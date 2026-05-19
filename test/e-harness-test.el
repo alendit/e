@@ -99,6 +99,32 @@
     (should (equal captured-messages
                    '((:role user :content "from context"))))))
 
+(ert-deftest e-harness-test-prompt-passes-tool-definitions-as-options ()
+  "Prompting includes registered tool definitions in backend options."
+  (let* ((captured-options nil)
+         (backend (e-backend-create
+                   :name "capture"
+                   :stream (cl-function
+                            (lambda (&key messages options on-item)
+                              (ignore messages)
+                              (setq captured-options options)
+                              (funcall on-item '(:type done :reason stop))))))
+         (tools (e-tools-registry-create))
+         (harness (e-harness-create :backend backend :tools tools)))
+    (e-tools-register tools
+                      :name "current_time"
+                      :description "Return the current time."
+                      :parameters '(:type "object" :properties nil)
+                      :handler (lambda (_arguments) "now"))
+    (e-harness-create-session harness :id "session-1")
+    (e-harness-prompt harness "session-1" "raw prompt")
+    (should (equal (plist-get captured-options :tools)
+                   '((:type "function"
+                      :name "current_time"
+                      :description "Return the current time."
+                      :parameters (:type "object" :properties nil)
+                      :strict :json-false))))))
+
 (provide 'e-harness-test)
 
 ;;; e-harness-test.el ends here

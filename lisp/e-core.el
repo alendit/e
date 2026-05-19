@@ -14,6 +14,7 @@
 
 (require 'e-backend)
 (require 'e-context)
+(require 'e-emacs-tools)
 (require 'e-events)
 (require 'e-harness)
 (require 'e-loop)
@@ -31,6 +32,7 @@
         :sessions t
         :backends t
         :context t
+        :emacs-tools t
         :openai t
         :tools t
         :loop t

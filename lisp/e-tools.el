@@ -16,13 +16,32 @@
 (cl-defstruct (e-tools-registry (:constructor e-tools-registry-create))
   (tools (make-hash-table :test 'equal)))
 
-(cl-defun e-tools-register (registry &key name description handler)
-  "Register tool NAME with DESCRIPTION and HANDLER in REGISTRY."
+(cl-defun e-tools-register (registry &key name description parameters handler)
+  "Register tool NAME with DESCRIPTION, PARAMETERS, and HANDLER in REGISTRY."
   (unless (functionp handler)
     (signal 'wrong-type-argument (list 'functionp handler)))
   (puthash name
-           (list :name name :description description :handler handler)
+           (list :name name
+                 :description description
+                 :parameters parameters
+                 :handler handler)
            (e-tools-registry-tools registry)))
+
+(defun e-tools-definitions (registry)
+  "Return backend-neutral tool definitions for REGISTRY."
+  (let ((definitions nil))
+    (maphash
+     (lambda (_name tool)
+       (push (list :type "function"
+                   :name (plist-get tool :name)
+                   :description (plist-get tool :description)
+                   :parameters (or (plist-get tool :parameters)
+                                   '(:type "object"
+                                     :properties nil))
+                   :strict :json-false)
+             definitions))
+     (e-tools-registry-tools registry))
+    (nreverse definitions)))
 
 (defun e-tools--result (call status content &optional metadata)
   "Return a structured tool result for CALL with STATUS, CONTENT, and METADATA."

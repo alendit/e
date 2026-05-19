@@ -77,6 +77,14 @@ provider-neutral runtime."
   "Return messages for SESSION-ID in HARNESS."
   (e-session-messages (e-harness-sessions harness) session-id))
 
+(defun e-harness--turn-options (harness)
+  "Return backend-neutral turn options for HARNESS."
+  (let ((tool-definitions (e-tools-definitions (e-harness-tools harness))))
+    (if tool-definitions
+        (append (copy-sequence (e-harness-default-options harness))
+                (list :tools tool-definitions))
+      (e-harness-default-options harness))))
+
 (defun e-harness-prompt (harness session-id prompt)
   "Append PROMPT and run one backend turn for SESSION-ID in HARNESS."
   (let* ((turn-id (e-harness--next-turn-id))
@@ -100,7 +108,7 @@ provider-neutral runtime."
                           (e-harness-context-strategy harness)
                           :sessions (e-harness-sessions harness)
                           :session-id session-id
-                          :options (e-harness-default-options harness))))
+                          :options (e-harness--turn-options harness))))
             (e-loop-run-turn
              :session-id session-id
              :turn-id turn-id

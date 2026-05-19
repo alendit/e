@@ -31,6 +31,21 @@
                      :content "hi"
                      :metadata nil)))))
 
+(ert-deftest e-tools-test-definitions-are-backend-neutral-function-tools ()
+  "Registered tools expose backend-neutral function definitions."
+  (let ((registry (e-tools-registry-create)))
+    (e-tools-register registry
+                      :name "current_time"
+                      :description "Return the current time."
+                      :parameters '(:type "object" :properties nil)
+                      :handler (lambda (_arguments) "now"))
+    (should (equal (e-tools-definitions registry)
+                   '((:type "function"
+                      :name "current_time"
+                      :description "Return the current time."
+                      :parameters (:type "object" :properties nil)
+                      :strict :json-false))))))
+
 (ert-deftest e-tools-test-missing-tool-returns-structured-error ()
   "Unknown tools return structured error results."
   (let ((registry (e-tools-registry-create)))

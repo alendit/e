@@ -63,6 +63,55 @@
     (should (equal (plist-get (car messages) :role) 'tool))
     (should (equal (plist-get (plist-get (car messages) :content) :status) 'ok))))
 
+(ert-deftest e-loop-test-requeries-backend-after-tool-result ()
+  "Tool results are fed back into the backend until an assistant message settles."
+  (let* ((calls 0)
+         (backend (e-backend-create
+                   :name "tool-followup"
+                   :stream (cl-function
+                            (lambda (&key messages options on-item)
+                              (ignore options)
+                              (setq calls (1+ calls))
+                              (if (= calls 1)
+                                  (progn
+                                    (should (equal (mapcar (lambda (message)
+                                                             (plist-get message :role))
+                                                           messages)
+                                                   '(user)))
+                                    (funcall on-item
+                                             '(:type tool-call
+                                               :id "call-1"
+                                               :name "echo"
+                                               :arguments (:text "hi")))
+                                    (funcall on-item '(:type done :reason tool-use)))
+                                (should (equal (mapcar (lambda (message)
+                                                         (plist-get message :role))
+                                                       messages)
+                                               '(user tool)))
+                                (funcall on-item
+                                         '(:type assistant-message
+                                           :content "saw tool result"))
+                                (funcall on-item '(:type done :reason stop)))))))
+         (tools (e-tools-registry-create))
+         (messages nil))
+    (e-tools-register tools
+                      :name "echo"
+                      :description "Echo text."
+                      :handler (lambda (arguments) (plist-get arguments :text)))
+    (e-loop-run-turn
+     :session-id "session-1"
+     :turn-id "turn-1"
+     :messages '((:role user :content "hi"))
+     :backend backend
+     :tools tools
+     :options nil
+     :on-event #'ignore
+     :append-message (lambda (message) (push message messages)))
+    (should (equal calls 2))
+    (should (equal (mapcar (lambda (message) (plist-get message :role))
+                           (nreverse messages))
+                   '(tool assistant)))))
+
 (provide 'e-loop-test)
 
 ;;; e-loop-test.el ends here

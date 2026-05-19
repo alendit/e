@@ -42,58 +42,73 @@ The loop is synchronous for the first core implementation.  Async process
 management stays outside this task until the core event and state semantics are
 stable."
   (let ((assistant-content nil)
-        (done-reason nil))
+        (done-reason nil)
+        (turn-messages (copy-sequence messages))
+        (continue t)
+        (iteration 0)
+        (max-iterations (or (plist-get options :max-tool-iterations) 4)))
     (e-loop--emit :on-event on-event
                   :session-id session-id
                   :turn-id turn-id
                   :type 'turn-started
                   :payload nil)
-    (e-backend-stream
-     backend
-     :messages messages
-     :options options
-     :on-item
-     (lambda (item)
-       (pcase (plist-get item :type)
-         ('assistant-delta
-          (setq assistant-content
-                (concat assistant-content (plist-get item :content)))
-          (e-loop--emit :on-event on-event
-                        :session-id session-id
-                        :turn-id turn-id
-                        :type 'assistant-delta
-                        :payload item))
-         ('assistant-message
-          (let ((message (list :id (e-loop--next-message-id)
-                               :role 'assistant
-                               :content (plist-get item :content)
-                               :metadata nil)))
-            (funcall append-message message)
-            (e-loop--emit :on-event on-event
-                          :session-id session-id
-                          :turn-id turn-id
-                          :type 'message-added
-                          :payload (list :message message))))
-         ('tool-call
-          (let* ((result (e-tools-execute tools item))
-                 (message (list :id (e-loop--next-message-id)
-                                :role 'tool
-                                :content result
-                                :metadata nil)))
-            (funcall append-message message)
-            (e-loop--emit :on-event on-event
-                          :session-id session-id
-                          :turn-id turn-id
-                          :type 'tool-finished
-                          :payload (list :result result))))
-         ('done
-          (setq done-reason (plist-get item :reason)))
-         (_
-          (e-loop--emit :on-event on-event
-                        :session-id session-id
-                        :turn-id turn-id
-                        :type 'backend-item-ignored
-                        :payload item)))))
+    (while continue
+      (setq iteration (1+ iteration))
+      (let ((tool-called nil)
+            (assistant-message nil))
+        (e-backend-stream
+         backend
+         :messages turn-messages
+         :options options
+         :on-item
+         (lambda (item)
+           (pcase (plist-get item :type)
+             ('assistant-delta
+              (setq assistant-content
+                    (concat assistant-content (plist-get item :content)))
+              (e-loop--emit :on-event on-event
+                            :session-id session-id
+                            :turn-id turn-id
+                            :type 'assistant-delta
+                            :payload item))
+             ('assistant-message
+              (setq assistant-message t)
+              (let ((message (list :id (e-loop--next-message-id)
+                                   :role 'assistant
+                                   :content (plist-get item :content)
+                                   :metadata nil)))
+                (setq turn-messages (append turn-messages (list message)))
+                (funcall append-message message)
+                (e-loop--emit :on-event on-event
+                              :session-id session-id
+                              :turn-id turn-id
+                              :type 'message-added
+                              :payload (list :message message))))
+             ('tool-call
+              (setq tool-called t)
+              (let* ((result (e-tools-execute tools item))
+                     (message (list :id (e-loop--next-message-id)
+                                    :role 'tool
+                                    :content result
+                                    :metadata nil)))
+                (setq turn-messages (append turn-messages (list message)))
+                (funcall append-message message)
+                (e-loop--emit :on-event on-event
+                              :session-id session-id
+                              :turn-id turn-id
+                              :type 'tool-finished
+                              :payload (list :result result))))
+             ('done
+              (setq done-reason (plist-get item :reason)))
+             (_
+              (e-loop--emit :on-event on-event
+                            :session-id session-id
+                            :turn-id turn-id
+                            :type 'backend-item-ignored
+                            :payload item)))))
+        (setq continue (and tool-called
+                            (not assistant-message)
+                            (< iteration max-iterations)))))
     (e-loop--emit :on-event on-event
                   :session-id session-id
                   :turn-id turn-id
