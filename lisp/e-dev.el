@@ -40,6 +40,7 @@
                   "lisp/e-backend.el"
                   "lisp/e-tools.el"
                   "lisp/e-loop.el"
+                  "lisp/e-harness.el"
                   "lisp/e-core.el"
                   "e.el"
                   "lisp/e-dev.el")))
