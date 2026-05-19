@@ -17,6 +17,7 @@
 (require 'e-events)
 (require 'e-harness)
 (require 'e-loop)
+(require 'e-openai)
 (require 'e-session)
 (require 'e-tools)
 
@@ -30,6 +31,7 @@
         :sessions t
         :backends t
         :context t
+        :openai t
         :tools t
         :loop t
         :harness t))

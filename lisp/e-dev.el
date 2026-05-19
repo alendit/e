@@ -39,6 +39,7 @@
                   "lisp/e-session.el"
                   "lisp/e-context.el"
                   "lisp/e-backend.el"
+                  "lisp/e-openai.el"
                   "lisp/e-tools.el"
                   "lisp/e-loop.el"
                   "lisp/e-harness.el"

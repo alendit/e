@@ -1,0 +1,126 @@
+;;; e-openai-test.el --- Tests for e OpenAI/Codex backend -*- lexical-binding: t; -*-
+
+;; Copyright (C) 2026 Dimitri Vorona
+
+;; Author: Dimitri Vorona
+;; SPDX-License-Identifier: MIT
+
+;;; Commentary:
+
+;; ERT tests for OpenAI/Codex auth, request mapping, and stream parsing.
+
+;;; Code:
+
+(require 'ert)
+(require 'json)
+(require 'e)
+(require 'e-backend)
+(require 'e-openai)
+
+(defun e-openai-test--jwt ()
+  "Return a fake JWT with a Codex account-id claim."
+  (let* ((payload (json-encode
+                   '(:https://api.openai.com/auth
+                     (:chatgpt_account_id "acct-test"))))
+         (encoded (base64-encode-string payload 'no-line-break)))
+    (setq encoded (string-replace "+" "-" encoded))
+    (setq encoded (string-replace "/" "_" encoded))
+    (setq encoded (replace-regexp-in-string "=+$" "" encoded))
+    (format "header.%s.signature" encoded)))
+
+(ert-deftest e-openai-test-auth-file-uses-codex-home ()
+  "Codex auth file resolution honors CODEX_HOME."
+  (let ((process-environment
+         (cons "CODEX_HOME=/tmp/e-codex-home" process-environment)))
+    (should (equal (e-openai-codex-auth-file)
+                   "/tmp/e-codex-home/auth.json"))))
+
+(ert-deftest e-openai-test-read-auth-token-and-account-id ()
+  "Auth parsing extracts the access token and account id."
+  (let* ((token (e-openai-test--jwt))
+         (auth (list :tokens (list :access_token token
+                                   :refresh_token "refresh"))))
+    (should (equal (e-openai-codex-auth-access-token auth) token))
+    (should (equal (e-openai-codex-auth-account-id auth) "acct-test"))))
+
+(ert-deftest e-openai-test-request-body-maps-neutral-messages ()
+  "OpenAI request body uses Responses API input items."
+  (should
+   (equal
+    (e-openai-codex-request-body
+     :messages '((:role user :content "hello")
+                 (:role assistant :content "hi"))
+     :options '(:model "gpt-test" :instructions "Be terse."))
+    '(:model "gpt-test"
+      :store :json-false
+      :stream t
+      :instructions "Be terse."
+      :input [(:type "message"
+               :role "user"
+               :content [(:type "input_text" :text "hello")])
+              (:type "message"
+               :role "assistant"
+               :content [(:type "output_text" :text "hi")])]
+      :tool_choice "auto"
+      :parallel_tool_calls t))))
+
+(ert-deftest e-openai-test-parse-sse-events ()
+  "Responses SSE events become backend-neutral stream items."
+  (should
+   (equal
+    (e-openai-codex-parse-stream
+     "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"he\"}\n\n\
+event: response.output_text.done\ndata: {\"type\":\"response.output_text.done\",\"text\":\"hello\"}\n\n\
+event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")
+    '((:type assistant-delta :content "he")
+      (:type assistant-message :content "hello")
+      (:type done :reason stop)))))
+
+(ert-deftest e-openai-test-parse-function-call-event ()
+  "Responses function calls become backend-neutral tool calls."
+  (should
+   (equal
+    (e-openai-codex-parse-stream
+     "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"function_call\",\"call_id\":\"call-1\",\"name\":\"now\",\"arguments\":\"{\\\"format\\\":\\\"iso\\\"}\"}}\n\n")
+    '((:type tool-call
+      :id "call-1"
+      :name "now"
+      :arguments (:format "iso"))))))
+
+(ert-deftest e-openai-test-backend-streams-through-injected-requester ()
+  "The Codex backend streams parsed events from an injected HTTP requester."
+  (let* ((token (e-openai-test--jwt))
+         (auth-file (make-temp-file "e-auth" nil ".json"
+                                    (json-encode
+                                     (list :tokens
+                                           (list :access_token token
+                                                 :refresh_token "refresh")))))
+         (seen nil)
+         (captured nil)
+         (backend
+          (e-openai-codex-backend-create
+           :auth-file auth-file
+           :request-function
+           (cl-function
+            (lambda (&key url headers body)
+              (setq captured (list :url url :headers headers :body body))
+              "data: {\"type\":\"response.output_text.done\",\"text\":\"ok\"}\n\n\
+data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")))))
+    (unwind-protect
+        (progn
+          (e-backend-stream backend
+                            :messages '((:role user :content "hello"))
+                            :options '(:model "gpt-test")
+                            :on-item (lambda (item) (push item seen)))
+          (should (equal (nreverse seen)
+                         '((:type assistant-message :content "ok")
+                           (:type done :reason stop))))
+          (should (equal (plist-get captured :url)
+                         "https://chatgpt.com/backend-api/codex/responses"))
+          (should (assoc "Authorization" (plist-get captured :headers)))
+          (should (assoc "chatgpt-account-id" (plist-get captured :headers))))
+      (delete-file auth-file))))
+
+(provide 'e-openai-test)
+
+;;; e-openai-test.el ends here
