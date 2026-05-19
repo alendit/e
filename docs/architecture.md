@@ -1,12 +1,26 @@
-    # Architecture
+# Architecture
 
 ## Project Overview
 
 `e` is an Emacs-hosted agent runtime inspired by pi-core. It should let Emacs run live-configurable agents that can inspect editor state, operate tools, and, when explicitly authorized, modify Emacs configuration or their own harnesses.
 
-The repository currently contains a minimal Emacs package scaffold. The architecture below is still mostly a target-state overview for the future agent runtime, but the package entry point, core scaffold, development reload helper, and ERT test harness now exist.
+The repository now contains the first pure core harness implementation. The package entry point, event helpers, in-memory session store, backend-neutral adapter contract, tool registry, synchronous loop, harness service, development reload helper, and ERT tests exist. The architecture below still includes target-state components that have not been implemented yet, especially the real OpenAI backend, Emacs execution tools, durable persistence, presentation shells, and richer context management.
 
-The primary runtime surfaces are expected to be an Emacs Lisp harness API, Emacs presentation shells, explicit tool adapters, session persistence, and generic LLM backend adapters. The first provider target is OpenAI API access through ChatGPT subscription auth, but provider details must remain outside core harness policy.
+The primary runtime surfaces are expected to be an Emacs Lisp harness API, context-management strategies, Emacs presentation shells, explicit tool adapters, session persistence, and generic LLM backend adapters. The first provider target is OpenAI API access through ChatGPT subscription auth, but provider details must remain outside core harness policy.
+
+## Table Of Contents
+
+- project overview: L3-L9
+- architecture overview: L25-L54
+- boundaries and invariants: L56-L76
+- repository mapping: L78-L108
+- components: L110-L171
+- data and control flow: L173-L208
+- public surfaces: L210-L222
+- extension points: L224-L228
+- testing and verification: L230-L236
+- change management: L238-L240
+- architecture discussion: L242-L260
 
 ## Architecture Overview
 
@@ -16,6 +30,7 @@ The target shape is:
 
 - Core harness: lifecycle, state, queues, events, tools, resources, and session coordination.
 - Agent loop: context transformation, model streaming, tool-call handling, and stop conditions.
+- Context management: strategy-selected construction of backend context from session state, prompts, tool results, resources, and optional explicit state artifacts.
 - Execution environment: Emacs-aware side-effect boundary for buffers, files, processes, elisp evaluation, and harness mutation tools.
 - LLM backend: generic provider interface with OpenAI/ChatGPT auth as the first adapter.
 - Presentation shells: Emacs buffers, commands, keymaps, and interaction modes that consume harness events.
@@ -25,13 +40,16 @@ The target shape is:
 flowchart LR
     User["Emacs user"] --> UI["Presentation shells"]
     UI --> Harness["Core harness"]
-    Harness --> Loop["Agent loop"]
+    Harness --> Context["Context strategy"]
+    Context --> Loop["Agent loop"]
     Loop --> Backend["Generic LLM backend"]
     Backend --> OpenAI["OpenAI adapter"]
     Loop --> Tools["Tool registry"]
     Tools --> Env["Emacs execution environment"]
     Harness --> Sessions["Session store"]
+    Context --> Sessions
     Harness --> Resources["Resources and config"]
+    Context --> Resources
     Env --> Emacs["Buffers, files, processes, elisp"]
 ```
 
@@ -39,9 +57,10 @@ flowchart LR
 
 Confirmed current state:
 
-- A minimal package entry point, pure core scaffold, and development reload helper exist.
+- A package entry point, pure core harness modules, development reload helper, and ERT test suite exist.
+- The current loop supports a synchronous fake-backend flow with in-memory sessions and structured events.
 - `AGENTS.md` is the current architecture policy source of truth.
-- This document records the target architecture and must be updated as real runtime components replace scaffold behavior.
+- This document records the current architecture and target seams, and must be updated as runtime components replace deferred behavior.
 
 Target invariants:
 
@@ -49,8 +68,11 @@ Target invariants:
 - Presentation shells may depend on harness APIs and events, but must not own agent policy, backend routing, session semantics, or tool execution semantics.
 - LLM provider specifics belong in backend adapters. The core harness depends on a generic backend contract, not OpenAI-specific auth or payload shapes.
 - OpenAI API access through ChatGPT subscription auth is an adapter concern. Auth refresh, provider headers, and model capability mapping stay outside the core loop.
+- Context construction must remain provider-neutral. The OpenAI backend should receive backend-neutral messages, tools, and options, not own transcript replay, compaction, or canvas-state policy.
+- Context management should be strategy-selectable. The first strategy can be classic transcript stack replay, but the architecture must also allow explicit state-artifact strategies such as canvas mode.
 - Emacs side effects belong in the execution environment and concrete tools. The core harness describes intent and consumes results.
 - Harness self-modification must be exposed as explicit tools with recorded effects, not implicit mutation from presentation code.
+- Append-only evidence logs and mutable semantic state must stay distinct when a context strategy uses explicit state artifacts.
 - Expected domain errors are handled where the layer has enough context; unexpected errors surface to the top-level shell.
 
 ## Repository Mapping
@@ -59,15 +81,26 @@ Current repository mapping:
 
 - `AGENTS.md`: durable repo guidance, architectural constraints, and design self-check questions.
 - `docs/architecture.md`: current architecture map and target-state description.
-- `e.el`: package entry point, public scaffold commands, package metadata, and autoloads.
-- `lisp/e-core.el`: pure runtime scaffold with no presentation, backend, or side-effect dependencies.
+- `docs/core.md`: completed implementation plan for the first pure core harness.
+- `docs/core-qa.md`: QA scenario map for the completed core slices.
+- `docs/feat-canvas.md`: deferred design note for canvas-state context management.
+- `e.el`: package entry point, public smoke commands, package metadata, and autoloads.
+- `lisp/e-core.el`: core module aggregator and status surface.
+- `lisp/e-events.el`: event construction helpers for stable core event plists.
+- `lisp/e-session.el`: in-memory session repository and message APIs.
+- `lisp/e-backend.el`: backend-neutral adapter contract and fake backend.
+- `lisp/e-tools.el`: pure tool registry and structured tool-result handling.
+- `lisp/e-loop.el`: synchronous backend/tool/message/event turn loop.
+- `lisp/e-harness.el`: public core harness service for sessions, prompts, follow-ups, reset, state access, and event subscription.
 - `lisp/e-dev.el`: interactive development helpers for live reloading local source in Emacs.
-- `test/e-test.el`: ERT smoke tests for the package surface.
+- `test/e-test.el`: ERT smoke tests for the package surface and exposed harness API.
+- `test/e-*-test.el`: focused ERT tests for events, sessions, backend contract, tools, loop, and harness behavior.
 - `Eldev`: Eldev test/build/lint/package tooling configuration.
 
 Expected future mapping should keep these roles separate:
 
 - Harness modules: no presentation dependencies, no provider-specific auth, no direct UI side effects.
+- Context strategy modules: provider-neutral context assembly and interpretation of context-state outputs.
 - Presentation modules: Emacs UI commands and rendering only; depend inward on harness APIs.
 - Backend adapters: provider-specific auth, request mapping, streaming, and model capability translation.
 - Execution adapters and tools: side effects against Emacs, files, processes, and harness mutation capabilities.
@@ -82,19 +115,40 @@ The core harness owns the stable application boundary for agents. It should prov
 
 It owns current agent state, structured events, queue state, active tools, resources, session coordination, and delegation to the agent loop. It collaborates with the session store, generic backend interface, tool registry, and execution environment. Its side effects should be limited to adapter calls for backend streaming, session persistence, and tool execution.
 
-`lisp/e-core.el` currently implements only a placeholder scaffold status function. It is the intended location for the first pure harness behavior, but it does not yet implement lifecycle, sessions, tools, resources, or backend coordination.
+Current code exposes `e-harness-create`, `e-harness-create-session`, `e-harness-subscribe`, `e-harness-prompt`, `e-harness-follow-up`, `e-harness-abort`, `e-harness-reset`, `e-harness-state`, and `e-harness-messages` through `(require 'e)`. The implementation is synchronous and in-memory. It is sufficient for fake-backend core tests, but it does not yet support async turns, real provider streaming, durable stores, or concrete Emacs side effects.
 
 ### Agent Loop
 
-The agent loop owns turn execution. It transforms harness context into backend-ready messages, streams assistant output, processes tool calls, applies stop conditions, and reports lifecycle/tool/message events back to the harness.
+The agent loop owns turn execution. It accepts backend-ready messages, streams assistant output, processes tool calls, applies stop conditions, and reports lifecycle/tool/message events back to the harness.
 
 The loop depends on generic contracts supplied by the harness. It should not know which presentation shell requested the turn or which provider implements the backend.
+
+The current loop in `lisp/e-loop.el` is synchronous and backend-neutral. It consumes fake backend stream items, appends assistant and tool-result messages through callbacks, and emits structured events. It should not accumulate policy for how context is assembled; that belongs in a context-management strategy.
+
+### Context Management Strategies
+
+Context management owns the transformation from durable session state and current turn inputs into backend-ready context. It is a strategy seam between the harness/session store and the loop/backend.
+
+The first real strategy should be `transcript-stack`: replay prior user, assistant, and tool-result messages into the model request. This is the simplest path for making the OpenAI backend work.
+
+The architecture must also allow alternative strategies, especially `canvas-state` as described in `docs/feat-canvas.md`. In canvas mode, a durable canvas is the authoritative semantic state, while the full transcript and tool results remain append-only evidence retrievable through tools. The model receives the current canvas, the latest prompt, recent observations, and selected evidence; it can then request tool calls or propose a versioned canvas edit.
+
+Context strategies should own:
+
+- selecting and formatting session messages, tool results, resources, and evidence
+- deciding whether the model sees a transcript stack, a canvas state document, or another context shape
+- interpreting model outputs that update context-owned state artifacts
+- preserving provenance links between summaries, facts, decisions, and evidence
+
+Context strategies must not own provider auth, provider-specific payload mapping, UI rendering, or concrete Emacs side effects.
 
 ### Session And State Store
 
 The session store owns durable conversation state. The target model should support more than a flat transcript because agents need resumable work, compaction, branch summaries, and explicit metadata changes.
 
 The store should persist user, assistant, tool-result, and custom harness messages; track model and thinking-level changes; represent compaction and branch summaries; and expose a current leaf or branch cursor for resume and navigation. Presentation shells may display this state but must not become its source of truth.
+
+The current store in `lisp/e-session.el` is in-memory only. Future durable storage should be able to persist both append-only evidence logs and mutable context-state artifacts such as canvas revisions. Those concepts should remain separate: logs are evidence, while canvas or summary documents are editable semantic state.
 
 ### Execution Environment And Tools
 
@@ -107,6 +161,8 @@ Tools depend on the execution environment. The core harness depends only on tool
 The LLM backend interface owns provider independence. The first adapter should target OpenAI API access through ChatGPT subscription auth, but the harness should treat it as one backend implementation.
 
 The interface should accept backend-neutral messages/options, stream assistant output and tool-call requests, map model capabilities outside core policy, and isolate auth, retry, headers, and provider-specific request/response shapes. Adding a second provider should require a new adapter, not changes to presentation shells or core harness policy.
+
+The OpenAI adapter should use Codex/ChatGPT subscription auth as an adapter concern. It should not decide whether a session uses transcript-stack context, canvas-state context, or another future strategy.
 
 ### Presentation Shells
 
@@ -123,6 +179,7 @@ sequenceDiagram
     participant User as Emacs user
     participant UI as Presentation shell
     participant H as Core harness
+    participant C as Context strategy
     participant L as Agent loop
     participant B as LLM backend
     participant T as Tool registry
@@ -131,6 +188,9 @@ sequenceDiagram
     User->>UI: prompt or command
     UI->>H: lifecycle request
     H->>S: load current context
+    H->>C: build backend-neutral context
+    C->>S: read messages, state artifacts, evidence
+    C-->>H: context request
     H->>L: run turn with context and queues
     L->>B: stream backend request
     B-->>L: assistant deltas and tool calls
@@ -145,14 +205,17 @@ sequenceDiagram
 
 Configuration flow should follow the same boundary. Presentation submits a configuration intent to the harness. The harness updates stable state or delegates side effects to adapters. Provider-specific configuration is stored behind backend adapter configuration, not in generic harness state.
 
+Canvas-state flow is a specialized context-management flow. The context strategy reads the current canvas revision and selected evidence, the loop receives backend-neutral context, and accepted canvas edits are validated and persisted as new revisions. The raw log remains append-only evidence.
+
 ## Public Surfaces
 
-The current public scaffold surface is:
+The current public package surface is:
 
 - `(require 'e)`: load the package.
 - `e-version`: current package version.
 - `e-status`: interactive smoke command that reports the loaded package status.
 - `e-dev-reload`: interactive development command that reloads local source files.
+- `e-harness-create`, `e-harness-create-session`, `e-harness-subscribe`, `e-harness-prompt`, `e-harness-follow-up`, `e-harness-abort`, `e-harness-reset`, `e-harness-state`, and `e-harness-messages`: first core harness API.
 
 The target public surface should be an Emacs Lisp harness API rather than a UI-only command set. It should cover lifecycle operations, state access, event subscription, backend and tool configuration, session selection, and adapter registration.
 
@@ -160,37 +223,38 @@ Presentation commands should call this surface instead of duplicating behavior.
 
 ## Extension Points
 
-Established extension points do not exist yet in code. Target extension points are LLM backend adapters, tool definitions, execution environment adapters, resource providers, session repositories, and presentation shells.
+Established extension points now exist for backend adapters and pure tool definitions. Target extension points are LLM backend adapters, context-management strategies, tool definitions, execution environment adapters, resource providers, session repositories, and presentation shells.
 
 These are architectural seams because they protect stable harness policy from volatile UI, provider, and side-effect details.
 
 ## Testing And Verification
 
-`test/e-test.el` contains ERT smoke tests for loading the package, exposing `e-version`, and exposing the interactive status/reload commands. Eldev is the project test/build/lint/package runner.
+`test/e-test.el` contains ERT smoke tests for loading the package, exposing `e-version`, exposing the interactive status/reload commands, and exposing the harness API. Eldev is the project test/build/lint/package runner.
 
-The first implementation should make the core harness testable with fake backends, fake tools, fake execution environments, and in-memory sessions. Those tests should prove lifecycle, event ordering, queue handling, session writes, tool-result handling, and provider independence without launching a full Emacs presentation shell.
+The first implementation makes the core harness testable with fake backends, pure fake tools, and in-memory sessions. Current tests prove event shape, session writes, backend independence, tool-result handling, loop behavior, lifecycle operations, and package exposure without launching a full Emacs presentation shell.
 
-Adapter tests should separately verify Emacs side effects, provider auth, and provider streaming behavior. Presentation tests should verify command wiring and rendering against harness events, not duplicate harness behavior.
+Adapter tests should separately verify Emacs side effects, provider auth, provider streaming behavior, and context strategy behavior. Presentation tests should verify command wiring and rendering against harness events, not duplicate harness behavior.
 
 ## Change Management
 
-Update this document when the harness/presentation boundary moves, the LLM backend contract changes, the session storage format changes, tool execution semantics change, Emacs side-effect boundaries move, or public harness lifecycle/event surfaces are renamed or removed.
+Update this document when the harness/presentation boundary moves, the context-management contract changes, the LLM backend contract changes, the session storage format changes, tool execution semantics change, Emacs side-effect boundaries move, or public harness lifecycle/event surfaces are renamed or removed.
 
 ## Architecture Discussion
 
-The target architecture gives each behavior a clear owner: the harness owns lifecycle and policy, the loop owns turn execution, the session store owns durable state, adapters own side effects and provider specifics, and presentation owns interaction.
+The target architecture gives each behavior a clear owner: the harness owns lifecycle and policy, context strategies own backend context assembly, the loop owns turn execution, the session store owns durable state, adapters own side effects and provider specifics, and presentation owns interaction.
 
 Dependency direction should flow from unstable code toward stable contracts. Presentation, provider adapters, and concrete tools are expected to change more often than core harness policy, so they should depend on the harness surface rather than the reverse.
 
 Side effects are intentionally pushed outward. Buffer edits, file writes, process execution, elisp evaluation, provider auth, and harness self-modification all belong behind explicit adapters or tools. This keeps the core loop testable with fake implementations.
 
-The main abstraction risk is creating generic interfaces before their semantics are real. The harness, backend, tool, session, and execution environment contracts are justified because the project already has explicit change pressure in those dimensions: multiple presentations, provider independence, live-configurable tools, durable sessions, and Emacs-native side effects.
+The main abstraction risk is creating generic interfaces before their semantics are real. The harness, backend, tool, session, context-strategy, and execution environment contracts are justified because the project already has explicit change pressure in those dimensions: multiple presentations, provider independence, live-configurable tools, durable sessions, alternative context formats, and Emacs-native side effects.
 
-Confirmed gap: the implementation is only a scaffold. The current architecture is still mostly a vision recorded in durable docs, with a small verified package surface that future runtime work can build on.
+Confirmed gap: the implementation is still an in-memory synchronous core. It is no longer only a scaffold, but real provider access, durable persistence, async execution, concrete tools, context strategy selection, and presentation shells remain future work.
 
 Delta to the architectural vision:
 
-- Source modules need to establish the harness surface before presentation work grows around it.
-- A fake backend and in-memory session store should exist before the OpenAI/ChatGPT adapter so backend independence is tested early.
+- The OpenAI/ChatGPT adapter can now build on the backend-neutral contract instead of changing harness policy.
+- Context construction should be extracted as a strategy before the OpenAI backend hard-codes transcript replay.
 - Presentation should start as a thin shell over harness events, not as the place where lifecycle behavior accumulates.
 - Self-modifying agent capabilities need explicit tools, session records, and permission behavior before they are exposed through UI commands.
+- Canvas-state context management should remain deferred until the transcript-stack strategy and OpenAI backend are working, but `docs/feat-canvas.md` records the invariants the architecture should preserve.
