@@ -14,6 +14,7 @@
 
 (require 'e-backend)
 (require 'e-context)
+(require 'e-emacs-base)
 (require 'e-emacs-tools)
 (require 'e-events)
 (require 'e-harness)
@@ -34,6 +35,7 @@
         :layers t
         :backends t
         :context t
+        :emacs-base t
         :emacs-tools t
         :openai t
         :tools t

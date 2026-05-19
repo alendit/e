@@ -14,12 +14,16 @@
 (require 'cl-lib)
 
 (cl-defstruct (e-tools-registry (:constructor e-tools-registry-create))
-  (tools (make-hash-table :test 'equal)))
+  (tools (make-hash-table :test 'equal))
+  (order nil))
 
 (cl-defun e-tools-register (registry &key name description parameters handler)
   "Register tool NAME with DESCRIPTION, PARAMETERS, and HANDLER in REGISTRY."
   (unless (functionp handler)
     (signal 'wrong-type-argument (list 'functionp handler)))
+  (unless (gethash name (e-tools-registry-tools registry))
+    (setf (e-tools-registry-order registry)
+          (append (e-tools-registry-order registry) (list name))))
   (puthash name
            (list :name name
                  :description description
@@ -30,17 +34,16 @@
 (defun e-tools-definitions (registry)
   "Return backend-neutral tool definitions for REGISTRY."
   (let ((definitions nil))
-    (maphash
-     (lambda (_name tool)
-       (push (list :type "function"
-                   :name (plist-get tool :name)
-                   :description (plist-get tool :description)
-                   :parameters (or (plist-get tool :parameters)
-                                   '(:type "object"
-                                     :properties nil))
-                   :strict :json-false)
-             definitions))
-     (e-tools-registry-tools registry))
+    (dolist (name (e-tools-registry-order registry))
+      (let ((tool (gethash name (e-tools-registry-tools registry))))
+        (push (list :type "function"
+                    :name (plist-get tool :name)
+                    :description (plist-get tool :description)
+                    :parameters (or (plist-get tool :parameters)
+                                    '(:type "object"
+                                      :properties nil))
+                    :strict :json-false)
+              definitions)))
     (nreverse definitions)))
 
 (defun e-tools--result (call status content &optional metadata)
