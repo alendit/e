@@ -35,7 +35,10 @@
   (interactive)
   (let* ((root (file-name-as-directory
                 (expand-file-name (or directory e-dev-source-directory))))
-         (files '("lisp/e-core.el" "e.el" "lisp/e-dev.el")))
+         (files '("lisp/e-events.el"
+                  "lisp/e-core.el"
+                  "e.el"
+                  "lisp/e-dev.el")))
     (dolist (file files)
       (load (expand-file-name file root) nil 'nomessage))
     (message "Reloaded e from %s" (abbreviate-file-name root))
