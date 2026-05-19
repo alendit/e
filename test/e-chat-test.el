@@ -35,6 +35,27 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-inline-prompt-is-editable-and-submits ()
+  "The chat buffer prompt accepts typed text and submits it inline."
+  (let* ((backend (e-backend-fake-create
+                   :items '((:type assistant-message :content "inline answer")
+                            (:type done :reason stop))))
+         (harness (e-harness-create :backend backend))
+         (buffer (e-chat-open :harness harness :session-id "chat-inline")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (should-not buffer-read-only)
+          (goto-char (point-max))
+          (insert "typed prompt")
+          (e-chat-submit)
+          (e-harness-wait e-chat-harness e-chat-session-id 1.0)
+          (let ((content (buffer-string)))
+            (should (string-match-p "User: typed prompt" content))
+            (should (string-match-p "Assistant: inline answer" content))
+            (should (string-match-p "\n> $" content))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-reset-clears-rendered-session ()
   "Reset clears the rendered chat buffer and harness session transcript."
   (let* ((backend (e-backend-fake-create

@@ -40,16 +40,26 @@
 (defvar-local e-chat-session-id nil
   "Session id used by the current chat buffer.")
 
+(defvar-local e-chat--prompt-marker nil
+  "Marker at the beginning of the editable chat prompt text.")
+
 (defvar e-chat-mode-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "C-c C-c") #'e-chat-submit)
+    (define-key map (kbd "RET") #'e-chat-submit)
     (define-key map (kbd "C-c C-k") #'e-chat-abort)
     (define-key map (kbd "C-c C-r") #'e-chat-reset)
     map)
   "Keymap for `e-chat-mode'.")
 
-(define-derived-mode e-chat-mode special-mode "e-chat"
+(define-derived-mode e-chat-mode text-mode "e-chat"
   "Major mode for e chat buffers.")
+
+(defun e-chat--line-beginning-at (position)
+  "Return line beginning at POSITION."
+  (save-excursion
+    (goto-char position)
+    (line-beginning-position)))
 
 (defun e-chat--default-harness ()
   "Create the default Codex-backed chat harness."
@@ -66,15 +76,46 @@
 
 (defun e-chat--insert-line (line)
   "Insert LINE into the current chat buffer."
-  (let ((inhibit-read-only t))
-    (goto-char (point-max))
-    (insert line "\n")))
+  (let ((position (if (and (markerp e-chat--prompt-marker)
+                           (marker-position e-chat--prompt-marker))
+                      (e-chat--line-beginning-at
+                       (marker-position e-chat--prompt-marker))
+                    (point-max))))
+    (save-excursion
+      (goto-char position)
+      (insert line "\n"))))
+
+(defun e-chat--insert-prompt ()
+  "Insert an editable prompt at the end of the current chat buffer."
+  (goto-char (point-max))
+  (unless (bolp)
+    (insert "\n"))
+  (insert "> ")
+  (setq e-chat--prompt-marker (point-marker))
+  (set-marker-insertion-type e-chat--prompt-marker nil))
+
+(defun e-chat--prompt-text ()
+  "Return the current editable prompt text."
+  (unless (and (markerp e-chat--prompt-marker)
+               (marker-position e-chat--prompt-marker))
+    (user-error "No active e chat prompt"))
+  (string-trim
+   (buffer-substring-no-properties e-chat--prompt-marker (point-max))))
+
+(defun e-chat--delete-prompt ()
+  "Delete the editable prompt from the current chat buffer."
+  (when (and (markerp e-chat--prompt-marker)
+             (marker-position e-chat--prompt-marker))
+    (let ((start (e-chat--line-beginning-at
+                  (marker-position e-chat--prompt-marker))))
+      (delete-region start (point-max)))
+    (set-marker e-chat--prompt-marker nil)))
 
 (defun e-chat--clear ()
   "Clear and initialize the current chat buffer."
-  (let ((inhibit-read-only t))
-    (erase-buffer)
-    (insert "e chat\n\n")))
+  (erase-buffer)
+  (insert "e chat\n\n")
+  (e-chat--insert-prompt))
 
 (defun e-chat--set-status (status)
   "Set chat buffer STATUS."
@@ -99,15 +140,18 @@
       (format "Turn started: %s" (plist-get event :turn-id))))
     ('turn-finished
      (e-chat--set-status "idle")
-     (e-chat--insert-line "Turn finished"))
+     (e-chat--insert-line "Turn finished")
+     (e-chat--insert-prompt))
     ('turn-failed
      (e-chat--set-status "error")
      (e-chat--insert-line
       (format "Turn failed: %s"
-              (plist-get (plist-get event :payload) :error))))
+              (plist-get (plist-get event :payload) :error)))
+     (e-chat--insert-prompt))
     ('turn-cancelled
      (e-chat--set-status "cancelled")
-     (e-chat--insert-line "Turn cancelled"))
+     (e-chat--insert-line "Turn cancelled")
+     (e-chat--insert-prompt))
     ('message-added
      (e-chat--insert-line
       (e-chat--message-line
@@ -157,13 +201,15 @@ Codex-backed harness with the emacs-base layer active."
   (interactive)
   (pop-to-buffer (e-chat-open)))
 
-(defun e-chat-submit (prompt)
-  "Submit PROMPT through the current chat buffer harness."
-  (interactive (list (read-string "Prompt: ")))
+(defun e-chat-submit (&optional prompt)
+  "Submit PROMPT or the current editable prompt text."
+  (interactive)
   (unless (and e-chat-harness e-chat-session-id)
     (user-error "This buffer is not attached to an e chat session"))
+  (setq prompt (or prompt (e-chat--prompt-text)))
   (when (string-empty-p prompt)
     (user-error "Prompt must not be empty"))
+  (e-chat--delete-prompt)
   (e-chat--set-status "queued")
   (e-harness-prompt-async e-chat-harness e-chat-session-id prompt))
 
