@@ -1,4 +1,4 @@
-;;; e-core.el --- Core runtime scaffold for e -*- lexical-binding: t; -*-
+;;; e-core.el --- Core runtime for e -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 Dimitri Vorona
 
@@ -7,17 +7,30 @@
 
 ;;; Commentary:
 
-;; Pure core scaffold for e.  This module must stay independent from
+;; Pure core runtime for e.  This module must stay independent from
 ;; presentation buffers, keymaps, provider adapters, and concrete side effects.
 
 ;;; Code:
+
+(require 'e-backend)
+(require 'e-events)
+(require 'e-harness)
+(require 'e-loop)
+(require 'e-session)
+(require 'e-tools)
 
 (defconst e-core-scaffold-state 'ready
   "Minimal state marker for the core runtime scaffold.")
 
 (defun e-core-status ()
-  "Return a plist describing the current core scaffold state."
-  (list :state e-core-scaffold-state))
+  "Return a plist describing the current core state."
+  (list :state e-core-scaffold-state
+        :events t
+        :sessions t
+        :backends t
+        :tools t
+        :loop t
+        :harness t))
 
 (provide 'e-core)
 
