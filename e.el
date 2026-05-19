@@ -56,6 +56,9 @@
 ;;;###autoload
 (autoload 'e-dev-reload "e-dev" "Reload e package files during development." t)
 
+;;;###autoload
+(autoload 'e-chat "e-chat" "Open the default e chat buffer." t)
+
 (provide 'e)
 
 ;;; e.el ends here

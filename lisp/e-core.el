@@ -13,6 +13,7 @@
 ;;; Code:
 
 (require 'e-backend)
+(require 'e-chat)
 (require 'e-context)
 (require 'e-emacs-base)
 (require 'e-emacs-tools)
@@ -32,6 +33,7 @@
   (list :state e-core-scaffold-state
         :events t
         :sessions t
+        :chat t
         :layers t
         :backends t
         :context t

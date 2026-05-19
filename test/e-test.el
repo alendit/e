@@ -26,6 +26,7 @@
   "The package exposes status and live-reload commands."
   (require 'e)
   (should (commandp 'e-status))
+  (should (commandp 'e-chat))
   (should (commandp 'e-dev-reload)))
 
 (ert-deftest e-test-exposes-core-harness-api ()
