@@ -46,4 +46,18 @@ Then run:
 ~/.emacs.d/bin/doom sync
 ```
 
+Restart Emacs after `doom sync`, or reload Doom's generated package autoloads
+for the current session. Until the package/autoloads are loaded, commands such
+as `M-x e-dev-reload` and `M-x e-chat` will not exist in `M-x`.
+
+For an already-running Emacs session, the one-time manual bootstrap is:
+
+```elisp
+(load-file "/Users/dimitrivorona/projects/elisp/e/e.el")
+```
+
+After that, `M-x e-dev-reload` reloads the package modules from the checkout in
+dependency order, including new MVP modules such as `e-layers`,
+`e-emacs-base`, and `e-chat`.
+
 The package itself does not depend on Doom-specific APIs.
