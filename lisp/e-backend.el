@@ -31,7 +31,7 @@ backend-neutral stream items."
            :on-item on-item))
 
 (cl-defun e-backend-fake-create (&key name items)
-  "Create a fake backend that streams ITEMS synchronously."
+  "Create fake backend NAME that streams ITEMS synchronously."
   (e-backend-create
    :name (or name "fake")
    :stream (cl-function

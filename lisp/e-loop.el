@@ -25,7 +25,8 @@
   (format "msg-%d" e-loop--message-counter))
 
 (cl-defun e-loop--emit (&key on-event session-id turn-id type payload)
-  "Emit a loop event through ON-EVENT."
+  "Emit event TYPE for SESSION-ID and TURN-ID through ON-EVENT.
+PAYLOAD is stored as the event payload."
   (funcall on-event
            (e-events-make :type type
                           :session-id session-id
@@ -34,7 +35,9 @@
 
 (cl-defun e-loop-run-turn
     (&key session-id turn-id messages backend tools options on-event append-message)
-  "Run one agent turn.
+  "Run one agent turn for SESSION-ID and TURN-ID.
+MESSAGES, BACKEND, TOOLS, OPTIONS, ON-EVENT, and APPEND-MESSAGE define the
+turn context and output callbacks.
 The loop is synchronous for the first core implementation.  Async process
 management stays outside this task until the core event and state semantics are
 stable."

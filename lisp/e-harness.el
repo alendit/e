@@ -43,20 +43,20 @@
   (format "msg-user-%d" e-harness--message-counter))
 
 (cl-defun e-harness-create (&key backend sessions tools)
-  "Create a core harness."
+  "Create a core harness with BACKEND, SESSIONS, and TOOLS."
   (e-harness--make :backend backend
                    :sessions (or sessions (e-session-store-create))
                    :tools (or tools (e-tools-registry-create))
                    :active-turns (make-hash-table :test 'equal)))
 
 (cl-defun e-harness-create-session (harness &key id metadata)
-  "Create a session in HARNESS."
+  "Create session ID with METADATA in HARNESS."
   (e-session-create (e-harness-sessions harness)
                     :id id
                     :metadata metadata))
 
 (defun e-harness-subscribe (harness subscriber)
-  "Register SUBSCRIBER for core events."
+  "Register SUBSCRIBER for core events from HARNESS."
   (push subscriber (e-harness-subscribers harness))
   subscriber)
 
@@ -66,11 +66,11 @@
     (funcall subscriber event)))
 
 (defun e-harness-messages (harness session-id)
-  "Return messages for SESSION-ID."
+  "Return messages for SESSION-ID in HARNESS."
   (e-session-messages (e-harness-sessions harness) session-id))
 
 (defun e-harness-prompt (harness session-id prompt)
-  "Append PROMPT and run one backend turn for SESSION-ID."
+  "Append PROMPT and run one backend turn for SESSION-ID in HARNESS."
   (let* ((turn-id (e-harness--next-turn-id))
          (user-message (list :id (e-harness--next-message-id)
                              :role 'user
@@ -104,11 +104,11 @@
       (remhash session-id (e-harness-active-turns harness)))))
 
 (defun e-harness-follow-up (harness session-id prompt)
-  "Submit PROMPT as the next turn for SESSION-ID."
+  "Submit PROMPT as the next turn for SESSION-ID in HARNESS."
   (e-harness-prompt harness session-id prompt))
 
 (defun e-harness-reset (harness session-id)
-  "Clear SESSION-ID transcript state."
+  "Clear SESSION-ID transcript state in HARNESS."
   (e-session-clear-messages (e-harness-sessions harness) session-id)
   (e-harness--emit
    harness
@@ -118,13 +118,13 @@
                   :payload nil)))
 
 (defun e-harness-state (harness session-id)
-  "Return settled state for SESSION-ID."
+  "Return settled state for SESSION-ID in HARNESS."
   (list :session-id session-id
         :active-turn (gethash session-id (e-harness-active-turns harness))
         :message-count (length (e-harness-messages harness session-id))))
 
 (defun e-harness-abort (harness session-id)
-  "Abort the active turn for SESSION-ID.
+  "Abort the active turn for SESSION-ID in HARNESS.
 The synchronous first implementation can only surface that no turn is active
 after `e-harness-prompt' settles.  Async cancellation belongs to the later
 process/queue package."

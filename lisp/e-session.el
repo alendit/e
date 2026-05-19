@@ -37,7 +37,7 @@
       (signal 'e-session-missing (list session-id))))
 
 (defun e-session-messages (store session-id)
-  "Return messages for SESSION-ID in insertion order."
+  "Return messages for SESSION-ID in STORE in insertion order."
   (copy-sequence (plist-get (e-session-get store session-id) :messages)))
 
 (defun e-session-append-message (store session-id message)
@@ -48,7 +48,7 @@
     message))
 
 (defun e-session-clear-messages (store session-id)
-  "Clear all messages for SESSION-ID."
+  "Clear all messages for SESSION-ID in STORE."
   (let ((session (e-session-get store session-id)))
     (plist-put session :messages nil)
     session))

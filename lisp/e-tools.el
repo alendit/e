@@ -17,7 +17,7 @@
   (tools (make-hash-table :test 'equal)))
 
 (cl-defun e-tools-register (registry &key name description handler)
-  "Register a tool in REGISTRY."
+  "Register tool NAME with DESCRIPTION and HANDLER in REGISTRY."
   (unless (functionp handler)
     (signal 'wrong-type-argument (list 'functionp handler)))
   (puthash name
@@ -25,7 +25,7 @@
            (e-tools-registry-tools registry)))
 
 (defun e-tools--result (call status content &optional metadata)
-  "Return a structured tool result for CALL."
+  "Return a structured tool result for CALL with STATUS, CONTENT, and METADATA."
   (list :tool-call-id (plist-get call :id)
         :name (plist-get call :name)
         :status status
