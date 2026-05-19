@@ -37,6 +37,7 @@
                 (expand-file-name (or directory e-dev-source-directory))))
          (files '("lisp/e-events.el"
                   "lisp/e-session.el"
+                  "lisp/e-context.el"
                   "lisp/e-backend.el"
                   "lisp/e-tools.el"
                   "lisp/e-loop.el"

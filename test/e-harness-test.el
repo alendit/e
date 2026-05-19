@@ -14,6 +14,7 @@
 (require 'ert)
 (require 'e)
 (require 'e-backend)
+(require 'e-context)
 (require 'e-harness)
 
 (ert-deftest e-harness-test-prompt-writes-user-and-assistant-messages ()
@@ -70,6 +71,33 @@
     (e-harness-create-session harness :id "session-1")
     (should (equal (e-harness-state harness "session-1")
                    '(:session-id "session-1" :active-turn nil :message-count 0)))))
+
+(ert-deftest e-harness-test-prompt-uses-context-strategy ()
+  "Prompting delegates backend message construction to the context strategy."
+  (let* ((captured-messages nil)
+         (backend (e-backend-create
+                   :name "capture"
+                   :stream (cl-function
+                            (lambda (&key messages options on-item)
+                              (ignore options)
+                              (setq captured-messages messages)
+                              (funcall on-item '(:type done :reason stop))))))
+         (context-strategy
+          (e-context-create
+           :name 'test-context
+           :build (cl-function
+                   (lambda (&key sessions session-id options)
+                     (ignore sessions session-id options)
+                     '(:strategy test-context
+                       :messages ((:role user :content "from context"))
+                       :options (:model "context-model"))))))
+         (harness (e-harness-create
+                   :backend backend
+                   :context-strategy context-strategy)))
+    (e-harness-create-session harness :id "session-1")
+    (e-harness-prompt harness "session-1" "raw prompt")
+    (should (equal captured-messages
+                   '((:role user :content "from context"))))))
 
 (provide 'e-harness-test)
 

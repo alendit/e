@@ -13,6 +13,7 @@
 ;;; Code:
 
 (require 'e-backend)
+(require 'e-context)
 (require 'e-events)
 (require 'e-harness)
 (require 'e-loop)
@@ -28,6 +29,7 @@
         :events t
         :sessions t
         :backends t
+        :context t
         :tools t
         :loop t
         :harness t))

@@ -12,6 +12,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'e-context)
 (require 'e-events)
 (require 'e-loop)
 (require 'e-session)
@@ -21,6 +22,7 @@
 
 (cl-defstruct (e-harness (:constructor e-harness--make))
   backend
+  context-strategy
   (sessions (e-session-store-create))
   (tools (e-tools-registry-create))
   (subscribers nil)
@@ -42,9 +44,11 @@
   (setq e-harness--message-counter (1+ e-harness--message-counter))
   (format "msg-user-%d" e-harness--message-counter))
 
-(cl-defun e-harness-create (&key backend sessions tools)
-  "Create a core harness with BACKEND, SESSIONS, and TOOLS."
+(cl-defun e-harness-create (&key backend context-strategy sessions tools)
+  "Create a core harness with BACKEND, CONTEXT-STRATEGY, SESSIONS, and TOOLS."
   (e-harness--make :backend backend
+                   :context-strategy (or context-strategy
+                                         (e-context-transcript-stack-create))
                    :sessions (or sessions (e-session-store-create))
                    :tools (or tools (e-tools-registry-create))
                    :active-turns (make-hash-table :test 'equal)))
@@ -88,19 +92,24 @@
                           :session-id session-id
                           :turn-id turn-id
                           :payload (list :message user-message)))
-          (e-loop-run-turn
-           :session-id session-id
-           :turn-id turn-id
-           :messages (e-session-messages (e-harness-sessions harness) session-id)
-           :backend (e-harness-backend harness)
-           :tools (e-harness-tools harness)
-           :options nil
-           :on-event (lambda (event) (e-harness--emit harness event))
-           :append-message
-           (lambda (message)
-             (e-session-append-message (e-harness-sessions harness)
-                                       session-id
-                                       message))))
+          (let ((context (e-context-build
+                          (e-harness-context-strategy harness)
+                          :sessions (e-harness-sessions harness)
+                          :session-id session-id
+                          :options nil)))
+            (e-loop-run-turn
+             :session-id session-id
+             :turn-id turn-id
+             :messages (plist-get context :messages)
+             :backend (e-harness-backend harness)
+             :tools (e-harness-tools harness)
+             :options (plist-get context :options)
+             :on-event (lambda (event) (e-harness--emit harness event))
+             :append-message
+             (lambda (message)
+               (e-session-append-message (e-harness-sessions harness)
+                                         session-id
+                                         message)))))
       (remhash session-id (e-harness-active-turns harness)))))
 
 (defun e-harness-follow-up (harness session-id prompt)
