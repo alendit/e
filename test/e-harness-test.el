@@ -41,6 +41,19 @@
      (e-harness-abort harness "session-1")
      :type 'e-harness-no-active-turn)))
 
+(ert-deftest e-harness-test-follow-up-appends-user-message ()
+  "Follow-up submits another turn against the same session."
+  (let* ((backend (e-backend-fake-create
+                   :items '((:type assistant-message :content "answer")
+                            (:type done :reason stop))))
+         (harness (e-harness-create :backend backend)))
+    (e-harness-create-session harness :id "session-1")
+    (e-harness-prompt harness "session-1" "first")
+    (e-harness-follow-up harness "session-1" "second")
+    (should (equal (mapcar (lambda (message) (plist-get message :role))
+                           (e-harness-messages harness "session-1"))
+                   '(user assistant user assistant)))))
+
 (provide 'e-harness-test)
 
 ;;; e-harness-test.el ends here

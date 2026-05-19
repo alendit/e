@@ -103,6 +103,10 @@
                                        message))))
       (remhash session-id (e-harness-active-turns harness)))))
 
+(defun e-harness-follow-up (harness session-id prompt)
+  "Submit PROMPT as the next turn for SESSION-ID."
+  (e-harness-prompt harness session-id prompt))
+
 (defun e-harness-abort (harness session-id)
   "Abort the active turn for SESSION-ID.
 The synchronous first implementation can only surface that no turn is active
