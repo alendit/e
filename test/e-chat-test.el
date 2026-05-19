@@ -11,6 +11,7 @@
 
 ;;; Code:
 
+(require 'cl-lib)
 (require 'ert)
 (require 'e)
 (require 'e-backend)
@@ -55,6 +56,22 @@
             (should (string-match-p "\n> $" content))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-open-enters-evil-insert-state-when-available ()
+  "The chat buffer enters Evil insert state when Evil is loaded."
+  (let* ((backend (e-backend-fake-create :items nil))
+         (harness (e-harness-create :backend backend))
+         entered-buffer
+         buffer)
+    (cl-letf (((symbol-function 'evil-insert-state)
+               (lambda ()
+                 (setq entered-buffer (current-buffer)))))
+      (unwind-protect
+          (progn
+            (setq buffer (e-chat-open :harness harness :session-id "chat-evil"))
+            (should (eq entered-buffer buffer)))
+        (when (buffer-live-p buffer)
+          (kill-buffer buffer))))))
 
 (ert-deftest e-chat-test-reset-clears-rendered-session ()
   "Reset clears the rendered chat buffer and harness session transcript."

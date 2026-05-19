@@ -61,6 +61,11 @@
     (goto-char position)
     (line-beginning-position)))
 
+(defun e-chat--enter-input-state ()
+  "Enter an input-friendly editor state when optional modal packages exist."
+  (when (fboundp 'evil-insert-state)
+    (evil-insert-state)))
+
 (defun e-chat--default-harness ()
   "Create the default Codex-backed chat harness."
   (let ((harness (e-openai-codex-create-harness)))
@@ -92,7 +97,8 @@
     (insert "\n"))
   (insert "> ")
   (setq e-chat--prompt-marker (point-marker))
-  (set-marker-insertion-type e-chat--prompt-marker nil))
+  (set-marker-insertion-type e-chat--prompt-marker nil)
+  (e-chat--enter-input-state))
 
 (defun e-chat--prompt-text ()
   "Return the current editable prompt text."
