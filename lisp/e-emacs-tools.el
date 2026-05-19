@@ -16,7 +16,7 @@
 (require 'e-tools)
 
 (defun e-emacs-tools-register-current-time (registry)
-  "Register a harmless current-time tool in REGISTRY."
+  "Register a harmless `current-time' tool in REGISTRY."
   (e-tools-register
    registry
    :name "current_time"

@@ -240,7 +240,7 @@ When CODEX-HOME is nil, use the CODEX_HOME environment variable or
 
 (cl-defun e-openai-codex-backend-create
     (&key auth-file base-url request-function name)
-  "Create an OpenAI/Codex backend.
+  "Create an OpenAI/Codex backend named NAME.
 AUTH-FILE points at Codex-managed auth.  BASE-URL defaults to ChatGPT's Codex
 backend.  REQUEST-FUNCTION is injectable for tests."
   (e-backend-create
@@ -266,8 +266,9 @@ backend.  REQUEST-FUNCTION is injectable for tests."
 (cl-defun e-openai-codex-create-harness
     (&key auth-file base-url request-function model)
   "Create a harness configured for ChatGPT-backed Codex.
-MODEL is written into backend-neutral turn options by the default context
-strategy path used by `e-harness-prompt'."
+AUTH-FILE, BASE-URL, and REQUEST-FUNCTION configure the backend adapter.  MODEL
+is written into backend-neutral turn options by the default context strategy
+path used by `e-harness-prompt'."
   (e-harness-create
    :backend (e-openai-codex-backend-create
              :auth-file auth-file

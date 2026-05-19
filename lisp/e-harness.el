@@ -97,7 +97,9 @@ provider-neutral runtime."
        (eq (plist-get entry :status) 'running)))
 
 (defun e-harness--emit-turn-failed (harness session-id turn-id error-message)
-  "Emit a turn-failed event for ERROR-MESSAGE."
+  "Emit a turn-failed event from HARNESS.
+SESSION-ID and TURN-ID identify the failed turn.  ERROR-MESSAGE describes the
+provider or loop failure."
   (e-harness--emit
    harness
    (e-events-make :type 'turn-failed
@@ -153,9 +155,9 @@ provider-neutral runtime."
       (remhash session-id (e-harness-active-turns harness)))))
 
 (cl-defun e-harness-prompt-async (harness session-id prompt &key delay)
-  "Append PROMPT and run one backend turn asynchronously.
+  "Append PROMPT and run one backend turn asynchronously in HARNESS.
 Return the queued turn id.  DELAY is primarily for tests and queued-turn
-cancellation."
+cancellation.  SESSION-ID identifies the session."
   (let* ((turn-id (e-harness--next-turn-id))
          (entry (list :id turn-id
                       :status 'running
@@ -201,11 +203,10 @@ cancellation."
   "Return settled state for SESSION-ID in HARNESS."
   (let ((entry (gethash session-id (e-harness-active-turns harness))))
     (list :session-id session-id
-        :active-turn (when (or (not (listp entry))
-                               (eq (plist-get entry :status) 'running))
-                       (e-harness--active-turn-id entry))
-        :message-count (length (e-harness-messages harness session-id))))
-    )
+          :active-turn (when (or (not (listp entry))
+                                 (eq (plist-get entry :status) 'running))
+                         (e-harness--active-turn-id entry))
+          :message-count (length (e-harness-messages harness session-id)))))
 
 (defun e-harness-abort (harness session-id)
   "Abort the active turn for SESSION-ID in HARNESS."
@@ -228,7 +229,7 @@ cancellation."
       (signal 'e-harness-no-active-turn (list session-id)))))
 
 (defun e-harness-wait (harness session-id &optional timeout)
-  "Wait for SESSION-ID's async turn to settle.
+  "Wait for SESSION-ID's async turn in HARNESS to settle.
 TIMEOUT is in seconds.  Return the settled active-turn entry and clear it from
 active state when it is no longer running."
   (let ((deadline (and timeout (+ (float-time) timeout)))
