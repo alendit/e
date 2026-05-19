@@ -43,14 +43,23 @@
 (defvar-local e-chat--prompt-marker nil
   "Marker at the beginning of the editable chat prompt text.")
 
-(defvar e-chat-mode-map
-  (let ((map (make-sparse-keymap)))
+(defconst e-chat--prompt-prefix "> "
+  "Prefix shown before editable e chat prompt text.")
+
+(defun e-chat--make-mode-map (&optional map)
+  "Return MAP configured as the local keymap for `e-chat-mode'."
+  (let ((map (or map (make-sparse-keymap))))
+    (set-keymap-parent map text-mode-map)
     (define-key map (kbd "C-c C-c") #'e-chat-submit)
     (define-key map (kbd "RET") #'e-chat-submit)
     (define-key map (kbd "C-c C-k") #'e-chat-abort)
     (define-key map (kbd "C-c C-r") #'e-chat-reset)
-    map)
+    map))
+
+(defvar e-chat-mode-map (e-chat--make-mode-map)
   "Keymap for `e-chat-mode'.")
+
+(setq e-chat-mode-map (e-chat--make-mode-map e-chat-mode-map))
 
 (define-derived-mode e-chat-mode text-mode "e-chat"
   "Major mode for e chat buffers.")
@@ -95,22 +104,43 @@
   (goto-char (point-max))
   (unless (bolp)
     (insert "\n"))
-  (insert "> ")
+  (insert e-chat--prompt-prefix)
   (setq e-chat--prompt-marker (point-marker))
   (set-marker-insertion-type e-chat--prompt-marker nil))
 
+(defun e-chat--prompt-start-at-buffer-end ()
+  "Return active prompt text start inferred from the final buffer line."
+  (save-excursion
+    (goto-char (point-max))
+    (beginning-of-line)
+    (when (looking-at-p (regexp-quote e-chat--prompt-prefix))
+      (+ (line-beginning-position) (length e-chat--prompt-prefix)))))
+
+(defun e-chat--ensure-prompt-marker ()
+  "Ensure `e-chat--prompt-marker' points at the visible active prompt."
+  (let ((start (e-chat--prompt-start-at-buffer-end)))
+    (cond
+     (start
+      (unless (markerp e-chat--prompt-marker)
+        (setq e-chat--prompt-marker (make-marker)))
+      (set-marker e-chat--prompt-marker start)
+      (set-marker-insertion-type e-chat--prompt-marker nil)
+      start)
+     ((and (markerp e-chat--prompt-marker)
+           (marker-position e-chat--prompt-marker))
+      (marker-position e-chat--prompt-marker))
+     (t
+      (user-error "No active e chat prompt")))))
+
 (defun e-chat--prompt-text ()
   "Return the current editable prompt text."
-  (unless (and (markerp e-chat--prompt-marker)
-               (marker-position e-chat--prompt-marker))
-    (user-error "No active e chat prompt"))
+  (e-chat--ensure-prompt-marker)
   (string-trim
    (buffer-substring-no-properties e-chat--prompt-marker (point-max))))
 
 (defun e-chat--delete-prompt ()
   "Delete the editable prompt from the current chat buffer."
-  (when (and (markerp e-chat--prompt-marker)
-             (marker-position e-chat--prompt-marker))
+  (when (ignore-errors (e-chat--ensure-prompt-marker))
     (let ((start (e-chat--line-beginning-at
                   (marker-position e-chat--prompt-marker))))
       (delete-region start (point-max)))

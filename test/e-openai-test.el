@@ -88,6 +88,32 @@ event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{
       :name "now"
       :arguments (:format "iso"))))))
 
+(ert-deftest e-openai-test-default-http-request-accepts-keyword-arguments ()
+  "The default HTTP requester accepts the keyword call shape used by backend."
+  (let (captured-url captured-method captured-headers captured-body)
+    (cl-letf (((symbol-function 'url-retrieve-synchronously)
+               (lambda (url &rest _args)
+                 (setq captured-url url)
+                 (setq captured-method url-request-method)
+                 (setq captured-headers url-request-extra-headers)
+                 (setq captured-body url-request-data)
+                 (let ((buffer (generate-new-buffer " *e-openai-test-http*")))
+                   (with-current-buffer buffer
+                     (insert "HTTP/1.1 200 OK\n\n"
+                             "data: {\"type\":\"response.completed\"}\n\n"))
+                   buffer))))
+      (should
+       (equal
+        (e-openai-codex--http-request
+         :url "https://example.test/codex/responses"
+         :headers '(("Authorization" . "Bearer test"))
+         :body "{}")
+        "data: {\"type\":\"response.completed\"}\n\n"))
+      (should (equal captured-url "https://example.test/codex/responses"))
+      (should (equal captured-method "POST"))
+      (should (equal captured-headers '(("Authorization" . "Bearer test"))))
+      (should (equal (decode-coding-string captured-body 'utf-8) "{}")))))
+
 (ert-deftest e-openai-test-backend-streams-through-injected-requester ()
   "The Codex backend streams parsed events from an injected HTTP requester."
   (let* ((token (e-openai-test--jwt))

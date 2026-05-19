@@ -68,6 +68,41 @@
       (should (equal configured-mode 'e-chat-mode))
       (should (equal configured-state 'normal)))))
 
+(ert-deftest e-chat-test-reload-normalizes-stale-special-mode-map ()
+  "Reloading the chat mode drops stale special-mode keymap inheritance."
+  (let ((original-map e-chat-mode-map)
+        (stale-map (make-sparse-keymap)))
+    (unwind-protect
+        (progn
+          (set-keymap-parent stale-map special-mode-map)
+          (setq e-chat-mode-map stale-map)
+          (e-chat--make-mode-map e-chat-mode-map)
+          (should (eq (keymap-parent e-chat-mode-map) text-mode-map))
+          (should-not (eq (lookup-key e-chat-mode-map "q") #'quit-window))
+          (should (eq (lookup-key e-chat-mode-map (kbd "RET"))
+                      #'e-chat-submit)))
+      (setq e-chat-mode-map original-map))))
+
+(ert-deftest e-chat-test-prompt-text-recovers-stale-marker ()
+  "Prompt text is read from the visible prompt when marker state is stale."
+  (let* ((backend (e-backend-fake-create :items nil))
+         (harness (e-harness-create :backend backend))
+         (buffer (e-chat-open :harness harness :session-id "chat-stale-marker")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (goto-char (point-max))
+          (insert "visible prompt")
+          (set-marker e-chat--prompt-marker (point-max))
+          (should (equal (e-chat--prompt-text) "visible prompt"))
+          (should (equal (marker-position e-chat--prompt-marker)
+                         (save-excursion
+                           (goto-char (point-max))
+                           (beginning-of-line)
+                           (+ (line-beginning-position)
+                              (length e-chat--prompt-prefix))))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-open-does-not-force-evil-insert-state ()
   "The chat buffer leaves modal state changes to normal editor commands."
   (let* ((backend (e-backend-fake-create :items nil))

@@ -166,7 +166,7 @@ When CODEX-HOME is nil, use the CODEX_HOME environment variable or
                   ("x-client-request-id" . ,session-id)))
       headers)))
 
-(defun e-openai-codex--http-request (&key url headers body)
+(cl-defun e-openai-codex--http-request (&key url headers body)
   "POST BODY to URL with HEADERS and return response text."
   (let ((url-request-method "POST")
         (url-request-extra-headers headers)
