@@ -36,6 +36,7 @@
   (let* ((root (file-name-as-directory
                 (expand-file-name (or directory e-dev-source-directory))))
          (files '("lisp/e-events.el"
+                  "lisp/e-session.el"
                   "lisp/e-core.el"
                   "e.el"
                   "lisp/e-dev.el")))
