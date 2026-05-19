@@ -23,6 +23,7 @@
 (cl-defstruct (e-harness (:constructor e-harness--make))
   backend
   context-strategy
+  default-options
   (sessions (e-session-store-create))
   (tools (e-tools-registry-create))
   (subscribers nil)
@@ -44,11 +45,14 @@
   (setq e-harness--message-counter (1+ e-harness--message-counter))
   (format "msg-user-%d" e-harness--message-counter))
 
-(cl-defun e-harness-create (&key backend context-strategy sessions tools)
-  "Create a core harness with BACKEND, CONTEXT-STRATEGY, SESSIONS, and TOOLS."
+(cl-defun e-harness-create (&key backend context-strategy default-options sessions tools)
+  "Create a core harness.
+BACKEND, CONTEXT-STRATEGY, DEFAULT-OPTIONS, SESSIONS, and TOOLS configure the
+provider-neutral runtime."
   (e-harness--make :backend backend
                    :context-strategy (or context-strategy
                                          (e-context-transcript-stack-create))
+                   :default-options default-options
                    :sessions (or sessions (e-session-store-create))
                    :tools (or tools (e-tools-registry-create))
                    :active-turns (make-hash-table :test 'equal)))
@@ -96,7 +100,7 @@
                           (e-harness-context-strategy harness)
                           :sessions (e-harness-sessions harness)
                           :session-id session-id
-                          :options nil)))
+                          :options (e-harness-default-options harness))))
             (e-loop-run-turn
              :session-id session-id
              :turn-id turn-id

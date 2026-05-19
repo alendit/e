@@ -15,6 +15,7 @@
 (require 'json)
 (require 'e)
 (require 'e-backend)
+(require 'e-harness)
 (require 'e-openai)
 
 (defun e-openai-test--jwt ()
@@ -119,6 +120,36 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
                          "https://chatgpt.com/backend-api/codex/responses"))
           (should (assoc "Authorization" (plist-get captured :headers)))
           (should (assoc "chatgpt-account-id" (plist-get captured :headers))))
+      (delete-file auth-file))))
+
+(ert-deftest e-openai-test-codex-harness-runs-minimal-prompt-flow ()
+  "The Codex harness helper can run prompt to persisted assistant message."
+  (let* ((token (e-openai-test--jwt))
+         (auth-file (make-temp-file "e-auth" nil ".json"
+                                    (json-encode
+                                     (list :tokens
+                                           (list :access_token token
+                                                 :refresh_token "refresh")))))
+         (harness
+          (e-openai-codex-create-harness
+           :auth-file auth-file
+           :model "gpt-test"
+           :request-function
+           (cl-function
+            (lambda (&key url headers body)
+              (ignore url headers body)
+              "data: {\"type\":\"response.output_text.done\",\"text\":\"real-ish answer\"}\n\n\
+data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")))))
+    (unwind-protect
+        (progn
+          (e-harness-create-session harness :id "session-1")
+          (e-harness-prompt harness "session-1" "question")
+          (should (equal (mapcar (lambda (message) (plist-get message :role))
+                                 (e-harness-messages harness "session-1"))
+                         '(user assistant)))
+          (should (equal (plist-get (cadr (e-harness-messages harness "session-1"))
+                                    :content)
+                         "real-ish answer")))
       (delete-file auth-file))))
 
 (provide 'e-openai-test)

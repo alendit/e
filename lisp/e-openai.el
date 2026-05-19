@@ -17,6 +17,7 @@
 (require 'subr-x)
 (require 'url)
 (require 'e-backend)
+(require 'e-harness)
 
 (define-error 'e-openai-auth-missing "OpenAI/Codex auth is missing")
 (define-error 'e-openai-auth-invalid "OpenAI/Codex auth is invalid")
@@ -28,6 +29,16 @@
 (defconst e-openai-codex-account-claim
   "https://api.openai.com/auth"
   "JWT claim namespace containing the ChatGPT account id.")
+
+(defgroup e-openai nil
+  "OpenAI/Codex backend adapter for e."
+  :group 'e
+  :prefix "e-openai-")
+
+(defcustom e-openai-codex-default-model "gpt-5.4"
+  "Default model for ChatGPT-backed Codex requests."
+  :type 'string
+  :group 'e-openai)
 
 (defun e-openai-codex-auth-file (&optional codex-home)
   "Return the Codex auth file path for CODEX-HOME.
@@ -251,6 +262,18 @@ backend.  REQUEST-FUNCTION is injectable for tests."
                                 :body body)))
         (dolist (item (e-openai-codex-parse-stream response))
           (funcall on-item item)))))))
+
+(cl-defun e-openai-codex-create-harness
+    (&key auth-file base-url request-function model)
+  "Create a harness configured for ChatGPT-backed Codex.
+MODEL is written into backend-neutral turn options by the default context
+strategy path used by `e-harness-prompt'."
+  (e-harness-create
+   :backend (e-openai-codex-backend-create
+             :auth-file auth-file
+             :base-url base-url
+             :request-function request-function)
+   :default-options (list :model (or model e-openai-codex-default-model))))
 
 (provide 'e-openai)
 
