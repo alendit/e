@@ -99,7 +99,25 @@
                            (goto-char (point-max))
                            (beginning-of-line)
                            (+ (line-beginning-position)
-                              (length e-chat--prompt-prefix))))))
+                              (length e-chat--prompt-marker-prefix))))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-prompt-text-accepts-evil-insert-before-space ()
+  "Prompt text works when modal insertion places text before the prompt space."
+  (let* ((backend (e-backend-fake-create :items nil))
+         (harness (e-harness-create :backend backend))
+         (buffer (e-chat-open :harness harness :session-id "chat-evil-insert")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (goto-char e-chat--prompt-marker)
+          (backward-char)
+          (insert "hi")
+          (should (equal (buffer-substring-no-properties
+                          (line-beginning-position)
+                          (point-max))
+                         ">hi "))
+          (should (equal (e-chat--prompt-text) "hi")))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 

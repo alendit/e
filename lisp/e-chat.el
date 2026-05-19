@@ -46,6 +46,9 @@
 (defconst e-chat--prompt-prefix "> "
   "Prefix shown before editable e chat prompt text.")
 
+(defconst e-chat--prompt-marker-prefix ">"
+  "Structural prefix that marks an editable e chat prompt line.")
+
 (defun e-chat--make-mode-map (&optional map)
   "Return MAP configured as the local keymap for `e-chat-mode'."
   (let ((map (or map (make-sparse-keymap))))
@@ -113,8 +116,9 @@
   (save-excursion
     (goto-char (point-max))
     (beginning-of-line)
-    (when (looking-at-p (regexp-quote e-chat--prompt-prefix))
-      (+ (line-beginning-position) (length e-chat--prompt-prefix)))))
+    (when (looking-at-p (regexp-quote e-chat--prompt-marker-prefix))
+      (+ (line-beginning-position)
+         (length e-chat--prompt-marker-prefix)))))
 
 (defun e-chat--ensure-prompt-marker ()
   "Ensure `e-chat--prompt-marker' points at the visible active prompt."
