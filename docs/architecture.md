@@ -4,7 +4,7 @@
 
 `e` is an Emacs-hosted agent runtime inspired by pi-core. It should let Emacs run live-configurable agents that can inspect editor state, operate tools, and, when explicitly authorized, modify Emacs configuration or their own harnesses.
 
-The repository now contains the first real-agent core path. The package entry point, event helpers, in-memory session store, context strategy seam, backend-neutral adapter contract, ChatGPT-backed OpenAI/Codex adapter, tool registry, harmless current-time tool, loop, harness service, async turn settlement, development reload helper, and ERT tests exist. The architecture below still includes target-state components that have not been implemented yet, especially durable persistence, presentation shells, richer context management, and higher-risk Emacs execution tools.
+The repository now contains the first usable Emacs-hosted agent path. The package entry point, event helpers, in-memory session store, context strategy seam, layer and context-provider seam, backend-neutral adapter contract, ChatGPT-backed OpenAI/Codex adapter, tool registry, Emacs base layer, buffer and elisp tools, loop, harness service, async turn settlement, basic chat presentation, development reload helper, and ERT tests exist. The architecture below still includes target-state components that have not been implemented yet, especially durable persistence, richer context management, permission controls, and harness self-modification tools.
 
 The primary runtime surfaces are expected to be an Emacs Lisp harness API, context-management strategies, Emacs presentation shells, explicit tool adapters, session persistence, and generic LLM backend adapters. The first provider target is OpenAI API access through ChatGPT subscription auth, but provider details must remain outside core harness policy.
 
@@ -85,21 +85,25 @@ Current repository mapping:
 - `docs/core-qa.md`: QA scenario map for the completed core slices.
 - `docs/M2.md`: completed implementation plan for making the core use a real Codex backend path.
 - `docs/M2-qa.md`: QA scenario map for the completed M2 slices.
+- `docs/mvp.md`: completed MVP implementation plan for chat, layers, visible-buffer context, and Emacs tools.
 - `docs/feat-canvas.md`: deferred design note for canvas-state context management.
 - `e.el`: package entry point, public smoke commands, package metadata, and autoloads.
 - `lisp/e-core.el`: core module aggregator and status surface.
 - `lisp/e-events.el`: event construction helpers for stable core event plists.
 - `lisp/e-session.el`: in-memory session repository and message APIs.
-- `lisp/e-context.el`: provider-neutral context strategy contract and `transcript-stack` strategy.
+- `lisp/e-context.el`: provider-neutral context strategy and context-provider contracts, plus the `transcript-stack` strategy.
+- `lisp/e-layers.el`: harness-owned layer descriptors and layer context/tool activation helpers.
 - `lisp/e-backend.el`: backend-neutral adapter contract and fake backend.
 - `lisp/e-openai.el`: ChatGPT-backed OpenAI/Codex adapter for Codex auth, Responses request mapping, and SSE parsing.
 - `lisp/e-tools.el`: pure tool registry and structured tool-result handling.
-- `lisp/e-emacs-tools.el`: M2-safe concrete Emacs tool registration, currently `current_time`.
+- `lisp/e-emacs-tools.el`: concrete Emacs buffer, save, elisp, and current-time tools.
+- `lisp/e-emacs-base.el`: default Emacs layer with instructions, visible-buffer context, and MVP tools.
 - `lisp/e-loop.el`: backend/tool/message/event turn loop with tool-result follow-up.
 - `lisp/e-harness.el`: public core harness service for sessions, prompts, async prompts, wait, follow-ups, reset, state access, cancellation, and event subscription.
+- `lisp/e-chat.el`: basic chat presentation buffer, commands, keymap, and harness event rendering.
 - `lisp/e-dev.el`: interactive development helpers for live reloading local source in Emacs.
 - `test/e-test.el`: ERT smoke tests for the package surface and exposed harness API.
-- `test/e-*-test.el`: focused ERT tests for events, sessions, backend contract, tools, loop, and harness behavior.
+- `test/e-*-test.el`: focused ERT tests for events, sessions, backend contract, layers, Emacs base, tools, loop, harness behavior, and chat presentation.
 - `Eldev`: Eldev test/build/lint/package tooling configuration.
 
 Expected future mapping should keep these roles separate:
@@ -120,7 +124,7 @@ The core harness owns the stable application boundary for agents. It should prov
 
 It owns current agent state, structured events, queue state, active tools, resources, session coordination, and delegation to the agent loop. It collaborates with the session store, generic backend interface, tool registry, and execution environment. Its side effects should be limited to adapter calls for backend streaming, session persistence, and tool execution.
 
-Current code exposes `e-harness-create`, `e-harness-create-session`, `e-harness-subscribe`, `e-harness-prompt`, `e-harness-prompt-async`, `e-harness-wait`, `e-harness-follow-up`, `e-harness-abort`, `e-harness-reset`, `e-harness-state`, and `e-harness-messages` through `(require 'e)`. The implementation is in-memory and supports narrow async settlement. It is sufficient for fake-backend tests and a real Codex-backed prompt path, but it does not yet support durable stores, presentation shells, or interrupting an already-running provider call inside Emacs.
+Current code exposes `e-harness-create`, `e-harness-create-session`, `e-harness-subscribe`, `e-harness-activate-layer`, `e-harness-prompt`, `e-harness-prompt-async`, `e-harness-wait`, `e-harness-follow-up`, `e-harness-abort`, `e-harness-reset`, `e-harness-state`, and `e-harness-messages` through `(require 'e)`. The implementation is in-memory and supports narrow async settlement, active layer registration, and context-provider prefix messages. It is sufficient for fake-backend tests, a real Codex-backed prompt path, and the basic chat presentation, but it does not yet support durable stores or interrupting an already-running provider call inside Emacs.
 
 ### Agent Loop
 
@@ -132,7 +136,7 @@ The current loop in `lisp/e-loop.el` is backend-neutral. It consumes backend str
 
 ### Context Management Strategies
 
-Context management owns the transformation from durable session state and current turn inputs into backend-ready context. It is a strategy seam between the harness/session store and the loop/backend.
+Context management owns the transformation from durable session state and current turn inputs into backend-ready context. It is a strategy seam between the harness/session store and the loop/backend. Context providers are read-only contributors supplied by active layers; the harness collects provider messages and prepends them through the context strategy entry point.
 
 The first real strategy is `transcript-stack`: replay prior user, assistant, and tool-result messages into the model request. This is the simplest path for making the OpenAI backend work.
 
@@ -140,6 +144,7 @@ The architecture must also allow alternative strategies, especially `canvas-stat
 
 Context strategies should own:
 
+- merging harness-provided prefix messages with the selected context shape
 - selecting and formatting session messages, tool results, resources, and evidence
 - deciding whether the model sees a transcript stack, a canvas state document, or another context shape
 - interpreting model outputs that update context-owned state artifacts
@@ -161,7 +166,7 @@ The execution environment is the shell boundary for Emacs side effects. It shoul
 
 Tools depend on the execution environment. The core harness depends only on tool contracts, backend-neutral tool definitions, and structured tool results. Permission checks, confirmation, observability, and audit records should stay close to concrete side effects.
 
-The current concrete tool surface is deliberately small: `e-emacs-tools-register-current-time` registers `current_time`, which reads the current local time and performs no mutation. File writes, buffer edits, process execution, elisp evaluation, and harness mutation remain deferred.
+The current concrete tool surface is the MVP `emacs-base` set: `current_time`, `list_buffers`, `read_buffer`, `write_buffer`, `edit_buffer`, `save_buffer`, and `run_elisp`. Buffer write/edit tools mutate live buffers without saving; `save_buffer` is the explicit persistence action for file-backed buffers. Process execution, permission/confirmation controls, and harness mutation remain deferred.
 
 ### LLM Backend Interface
 
@@ -176,6 +181,8 @@ The OpenAI adapter uses Codex/ChatGPT subscription auth as an adapter concern. I
 Presentation shells are Emacs-facing UI layers. They render sessions, messages, tool progress, errors, and queue state; provide commands and keymaps; and let users inspect or authorize sensitive side effects.
 
 Presentation shells must not own session semantics, provider routing, tool policy, backend-specific auth, or harness lifecycle behavior.
+
+The current presentation shell is `e-chat`: a basic `*e-chat*` buffer with prompt submission, event rendering, reset, and abort commands. It creates a Codex-backed harness by default and activates `emacs-base`, while tests inject fake backends to keep UI behavior independent of provider details.
 
 ## Data And Control Flow
 
@@ -221,11 +228,13 @@ The current public package surface is:
 - `(require 'e)`: load the package.
 - `e-version`: current package version.
 - `e-status`: interactive smoke command that reports the loaded package status.
+- `e-chat`: interactive command that opens the default basic chat buffer.
 - `e-dev-reload`: interactive development command that reloads local source files.
-- `e-harness-create`, `e-harness-create-session`, `e-harness-subscribe`, `e-harness-prompt`, `e-harness-prompt-async`, `e-harness-wait`, `e-harness-follow-up`, `e-harness-abort`, `e-harness-reset`, `e-harness-state`, and `e-harness-messages`: core harness API.
+- `e-harness-create`, `e-harness-create-session`, `e-harness-subscribe`, `e-harness-activate-layer`, `e-harness-prompt`, `e-harness-prompt-async`, `e-harness-wait`, `e-harness-follow-up`, `e-harness-abort`, `e-harness-reset`, `e-harness-state`, and `e-harness-messages`: core harness API.
 - `e-openai-codex-create-harness`: create a harness configured for ChatGPT-backed Codex access.
 - `e-openai-codex-backend-create`: create the concrete OpenAI/Codex backend adapter.
-- `e-emacs-tools-register-defaults` and `e-emacs-tools-register-current-time`: register current low-risk concrete tools.
+- `e-emacs-base-layer-create`: create the default Emacs layer.
+- `e-emacs-tools-register-defaults`: register the MVP concrete Emacs tool surface.
 
 The target public surface should be an Emacs Lisp harness API rather than a UI-only command set. It should cover lifecycle operations, state access, event subscription, backend and tool configuration, session selection, and adapter registration.
 
@@ -233,15 +242,15 @@ Presentation commands should call this surface instead of duplicating behavior.
 
 ## Extension Points
 
-Established extension points now exist for backend adapters, context-management strategies, pure tool definitions, and low-risk concrete tool registration. Target extension points are LLM backend adapters, context-management strategies, tool definitions, execution environment adapters, resource providers, session repositories, and presentation shells.
+Established extension points now exist for backend adapters, context-management strategies, context providers, harness-owned layers, pure tool definitions, concrete Emacs tool registration, and presentation shells. Target extension points are LLM backend adapters, context-management strategies, tool definitions, execution environment adapters, resource providers, session repositories, and presentation shells.
 
 These are architectural seams because they protect stable harness policy from volatile UI, provider, and side-effect details.
 
 ## Testing And Verification
 
-`test/e-test.el` contains ERT smoke tests for loading the package, exposing `e-version`, exposing the interactive status/reload commands, and exposing the harness API. Eldev is the project test/build/lint/package runner.
+`test/e-test.el` contains ERT smoke tests for loading the package, exposing `e-version`, exposing the interactive status/chat/reload commands, and exposing the harness API. Eldev is the project test/build/lint/package runner.
 
-The current implementation makes the core harness testable with fake backends, injected OpenAI/Codex transports, pure fake tools, harmless concrete tools, and in-memory sessions. Current tests prove event shape, session writes, backend independence, context construction, OpenAI/Codex request/stream mapping, tool-result handling, tool follow-up, async settlement, cancellation, lifecycle operations, and package exposure without launching a full Emacs presentation shell.
+The current implementation makes the core harness testable with fake backends, injected OpenAI/Codex transports, pure fake tools, concrete Emacs buffer/elisp tools, layer/context-provider fixtures, chat presentation fixtures, and in-memory sessions. Current tests prove event shape, session writes, backend independence, context construction, layer activation, visible-buffer context, OpenAI/Codex request/stream mapping, tool-result handling, buffer mutation/save behavior, elisp evaluation, tool follow-up, async settlement, cancellation, lifecycle operations, chat rendering, and package exposure.
 
 Adapter tests should separately verify Emacs side effects, provider auth, provider streaming behavior, and context strategy behavior. Presentation tests should verify command wiring and rendering against harness events, not duplicate harness behavior.
 
@@ -259,12 +268,13 @@ Side effects are intentionally pushed outward. Buffer edits, file writes, proces
 
 The main abstraction risk is creating generic interfaces before their semantics are real. The harness, backend, tool, session, context-strategy, and execution environment contracts are justified because the project already has explicit change pressure in those dimensions: multiple presentations, provider independence, live-configurable tools, durable sessions, alternative context formats, and Emacs-native side effects.
 
-Confirmed gap: the implementation is still in-memory and presentation-free. It is no longer only a scaffold: real provider access, context strategy selection, a harmless concrete tool, function-call follow-up, and narrow async settlement now exist. Durable persistence, rich presentation shells, canvas-state context, dangerous tools, and provider-call interruption remain future work.
+Confirmed gap: the implementation is still in-memory and has only a basic presentation shell. It is no longer only a scaffold: real provider access, context strategy selection, layer-owned context providers, the `emacs-base` tool surface, function-call follow-up, narrow async settlement, and a basic chat buffer now exist. Durable persistence, richer presentation shells, canvas-state context, permission controls, process tools, harness self-modification, and provider-call interruption remain future work.
 
 Delta to the architectural vision:
 
 - The OpenAI/ChatGPT adapter now builds on the backend-neutral contract instead of changing harness policy.
 - Context construction has been extracted as a strategy before transcript replay could be hard-coded into the OpenAI backend.
-- Presentation should start as a thin shell over harness events, not as the place where lifecycle behavior accumulates.
+- Layers and context providers are harness-owned runtime contributors, not presentation behavior.
+- The chat presentation starts as a thin shell over harness events, not as the place where lifecycle behavior accumulates.
 - Self-modifying agent capabilities need explicit tools, session records, and permission behavior before they are exposed through UI commands.
 - Canvas-state context management should remain deferred until the transcript-stack strategy and OpenAI backend are working, but `docs/feat-canvas.md` records the invariants the architecture should preserve.

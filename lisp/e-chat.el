@@ -59,7 +59,7 @@
 
 (defun e-chat--ensure-session (harness session-id)
   "Ensure SESSION-ID exists in HARNESS."
-  (condition-case err
+  (condition-case nil
       (e-harness-create-session harness :id session-id)
     (e-session-duplicate
      nil)))

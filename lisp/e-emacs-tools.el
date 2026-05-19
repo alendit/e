@@ -128,7 +128,7 @@ When VISIBLE-ONLY is non-nil, include only buffers visible in windows."
                      (plist-get arguments :visible_only))))))
 
 (defun e-emacs-tools-register-read-buffer (registry)
-  "Register a tool that reads live Emacs buffer text in REGISTRY."
+  "Register a tool to read live Emacs buffer text in REGISTRY."
   (e-tools-register
    registry
    :name "read_buffer"
@@ -152,7 +152,7 @@ When VISIBLE-ONLY is non-nil, include only buffers visible in windows."
                  :end reported-end)))))))
 
 (defun e-emacs-tools-register-write-buffer (registry)
-  "Register a tool that replaces live Emacs buffer text in REGISTRY."
+  "Register a tool to replace live Emacs buffer text in REGISTRY."
   (e-tools-register
    registry
    :name "write_buffer"
@@ -207,7 +207,7 @@ When VISIBLE-ONLY is non-nil, include only buffers visible in windows."
                         '("old_text matched more than once"))))))))))
 
 (defun e-emacs-tools-register-save-buffer (registry)
-  "Register a tool that saves file-backed Emacs buffers in REGISTRY."
+  "Register a tool to save file-backed Emacs buffers in REGISTRY."
   (e-tools-register
    registry
    :name "save_buffer"
@@ -228,7 +228,7 @@ When VISIBLE-ONLY is non-nil, include only buffers visible in windows."
                :saved t))))))
 
 (defun e-emacs-tools-register-run-elisp (registry)
-  "Register a tool that evaluates explicit Emacs Lisp in REGISTRY."
+  "Register a tool to evaluate explicit Emacs Lisp in REGISTRY."
   (e-tools-register
    registry
    :name "run_elisp"
