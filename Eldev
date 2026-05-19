@@ -1,0 +1,7 @@
+;;; Eldev --- Build configuration for e -*- lexical-binding: t; -*-
+
+;; Keep the project on Emacs' built-in ERT runner.  Eldev's defaults discover
+;; the package entry point, lisp files, tests, byte-compilation targets, lint
+;; tools, and package tarball from the repository and package headers.
+
+(setf eldev-test-framework 'ert)

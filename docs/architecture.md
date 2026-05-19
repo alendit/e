@@ -4,7 +4,7 @@
 
 `e` is an Emacs-hosted agent runtime inspired by pi-core. It should let Emacs run live-configurable agents that can inspect editor state, operate tools, and, when explicitly authorized, modify Emacs configuration or their own harnesses.
 
-The repository currently contains only `AGENTS.md` and this document. The architecture below is therefore a target-state overview for the core harness surface, not a description of implemented source modules.
+The repository currently contains a minimal Emacs package scaffold. The architecture below is still mostly a target-state overview for the future agent runtime, but the package entry point, core scaffold, development reload helper, and ERT test harness now exist.
 
 The primary runtime surfaces are expected to be an Emacs Lisp harness API, Emacs presentation shells, explicit tool adapters, session persistence, and generic LLM backend adapters. The first provider target is OpenAI API access through ChatGPT subscription auth, but provider details must remain outside core harness policy.
 
@@ -39,9 +39,9 @@ flowchart LR
 
 Confirmed current state:
 
-- No implementation modules exist yet.
+- A minimal package entry point, pure core scaffold, and development reload helper exist.
 - `AGENTS.md` is the current architecture policy source of truth.
-- This document records the target architecture and must be updated when source modules are introduced.
+- This document records the target architecture and must be updated as real runtime components replace scaffold behavior.
 
 Target invariants:
 
@@ -59,8 +59,11 @@ Current repository mapping:
 
 - `AGENTS.md`: durable repo guidance, architectural constraints, and design self-check questions.
 - `docs/architecture.md`: current architecture map and target-state description.
-
-No source directories exist yet. When implementation begins, this section should be updated before the document is treated as current-state architecture.
+- `e.el`: package entry point, public scaffold commands, package metadata, and autoloads.
+- `lisp/e-core.el`: pure runtime scaffold with no presentation, backend, or side-effect dependencies.
+- `lisp/e-dev.el`: interactive development helpers for live reloading local source in Emacs.
+- `test/e-test.el`: ERT smoke tests for the package surface.
+- `Eldev`: Eldev test/build/lint/package tooling configuration.
 
 Expected future mapping should keep these roles separate:
 
@@ -79,7 +82,7 @@ The core harness owns the stable application boundary for agents. It should prov
 
 It owns current agent state, structured events, queue state, active tools, resources, session coordination, and delegation to the agent loop. It collaborates with the session store, generic backend interface, tool registry, and execution environment. Its side effects should be limited to adapter calls for backend streaming, session persistence, and tool execution.
 
-No source paths implement this component yet.
+`lisp/e-core.el` currently implements only a placeholder scaffold status function. It is the intended location for the first pure harness behavior, but it does not yet implement lifecycle, sessions, tools, resources, or backend coordination.
 
 ### Agent Loop
 
@@ -144,7 +147,12 @@ Configuration flow should follow the same boundary. Presentation submits a confi
 
 ## Public Surfaces
 
-There are no implemented public APIs yet.
+The current public scaffold surface is:
+
+- `(require 'e)`: load the package.
+- `e-version`: current package version.
+- `e-status`: interactive smoke command that reports the loaded package status.
+- `e-dev-reload`: interactive development command that reloads local source files.
 
 The target public surface should be an Emacs Lisp harness API rather than a UI-only command set. It should cover lifecycle operations, state access, event subscription, backend and tool configuration, session selection, and adapter registration.
 
@@ -158,7 +166,7 @@ These are architectural seams because they protect stable harness policy from vo
 
 ## Testing And Verification
 
-No tests exist yet.
+`test/e-test.el` contains ERT smoke tests for loading the package, exposing `e-version`, and exposing the interactive status/reload commands. Eldev is the project test/build/lint/package runner.
 
 The first implementation should make the core harness testable with fake backends, fake tools, fake execution environments, and in-memory sessions. Those tests should prove lifecycle, event ordering, queue handling, session writes, tool-result handling, and provider independence without launching a full Emacs presentation shell.
 
@@ -178,7 +186,7 @@ Side effects are intentionally pushed outward. Buffer edits, file writes, proces
 
 The main abstraction risk is creating generic interfaces before their semantics are real. The harness, backend, tool, session, and execution environment contracts are justified because the project already has explicit change pressure in those dimensions: multiple presentations, provider independence, live-configurable tools, durable sessions, and Emacs-native side effects.
 
-Confirmed gap: there is no implementation yet. The current architecture is a vision recorded in durable docs, not a verified code map.
+Confirmed gap: the implementation is only a scaffold. The current architecture is still mostly a vision recorded in durable docs, with a small verified package surface that future runtime work can build on.
 
 Delta to the architectural vision:
 
