@@ -14,6 +14,7 @@
 
 (require 'cl-lib)
 (require 'json)
+(require 'pp)
 (require 'subr-x)
 (require 'url)
 (require 'e-backend)
@@ -39,6 +40,29 @@
   "Default model for ChatGPT-backed Codex requests."
   :type 'string
   :group 'e-openai)
+
+(defcustom e-openai-codex-debug nil
+  "When non-nil, retain the last raw Codex response and event summaries."
+  :type 'boolean
+  :group 'e-openai)
+
+(defvar e-openai-codex--last-diagnostics nil
+  "Last OpenAI/Codex diagnostics captured when debug mode is enabled.")
+
+(defun e-openai-codex-last-diagnostics ()
+  "Return the last captured OpenAI/Codex diagnostics.
+When called interactively, display diagnostics in a temporary buffer.
+Diagnostics are captured only when `e-openai-codex-debug' is non-nil."
+  (interactive)
+  (if (called-interactively-p 'interactive)
+      (with-current-buffer (get-buffer-create "*e-openai-codex-diagnostics*")
+        (let ((inhibit-read-only t))
+          (erase-buffer)
+          (insert (pp-to-string e-openai-codex--last-diagnostics))
+          (goto-char (point-min))
+          (special-mode))
+        (display-buffer (current-buffer)))
+    e-openai-codex--last-diagnostics))
 
 (defun e-openai-codex-auth-file (&optional codex-home)
   "Return the Codex auth file path for CODEX-HOME.
@@ -198,6 +222,40 @@ When CODEX-HOME is nil, use the CODEX_HOME environment variable or
       (e-openai-codex--parse-json arguments)
     nil))
 
+(defun e-openai-codex--sequence-list (value)
+  "Return VALUE as a list when it is a JSON array sequence."
+  (cond
+   ((vectorp value) (append value nil))
+   ((listp value) value)
+   (t nil)))
+
+(defun e-openai-codex--content-text (content)
+  "Return concatenated output text from Responses CONTENT."
+  (string-join
+   (delq nil
+         (mapcar
+          (lambda (part)
+            (when (member (plist-get part :type) '("output_text" "text"))
+              (plist-get part :text)))
+          (e-openai-codex--sequence-list content)))
+   ""))
+
+(defun e-openai-codex--message-item-text (item)
+  "Return assistant text from a Responses message ITEM."
+  (when (equal (plist-get item :type) "message")
+    (let ((text (e-openai-codex--content-text (plist-get item :content))))
+      (unless (string-empty-p text)
+        text))))
+
+(defun e-openai-codex--event-summary (event item)
+  "Return a compact diagnostics summary for provider EVENT and parsed ITEM."
+  (let ((provider-item (plist-get event :item))
+        (provider-part (plist-get event :part)))
+    (list :event-type (plist-get event :type)
+          :item-type (or (plist-get provider-item :type)
+                         (plist-get provider-part :type))
+          :parsed-type (plist-get item :type))))
+
 (defun e-openai-codex--event-item (event)
   "Map parsed Responses EVENT to one backend-neutral item, or nil."
   (let ((type (plist-get event :type)))
@@ -216,6 +274,16 @@ When CODEX-HOME is nil, use the CODEX_HOME environment variable or
               :name (plist-get item :name)
               :arguments (e-openai-codex--parse-function-arguments
                           (plist-get item :arguments)))))
+     ((and (equal type "response.output_item.done")
+           (e-openai-codex--message-item-text (plist-get event :item)))
+      (list :type 'assistant-message
+            :content (e-openai-codex--message-item-text
+                      (plist-get event :item))))
+     ((and (equal type "response.content_part.done")
+           (member (plist-get (plist-get event :part) :type)
+                   '("output_text" "text")))
+      (list :type 'assistant-message
+            :content (plist-get (plist-get event :part) :text)))
      ((member type '("response.completed" "response.done"))
       (list :type 'done :reason 'stop))
      ((equal type "response.failed")
@@ -224,7 +292,9 @@ When CODEX-HOME is nil, use the CODEX_HOME environment variable or
 
 (defun e-openai-codex-parse-stream (stream-text)
   "Parse Codex Responses STREAM-TEXT into backend-neutral items."
-  (let ((items nil))
+  (let ((items nil)
+        (event-summaries nil)
+        (assistant-message-contents nil))
     (dolist (chunk (split-string stream-text "\n\n" t))
       (let ((data-lines nil))
         (dolist (line (split-string chunk "\n"))
@@ -233,9 +303,21 @@ When CODEX-HOME is nil, use the CODEX_HOME environment variable or
         (when data-lines
           (let ((data (string-join (nreverse data-lines) "\n")))
             (unless (or (string-empty-p data) (equal data "[DONE]"))
-              (when-let ((item (e-openai-codex--event-item
-                                (e-openai-codex--parse-json data))))
-                (push item items)))))))
+              (let* ((event (e-openai-codex--parse-json data))
+                     (item (e-openai-codex--event-item event)))
+                (push (e-openai-codex--event-summary event item)
+                      event-summaries)
+                (when item
+                  (if (eq (plist-get item :type) 'assistant-message)
+                      (let ((content (plist-get item :content)))
+                        (unless (member content assistant-message-contents)
+                          (push content assistant-message-contents)
+                          (push item items)))
+                    (push item items)))))))))
+    (when e-openai-codex-debug
+      (setq e-openai-codex--last-diagnostics
+            (list :raw-response stream-text
+                  :events (nreverse event-summaries))))
     (nreverse items)))
 
 (cl-defun e-openai-codex-backend-create

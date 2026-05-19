@@ -88,6 +88,47 @@ event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{
       :name "now"
       :arguments (:format "iso"))))))
 
+(ert-deftest e-openai-test-parse-message-output-item ()
+  "Responses message output items become assistant messages."
+  (should
+   (equal
+    (e-openai-codex-parse-stream
+     "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"hello from item\"}]}}\n\n")
+    '((:type assistant-message :content "hello from item")))))
+
+(ert-deftest e-openai-test-parse-live-codex-message-shape-deduplicates ()
+  "The live Codex text event sequence yields one persisted assistant message."
+  (should
+   (equal
+    (e-openai-codex-parse-stream
+     "data: {\"type\":\"response.output_text.delta\",\"delta\":\"pong\"}\n\n\
+data: {\"type\":\"response.output_text.done\",\"text\":\"pong\"}\n\n\
+data: {\"type\":\"response.content_part.done\",\"part\":{\"type\":\"output_text\",\"text\":\"pong\"}}\n\n\
+data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"pong\"}]}}\n\n\
+data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")
+    '((:type assistant-delta :content "pong")
+      (:type assistant-message :content "pong")
+      (:type done :reason stop)))))
+
+(ert-deftest e-openai-test-debug-diagnostics-record-ignored-events ()
+  "Debug diagnostics record raw response and ignored provider event summaries."
+  (let ((e-openai-codex-debug t)
+        (e-openai-codex--last-diagnostics nil)
+        (stream "data: {\"type\":\"response.unknown\",\"item\":{\"type\":\"mystery\"}}\n\n\
+data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n"))
+    (should (equal (e-openai-codex-parse-stream stream)
+                   '((:type done :reason stop))))
+    (should (equal (plist-get e-openai-codex--last-diagnostics :raw-response)
+                   stream))
+    (should
+     (equal (plist-get e-openai-codex--last-diagnostics :events)
+            '((:event-type "response.unknown"
+               :item-type "mystery"
+               :parsed-type nil)
+              (:event-type "response.completed"
+               :item-type nil
+               :parsed-type done))))))
+
 (ert-deftest e-openai-test-default-http-request-accepts-keyword-arguments ()
   "The default HTTP requester accepts the keyword call shape used by backend."
   (let (captured-url captured-method captured-headers captured-body)

@@ -36,6 +36,21 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-renders-empty-output-diagnostic ()
+  "The chat buffer renders turns that finish without assistant output."
+  (let* ((backend (e-backend-fake-create
+                   :items '((:type done :reason stop))))
+         (harness (e-harness-create :backend backend))
+         (buffer (e-chat-open :harness harness :session-id "chat-empty-output")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat-submit "hello")
+          (e-harness-wait e-chat-harness e-chat-session-id 1.0)
+          (should (string-match-p "Backend returned no assistant output"
+                                  (buffer-string))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-inline-prompt-is-editable-and-submits ()
   "The chat buffer prompt accepts typed text and submits it inline."
   (let* ((backend (e-backend-fake-create

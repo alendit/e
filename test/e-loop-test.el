@@ -40,6 +40,45 @@
     (should (member 'turn-started (mapcar (lambda (event) (plist-get event :type)) events)))
     (should (member 'turn-finished (mapcar (lambda (event) (plist-get event :type)) events)))))
 
+(ert-deftest e-loop-test-persists-delta-only-assistant-message ()
+  "Assistant deltas are persisted when no final assistant message arrives."
+  (let* ((backend (e-backend-fake-create
+                   :items '((:type assistant-delta :content "hel")
+                            (:type assistant-delta :content "lo")
+                            (:type done :reason stop))))
+         (messages nil))
+    (e-loop-run-turn
+     :session-id "session-1"
+     :turn-id "turn-1"
+     :messages '((:role user :content "hi"))
+     :backend backend
+     :tools (e-tools-registry-create)
+     :options nil
+     :on-event #'ignore
+     :append-message (lambda (message) (push message messages)))
+    (should (equal (mapcar (lambda (message) (plist-get message :role))
+                           messages)
+                   '(assistant)))
+    (should (equal (plist-get (car messages) :content) "hello"))))
+
+(ert-deftest e-loop-test-emits-empty-output-event ()
+  "Turns with no assistant output emit a backend-empty-output event."
+  (let* ((backend (e-backend-fake-create
+                   :items '((:type done :reason stop))))
+         (events nil))
+    (e-loop-run-turn
+     :session-id "session-1"
+     :turn-id "turn-1"
+     :messages '((:role user :content "hi"))
+     :backend backend
+     :tools (e-tools-registry-create)
+     :options nil
+     :on-event (lambda (event) (push event events))
+     :append-message #'ignore)
+    (should (member 'backend-empty-output
+                    (mapcar (lambda (event) (plist-get event :type))
+                            events)))))
+
 (ert-deftest e-loop-test-executes-tool-call-and-appends-result ()
   "Tool calls execute through the registry and append tool result messages."
   (let* ((backend (e-backend-fake-create

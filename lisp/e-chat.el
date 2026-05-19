@@ -203,6 +203,8 @@
      (e-chat--insert-line
       (format "Tool finished: %S"
               (plist-get (plist-get event :payload) :result))))
+    ('backend-empty-output
+     (e-chat--insert-line "Backend returned no assistant output"))
     ('session-reset
      (e-chat--set-status "idle")
      (e-chat--insert-line "Session reset"))

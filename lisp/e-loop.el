@@ -12,6 +12,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'subr-x)
 (require 'e-backend)
 (require 'e-events)
 (require 'e-tools)
@@ -23,6 +24,13 @@
   "Return a new in-process message id."
   (setq e-loop--message-counter (1+ e-loop--message-counter))
   (format "msg-%d" e-loop--message-counter))
+
+(defun e-loop--assistant-message (content)
+  "Return an assistant message with CONTENT."
+  (list :id (e-loop--next-message-id)
+        :role 'assistant
+        :content content
+        :metadata nil))
 
 (cl-defun e-loop--emit (&key on-event session-id turn-id type payload)
   "Emit event TYPE for SESSION-ID and TURN-ID through ON-EVENT.
@@ -42,6 +50,7 @@ The loop is synchronous for the first core implementation.  Async process
 management stays outside this task until the core event and state semantics are
 stable."
   (let ((assistant-content nil)
+        (assistant-message-written nil)
         (done-reason nil)
         (turn-messages (copy-sequence messages))
         (continue t)
@@ -73,10 +82,9 @@ stable."
                             :payload item))
              ('assistant-message
               (setq assistant-message t)
-              (let ((message (list :id (e-loop--next-message-id)
-                                   :role 'assistant
-                                   :content (plist-get item :content)
-                                   :metadata nil)))
+              (setq assistant-message-written t)
+              (let ((message (e-loop--assistant-message
+                              (plist-get item :content))))
                 (setq turn-messages (append turn-messages (list message)))
                 (funcall append-message message)
                 (e-loop--emit :on-event on-event
@@ -109,6 +117,23 @@ stable."
         (setq continue (and tool-called
                             (not assistant-message)
                             (< iteration max-iterations)))))
+    (cond
+     ((and (not assistant-message-written)
+           (not (string-empty-p (or assistant-content ""))))
+      (let ((message (e-loop--assistant-message assistant-content)))
+        (funcall append-message message)
+        (e-loop--emit :on-event on-event
+                      :session-id session-id
+                      :turn-id turn-id
+                      :type 'message-added
+                      :payload (list :message message))))
+     ((and (not assistant-message-written)
+           (string-empty-p (or assistant-content "")))
+      (e-loop--emit :on-event on-event
+                    :session-id session-id
+                    :turn-id turn-id
+                    :type 'backend-empty-output
+                    :payload (list :reason done-reason))))
     (e-loop--emit :on-event on-event
                   :session-id session-id
                   :turn-id turn-id
