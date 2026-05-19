@@ -54,6 +54,23 @@
                            (e-harness-messages harness "session-1"))
                    '(user assistant user assistant)))))
 
+(ert-deftest e-harness-test-reset-clears-session-messages ()
+  "Reset clears transcript messages for a session."
+  (let ((harness (e-harness-create
+                  :backend (e-backend-fake-create :items nil))))
+    (e-harness-create-session harness :id "session-1")
+    (e-harness-prompt harness "session-1" "question")
+    (e-harness-reset harness "session-1")
+    (should (equal (e-harness-messages harness "session-1") nil))))
+
+(ert-deftest e-harness-test-state-reports-session-and-active-turn ()
+  "Harness state reports settled session status."
+  (let ((harness (e-harness-create
+                  :backend (e-backend-fake-create :items nil))))
+    (e-harness-create-session harness :id "session-1")
+    (should (equal (e-harness-state harness "session-1")
+                   '(:session-id "session-1" :active-turn nil :message-count 0)))))
+
 (provide 'e-harness-test)
 
 ;;; e-harness-test.el ends here

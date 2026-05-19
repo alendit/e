@@ -47,6 +47,12 @@
     (plist-put session :messages (append messages (list message)))
     message))
 
+(defun e-session-clear-messages (store session-id)
+  "Clear all messages for SESSION-ID."
+  (let ((session (e-session-get store session-id)))
+    (plist-put session :messages nil)
+    session))
+
 (provide 'e-session)
 
 ;;; e-session.el ends here

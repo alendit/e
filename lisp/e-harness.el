@@ -107,6 +107,22 @@
   "Submit PROMPT as the next turn for SESSION-ID."
   (e-harness-prompt harness session-id prompt))
 
+(defun e-harness-reset (harness session-id)
+  "Clear SESSION-ID transcript state."
+  (e-session-clear-messages (e-harness-sessions harness) session-id)
+  (e-harness--emit
+   harness
+   (e-events-make :type 'session-reset
+                  :session-id session-id
+                  :turn-id nil
+                  :payload nil)))
+
+(defun e-harness-state (harness session-id)
+  "Return settled state for SESSION-ID."
+  (list :session-id session-id
+        :active-turn (gethash session-id (e-harness-active-turns harness))
+        :message-count (length (e-harness-messages harness session-id))))
+
 (defun e-harness-abort (harness session-id)
   "Abort the active turn for SESSION-ID.
 The synchronous first implementation can only surface that no turn is active
