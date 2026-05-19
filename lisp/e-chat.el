@@ -55,16 +55,16 @@
 (define-derived-mode e-chat-mode text-mode "e-chat"
   "Major mode for e chat buffers.")
 
+(defun e-chat--configure-modal-state ()
+  "Configure optional modal editing packages for `e-chat-mode'."
+  (when (fboundp 'evil-set-initial-state)
+    (evil-set-initial-state 'e-chat-mode 'normal)))
+
 (defun e-chat--line-beginning-at (position)
   "Return line beginning at POSITION."
   (save-excursion
     (goto-char position)
     (line-beginning-position)))
-
-(defun e-chat--enter-input-state ()
-  "Enter an input-friendly editor state when optional modal packages exist."
-  (when (fboundp 'evil-insert-state)
-    (evil-insert-state)))
 
 (defun e-chat--default-harness ()
   "Create the default Codex-backed chat harness."
@@ -97,8 +97,7 @@
     (insert "\n"))
   (insert "> ")
   (setq e-chat--prompt-marker (point-marker))
-  (set-marker-insertion-type e-chat--prompt-marker nil)
-  (e-chat--enter-input-state))
+  (set-marker-insertion-type e-chat--prompt-marker nil))
 
 (defun e-chat--prompt-text ()
   "Return the current editable prompt text."
@@ -186,6 +185,7 @@ Codex-backed harness with the emacs-base layer active."
          (buffer (get-buffer-create e-chat-buffer-name)))
     (e-chat--ensure-session chat-harness chat-session-id)
     (with-current-buffer buffer
+      (e-chat--configure-modal-state)
       (e-chat-mode)
       (setq-local e-chat-harness chat-harness)
       (setq-local e-chat-session-id chat-session-id)

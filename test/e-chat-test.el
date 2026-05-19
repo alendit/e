@@ -57,19 +57,30 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest e-chat-test-open-enters-evil-insert-state-when-available ()
-  "The chat buffer enters Evil insert state when Evil is loaded."
+(ert-deftest e-chat-test-configures-evil-normal-state-when-available ()
+  "The chat buffer configures Evil to treat it as a normal editable mode."
+  (let (configured-mode configured-state)
+    (cl-letf (((symbol-function 'evil-set-initial-state)
+               (lambda (mode state)
+                 (setq configured-mode mode)
+                 (setq configured-state state))))
+      (e-chat--configure-modal-state)
+      (should (equal configured-mode 'e-chat-mode))
+      (should (equal configured-state 'normal)))))
+
+(ert-deftest e-chat-test-open-does-not-force-evil-insert-state ()
+  "The chat buffer leaves modal state changes to normal editor commands."
   (let* ((backend (e-backend-fake-create :items nil))
          (harness (e-harness-create :backend backend))
-         entered-buffer
+         insert-called
          buffer)
     (cl-letf (((symbol-function 'evil-insert-state)
                (lambda ()
-                 (setq entered-buffer (current-buffer)))))
+                 (setq insert-called t))))
       (unwind-protect
           (progn
             (setq buffer (e-chat-open :harness harness :session-id "chat-evil"))
-            (should (eq entered-buffer buffer)))
+            (should-not insert-called))
         (when (buffer-live-p buffer)
           (kill-buffer buffer))))))
 
