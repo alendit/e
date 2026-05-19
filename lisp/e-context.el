@@ -21,16 +21,40 @@
   name
   build)
 
-(cl-defun e-context-build (strategy &key sessions session-id options)
+(cl-defstruct (e-context-provider
+               (:constructor e-context-provider-create)
+               (:conc-name e-context-provider--))
+  name
+  build)
+
+(cl-defun e-context-provider-build (provider &key harness session-id turn-id)
+  "Build read-only context messages with PROVIDER.
+HARNESS, SESSION-ID, and TURN-ID identify the current turn."
+  (unless (functionp (e-context-provider--build provider))
+    (signal 'wrong-type-argument
+            (list 'functionp (e-context-provider--build provider))))
+  (funcall (e-context-provider--build provider)
+           :harness harness
+           :session-id session-id
+           :turn-id turn-id))
+
+(cl-defun e-context-build
+    (strategy &key sessions session-id options prefix-messages)
   "Build backend-neutral context with STRATEGY.
 SESSIONS and SESSION-ID identify durable state.  OPTIONS are backend-neutral
-turn options passed through or adjusted by the strategy."
+turn options passed through or adjusted by the strategy.  PREFIX-MESSAGES are
+backend-neutral messages that should appear before the session transcript."
   (unless (functionp (e-context--build strategy))
     (signal 'wrong-type-argument (list 'functionp (e-context--build strategy))))
-  (funcall (e-context--build strategy)
-           :sessions sessions
-           :session-id session-id
-           :options options))
+  (let ((context (funcall (e-context--build strategy)
+                          :sessions sessions
+                          :session-id session-id
+                          :options options)))
+    (when prefix-messages
+      (plist-put context
+                 :messages
+                 (append prefix-messages (plist-get context :messages))))
+    context))
 
 (cl-defun e-context-transcript-stack-create ()
   "Create the classic transcript-stack context strategy."

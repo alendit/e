@@ -17,6 +17,7 @@
 (require 'e-emacs-tools)
 (require 'e-events)
 (require 'e-harness)
+(require 'e-layers)
 (require 'e-loop)
 (require 'e-openai)
 (require 'e-session)
@@ -30,6 +31,7 @@
   (list :state e-core-scaffold-state
         :events t
         :sessions t
+        :layers t
         :backends t
         :context t
         :emacs-tools t

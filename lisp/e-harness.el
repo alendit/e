@@ -14,6 +14,7 @@
 (require 'cl-lib)
 (require 'e-context)
 (require 'e-events)
+(require 'e-layers)
 (require 'e-loop)
 (require 'e-session)
 (require 'e-tools)
@@ -26,6 +27,7 @@
   default-options
   (sessions (e-session-store-create))
   (tools (e-tools-registry-create))
+  (active-layers nil)
   (subscribers nil)
   active-turns)
 
@@ -45,17 +47,29 @@
   (setq e-harness--message-counter (1+ e-harness--message-counter))
   (format "msg-user-%d" e-harness--message-counter))
 
-(cl-defun e-harness-create (&key backend context-strategy default-options sessions tools)
+(cl-defun e-harness-create
+    (&key backend context-strategy default-options sessions tools active-layers)
   "Create a core harness.
-BACKEND, CONTEXT-STRATEGY, DEFAULT-OPTIONS, SESSIONS, and TOOLS configure the
-provider-neutral runtime."
-  (e-harness--make :backend backend
-                   :context-strategy (or context-strategy
-                                         (e-context-transcript-stack-create))
-                   :default-options default-options
-                   :sessions (or sessions (e-session-store-create))
-                   :tools (or tools (e-tools-registry-create))
-                   :active-turns (make-hash-table :test 'equal)))
+BACKEND, CONTEXT-STRATEGY, DEFAULT-OPTIONS, SESSIONS, TOOLS, and ACTIVE-LAYERS
+configure the provider-neutral runtime."
+  (let ((harness
+         (e-harness--make :backend backend
+                          :context-strategy (or context-strategy
+                                                (e-context-transcript-stack-create))
+                          :default-options default-options
+                          :sessions (or sessions (e-session-store-create))
+                          :tools (or tools (e-tools-registry-create))
+                          :active-turns (make-hash-table :test 'equal))))
+    (dolist (layer active-layers)
+      (e-harness-activate-layer harness layer))
+    harness))
+
+(defun e-harness-activate-layer (harness layer)
+  "Activate LAYER in HARNESS and register its tools."
+  (e-layers-register-tools layer (e-harness-tools harness))
+  (setf (e-harness-active-layers harness)
+        (append (e-harness-active-layers harness) (list layer)))
+  layer)
 
 (cl-defun e-harness-create-session (harness &key id metadata)
   "Create session ID with METADATA in HARNESS."
@@ -126,7 +140,13 @@ provider or loop failure."
                     (e-harness-context-strategy harness)
                     :sessions (e-harness-sessions harness)
                     :session-id session-id
-                    :options (e-harness--turn-options harness))))
+                    :options (e-harness--turn-options harness)
+                    :prefix-messages
+                    (e-layers-context-messages
+                     (e-harness-active-layers harness)
+                     :harness harness
+                     :session-id session-id
+                     :turn-id turn-id))))
       (e-loop-run-turn
        :session-id session-id
        :turn-id turn-id
