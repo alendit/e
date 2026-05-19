@@ -42,6 +42,62 @@
      (e-harness-abort harness "session-1")
      :type 'e-harness-no-active-turn)))
 
+(ert-deftest e-harness-test-async-prompt-wait-settles-turn ()
+  "Async prompting tracks an active turn until wait settles it."
+  (let* ((backend (e-backend-fake-create
+                   :items '((:type assistant-message :content "answer")
+                            (:type done :reason stop))))
+         (harness (e-harness-create :backend backend)))
+    (e-harness-create-session harness :id "session-1")
+    (let ((turn-id (e-harness-prompt-async harness "session-1" "question")))
+      (should (equal (plist-get (e-harness-state harness "session-1")
+                                :active-turn)
+                     turn-id))
+      (should (equal (plist-get (e-harness-wait harness "session-1" 1.0)
+                                :status)
+                     'done))
+      (should (equal (plist-get (e-harness-state harness "session-1")
+                                :active-turn)
+                     nil)))))
+
+(ert-deftest e-harness-test-abort-cancels-queued-async-turn ()
+  "Aborting a queued async turn settles it as cancelled."
+  (let* ((called nil)
+         (backend (e-backend-create
+                   :name "slow"
+                   :stream (cl-function
+                            (lambda (&key messages options on-item)
+                              (ignore messages options on-item)
+                              (setq called t)))))
+         (harness (e-harness-create :backend backend)))
+    (e-harness-create-session harness :id "session-1")
+    (e-harness-prompt-async harness "session-1" "question" :delay 1.0)
+    (e-harness-abort harness "session-1")
+    (should (equal (plist-get (e-harness-wait harness "session-1" 0.1)
+                              :status)
+                   'cancelled))
+    (should (equal called nil))))
+
+(ert-deftest e-harness-test-async-provider-error-is-surfaced ()
+  "Async provider failures settle as errors and emit turn-failed."
+  (let* ((backend (e-backend-create
+                   :name "failing"
+                   :stream (cl-function
+                            (lambda (&key messages options on-item)
+                              (ignore messages options on-item)
+                              (error "provider failed")))))
+         (harness (e-harness-create :backend backend))
+         (events nil))
+    (e-harness-subscribe harness (lambda (event) (push event events)))
+    (e-harness-create-session harness :id "session-1")
+    (e-harness-prompt-async harness "session-1" "question")
+    (let ((settled (e-harness-wait harness "session-1" 1.0)))
+      (should (equal (plist-get settled :status) 'error))
+      (should (string-match-p "provider failed" (plist-get settled :error))))
+    (should (member 'turn-failed
+                    (mapcar (lambda (event) (plist-get event :type))
+                            events)))))
+
 (ert-deftest e-harness-test-follow-up-appends-user-message ()
   "Follow-up submits another turn against the same session."
   (let* ((backend (e-backend-fake-create

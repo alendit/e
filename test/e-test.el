@@ -33,6 +33,8 @@
   (require 'e)
   (should (fboundp 'e-harness-create))
   (should (fboundp 'e-harness-prompt))
+  (should (fboundp 'e-harness-prompt-async))
+  (should (fboundp 'e-harness-wait))
   (should (fboundp 'e-harness-messages)))
 
 (provide 'e-test)
