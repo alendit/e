@@ -25,6 +25,11 @@
     "Directory containing the e package entry point.")
   (add-to-list 'load-path (expand-file-name "lisp" e--directory)))
 
+;;;###autoload
+(let ((directory (file-name-directory
+                  (or load-file-name buffer-file-name default-directory))))
+  (add-to-list 'load-path (expand-file-name "lisp" directory)))
+
 (require 'e-core)
 
 (defgroup e nil
@@ -54,19 +59,28 @@
     summary))
 
 ;;;###autoload
-(autoload 'e-dev-reload "e-dev" "Reload e package files during development." t)
+(autoload 'e-dev-reload "lisp/e-dev" "Reload e package files during development." t)
 
 ;;;###autoload
-(autoload 'e-chat "e-chat" "Create and open a new persisted e chat session." t)
+(autoload 'e-chat "lisp/e-chat" "Create and open a new persisted e chat session." t)
 
 ;;;###autoload
-(autoload 'e-chat-new "e-chat" "Create and open a new persisted e chat session." t)
+(autoload 'e-chat-new "lisp/e-chat" "Create and open a new persisted e chat session." t)
 
 ;;;###autoload
-(autoload 'e-chat-resume "e-chat" "Resume a recent persisted e chat session." t)
+(autoload 'e-chat-resume "lisp/e-chat" "Resume a recent persisted e chat session." t)
 
 ;;;###autoload
-(autoload 'e-chat-rename "e-chat" "Rename the current e chat session." t)
+(autoload 'e-chat-rename "lisp/e-chat" "Rename the current e chat session." t)
+
+;;;###autoload
+(autoload 'e-chat-submit "lisp/e-chat" "Submit the current e chat prompt." t)
+
+;;;###autoload
+(autoload 'e-chat-abort "lisp/e-chat" "Abort the active e chat turn." t)
+
+;;;###autoload
+(autoload 'e-chat-reset "lisp/e-chat" "Reset the current e chat session." t)
 
 (provide 'e)
 

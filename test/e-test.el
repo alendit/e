@@ -11,7 +11,19 @@
 
 ;;; Code:
 
+(require 'autoload)
 (require 'ert)
+
+(defconst e-test--autoload-commands
+  '(e-chat
+    e-chat-new
+    e-chat-resume
+    e-chat-rename
+    e-chat-submit
+    e-chat-abort
+    e-chat-reset
+    e-dev-reload)
+  "Interactive commands expected to exist from package autoloads.")
 
 (ert-deftest e-test-loads-feature ()
   "The package feature can be required from the project load path."
@@ -31,6 +43,35 @@
   (should (commandp 'e-chat-resume))
   (should (commandp 'e-chat-rename))
   (should (commandp 'e-dev-reload)))
+
+(ert-deftest e-test-autoloads-expose-chat-commands-at-startup ()
+  "Generated package autoloads expose chat commands before reload."
+  (let ((generated-autoload-file
+         (make-temp-file
+          (expand-file-name "e-generated-autoloads-" default-directory)
+          nil
+          ".el")))
+    (unwind-protect
+        (progn
+          (dolist (command e-test--autoload-commands)
+            (when (fboundp command)
+              (fmakunbound command)))
+          (update-directory-autoloads default-directory)
+          (let ((load-path (list default-directory)))
+            (load generated-autoload-file nil 'nomessage)
+            (dolist (command e-test--autoload-commands)
+              (should (commandp command)))
+            (autoload-do-load (symbol-function 'e-chat) 'e-chat)
+            (autoload-do-load (symbol-function 'e-dev-reload) 'e-dev-reload))
+          (dolist (command e-test--autoload-commands)
+            (should (commandp command))))
+      (when (file-exists-p generated-autoload-file)
+        (delete-file generated-autoload-file))
+      (when (file-exists-p (concat generated-autoload-file "~"))
+        (delete-file (concat generated-autoload-file "~")))
+      (load (expand-file-name "e.el" default-directory) nil 'nomessage)
+      (load (expand-file-name "lisp/e-chat.el" default-directory) nil 'nomessage)
+      (load (expand-file-name "lisp/e-dev.el" default-directory) nil 'nomessage))))
 
 (ert-deftest e-test-exposes-core-harness-api ()
   "The package exposes the core harness API after requiring e."

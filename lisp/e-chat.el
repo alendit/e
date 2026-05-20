@@ -612,6 +612,7 @@ reload.  User-facing commands should call `e-chat-new' or `e-chat-resume'."
   (e-chat--set-status "idle")
   (current-buffer))
 
+;;;###autoload
 (defun e-chat-submit (&optional prompt)
   "Submit PROMPT or the current editable prompt text."
   (interactive)
@@ -624,6 +625,7 @@ reload.  User-facing commands should call `e-chat-new' or `e-chat-resume'."
   (e-chat--set-status "queued")
   (e-harness-prompt-async e-chat-harness e-chat-session-id prompt))
 
+;;;###autoload
 (defun e-chat-abort ()
   "Abort the active turn for the current chat buffer."
   (interactive)
@@ -631,6 +633,7 @@ reload.  User-facing commands should call `e-chat-new' or `e-chat-resume'."
     (user-error "This buffer is not attached to an e chat session"))
   (e-harness-abort e-chat-harness e-chat-session-id))
 
+;;;###autoload
 (defun e-chat-reset ()
   "Reset the current chat session and rendered buffer."
   (interactive)
