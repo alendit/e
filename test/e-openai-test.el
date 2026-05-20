@@ -97,7 +97,7 @@ event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{
     '((:type assistant-message :content "hello from item")))))
 
 (ert-deftest e-openai-test-parse-live-codex-message-shape-deduplicates ()
-  "The live Codex text event sequence yields one persisted assistant message."
+  "The live Codex text event sequence prefers canonical final text."
   (should
    (equal
     (e-openai-codex-parse-stream
@@ -108,6 +108,18 @@ data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"message\",\"c
 data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")
     '((:type assistant-delta :content "pong")
       (:type assistant-message :content "pong")
+      (:type done :reason stop)))))
+
+(ert-deftest e-openai-test-parse-identical-canonical-messages-are-preserved ()
+  "Separate canonical text-done events with the same content are not deduped."
+  (should
+   (equal
+    (e-openai-codex-parse-stream
+     "data: {\"type\":\"response.output_text.done\",\"text\":\"same\"}\n\n\
+data: {\"type\":\"response.output_text.done\",\"text\":\"same\"}\n\n\
+data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")
+    '((:type assistant-message :content "same")
+      (:type assistant-message :content "same")
       (:type done :reason stop)))))
 
 (ert-deftest e-openai-test-debug-diagnostics-record-ignored-events ()

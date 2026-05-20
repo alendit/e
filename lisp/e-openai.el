@@ -276,14 +276,16 @@ When CODEX-HOME is nil, use the CODEX_HOME environment variable or
                           (plist-get item :arguments)))))
      ((and (equal type "response.output_item.done")
            (e-openai-codex--message-item-text (plist-get event :item)))
-      (list :type 'assistant-message
+      (list :type 'assistant-message-candidate
             :content (e-openai-codex--message-item-text
-                      (plist-get event :item))))
+                      (plist-get event :item))
+            :source 'output-item))
      ((and (equal type "response.content_part.done")
            (member (plist-get (plist-get event :part) :type)
                    '("output_text" "text")))
-      (list :type 'assistant-message
-            :content (plist-get (plist-get event :part) :text)))
+      (list :type 'assistant-message-candidate
+            :content (plist-get (plist-get event :part) :text)
+            :source 'content-part))
      ((member type '("response.completed" "response.done"))
       (list :type 'done :reason 'stop))
      ((equal type "response.failed")
@@ -294,26 +296,45 @@ When CODEX-HOME is nil, use the CODEX_HOME environment variable or
   "Parse Codex Responses STREAM-TEXT into backend-neutral items."
   (let ((items nil)
         (event-summaries nil)
-        (assistant-message-contents nil))
-    (dolist (chunk (split-string stream-text "\n\n" t))
-      (let ((data-lines nil))
-        (dolist (line (split-string chunk "\n"))
-          (when (string-prefix-p "data:" line)
-            (push (string-trim (substring line 5)) data-lines)))
-        (when data-lines
-          (let ((data (string-join (nreverse data-lines) "\n")))
-            (unless (or (string-empty-p data) (equal data "[DONE]"))
-              (let* ((event (e-openai-codex--parse-json data))
-                     (item (e-openai-codex--event-item event)))
-                (push (e-openai-codex--event-summary event item)
-                      event-summaries)
-                (when item
-                  (if (eq (plist-get item :type) 'assistant-message)
-                      (let ((content (plist-get item :content)))
-                        (unless (member content assistant-message-contents)
-                          (push content assistant-message-contents)
-                          (push item items)))
-                    (push item items)))))))))
+        (assistant-message-seen nil)
+        (assistant-message-candidate nil))
+    (cl-labels
+        ((handle-item
+          (item)
+          (pcase (plist-get item :type)
+            ('assistant-message
+             (setq assistant-message-seen t)
+             (push item items))
+            ('assistant-message-candidate
+             (unless assistant-message-candidate
+               (setq assistant-message-candidate
+                     (list :type 'assistant-message
+                           :content (plist-get item :content)))))
+            ('done
+             (unless assistant-message-seen
+               (when assistant-message-candidate
+                 (push assistant-message-candidate items)
+                 (setq assistant-message-seen t)))
+             (push item items))
+            (_
+             (push item items)))))
+      (dolist (chunk (split-string stream-text "\n\n" t))
+        (let ((data-lines nil))
+          (dolist (line (split-string chunk "\n"))
+            (when (string-prefix-p "data:" line)
+              (push (string-trim (substring line 5)) data-lines)))
+          (when data-lines
+            (let ((data (string-join (nreverse data-lines) "\n")))
+              (unless (or (string-empty-p data) (equal data "[DONE]"))
+                (let* ((event (e-openai-codex--parse-json data))
+                       (item (e-openai-codex--event-item event)))
+                  (push (e-openai-codex--event-summary event item)
+                        event-summaries)
+                  (when item
+                    (handle-item item)))))))))
+    (unless assistant-message-seen
+      (when assistant-message-candidate
+        (push assistant-message-candidate items)))
     (when e-openai-codex-debug
       (setq e-openai-codex--last-diagnostics
             (list :raw-response stream-text
