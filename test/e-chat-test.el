@@ -311,6 +311,42 @@
   (should (equal e-chat--user-glyph ">"))
   (should (equal e-chat--assistant-glyph "●")))
 
+(ert-deftest e-chat-test-assistant-markdown-renders-with-text-properties ()
+  "Assistant messages keep Markdown text and apply Markdown presentation faces."
+  (let ((buffer (e-chat-test--buffer nil "chat-markdown")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat--insert-entry
+           "Assistant"
+           "Use **bold** and `code`.\n- item\n\n```elisp\n(message \"hi\")\n```\n\n[docs](https://example.test)")
+          (let ((content (buffer-string)))
+            (should (string-match-p "\\*\\*bold\\*\\*" content))
+            (should (string-match-p "`code`" content))
+            (should (string-match-p "\\[docs\\](https://example.test)" content)))
+          (save-excursion
+            (goto-char (point-min))
+            (search-forward "bold")
+            (should (memq 'e-chat-markdown-strong-face
+                          (ensure-list (get-text-property (1- (point)) 'face))))
+            (search-forward "code")
+            (should (memq 'e-chat-markdown-code-face
+                          (ensure-list (get-text-property (1- (point)) 'face))))
+            (search-forward "- item")
+            (should (memq 'e-chat-markdown-list-face
+                          (ensure-list (get-text-property (1- (point)) 'face))))
+            (search-forward "(message \"hi\")")
+            (should (memq 'e-chat-markdown-code-block-face
+                          (ensure-list (get-text-property (1- (point)) 'face))))
+            (search-forward "docs")
+            (should (memq 'e-chat-markdown-link-face
+                          (ensure-list (get-text-property (1- (point)) 'face))))
+            (should (equal (get-text-property (1- (point)) 'help-echo)
+                           "https://example.test"))
+            (should (equal (get-text-property (1- (point)) 'e-chat-link-url)
+                           "https://example.test"))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-hides-empty-output-diagnostic ()
   "The chat buffer does not render transient empty-output diagnostics."
   (let ((buffer (e-chat-test--buffer

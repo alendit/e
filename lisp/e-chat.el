@@ -101,6 +101,46 @@
   "Face used for the focused turn in response navigation mode."
   :group 'e-chat)
 
+(defface e-chat-markdown-strong-face
+  '((t :weight bold))
+  "Face used for strong Markdown spans in assistant messages."
+  :group 'e-chat)
+
+(defface e-chat-markdown-emphasis-face
+  '((t :slant italic))
+  "Face used for emphasized Markdown spans in assistant messages."
+  :group 'e-chat)
+
+(defface e-chat-markdown-code-face
+  '((t :inherit fixed-pitch
+       :foreground "#f6d48f"
+       :background "#202833"))
+  "Face used for inline Markdown code in assistant messages."
+  :group 'e-chat)
+
+(defface e-chat-markdown-code-block-face
+  '((t :inherit fixed-pitch
+       :foreground "#dbe7ef"
+       :background "#1c252f"
+       :extend t))
+  "Face used for fenced Markdown code blocks in assistant messages."
+  :group 'e-chat)
+
+(defface e-chat-markdown-heading-face
+  '((t :inherit font-lock-keyword-face :weight bold))
+  "Face used for Markdown headings in assistant messages."
+  :group 'e-chat)
+
+(defface e-chat-markdown-list-face
+  '((t :inherit font-lock-builtin-face))
+  "Face used for Markdown list items in assistant messages."
+  :group 'e-chat)
+
+(defface e-chat-markdown-link-face
+  '((t :inherit link))
+  "Face used for Markdown link labels in assistant messages."
+  :group 'e-chat)
+
 (defconst e-chat--user-face-spec
   '((t :inherit default
        :foreground "#d7ecff"
@@ -822,6 +862,89 @@ When APPEND is non-nil, merge CONTENT into the previous entry with TITLE."
       (format "%s %s\n\n" (e-chat--entry-heading title) content)
     (format "%s\n%s\n\n" (e-chat--entry-heading title) content)))
 
+(defun e-chat--entry-content-offset (title)
+  "Return the character offset of TITLE entry content start."
+  (if (member title '("You" "Assistant"))
+      (1+ (length (e-chat--entry-heading title)))
+    (1+ (length (e-chat--entry-heading title)))))
+
+(defun e-chat--add-markdown-face (start end face)
+  "Add Markdown FACE between START and END."
+  (when (< start end)
+    (add-face-text-property start end face t)))
+
+(defun e-chat--line-content-start (line-start content-start)
+  "Return CONTENT-START or LINE-START, whichever is later."
+  (max line-start content-start))
+
+(defun e-chat--apply-markdown-line-faces (content-start content-end)
+  "Apply block-level Markdown faces between CONTENT-START and CONTENT-END."
+  (save-excursion
+    (goto-char content-start)
+    (let ((in-code-block nil))
+      (while (< (point) content-end)
+        (let* ((line-start (line-beginning-position))
+               (line-end (min (line-end-position) content-end))
+               (line-content-start (e-chat--line-content-start
+                                    line-start content-start))
+               (line-text (buffer-substring-no-properties
+                           line-content-start line-end)))
+          (cond
+           ((string-match-p "\\`[ \t]*```" line-text)
+            (e-chat--add-markdown-face line-content-start line-end
+                                       'e-chat-markdown-code-block-face)
+            (setq in-code-block (not in-code-block)))
+           (in-code-block
+            (e-chat--add-markdown-face line-content-start line-end
+                                       'e-chat-markdown-code-block-face))
+           ((string-match-p "\\`[ \t]*#{1,6}[ \t]+" line-text)
+            (e-chat--add-markdown-face line-content-start line-end
+                                       'e-chat-markdown-heading-face))
+           ((string-match-p "\\`[ \t]*\\([-+*]\\|[0-9]+\\.\\)[ \t]+" line-text)
+            (e-chat--add-markdown-face line-content-start line-end
+                                       'e-chat-markdown-list-face)))
+          (forward-line 1))))))
+
+(defun e-chat--apply-markdown-inline-face
+    (regexp content-start content-end face &optional group)
+  "Apply FACE to REGEXP GROUP between CONTENT-START and CONTENT-END."
+  (save-excursion
+    (goto-char content-start)
+    (while (re-search-forward regexp content-end t)
+      (let ((group (or group 1)))
+        (e-chat--add-markdown-face
+         (match-beginning group) (match-end group) face)))))
+
+(defun e-chat--apply-markdown-link-faces (content-start content-end)
+  "Apply Markdown link faces and metadata between CONTENT-START and CONTENT-END."
+  (save-excursion
+    (goto-char content-start)
+    (while (re-search-forward "\\[\\([^]\n]+\\)\\](\\([^) \n]+\\))"
+                              content-end t)
+      (let ((label-start (match-beginning 1))
+            (label-end (match-end 1))
+            (url (match-string-no-properties 2)))
+        (e-chat--add-markdown-face label-start label-end
+                                   'e-chat-markdown-link-face)
+        (add-text-properties label-start label-end
+                             `(help-echo ,url e-chat-link-url ,url))))))
+
+(defun e-chat--apply-assistant-markdown (content-start content-end)
+  "Apply Markdown presentation between CONTENT-START and CONTENT-END."
+  (when (< content-start content-end)
+    (e-chat--apply-markdown-line-faces content-start content-end)
+    (e-chat--apply-markdown-inline-face
+     "`\\([^`\n]+\\)`" content-start content-end
+     'e-chat-markdown-code-face)
+    (e-chat--apply-markdown-inline-face
+     "\\*\\*\\([^*\n]+\\)\\*\\*" content-start content-end
+     'e-chat-markdown-strong-face)
+    (e-chat--apply-markdown-inline-face
+     "\\(^\\|[[:space:]]\\)\\*\\([^*\n]+\\)\\*"
+     content-start content-end
+     'e-chat-markdown-emphasis-face 2)
+    (e-chat--apply-markdown-link-faces content-start content-end)))
+
 (defun e-chat--insert-entry (title content &optional ensure-composer turn-id)
   "Insert a protected chat entry with TITLE and CONTENT.
 When ENSURE-COMPOSER is non-nil, recreate the composer after inserting.
@@ -839,6 +962,10 @@ TURN-ID tags the rendered entry for response navigation."
          (when block-id
            `(e-chat-turn-id ,turn-id
              e-chat-block-id ,block-id)))
+        (when (equal title "Assistant")
+          (e-chat--apply-assistant-markdown
+           (+ start (e-chat--entry-content-offset title))
+           (point)))
         (e-chat--update-block-bounds block-id turn-id start (point))))
     (when (or ensure-composer had-composer)
       (e-chat--insert-composer))))
