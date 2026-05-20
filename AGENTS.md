@@ -6,6 +6,14 @@
 - Keep the harness and presentation separate. The harness owns agent lifecycle, sessions, model routing, tool execution, resources, and architectural policy. Presentation shells own buffers, commands, keymaps, rendering, and user interaction.
 - The first backend target is OpenAI API access through ChatGPT subscription auth where available, but the LLM backend must stay generic. Provider auth, request shapes, retry behavior, and model-specific features belong behind backend adapters.
 
+## Interactive Development
+
+- Strive to develop interactively against the running Emacs whenever the change affects runtime behavior, chat presentation, tools, backend requests, reload behavior, or buffer state. Batch tests are necessary but not sufficient for live agent workflows.
+- After code changes, reload the affected modules into the running Emacs and call `e-dev-reload` through `emacsclient --eval` so existing `*e-chat*` buffers and harness state are refreshed. Do this proactively; the user should not need to run `M-x e-dev-reload` after each agent change.
+- Use `emacsclient --eval` to inspect live state when debugging: active chat buffer contents, buffer-local harness/session values, active tool definitions, raw response buffers, diagnostics, and session messages. Prefer direct inspection of the running Emacs over guessing from source alone.
+- For model/tool/backend changes, verify at least one live scenario in the running Emacs when feasible. Use temporary buffers for destructive tool checks, and avoid mutating user buffers unless the task explicitly calls for it.
+- Keep live reload and inspection commands narrow and explicit. Do not rely on Doom-specific APIs for package behavior; use Doom only as the user's current Emacs distribution context.
+
 ## Architecture Guidance
 
 Use this section to evaluate decomposition, dependency direction, side-effect placement, interface design, and testability.
