@@ -440,6 +440,22 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-response-navigation-expand-folds-visible-turn-details ()
+  "Pressing RET on an unfolded focused turn removes its inline metadata."
+  (let ((buffer (e-chat-test--buffer nil "chat-nav-fold")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat-test--render-turn "turn-1" 10 11 "first" "one")
+          (call-interactively #'e-chat-enter-response-navigation)
+          (call-interactively #'e-chat-response-navigation-expand)
+          (should (string-match-p "  Turn: turn-1" (buffer-string)))
+          (call-interactively #'e-chat-response-navigation-expand)
+          (should-not (string-match-p "  Turn: turn-1" (buffer-string)))
+          (should e-chat-response-navigation-mode)
+          (should (equal e-chat--focused-turn-id "turn-1")))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-response-navigation-i-returns-to-composer ()
   "Pressing i leaves navigation mode and focuses the composer."
   (let ((buffer (e-chat-test--buffer nil "chat-nav-insert")))

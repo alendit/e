@@ -563,6 +563,16 @@ Return non-nil when a composer was removed."
     (plist-put block :details-start-marker nil)
     (plist-put block :details-end-marker nil)))
 
+(defun e-chat--block-details-visible-p (block)
+  "Return non-nil when BLOCK has visible expanded detail text."
+  (let ((start (plist-get block :details-start-marker))
+        (end (plist-get block :details-end-marker)))
+    (and (markerp start)
+         (markerp end)
+         (marker-position start)
+         (marker-position end)
+         (< (marker-position start) (marker-position end)))))
+
 (defun e-chat--turn-details-text (turn-id record)
   "Return expanded details text for TURN-ID using RECORD."
   (format "  Turn: %s\n  Started: %s\n  Ended: %s\n  Duration: %s\n\n"
@@ -670,7 +680,9 @@ TURN-ID tags the rendered entry for response navigation."
   (let* ((block (gethash e-chat--focused-block-id e-chat--block-registry))
          (turn-id (plist-get block :turn-id))
          (record (gethash turn-id e-chat--turn-registry)))
-    (e-chat--insert-block-details block turn-id record)))
+    (if (e-chat--block-details-visible-p block)
+        (e-chat--delete-block-details block)
+      (e-chat--insert-block-details block turn-id record))))
 
 (defun e-chat-response-navigation-insert ()
   "Leave response navigation and focus the composer."
