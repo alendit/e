@@ -77,6 +77,9 @@
 (autoload 'e-chat-set-effort "lisp/e-chat" "Set the current e chat session reasoning effort." t)
 
 ;;;###autoload
+(autoload 'e-chat-show-context "lisp/e-chat" "Show the current e chat session context." t)
+
+;;;###autoload
 (autoload 'e-chat-submit "lisp/e-chat" "Submit the current e chat prompt." t)
 
 ;;;###autoload

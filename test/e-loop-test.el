@@ -61,11 +61,12 @@
                    '(assistant)))
     (should (equal (plist-get (car messages) :content) "hello"))))
 
-(ert-deftest e-loop-test-emits-empty-output-event ()
-  "Turns with no assistant output emit a backend-empty-output event."
+(ert-deftest e-loop-test-persists-empty-output-assistant-message ()
+  "Turns with no assistant output append a visible assistant placeholder."
   (let* ((backend (e-backend-fake-create
                    :items '((:type done :reason stop))))
-         (events nil))
+         (events nil)
+         (messages nil))
     (e-loop-run-turn
      :session-id "session-1"
      :turn-id "turn-1"
@@ -74,8 +75,17 @@
      :tools (e-tools-registry-create)
      :options nil
      :on-event (lambda (event) (push event events))
-     :append-message #'ignore)
+     :append-message (lambda (message) (push message messages)))
+    (should (equal (mapcar (lambda (message) (plist-get message :role))
+                           messages)
+                   '(assistant)))
+    (should (equal (plist-get (car messages) :content) "✅ Done"))
+    (should (equal (plist-get (plist-get (car messages) :metadata) :synthetic)
+                   t))
     (should (member 'backend-empty-output
+                    (mapcar (lambda (event) (plist-get event :type))
+                            events)))
+    (should (member 'message-added
                     (mapcar (lambda (event) (plist-get event :type))
                             events)))))
 
@@ -116,11 +126,16 @@
      :messages '((:role user :content "hi"))
      :backend backend
      :tools tools
-     :options nil
+     :options '(:max-tool-iterations 1)
      :on-event #'ignore
      :append-message (lambda (message) (push message messages)))
-    (should (equal (plist-get (car messages) :role) 'tool))
-    (should (equal (plist-get (plist-get (car messages) :content) :status) 'ok))))
+    (let ((ordered (nreverse messages)))
+      (should (equal (mapcar (lambda (message) (plist-get message :role))
+                             ordered)
+                     '(tool-call tool assistant)))
+      (should (equal (plist-get (plist-get (cadr ordered) :content) :status)
+                     'ok))
+      (should (equal (plist-get (cl-third ordered) :content) "✅ Done")))))
 
 (ert-deftest e-loop-test-requeries-backend-after-tool-result ()
   "Tool results are fed back into the backend until an assistant message settles."

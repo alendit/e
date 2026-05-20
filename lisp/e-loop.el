@@ -22,17 +22,20 @@
 (defvar e-loop--message-counter 0
   "Monotonic message id counter for loop-created messages.")
 
+(defvar e-loop-empty-assistant-content "✅ Done"
+  "Assistant content to persist when a turn finishes without model text.")
+
 (defun e-loop--next-message-id ()
   "Return a new in-process message id."
   (setq e-loop--message-counter (1+ e-loop--message-counter))
   (format "msg-%d" e-loop--message-counter))
 
-(defun e-loop--assistant-message (content)
-  "Return an assistant message with CONTENT."
+(defun e-loop--assistant-message (content &optional metadata)
+  "Return an assistant message with CONTENT and optional METADATA."
   (list :id (e-loop--next-message-id)
         :role 'assistant
         :content content
-        :metadata nil))
+        :metadata metadata))
 
 (cl-defun e-loop--emit (&key on-event session-id turn-id type payload)
   "Emit event TYPE for SESSION-ID and TURN-ID through ON-EVENT.
@@ -142,6 +145,15 @@ stable."
                       :payload (list :message message))))
      ((and (not assistant-message-written)
            (string-empty-p (or assistant-content "")))
+      (let ((message (e-loop--assistant-message
+                      e-loop-empty-assistant-content
+                      (list :synthetic t :reason done-reason))))
+        (funcall append-message message)
+        (e-loop--emit :on-event on-event
+                      :session-id session-id
+                      :turn-id turn-id
+                      :type 'message-added
+                      :payload (list :message message)))
       (e-loop--emit :on-event on-event
                     :session-id session-id
                     :turn-id turn-id

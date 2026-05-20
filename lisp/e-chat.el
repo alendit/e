@@ -13,6 +13,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'pp)
 (require 'subr-x)
 (require 'e-emacs-base)
 (require 'e-harness)
@@ -31,6 +32,11 @@
 
 (defcustom e-chat-default-session-id "default"
   "Legacy fallback chat session id for internal callers."
+  :type 'string
+  :group 'e-chat)
+
+(defcustom e-chat-context-buffer-name "*e-chat-context*"
+  "Buffer name for read-only context previews."
   :type 'string
   :group 'e-chat)
 
@@ -165,6 +171,7 @@
     (define-key map (kbd "RET") #'newline)
     (define-key map (kbd "C-c C-k") #'e-chat-abort)
     (define-key map (kbd "C-c C-r") #'e-chat-reset)
+    (define-key map (kbd "C-c C-x") #'e-chat-show-context)
     map))
 
 (defvar e-chat-mode-map (e-chat--make-mode-map)
@@ -461,6 +468,28 @@ When ENSURE-COMPOSER is non-nil, recreate the composer after inserting."
                       (or effort "effort unset")))
           (format "E Chat: %s" status))))
 
+(defun e-chat--context-buffer-text (context session-id)
+  "Return display text for CONTEXT belonging to SESSION-ID."
+  (with-temp-buffer
+    (insert (format "Session: %s\n\n" session-id))
+    (insert "Options:\n")
+    (pp (plist-get context :options) (current-buffer))
+    (insert "\nMessages:\n")
+    (pp (plist-get context :messages) (current-buffer))
+    (buffer-string)))
+
+(defun e-chat--display-context-buffer (context session-id)
+  "Display CONTEXT for SESSION-ID in a read-only temp buffer."
+  (let ((buffer (get-buffer-create e-chat-context-buffer-name)))
+    (with-current-buffer buffer
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert (e-chat--context-buffer-text context session-id)))
+      (special-mode)
+      (goto-char (point-min)))
+    (display-buffer buffer)
+    buffer))
+
 (defun e-chat--message-entry (message)
   "Return a rendered entry for MESSAGE."
   (let ((role (plist-get message :role))
@@ -661,6 +690,16 @@ reload.  User-facing commands should call `e-chat-new' or `e-chat-resume'."
   (e-chat--set-status "idle")
   (message "Set e chat effort to %s"
            (if (string-empty-p effort) "default" effort)))
+
+;;;###autoload
+(defun e-chat-show-context ()
+  "Show the current chat session context in a read-only temp buffer."
+  (interactive)
+  (unless (and e-chat-harness e-chat-session-id)
+    (user-error "This buffer is not attached to an e chat session"))
+  (e-chat--display-context-buffer
+   (e-harness-context e-chat-harness e-chat-session-id)
+   e-chat-session-id))
 
 ;;;###autoload
 (defun e-chat-submit (&optional prompt)

@@ -97,6 +97,30 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-submit-immediately-clears-composer-and-renders-user-turn ()
+  "Submitting shows the user turn before the async backend settles."
+  (let ((buffer (e-chat-test--buffer
+                 '((:type assistant-message :content "later")
+                   (:type done :reason stop))
+                 "chat-submit-immediate")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (goto-char (point-max))
+          (insert "send now")
+          (e-chat-submit)
+          (let ((content (buffer-string)))
+            (should (string-match-p
+                     (concat (regexp-quote e-chat--user-glyph)
+                             " You\nsend now")
+                     content))
+            (should-not (string-match-p
+                         (concat (regexp-quote e-chat--composer-glyph)
+                                 "send now")
+                         content)))
+          (should-not (e-chat--composer-active-p)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-return-inserts-newline-in-composer ()
   "RET inserts a newline instead of submitting the prompt."
   (let ((buffer (e-chat-test--buffer
@@ -184,6 +208,10 @@
           (e-harness-wait e-chat-harness e-chat-session-id 1.0)
           (should-not (string-match-p "Backend returned no assistant output"
                                       (buffer-string)))
+          (should (string-match-p
+                   (concat (regexp-quote e-chat--assistant-glyph)
+                           " Assistant\n✅ Done")
+                   (buffer-string)))
           (should (string-match-p "E Chat: done" header-line-format)))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
@@ -406,6 +434,28 @@
           (should (string-match-p "high" header-line-format)))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-show-context-opens-read-only-preview-buffer ()
+  "Context command renders the current session context in a read-only buffer."
+  (let ((buffer (e-chat-test--buffer nil "chat-context")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-session-append-message
+           (e-harness-sessions e-chat-harness)
+           e-chat-session-id
+           '(:role user :content "context question"))
+          (let ((context-buffer (e-chat-show-context)))
+            (should (buffer-live-p context-buffer))
+            (with-current-buffer context-buffer
+              (should (derived-mode-p 'special-mode))
+              (should buffer-read-only)
+              (should (string-match-p "Session: chat-context" (buffer-string)))
+              (should (string-match-p "context question" (buffer-string)))
+              (should-error (insert "mutate") :type 'buffer-read-only))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (when-let ((context-buffer (get-buffer e-chat-context-buffer-name)))
+        (kill-buffer context-buffer)))))
 
 (ert-deftest e-chat-test-reset-clears-rendered-session ()
   "Reset clears the rendered chat buffer and harness session transcript."

@@ -20,6 +20,7 @@
     e-chat-rename
     e-chat-set-model
     e-chat-set-effort
+    e-chat-show-context
     e-chat-submit
     e-chat-abort
     e-chat-reset
@@ -44,6 +45,7 @@
   (should (commandp 'e-chat-rename))
   (should (commandp 'e-chat-set-model))
   (should (commandp 'e-chat-set-effort))
+  (should (commandp 'e-chat-show-context))
   (should (commandp 'e-dev-reload)))
 
 (ert-deftest e-test-autoloads-expose-chat-commands-at-startup ()
@@ -82,6 +84,7 @@
   (should (fboundp 'e-harness-prompt))
   (should (fboundp 'e-harness-prompt-async))
   (should (fboundp 'e-harness-wait))
+  (should (fboundp 'e-harness-context))
   (should (fboundp 'e-harness-messages)))
 
 (provide 'e-test)

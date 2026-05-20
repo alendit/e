@@ -145,6 +145,21 @@ configure the provider-neutral runtime."
         (plist-put options :tools tool-definitions)
       options)))
 
+(defun e-harness-context (harness session-id &optional turn-id)
+  "Return backend-neutral context for SESSION-ID in HARNESS.
+TURN-ID is passed to active layer context providers when present."
+  (e-context-build
+   (e-harness-context-strategy harness)
+   :sessions (e-harness-sessions harness)
+   :session-id session-id
+   :options (e-harness--turn-options harness session-id)
+   :prefix-messages
+   (e-layers-context-messages
+    (e-harness-active-layers harness)
+    :harness harness
+    :session-id session-id
+    :turn-id turn-id)))
+
 (defun e-harness--active-turn-id (entry)
   "Return active turn id from ENTRY."
   (if (listp entry)
@@ -167,8 +182,8 @@ provider or loop failure."
                   :turn-id turn-id
                   :payload (list :error error-message))))
 
-(defun e-harness--run-prompt-turn (harness session-id turn-id prompt)
-  "Run PROMPT for SESSION-ID and TURN-ID in HARNESS."
+(defun e-harness--append-user-message (harness session-id turn-id prompt)
+  "Append PROMPT as the user message in HARNESS for SESSION-ID and TURN-ID."
   (let ((user-message (list :id (e-harness--next-message-id)
                             :role 'user
                             :content prompt
@@ -182,30 +197,24 @@ provider or loop failure."
                     :session-id session-id
                     :turn-id turn-id
                     :payload (list :message user-message)))
-    (let ((context (e-context-build
-                    (e-harness-context-strategy harness)
-                    :sessions (e-harness-sessions harness)
-                    :session-id session-id
-                    :options (e-harness--turn-options harness session-id)
-                    :prefix-messages
-                    (e-layers-context-messages
-                     (e-harness-active-layers harness)
-                     :harness harness
-                     :session-id session-id
-                     :turn-id turn-id))))
-      (e-loop-run-turn
-       :session-id session-id
-       :turn-id turn-id
-       :messages (plist-get context :messages)
-       :backend (e-harness-backend harness)
-       :tools (e-harness-tools harness)
-       :options (plist-get context :options)
-       :on-event (lambda (event) (e-harness--emit harness event))
-       :append-message
-       (lambda (message)
-         (e-session-append-message (e-harness-sessions harness)
-                                   session-id
-                                   message))))))
+    user-message))
+
+(defun e-harness--run-prompt-turn (harness session-id turn-id)
+  "Run the queued prompt turn for SESSION-ID and TURN-ID in HARNESS."
+  (let ((context (e-harness-context harness session-id turn-id)))
+    (e-loop-run-turn
+     :session-id session-id
+     :turn-id turn-id
+     :messages (plist-get context :messages)
+     :backend (e-harness-backend harness)
+     :tools (e-harness-tools harness)
+     :options (plist-get context :options)
+     :on-event (lambda (event) (e-harness--emit harness event))
+     :append-message
+     (lambda (message)
+       (e-session-append-message (e-harness-sessions harness)
+                                 session-id
+                                 message)))))
 
 (defun e-harness-prompt (harness session-id prompt)
   "Append PROMPT and run one backend turn for SESSION-ID in HARNESS."
@@ -213,7 +222,9 @@ provider or loop failure."
     (puthash session-id turn-id (e-harness-active-turns harness))
     (unwind-protect
         (condition-case err
-            (e-harness--run-prompt-turn harness session-id turn-id prompt)
+            (progn
+              (e-harness--append-user-message harness session-id turn-id prompt)
+              (e-harness--run-prompt-turn harness session-id turn-id))
           (error
            (let ((message (error-message-string err)))
              (e-harness--emit-turn-failed harness session-id turn-id message)
@@ -231,6 +242,14 @@ cancellation.  SESSION-ID identifies the session."
                       :error nil
                       :timer nil)))
     (puthash session-id entry (e-harness-active-turns harness))
+    (condition-case err
+        (e-harness--append-user-message harness session-id turn-id prompt)
+      (error
+       (let ((message (error-message-string err)))
+         (plist-put entry :status 'error)
+         (plist-put entry :error message)
+         (e-harness--emit-turn-failed harness session-id turn-id message)
+         (signal (car err) (cdr err)))))
     (plist-put
      entry
      :timer
@@ -241,7 +260,7 @@ cancellation.  SESSION-ID identifies the session."
         (unless (plist-get entry :cancelled)
           (condition-case err
               (let ((result (e-harness--run-prompt-turn
-                             harness session-id turn-id prompt)))
+                             harness session-id turn-id)))
                 (plist-put entry :result result)
                 (plist-put entry :status 'done))
             (error

@@ -16,6 +16,7 @@
 (require 'e-backend)
 (require 'e-context)
 (require 'e-harness)
+(require 'e-layers)
 
 (ert-deftest e-harness-test-prompt-writes-user-and-assistant-messages ()
   "Prompting writes user and assistant messages to the session."
@@ -59,6 +60,29 @@
       (should (equal (plist-get (e-harness-state harness "session-1")
                                 :active-turn)
                      nil)))))
+
+(ert-deftest e-harness-test-async-prompt-appends-user-message-immediately ()
+  "Async prompting records the user message before the backend timer runs."
+  (let* ((called nil)
+         (backend (e-backend-create
+                   :name "delayed"
+                   :stream (cl-function
+                            (lambda (&key messages options on-item)
+                              (ignore messages options on-item)
+                              (setq called t)))))
+         (harness (e-harness-create :backend backend))
+         (events nil))
+    (e-harness-subscribe harness (lambda (event) (push event events)))
+    (e-harness-create-session harness :id "session-1")
+    (e-harness-prompt-async harness "session-1" "question" :delay 1.0)
+    (should (equal called nil))
+    (should (equal (mapcar (lambda (message) (plist-get message :role))
+                           (e-harness-messages harness "session-1"))
+                   '(user)))
+    (should (member 'message-added
+                    (mapcar (lambda (event) (plist-get event :type))
+                            events)))
+    (e-harness-abort harness "session-1")))
 
 (ert-deftest e-harness-test-abort-cancels-queued-async-turn ()
   "Aborting a queued async turn settles it as cancelled."
@@ -154,6 +178,36 @@
     (e-harness-prompt harness "session-1" "raw prompt")
     (should (equal captured-messages
                    '((:role user :content "from context"))))))
+
+(ert-deftest e-harness-test-context-builds-current-session-preview ()
+  "Context preview returns the same messages and options a turn would use."
+  (let* ((provider (e-context-provider-create
+                    :name 'test-provider
+                    :build (cl-function
+                            (lambda (&key harness session-id turn-id)
+                              (ignore harness session-id turn-id)
+                              '((:role system :content "provider context"))))))
+         (layer (e-layer-create
+                 :id 'test-layer
+                 :name "Test Layer"
+                 :instructions "layer instructions"
+                 :context-providers (list provider)))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :default-options '(:model "default-model")
+                   :active-layers (list layer))))
+    (e-harness-create-session harness :id "session-1")
+    (e-harness-set-session-model harness "session-1" "session-model")
+    (e-session-append-message
+     (e-harness-sessions harness)
+     "session-1"
+     '(:role user :content "hello"))
+    (let ((context (e-harness-context harness "session-1")))
+      (should (equal (mapcar (lambda (message) (plist-get message :content))
+                             (plist-get context :messages))
+                     '("layer instructions" "provider context" "hello")))
+      (should (equal (plist-get (plist-get context :options) :model)
+                     "session-model")))))
 
 (ert-deftest e-harness-test-prompt-passes-tool-definitions-as-options ()
   "Prompting includes registered tool definitions in backend options."
