@@ -106,6 +106,28 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-composer-has-visible-separator-line ()
+  "The composer has a protected, visible separator above its prompt."
+  (let ((buffer (e-chat-test--buffer nil "chat-separator")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (goto-char e-chat--composer-start-marker)
+          (forward-line -1)
+          (let ((line-start (line-beginning-position))
+                (line-end (line-end-position)))
+            (should (string-match-p "─"
+                                    (buffer-substring-no-properties
+                                     line-start line-end)))
+            (should (eq (get-text-property line-start 'font-lock-face)
+                        'e-chat-separator-face))
+            (should (get-text-property line-start 'read-only))
+            (should (equal (face-attribute 'e-chat-separator-face :foreground)
+                           "#7f8a99"))
+            (should (equal (face-attribute 'e-chat-separator-face :background)
+                           "#202833"))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-submit-multiline-composer-and-render-response ()
   "The composer submits multiline text and chat renders message blocks."
   (let ((buffer (e-chat-test--buffer
@@ -265,6 +287,20 @@
   (should (eq (face-attribute 'e-chat-user-face :extend) t))
   (should (eq (face-attribute 'e-chat-assistant-face :extend) t))
   (should (eq (face-attribute 'e-chat-system-face :extend) t)))
+
+(ert-deftest e-chat-test-owned-face-defaults-refresh-separator-face ()
+  "Live reload reapplies package-owned separator face defaults."
+  (unwind-protect
+      (progn
+        (set-face-attribute 'e-chat-separator-face nil
+                            :foreground 'unspecified
+                            :background 'unspecified)
+        (e-chat--apply-owned-face-defaults)
+        (should (equal (face-attribute 'e-chat-separator-face :foreground)
+                       "#7f8a99"))
+        (should (equal (face-attribute 'e-chat-separator-face :background)
+                       "#202833")))
+    (e-chat--apply-owned-face-defaults)))
 
 (ert-deftest e-chat-test-user-and-assistant-headings-are-glyph-only ()
   "User and assistant message headings render only their compact glyphs."

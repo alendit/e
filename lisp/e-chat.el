@@ -75,9 +75,21 @@
   :group 'e-chat)
 
 (defface e-chat-separator-face
-  '((t :inherit shadow :extend t))
+  '((t :inherit shadow
+       :foreground "#7f8a99"
+       :background "#202833"
+       :extend t))
   "Face used for the composer separator."
   :group 'e-chat)
+
+(defun e-chat--apply-owned-face-defaults ()
+  "Apply face defaults that should update during live reload."
+  (set-face-attribute 'e-chat-separator-face nil
+                      :foreground "#7f8a99"
+                      :background "#202833"
+                      :extend t))
+
+(e-chat--apply-owned-face-defaults)
 
 (defface e-chat-title-face
   '((t :inherit font-lock-keyword-face :weight bold :height 1.1 :extend t))
