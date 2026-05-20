@@ -152,6 +152,34 @@
         (when (buffer-live-p buffer)
           (kill-buffer buffer))))))
 
+(ert-deftest e-chat-test-reload-buffers-refreshes-existing-chat-harness ()
+  "Reloading chat buffers reattaches them to a fresh default harness."
+  (let* ((old-backend (e-backend-fake-create :items nil))
+         (old-harness (e-harness-create :backend old-backend))
+         (new-backend (e-backend-fake-create
+                       :items '((:type assistant-message :content "fresh answer")
+                                (:type done :reason stop))))
+         (new-harness (e-harness-create :backend new-backend))
+         (buffer (e-chat-open :harness old-harness :session-id "chat-reload")))
+    (unwind-protect
+        (progn
+          (with-current-buffer buffer
+            (goto-char (point-max))
+            (insert "stale prompt"))
+          (cl-letf (((symbol-function 'e-chat--default-harness)
+                     (lambda () new-harness)))
+            (should (= (e-chat-reload-buffers) 1)))
+          (with-current-buffer buffer
+            (should (eq e-chat-harness new-harness))
+            (should (equal e-chat-session-id "chat-reload"))
+            (should-not (string-match-p "stale prompt" (buffer-string)))
+            (e-chat-submit "hello")
+            (e-harness-wait e-chat-harness e-chat-session-id 1.0)
+            (should (string-match-p "Assistant: fresh answer"
+                                    (buffer-string)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-reset-clears-rendered-session ()
   "Reset clears the rendered chat buffer and harness session transcript."
   (let* ((backend (e-backend-fake-create

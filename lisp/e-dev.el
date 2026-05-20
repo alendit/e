@@ -52,7 +52,13 @@
                   "lisp/e-dev.el")))
     (dolist (file files)
       (load (expand-file-name file root) nil 'nomessage))
-    (message "Reloaded e from %s" (abbreviate-file-name root))
+    (let ((refreshed (if (fboundp 'e-chat-reload-buffers)
+                         (e-chat-reload-buffers)
+                       0)))
+      (message "Reloaded e from %s; refreshed %d chat buffer%s"
+               (abbreviate-file-name root)
+               refreshed
+               (if (= refreshed 1) "" "s")))
     root))
 
 (provide 'e-dev)

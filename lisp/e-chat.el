@@ -91,6 +91,16 @@
     (e-session-duplicate
      nil)))
 
+(defun e-chat--subscribe (harness buffer)
+  "Subscribe BUFFER to HARNESS chat events."
+  (e-harness-subscribe
+   harness
+   (lambda (event)
+     (when (buffer-live-p buffer)
+       (with-current-buffer buffer
+         (when (eq e-chat-harness harness)
+           (e-chat--render-event event)))))))
+
 (defun e-chat--insert-line (line)
   "Insert LINE into the current chat buffer."
   (let ((position (if (and (markerp e-chat--prompt-marker)
@@ -219,23 +229,44 @@ Codex-backed harness with the emacs-base layer active."
   (let* ((chat-harness (or harness (e-chat--default-harness)))
          (chat-session-id (or session-id e-chat-default-session-id))
          (buffer (get-buffer-create e-chat-buffer-name)))
-    (e-chat--ensure-session chat-harness chat-session-id)
-    (with-current-buffer buffer
-      (e-chat--configure-modal-state)
-      (e-chat-mode)
-      (setq-local e-chat-harness chat-harness)
-      (setq-local e-chat-session-id chat-session-id)
-      (e-chat--clear)
-      (e-chat--set-status "idle")
-      (e-harness-subscribe
-       chat-harness
-       (lambda (event)
-         (when (buffer-live-p buffer)
-           (with-current-buffer buffer
-             (e-chat--render-event event))))))
+    (e-chat--attach-buffer buffer chat-harness chat-session-id)
     (when (called-interactively-p 'interactive)
       (pop-to-buffer buffer))
     buffer))
+
+(defun e-chat--attach-buffer (buffer harness session-id)
+  "Attach BUFFER to HARNESS and SESSION-ID."
+  (e-chat--ensure-session harness session-id)
+  (with-current-buffer buffer
+    (e-chat--configure-modal-state)
+    (e-chat-mode)
+    (setq-local e-chat-harness harness)
+    (setq-local e-chat-session-id session-id)
+    (e-chat--clear)
+    (e-chat--set-status "idle")
+    (e-chat--subscribe harness buffer))
+  buffer)
+
+(defun e-chat-reload-buffers ()
+  "Refresh live e chat buffers after development reload."
+  (interactive)
+  (let ((count 0))
+    (dolist (buffer (buffer-list))
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer
+          (when (derived-mode-p 'e-chat-mode)
+            (let ((session-id (or e-chat-session-id
+                                  e-chat-default-session-id)))
+              (setq count (1+ count))
+              (e-chat--attach-buffer
+               buffer
+               (e-chat--default-harness)
+               session-id))))))
+    (when (called-interactively-p 'interactive)
+      (message "Refreshed %d e chat buffer%s"
+               count
+               (if (= count 1) "" "s")))
+    count))
 
 ;;;###autoload
 (defun e-chat ()
