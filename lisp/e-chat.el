@@ -40,6 +40,11 @@
   :type 'string
   :group 'e-chat)
 
+(defcustom e-chat-submit-backend-delay 0.05
+  "Seconds to delay backend work after rendering a submitted human turn."
+  :type 'number
+  :group 'e-chat)
+
 (defface e-chat-user-face
   '((t :inherit default
        :foreground "#d7ecff"
@@ -77,6 +82,11 @@
 (defface e-chat-title-face
   '((t :inherit font-lock-keyword-face :weight bold :height 1.1 :extend t))
   "Face used for the chat buffer title."
+  :group 'e-chat)
+
+(defface e-chat-focused-turn-face
+  '((t :inherit highlight :extend t))
+  "Face used for the focused turn in response navigation mode."
   :group 'e-chat)
 
 (defconst e-chat--user-face-spec
@@ -123,10 +133,31 @@
 (defvar-local e-chat--composer-spacer-marker nil
   "Marker at the beginning of the visual spacer above the composer.")
 
-(defconst e-chat--user-glyph "▌"
+(defvar-local e-chat--turn-registry nil
+  "Hash table of rendered turn metadata keyed by turn id.")
+
+(defvar-local e-chat--block-registry nil
+  "Hash table of rendered block metadata keyed by block id.")
+
+(defvar-local e-chat--block-order nil
+  "Rendered block ids in transcript order.")
+
+(defvar-local e-chat--focused-turn-id nil
+  "Turn id belonging to the currently focused response-navigation block.")
+
+(defvar-local e-chat--focused-block-id nil
+  "Block id currently focused by response navigation.")
+
+(defvar-local e-chat--block-counter 0
+  "Counter used to assign display-local block ids.")
+
+(defvar-local e-chat--focused-turn-overlay nil
+  "Overlay highlighting the focused response-navigation turn.")
+
+(defconst e-chat--user-glyph ">"
   "Glyph shown before user-authored chat blocks.")
 
-(defconst e-chat--assistant-glyph "◆"
+(defconst e-chat--assistant-glyph "●"
   "Glyph shown before assistant chat blocks.")
 
 (defconst e-chat--system-glyph "·"
@@ -163,10 +194,24 @@
     field e-chat-transcript)
   "Text properties applied to protected e chat presentation text.")
 
+(defun e-chat--make-response-navigation-mode-map ()
+  "Return the keymap for `e-chat-response-navigation-mode'."
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "j") #'e-chat-response-navigation-next)
+    (define-key map (kbd "k") #'e-chat-response-navigation-previous)
+    (define-key map (kbd "RET") #'e-chat-response-navigation-expand)
+    (define-key map (kbd "i") #'e-chat-response-navigation-insert)
+    map))
+
+(defvar e-chat-response-navigation-mode-map
+  (e-chat--make-response-navigation-mode-map)
+  "Keymap for response navigation inside `e-chat-mode'.")
+
 (defun e-chat--make-mode-map (&optional map)
   "Return MAP configured as the local keymap for `e-chat-mode'."
   (let ((map (or map (make-sparse-keymap))))
     (set-keymap-parent map text-mode-map)
+    (define-key map (kbd "<escape>") #'e-chat-enter-response-navigation)
     (define-key map (kbd "C-c C-c") #'e-chat-submit)
     (define-key map (kbd "RET") #'newline)
     (define-key map (kbd "C-c C-k") #'e-chat-abort)
@@ -181,6 +226,16 @@
 
 (define-derived-mode e-chat-mode text-mode "e-chat"
   "Major mode for e chat buffers.")
+
+(define-minor-mode e-chat-response-navigation-mode
+  "Navigate rendered turn blocks in an e chat buffer."
+  :lighter " Nav"
+  :keymap e-chat-response-navigation-mode-map
+  (unless e-chat-response-navigation-mode
+    (setq e-chat--focused-turn-id nil)
+    (setq e-chat--focused-block-id nil)
+    (when (overlayp e-chat--focused-turn-overlay)
+      (delete-overlay e-chat--focused-turn-overlay))))
 
 (defun e-chat--disable-modal-editing ()
   "Disable local modal editing state for the chat buffer when available."
@@ -377,6 +432,167 @@ Return non-nil when a composer was removed."
    (buffer-substring-no-properties e-chat--composer-start-marker
                                    (point-max))))
 
+(defun e-chat--ensure-turn-registry ()
+  "Ensure turn navigation state exists for the current chat buffer."
+  (unless (hash-table-p e-chat--turn-registry)
+    (setq e-chat--turn-registry (make-hash-table :test 'equal)))
+  e-chat--turn-registry)
+
+(defun e-chat--ensure-block-registry ()
+  "Ensure block navigation state exists for the current chat buffer."
+  (unless (hash-table-p e-chat--block-registry)
+    (setq e-chat--block-registry (make-hash-table :test 'equal)))
+  e-chat--block-registry)
+
+(defun e-chat--turn-record (turn-id)
+  "Return mutable metadata for TURN-ID, creating it when needed."
+  (when turn-id
+    (let ((registry (e-chat--ensure-turn-registry)))
+      (or (gethash turn-id registry)
+          (let ((record (list :id turn-id
+                              :started-at nil
+                              :ended-at nil)))
+            (puthash turn-id record registry)
+            record)))))
+
+(defun e-chat--next-block-id ()
+  "Return a new display-local block id."
+  (setq e-chat--block-counter (1+ e-chat--block-counter))
+  (format "block-%d" e-chat--block-counter))
+
+(defun e-chat--block-record (block-id turn-id)
+  "Return mutable metadata for BLOCK-ID belonging to TURN-ID."
+  (let ((registry (e-chat--ensure-block-registry)))
+    (or (gethash block-id registry)
+        (let ((record (list :id block-id
+                            :turn-id turn-id
+                            :start-marker nil
+                            :end-marker nil)))
+          (puthash block-id record registry)
+          (setq e-chat--block-order (append e-chat--block-order (list block-id)))
+          record))))
+
+(defun e-chat--set-turn-time (turn-id field value)
+  "Set TURN-ID timing FIELD to VALUE when both are available."
+  (when (and turn-id value)
+    (plist-put (e-chat--turn-record turn-id) field value)))
+
+(defun e-chat--update-block-bounds (block-id turn-id start end)
+  "Set BLOCK-ID bounds for TURN-ID to START through END."
+  (when block-id
+    (e-chat--turn-record turn-id)
+    (let ((record (e-chat--block-record block-id turn-id)))
+      (plist-put record :start-marker (copy-marker start nil))
+      (plist-put record :end-marker (copy-marker end nil)))))
+
+(defun e-chat--block-at-point ()
+  "Return the rendered block id at point, or nil."
+  (or (get-text-property (point) 'e-chat-block-id)
+      (get-text-property (max (point-min) (1- (point))) 'e-chat-block-id)))
+
+(defun e-chat--last-rendered-block-id ()
+  "Return the most recent rendered block id before the composer."
+  (car (last e-chat--block-order)))
+
+(defun e-chat--focus-block (block-id)
+  "Focus BLOCK-ID in response navigation mode."
+  (let* ((record (and block-id
+                      (hash-table-p e-chat--block-registry)
+                      (gethash block-id e-chat--block-registry)))
+         (start-marker (plist-get record :start-marker))
+         (end-marker (plist-get record :end-marker))
+         (start (and (markerp start-marker) (marker-position start-marker)))
+         (end (and (markerp end-marker) (marker-position end-marker))))
+    (unless (and record start end (< start end))
+      (user-error "No rendered e chat block to focus"))
+    (setq e-chat--focused-block-id block-id)
+    (setq e-chat--focused-turn-id (plist-get record :turn-id))
+    (unless (overlayp e-chat--focused-turn-overlay)
+      (setq e-chat--focused-turn-overlay (make-overlay start end nil t nil)))
+    (move-overlay e-chat--focused-turn-overlay start end)
+    (overlay-put e-chat--focused-turn-overlay 'face 'e-chat-focused-turn-face)
+    (goto-char start)
+    (when-let ((window (e-chat--visible-window)))
+      (set-window-point window start))
+    block-id))
+
+(defun e-chat--move-focused-block (step)
+  "Move focused block by STEP in rendered block order."
+  (unless e-chat--focused-block-id
+    (user-error "No focused e chat block"))
+  (let ((remaining e-chat--block-order)
+        (index 0)
+        found)
+    (while (and remaining (not found))
+      (if (equal (car remaining) e-chat--focused-block-id)
+          (setq found index)
+        (setq index (1+ index)
+              remaining (cdr remaining))))
+    (unless found
+      (user-error "Focused e chat block is no longer rendered"))
+    (let ((next-index (max 0 (min (1- (length e-chat--block-order))
+                                  (+ found step)))))
+      (e-chat--focus-block (nth next-index e-chat--block-order)))))
+
+(defun e-chat--format-time-value (value)
+  "Return VALUE as a compact display string."
+  (cond
+   ((numberp value)
+    (format-time-string "%Y-%m-%d %H:%M:%S UTC"
+                        (seconds-to-time value)
+                        t))
+   (value (format "%s" value))
+   (t "unknown")))
+
+(defun e-chat--format-duration (started-at ended-at)
+  "Return duration between STARTED-AT and ENDED-AT."
+  (if (and started-at ended-at)
+      (format "%.2fs" (- ended-at started-at))
+    "unknown"))
+
+(defun e-chat--delete-block-details (block)
+  "Delete expanded detail text for BLOCK."
+  (let ((start (plist-get block :details-start-marker))
+        (end (plist-get block :details-end-marker)))
+    (when (and (markerp start)
+               (markerp end)
+               (marker-position start)
+               (marker-position end))
+      (let ((inhibit-read-only t))
+        (delete-region start end)))
+    (plist-put block :details-start-marker nil)
+    (plist-put block :details-end-marker nil)))
+
+(defun e-chat--turn-details-text (turn-id record)
+  "Return expanded details text for TURN-ID using RECORD."
+  (format "  Turn: %s\n  Started: %s\n  Ended: %s\n  Duration: %s\n\n"
+          turn-id
+          (e-chat--format-time-value (plist-get record :started-at))
+          (e-chat--format-time-value (plist-get record :ended-at))
+          (e-chat--format-duration (plist-get record :started-at)
+                                   (plist-get record :ended-at))))
+
+(defun e-chat--insert-block-details (block turn-id record)
+  "Insert expanded details for BLOCK and TURN-ID using RECORD."
+  (e-chat--delete-block-details block)
+  (let* ((end-marker (plist-get block :end-marker))
+         (end (and (markerp end-marker) (marker-position end-marker)))
+         (had-composer (e-chat--delete-composer)))
+    (unless end
+      (user-error "Focused e chat block has no insertion point"))
+    (let ((inhibit-read-only t))
+      (goto-char end)
+      (let ((start (point)))
+        (e-chat--insert-protected
+         (e-chat--turn-details-text turn-id record)
+         'e-chat-system-face
+         '(e-chat-turn-details t))
+        (plist-put block :details-start-marker (copy-marker start nil))
+        (plist-put block :details-end-marker (copy-marker (point) nil))))
+    (when had-composer
+      (goto-char (point-max))
+      (e-chat--insert-composer))))
+
 (defun e-chat--entry-face (title)
   "Return face for chat entry TITLE."
   (pcase title
@@ -391,22 +607,72 @@ Return non-nil when a composer was removed."
     ("Assistant" e-chat--assistant-glyph)
     (_ e-chat--system-glyph)))
 
-(defun e-chat--insert-entry (title content &optional ensure-composer)
+(defun e-chat--entry-heading (title)
+  "Return compact heading text for chat entry TITLE."
+  (pcase title
+    ((or "You" "Assistant") (e-chat--entry-glyph title))
+    (_ (format "%s %s" (e-chat--entry-glyph title) title))))
+
+(defun e-chat--insert-entry (title content &optional ensure-composer turn-id)
   "Insert a protected chat entry with TITLE and CONTENT.
-When ENSURE-COMPOSER is non-nil, recreate the composer after inserting."
-  (let ((had-composer (e-chat--delete-composer)))
+When ENSURE-COMPOSER is non-nil, recreate the composer after inserting.
+TURN-ID tags the rendered entry for response navigation."
+  (let ((had-composer (e-chat--delete-composer))
+        (block-id (and turn-id (e-chat--next-block-id))))
     (let ((inhibit-read-only t))
       (goto-char (point-max))
       (unless (or (bobp) (bolp))
         (insert "\n"))
-      (e-chat--insert-protected
-       (format "%s %s\n%s\n\n"
-               (e-chat--entry-glyph title)
-               title
-               content)
-       (e-chat--entry-face title)))
+      (let ((start (point)))
+        (e-chat--insert-protected
+         (format "%s\n%s\n\n"
+                 (e-chat--entry-heading title)
+                 content)
+         (e-chat--entry-face title)
+         (when block-id
+           `(e-chat-turn-id ,turn-id
+             e-chat-block-id ,block-id)))
+        (e-chat--update-block-bounds block-id turn-id start (point))))
     (when (or ensure-composer had-composer)
       (e-chat--insert-composer))))
+
+(defun e-chat-enter-response-navigation ()
+  "Enter response navigation mode and focus the nearest rendered turn."
+  (interactive)
+  (unless (derived-mode-p 'e-chat-mode)
+    (user-error "Response navigation is only available in e chat buffers"))
+  (let ((block-id (or (e-chat--block-at-point)
+                      (e-chat--last-rendered-block-id))))
+    (unless block-id
+      (user-error "No rendered e chat blocks"))
+    (e-chat-response-navigation-mode 1)
+    (e-chat--focus-block block-id)))
+
+(defun e-chat-response-navigation-next ()
+  "Focus the next rendered turn block."
+  (interactive)
+  (e-chat--move-focused-block 1))
+
+(defun e-chat-response-navigation-previous ()
+  "Focus the previous rendered turn block."
+  (interactive)
+  (e-chat--move-focused-block -1))
+
+(defun e-chat-response-navigation-expand ()
+  "Expand metadata under the focused turn block."
+  (interactive)
+  (unless e-chat--focused-turn-id
+    (user-error "No focused e chat turn"))
+  (let* ((block (gethash e-chat--focused-block-id e-chat--block-registry))
+         (turn-id (plist-get block :turn-id))
+         (record (gethash turn-id e-chat--turn-registry)))
+    (e-chat--insert-block-details block turn-id record)))
+
+(defun e-chat-response-navigation-insert ()
+  "Leave response navigation and focus the composer."
+  (interactive)
+  (e-chat-response-navigation-mode -1)
+  (e-chat--show-composer))
 
 (defun e-chat--refresh-composer-position ()
   "Refresh composer spacer for the current visible window."
@@ -434,6 +700,15 @@ When ENSURE-COMPOSER is non-nil, recreate the composer after inserting."
     (setq e-chat--transcript-end-marker nil)
     (setq e-chat--composer-start-marker nil)
     (setq e-chat--composer-spacer-marker nil)
+    (setq e-chat--turn-registry (make-hash-table :test 'equal))
+    (setq e-chat--block-registry (make-hash-table :test 'equal))
+    (setq e-chat--block-order nil)
+    (setq e-chat--block-counter 0)
+    (setq e-chat--focused-turn-id nil)
+    (setq e-chat--focused-block-id nil)
+    (when (overlayp e-chat--focused-turn-overlay)
+      (delete-overlay e-chat--focused-turn-overlay))
+    (setq e-chat--focused-turn-overlay nil)
     (let ((title (and e-chat-harness
                       e-chat-session-id
                       (ignore-errors
@@ -504,25 +779,40 @@ When ENSURE-COMPOSER is non-nil, recreate the composer after inserting."
   "Render harness EVENT into the current chat buffer."
   (pcase (plist-get event :type)
     ('turn-started
+     (e-chat--set-turn-time (plist-get event :turn-id)
+                             :started-at
+                             (plist-get event :created-at))
      (e-chat--set-status (format "running %s" (plist-get event :turn-id))))
     ('turn-finished
+     (e-chat--set-turn-time (plist-get event :turn-id)
+                             :ended-at
+                             (plist-get event :created-at))
      (e-chat--set-status "done")
      (e-chat--ensure-composer)
      (e-chat--refresh-composer-position))
     ('turn-failed
+     (e-chat--set-turn-time (plist-get event :turn-id)
+                             :ended-at
+                             (plist-get event :created-at))
      (e-chat--set-status "error")
      (e-chat--insert-entry
       "System"
       (format "Turn failed: %s"
               (plist-get (plist-get event :payload) :error))
-      t))
+      t
+      (plist-get event :turn-id)))
     ('turn-cancelled
+     (e-chat--set-turn-time (plist-get event :turn-id)
+                             :ended-at
+                             (plist-get event :created-at))
      (e-chat--set-status "cancelled")
-     (e-chat--insert-entry "System" "Turn cancelled" t))
+     (e-chat--insert-entry "System" "Turn cancelled" t
+                           (plist-get event :turn-id)))
     ('message-added
      (let* ((entry (e-chat--message-entry
                     (plist-get (plist-get event :payload) :message))))
-       (e-chat--insert-entry (car entry) (cdr entry))))
+       (e-chat--insert-entry (car entry) (cdr entry) nil
+                             (plist-get event :turn-id))))
     ('assistant-delta
      (e-chat--set-status "streaming"))
     ('tool-finished
@@ -537,9 +827,16 @@ When ENSURE-COMPOSER is non-nil, recreate the composer after inserting."
 
 (defun e-chat--render-session ()
   "Render the attached session transcript in the current buffer."
-  (dolist (message (e-harness-messages e-chat-harness e-chat-session-id))
-    (let ((entry (e-chat--message-entry message)))
-      (e-chat--insert-entry (car entry) (cdr entry) t))))
+  (let ((turn-index 0)
+        turn-id)
+    (dolist (message (e-harness-messages e-chat-harness e-chat-session-id))
+      (when (or (not turn-id)
+                (eq (plist-get message :role) 'user))
+        (setq turn-index (1+ turn-index))
+        (setq turn-id (format "replayed-turn-%d" turn-index))
+        (e-chat--turn-record turn-id))
+      (let ((entry (e-chat--message-entry message)))
+        (e-chat--insert-entry (car entry) (cdr entry) t turn-id)))))
 
 (cl-defun e-chat-open (&key harness session-id new-session)
   "Attach and return an e chat buffer.
@@ -712,7 +1009,9 @@ reload.  User-facing commands should call `e-chat-new' or `e-chat-resume'."
     (user-error "Prompt must not be empty"))
   (e-chat--delete-composer)
   (e-chat--set-status "queued")
-  (e-harness-prompt-async e-chat-harness e-chat-session-id prompt))
+  (e-harness-prompt-async e-chat-harness e-chat-session-id prompt
+                          :delay e-chat-submit-backend-delay)
+  (redisplay t))
 
 ;;;###autoload
 (defun e-chat-abort ()

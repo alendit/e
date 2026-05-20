@@ -34,6 +34,51 @@
         (when (derived-mode-p 'e-chat-mode)
           (kill-buffer buffer))))))
 
+(defun e-chat-test--render-turn (turn-id start-time end-time prompt response)
+  "Render TURN-ID with START-TIME, END-TIME, PROMPT, and RESPONSE."
+  (e-chat--render-event
+   (e-events-make :type 'turn-started
+                  :session-id e-chat-session-id
+                  :turn-id turn-id
+                  :created-at start-time))
+  (e-chat--render-event
+   (e-events-make :type 'message-added
+                  :session-id e-chat-session-id
+                  :turn-id turn-id
+                  :created-at start-time
+                  :payload (list :message
+                                 (list :role 'user :content prompt))))
+  (e-chat--render-event
+   (e-events-make :type 'message-added
+                  :session-id e-chat-session-id
+                  :turn-id turn-id
+                  :created-at end-time
+                  :payload (list :message
+                                 (list :role 'assistant :content response))))
+  (e-chat--render-event
+   (e-events-make :type 'turn-finished
+                  :session-id e-chat-session-id
+                  :turn-id turn-id
+                  :created-at end-time
+                  :payload '(:reason stop))))
+
+(defun e-chat-test--focused-turn-bounds ()
+  "Return focused turn overlay bounds."
+  (list (overlay-start e-chat--focused-turn-overlay)
+        (overlay-end e-chat--focused-turn-overlay)))
+
+(defun e-chat-test--focused-turn-text ()
+  "Return focused overlay text."
+  (buffer-substring-no-properties
+   (overlay-start e-chat--focused-turn-overlay)
+   (overlay-end e-chat--focused-turn-overlay)))
+
+(defun e-chat-test--turn-bounds (turn-id)
+  "Return registered bounds for TURN-ID."
+  (let ((turn (gethash turn-id e-chat--turn-registry)))
+    (list (marker-position (plist-get turn :start-marker))
+          (marker-position (plist-get turn :end-marker)))))
+
 (ert-deftest e-chat-test-open-creates-protected-transcript-and-composer ()
   "Opening chat creates protected transcript text and editable composer text."
   (let ((buffer (e-chat-test--buffer nil "chat-open")))
@@ -75,11 +120,11 @@
           (e-harness-wait e-chat-harness e-chat-session-id 1.0)
           (let ((content (buffer-string)))
             (should (string-match-p (concat (regexp-quote e-chat--user-glyph)
-                                            " You\nfirst line\nsecond line")
+                                            "\nfirst line\nsecond line")
                                     content))
             (should (string-match-p
                      (concat (regexp-quote e-chat--assistant-glyph)
-                             " Assistant\nhello back")
+                             "\nhello back")
                      content))
             (should-not (string-match-p "Turn started" content))
             (should-not (string-match-p "Turn finished" content))
@@ -111,12 +156,36 @@
           (let ((content (buffer-string)))
             (should (string-match-p
                      (concat (regexp-quote e-chat--user-glyph)
-                             " You\nsend now")
+                             "\nsend now")
                      content))
             (should-not (string-match-p
                          (concat (regexp-quote e-chat--composer-glyph)
                                  "send now")
                          content)))
+          (should-not (e-chat--composer-active-p)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-submit-forces-redisplay-after-human-turn ()
+  "Submitting forces the rendered human turn to display before timers run."
+  (let ((buffer (e-chat-test--buffer
+                 '((:type assistant-message :content "later")
+                   (:type done :reason stop))
+                 "chat-submit-redisplay"))
+        redisplayed)
+    (unwind-protect
+        (with-current-buffer buffer
+          (goto-char (point-max))
+          (insert "send now")
+          (cl-letf (((symbol-function 'redisplay)
+                     (lambda (&optional force)
+                       (setq redisplayed force))))
+            (e-chat-submit))
+          (should (equal redisplayed t))
+          (should (string-match-p
+                   (concat (regexp-quote e-chat--user-glyph)
+                           "\nsend now")
+                   (buffer-string)))
           (should-not (e-chat--composer-active-p)))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
@@ -197,6 +266,11 @@
   (should (eq (face-attribute 'e-chat-assistant-face :extend) t))
   (should (eq (face-attribute 'e-chat-system-face :extend) t)))
 
+(ert-deftest e-chat-test-user-and-assistant-headings-are-glyph-only ()
+  "User and assistant message headings render only their compact glyphs."
+  (should (equal e-chat--user-glyph ">"))
+  (should (equal e-chat--assistant-glyph "●")))
+
 (ert-deftest e-chat-test-hides-empty-output-diagnostic ()
   "The chat buffer does not render transient empty-output diagnostics."
   (let ((buffer (e-chat-test--buffer
@@ -210,7 +284,7 @@
                                       (buffer-string)))
           (should (string-match-p
                    (concat (regexp-quote e-chat--assistant-glyph)
-                           " Assistant\n✅ Done")
+                           "\n✅ Done")
                    (buffer-string)))
           (should (string-match-p "E Chat: done" header-line-format)))
       (when (buffer-live-p buffer)
@@ -245,6 +319,166 @@
                              " System\nTurn cancelled")
                      content))
             (should-not (string-match-p "(:status ok)" content))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-response-navigation-starts-at-latest-from-composer ()
+  "Response navigation starts at the latest turn when point is in the composer."
+  (let ((buffer (e-chat-test--buffer nil "chat-nav-latest")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat-test--render-turn "turn-1" 10 11 "first" "one")
+          (e-chat-test--render-turn "turn-2" 20 23.5 "second" "two")
+          (goto-char (point-max))
+          (call-interactively #'e-chat-enter-response-navigation)
+          (should e-chat-response-navigation-mode)
+          (should (equal (plist-get (gethash e-chat--focused-block-id
+                                             e-chat--block-registry)
+                                    :turn-id)
+                         "turn-2"))
+          (should (string-match-p
+                   (concat (regexp-quote e-chat--assistant-glyph) "\ntwo")
+                   (e-chat-test--focused-turn-text)))
+          (should-not (string-match-p
+                       (concat (regexp-quote e-chat--user-glyph) "\nsecond")
+                       (e-chat-test--focused-turn-text))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-response-navigation-focus-excludes-composer-spacer ()
+  "Focused turn highlight stops before the visible composer spacer."
+  (let ((buffer (e-chat-test--buffer nil "chat-nav-spacer"))
+        (window nil))
+    (unwind-protect
+        (progn
+          (setq window (display-buffer buffer))
+          (with-current-buffer buffer
+            (let ((e-chat--test-window-body-height 60)
+                  (e-chat--test-transcript-screen-lines 4))
+              (e-chat-test--render-turn "turn-1" 10 11 "first" "one"))
+            (goto-char (point-max))
+            (call-interactively #'e-chat-enter-response-navigation)
+            (should (equal (plist-get (gethash e-chat--focused-block-id
+                                               e-chat--block-registry)
+                                      :turn-id)
+                           "turn-1"))
+            (should (<= (overlay-end e-chat--focused-turn-overlay)
+                        (marker-position e-chat--transcript-end-marker)))))
+      (when (window-live-p window)
+        (delete-window window))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-response-navigation-starts-at-turn-under-point ()
+  "Response navigation starts at the rendered turn under point."
+  (let ((buffer (e-chat-test--buffer nil "chat-nav-under-point")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat-test--render-turn "turn-1" 10 11 "first" "one")
+          (e-chat-test--render-turn "turn-2" 20 23.5 "second" "two")
+          (goto-char (point-min))
+          (search-forward "one")
+          (call-interactively #'e-chat-enter-response-navigation)
+          (should (equal (plist-get (gethash e-chat--focused-block-id
+                                             e-chat--block-registry)
+                                    :turn-id)
+                         "turn-1"))
+          (should (string-match-p
+                   (concat (regexp-quote e-chat--assistant-glyph) "\none")
+                   (e-chat-test--focused-turn-text)))
+          (should-not (string-match-p
+                       (concat (regexp-quote e-chat--user-glyph) "\nfirst")
+                       (e-chat-test--focused-turn-text))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-response-navigation-j-and-k-move-focus ()
+  "Response navigation j/k move between turn blocks."
+  (let ((buffer (e-chat-test--buffer nil "chat-nav-move")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat-test--render-turn "turn-1" 10 11 "first" "one")
+          (e-chat-test--render-turn "turn-2" 20 23.5 "second" "two")
+          (call-interactively #'e-chat-enter-response-navigation)
+          (call-interactively
+           (lookup-key e-chat-response-navigation-mode-map (kbd "k")))
+          (should (string-match-p
+                   (concat (regexp-quote e-chat--user-glyph) "\nsecond")
+                   (e-chat-test--focused-turn-text)))
+          (should-not (string-match-p
+                       (concat (regexp-quote e-chat--assistant-glyph) "\ntwo")
+                       (e-chat-test--focused-turn-text)))
+          (call-interactively
+           (lookup-key e-chat-response-navigation-mode-map (kbd "j")))
+          (should (string-match-p
+                   (concat (regexp-quote e-chat--assistant-glyph) "\ntwo")
+                   (e-chat-test--focused-turn-text))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-response-navigation-expand-inserts-readable-turn-details ()
+  "Expanding a focused turn inserts readable metadata under that turn."
+  (let ((buffer (e-chat-test--buffer nil "chat-nav-expand")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat-test--render-turn "turn-1" 10 11 "first" "one")
+          (e-chat-test--render-turn "turn-2" 20 23.5 "second" "two")
+          (call-interactively #'e-chat-enter-response-navigation)
+          (call-interactively #'e-chat-response-navigation-expand)
+          (let ((content (buffer-string)))
+            (should (string-match-p
+                     (concat (regexp-quote e-chat--assistant-glyph)
+                             "\ntwo\n\n  Turn: turn-2")
+                     content))
+            (should (string-match-p
+                     "  Started: 1970-01-01 00:00:20 UTC"
+                     content))
+            (should (string-match-p
+                     "  Ended: 1970-01-01 00:00:23 UTC"
+                     content))
+            (should (string-match-p "  Duration: 3.50s" content))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-response-navigation-i-returns-to-composer ()
+  "Pressing i leaves navigation mode and focuses the composer."
+  (let ((buffer (e-chat-test--buffer nil "chat-nav-insert")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat-test--render-turn "turn-1" 10 11 "first" "one")
+          (call-interactively #'e-chat-enter-response-navigation)
+          (call-interactively
+           (lookup-key e-chat-response-navigation-mode-map (kbd "i")))
+          (should-not e-chat-response-navigation-mode)
+          (should (>= (point) (marker-position e-chat--composer-start-marker))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-response-navigation-replayed-session-uses-synthetic-turns ()
+  "Replayed messages without turn metadata remain navigable."
+  (let* ((store (e-session-store-create))
+         (backend (e-backend-fake-create :items nil))
+         (harness (e-harness-create :backend backend :sessions store))
+         (buffer nil))
+    (unwind-protect
+        (progn
+          (e-harness-create-session harness :id "chat-nav-replay")
+          (e-session-append-message
+           store "chat-nav-replay" '(:role user :content "old first"))
+          (e-session-append-message
+           store "chat-nav-replay" '(:role assistant :content "old one"))
+          (e-session-append-message
+           store "chat-nav-replay" '(:role user :content "old second"))
+          (setq buffer (e-chat-open :harness harness
+                                    :session-id "chat-nav-replay"))
+          (with-current-buffer buffer
+            (call-interactively #'e-chat-enter-response-navigation)
+            (should (equal e-chat--focused-turn-id "replayed-turn-2"))
+            (call-interactively #'e-chat-response-navigation-expand)
+            (let ((content (buffer-string)))
+              (should (string-match-p "  Started: unknown" content))
+              (should (string-match-p "  Ended: unknown" content))
+              (should (string-match-p "  Duration: unknown" content)))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -326,7 +560,7 @@
             (e-harness-wait e-chat-harness e-chat-session-id 1.0)
             (should (string-match-p
                      (concat (regexp-quote e-chat--assistant-glyph)
-                             " Assistant\nfresh answer")
+                             "\nfresh answer")
                      (buffer-string)))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer))
