@@ -17,6 +17,7 @@
 (require 'e-backend)
 (require 'e-harness)
 (require 'e-openai)
+(require 'url-http)
 
 (defun e-openai-test--jwt ()
   "Return a fake JWT with a Codex account-id claim."
@@ -245,6 +246,46 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
       (should (equal captured-method "POST"))
       (should (equal captured-headers '(("Authorization" . "Bearer test"))))
       (should (equal (decode-coding-string captured-body 'utf-8) "{}")))))
+
+(ert-deftest e-openai-test-default-http-request-normalizes-header-bytes ()
+  "Multibyte ASCII headers must not make a Unicode request body invalid."
+  (let (captured-request)
+    (cl-letf (((symbol-function 'url-retrieve-synchronously)
+               (lambda (url &rest _args)
+                 (let ((buffer (generate-new-buffer " *e-openai-test-http*")))
+                   (with-current-buffer buffer
+                     (mm-disable-multibyte)
+                     (setq url-current-object (url-generic-parse-url url)
+                           url-http-target-url url-current-object
+                           url-http-method url-request-method
+                           url-http-version "1.1"
+                           url-http-extra-headers url-request-extra-headers
+                           url-http-data url-request-data
+                           url-http-proxy nil
+                           url-http-referer nil
+                           url-http-attempt-keepalives t
+                           url-extensions-header nil
+                           url-mime-encoding-string nil
+                           url-mime-charset-string nil
+                           url-mime-language-string nil
+                           url-mime-accept-string nil
+                           url-privacy-level nil
+                           url-user-agent nil
+                           url-http-real-basic-auth-storage nil)
+                     (setq captured-request (url-http-create-request))
+                     (insert "HTTP/1.1 200 OK\n\n"
+                             "data: {\"type\":\"response.completed\"}\n\n"))
+                   buffer))))
+      (should
+       (equal
+        (e-openai-codex--http-request
+         :url "https://example.test/codex/responses"
+         :headers `(("Authorization" . ,(string-to-multibyte "Bearer test"))
+                    ("Content-Type" . "application/json"))
+         :body (json-encode '(:text "▌ unicode body")))
+        "data: {\"type\":\"response.completed\"}\n\n"))
+      (should (= (string-bytes captured-request)
+                 (length captured-request))))))
 
 (ert-deftest e-openai-test-backend-streams-through-injected-requester ()
   "The Codex backend streams parsed events from an injected HTTP requester."

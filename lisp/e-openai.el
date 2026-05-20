@@ -238,10 +238,21 @@ When CODEX-HOME is nil, use the CODEX_HOME environment variable or
                   ("x-client-request-id" . ,session-id)))
       headers)))
 
+(defun e-openai-codex--http-header-bytes (value)
+  "Return VALUE as an ASCII byte string suitable for `url-request-extra-headers'."
+  (encode-coding-string (format "%s" value) 'us-ascii))
+
+(defun e-openai-codex--http-header-list (headers)
+  "Return HEADERS with names and values normalized to byte strings."
+  (mapcar (lambda (header)
+            (cons (e-openai-codex--http-header-bytes (car header))
+                  (e-openai-codex--http-header-bytes (cdr header))))
+          headers))
+
 (cl-defun e-openai-codex--http-request (&key url headers body)
   "POST BODY to URL with HEADERS and return response text."
   (let ((url-request-method "POST")
-        (url-request-extra-headers headers)
+        (url-request-extra-headers (e-openai-codex--http-header-list headers))
         (url-request-data (encode-coding-string body 'utf-8)))
     (with-current-buffer (url-retrieve-synchronously url 'silent nil nil)
       (unwind-protect
