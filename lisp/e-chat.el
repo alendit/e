@@ -165,7 +165,7 @@
 
 (defun e-chat--default-harness ()
   "Create the default Codex-backed chat harness."
-  (let ((harness (e-openai-codex-create-harness)))
+  (let ((harness (e-openai-create-harness :provider e-openai-default-provider)))
     (e-harness-activate-layer harness (e-emacs-base-layer-create))
     harness))
 

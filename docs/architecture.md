@@ -4,7 +4,7 @@
 
 `e` is an Emacs-hosted agent runtime inspired by pi-core. It should let Emacs run live-configurable agents that can inspect editor state, operate tools, and, when explicitly authorized, modify Emacs configuration or their own harnesses.
 
-The repository now contains the first usable Emacs-hosted agent path. The package entry point, event helpers, in-memory session store, context strategy seam, layer and context-provider seam, backend-neutral adapter contract, ChatGPT-backed OpenAI/Codex adapter, tool registry, Emacs base layer, buffer and elisp tools, loop, harness service, async turn settlement, basic chat presentation, development reload helper, and ERT tests exist. The architecture below still includes target-state components that have not been implemented yet, especially durable persistence, richer context management, permission controls, and harness self-modification tools.
+The repository now contains the first usable Emacs-hosted agent path. The package entry point, event helpers, in-memory session store, context strategy seam, layer and context-provider seam, backend-neutral adapter contract, profile-configurable OpenAI-like Responses adapter, tool registry, Emacs base layer, buffer and elisp tools, loop, harness service, async turn settlement, basic chat presentation, development reload helper, and ERT tests exist. The architecture below still includes target-state components that have not been implemented yet, especially durable persistence, richer context management, permission controls, and harness self-modification tools.
 
 The primary runtime surfaces are expected to be an Emacs Lisp harness API, context-management strategies, Emacs presentation shells, explicit tool adapters, session persistence, and generic LLM backend adapters. The first provider target is OpenAI API access through ChatGPT subscription auth, but provider details must remain outside core harness policy.
 
@@ -94,7 +94,7 @@ Current repository mapping:
 - `lisp/e-context.el`: provider-neutral context strategy and context-provider contracts, plus the `transcript-stack` strategy.
 - `lisp/e-layers.el`: harness-owned layer descriptors and layer context/tool activation helpers.
 - `lisp/e-backend.el`: backend-neutral adapter contract and fake backend.
-- `lisp/e-openai.el`: ChatGPT-backed OpenAI/Codex adapter for Codex auth, Responses request mapping, and SSE parsing.
+- `lisp/e-openai.el`: profile-configurable OpenAI-like Responses adapter for Codex auth, token-auth gateways, request mapping, and SSE parsing.
 - `lisp/e-tools.el`: pure tool registry and structured tool-result handling.
 - `lisp/e-emacs-tools.el`: concrete Emacs buffer, save, and elisp tools.
 - `lisp/e-emacs-base.el`: default Emacs layer with instructions, visible-buffer context, and MVP tools.
@@ -174,7 +174,7 @@ The LLM backend interface owns provider independence. The first adapter targets 
 
 The interface should accept backend-neutral messages/options, stream assistant output and tool-call requests, map model capabilities outside core policy, and isolate auth, retry, headers, and provider-specific request/response shapes. Adding a second provider should require a new adapter, not changes to presentation shells or core harness policy.
 
-The OpenAI adapter uses Codex/ChatGPT subscription auth as an adapter concern. It resolves `auth.json`, extracts the access token and ChatGPT account id, builds a ChatGPT Codex Responses request, and parses SSE output into backend-neutral stream items. It does not decide whether a session uses transcript-stack context, canvas-state context, or another future strategy.
+The OpenAI adapter uses provider profiles as adapter-local configuration. Codex profiles resolve `auth.json`, extract the access token and ChatGPT account id, build a ChatGPT Codex Responses request, and parse SSE output into backend-neutral stream items. Token-auth OpenAI-like profiles read a bearer token from a configured environment variable and send only standard Responses headers. It does not decide whether a session uses transcript-stack context, canvas-state context, or another future strategy.
 
 ### Presentation Shells
 
@@ -231,8 +231,10 @@ The current public package surface is:
 - `e-chat`: interactive command that opens the default basic chat buffer.
 - `e-dev-reload`: interactive development command that reloads local source files.
 - `e-harness-create`, `e-harness-create-session`, `e-harness-subscribe`, `e-harness-activate-layer`, `e-harness-prompt`, `e-harness-prompt-async`, `e-harness-wait`, `e-harness-follow-up`, `e-harness-abort`, `e-harness-reset`, `e-harness-state`, and `e-harness-messages`: core harness API.
-- `e-openai-codex-create-harness`: create a harness configured for ChatGPT-backed Codex access.
-- `e-openai-codex-backend-create`: create the concrete OpenAI/Codex backend adapter.
+- `e-openai-create-harness`: create a harness configured for `e-openai-default-provider` or an explicit OpenAI-like provider profile.
+- `e-openai-backend-create`: create the concrete OpenAI-like Responses backend adapter.
+- `e-openai-codex-create-harness`: compatibility wrapper for ChatGPT-backed Codex access.
+- `e-openai-codex-backend-create`: compatibility wrapper for the concrete OpenAI/Codex backend adapter.
 - `e-emacs-base-layer-create`: create the default Emacs layer.
 - `e-emacs-tools-register-defaults`: register the MVP concrete Emacs tool surface.
 
@@ -242,7 +244,7 @@ Presentation commands should call this surface instead of duplicating behavior.
 
 ## Extension Points
 
-Established extension points now exist for backend adapters, context-management strategies, context providers, harness-owned layers, pure tool definitions, concrete Emacs tool registration, and presentation shells. Target extension points are LLM backend adapters, context-management strategies, tool definitions, execution environment adapters, resource providers, session repositories, and presentation shells.
+Established extension points now exist for backend adapters, OpenAI-like provider profiles, context-management strategies, context providers, harness-owned layers, pure tool definitions, concrete Emacs tool registration, and presentation shells. Target extension points are LLM backend adapters, context-management strategies, tool definitions, execution environment adapters, resource providers, session repositories, and presentation shells.
 
 These are architectural seams because they protect stable harness policy from volatile UI, provider, and side-effect details.
 

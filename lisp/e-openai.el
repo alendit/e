@@ -23,6 +23,7 @@
 
 (define-error 'e-openai-auth-missing "OpenAI/Codex auth is missing")
 (define-error 'e-openai-auth-invalid "OpenAI/Codex auth is invalid")
+(define-error 'e-openai-provider-invalid "OpenAI provider profile is invalid")
 
 (defconst e-openai-codex-default-base-url
   "https://chatgpt.com/backend-api"
@@ -37,9 +38,31 @@
   :group 'e
   :prefix "e-openai-")
 
-(defcustom e-openai-codex-default-model "gpt-5.4"
-  "Default model for ChatGPT-backed Codex requests."
+(defcustom e-openai-default-model "gpt-5.4"
+  "Default model for OpenAI-like Responses requests."
   :type 'string
+  :group 'e-openai)
+
+(defvaralias 'e-openai-codex-default-model 'e-openai-default-model)
+
+(defcustom e-openai-default-provider 'codex
+  "Default provider profile used by generic OpenAI harness helpers."
+  :type 'symbol
+  :group 'e-openai)
+
+(defcustom e-openai-model-providers
+  `((codex
+     :name "ChatGPT Codex"
+     :base-url ,(concat e-openai-codex-default-base-url "/codex")
+     :wire-api responses
+     :requires-openai-auth t))
+  "OpenAI-like model provider profiles keyed by provider symbol.
+
+Each profile is plist data.  `:wire-api' currently supports only
+`responses'.  Profiles with `:requires-openai-auth' non-nil use Codex-managed
+ChatGPT auth.  Profiles with `:requires-openai-auth' nil read a bearer token
+from `:env-key'."
+  :type '(alist :key-type symbol :value-type sexp)
   :group 'e-openai)
 
 (defcustom e-openai-codex-debug nil
@@ -55,6 +78,52 @@
 
 (defvar e-openai-codex--last-diagnostics nil
   "Last OpenAI/Codex diagnostics captured when debug mode is enabled.")
+
+(defun e-openai-provider-profile (&optional provider)
+  "Return configured profile for PROVIDER.
+When PROVIDER is nil, use `e-openai-default-provider'."
+  (let* ((provider (or provider e-openai-default-provider))
+         (entry (assq provider e-openai-model-providers)))
+    (unless entry
+      (signal 'e-openai-provider-invalid
+              (list (format "Unknown provider profile: %S" provider))))
+    (let ((profile (cdr entry)))
+      (unless (and (listp profile)
+                   (eq (plist-get profile :wire-api) 'responses))
+        (signal 'e-openai-provider-invalid
+                (list (format "Provider %S must use :wire-api responses"
+                              provider))))
+      profile)))
+
+(defun e-openai-provider-name (&optional provider)
+  "Return display name for PROVIDER."
+  (or (plist-get (e-openai-provider-profile provider) :name)
+      (symbol-name (or provider e-openai-default-provider))))
+
+(defun e-openai--provider-base-url (profile)
+  "Return PROFILE's base URL or signal a provider configuration error."
+  (let ((base-url (plist-get profile :base-url)))
+    (unless (and (stringp base-url) (not (string-empty-p base-url)))
+      (signal 'e-openai-provider-invalid
+              '("Provider profile is missing :base-url")))
+    base-url))
+
+(defun e-openai--provider-model (profile explicit-model)
+  "Return model for PROFILE, preferring EXPLICIT-MODEL."
+  (or explicit-model
+      (plist-get profile :default-model)
+      e-openai-default-model))
+
+(defun e-openai--env-token (env-key)
+  "Return bearer token from ENV-KEY or signal an auth error."
+  (unless (and (stringp env-key) (not (string-empty-p env-key)))
+    (signal 'e-openai-auth-invalid
+            '("Token-auth provider is missing :env-key")))
+  (let ((token (getenv env-key)))
+    (unless (and (stringp token) (not (string-empty-p token)))
+      (signal 'e-openai-auth-missing
+              (list (format "Environment variable %s is missing" env-key))))
+    token))
 
 (defun e-openai-codex-last-diagnostics ()
   "Return the last captured OpenAI/Codex diagnostics.
@@ -212,16 +281,23 @@ When CODEX-HOME is nil, use the CODEX_HOME environment variable or
       (setq body (append body (list :reasoning reasoning))))
     body))
 
+(defun e-openai-responses-url (base-url)
+  "Return the Responses endpoint URL for BASE-URL."
+  (let ((normalized (string-remove-suffix "/" base-url)))
+    (if (string-suffix-p "/responses" normalized)
+        normalized
+      (concat normalized "/responses"))))
+
 (defun e-openai-codex-url (&optional base-url)
   "Return the Codex Responses URL for BASE-URL."
   (let ((normalized (string-remove-suffix
                      "/"
                      (or base-url e-openai-codex-default-base-url))))
     (cond
-     ((string-suffix-p "/codex/responses" normalized) normalized)
+     ((string-suffix-p "/responses" normalized) normalized)
      ((string-suffix-p "/codex" normalized)
-      (concat normalized "/responses"))
-     (t (concat normalized "/codex/responses")))))
+      (e-openai-responses-url normalized))
+     (t (e-openai-responses-url (concat normalized "/codex"))))))
 
 (defun e-openai-codex--headers (auth &optional session-id)
   "Return Codex request headers for AUTH and SESSION-ID."
@@ -237,6 +313,22 @@ When CODEX-HOME is nil, use the CODEX_HOME environment variable or
                 `(("session_id" . ,session-id)
                   ("x-client-request-id" . ,session-id)))
       headers)))
+
+(defun e-openai--token-headers (token)
+  "Return standard Responses headers using bearer TOKEN."
+  `(("Authorization" . ,(concat "Bearer " token))
+    ("Accept" . "text/event-stream")
+    ("Content-Type" . "application/json")))
+
+(cl-defun e-openai--headers (&key profile auth-file session-id)
+  "Return request headers for PROFILE.
+AUTH-FILE and SESSION-ID are used only for Codex-managed OpenAI auth
+profiles."
+  (if (plist-get profile :requires-openai-auth)
+      (e-openai-codex--headers (e-openai-codex-read-auth auth-file)
+                               session-id)
+    (e-openai--token-headers
+     (e-openai--env-token (plist-get profile :env-key)))))
 
 (defun e-openai-codex--http-header-bytes (value)
   "Return VALUE as an ASCII byte string suitable for `url-request-extra-headers'."
@@ -419,30 +511,77 @@ When CODEX-HOME is nil, use the CODEX_HOME environment variable or
                   :events (nreverse event-summaries))))
     (nreverse items)))
 
+(cl-defun e-openai-backend-create
+    (&key provider auth-file base-url request-function name model)
+  "Create an OpenAI-like Responses backend named NAME.
+PROVIDER selects a profile from `e-openai-model-providers'.  AUTH-FILE is used
+for Codex-managed OpenAI auth profiles.  BASE-URL overrides the profile base
+URL.  REQUEST-FUNCTION is injectable for tests.  MODEL is the backend-local
+default when turn options do not include `:model'."
+  (let ((provider (or provider e-openai-default-provider)))
+    (e-backend-create
+     :name (or name (e-openai-provider-name provider))
+     :stream
+     (cl-function
+      (lambda (&key messages options on-item)
+        (let* ((profile (e-openai-provider-profile provider))
+               (effective-options (copy-sequence options))
+               (_ (unless (plist-get effective-options :model)
+                    (setq effective-options
+                          (plist-put effective-options
+                                     :model
+                                     (e-openai--provider-model profile model)))))
+               (body (json-encode
+                      (e-openai-codex-request-body
+                       :messages messages
+                       :options effective-options
+                       :tools (plist-get effective-options :tools))))
+               (session-id (plist-get effective-options :session-id))
+               (response (funcall (or request-function
+                                      #'e-openai-codex--http-request)
+                                  :url (e-openai-responses-url
+                                        (or base-url
+                                            (e-openai--provider-base-url
+                                             profile)))
+                                  :headers (e-openai--headers
+                                            :profile profile
+                                            :auth-file auth-file
+                                            :session-id session-id)
+                                  :body body)))
+          (dolist (item (e-openai-codex-parse-stream response))
+            (funcall on-item item))))))))
+
+(cl-defun e-openai-create-harness
+    (&key provider auth-file base-url request-function model)
+  "Create a harness configured for an OpenAI-like Responses provider.
+PROVIDER selects `e-openai-default-provider' when nil.  AUTH-FILE, BASE-URL,
+and REQUEST-FUNCTION configure the backend adapter.  MODEL is written into
+backend-neutral turn options by the default context strategy path used by
+`e-harness-prompt'."
+  (let* ((provider (or provider e-openai-default-provider))
+         (profile (e-openai-provider-profile provider))
+         (model (e-openai--provider-model profile model)))
+    (e-harness-create
+     :backend (e-openai-backend-create
+               :provider provider
+               :auth-file auth-file
+               :base-url base-url
+               :request-function request-function
+               :model model)
+     :default-options (list :model model))))
+
 (cl-defun e-openai-codex-backend-create
-    (&key auth-file base-url request-function name)
+    (&key auth-file base-url request-function name model)
   "Create an OpenAI/Codex backend named NAME.
 AUTH-FILE points at Codex-managed auth.  BASE-URL defaults to ChatGPT's Codex
 backend.  REQUEST-FUNCTION is injectable for tests."
-  (e-backend-create
+  (e-openai-backend-create
+   :provider 'codex
+   :auth-file auth-file
+   :base-url (when base-url (e-openai-codex-url base-url))
+   :request-function request-function
    :name (or name "openai-codex")
-   :stream
-   (cl-function
-    (lambda (&key messages options on-item)
-      (let* ((auth (e-openai-codex-read-auth auth-file))
-             (body (json-encode
-                    (e-openai-codex-request-body
-                     :messages messages
-                     :options options
-                     :tools (plist-get options :tools))))
-             (session-id (plist-get options :session-id))
-             (response (funcall (or request-function
-                                    #'e-openai-codex--http-request)
-                                :url (e-openai-codex-url base-url)
-                                :headers (e-openai-codex--headers auth session-id)
-                                :body body)))
-        (dolist (item (e-openai-codex-parse-stream response))
-          (funcall on-item item)))))))
+   :model model))
 
 (cl-defun e-openai-codex-create-harness
     (&key auth-file base-url request-function model)
@@ -450,12 +589,12 @@ backend.  REQUEST-FUNCTION is injectable for tests."
 AUTH-FILE, BASE-URL, and REQUEST-FUNCTION configure the backend adapter.  MODEL
 is written into backend-neutral turn options by the default context strategy
 path used by `e-harness-prompt'."
-  (e-harness-create
-   :backend (e-openai-codex-backend-create
-             :auth-file auth-file
-             :base-url base-url
-             :request-function request-function)
-   :default-options (list :model (or model e-openai-codex-default-model))))
+  (e-openai-create-harness
+   :provider 'codex
+   :auth-file auth-file
+   :base-url (when base-url (e-openai-codex-url base-url))
+   :request-function request-function
+   :model model))
 
 (provide 'e-openai)
 

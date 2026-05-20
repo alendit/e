@@ -285,6 +285,18 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-default-harness-uses-default-openai-provider ()
+  "Default chat harness creation honors `e-openai-default-provider'."
+  (let ((e-openai-default-provider 'openai-compatible-gateway)
+        (seen-provider nil))
+    (cl-letf (((symbol-function 'e-openai-create-harness)
+               (lambda (&rest args)
+                 (setq seen-provider (plist-get args :provider))
+                 (e-harness-create
+                  :backend (e-backend-fake-create :items nil)))))
+      (should (e-harness-p (e-chat--default-harness)))
+      (should (eq seen-provider 'openai-compatible-gateway)))))
+
 (ert-deftest e-chat-test-reset-clears-rendered-session ()
   "Reset clears the rendered chat buffer and harness session transcript."
   (let ((buffer (e-chat-test--buffer

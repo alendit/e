@@ -61,3 +61,30 @@ dependency order, including new MVP modules such as `e-layers`,
 `e-emacs-base`, and `e-chat`.
 
 The package itself does not depend on Doom-specific APIs.
+
+## OpenAI-Like Providers
+
+`e` configures OpenAI-like backends with Emacs Lisp provider profiles.  This is
+profile data, not a TOML parser.
+
+```elisp
+(setq e-openai-model-providers
+      '((codex
+         :name "ChatGPT Codex"
+         :base-url "https://chatgpt.com/backend-api/codex"
+         :wire-api responses
+         :requires-openai-auth t)
+        (openai-compatible-gateway
+         :name "OpenAI-Compatible Gateway"
+         :base-url "https://gateway.example.test"
+         :env-key "OPENAI_GATEWAY_API_KEY"
+         :wire-api responses
+         :requires-openai-auth nil)))
+
+(setq e-openai-default-provider 'openai-compatible-gateway)
+```
+
+Profiles with `:requires-openai-auth t` use Codex-managed ChatGPT auth from
+`CODEX_HOME/auth.json` or `~/.codex/auth.json`.  Profiles with
+`:requires-openai-auth nil` read a bearer token from `:env-key` and send only
+standard Responses headers.

@@ -116,6 +116,131 @@
       :tool_choice "auto"
       :parallel_tool_calls t))))
 
+(ert-deftest e-openai-test-responses-url-appends-responses-path ()
+  "Responses providers append /responses unless the base URL already has it."
+  (should (equal (e-openai-responses-url "https://gateway.example.test")
+                 "https://gateway.example.test/responses"))
+  (should (equal (e-openai-responses-url "https://gateway.example.test/")
+                 "https://gateway.example.test/responses"))
+  (should (equal (e-openai-responses-url "https://gateway.example.test/responses")
+                 "https://gateway.example.test/responses")))
+
+(ert-deftest e-openai-test-token-provider-uses-env-key-authorization ()
+  "Token-auth providers read bearer tokens from their configured env key."
+  (let* ((process-environment
+          (cons "OPENAI_GATEWAY_API_KEY=test-gateway-token" process-environment))
+         (e-openai-model-providers
+          '((openai-compatible-gateway
+             :name "OpenAI-Compatible Gateway"
+             :base-url "https://gateway.example.test"
+             :env-key "OPENAI_GATEWAY_API_KEY"
+             :wire-api responses
+             :requires-openai-auth nil)))
+         (captured nil)
+         (backend
+          (e-openai-backend-create
+           :provider 'openai-compatible-gateway
+           :request-function
+           (cl-function
+            (lambda (&key url headers body)
+              (setq captured (list :url url :headers headers :body body))
+              "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")))))
+    (e-backend-stream backend
+                      :messages '((:role user :content "hello"))
+                      :options '(:model "gateway-model")
+                      :on-item #'ignore)
+    (should (equal (plist-get captured :url)
+                   "https://gateway.example.test/responses"))
+    (should (equal (cdr (assoc "Authorization" (plist-get captured :headers)))
+                   "Bearer test-gateway-token"))
+    (should (assoc "Accept" (plist-get captured :headers)))
+    (should (assoc "Content-Type" (plist-get captured :headers)))
+    (should-not (assoc "chatgpt-account-id" (plist-get captured :headers)))
+    (should-not (assoc "originator" (plist-get captured :headers)))
+    (should-not (assoc "OpenAI-Beta" (plist-get captured :headers)))))
+
+(ert-deftest e-openai-test-backend-captures-default-provider-at-create-time ()
+  "Backends created from the default provider do not follow later default changes."
+  (let* ((process-environment
+          (append '("GATEWAY_ONE_KEY=one-token"
+                    "GATEWAY_TWO_KEY=two-token")
+                  process-environment))
+         (e-openai-model-providers
+          '((gateway-one
+             :name "Gateway One"
+             :base-url "https://one.example.test"
+             :env-key "GATEWAY_ONE_KEY"
+             :wire-api responses
+             :requires-openai-auth nil)
+            (gateway-two
+             :name "Gateway Two"
+             :base-url "https://two.example.test"
+             :env-key "GATEWAY_TWO_KEY"
+             :wire-api responses
+             :requires-openai-auth nil)))
+         (e-openai-default-provider 'gateway-one)
+         (captured nil)
+         (backend
+          (e-openai-backend-create
+           :request-function
+           (cl-function
+            (lambda (&key url headers body)
+              (ignore headers body)
+              (setq captured url)
+              "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")))))
+    (setq e-openai-default-provider 'gateway-two)
+    (e-backend-stream backend
+                      :messages '((:role user :content "hello"))
+                      :options '(:model "gateway-model")
+                      :on-item #'ignore)
+    (should (equal captured "https://one.example.test/responses"))))
+
+(ert-deftest e-openai-test-provider-default-model-is-used-by-harness ()
+  "Provider default models are used when callers do not pass a model."
+  (let ((e-openai-model-providers
+         '((openai-compatible-gateway
+            :name "OpenAI-Compatible Gateway"
+            :base-url "https://gateway.example.test"
+            :env-key "OPENAI_GATEWAY_API_KEY"
+            :wire-api responses
+            :requires-openai-auth nil
+            :default-model "gateway-default"))))
+    (should (equal (e-harness-default-options
+                    (e-openai-create-harness
+                     :provider 'openai-compatible-gateway
+                     :request-function #'ignore))
+                   '(:model "gateway-default")))))
+
+(ert-deftest e-openai-test-generic-harness-streams-token-provider ()
+  "Generic token-auth harnesses stream through injected requesters."
+  (let* ((process-environment
+          (cons "OPENAI_GATEWAY_API_KEY=test-gateway-token" process-environment))
+         (e-openai-model-providers
+          '((openai-compatible-gateway
+             :name "OpenAI-Compatible Gateway"
+             :base-url "https://gateway.example.test"
+             :env-key "OPENAI_GATEWAY_API_KEY"
+             :wire-api responses
+             :requires-openai-auth nil)))
+         (harness
+          (e-openai-create-harness
+           :provider 'openai-compatible-gateway
+           :model "gateway-model"
+           :request-function
+           (cl-function
+            (lambda (&key url headers body)
+              (ignore url headers body)
+              "data: {\"type\":\"response.output_text.done\",\"text\":\"gateway answer\"}\n\n\
+data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")))))
+    (e-harness-create-session harness :id "session-1")
+    (e-harness-prompt harness "session-1" "question")
+    (should (equal (mapcar (lambda (message) (plist-get message :role))
+                           (e-harness-messages harness "session-1"))
+                   '(user assistant)))
+    (should (equal (plist-get (cadr (e-harness-messages harness "session-1"))
+                              :content)
+                   "gateway answer"))))
+
 (ert-deftest e-openai-test-parse-sse-events ()
   "Responses SSE events become backend-neutral stream items."
   (should
