@@ -62,9 +62,6 @@
 (autoload 'e-dev-reload "lisp/e-dev" "Reload e package files during development." t)
 
 ;;;###autoload
-(autoload 'e-chat "lisp/e-chat" "Create and open a new persisted e chat session." t)
-
-;;;###autoload
 (autoload 'e-chat-new "lisp/e-chat" "Create and open a new persisted e chat session." t)
 
 ;;;###autoload
@@ -72,6 +69,12 @@
 
 ;;;###autoload
 (autoload 'e-chat-rename "lisp/e-chat" "Rename the current e chat session." t)
+
+;;;###autoload
+(autoload 'e-chat-set-model "lisp/e-chat" "Set the current e chat session model." t)
+
+;;;###autoload
+(autoload 'e-chat-set-effort "lisp/e-chat" "Set the current e chat session reasoning effort." t)
 
 ;;;###autoload
 (autoload 'e-chat-submit "lisp/e-chat" "Submit the current e chat prompt." t)

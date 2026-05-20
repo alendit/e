@@ -228,9 +228,10 @@ The current public package surface is:
 - `(require 'e)`: load the package.
 - `e-version`: current package version.
 - `e-status`: interactive smoke command that reports the loaded package status.
-- `e-chat` and `e-chat-new`: interactive commands that create and open a new persisted chat session.
+- `e-chat-new`: interactive command that creates and opens a new persisted chat session.
 - `e-chat-resume`: interactive command that resumes a recent persisted chat session.
 - `e-chat-rename`: interactive command that manually renames the current chat session.
+- `e-chat-set-model` and `e-chat-set-effort`: interactive commands that update session-scoped model options.
 - `e-dev-reload`: interactive development command that reloads local source files.
 - `e-harness-create`, `e-harness-create-session`, `e-harness-subscribe`, `e-harness-activate-layer`, `e-harness-prompt`, `e-harness-prompt-async`, `e-harness-wait`, `e-harness-follow-up`, `e-harness-abort`, `e-harness-reset`, `e-harness-state`, and `e-harness-messages`: core harness API.
 - `e-openai-create-harness`: create a harness configured for `e-openai-default-provider` or an explicit OpenAI-like provider profile.

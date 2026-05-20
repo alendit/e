@@ -119,6 +119,19 @@
         :updated-seq (plist-get session :updated-seq)
         :file (plist-get session :file)))
 
+(defun e-session--normalize-turn-options (options)
+  "Return canonical session turn OPTIONS."
+  (let (normalized)
+    (when-let ((model (plist-get options :model)))
+      (when (and (stringp model) (not (string-empty-p (string-trim model))))
+        (setq normalized
+              (plist-put normalized :model (string-trim model)))))
+    (when-let ((effort (plist-get options :reasoning-effort)))
+      (when (and (stringp effort) (not (string-empty-p (string-trim effort))))
+        (setq normalized
+              (plist-put normalized :reasoning-effort (string-trim effort)))))
+    normalized))
+
 (defun e-session--write-index (store)
   "Write STORE's persistent session index."
   (when (e-session--persistent-p store)
@@ -166,6 +179,9 @@
                                             timestamp)
                             :updated-at (or (plist-get record :updated-at)
                                             timestamp)
+                            :turn-options
+                            (e-session--normalize-turn-options
+                             (plist-get record :turn-options))
                             :name nil)))
          (e-session--touch store session (plist-get session :updated-at))
          (puthash session-id session (e-session-store-sessions store))))
@@ -181,6 +197,11 @@
        (when session
          (when (plist-member record :name)
            (plist-put session :name (plist-get record :name)))
+         (when (plist-member record :turn-options)
+           (plist-put session
+                      :turn-options
+                      (e-session--normalize-turn-options
+                       (plist-get record :turn-options))))
          (e-session--touch store session timestamp)))
       ("messages-cleared"
        (when session
@@ -235,6 +256,7 @@
                         :messages nil
                         :current-branch nil
                         :compactions nil
+                        :turn-options nil
                         :created-at timestamp
                         :updated-at timestamp
                         :name (plist-get metadata :name))))
@@ -260,6 +282,26 @@
 (defun e-session-messages (store session-id)
   "Return messages for SESSION-ID in STORE in insertion order."
   (copy-sequence (plist-get (e-session-get store session-id) :messages)))
+
+(defun e-session-turn-options (store session-id)
+  "Return session-scoped turn options for SESSION-ID in STORE."
+  (copy-sequence (plist-get (e-session-get store session-id) :turn-options)))
+
+(defun e-session-set-turn-options (store session-id options)
+  "Replace SESSION-ID turn OPTIONS in STORE."
+  (let* ((session (e-session-get store session-id))
+         (turn-options (e-session--normalize-turn-options options)))
+    (plist-put session :turn-options turn-options)
+    (e-session--touch store session)
+    (e-session--refresh-derived-fields store session)
+    (e-session--append-record
+     store session-id
+     (list :type "session-info"
+           :session-id session-id
+           :timestamp (plist-get session :updated-at)
+           :turn-options turn-options))
+    (e-session--write-index store)
+    turn-options))
 
 (defun e-session-append-message (store session-id message)
   "Append MESSAGE to SESSION-ID in STORE."

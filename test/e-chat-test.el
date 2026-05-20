@@ -333,7 +333,7 @@
           (e-chat-test--kill-chat-buffers)
           (with-current-buffer (e-chat-new)
             (setq first-id e-chat-session-id))
-          (with-current-buffer (e-chat)
+          (with-current-buffer (e-chat-new)
             (setq second-id e-chat-session-id))
           (should (not (equal first-id second-id)))
           (should (file-exists-p
@@ -386,6 +386,26 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer))
       (delete-directory directory t))))
+
+(ert-deftest e-chat-test-model-and-effort-commands-update-session-options ()
+  "Chat model and effort commands update harness-owned session options."
+  (let ((buffer (e-chat-test--buffer nil "chat-options")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (cl-letf (((symbol-function 'read-string)
+                     (lambda (&rest _args) "gpt-test"))
+                    ((symbol-function 'completing-read)
+                     (lambda (&rest _args) "high")))
+            (call-interactively #'e-chat-set-model)
+            (call-interactively #'e-chat-set-effort))
+          (should (equal (e-harness-session-options
+                          e-chat-harness
+                          e-chat-session-id)
+                         '(:model "gpt-test" :reasoning-effort "high")))
+          (should (string-match-p "gpt-test" header-line-format))
+          (should (string-match-p "high" header-line-format)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
 
 (ert-deftest e-chat-test-reset-clears-rendered-session ()
   "Reset clears the rendered chat buffer and harness session transcript."

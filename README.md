@@ -48,7 +48,7 @@ Then run:
 
 Restart Emacs after `doom sync`, or reload Doom's generated package autoloads
 for the current session. Until the package/autoloads are loaded, commands such
-as `M-x e-dev-reload` and `M-x e-chat` will not exist in `M-x`.
+as `M-x e-dev-reload` and `M-x e-chat-new` will not exist in `M-x`.
 
 For an already-running Emacs session, the one-time manual bootstrap is:
 
@@ -64,13 +64,15 @@ The package itself does not depend on Doom-specific APIs.
 
 ## Chat Sessions
 
-`M-x e-chat` and `M-x e-chat-new` create a fresh persisted chat session.
+`M-x e-chat-new` creates a fresh persisted chat session.
 Sessions are stored under `(locate-user-emacs-file "e/sessions/")` as
 append-only JSONL files with a recent-session `index.json`.
 
-Use `M-x e-chat-resume` to pick a recent session and `M-x e-chat-rename` to set
-an explicit display name for the current session.  If a session has no explicit
-name, chat buffers use the first user message as a fallback title.
+Use `M-x e-chat-resume` to pick a recent session, `M-x e-chat-rename` to set
+an explicit display name for the current session, and `M-x e-chat-set-model` or
+`M-x e-chat-set-effort` to override the model settings for that session. If a
+session has no explicit name, chat buffers use the first user message as a
+fallback title.
 
 ## OpenAI-Like Providers
 

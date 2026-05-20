@@ -29,6 +29,28 @@
   :type 'directory
   :group 'e-dev)
 
+(defconst e-dev--obsolete-functions
+  '(e-chat)
+  "Functions removed from the public surface that reload should unbind.")
+
+(defconst e-dev--reevaluated-defaults
+  '(e-openai-default-model
+    e-openai-default-reasoning-effort)
+  "Uncustomized options whose changed defaults should apply after reload.")
+
+(defun e-dev--clear-obsolete-functions ()
+  "Remove stale obsolete function bindings after a live reload."
+  (dolist (symbol e-dev--obsolete-functions)
+    (when (fboundp symbol)
+      (fmakunbound symbol))))
+
+(defun e-dev--reevaluate-uncustomized-defaults ()
+  "Reapply changed defcustom defaults unless the user customized them."
+  (dolist (symbol e-dev--reevaluated-defaults)
+    (when (and (boundp symbol)
+               (not (get symbol 'customized-value)))
+      (custom-reevaluate-setting symbol))))
+
 ;;;###autoload
 (defun e-dev-reload (&optional directory)
   "Reload e package files from DIRECTORY or `e-dev-source-directory'."
@@ -52,6 +74,8 @@
                   "lisp/e-dev.el")))
     (dolist (file files)
       (load (expand-file-name file root) nil 'nomessage))
+    (e-dev--clear-obsolete-functions)
+    (e-dev--reevaluate-uncustomized-defaults)
     (let ((refreshed (if (fboundp 'e-chat-reload-buffers)
                          (e-chat-reload-buffers)
                        0)))

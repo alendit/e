@@ -136,6 +136,10 @@
 (defconst e-chat--title "E Agent Session"
   "Title shown at the top of e chat buffers.")
 
+(defconst e-chat--reasoning-effort-values
+  '("" "minimal" "low" "medium" "high" "xhigh")
+  "Reasoning effort values offered by the chat presentation.")
+
 (defvar e-chat--test-window-body-height nil
   "Test override for the visible chat window height.")
 
@@ -440,12 +444,21 @@ When ENSURE-COMPOSER is non-nil, recreate the composer after inserting."
   "Set chat buffer STATUS."
   (setq header-line-format
         (if (and e-chat-harness e-chat-session-id)
-            (format "E Chat: %s - %s"
-                    status
-                    (ignore-errors
-                      (e-session-display-title
-                       (e-harness-sessions e-chat-harness)
-                       e-chat-session-id)))
+            (let* ((title (ignore-errors
+                            (e-session-display-title
+                             (e-harness-sessions e-chat-harness)
+                             e-chat-session-id)))
+                   (options (ignore-errors
+                              (e-harness--turn-options
+                               e-chat-harness
+                               e-chat-session-id)))
+                   (model (plist-get options :model))
+                   (effort (plist-get options :reasoning-effort)))
+              (format "E Chat: %s - %s - %s/%s"
+                      status
+                      title
+                      (or model "model unset")
+                      (or effort "effort unset")))
           (format "E Chat: %s" status))))
 
 (defun e-chat--message-entry (message)
@@ -563,12 +576,6 @@ reload.  User-facing commands should call `e-chat-new' or `e-chat-resume'."
       (pop-to-buffer buffer))
     buffer))
 
-;;;###autoload
-(defun e-chat ()
-  "Create and open a new persisted e chat session."
-  (interactive)
-  (e-chat-new))
-
 (defun e-chat--session-choice-label (session)
   "Return completion label for SESSION metadata."
   (format "%s  [%s]"
@@ -611,6 +618,49 @@ reload.  User-facing commands should call `e-chat-new' or `e-chat-resume'."
   (e-chat--render-session)
   (e-chat--set-status "idle")
   (current-buffer))
+
+;;;###autoload
+(defun e-chat-set-model (model)
+  "Set MODEL for the current chat session."
+  (interactive
+   (let* ((options (and e-chat-harness
+                       e-chat-session-id
+                       (ignore-errors
+                         (e-harness--turn-options
+                          e-chat-harness
+                          e-chat-session-id))))
+          (current (plist-get options :model)))
+     (list (read-string "Model: " current nil current))))
+  (unless (and e-chat-harness e-chat-session-id)
+    (user-error "This buffer is not attached to an e chat session"))
+  (e-harness-set-session-model e-chat-harness e-chat-session-id model)
+  (e-chat--set-status "idle")
+  (message "Set e chat model to %s" (if (string-empty-p model) "default" model)))
+
+;;;###autoload
+(defun e-chat-set-effort (effort)
+  "Set reasoning EFFORT for the current chat session."
+  (interactive
+   (let* ((options (and e-chat-harness
+                       e-chat-session-id
+                       (ignore-errors
+                         (e-harness--turn-options
+                          e-chat-harness
+                          e-chat-session-id))))
+          (current (or (plist-get options :reasoning-effort) "")))
+     (list (completing-read "Reasoning effort: "
+                            e-chat--reasoning-effort-values
+                            nil
+                            t
+                            nil
+                            nil
+                            current))))
+  (unless (and e-chat-harness e-chat-session-id)
+    (user-error "This buffer is not attached to an e chat session"))
+  (e-harness-set-session-reasoning-effort e-chat-harness e-chat-session-id effort)
+  (e-chat--set-status "idle")
+  (message "Set e chat effort to %s"
+           (if (string-empty-p effort) "default" effort)))
 
 ;;;###autoload
 (defun e-chat-submit (&optional prompt)

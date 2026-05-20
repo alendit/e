@@ -75,6 +75,22 @@
                            "Named session"))))
       (delete-directory directory t))))
 
+(ert-deftest e-session-test-turn-options-persist-through-session-info ()
+  "Session turn options survive persistent replay."
+  (let* ((directory (make-temp-file "e-session-" t))
+         (store (e-session-persistent-store-create directory))
+         (session-id (plist-get (e-session-create store) :id)))
+    (unwind-protect
+        (progn
+          (e-session-set-turn-options
+           store
+           session-id
+           '(:model "gpt-test" :reasoning-effort "high"))
+          (let ((loaded (e-session-persistent-store-create directory)))
+            (should (equal (e-session-turn-options loaded session-id)
+                           '(:model "gpt-test" :reasoning-effort "high")))))
+      (delete-directory directory t))))
+
 (ert-deftest e-session-test-clear-messages-is-append-only ()
   "Clearing a session empties replayed transcript without truncating JSONL."
   (let* ((directory (make-temp-file "e-session-" t))

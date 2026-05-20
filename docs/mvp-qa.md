@@ -75,7 +75,7 @@ batch `e-dev-reload`.
 With valid Codex-managed ChatGPT auth available at `CODEX_HOME/auth.json` or
 `~/.codex/auth.json`, a user can now:
 
-1. Run `M-x e-chat`.
+1. Run `M-x e-chat-new`.
 2. Submit a prompt from `*e-chat*`.
 3. Have the default harness activate `emacs-base`.
 4. Send layer instructions and visible-buffer metadata into transcript-stack

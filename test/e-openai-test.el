@@ -64,7 +64,62 @@
                :role "assistant"
                :content [(:type "output_text" :text "hi")])]
       :tool_choice "auto"
-      :parallel_tool_calls t))))
+      :parallel_tool_calls t
+      :reasoning (:effort "high")))))
+
+(ert-deftest e-openai-test-request-body-defaults-to-gpt55-high-effort ()
+  "OpenAI request bodies default to GPT-5.5 with high reasoning effort."
+  (should
+   (equal
+    (e-openai-codex-request-body
+     :messages '((:role user :content "hello"))
+     :options nil)
+    '(:model "gpt-5.5"
+      :store :json-false
+      :stream t
+      :instructions "You are a helpful assistant."
+      :input [(:type "message"
+               :role "user"
+               :content [(:type "input_text" :text "hello")])]
+      :tool_choice "auto"
+      :parallel_tool_calls t
+      :reasoning (:effort "high")))))
+
+(ert-deftest e-openai-test-request-body-maps-reasoning-effort-option ()
+  "Backend-neutral reasoning effort maps to the Responses reasoning object."
+  (should
+   (equal
+    (e-openai-codex-request-body
+     :messages '((:role user :content "hello"))
+     :options '(:model "gpt-test" :reasoning-effort "low"))
+    '(:model "gpt-test"
+      :store :json-false
+      :stream t
+      :instructions "You are a helpful assistant."
+      :input [(:type "message"
+               :role "user"
+               :content [(:type "input_text" :text "hello")])]
+      :tool_choice "auto"
+      :parallel_tool_calls t
+      :reasoning (:effort "low")))))
+
+(ert-deftest e-openai-test-request-body-preserves-explicit-reasoning-option ()
+  "Explicit provider reasoning options take precedence over default effort."
+  (should
+   (equal
+    (e-openai-codex-request-body
+     :messages '((:role user :content "hello"))
+     :options '(:model "gpt-test" :reasoning (:effort "minimal")))
+    '(:model "gpt-test"
+      :store :json-false
+      :stream t
+      :instructions "You are a helpful assistant."
+      :input [(:type "message"
+               :role "user"
+               :content [(:type "input_text" :text "hello")])]
+      :tool_choice "auto"
+      :parallel_tool_calls t
+      :reasoning (:effort "minimal")))))
 
 (ert-deftest e-openai-test-request-body-moves-system-messages-to-instructions ()
   "Codex requests do not send forbidden system input messages."
@@ -83,7 +138,8 @@
                :role "user"
                :content [(:type "input_text" :text "hello")])]
       :tool_choice "auto"
-      :parallel_tool_calls t))))
+      :parallel_tool_calls t
+      :reasoning (:effort "high")))))
 
 (ert-deftest e-openai-test-request-body-includes-function-call-before-output ()
   "Tool-call transcript messages serialize before function-call outputs."
@@ -114,7 +170,8 @@
                :call_id "call-1"
                :output "(:ok t)")]
       :tool_choice "auto"
-      :parallel_tool_calls t))))
+      :parallel_tool_calls t
+      :reasoning (:effort "high")))))
 
 (ert-deftest e-openai-test-responses-url-appends-responses-path ()
   "Responses providers append /responses unless the base URL already has it."
@@ -209,7 +266,13 @@
                     (e-openai-create-harness
                      :provider 'openai-compatible-gateway
                      :request-function #'ignore))
-                   '(:model "gateway-default")))))
+                   '(:model "gateway-default" :reasoning-effort "high")))))
+
+(ert-deftest e-openai-test-default-harness-uses-gpt55-high-effort ()
+  "The default OpenAI harness uses GPT-5.5 and high reasoning effort."
+  (should (equal (e-harness-default-options
+                  (e-openai-create-harness :request-function #'ignore))
+                 '(:model "gpt-5.5" :reasoning-effort "high"))))
 
 (ert-deftest e-openai-test-generic-harness-streams-token-provider ()
   "Generic token-auth harnesses stream through injected requesters."

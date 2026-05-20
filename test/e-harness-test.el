@@ -185,6 +185,49 @@
                        :parameters ,parameters
                        :strict :json-false))))))
 
+(ert-deftest e-harness-test-session-options-override-default-options ()
+  "Session-specific turn options override harness defaults and keep tools."
+  (let* ((captured-options nil)
+         (backend (e-backend-create
+                   :name "capture"
+                   :stream (cl-function
+                            (lambda (&key messages options on-item)
+                              (ignore messages)
+                              (setq captured-options options)
+                              (funcall on-item '(:type done :reason stop))))))
+         (tools (e-tools-registry-create))
+         (harness (e-harness-create
+                   :backend backend
+                   :tools tools
+                   :default-options '(:model "default-model"
+                                      :reasoning-effort "medium"))))
+    (e-tools-register tools
+                      :name "noop"
+                      :description "Accept no arguments."
+                      :parameters '(:type "object" :properties nil)
+                      :handler (lambda (_arguments) "now"))
+    (e-harness-create-session harness :id "session-1")
+    (e-harness-set-session-model harness "session-1" "session-model")
+    (e-harness-set-session-reasoning-effort harness "session-1" "high")
+    (e-harness-prompt harness "session-1" "raw prompt")
+    (should (equal (plist-get captured-options :model) "session-model"))
+    (should (equal (plist-get captured-options :reasoning-effort) "high"))
+    (should (plist-get captured-options :tools))))
+
+(ert-deftest e-harness-test-session-option-changes-emit-events ()
+  "Changing session options emits a core event."
+  (let* ((backend (e-backend-fake-create :items nil))
+         (harness (e-harness-create :backend backend))
+         (events nil))
+    (e-harness-subscribe harness (lambda (event) (push event events)))
+    (e-harness-create-session harness :id "session-1")
+    (e-harness-set-session-model harness "session-1" "gpt-test")
+    (let ((event (car events)))
+      (should (eq (plist-get event :type) 'session-options-changed))
+      (should (equal (plist-get event :session-id) "session-1"))
+      (should (equal (plist-get (plist-get event :payload) :turn-options)
+                     '(:model "gpt-test"))))))
+
 (provide 'e-harness-test)
 
 ;;; e-harness-test.el ends here

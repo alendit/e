@@ -18,6 +18,7 @@
 (require 'e-loop)
 (require 'e-session)
 (require 'e-tools)
+(require 'subr-x)
 
 (define-error 'e-harness-no-active-turn "No active turn")
 
@@ -91,13 +92,58 @@ configure the provider-neutral runtime."
   "Return messages for SESSION-ID in HARNESS."
   (e-session-messages (e-harness-sessions harness) session-id))
 
-(defun e-harness--turn-options (harness)
-  "Return backend-neutral turn options for HARNESS."
-  (let ((tool-definitions (e-tools-definitions (e-harness-tools harness))))
+(defun e-harness--merge-turn-options (base overrides)
+  "Return BASE options with OVERRIDES applied."
+  (let ((options (copy-sequence base))
+        (remaining overrides))
+    (while remaining
+      (setq options (plist-put options (pop remaining) (pop remaining))))
+    options))
+
+(defun e-harness-session-options (harness session-id)
+  "Return session-specific turn options for SESSION-ID in HARNESS."
+  (e-session-turn-options (e-harness-sessions harness) session-id))
+
+(defun e-harness--set-session-options (harness session-id options)
+  "Replace SESSION-ID turn OPTIONS in HARNESS and emit an update event."
+  (let ((turn-options
+         (e-session-set-turn-options
+          (e-harness-sessions harness)
+          session-id
+          options)))
+    (e-harness--emit
+     harness
+     (e-events-make :type 'session-options-changed
+                    :session-id session-id
+                    :turn-id "session-options"
+                    :payload (list :turn-options turn-options)))
+    turn-options))
+
+(defun e-harness-set-session-model (harness session-id model)
+  "Set SESSION-ID's model override to MODEL in HARNESS."
+  (let ((options (copy-sequence (e-harness-session-options harness session-id))))
+    (if (and (stringp model) (not (string-empty-p (string-trim model))))
+        (setq options (plist-put options :model (string-trim model)))
+      (cl-remf options :model))
+    (e-harness--set-session-options harness session-id options)))
+
+(defun e-harness-set-session-reasoning-effort (harness session-id effort)
+  "Set SESSION-ID's reasoning EFFORT override in HARNESS."
+  (let ((options (copy-sequence (e-harness-session-options harness session-id))))
+    (if (and (stringp effort) (not (string-empty-p (string-trim effort))))
+        (setq options (plist-put options :reasoning-effort (string-trim effort)))
+      (cl-remf options :reasoning-effort))
+    (e-harness--set-session-options harness session-id options)))
+
+(defun e-harness--turn-options (harness session-id)
+  "Return backend-neutral turn options for HARNESS and SESSION-ID."
+  (let ((options (e-harness--merge-turn-options
+                  (e-harness-default-options harness)
+                  (e-harness-session-options harness session-id)))
+        (tool-definitions (e-tools-definitions (e-harness-tools harness))))
     (if tool-definitions
-        (append (copy-sequence (e-harness-default-options harness))
-                (list :tools tool-definitions))
-      (e-harness-default-options harness))))
+        (plist-put options :tools tool-definitions)
+      options)))
 
 (defun e-harness--active-turn-id (entry)
   "Return active turn id from ENTRY."
@@ -140,7 +186,7 @@ provider or loop failure."
                     (e-harness-context-strategy harness)
                     :sessions (e-harness-sessions harness)
                     :session-id session-id
-                    :options (e-harness--turn-options harness)
+                    :options (e-harness--turn-options harness session-id)
                     :prefix-messages
                     (e-layers-context-messages
                      (e-harness-active-layers harness)

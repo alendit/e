@@ -38,12 +38,18 @@
   :group 'e
   :prefix "e-openai-")
 
-(defcustom e-openai-default-model "gpt-5.4"
+(defcustom e-openai-default-model "gpt-5.5"
   "Default model for OpenAI-like Responses requests."
   :type 'string
   :group 'e-openai)
 
 (defvaralias 'e-openai-codex-default-model 'e-openai-default-model)
+
+(defcustom e-openai-default-reasoning-effort "high"
+  "Default reasoning effort for OpenAI-like Responses requests."
+  :type '(choice (const :tag "Unset" nil)
+                 (string :tag "Effort"))
+  :group 'e-openai)
 
 (defcustom e-openai-default-provider 'codex
   "Default provider profile used by generic OpenAI harness helpers."
@@ -265,7 +271,13 @@ When CODEX-HOME is nil, use the CODEX_HOME environment variable or
   "Build a Codex Responses request body from MESSAGES, OPTIONS, and TOOLS."
   (let* ((input-messages (seq-remove #'e-openai-codex--system-message-p
                                      messages))
-         (body (list :model (or (plist-get options :model) "gpt-5.4")
+         (reasoning (if (plist-member options :reasoning)
+                        (plist-get options :reasoning)
+                      (when-let ((effort (or (plist-get options :reasoning-effort)
+                                             e-openai-default-reasoning-effort)))
+                        (list :effort effort))))
+         (body (list :model (or (plist-get options :model)
+                                e-openai-default-model)
                      :store :json-false
                      :stream t
                      :instructions (e-openai-codex--instructions
@@ -277,7 +289,7 @@ When CODEX-HOME is nil, use the CODEX_HOME environment variable or
                      :parallel_tool_calls t)))
     (when tools
       (setq body (append body (list :tools (vconcat tools)))))
-    (when-let ((reasoning (plist-get options :reasoning)))
+    (when reasoning
       (setq body (append body (list :reasoning reasoning))))
     body))
 
@@ -568,7 +580,8 @@ backend-neutral turn options by the default context strategy path used by
                :base-url base-url
                :request-function request-function
                :model model)
-     :default-options (list :model model)
+     :default-options (list :model model
+                            :reasoning-effort e-openai-default-reasoning-effort)
      :sessions sessions)))
 
 (cl-defun e-openai-codex-backend-create

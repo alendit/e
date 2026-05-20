@@ -15,10 +15,11 @@
 (require 'ert)
 
 (defconst e-test--autoload-commands
-  '(e-chat
-    e-chat-new
+  '(e-chat-new
     e-chat-resume
     e-chat-rename
+    e-chat-set-model
+    e-chat-set-effort
     e-chat-submit
     e-chat-abort
     e-chat-reset
@@ -38,10 +39,11 @@
   "The package exposes status and live-reload commands."
   (require 'e)
   (should (commandp 'e-status))
-  (should (commandp 'e-chat))
   (should (commandp 'e-chat-new))
   (should (commandp 'e-chat-resume))
   (should (commandp 'e-chat-rename))
+  (should (commandp 'e-chat-set-model))
+  (should (commandp 'e-chat-set-effort))
   (should (commandp 'e-dev-reload)))
 
 (ert-deftest e-test-autoloads-expose-chat-commands-at-startup ()
@@ -61,7 +63,7 @@
             (load generated-autoload-file nil 'nomessage)
             (dolist (command e-test--autoload-commands)
               (should (commandp command)))
-            (autoload-do-load (symbol-function 'e-chat) 'e-chat)
+            (autoload-do-load (symbol-function 'e-chat-new) 'e-chat-new)
             (autoload-do-load (symbol-function 'e-dev-reload) 'e-dev-reload))
           (dolist (command e-test--autoload-commands)
             (should (commandp command))))
