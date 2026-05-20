@@ -12,6 +12,7 @@
 ;;; Code:
 
 (require 'ert)
+(require 'json)
 (require 'e)
 (require 'e-tools)
 
@@ -39,12 +40,19 @@
                       :description "Return the current time."
                       :parameters '(:type "object" :properties nil)
                       :handler (lambda (_arguments) "now"))
-    (should (equal (e-tools-definitions registry)
-                   '((:type "function"
-                      :name "current_time"
-                      :description "Return the current time."
-                      :parameters (:type "object" :properties nil)
-                      :strict :json-false))))))
+    (let* ((definitions (e-tools-definitions registry))
+           (parameters (plist-get (car definitions) :parameters)))
+      (should (equal (plist-get parameters :type) "object"))
+      (should (hash-table-p (plist-get parameters :properties)))
+      (should (string-match-p
+               "\"properties\":{}"
+               (json-encode definitions)))
+      (should (equal (car definitions)
+                     `(:type "function"
+                       :name "current_time"
+                       :description "Return the current time."
+                       :parameters ,parameters
+                       :strict :json-false))))))
 
 (ert-deftest e-tools-test-missing-tool-returns-structured-error ()
   "Unknown tools return structured error results."

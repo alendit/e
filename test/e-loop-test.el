@@ -79,6 +79,26 @@
                     (mapcar (lambda (event) (plist-get event :type))
                             events)))))
 
+(ert-deftest e-loop-test-surfaces-backend-error ()
+  "Backend error items stop the turn with an explicit error."
+  (let* ((backend (e-backend-fake-create
+                   :items '((:type backend-error :content "provider failed"))))
+         (events nil))
+    (should-error
+     (e-loop-run-turn
+      :session-id "session-1"
+      :turn-id "turn-1"
+      :messages '((:role user :content "hi"))
+      :backend backend
+      :tools (e-tools-registry-create)
+      :options nil
+      :on-event (lambda (event) (push event events))
+      :append-message #'ignore)
+     :type 'e-loop-backend-error)
+    (should (member 'turn-started
+                    (mapcar (lambda (event) (plist-get event :type))
+                            events)))))
+
 (ert-deftest e-loop-test-executes-tool-call-and-appends-result ()
   "Tool calls execute through the registry and append tool result messages."
   (let* ((backend (e-backend-fake-create
@@ -122,11 +142,11 @@
                                                :id "call-1"
                                                :name "echo"
                                                :arguments (:text "hi")))
-                                    (funcall on-item '(:type done :reason tool-use)))
+                                (funcall on-item '(:type done :reason tool-use)))
                                 (should (equal (mapcar (lambda (message)
                                                          (plist-get message :role))
                                                        messages)
-                                               '(user tool)))
+                                               '(user tool-call tool)))
                                 (funcall on-item
                                          '(:type assistant-message
                                            :content "saw tool result"))
@@ -149,7 +169,7 @@
     (should (equal calls 2))
     (should (equal (mapcar (lambda (message) (plist-get message :role))
                            (nreverse messages))
-                   '(tool assistant)))))
+                   '(tool-call tool assistant)))))
 
 (provide 'e-loop-test)
 

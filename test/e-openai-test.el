@@ -65,6 +65,56 @@
       :tool_choice "auto"
       :parallel_tool_calls t))))
 
+(ert-deftest e-openai-test-request-body-moves-system-messages-to-instructions ()
+  "Codex requests do not send forbidden system input messages."
+  (should
+   (equal
+    (e-openai-codex-request-body
+     :messages '((:role system :content "Layer instructions.")
+                 (:role system :content "Visible buffer context.")
+                 (:role user :content "hello"))
+     :options '(:model "gpt-test" :instructions "Base instructions."))
+    '(:model "gpt-test"
+      :store :json-false
+      :stream t
+      :instructions "Base instructions.\n\nLayer instructions.\n\nVisible buffer context."
+      :input [(:type "message"
+               :role "user"
+               :content [(:type "input_text" :text "hello")])]
+      :tool_choice "auto"
+      :parallel_tool_calls t))))
+
+(ert-deftest e-openai-test-request-body-includes-function-call-before-output ()
+  "Tool-call transcript messages serialize before function-call outputs."
+  (should
+   (equal
+    (e-openai-codex-request-body
+     :messages '((:role user :content "hello")
+                 (:role tool-call
+                  :content (:id "call-1"
+                            :name "read_buffer"
+                            :arguments (:name "README.md")))
+                 (:role tool
+                  :content (:tool-call-id "call-1"
+                            :content (:ok t))))
+     :options '(:model "gpt-test"))
+    '(:model "gpt-test"
+      :store :json-false
+      :stream t
+      :instructions "You are a helpful assistant."
+      :input [(:type "message"
+               :role "user"
+               :content [(:type "input_text" :text "hello")])
+              (:type "function_call"
+               :call_id "call-1"
+               :name "read_buffer"
+               :arguments "{\"name\":\"README.md\"}")
+              (:type "function_call_output"
+               :call_id "call-1"
+               :output "(:ok t)")]
+      :tool_choice "auto"
+      :parallel_tool_calls t))))
+
 (ert-deftest e-openai-test-parse-sse-events ()
   "Responses SSE events become backend-neutral stream items."
   (should
@@ -140,6 +190,35 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
               (:event-type "response.completed"
                :item-type nil
                :parsed-type done))))))
+
+(ert-deftest e-openai-test-parse-stream-appends-raw-response-buffer ()
+  "Raw provider responses are retained in a hidden inspection buffer."
+  (let ((buffer-name e-openai-codex-raw-responses-buffer-name)
+        (stream "data: {\"type\":\"response.completed\"}\n\n"))
+    (when (get-buffer buffer-name)
+      (kill-buffer buffer-name))
+    (unwind-protect
+        (progn
+          (e-openai-codex-parse-stream stream)
+          (should (string-prefix-p " " buffer-name))
+          (should (get-buffer buffer-name))
+          (with-current-buffer buffer-name
+            (should (string-match-p
+                     (regexp-quote stream)
+                     (buffer-string)))))
+      (when (get-buffer buffer-name)
+        (kill-buffer buffer-name)))))
+
+(ert-deftest e-openai-test-parse-json-error-response ()
+  "Non-stream provider JSON errors become backend error items."
+  (should
+   (equal
+    (e-openai-codex-parse-stream
+     "{\"error\":{\"message\":\"Invalid schema\",\"type\":\"invalid_request_error\"}}")
+    '((:type backend-error
+      :content "Invalid schema"
+      :payload (:error (:message "Invalid schema"
+                       :type "invalid_request_error")))))))
 
 (ert-deftest e-openai-test-default-http-request-accepts-keyword-arguments ()
   "The default HTTP requester accepts the keyword call shape used by backend."

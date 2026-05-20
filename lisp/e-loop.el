@@ -17,6 +17,8 @@
 (require 'e-events)
 (require 'e-tools)
 
+(define-error 'e-loop-backend-error "Backend returned an error")
+
 (defvar e-loop--message-counter 0
   "Monotonic message id counter for loop-created messages.")
 
@@ -94,11 +96,19 @@ stable."
                               :payload (list :message message))))
              ('tool-call
               (setq tool-called t)
-              (let* ((result (e-tools-execute tools item))
+              (let* ((tool-call-message
+                      (list :id (e-loop--next-message-id)
+                            :role 'tool-call
+                            :content item
+                            :metadata nil))
+                     (result (e-tools-execute tools item))
                      (message (list :id (e-loop--next-message-id)
                                     :role 'tool
                                     :content result
                                     :metadata nil)))
+                (setq turn-messages
+                      (append turn-messages (list tool-call-message)))
+                (funcall append-message tool-call-message)
                 (setq turn-messages (append turn-messages (list message)))
                 (funcall append-message message)
                 (e-loop--emit :on-event on-event
@@ -108,6 +118,9 @@ stable."
                               :payload (list :result result))))
              ('done
               (setq done-reason (plist-get item :reason)))
+             ('backend-error
+              (signal 'e-loop-backend-error
+                      (list (plist-get item :content))))
              (_
               (e-loop--emit :on-event on-event
                             :session-id session-id

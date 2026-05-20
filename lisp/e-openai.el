@@ -15,6 +15,7 @@
 (require 'cl-lib)
 (require 'json)
 (require 'pp)
+(require 'seq)
 (require 'subr-x)
 (require 'url)
 (require 'e-backend)
@@ -46,6 +47,12 @@
   :type 'boolean
   :group 'e-openai)
 
+(defcustom e-openai-codex-raw-responses-buffer-name
+  " *e-openai-codex-raw-responses*"
+  "Hidden buffer used to retain raw Codex provider responses."
+  :type 'string
+  :group 'e-openai)
+
 (defvar e-openai-codex--last-diagnostics nil
   "Last OpenAI/Codex diagnostics captured when debug mode is enabled.")
 
@@ -63,6 +70,20 @@ Diagnostics are captured only when `e-openai-codex-debug' is non-nil."
           (special-mode))
         (display-buffer (current-buffer)))
     e-openai-codex--last-diagnostics))
+
+(defun e-openai-codex--append-raw-response (stream-text)
+  "Append STREAM-TEXT to the hidden raw provider response buffer."
+  (unless (string-empty-p (or stream-text ""))
+    (with-current-buffer (get-buffer-create
+                          e-openai-codex-raw-responses-buffer-name)
+      (let ((inhibit-read-only t))
+        (goto-char (point-max))
+        (unless (bobp)
+          (insert "\n"))
+        (insert ";;; " (current-time-string) "\n")
+        (insert stream-text)
+        (unless (bolp)
+          (insert "\n"))))))
 
 (defun e-openai-codex-auth-file (&optional codex-home)
   "Return the Codex auth file path for CODEX-HOME.
@@ -137,6 +158,13 @@ When CODEX-HOME is nil, use the CODEX_HOME environment variable or
   (let ((role (plist-get message :role))
         (content (plist-get message :content)))
     (pcase role
+      ('tool-call
+       (list :type "function_call"
+             :call_id (plist-get content :id)
+             :name (plist-get content :name)
+             :arguments (json-encode
+                         (or (plist-get content :arguments)
+                             (make-hash-table :test 'equal)))))
       ('tool
        (let ((result content))
          (list :type "function_call_output"
@@ -147,17 +175,37 @@ When CODEX-HOME is nil, use the CODEX_HOME environment variable or
              :role (symbol-name role)
              :content (e-openai-codex--message-content role content))))))
 
+(defun e-openai-codex--system-message-p (message)
+  "Return non-nil when MESSAGE is a backend-neutral system message."
+  (eq (plist-get message :role) 'system))
+
+(defun e-openai-codex--instructions (messages options)
+  "Return top-level Codex instructions from MESSAGES and OPTIONS."
+  (string-join
+   (delq nil
+         (append
+          (list (or (plist-get options :instructions)
+                    "You are a helpful assistant."))
+          (mapcar (lambda (message)
+                    (plist-get message :content))
+                  (seq-filter #'e-openai-codex--system-message-p
+                              messages))))
+   "\n\n"))
+
 (cl-defun e-openai-codex-request-body (&key messages options tools)
   "Build a Codex Responses request body from MESSAGES, OPTIONS, and TOOLS."
-  (let ((body (list :model (or (plist-get options :model) "gpt-5.4")
-                    :store :json-false
-                    :stream t
-                    :instructions (or (plist-get options :instructions)
-                                      "You are a helpful assistant.")
-                    :input (vconcat (mapcar #'e-openai-codex--input-message
-                                            messages))
-                    :tool_choice "auto"
-                    :parallel_tool_calls t)))
+  (let* ((input-messages (seq-remove #'e-openai-codex--system-message-p
+                                     messages))
+         (body (list :model (or (plist-get options :model) "gpt-5.4")
+                     :store :json-false
+                     :stream t
+                     :instructions (e-openai-codex--instructions
+                                    messages
+                                    options)
+                     :input (vconcat (mapcar #'e-openai-codex--input-message
+                                             input-messages))
+                     :tool_choice "auto"
+                     :parallel_tool_calls t)))
     (when tools
       (setq body (append body (list :tools (vconcat tools)))))
     (when-let ((reasoning (plist-get options :reasoning)))
@@ -256,6 +304,21 @@ When CODEX-HOME is nil, use the CODEX_HOME environment variable or
                          (plist-get provider-part :type))
           :parsed-type (plist-get item :type))))
 
+(defun e-openai-codex--json-error-item (stream-text)
+  "Return a backend error item when STREAM-TEXT is a JSON error response."
+  (when (string-prefix-p "{" (string-trim-left stream-text))
+    (let* ((payload (e-openai-codex--parse-json stream-text))
+           (error (plist-get payload :error))
+           (detail (plist-get payload :detail))
+           (message (cond
+                     ((listp error) (plist-get error :message))
+                     ((stringp error) error)
+                     ((stringp detail) detail))))
+      (when message
+        (list :type 'backend-error
+              :content message
+              :payload payload)))))
+
 (defun e-openai-codex--event-item (event)
   "Map parsed Responses EVENT to one backend-neutral item, or nil."
   (let ((type (plist-get event :type)))
@@ -294,6 +357,7 @@ When CODEX-HOME is nil, use the CODEX_HOME environment variable or
 
 (defun e-openai-codex-parse-stream (stream-text)
   "Parse Codex Responses STREAM-TEXT into backend-neutral items."
+  (e-openai-codex--append-raw-response stream-text)
   (let ((items nil)
         (event-summaries nil)
         (assistant-message-seen nil)
@@ -335,6 +399,9 @@ When CODEX-HOME is nil, use the CODEX_HOME environment variable or
     (unless assistant-message-seen
       (when assistant-message-candidate
         (push assistant-message-candidate items)))
+    (unless items
+      (when-let ((error-item (e-openai-codex--json-error-item stream-text)))
+        (push error-item items)))
     (when e-openai-codex-debug
       (setq e-openai-codex--last-diagnostics
             (list :raw-response stream-text

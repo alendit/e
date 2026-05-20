@@ -31,6 +31,21 @@
                  :handler handler)
            (e-tools-registry-tools registry)))
 
+(defun e-tools--empty-json-object ()
+  "Return an empty object suitable for `json-encode'."
+  (make-hash-table :test 'equal))
+
+(defun e-tools--normalize-parameters (parameters)
+  "Return tool PARAMETERS with valid JSON object defaults."
+  (let ((normalized (copy-sequence
+                     (or parameters
+                         (list :type "object"
+                               :properties (e-tools--empty-json-object))))))
+    (when (and (equal (plist-get normalized :type) "object")
+               (null (plist-get normalized :properties)))
+      (plist-put normalized :properties (e-tools--empty-json-object)))
+    normalized))
+
 (defun e-tools-definitions (registry)
   "Return backend-neutral tool definitions for REGISTRY."
   (let ((definitions nil))
@@ -39,9 +54,8 @@
         (push (list :type "function"
                     :name (plist-get tool :name)
                     :description (plist-get tool :description)
-                    :parameters (or (plist-get tool :parameters)
-                                    '(:type "object"
-                                      :properties nil))
+                    :parameters (e-tools--normalize-parameters
+                                 (plist-get tool :parameters))
                     :strict :json-false)
               definitions)))
     (nreverse definitions)))

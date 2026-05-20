@@ -174,12 +174,16 @@
                       :handler (lambda (_arguments) "now"))
     (e-harness-create-session harness :id "session-1")
     (e-harness-prompt harness "session-1" "raw prompt")
-    (should (equal (plist-get captured-options :tools)
-                   '((:type "function"
-                      :name "current_time"
-                      :description "Return the current time."
-                      :parameters (:type "object" :properties nil)
-                      :strict :json-false))))))
+    (let* ((tool (car (plist-get captured-options :tools)))
+           (parameters (plist-get tool :parameters)))
+      (should (equal (plist-get parameters :type) "object"))
+      (should (hash-table-p (plist-get parameters :properties)))
+      (should (equal tool
+                     `(:type "function"
+                       :name "current_time"
+                       :description "Return the current time."
+                       :parameters ,parameters
+                       :strict :json-false))))))
 
 (provide 'e-harness-test)
 
