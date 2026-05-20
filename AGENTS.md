@@ -9,8 +9,11 @@
 ## Interactive Development
 
 - Strive to develop interactively against the running Emacs whenever the change affects runtime behavior, chat presentation, tools, backend requests, reload behavior, or buffer state. Batch tests are necessary but not sufficient for live agent workflows.
-- After code changes, reload the affected modules into the running Emacs and call `e-dev-reload` through `emacsclient --eval` so existing `*e-chat*` buffers and harness state are refreshed. Do this proactively; the user should not need to run `M-x e-dev-reload` after each agent change.
-- Use `emacsclient --eval` to inspect live state when debugging: active chat buffer contents, buffer-local harness/session values, active tool definitions, raw response buffers, diagnostics, and session messages. Prefer direct inspection of the running Emacs over guessing from source alone.
+- Reloading changed Emacs Lisp into the user's running Emacs is the agent's responsibility, not a user follow-up. After any change to `lisp/*.el`, `e.el`, or behavior that is already loaded in the user's Emacs, proactively run `e-dev-reload` through `emacsclient --eval` before claiming the work is ready.
+- Use this reload shape from the repo root unless a task needs a narrower expression: `emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"`. Prefer direct `emacsclient` invocation; do not wrap it in `zsh -lc` unless shell features are actually required.
+- If `emacsclient --eval` fails because no server/frame is available, report that exact failure in the final note instead of implying the live Emacs was refreshed. Do not tell the user to reload manually unless live reload was genuinely unavailable.
+- After reloading, use `emacsclient --eval` to inspect live state when debugging: active chat buffer contents, buffer-local harness/session values, active tool definitions, raw response buffers, diagnostics, and session messages. Prefer direct inspection of the running Emacs over guessing from source alone.
+- Final notes for behavior changes should say whether the running Emacs was reloaded and, when relevant, what live scenario was inspected. Batch test results alone do not prove the user's current Emacs session picked up the change.
 - For model/tool/backend changes, verify at least one live scenario in the running Emacs when feasible. Use temporary buffers for destructive tool checks, and avoid mutating user buffers unless the task explicitly calls for it.
 - Keep live reload and inspection commands narrow and explicit. Do not rely on Doom-specific APIs for package behavior; use Doom only as the user's current Emacs distribution context.
 
