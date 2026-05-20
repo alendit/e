@@ -120,11 +120,11 @@
           (e-harness-wait e-chat-harness e-chat-session-id 1.0)
           (let ((content (buffer-string)))
             (should (string-match-p (concat (regexp-quote e-chat--user-glyph)
-                                            "\nfirst line\nsecond line")
+                                            " first line\nsecond line")
                                     content))
             (should (string-match-p
                      (concat (regexp-quote e-chat--assistant-glyph)
-                             "\nhello back")
+                             " hello back")
                      content))
             (should-not (string-match-p "Turn started" content))
             (should-not (string-match-p "Turn finished" content))
@@ -156,7 +156,7 @@
           (let ((content (buffer-string)))
             (should (string-match-p
                      (concat (regexp-quote e-chat--user-glyph)
-                             "\nsend now")
+                             " send now")
                      content))
             (should-not (string-match-p
                          (concat (regexp-quote e-chat--composer-glyph)
@@ -184,7 +184,7 @@
           (should (equal redisplayed t))
           (should (string-match-p
                    (concat (regexp-quote e-chat--user-glyph)
-                           "\nsend now")
+                           " send now")
                    (buffer-string)))
           (should-not (e-chat--composer-active-p)))
       (when (buffer-live-p buffer)
@@ -284,7 +284,7 @@
                                       (buffer-string)))
           (should (string-match-p
                    (concat (regexp-quote e-chat--assistant-glyph)
-                           "\n✅ Done")
+                           " ✅ Done")
                    (buffer-string)))
           (should (string-match-p "E Chat: done" header-line-format)))
       (when (buffer-live-p buffer)
@@ -337,10 +337,10 @@
                                     :turn-id)
                          "turn-2"))
           (should (string-match-p
-                   (concat (regexp-quote e-chat--assistant-glyph) "\ntwo")
+                   (concat (regexp-quote e-chat--assistant-glyph) " two")
                    (e-chat-test--focused-turn-text)))
           (should-not (string-match-p
-                       (concat (regexp-quote e-chat--user-glyph) "\nsecond")
+                       (concat (regexp-quote e-chat--user-glyph) " second")
                        (e-chat-test--focused-turn-text))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
@@ -384,10 +384,10 @@
                                     :turn-id)
                          "turn-1"))
           (should (string-match-p
-                   (concat (regexp-quote e-chat--assistant-glyph) "\none")
+                   (concat (regexp-quote e-chat--assistant-glyph) " one")
                    (e-chat-test--focused-turn-text)))
           (should-not (string-match-p
-                       (concat (regexp-quote e-chat--user-glyph) "\nfirst")
+                       (concat (regexp-quote e-chat--user-glyph) " first")
                        (e-chat-test--focused-turn-text))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
@@ -403,15 +403,15 @@
           (call-interactively
            (lookup-key e-chat-response-navigation-mode-map (kbd "k")))
           (should (string-match-p
-                   (concat (regexp-quote e-chat--user-glyph) "\nsecond")
+                   (concat (regexp-quote e-chat--user-glyph) " second")
                    (e-chat-test--focused-turn-text)))
           (should-not (string-match-p
-                       (concat (regexp-quote e-chat--assistant-glyph) "\ntwo")
+                       (concat (regexp-quote e-chat--assistant-glyph) " two")
                        (e-chat-test--focused-turn-text)))
           (call-interactively
            (lookup-key e-chat-response-navigation-mode-map (kbd "j")))
           (should (string-match-p
-                   (concat (regexp-quote e-chat--assistant-glyph) "\ntwo")
+                   (concat (regexp-quote e-chat--assistant-glyph) " two")
                    (e-chat-test--focused-turn-text))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
@@ -428,7 +428,7 @@
           (let ((content (buffer-string)))
             (should (string-match-p
                      (concat (regexp-quote e-chat--assistant-glyph)
-                             "\ntwo\n\n  Turn: turn-2")
+                             " two\n\n  Turn: turn-2")
                      content))
             (should (string-match-p
                      "  Started: 1970-01-01 00:00:20 UTC"
@@ -560,7 +560,7 @@
             (e-harness-wait e-chat-harness e-chat-session-id 1.0)
             (should (string-match-p
                      (concat (regexp-quote e-chat--assistant-glyph)
-                             "\nfresh answer")
+                             " fresh answer")
                      (buffer-string)))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer))

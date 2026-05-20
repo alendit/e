@@ -613,6 +613,12 @@ Return non-nil when a composer was removed."
     ((or "You" "Assistant") (e-chat--entry-glyph title))
     (_ (format "%s %s" (e-chat--entry-glyph title) title))))
 
+(defun e-chat--entry-text (title content)
+  "Return display text for chat entry TITLE and CONTENT."
+  (if (member title '("You" "Assistant"))
+      (format "%s %s\n\n" (e-chat--entry-heading title) content)
+    (format "%s\n%s\n\n" (e-chat--entry-heading title) content)))
+
 (defun e-chat--insert-entry (title content &optional ensure-composer turn-id)
   "Insert a protected chat entry with TITLE and CONTENT.
 When ENSURE-COMPOSER is non-nil, recreate the composer after inserting.
@@ -625,9 +631,7 @@ TURN-ID tags the rendered entry for response navigation."
         (insert "\n"))
       (let ((start (point)))
         (e-chat--insert-protected
-         (format "%s\n%s\n\n"
-                 (e-chat--entry-heading title)
-                 content)
+         (e-chat--entry-text title content)
          (e-chat--entry-face title)
          (when block-id
            `(e-chat-turn-id ,turn-id
