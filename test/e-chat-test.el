@@ -34,7 +34,7 @@
           (should (derived-mode-p 'e-chat-mode))
           (goto-char (point-min))
           (should (looking-at-p (regexp-quote e-chat--title)))
-          (should (eq (get-text-property (point-min) 'face)
+          (should (eq (get-text-property (point-min) 'font-lock-face)
                       'e-chat-title-face))
           (should-not (string-match-p "^e chat$" (buffer-string)))
           (should (markerp e-chat--composer-start-marker))
@@ -80,10 +80,10 @@
           (save-excursion
             (goto-char (point-min))
             (search-forward "first line")
-            (should (eq (get-text-property (point) 'face)
+            (should (eq (get-text-property (point) 'font-lock-face)
                         'e-chat-user-face))
             (search-forward "hello back")
-            (should (eq (get-text-property (point) 'face)
+            (should (eq (get-text-property (point) 'font-lock-face)
                         'e-chat-assistant-face)))
           (should (equal (e-chat--composer-text) "")))
       (when (buffer-live-p buffer)
@@ -152,13 +152,18 @@
           (kill-buffer buffer))))))
 
 (ert-deftest e-chat-test-speaker-faces-are-visually-distinct ()
-  "User and assistant entries use intentionally distinct highlighting."
-  (should (eq (face-attribute 'e-chat-user-face :inherit)
-              'font-lock-string-face))
-  (should (eq (face-attribute 'e-chat-assistant-face :inherit)
-              'font-lock-function-name-face))
-  (should-not (eq (face-attribute 'e-chat-user-face :inherit)
-                  (face-attribute 'e-chat-assistant-face :inherit))))
+  "User, assistant, and system entries use distinct background highlighting."
+  (should (equal (face-attribute 'e-chat-user-face :background)
+                 "#243347"))
+  (should (equal (face-attribute 'e-chat-assistant-face :background)
+                 "#2b3526"))
+  (should (equal (face-attribute 'e-chat-system-face :background)
+                 "#312b3c"))
+  (should-not (equal (face-attribute 'e-chat-user-face :background)
+                     (face-attribute 'e-chat-assistant-face :background)))
+  (should (eq (face-attribute 'e-chat-user-face :extend) t))
+  (should (eq (face-attribute 'e-chat-assistant-face :extend) t))
+  (should (eq (face-attribute 'e-chat-system-face :extend) t)))
 
 (ert-deftest e-chat-test-hides-empty-output-diagnostic ()
   "The chat buffer does not render transient empty-output diagnostics."

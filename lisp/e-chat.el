@@ -35,17 +35,26 @@
   :group 'e-chat)
 
 (defface e-chat-user-face
-  '((t :inherit font-lock-string-face :extend t))
+  '((t :inherit default
+       :foreground "#d7ecff"
+       :background "#243347"
+       :extend t))
   "Face used for user-authored chat blocks."
   :group 'e-chat)
 
 (defface e-chat-assistant-face
-  '((t :inherit font-lock-function-name-face :extend t))
+  '((t :inherit default
+       :foreground "#e6f3d4"
+       :background "#2b3526"
+       :extend t))
   "Face used for assistant response chat blocks."
   :group 'e-chat)
 
 (defface e-chat-system-face
-  '((t :inherit font-lock-comment-face :extend t))
+  '((t :inherit default
+       :foreground "#ded2ec"
+       :background "#312b3c"
+       :extend t))
   "Face used for compact system chat blocks."
   :group 'e-chat)
 
@@ -65,17 +74,31 @@
   :group 'e-chat)
 
 (defconst e-chat--user-face-spec
-  '((t :inherit font-lock-string-face :extend t))
+  '((t :inherit default
+       :foreground "#d7ecff"
+       :background "#243347"
+       :extend t))
   "Default face spec for user-authored chat blocks.")
 
 (defconst e-chat--assistant-face-spec
-  '((t :inherit font-lock-function-name-face :extend t))
+  '((t :inherit default
+       :foreground "#e6f3d4"
+       :background "#2b3526"
+       :extend t))
   "Default face spec for assistant response chat blocks.")
+
+(defconst e-chat--system-face-spec
+  '((t :inherit default
+       :foreground "#ded2ec"
+       :background "#312b3c"
+       :extend t))
+  "Default face spec for compact system chat blocks.")
 
 (defun e-chat--refresh-face-specs ()
   "Refresh chat face defaults after live reload."
   (face-spec-set 'e-chat-user-face e-chat--user-face-spec)
-  (face-spec-set 'e-chat-assistant-face e-chat--assistant-face-spec))
+  (face-spec-set 'e-chat-assistant-face e-chat--assistant-face-spec)
+  (face-spec-set 'e-chat-system-face e-chat--system-face-spec))
 
 (e-chat--refresh-face-specs)
 
@@ -198,7 +221,7 @@ FACE is applied when non-nil.  PROPERTIES are added with text properties."
     (insert text)
     (e-chat--mark-protected start (point))
     (when face
-      (add-face-text-property start (point) face nil))
+      (add-text-properties start (point) `(font-lock-face ,face)))
     (when properties
       (add-text-properties start (point) properties))))
 
