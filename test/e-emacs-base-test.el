@@ -26,8 +26,7 @@
     (should (equal (mapcar (lambda (definition)
                              (plist-get definition :name))
                            (e-tools-definitions (e-harness-tools harness)))
-                   '("current_time"
-                     "list_buffers"
+                   '("list_buffers"
                      "read_buffer"
                      "write_buffer"
                      "edit_buffer"

@@ -36,8 +36,8 @@
   "Registered tools expose backend-neutral function definitions."
   (let ((registry (e-tools-registry-create)))
     (e-tools-register registry
-                      :name "current_time"
-                      :description "Return the current time."
+                      :name "noop"
+                      :description "Accept no arguments."
                       :parameters '(:type "object" :properties nil)
                       :handler (lambda (_arguments) "now"))
     (let* ((definitions (e-tools-definitions registry))
@@ -49,8 +49,8 @@
                (json-encode definitions)))
       (should (equal (car definitions)
                      `(:type "function"
-                       :name "current_time"
-                       :description "Return the current time."
+                       :name "noop"
+                       :description "Accept no arguments."
                        :parameters ,parameters
                        :strict :json-false))))))
 

@@ -96,7 +96,7 @@ Current repository mapping:
 - `lisp/e-backend.el`: backend-neutral adapter contract and fake backend.
 - `lisp/e-openai.el`: ChatGPT-backed OpenAI/Codex adapter for Codex auth, Responses request mapping, and SSE parsing.
 - `lisp/e-tools.el`: pure tool registry and structured tool-result handling.
-- `lisp/e-emacs-tools.el`: concrete Emacs buffer, save, elisp, and current-time tools.
+- `lisp/e-emacs-tools.el`: concrete Emacs buffer, save, and elisp tools.
 - `lisp/e-emacs-base.el`: default Emacs layer with instructions, visible-buffer context, and MVP tools.
 - `lisp/e-loop.el`: backend/tool/message/event turn loop with tool-result follow-up.
 - `lisp/e-harness.el`: public core harness service for sessions, prompts, async prompts, wait, follow-ups, reset, state access, cancellation, and event subscription.
@@ -166,7 +166,7 @@ The execution environment is the shell boundary for Emacs side effects. It shoul
 
 Tools depend on the execution environment. The core harness depends only on tool contracts, backend-neutral tool definitions, and structured tool results. Permission checks, confirmation, observability, and audit records should stay close to concrete side effects.
 
-The current concrete tool surface is the MVP `emacs-base` set: `current_time`, `list_buffers`, `read_buffer`, `write_buffer`, `edit_buffer`, `save_buffer`, and `run_elisp`. Buffer write/edit tools mutate live buffers without saving; `save_buffer` is the explicit persistence action for file-backed buffers. Process execution, permission/confirmation controls, and harness mutation remain deferred.
+The current concrete tool surface is the MVP `emacs-base` set: `list_buffers`, `read_buffer`, `write_buffer`, `edit_buffer`, `save_buffer`, and `run_elisp`. Buffer write/edit tools mutate live buffers without saving; `save_buffer` is the explicit persistence action for file-backed buffers. Process execution, permission/confirmation controls, and harness mutation remain deferred.
 
 ### LLM Backend Interface
 

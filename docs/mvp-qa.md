@@ -34,10 +34,10 @@ test/e-context-test.el test/e-harness-test.el`.
 **Scenario enabled:** The default `emacs-base` layer gives the model an
 Emacs-aware operating surface.
 
-With `emacs-base` active, the harness exposes these tools: `current_time`,
-`list_buffers`, `read_buffer`, `write_buffer`, `edit_buffer`, `save_buffer`,
-and `run_elisp`. It also contributes instructions that buffer edits are live
-mutations and saving is explicit.
+With `emacs-base` active, the harness exposes these tools: `list_buffers`,
+`read_buffer`, `write_buffer`, `edit_buffer`, `save_buffer`, and `run_elisp`.
+It also contributes instructions that buffer edits are live mutations and
+saving is explicit.
 
 The visible-buffer context provider reports names, modes, file paths when
 present, modified status, and visibility for buffers visible in windows. It

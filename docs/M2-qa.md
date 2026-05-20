@@ -42,16 +42,15 @@ is the smallest real-agent path before UI work.
 `rtk eldev test test/e-harness-test.el`, `rtk eldev test`, and batch
 `e-dev-reload`.
 
-## Slice 4: Harmless Tool Calling
+## Slice 4: Tool Calling
 
-**Scenario enabled:** A real model can receive one low-risk function tool,
-request it, have the registry execute it, append a structured tool result, and
-continue the turn with that tool result in context.
+**Scenario enabled:** A real model can receive backend-neutral function tool
+definitions, request one, have the registry execute it, append a structured
+tool result, and continue the turn with that tool result in context.
 
-The new concrete tool is `current_time`. It does not edit buffers, write files,
-run processes, evaluate elisp, or mutate the harness. Tool definitions are
-backend-neutral and passed through harness options to the OpenAI/Codex request
-mapper.
+This slice originally used a temporary demo tool. The current MVP surface
+removed that demo tool and uses the Emacs buffer/elisp tools provided by
+`emacs-base`.
 
 **Validation:** `rtk eldev test test/e-tools-test.el
 test/e-emacs-tools-test.el test/e-harness-test.el test/e-loop-test.el`,
@@ -78,8 +77,7 @@ With valid Codex-managed ChatGPT auth available at `CODEX_HOME/auth.json` or
 `~/.codex/auth.json`, Elisp can now:
 
 1. Create a Codex-backed harness with `e-openai-codex-create-harness`.
-2. Register the safe `current_time` tool with
-   `e-emacs-tools-register-defaults`.
+2. Register the `emacs-base` tools with `e-emacs-tools-register-defaults`.
 3. Create a session through `e-harness-create-session`.
 4. Submit a prompt with `e-harness-prompt` or `e-harness-prompt-async`.
 5. Build context through `transcript-stack`.

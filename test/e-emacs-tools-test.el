@@ -17,18 +17,6 @@
 (require 'e-emacs-tools)
 (require 'e-tools)
 
-(ert-deftest e-emacs-tools-test-current-time-tool ()
-  "The current-time tool returns a readable time string."
-  (let ((registry (e-tools-registry-create)))
-    (e-emacs-tools-register-current-time registry)
-    (let ((result (e-tools-execute registry
-                                   '(:id "call-1"
-                                     :name "current_time"
-                                     :arguments nil))))
-      (should (equal (plist-get result :status) 'ok))
-      (should (stringp (plist-get result :content)))
-      (should (< 0 (length (plist-get result :content)))))))
-
 (ert-deftest e-emacs-tools-test-list-buffers-reports-buffer-metadata ()
   "The list-buffers tool returns live buffer metadata."
   (let ((registry (e-tools-registry-create))

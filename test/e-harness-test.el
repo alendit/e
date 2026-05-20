@@ -168,8 +168,8 @@
          (tools (e-tools-registry-create))
          (harness (e-harness-create :backend backend :tools tools)))
     (e-tools-register tools
-                      :name "current_time"
-                      :description "Return the current time."
+                      :name "noop"
+                      :description "Accept no arguments."
                       :parameters '(:type "object" :properties nil)
                       :handler (lambda (_arguments) "now"))
     (e-harness-create-session harness :id "session-1")
@@ -180,8 +180,8 @@
       (should (hash-table-p (plist-get parameters :properties)))
       (should (equal tool
                      `(:type "function"
-                       :name "current_time"
-                       :description "Return the current time."
+                       :name "noop"
+                       :description "Accept no arguments."
                        :parameters ,parameters
                        :strict :json-false))))))
 

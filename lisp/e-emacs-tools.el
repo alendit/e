@@ -103,17 +103,6 @@ When VISIBLE-ONLY is non-nil, include only buffers visible in windows."
         (setq position (1+ position))))
     (nreverse forms)))
 
-(defun e-emacs-tools-register-current-time (registry)
-  "Register a harmless `current-time' tool in REGISTRY."
-  (e-tools-register
-   registry
-   :name "current_time"
-   :description "Return the current local time as a readable string."
-   :parameters '(:type "object"
-                 :properties nil)
-   :handler (lambda (_arguments)
-              (current-time-string))))
-
 (defun e-emacs-tools-register-list-buffers (registry)
   "Register a tool that lists live Emacs buffers in REGISTRY."
   (e-tools-register
@@ -247,7 +236,6 @@ When VISIBLE-ONLY is non-nil, include only buffers visible in windows."
 
 (defun e-emacs-tools-register-defaults (registry)
   "Register default concrete Emacs tools in REGISTRY."
-  (e-emacs-tools-register-current-time registry)
   (e-emacs-tools-register-list-buffers registry)
   (e-emacs-tools-register-read-buffer registry)
   (e-emacs-tools-register-write-buffer registry)
