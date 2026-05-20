@@ -137,6 +137,38 @@
                      'ok))
       (should (equal (plist-get (cl-third ordered) :content) "✅ Done")))))
 
+(ert-deftest e-loop-test-emits-intermittent-reasoning-and-tool-call-events ()
+  "Reasoning deltas and tool calls are surfaced before the final message."
+  (let* ((backend (e-backend-fake-create
+                   :items '((:type reasoning-delta :content "thinking")
+                            (:type tool-call :id "call-1" :name "echo" :arguments (:text "hi"))
+                            (:type assistant-message :content "done")
+                            (:type done :reason stop))))
+         (tools (e-tools-registry-create))
+         (events nil))
+    (e-tools-register tools
+                      :name "echo"
+                      :description "Echo text."
+                      :handler (lambda (arguments) (plist-get arguments :text)))
+    (e-loop-run-turn
+     :session-id "session-1"
+     :turn-id "turn-1"
+     :messages '((:role user :content "hi"))
+     :backend backend
+     :tools tools
+     :options nil
+     :on-event (lambda (event) (push event events))
+     :append-message #'ignore)
+    (let ((types (mapcar (lambda (event) (plist-get event :type))
+                         (nreverse events))))
+      (should (equal types
+                     '(turn-started
+                       reasoning-delta
+                       tool-started
+                       tool-finished
+                       message-added
+                       turn-finished))))))
+
 (ert-deftest e-loop-test-requeries-backend-after-tool-result ()
   "Tool results are fed back into the backend until an assistant message settles."
   (let* ((calls 0)

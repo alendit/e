@@ -56,6 +56,16 @@ backend-neutral messages that should appear before the session transcript."
                  (append prefix-messages (plist-get context :messages))))
     context))
 
+(defun e-context--backend-message (message)
+  "Return MESSAGE without presentation/storage-only metadata."
+  (let ((copy (copy-sequence message)))
+    (cl-remf copy :created-at)
+    copy))
+
+(defun e-context--backend-messages (messages)
+  "Return MESSAGES normalized for backend context."
+  (mapcar #'e-context--backend-message messages))
+
 (cl-defun e-context-transcript-stack-create ()
   "Create the classic transcript-stack context strategy."
   (e-context-create
@@ -63,7 +73,8 @@ backend-neutral messages that should appear before the session transcript."
    :build (cl-function
            (lambda (&key sessions session-id options)
              (list :strategy 'transcript-stack
-                   :messages (e-session-messages sessions session-id)
+                   :messages (e-context--backend-messages
+                              (e-session-messages sessions session-id))
                    :options options)))))
 
 (provide 'e-context)

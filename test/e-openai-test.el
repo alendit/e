@@ -327,6 +327,14 @@ event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{
       :name "now"
       :arguments (:format "iso"))))))
 
+(ert-deftest e-openai-test-parse-reasoning-summary-delta ()
+  "Responses reasoning summary deltas become backend-neutral reasoning items."
+  (should
+   (equal
+    (e-openai-codex-parse-stream
+     "data: {\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"checking context\"}\n\n")
+    '((:type reasoning-delta :content "checking context")))))
+
 (ert-deftest e-openai-test-parse-message-output-item ()
   "Responses message output items become assistant messages."
   (should

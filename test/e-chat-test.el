@@ -164,8 +164,8 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest e-chat-test-submit-immediately-clears-composer-and-renders-user-turn ()
-  "Submitting shows the user turn before the async backend settles."
+(ert-deftest e-chat-test-submit-immediately-clears-composer-and-keeps-separator ()
+  "Submitting shows the user turn and keeps bottom separator chrome visible."
   (let ((buffer (e-chat-test--buffer
                  '((:type assistant-message :content "later")
                    (:type done :reason stop))
@@ -184,6 +184,8 @@
                          (concat (regexp-quote e-chat--composer-glyph)
                                  "send now")
                          content)))
+          (should (string-match-p (regexp-quote e-chat--composer-separator)
+                                  (buffer-string)))
           (should-not (e-chat--composer-active-p)))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
@@ -208,6 +210,8 @@
                    (concat (regexp-quote e-chat--user-glyph)
                            " send now")
                    (buffer-string)))
+          (should (string-match-p (regexp-quote e-chat--composer-separator)
+                                  (buffer-string)))
           (should-not (e-chat--composer-active-p)))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
@@ -355,6 +359,89 @@
                              " System\nTurn cancelled")
                      content))
             (should-not (string-match-p "(:status ok)" content))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-replaces-intermittent-events-with-final-response ()
+  "Reasoning and tool-call entries are visible until final assistant output arrives."
+  (let ((buffer (e-chat-test--buffer nil "chat-intermittent")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat--render-event
+           (e-events-make :type 'turn-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 10))
+          (e-chat--render-event
+           (e-events-make :type 'reasoning-delta
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :payload '(:type reasoning-delta
+                                      :content "Need current buffer state.")))
+          (e-chat--render-event
+           (e-events-make :type 'tool-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :payload '(:type tool-call
+                                      :id "call-1"
+                                      :name "buffer-read"
+                                      :arguments (:buffer "*scratch*"))))
+          (let ((content (buffer-string)))
+            (should (string-match-p "Reasoning\nNeed current buffer state."
+                                    content))
+            (should (string-match-p "Tool call\nbuffer-read" content)))
+          (e-chat--render-event
+           (e-events-make :type 'message-added
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 11
+                          :payload '(:message (:role assistant
+                                                :content "Final answer."))))
+          (let ((content (buffer-string)))
+            (should (string-match-p
+                     (concat (regexp-quote e-chat--assistant-glyph)
+                             " Final answer.")
+                     content))
+            (should-not (string-match-p "Need current buffer state." content))
+            (should-not (string-match-p "Tool call\nbuffer-read" content))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-response-navigation-expand-shows-intermittent-events-first ()
+  "Expanding the final block shows intermittent reasoning before metadata."
+  (let ((buffer (e-chat-test--buffer nil "chat-intermittent-expand")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat--render-event
+           (e-events-make :type 'turn-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 10))
+          (e-chat--render-event
+           (e-events-make :type 'reasoning-delta
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :payload '(:type reasoning-delta
+                                      :content "Need current buffer state.")))
+          (e-chat--render-event
+           (e-events-make :type 'message-added
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 11
+                          :payload '(:message (:role assistant
+                                                :content "Final answer."))))
+          (e-chat--render-event
+           (e-events-make :type 'turn-finished
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 12
+                          :payload '(:reason stop)))
+          (call-interactively #'e-chat-enter-response-navigation)
+          (call-interactively #'e-chat-response-navigation-expand)
+          (let ((content (buffer-string)))
+            (should (string-match-p
+                     "Final answer\\.\n\n  Reasoning\n  Need current buffer state\\.\n\n  Turn: turn-1"
+                     content))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -516,11 +603,25 @@
         (progn
           (e-harness-create-session harness :id "chat-nav-replay")
           (e-session-append-message
-           store "chat-nav-replay" '(:role user :content "old first"))
+           store "chat-nav-replay"
+           '(:role user
+             :content "old first"
+             :created-at "1970-01-01T00:00:10Z"))
           (e-session-append-message
-           store "chat-nav-replay" '(:role assistant :content "old one"))
+           store "chat-nav-replay"
+           '(:role assistant
+             :content "old one"
+             :created-at "1970-01-01T00:00:12Z"))
           (e-session-append-message
-           store "chat-nav-replay" '(:role user :content "old second"))
+           store "chat-nav-replay"
+           '(:role user
+             :content "old second"
+             :created-at "1970-01-01T00:00:20Z"))
+          (e-session-append-message
+           store "chat-nav-replay"
+           '(:role assistant
+             :content "old two"
+             :created-at "1970-01-01T00:00:22Z"))
           (setq buffer (e-chat-open :harness harness
                                     :session-id "chat-nav-replay"))
           (with-current-buffer buffer
@@ -528,9 +629,52 @@
             (should (equal e-chat--focused-turn-id "replayed-turn-2"))
             (call-interactively #'e-chat-response-navigation-expand)
             (let ((content (buffer-string)))
-              (should (string-match-p "  Started: unknown" content))
-              (should (string-match-p "  Ended: unknown" content))
-              (should (string-match-p "  Duration: unknown" content)))))
+              (should (string-match-p
+                       "  Started: 1970-01-01T00:00:20Z"
+                       content))
+              (should (string-match-p
+                       "  Ended: 1970-01-01T00:00:22Z"
+                       content))
+              (should (string-match-p "  Duration: 2.00s" content)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-replayed-session-hides-tool-messages-in-final-turn ()
+  "Replayed tool messages stay out of the transcript and move to details."
+  (let* ((store (e-session-store-create))
+         (backend (e-backend-fake-create :items nil))
+         (harness (e-harness-create :backend backend :sessions store))
+         (buffer nil))
+    (unwind-protect
+        (progn
+          (e-harness-create-session harness :id "chat-tool-replay")
+          (e-session-append-message
+           store "chat-tool-replay" '(:role user :content "inspect"))
+          (e-session-append-message
+           store "chat-tool-replay"
+           '(:role tool-call
+             :content (:type tool-call :name "run_elisp" :arguments (:form "(buffer-name)"))))
+          (e-session-append-message
+           store "chat-tool-replay"
+           '(:role tool
+             :content (:tool-call-id "call-1"
+                       :name "run_elisp"
+                       :status ok
+                       :content (:result "*scratch*"))))
+          (e-session-append-message
+           store "chat-tool-replay" '(:role assistant :content "Final."))
+          (setq buffer (e-chat-open :harness harness
+                                    :session-id "chat-tool-replay"))
+          (with-current-buffer buffer
+            (let ((content (buffer-string)))
+              (should (string-match-p "Final\\." content))
+              (should-not (string-match-p "· Tool" content))
+              (should-not (string-match-p ":tool-call-id" content)))
+            (call-interactively #'e-chat-enter-response-navigation)
+            (call-interactively #'e-chat-response-navigation-expand)
+            (let ((content (buffer-string)))
+              (should (string-match-p "  Tool call\n  run_elisp" content))
+              (should (string-match-p "  Tool\n  (:tool-call-id" content)))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -577,6 +721,28 @@
                           (buffer-substring-no-properties
                            e-chat--composer-spacer-marker
                            e-chat--transcript-end-marker))))))
+      (when (window-live-p window)
+        (delete-window window))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-window-change-refreshes-visible-composer-spacer ()
+  "Window changes recalculate the composer spacer for visible chat buffers."
+  (let ((buffer (e-chat-test--buffer nil "chat-resize"))
+        (window nil))
+    (unwind-protect
+        (progn
+          (setq window (display-buffer buffer))
+          (with-current-buffer buffer
+            (let ((e-chat--test-window-body-height 18))
+              (e-chat--refresh-composer-position))
+            (let ((before (count-lines e-chat--composer-spacer-marker
+                                       e-chat--transcript-end-marker)))
+              (let ((e-chat--test-window-body-height 8))
+                (e-chat--refresh-visible-composers))
+              (let ((after (count-lines e-chat--composer-spacer-marker
+                                        e-chat--transcript-end-marker)))
+                (should (< after before))))))
       (when (window-live-p window)
         (delete-window window))
       (when (buffer-live-p buffer)

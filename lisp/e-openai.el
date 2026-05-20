@@ -38,12 +38,12 @@
   :group 'e
   :prefix "e-openai-")
 
+(defvaralias 'e-openai-codex-default-model 'e-openai-default-model)
+
 (defcustom e-openai-default-model "gpt-5.5"
   "Default model for OpenAI-like Responses requests."
   :type 'string
   :group 'e-openai)
-
-(defvaralias 'e-openai-codex-default-model 'e-openai-default-model)
 
 (defcustom e-openai-default-reasoning-effort "high"
   "Default reasoning effort for OpenAI-like Responses requests."
@@ -444,6 +444,11 @@ profiles."
      ((equal type "response.output_text.done")
       (list :type 'assistant-message
             :content (plist-get event :text)))
+     ((member type '("response.reasoning_summary_text.delta"
+                     "response.reasoning_text.delta"))
+      (list :type 'reasoning-delta
+            :content (or (plist-get event :delta)
+                         (plist-get event :text))))
      ((and (equal type "response.output_item.done")
            (e-openai-codex--function-call-item-p (plist-get event :item)))
       (let ((item (plist-get event :item)))

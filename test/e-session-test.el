@@ -11,6 +11,7 @@
 
 ;;; Code:
 
+(require 'cl-lib)
 (require 'ert)
 (require 'e)
 (require 'e-session)
@@ -33,6 +34,18 @@
     (should (equal (mapcar (lambda (message) (plist-get message :id))
                            (e-session-messages store "session-1"))
                    '("msg-1" "msg-2")))))
+
+(ert-deftest e-session-test-append-message-stamps-created-at ()
+  "Appended messages carry their creation timestamp."
+  (let ((store (e-session-store-create)))
+    (cl-letf (((symbol-function 'e-session--timestamp)
+               (lambda (&optional _time) "2026-05-21T10:00:00Z")))
+      (e-session-create store :id "session-1")
+      (e-session-append-message
+       store "session-1" '(:role user :content "hello"))
+      (should (equal (plist-get (car (e-session-messages store "session-1"))
+                                :created-at)
+                     "2026-05-21T10:00:00Z")))))
 
 (ert-deftest e-session-test-missing-session-surfaces-error ()
   "Appending to a missing session surfaces a domain error."
@@ -60,6 +73,35 @@
             (should (equal (mapcar (lambda (message) (plist-get message :id))
                                    (e-session-messages loaded session-id))
                            '("msg-1" "msg-2")))))
+      (delete-directory directory t))))
+
+(ert-deftest e-session-test-persistent-replay-preserves-message-timestamp ()
+  "Persistent replay restores each message's journal timestamp."
+  (let* ((directory (make-temp-file "e-session-" t))
+         (timestamps '("2026-05-21T10:00:00Z"
+                       "2026-05-21T10:00:01Z"))
+         (store (cl-letf (((symbol-function 'e-session--timestamp)
+                           (lambda (&optional _time)
+                             (prog1 (car timestamps)
+                               (setq timestamps (cdr timestamps))))))
+                  (e-session-persistent-store-create directory)))
+         (session-id nil))
+    (unwind-protect
+        (progn
+          (setq timestamps '("2026-05-21T10:00:00Z"
+                             "2026-05-21T10:00:01Z"))
+          (cl-letf (((symbol-function 'e-session--timestamp)
+                     (lambda (&optional _time)
+                       (prog1 (car timestamps)
+                         (setq timestamps (cdr timestamps))))))
+            (setq session-id
+                  (plist-get (e-session-create store :id "session-1") :id))
+            (e-session-append-message
+             store session-id '(:id "msg-1" :role user :content "hello")))
+          (let ((loaded (e-session-persistent-store-create directory)))
+            (should (equal (plist-get (car (e-session-messages loaded session-id))
+                                      :created-at)
+                           "2026-05-21T10:00:01Z"))))
       (delete-directory directory t))))
 
 (ert-deftest e-session-test-rename-persists-explicit-title ()

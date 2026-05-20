@@ -160,6 +160,13 @@
   (plist-put message :role (e-session--known-role (plist-get message :role)))
   message)
 
+(defun e-session--message-with-created-at (message timestamp)
+  "Return normalized MESSAGE with TIMESTAMP as its creation time when missing."
+  (let ((normalized (e-session--normalize-message (copy-sequence message))))
+    (unless (plist-member normalized :created-at)
+      (plist-put normalized :created-at timestamp))
+    normalized))
+
 (defun e-session--replay-record (store record)
   "Replay persistent RECORD into STORE without appending it again."
   (let* ((type (plist-get record :type))
@@ -190,8 +197,9 @@
          (plist-put session
                     :messages
                     (append (plist-get session :messages)
-                            (list (e-session--normalize-message
-                                   (plist-get record :message)))))
+                            (list (e-session--message-with-created-at
+                                   (plist-get record :message)
+                                   timestamp))))
          (e-session--touch store session timestamp)))
       ("session-info"
        (when session
@@ -306,15 +314,17 @@
 (defun e-session-append-message (store session-id message)
   "Append MESSAGE to SESSION-ID in STORE."
   (let* ((session (e-session-get store session-id))
-         (messages (plist-get session :messages)))
+         (messages (plist-get session :messages))
+         (timestamp (e-session--timestamp))
+         (message (e-session--message-with-created-at message timestamp)))
     (plist-put session :messages (append messages (list message)))
-    (e-session--touch store session)
+    (e-session--touch store session timestamp)
     (e-session--refresh-derived-fields store session)
     (e-session--append-record
      store session-id
      (list :type "message"
            :session-id session-id
-           :timestamp (plist-get session :updated-at)
+           :timestamp timestamp
            :message message))
     (e-session--write-index store)
     message))

@@ -195,6 +195,9 @@
 (defvar e-chat--test-transcript-screen-lines nil
   "Test override for transcript screen-line height.")
 
+(defvar e-chat--refresh-visible-composers-in-progress nil
+  "Non-nil while visible e chat composers are being refreshed.")
+
 (defvar e-chat--default-sessions nil
   "Default persistent session store used by chat commands.")
 
@@ -366,16 +369,20 @@ FACE is applied when non-nil.  PROPERTIES are added with text properties."
 (defun e-chat--delete-composer ()
   "Delete the active composer from the current chat buffer.
 Return non-nil when a composer was removed."
-  (when (e-chat--composer-active-p)
-    (let ((inhibit-read-only t)
-          (start (marker-position (or e-chat--composer-spacer-marker
-                                      e-chat--transcript-end-marker))))
-      (delete-region start (point-max))
-      (set-marker e-chat--transcript-end-marker nil)
-      (set-marker e-chat--composer-start-marker nil)
-      (when (markerp e-chat--composer-spacer-marker)
-        (set-marker e-chat--composer-spacer-marker nil))
-      t)))
+  (let ((start (or (and (markerp e-chat--composer-spacer-marker)
+                        (marker-position e-chat--composer-spacer-marker))
+                   (and (markerp e-chat--transcript-end-marker)
+                        (marker-position e-chat--transcript-end-marker))
+                   (and (markerp e-chat--composer-start-marker)
+                        (marker-position e-chat--composer-start-marker)))))
+    (when start
+      (let ((inhibit-read-only t))
+        (delete-region start (point-max))
+        (set-marker e-chat--transcript-end-marker nil)
+        (set-marker e-chat--composer-start-marker nil)
+        (when (markerp e-chat--composer-spacer-marker)
+          (set-marker e-chat--composer-spacer-marker nil))
+        t))))
 
 (defun e-chat--visible-height ()
   "Return the visible body height for the current chat buffer."
@@ -406,6 +413,7 @@ Return non-nil when a composer was removed."
 (defun e-chat--insert-composer ()
   "Insert an editable composer at the end of the current chat buffer."
   (e-chat--disable-completion)
+  (e-chat--delete-composer)
   (let ((inhibit-read-only t))
     (goto-char (point-max))
     (unless (or (bobp) (bolp))
@@ -430,6 +438,27 @@ Return non-nil when a composer was removed."
     (set-marker-insertion-type e-chat--composer-start-marker nil)
     (goto-char e-chat--composer-start-marker)
     (e-chat--show-composer)))
+
+(defun e-chat--insert-pending-separator ()
+  "Insert protected bottom separator chrome without an editable composer."
+  (e-chat--delete-composer)
+  (let ((inhibit-read-only t))
+    (goto-char (point-max))
+    (unless (or (bobp) (bolp))
+      (insert "\n"))
+    (setq e-chat--composer-spacer-marker (point-marker))
+    (set-marker-insertion-type e-chat--composer-spacer-marker nil)
+    (let ((spacer-lines (e-chat--composer-spacer-lines)))
+      (when (> spacer-lines 0)
+        (e-chat--insert-protected
+         (make-string spacer-lines ?\n)
+         'e-chat-separator-face)))
+    (setq e-chat--transcript-end-marker (point-marker))
+    (set-marker-insertion-type e-chat--transcript-end-marker nil)
+    (e-chat--insert-protected
+     (concat e-chat--composer-separator "\n")
+     'e-chat-separator-face)
+    (goto-char (point-max))))
 
 (defun e-chat--ensure-composer ()
   "Ensure the current chat buffer has an active composer."
@@ -463,9 +492,18 @@ Return non-nil when a composer was removed."
       (or (gethash turn-id registry)
           (let ((record (list :id turn-id
                               :started-at nil
-                              :ended-at nil)))
+                              :ended-at nil
+                              :intermittent-entries nil
+                              :transient-start-marker nil
+                              :transient-end-marker nil
+                              :final-rendered nil)))
             (puthash turn-id record registry)
             record)))))
+
+(defun e-chat--existing-turn-record (turn-id)
+  "Return existing metadata for TURN-ID, or nil."
+  (when (and turn-id (hash-table-p e-chat--turn-registry))
+    (gethash turn-id e-chat--turn-registry)))
 
 (defun e-chat--next-block-id ()
   "Return a new display-local block id."
@@ -556,11 +594,152 @@ Return non-nil when a composer was removed."
    (value (format "%s" value))
    (t "unknown")))
 
+(defun e-chat--time-seconds (value)
+  "Return VALUE as seconds when it can be parsed as a time."
+  (cond
+   ((numberp value) value)
+   ((stringp value)
+    (condition-case nil
+        (float-time (date-to-time value))
+      (error nil)))
+   (t nil)))
+
 (defun e-chat--format-duration (started-at ended-at)
   "Return duration between STARTED-AT and ENDED-AT."
-  (if (and started-at ended-at)
-      (format "%.2fs" (- ended-at started-at))
-    "unknown"))
+  (let ((started-seconds (e-chat--time-seconds started-at))
+        (ended-seconds (e-chat--time-seconds ended-at)))
+    (if (and started-seconds ended-seconds)
+        (format "%.2fs" (- ended-seconds started-seconds))
+      "unknown")))
+
+(defun e-chat--indent-detail-text (text)
+  "Return TEXT with each line indented for expanded turn details."
+  (concat "  " (replace-regexp-in-string "\n" "\n  " (string-trim-right text))))
+
+(defun e-chat--intermittent-entry-text (entry)
+  "Return display text for intermittent turn ENTRY."
+  (format "%s\n%s"
+          (plist-get entry :title)
+          (plist-get entry :content)))
+
+(defun e-chat--intermittent-details-text (record)
+  "Return expanded intermittent details text for RECORD."
+  (when-let ((entries (plist-get record :intermittent-entries)))
+    (concat
+     (mapconcat
+      (lambda (entry)
+        (e-chat--indent-detail-text (e-chat--intermittent-entry-text entry)))
+      entries
+      "\n\n")
+     "\n\n")))
+
+(defun e-chat--transient-text (record)
+  "Return visible transient text for RECORD."
+  (when-let ((entries (plist-get record :intermittent-entries)))
+    (concat
+     (mapconcat #'e-chat--intermittent-entry-text entries "\n\n")
+     "\n\n")))
+
+(defun e-chat--add-intermittent-entry (record title content &optional append)
+  "Add intermittent TITLE and CONTENT to RECORD.
+When APPEND is non-nil, merge CONTENT into the previous entry with TITLE."
+  (when (and record content (not (string-empty-p content)))
+    (let* ((entries (plist-get record :intermittent-entries))
+           (last-entry (car (last entries))))
+      (if (and append
+               last-entry
+               (equal (plist-get last-entry :title) title))
+          (plist-put last-entry
+                     :content
+                     (concat (plist-get last-entry :content) content))
+        (plist-put record
+                   :intermittent-entries
+                   (append entries
+                           (list (list :title title :content content))))))))
+
+(defun e-chat--delete-turn-transient (record)
+  "Delete the currently visible transient block for RECORD."
+  (let ((start (plist-get record :transient-start-marker))
+        (end (plist-get record :transient-end-marker)))
+    (when (and (markerp start)
+               (markerp end)
+               (marker-position start)
+               (marker-position end))
+      (let ((inhibit-read-only t))
+        (delete-region start end)))
+    (plist-put record :transient-start-marker nil)
+    (plist-put record :transient-end-marker nil)))
+
+(defun e-chat--render-turn-transient (turn-id record)
+  "Render RECORD's intermittent entries as a temporary block for TURN-ID."
+  (e-chat--delete-turn-transient record)
+  (unless (plist-get record :final-rendered)
+    (when-let ((text (e-chat--transient-text record)))
+      (let ((had-composer (e-chat--delete-composer)))
+        (let ((inhibit-read-only t))
+          (goto-char (point-max))
+          (unless (or (bobp) (bolp))
+            (insert "\n"))
+          (let ((start (point)))
+            (e-chat--insert-protected
+             text
+             'e-chat-system-face
+             `(e-chat-transient-turn-id ,turn-id))
+            (plist-put record :transient-start-marker (copy-marker start nil))
+            (plist-put record :transient-end-marker (copy-marker (point) nil))))
+        (when had-composer
+          (e-chat--insert-composer))))))
+
+(defun e-chat--append-intermittent-entry (turn-id title content &optional append)
+  "Append intermittent TITLE and CONTENT to TURN-ID.
+When APPEND is non-nil, merge CONTENT into the previous entry with TITLE."
+  (when (and turn-id content (not (string-empty-p content)))
+    (let ((record (e-chat--turn-record turn-id)))
+      (e-chat--add-intermittent-entry record title content append)
+      (e-chat--render-turn-transient turn-id record))))
+
+(defun e-chat--format-tool-call (payload)
+  "Return a compact display string for tool-call PAYLOAD."
+  (let ((name (plist-get payload :name))
+        (arguments (plist-get payload :arguments)))
+    (string-join
+     (delq nil
+           (list (and name (format "%s" name))
+                 (and arguments
+                      (format "%S" arguments))))
+     "\n")))
+
+(defun e-chat--tool-message-p (message)
+  "Return non-nil when MESSAGE is a tool transcript message."
+  (memq (plist-get message :role) '(tool-call tool)))
+
+(defun e-chat--record-tool-message (turn-id message)
+  "Record tool MESSAGE as expandable details for TURN-ID."
+  (when-let ((record (e-chat--turn-record turn-id)))
+    (pcase (plist-get message :role)
+      ('tool-call
+       (e-chat--add-intermittent-entry
+        record
+        "Tool call"
+        (e-chat--format-tool-call (plist-get message :content))))
+      ('tool
+       (e-chat--add-intermittent-entry
+        record
+        "Tool"
+        (format "%S" (plist-get message :content)))))))
+
+(defun e-chat--record-replayed-message-time (record message)
+  "Record MESSAGE's replay timestamp into RECORD."
+  (when-let ((created-at (plist-get message :created-at)))
+    (unless (plist-get record :started-at)
+      (plist-put record :started-at created-at))
+    (plist-put record :ended-at created-at)))
+
+(defun e-chat--finalize-turn-display (turn-id)
+  "Replace visible transient TURN-ID display with the final response."
+  (when-let ((record (e-chat--turn-record turn-id)))
+    (e-chat--delete-turn-transient record)
+    (plist-put record :final-rendered t)))
 
 (defun e-chat--delete-block-details (block)
   "Delete expanded detail text for BLOCK."
@@ -587,12 +766,14 @@ Return non-nil when a composer was removed."
 
 (defun e-chat--turn-details-text (turn-id record)
   "Return expanded details text for TURN-ID using RECORD."
-  (format "  Turn: %s\n  Started: %s\n  Ended: %s\n  Duration: %s\n\n"
-          turn-id
-          (e-chat--format-time-value (plist-get record :started-at))
-          (e-chat--format-time-value (plist-get record :ended-at))
-          (e-chat--format-duration (plist-get record :started-at)
-                                   (plist-get record :ended-at))))
+  (concat
+   (or (e-chat--intermittent-details-text record) "")
+   (format "  Turn: %s\n  Started: %s\n  Ended: %s\n  Duration: %s\n\n"
+           turn-id
+           (e-chat--format-time-value (plist-get record :started-at))
+           (e-chat--format-time-value (plist-get record :ended-at))
+           (e-chat--format-duration (plist-get record :started-at)
+                                    (plist-get record :ended-at)))))
 
 (defun e-chat--insert-block-details (block turn-id record)
   "Insert expanded details for BLOCK and TURN-ID using RECORD."
@@ -711,6 +892,25 @@ TURN-ID tags the rendered entry for response navigation."
       (e-chat--insert-composer)
       (insert text)
       (e-chat--show-composer))))
+
+(defun e-chat--refresh-visible-composers ()
+  "Refresh composer spacers for visible e chat buffers."
+  (unless e-chat--refresh-visible-composers-in-progress
+    (let ((e-chat--refresh-visible-composers-in-progress t)
+          (seen nil))
+      (dolist (window (window-list nil 'no-minibuf))
+        (let ((buffer (window-buffer window)))
+          (when (and (buffer-live-p buffer)
+                     (not (memq buffer seen)))
+            (push buffer seen)
+            (with-current-buffer buffer
+              (when (derived-mode-p 'e-chat-mode)
+                (e-chat--refresh-composer-position)))))))))
+
+(defun e-chat--ensure-window-refresh-hook ()
+  "Ensure visible chat composers refresh when frame windows change."
+  (add-hook 'window-configuration-change-hook
+            #'e-chat--refresh-visible-composers))
 
 (defun e-chat--show-composer ()
   "Move point and visible window focus to the composer."
@@ -837,14 +1037,36 @@ TURN-ID tags the rendered entry for response navigation."
      (e-chat--insert-entry "System" "Turn cancelled" t
                            (plist-get event :turn-id)))
     ('message-added
-     (let* ((entry (e-chat--message-entry
-                    (plist-get (plist-get event :payload) :message))))
+     (let* ((message (plist-get (plist-get event :payload) :message))
+            (entry (e-chat--message-entry message)))
+       (when (eq (plist-get message :role) 'assistant)
+         (e-chat--finalize-turn-display (plist-get event :turn-id)))
        (e-chat--insert-entry (car entry) (cdr entry) nil
                              (plist-get event :turn-id))))
     ('assistant-delta
      (e-chat--set-status "streaming"))
+    ('reasoning-delta
+     (e-chat--set-status "reasoning")
+     (e-chat--append-intermittent-entry
+      (plist-get event :turn-id)
+      "Reasoning"
+      (plist-get (plist-get event :payload) :content)
+      t))
+    ('tool-started
+     (e-chat--set-status "tool")
+     (e-chat--append-intermittent-entry
+      (plist-get event :turn-id)
+      "Tool call"
+      (e-chat--format-tool-call (plist-get event :payload))))
     ('tool-finished
-     (e-chat--set-status "tool done"))
+     (e-chat--set-status "tool done")
+     (when-let ((record (e-chat--existing-turn-record
+                         (plist-get event :turn-id))))
+       (e-chat--add-intermittent-entry
+        record
+        "Tool"
+        (format "%S" (plist-get (plist-get event :payload) :result)))
+       (e-chat--render-turn-transient (plist-get event :turn-id) record)))
     ('backend-empty-output
      (e-chat--set-status "done"))
     ('session-reset
@@ -856,15 +1078,19 @@ TURN-ID tags the rendered entry for response navigation."
 (defun e-chat--render-session ()
   "Render the attached session transcript in the current buffer."
   (let ((turn-index 0)
-        turn-id)
+        turn-id
+        record)
     (dolist (message (e-harness-messages e-chat-harness e-chat-session-id))
       (when (or (not turn-id)
                 (eq (plist-get message :role) 'user))
         (setq turn-index (1+ turn-index))
         (setq turn-id (format "replayed-turn-%d" turn-index))
-        (e-chat--turn-record turn-id))
-      (let ((entry (e-chat--message-entry message)))
-        (e-chat--insert-entry (car entry) (cdr entry) t turn-id)))))
+        (setq record (e-chat--turn-record turn-id)))
+      (e-chat--record-replayed-message-time record message)
+      (if (e-chat--tool-message-p message)
+          (e-chat--record-tool-message turn-id message)
+        (let ((entry (e-chat--message-entry message)))
+          (e-chat--insert-entry (car entry) (cdr entry) t turn-id))))))
 
 (cl-defun e-chat-open (&key harness session-id new-session)
   "Attach and return an e chat buffer.
@@ -891,6 +1117,7 @@ reload.  User-facing commands should call `e-chat-new' or `e-chat-resume'."
     (e-chat-mode)
     (e-chat--disable-modal-editing)
     (e-chat--disable-completion)
+    (e-chat--ensure-window-refresh-hook)
     (setq-local e-chat-harness harness)
     (setq-local e-chat-session-id session-id)
     (e-chat--rename-buffer-for-session)
@@ -1039,6 +1266,7 @@ reload.  User-facing commands should call `e-chat-new' or `e-chat-resume'."
   (e-chat--set-status "queued")
   (e-harness-prompt-async e-chat-harness e-chat-session-id prompt
                           :delay e-chat-submit-backend-delay)
+  (e-chat--insert-pending-separator)
   (redisplay t))
 
 ;;;###autoload
