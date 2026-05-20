@@ -27,6 +27,9 @@
   (require 'e)
   (should (commandp 'e-status))
   (should (commandp 'e-chat))
+  (should (commandp 'e-chat-new))
+  (should (commandp 'e-chat-resume))
+  (should (commandp 'e-chat-rename))
   (should (commandp 'e-dev-reload)))
 
 (ert-deftest e-test-exposes-core-harness-api ()

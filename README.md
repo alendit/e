@@ -62,6 +62,16 @@ dependency order, including new MVP modules such as `e-layers`,
 
 The package itself does not depend on Doom-specific APIs.
 
+## Chat Sessions
+
+`M-x e-chat` and `M-x e-chat-new` create a fresh persisted chat session.
+Sessions are stored under `(locate-user-emacs-file "e/sessions/")` as
+append-only JSONL files with a recent-session `index.json`.
+
+Use `M-x e-chat-resume` to pick a recent session and `M-x e-chat-rename` to set
+an explicit display name for the current session.  If a session has no explicit
+name, chat buffers use the first user message as a fallback title.
+
 ## OpenAI-Like Providers
 
 `e` configures OpenAI-like backends with Emacs Lisp provider profiles.  This is

@@ -57,7 +57,16 @@
 (autoload 'e-dev-reload "e-dev" "Reload e package files during development." t)
 
 ;;;###autoload
-(autoload 'e-chat "e-chat" "Open the default e chat buffer." t)
+(autoload 'e-chat "e-chat" "Create and open a new persisted e chat session." t)
+
+;;;###autoload
+(autoload 'e-chat-new "e-chat" "Create and open a new persisted e chat session." t)
+
+;;;###autoload
+(autoload 'e-chat-resume "e-chat" "Resume a recent persisted e chat session." t)
+
+;;;###autoload
+(autoload 'e-chat-rename "e-chat" "Rename the current e chat session." t)
 
 (provide 'e)
 

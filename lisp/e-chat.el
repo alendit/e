@@ -25,12 +25,12 @@
   :prefix "e-chat-")
 
 (defcustom e-chat-buffer-name "*e-chat*"
-  "Default e chat buffer name."
+  "Legacy fallback e chat buffer name."
   :type 'string
   :group 'e-chat)
 
 (defcustom e-chat-default-session-id "default"
-  "Default in-memory chat session id."
+  "Legacy fallback chat session id for internal callers."
   :type 'string
   :group 'e-chat)
 
@@ -142,6 +142,9 @@
 (defvar e-chat--test-transcript-screen-lines nil
   "Test override for transcript screen-line height.")
 
+(defvar e-chat--default-sessions nil
+  "Default persistent session store used by chat commands.")
+
 (defconst e-chat--protected-properties
   '(read-only t
     e-chat-protected t
@@ -188,9 +191,22 @@
 
 (defun e-chat--default-harness ()
   "Create the default Codex-backed chat harness."
-  (let ((harness (e-openai-create-harness :provider e-openai-default-provider)))
+  (let ((harness (e-openai-create-harness
+                  :provider e-openai-default-provider
+                  :sessions (e-chat--default-session-store))))
     (e-harness-activate-layer harness (e-emacs-base-layer-create))
     harness))
+
+(defun e-chat--default-session-store ()
+  "Return the default persistent chat session store."
+  (let ((directory (file-name-as-directory
+                    (expand-file-name e-session-directory))))
+    (unless (and (e-session-store-p e-chat--default-sessions)
+                 (equal (e-session-store-directory e-chat--default-sessions)
+                        directory))
+      (setq e-chat--default-sessions
+            (e-session-persistent-store-create directory)))
+    e-chat--default-sessions))
 
 (defun e-chat--ensure-session (harness session-id)
   "Ensure SESSION-ID exists in HARNESS."
@@ -198,6 +214,43 @@
       (e-harness-create-session harness :id session-id)
     (e-session-duplicate
      nil)))
+
+(defun e-chat--session-store ()
+  "Return the current chat buffer's session store."
+  (unless e-chat-harness
+    (user-error "This buffer is not attached to an e chat session"))
+  (e-harness-sessions e-chat-harness))
+
+(defun e-chat--short-session-id (session-id)
+  "Return a compact SESSION-ID for display."
+  (if (> (length session-id) 12)
+      (substring session-id 0 12)
+    session-id))
+
+(defun e-chat--session-buffer-name (store session-id)
+  "Return the buffer name for SESSION-ID in STORE."
+  (format "*e-chat:%s*"
+          (or (ignore-errors (e-session-display-title store session-id))
+              (e-chat--short-session-id session-id))))
+
+(defun e-chat--find-session-buffer (session-id)
+  "Return an existing chat buffer for SESSION-ID."
+  (catch 'buffer
+    (dolist (buffer (buffer-list))
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer
+          (when (and (derived-mode-p 'e-chat-mode)
+                     (equal e-chat-session-id session-id))
+            (throw 'buffer buffer)))))))
+
+(defun e-chat--rename-buffer-for-session ()
+  "Rename the current buffer from its attached session metadata."
+  (when (and e-chat-harness e-chat-session-id)
+    (rename-buffer
+     (e-chat--session-buffer-name
+      (e-harness-sessions e-chat-harness)
+      e-chat-session-id)
+     t)))
 
 (defun e-chat--subscribe (harness buffer)
   "Subscribe BUFFER to HARNESS chat events."
@@ -370,14 +423,30 @@ When ENSURE-COMPOSER is non-nil, recreate the composer after inserting."
     (setq e-chat--transcript-end-marker nil)
     (setq e-chat--composer-start-marker nil)
     (setq e-chat--composer-spacer-marker nil)
-    (e-chat--insert-protected
-     (concat e-chat--title "\n\n")
-     'e-chat-title-face)
+    (let ((title (and e-chat-harness
+                      e-chat-session-id
+                      (ignore-errors
+                        (e-session-display-title
+                         (e-harness-sessions e-chat-harness)
+                         e-chat-session-id)))))
+      (e-chat--insert-protected
+       (if title
+           (format "%s\n%s\n\n" e-chat--title title)
+         (concat e-chat--title "\n\n"))
+       'e-chat-title-face))
     (e-chat--insert-composer)))
 
 (defun e-chat--set-status (status)
   "Set chat buffer STATUS."
-  (setq header-line-format (format "E Chat: %s" status)))
+  (setq header-line-format
+        (if (and e-chat-harness e-chat-session-id)
+            (format "E Chat: %s - %s"
+                    status
+                    (ignore-errors
+                      (e-session-display-title
+                       (e-harness-sessions e-chat-harness)
+                       e-chat-session-id)))
+          (format "E Chat: %s" status))))
 
 (defun e-chat--message-entry (message)
   "Return a rendered entry for MESSAGE."
@@ -424,17 +493,28 @@ When ENSURE-COMPOSER is non-nil, recreate the composer after inserting."
     (_
      (e-chat--insert-entry "System" (format "Event: %S" event) t))))
 
-(cl-defun e-chat-open (&key harness session-id)
-  "Open and return an e chat buffer.
-HARNESS and SESSION-ID are injectable for tests.  Interactive calls create a
-Codex-backed harness with the emacs-base layer active."
-  (interactive)
+(defun e-chat--render-session ()
+  "Render the attached session transcript in the current buffer."
+  (dolist (message (e-harness-messages e-chat-harness e-chat-session-id))
+    (let ((entry (e-chat--message-entry message)))
+      (e-chat--insert-entry (car entry) (cdr entry) t))))
+
+(cl-defun e-chat-open (&key harness session-id new-session)
+  "Attach and return an e chat buffer.
+HARNESS, SESSION-ID, and NEW-SESSION are injectable for presentation tests and
+reload.  User-facing commands should call `e-chat-new' or `e-chat-resume'."
   (let* ((chat-harness (or harness (e-chat--default-harness)))
-         (chat-session-id (or session-id e-chat-default-session-id))
-         (buffer (get-buffer-create e-chat-buffer-name)))
+         (session (when (or new-session (not session-id))
+                    (e-harness-create-session chat-harness)))
+         (chat-session-id (or session-id
+                              (plist-get session :id)
+                              e-chat-default-session-id))
+         (buffer (or (e-chat--find-session-buffer chat-session-id)
+                     (get-buffer-create
+                      (e-chat--session-buffer-name
+                       (e-harness-sessions chat-harness)
+                       chat-session-id)))))
     (e-chat--attach-buffer buffer chat-harness chat-session-id)
-    (when (called-interactively-p 'interactive)
-      (pop-to-buffer buffer))
     buffer))
 
 (defun e-chat--attach-buffer (buffer harness session-id)
@@ -446,7 +526,9 @@ Codex-backed harness with the emacs-base layer active."
     (e-chat--disable-completion)
     (setq-local e-chat-harness harness)
     (setq-local e-chat-session-id session-id)
+    (e-chat--rename-buffer-for-session)
     (e-chat--clear)
+    (e-chat--render-session)
     (e-chat--set-status "idle")
     (e-chat--subscribe harness buffer))
   buffer)
@@ -473,10 +555,62 @@ Codex-backed harness with the emacs-base layer active."
     count))
 
 ;;;###autoload
-(defun e-chat ()
-  "Open the default e chat buffer."
+(defun e-chat-new ()
+  "Create and open a new persisted e chat session."
   (interactive)
-  (pop-to-buffer (e-chat-open)))
+  (let ((buffer (e-chat-open :new-session t)))
+    (when (called-interactively-p 'interactive)
+      (pop-to-buffer buffer))
+    buffer))
+
+;;;###autoload
+(defun e-chat ()
+  "Create and open a new persisted e chat session."
+  (interactive)
+  (e-chat-new))
+
+(defun e-chat--session-choice-label (session)
+  "Return completion label for SESSION metadata."
+  (format "%s  [%s]"
+          (plist-get session :title)
+          (plist-get session :id)))
+
+;;;###autoload
+(defun e-chat-resume ()
+  "Resume a recent persisted e chat session."
+  (interactive)
+  (let* ((harness (e-chat--default-harness))
+         (sessions (e-session-list (e-harness-sessions harness))))
+    (unless sessions
+      (user-error "No e chat sessions to resume"))
+    (let* ((labels (mapcar #'e-chat--session-choice-label sessions))
+           (selected (completing-read "Resume e session: " labels nil t))
+           (index (cl-position selected labels :test #'equal))
+           (session (nth index sessions))
+           (buffer (e-chat-open :harness harness
+                                :session-id (plist-get session :id))))
+      (when (called-interactively-p 'interactive)
+        (pop-to-buffer buffer))
+      buffer)))
+
+;;;###autoload
+(defun e-chat-rename (name)
+  "Rename the current e chat session to NAME."
+  (interactive
+   (let* ((store (e-chat--session-store))
+          (current (ignore-errors
+                     (plist-get
+                      (e-session-get store e-chat-session-id)
+                      :name))))
+     (list (read-string "Session name: " current))))
+  (unless (and e-chat-harness e-chat-session-id)
+    (user-error "This buffer is not attached to an e chat session"))
+  (e-session-rename (e-harness-sessions e-chat-harness) e-chat-session-id name)
+  (e-chat--rename-buffer-for-session)
+  (e-chat--clear)
+  (e-chat--render-session)
+  (e-chat--set-status "idle")
+  (current-buffer))
 
 (defun e-chat-submit (&optional prompt)
   "Submit PROMPT or the current editable prompt text."

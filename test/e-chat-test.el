@@ -26,6 +26,14 @@
     (e-chat-open :harness harness
                  :session-id (or session-id "chat-test"))))
 
+(defun e-chat-test--kill-chat-buffers ()
+  "Kill all live e chat buffers."
+  (dolist (buffer (buffer-list))
+    (when (buffer-live-p buffer)
+      (with-current-buffer buffer
+        (when (derived-mode-p 'e-chat-mode)
+          (kill-buffer buffer))))))
+
 (ert-deftest e-chat-test-open-creates-protected-transcript-and-composer ()
   "Opening chat creates protected transcript text and editable composer text."
   (let ((buffer (e-chat-test--buffer nil "chat-open")))
@@ -261,16 +269,20 @@
         (kill-buffer buffer)))))
 
 (ert-deftest e-chat-test-reload-buffers-refreshes-existing-chat-harness ()
-  "Reloading chat buffers reattaches them to a fresh default harness."
-  (let* ((old-backend (e-backend-fake-create :items nil))
-         (old-harness (e-harness-create :backend old-backend))
+  "Reloading chat buffers reattaches them and restores persisted transcript."
+  (let* ((directory (make-temp-file "e-chat-" t))
+         (store (e-session-persistent-store-create directory))
+         (old-backend (e-backend-fake-create :items nil))
+         (old-harness (e-harness-create :backend old-backend :sessions store))
          (new-backend (e-backend-fake-create
                        :items '((:type assistant-message :content "fresh answer")
                                 (:type done :reason stop))))
-         (new-harness (e-harness-create :backend new-backend))
+         (new-harness (e-harness-create :backend new-backend :sessions store))
          (buffer (e-chat-open :harness old-harness :session-id "chat-reload")))
     (unwind-protect
         (progn
+          (e-session-append-message
+           store "chat-reload" '(:id "msg-1" :role user :content "saved prompt"))
           (with-current-buffer buffer
             (goto-char (point-max))
             (insert "stale prompt"))
@@ -281,6 +293,7 @@
             (should (eq e-chat-harness new-harness))
             (should (equal e-chat-session-id "chat-reload"))
             (should-not (string-match-p "stale prompt" (buffer-string)))
+            (should (string-match-p "saved prompt" (buffer-string)))
             (e-chat-submit "hello")
             (e-harness-wait e-chat-harness e-chat-session-id 1.0)
             (should (string-match-p
@@ -288,19 +301,91 @@
                              " Assistant\nfresh answer")
                      (buffer-string)))))
       (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
+        (kill-buffer buffer))
+      (delete-directory directory t))))
 
 (ert-deftest e-chat-test-default-harness-uses-default-openai-provider ()
   "Default chat harness creation honors `e-openai-default-provider'."
   (let ((e-openai-default-provider 'openai-compatible-gateway)
-        (seen-provider nil))
+        (seen-provider nil)
+        (seen-sessions nil))
     (cl-letf (((symbol-function 'e-openai-create-harness)
                (lambda (&rest args)
                  (setq seen-provider (plist-get args :provider))
+                 (setq seen-sessions (plist-get args :sessions))
                  (e-harness-create
-                  :backend (e-backend-fake-create :items nil)))))
+                  :backend (e-backend-fake-create :items nil)
+                  :sessions seen-sessions))))
       (should (e-harness-p (e-chat--default-harness)))
-      (should (eq seen-provider 'openai-compatible-gateway)))))
+      (should (eq seen-provider 'openai-compatible-gateway))
+      (should (e-session-store-p seen-sessions)))))
+
+(ert-deftest e-chat-test-new-creates-distinct-persisted-sessions ()
+  "Each new chat command invocation creates a distinct persisted session."
+  (let* ((directory (make-temp-file "e-chat-" t))
+         (store (e-session-persistent-store-create directory))
+         (backend (e-backend-fake-create :items nil))
+         (harness (e-harness-create :backend backend :sessions store))
+         first-id second-id)
+    (unwind-protect
+        (cl-letf (((symbol-function 'e-chat--default-harness)
+                   (lambda () harness)))
+          (e-chat-test--kill-chat-buffers)
+          (with-current-buffer (e-chat-new)
+            (setq first-id e-chat-session-id))
+          (with-current-buffer (e-chat)
+            (setq second-id e-chat-session-id))
+          (should (not (equal first-id second-id)))
+          (should (file-exists-p
+                   (expand-file-name (concat first-id ".jsonl")
+                                     (expand-file-name "sessions" directory))))
+          (should (file-exists-p
+                   (expand-file-name (concat second-id ".jsonl")
+                                     (expand-file-name "sessions" directory)))))
+      (e-chat-test--kill-chat-buffers)
+      (delete-directory directory t))))
+
+(ert-deftest e-chat-test-resume-selects-existing-session ()
+  "Resuming uses completing-read over persisted sessions and renders transcript."
+  (let* ((directory (make-temp-file "e-chat-" t))
+         (store (e-session-persistent-store-create directory))
+         (backend (e-backend-fake-create :items nil))
+         (harness (e-harness-create :backend backend :sessions store)))
+    (unwind-protect
+        (progn
+          (e-session-create store :id "resume-me")
+          (e-session-append-message
+           store "resume-me" '(:id "msg-1" :role user :content "saved hello"))
+          (cl-letf (((symbol-function 'e-chat--default-harness)
+                     (lambda () harness))
+                    ((symbol-function 'completing-read)
+                     (lambda (_prompt collection &rest _args)
+                       (car collection))))
+            (with-current-buffer (e-chat-resume)
+              (should (equal e-chat-session-id "resume-me"))
+              (should (string-match-p "saved hello" (buffer-string))))))
+      (e-chat-test--kill-chat-buffers)
+      (delete-directory directory t))))
+
+(ert-deftest e-chat-test-rename-updates-session-and-buffer-display ()
+  "Renaming updates persistent metadata and the attached buffer name."
+  (let* ((directory (make-temp-file "e-chat-" t))
+         (store (e-session-persistent-store-create directory))
+         (backend (e-backend-fake-create :items nil))
+         (harness (e-harness-create :backend backend :sessions store))
+         (buffer (e-chat-open :harness harness :session-id "rename-me")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (cl-letf (((symbol-function 'read-string)
+                     (lambda (&rest _args) "Renamed session")))
+            (call-interactively #'e-chat-rename))
+          (should (equal (e-session-display-title store "rename-me")
+                         "Renamed session"))
+          (should (string-match-p "Renamed session" (buffer-name)))
+          (should (string-match-p "Renamed session" header-line-format)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (delete-directory directory t))))
 
 (ert-deftest e-chat-test-reset-clears-rendered-session ()
   "Reset clears the rendered chat buffer and harness session transcript."

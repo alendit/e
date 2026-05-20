@@ -552,12 +552,12 @@ default when turn options do not include `:model'."
             (funcall on-item item))))))))
 
 (cl-defun e-openai-create-harness
-    (&key provider auth-file base-url request-function model)
+    (&key provider auth-file base-url request-function model sessions)
   "Create a harness configured for an OpenAI-like Responses provider.
 PROVIDER selects `e-openai-default-provider' when nil.  AUTH-FILE, BASE-URL,
 and REQUEST-FUNCTION configure the backend adapter.  MODEL is written into
 backend-neutral turn options by the default context strategy path used by
-`e-harness-prompt'."
+`e-harness-prompt'.  SESSIONS supplies an existing session store."
   (let* ((provider (or provider e-openai-default-provider))
          (profile (e-openai-provider-profile provider))
          (model (e-openai--provider-model profile model)))
@@ -568,7 +568,8 @@ backend-neutral turn options by the default context strategy path used by
                :base-url base-url
                :request-function request-function
                :model model)
-     :default-options (list :model model))))
+     :default-options (list :model model)
+     :sessions sessions)))
 
 (cl-defun e-openai-codex-backend-create
     (&key auth-file base-url request-function name model)

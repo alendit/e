@@ -4,7 +4,7 @@
 
 `e` is an Emacs-hosted agent runtime inspired by pi-core. It should let Emacs run live-configurable agents that can inspect editor state, operate tools, and, when explicitly authorized, modify Emacs configuration or their own harnesses.
 
-The repository now contains the first usable Emacs-hosted agent path. The package entry point, event helpers, in-memory session store, context strategy seam, layer and context-provider seam, backend-neutral adapter contract, profile-configurable OpenAI-like Responses adapter, tool registry, Emacs base layer, buffer and elisp tools, loop, harness service, async turn settlement, basic chat presentation, development reload helper, and ERT tests exist. The architecture below still includes target-state components that have not been implemented yet, especially durable persistence, richer context management, permission controls, and harness self-modification tools.
+The repository now contains the first usable Emacs-hosted agent path. The package entry point, event helpers, JSONL-backed persistent session store, context strategy seam, layer and context-provider seam, backend-neutral adapter contract, profile-configurable OpenAI-like Responses adapter, tool registry, Emacs base layer, buffer and elisp tools, loop, harness service, async turn settlement, basic chat presentation, development reload helper, and ERT tests exist. The architecture below still includes target-state components that have not been implemented yet, especially richer context management, permission controls, and harness self-modification tools.
 
 The primary runtime surfaces are expected to be an Emacs Lisp harness API, context-management strategies, Emacs presentation shells, explicit tool adapters, session persistence, and generic LLM backend adapters. The first provider target is OpenAI API access through ChatGPT subscription auth, but provider details must remain outside core harness policy.
 
@@ -58,7 +58,7 @@ flowchart LR
 Confirmed current state:
 
 - A package entry point, pure core harness modules, OpenAI/Codex adapter, development reload helper, and ERT test suite exist.
-- The current loop supports fake and Codex-backed flows with in-memory sessions, structured events, tool calls, and narrow async turn settlement.
+- The current loop supports fake and Codex-backed flows with in-memory or persisted sessions, structured events, tool calls, and narrow async turn settlement.
 - `AGENTS.md` is the current architecture policy source of truth.
 - This document records the current architecture and target seams, and must be updated as runtime components replace deferred behavior.
 
@@ -90,7 +90,7 @@ Current repository mapping:
 - `e.el`: package entry point, public smoke commands, package metadata, and autoloads.
 - `lisp/e-core.el`: core module aggregator and status surface.
 - `lisp/e-events.el`: event construction helpers for stable core event plists.
-- `lisp/e-session.el`: in-memory session repository and message APIs.
+- `lisp/e-session.el`: session repository, JSONL persistence, recent-session index, metadata, and message APIs.
 - `lisp/e-context.el`: provider-neutral context strategy and context-provider contracts, plus the `transcript-stack` strategy.
 - `lisp/e-layers.el`: harness-owned layer descriptors and layer context/tool activation helpers.
 - `lisp/e-backend.el`: backend-neutral adapter contract and fake backend.
@@ -124,7 +124,7 @@ The core harness owns the stable application boundary for agents. It should prov
 
 It owns current agent state, structured events, queue state, active tools, resources, session coordination, and delegation to the agent loop. It collaborates with the session store, generic backend interface, tool registry, and execution environment. Its side effects should be limited to adapter calls for backend streaming, session persistence, and tool execution.
 
-Current code exposes `e-harness-create`, `e-harness-create-session`, `e-harness-subscribe`, `e-harness-activate-layer`, `e-harness-prompt`, `e-harness-prompt-async`, `e-harness-wait`, `e-harness-follow-up`, `e-harness-abort`, `e-harness-reset`, `e-harness-state`, and `e-harness-messages` through `(require 'e)`. The implementation is in-memory and supports narrow async settlement, active layer registration, and context-provider prefix messages. It is sufficient for fake-backend tests, a real Codex-backed prompt path, and the basic chat presentation, but it does not yet support durable stores or interrupting an already-running provider call inside Emacs.
+Current code exposes `e-harness-create`, `e-harness-create-session`, `e-harness-subscribe`, `e-harness-activate-layer`, `e-harness-prompt`, `e-harness-prompt-async`, `e-harness-wait`, `e-harness-follow-up`, `e-harness-abort`, `e-harness-reset`, `e-harness-state`, and `e-harness-messages` through `(require 'e)`. The implementation supports in-memory and persistent session stores, narrow async settlement, active layer registration, and context-provider prefix messages. It is sufficient for fake-backend tests, a real Codex-backed prompt path, resume-capable chat presentation, but it does not yet support interrupting an already-running provider call inside Emacs.
 
 ### Agent Loop
 
@@ -158,7 +158,7 @@ The session store owns durable conversation state. The target model should suppo
 
 The store should persist user, assistant, tool-result, and custom harness messages; track model and thinking-level changes; represent compaction and branch summaries; and expose a current leaf or branch cursor for resume and navigation. Presentation shells may display this state but must not become its source of truth.
 
-The current store in `lisp/e-session.el` is in-memory only. Future durable storage should be able to persist both append-only evidence logs and mutable context-state artifacts such as canvas revisions. Those concepts should remain separate: logs are evidence, while canvas or summary documents are editable semantic state.
+The current store in `lisp/e-session.el` supports both in-memory stores and a default persistent store rooted at `(locate-user-emacs-file "e/sessions/")`. Persistent sessions use append-only JSONL files under `sessions/<id>.jsonl` for `session`, `message`, `session-info`, and `messages-cleared` records, plus `index.json` for recent-session completion metadata. The implemented display title policy is explicit manual name, first user-message fallback, then an untitled timestamp. Future context-state artifacts such as canvas revisions should remain separate from the append-only evidence log: logs are evidence, while canvas or summary documents are editable semantic state.
 
 ### Execution Environment And Tools
 
@@ -182,7 +182,7 @@ Presentation shells are Emacs-facing UI layers. They render sessions, messages, 
 
 Presentation shells must not own session semantics, provider routing, tool policy, backend-specific auth, or harness lifecycle behavior.
 
-The current presentation shell is `e-chat`: a basic `*e-chat*` buffer with prompt submission, event rendering, reset, and abort commands. It creates a Codex-backed harness by default and activates `emacs-base`, while tests inject fake backends to keep UI behavior independent of provider details.
+The current presentation shell is `e-chat`: a basic session-specific chat buffer with prompt submission, event rendering, reset, abort, new-session, resume, and rename commands. It creates a Codex-backed harness by default, attaches it to the persistent session store, and activates `emacs-base`, while tests inject fake backends to keep UI behavior independent of provider details.
 
 ## Data And Control Flow
 
@@ -228,7 +228,9 @@ The current public package surface is:
 - `(require 'e)`: load the package.
 - `e-version`: current package version.
 - `e-status`: interactive smoke command that reports the loaded package status.
-- `e-chat`: interactive command that opens the default basic chat buffer.
+- `e-chat` and `e-chat-new`: interactive commands that create and open a new persisted chat session.
+- `e-chat-resume`: interactive command that resumes a recent persisted chat session.
+- `e-chat-rename`: interactive command that manually renames the current chat session.
 - `e-dev-reload`: interactive development command that reloads local source files.
 - `e-harness-create`, `e-harness-create-session`, `e-harness-subscribe`, `e-harness-activate-layer`, `e-harness-prompt`, `e-harness-prompt-async`, `e-harness-wait`, `e-harness-follow-up`, `e-harness-abort`, `e-harness-reset`, `e-harness-state`, and `e-harness-messages`: core harness API.
 - `e-openai-create-harness`: create a harness configured for `e-openai-default-provider` or an explicit OpenAI-like provider profile.
@@ -252,7 +254,7 @@ These are architectural seams because they protect stable harness policy from vo
 
 `test/e-test.el` contains ERT smoke tests for loading the package, exposing `e-version`, exposing the interactive status/chat/reload commands, and exposing the harness API. Eldev is the project test/build/lint/package runner.
 
-The current implementation makes the core harness testable with fake backends, injected OpenAI/Codex transports, pure fake tools, concrete Emacs buffer/elisp tools, layer/context-provider fixtures, chat presentation fixtures, and in-memory sessions. Current tests prove event shape, session writes, backend independence, context construction, layer activation, visible-buffer context, OpenAI/Codex request/stream mapping, tool-result handling, buffer mutation/save behavior, elisp evaluation, tool follow-up, async settlement, cancellation, lifecycle operations, chat rendering, and package exposure.
+The current implementation makes the core harness testable with fake backends, injected OpenAI/Codex transports, pure fake tools, concrete Emacs buffer/elisp tools, layer/context-provider fixtures, chat presentation fixtures, and in-memory or persisted sessions. Current tests prove event shape, session writes and replay, backend independence, context construction, layer activation, visible-buffer context, OpenAI/Codex request/stream mapping, tool-result handling, buffer mutation/save behavior, elisp evaluation, tool follow-up, async settlement, cancellation, lifecycle operations, chat rendering, resume and rename behavior, and package exposure.
 
 Adapter tests should separately verify Emacs side effects, provider auth, provider streaming behavior, and context strategy behavior. Presentation tests should verify command wiring and rendering against harness events, not duplicate harness behavior.
 
@@ -270,7 +272,7 @@ Side effects are intentionally pushed outward. Buffer edits, file writes, proces
 
 The main abstraction risk is creating generic interfaces before their semantics are real. The harness, backend, tool, session, context-strategy, and execution environment contracts are justified because the project already has explicit change pressure in those dimensions: multiple presentations, provider independence, live-configurable tools, durable sessions, alternative context formats, and Emacs-native side effects.
 
-Confirmed gap: the implementation is still in-memory and has only a basic presentation shell. It is no longer only a scaffold: real provider access, context strategy selection, layer-owned context providers, the `emacs-base` tool surface, function-call follow-up, narrow async settlement, and a basic chat buffer now exist. Durable persistence, richer presentation shells, canvas-state context, permission controls, process tools, harness self-modification, and provider-call interruption remain future work.
+Confirmed gap: the implementation now has JSONL-backed persistent sessions and a basic presentation shell. It is no longer only a scaffold: real provider access, context strategy selection, layer-owned context providers, the `emacs-base` tool surface, function-call follow-up, narrow async settlement, persistent chat sessions, resume, and manual rename now exist. AI-generated titles, delete/branch navigation, richer presentation shells, canvas-state context, permission controls, process tools, harness self-modification, and provider-call interruption remain future work.
 
 Delta to the architectural vision:
 

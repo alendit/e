@@ -33,6 +33,7 @@
   (list :state e-core-scaffold-state
         :events t
         :sessions t
+        :session-persistence t
         :chat t
         :layers t
         :backends t
