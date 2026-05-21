@@ -77,7 +77,7 @@ With valid Codex-managed ChatGPT auth available at `CODEX_HOME/auth.json` or
 `~/.codex/auth.json`, Elisp can now:
 
 1. Create a Codex-backed harness with `e-openai-codex-create-harness`.
-2. Register the `emacs-base` tools with `e-emacs-tools-register-defaults`.
+2. Register the `emacs-base` tools through focused Emacs capabilities.
 3. Create a session through `e-harness-create-session`.
 4. Submit a prompt with `e-harness-prompt` or `e-harness-prompt-async`.
 5. Build context through `transcript-stack`.

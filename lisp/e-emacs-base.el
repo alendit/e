@@ -7,8 +7,7 @@
 
 ;;; Commentary:
 
-;; The MVP Emacs base layer contributes Emacs-aware instructions, automatic
-;; visible-buffer context, and concrete Emacs tools.
+;; The default Emacs layer is a preset over focused Emacs capabilities.
 
 ;;; Code:
 

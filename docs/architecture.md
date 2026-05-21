@@ -4,7 +4,7 @@
 
 `e` is an Emacs-hosted agent runtime inspired by pi-core. It should let Emacs run live-configurable agents that can inspect editor state, operate tools, and, when explicitly authorized, modify Emacs configuration or their own harnesses.
 
-The repository now contains the first usable Emacs-hosted agent path. The package entry point, event helpers, JSONL-backed persistent session store, context strategy seam, layer and context-provider seam, backend-neutral adapter contract, profile-configurable OpenAI-like Responses adapter, tool registry, Emacs base layer, buffer and elisp tools, loop, harness service, async turn settlement, basic chat presentation, development reload helper, and ERT tests exist. The architecture below still includes target-state components that have not been implemented yet, especially explicit capability modules, richer context management, permission controls, and harness self-modification tools.
+The repository now contains the first usable Emacs-hosted agent path. The package entry point, event helpers, JSONL-backed persistent session store, context strategy seam, capability-backed layer presets, backend-neutral adapter contract, profile-configurable OpenAI-like Responses adapter, tool registry, Emacs base layer, buffer and elisp tools, loop, harness service, async turn settlement and cancellation hooks, basic chat presentation, development reload helper, and ERT tests exist. The architecture below still includes target-state components that have not been implemented yet, especially richer context management, permission controls, and harness self-modification tools.
 
 The primary runtime surfaces are expected to be an Emacs Lisp harness API, capability contracts, layer presets, context-management strategies, Emacs presentation shells, explicit tool adapters, session persistence, and generic LLM backend adapters. The first provider target is OpenAI API access through ChatGPT subscription auth, but provider details must remain outside core harness policy.
 
@@ -114,13 +114,13 @@ Current repository mapping:
 - `lisp/e-events.el`: event construction helpers for stable core event plists.
 - `lisp/e-session.el`: session repository, JSONL persistence, recent-session index, metadata, and message APIs.
 - `lisp/e-context.el`: provider-neutral context strategy and context-provider contracts, plus the `transcript-stack` strategy.
-- `lisp/e-layers.el`: harness-owned layer descriptors and layer context/tool activation helpers for stateless capability bundles.
+- `lisp/e-layers.el`: harness-owned layer descriptors for capability presets and defaults.
 - `lisp/e-backend.el`: backend-neutral adapter contract and fake backend.
 - `lisp/e-openai.el`: profile-configurable OpenAI-like Responses adapter for Codex auth, token-auth gateways, request mapping, and SSE parsing.
 - `lisp/e-tools.el`: pure tool registry and structured tool-result handling.
-- `lisp/e-base.el`: base workspace layer with file/shell-oriented instructions and base tools rooted in a workspace directory.
+- `lisp/e-base.el`: base workspace layer preset over file inspection, file mutation, shell/process, and base-guidance capabilities.
 - `lisp/e-emacs-tools.el`: concrete Emacs buffer, save, and elisp tools.
-- `lisp/e-emacs-base.el`: default Emacs layer with instructions, visible-buffer context, and MVP tools.
+- `lisp/e-emacs-base.el`: default Emacs layer preset over Emacs awareness, buffer read, buffer edit, and elisp-eval capabilities.
 - `lisp/e-loop.el`: backend/tool/message/event turn loop with tool-result follow-up.
 - `lisp/e-harness.el`: public core harness service for sessions, prompts, async prompts, wait, follow-ups, reset, state access, cancellation, and event subscription.
 - `lisp/e-chat.el`: basic chat presentation buffer, commands, keymap, and harness event rendering.
@@ -196,9 +196,9 @@ flowchart TD
     CapabilityActivation --> Harness
 ```
 
-The current `base` layer is a workspace-oriented preset. It contributes base instructions and registers file/shell-oriented workspace tools through `e-base-tools`. In the target model, it should resolve to smaller capabilities such as `file-inspection`, `file-mutation`, and `shell-process`. Those capabilities differ in side effects and dependencies, so they should not be treated as one behavior boundary merely because one layer activates them together.
+The `base` layer is a workspace-oriented preset over smaller capabilities: `base-guidance`, `file-inspection`, `file-mutation`, and `shell-process`. Those capabilities differ in side effects and dependencies, so they should not be treated as one behavior boundary merely because one layer activates them together.
 
-The current `emacs-base` layer is also a preset rather than a final atomic layer. It currently combines Emacs instructions, visible-buffer context, buffer inspection, buffer mutation, saving, and elisp evaluation. That is acceptable for the MVP because it gives the first useful Emacs-native agent experience, but the long-term granularity should likely split it into smaller capabilities:
+The `emacs-base` layer is also a preset rather than an atomic behavior unit. Its implementation composes smaller capabilities:
 
 - `emacs-awareness`: Emacs-specific instructions and visible-buffer metadata/context
 - `buffer-read`: buffer listing and range reads
@@ -363,7 +363,7 @@ The current public package surface is:
 - `e-openai-codex-create-harness`: compatibility wrapper for ChatGPT-backed Codex access.
 - `e-openai-codex-backend-create`: compatibility wrapper for the concrete OpenAI/Codex backend adapter.
 - `e-emacs-base-layer-create`: create the default Emacs layer.
-- `e-emacs-tools-register-defaults`: register the MVP concrete Emacs tool surface.
+- `e-emacs-tools-register-buffer-read`, `e-emacs-tools-register-buffer-edit`, and `e-emacs-tools-register-elisp-eval`: register focused concrete Emacs tool groups used by capabilities.
 
 The target public surface should be an Emacs Lisp harness API rather than a UI-only command set. It should cover lifecycle operations, state access, event subscription, backend and tool configuration, session selection, and adapter registration.
 
@@ -397,13 +397,13 @@ Side effects are intentionally pushed outward. Buffer edits, file writes, proces
 
 The main abstraction risk is creating generic interfaces before their semantics are real. The harness, backend, tool, session, context-strategy, capability contribution, layer preset, and execution environment contracts are justified because the project already has explicit change pressure in those dimensions: multiple presentations, provider independence, live-configurable tools, durable sessions, alternative context formats, and Emacs-native side effects.
 
-Confirmed gap: the implementation now has JSONL-backed persistent sessions and a basic presentation shell. It is no longer only a scaffold: real provider access, context strategy selection, active layer context providers, the `emacs-base` tool surface, function-call follow-up, narrow async settlement, persistent chat sessions, resume, and manual rename now exist. Explicit capability modules, AI-generated titles, delete/branch navigation, richer presentation shells, canvas-state context, permission controls, process tools, harness self-modification, and provider-call interruption remain future work.
+Confirmed gap: the implementation now has JSONL-backed persistent sessions and a basic presentation shell. It is no longer only a scaffold: real provider access, context strategy selection, capability-backed layer presets, the `emacs-base` tool surface, function-call follow-up, narrow async settlement, persistent chat sessions, resume, manual rename, branch/compaction records, evidence retrieval tools, and provider request cancellation hooks now exist. AI-generated titles, delete/branch navigation UI, richer presentation shells, canvas-state context, permission controls, and harness self-modification remain future work.
 
 Delta to the architectural vision:
 
 - The OpenAI/ChatGPT adapter now builds on the backend-neutral contract instead of changing harness policy.
 - Context construction has been extracted as a strategy before transcript replay could be hard-coded into the OpenAI backend.
-- Layers and context providers are harness-owned runtime contributors, not presentation behavior, but current layers still own behavior that should move into explicit capability modules.
-- The chat presentation starts as a thin shell over harness events, but it still calls harness APIs directly. The target is for chat to host a `chat-session` capability plus optional capabilities such as `selection-context`.
+- Layers are harness-owned presets over capability modules; behavior contributions now live in capabilities rather than layer fields.
+- The chat presentation starts as a thin shell over harness events and delegates chat semantics through the `chat-session` capability. Further shells can host optional capabilities such as `selection-context`.
 - Self-modifying agent capabilities need explicit tools and session records before they are exposed through UI commands.
 - Canvas-state context management should remain deferred until the transcript-stack strategy and OpenAI backend are working, but `docs/feat-canvas.md` records the invariants the architecture should preserve.

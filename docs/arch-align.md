@@ -12,15 +12,15 @@
 
 ---
 
-## Current Delta Summary
+## Completed Alignment Summary
 
-- `e-layer` still owns behavior directly through `:instructions`, `:tools`, `:context-providers`, `:skills`, and `:prompts`.
-- `base` and `emacs-base` are still behavior bundles rather than layer presets over capabilities.
-- `e-chat` still performs chat-session semantic operations directly: submit, abort, reset, rename, model/effort selection, context preview, default harness creation, and default layer activation.
-- Context assembly still collects providers from active layers, not active capabilities.
-- The session store now has transcript and activity evidence, but it still lacks branches, compactions, summaries, canvas artifacts, resource/config records, and retrieval tools.
-- Abort still cancels queued/timer state, not an in-flight provider request.
-- The OpenAI backend boundary is already mostly aligned and should be preserved.
+- `e-layer` is now a pure preset over capability objects and defaults.
+- `base` and `emacs-base` are implemented as layer presets over focused capabilities.
+- `e-chat` delegates chat-session semantics through `e-chat-session`; presentation remains responsible for buffers, keymaps, rendering, and user interaction.
+- Context assembly collects instructions and providers from active capabilities.
+- The session store now records transcript/activity evidence plus branch summaries, compactions, and current branch state, with read-only evidence retrieval tools.
+- Abort now cancels queued async turns and active backend request handles when adapters expose a cancellable request.
+- The OpenAI backend boundary remains adapter-owned; the current synchronous `url.el` request path exposes an explicit non-cancellable handle until a cancellable adapter exists.
 
 ## File Structure
 
@@ -257,7 +257,7 @@ Cover these expectations:
 
 - [ ] **Step 2: Split tool registrars if needed**
 
-If `e-emacs-tools-register-defaults` is too coarse, add focused registration helpers:
+The old aggregate `e-emacs-tools-register-defaults` path is too coarse; add focused registration helpers:
 
 - `e-emacs-tools-register-buffer-read`: registers `list_buffers` and `read_buffer`.
 - `e-emacs-tools-register-buffer-edit`: registers `write_buffer`, `edit_buffer`, and `save_buffer`.

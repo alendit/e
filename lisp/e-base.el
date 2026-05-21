@@ -16,7 +16,7 @@
 
 (defconst e-base-instructions
   "Use base file and shell tools for workspace files and shell commands. Use Emacs buffer tools for live buffer state."
-  "Default instructions contributed by the base layer.")
+  "Default instructions contributed by the base guidance capability.")
 
 (defun e-base-layer-create (&optional directory)
   "Create the base layer rooted at DIRECTORY or `default-directory'."

@@ -252,13 +252,6 @@ When VISIBLE-ONLY is non-nil, include only buffers visible in windows."
   (e-emacs-tools-register-run-elisp registry)
   registry)
 
-(defun e-emacs-tools-register-defaults (registry)
-  "Register default concrete Emacs tools in REGISTRY."
-  (e-emacs-tools-register-buffer-read registry)
-  (e-emacs-tools-register-buffer-edit registry)
-  (e-emacs-tools-register-elisp-eval registry)
-  registry)
-
 (provide 'e-emacs-tools)
 
 ;;; e-emacs-tools.el ends here

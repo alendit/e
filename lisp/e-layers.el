@@ -7,9 +7,9 @@
 
 ;;; Commentary:
 
-;; Layers bundle tools, instructions, prompts, skills, and context providers.
-;; The harness activates layers; presentation shells only choose how to expose
-;; that active runtime state to users.
+;; Layers are presets over capability objects and defaults.  The harness
+;; activates layers; presentation shells only choose how to expose that active
+;; runtime state to users.
 
 ;;; Code:
 

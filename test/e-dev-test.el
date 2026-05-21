@@ -25,7 +25,6 @@
   (fmakunbound 'e-chat-set-effort)
   (fmakunbound 'e-chat-open)
   (fmakunbound 'e-base-layer-create)
-  (fmakunbound 'e-base-tools-register-defaults)
   (fmakunbound 'e-emacs-base-layer-create)
   (fmakunbound 'e-layer-create)
   (e-dev-reload default-directory)
@@ -36,7 +35,6 @@
   (should (commandp 'e-chat-set-effort))
   (should (fboundp 'e-chat-open))
   (should (fboundp 'e-base-layer-create))
-  (should (fboundp 'e-base-tools-register-defaults))
   (should (fboundp 'e-emacs-base-layer-create))
   (should (fboundp 'e-layer-create)))
 

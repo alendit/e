@@ -484,14 +484,6 @@ TOTAL-LINES is the full file line count.  START-LINE is 1-based."
        (e-base-tools--truncate-bash-output
         (e-base-tools--run-shell-command command directory timeout))))))
 
-(defun e-base-tools-register-defaults (registry directory)
-  "Register all base tools in REGISTRY rooted at DIRECTORY."
-  (e-base-tools-register-read registry directory)
-  (e-base-tools-register-write registry directory)
-  (e-base-tools-register-edit registry directory)
-  (e-base-tools-register-bash registry directory)
-  registry)
-
 (provide 'e-base-tools)
 
 ;;; e-base-tools.el ends here

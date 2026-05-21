@@ -199,7 +199,7 @@ When SESSION-ID is non-nil, SUBSCRIBER only receives events for that session."
 
 (defun e-harness-context (harness session-id &optional turn-id)
   "Return backend-neutral context for SESSION-ID in HARNESS.
-TURN-ID is passed to active layer context providers when present."
+TURN-ID is passed to active capability context providers when present."
   (e-context-build
    (e-harness-context-strategy harness)
    :sessions (e-harness-sessions harness)
