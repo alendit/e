@@ -15,6 +15,7 @@
 (require 'e)
 (require 'e-backend)
 (require 'e-base)
+(require 'e-capabilities)
 (require 'e-harness)
 (require 'e-tools)
 
@@ -28,6 +29,16 @@
                              (plist-get definition :name))
                            (e-tools-definitions (e-harness-tools harness)))
                    '("read" "write" "edit" "bash")))))
+
+(ert-deftest e-base-test-layer-activates-file-capabilities ()
+  "The base layer is a preset over file and process capabilities."
+  (let ((layer (e-base-layer-create default-directory)))
+    (should (equal (mapcar #'e-capability-id
+                           (e-layer-capabilities layer))
+                   '(base-guidance
+                     file-inspection
+                     file-mutation
+                     shell-process)))))
 
 (ert-deftest e-base-test-layer-captures-directory-for-relative-paths ()
   "The base layer resolves relative paths against the captured directory."

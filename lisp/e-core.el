@@ -21,6 +21,7 @@
 (require 'e-emacs-base)
 (require 'e-emacs-tools)
 (require 'e-events)
+(require 'e-file-capabilities)
 (require 'e-harness)
 (require 'e-layers)
 (require 'e-loop)
@@ -35,6 +36,7 @@
   "Return a plist describing the current core state."
   (list :state e-core-scaffold-state
         :events t
+        :file-capabilities t
         :sessions t
         :session-persistence t
         :chat t

@@ -11,7 +11,7 @@
 
 ;;; Code:
 
-(require 'e-base-tools)
+(require 'e-file-capabilities)
 (require 'e-layers)
 
 (defconst e-base-instructions
@@ -25,9 +25,12 @@
     (e-layer-create
      :id 'base
      :name "Base"
-     :instructions e-base-instructions
-     :tools (list (lambda (registry)
-                    (e-base-tools-register-defaults registry root)))
+     :capabilities (list (e-base-guidance-capability-create e-base-instructions)
+                         (e-file-inspection-capability-create root)
+                         (e-file-mutation-capability-create root)
+                         (e-shell-process-capability-create root))
+     :instructions nil
+     :tools nil
      :context-providers nil
      :skills nil
      :prompts nil)))
