@@ -1201,8 +1201,8 @@
       (should (eq seen-provider 'openai-compatible-gateway))
       (should (e-session-store-p seen-sessions)))))
 
-(ert-deftest e-chat-test-default-harness-activates-base-and-emacs-base-layers ()
-  "Default chat harness activation includes the independent default layers."
+(ert-deftest e-chat-test-default-harness-activates-chat-session-base-and-emacs ()
+  "Default chat harness activation includes chat-session and default layers."
   (let ((e-chat-default-layer-functions
          '(e-base-layer-create e-emacs-base-layer-create)))
     (cl-letf (((symbol-function 'e-openai-create-harness)
@@ -1212,7 +1212,11 @@
       (should (equal (mapcar #'e-layer-id
                              (e-harness-active-layers
                               (e-chat--default-harness)))
-                     '(base emacs-base))))))
+                     '(chat-session base emacs-base)))
+      (should (memq 'chat-session
+                    (mapcar #'e-capability-id
+                            (e-harness-active-capabilities
+                             (e-chat--default-harness))))))))
 
 (ert-deftest e-chat-test-default-layer-functions-control-activation-order ()
   "Default chat layer functions control activated layer order."
@@ -1236,7 +1240,7 @@
       (should (equal (mapcar #'e-layer-id
                              (e-harness-active-layers
                               (e-chat--default-harness)))
-                     '(first-layer second-layer))))))
+                     '(chat-session first-layer second-layer))))))
 
 (ert-deftest e-chat-test-new-creates-distinct-persisted-sessions ()
   "Each new chat command invocation creates a distinct persisted session."

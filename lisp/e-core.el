@@ -16,6 +16,7 @@
 (require 'e-base)
 (require 'e-base-tools)
 (require 'e-capabilities)
+(require 'e-chat-session)
 (require 'e-chat)
 (require 'e-context)
 (require 'e-emacs-capabilities)
@@ -40,6 +41,7 @@
         :file-capabilities t
         :sessions t
         :session-persistence t
+        :chat-session t
         :chat t
         :layers t
         :base t

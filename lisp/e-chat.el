@@ -16,8 +16,10 @@
 (require 'pp)
 (require 'subr-x)
 (require 'e-base)
+(require 'e-chat-session)
 (require 'e-emacs-base)
 (require 'e-harness)
+(require 'e-layers)
 (require 'e-openai)
 (require 'e-session)
 
@@ -370,6 +372,12 @@
   (let ((harness (e-openai-create-harness
                   :provider e-openai-default-provider
                   :sessions (e-chat--default-session-store))))
+    (e-harness-activate-layer
+     harness
+     (e-layer-create
+      :id 'chat-session
+      :name "Chat Session"
+      :capabilities (list (e-chat-session-capability-create))))
     (dolist (create-layer e-chat-default-layer-functions)
       (e-harness-activate-layer harness (funcall create-layer)))
     harness))
@@ -1695,7 +1703,7 @@ reload.  User-facing commands should call `e-chat-new' or `e-chat-resume'."
      (list (read-string "Session name: " current))))
   (unless (and e-chat-harness e-chat-session-id)
     (user-error "This buffer is not attached to an e chat session"))
-  (e-session-rename (e-harness-sessions e-chat-harness) e-chat-session-id name)
+  (e-chat-session-rename e-chat-harness e-chat-session-id name)
   (e-chat--rename-buffer-for-session)
   (e-chat--clear)
   (e-chat--render-session)
@@ -1716,7 +1724,7 @@ reload.  User-facing commands should call `e-chat-new' or `e-chat-resume'."
      (list (read-string "Model: " current nil current))))
   (unless (and e-chat-harness e-chat-session-id)
     (user-error "This buffer is not attached to an e chat session"))
-  (e-harness-set-session-model e-chat-harness e-chat-session-id model)
+  (e-chat-session-set-model e-chat-harness e-chat-session-id model)
   (e-chat--set-status "idle")
   (message "Set e chat model to %s" (if (string-empty-p model) "default" model)))
 
@@ -1740,7 +1748,7 @@ reload.  User-facing commands should call `e-chat-new' or `e-chat-resume'."
                             current))))
   (unless (and e-chat-harness e-chat-session-id)
     (user-error "This buffer is not attached to an e chat session"))
-  (e-harness-set-session-reasoning-effort e-chat-harness e-chat-session-id effort)
+  (e-chat-session-set-effort e-chat-harness e-chat-session-id effort)
   (e-chat--set-status "idle")
   (message "Set e chat effort to %s"
            (if (string-empty-p effort) "default" effort)))
@@ -1752,7 +1760,7 @@ reload.  User-facing commands should call `e-chat-new' or `e-chat-resume'."
   (unless (and e-chat-harness e-chat-session-id)
     (user-error "This buffer is not attached to an e chat session"))
   (e-chat--display-context-buffer
-   (e-harness-context e-chat-harness e-chat-session-id)
+   (e-chat-session-context e-chat-harness e-chat-session-id)
    e-chat-session-id))
 
 ;;;###autoload
@@ -1762,12 +1770,10 @@ reload.  User-facing commands should call `e-chat-new' or `e-chat-resume'."
   (unless (and e-chat-harness e-chat-session-id)
     (user-error "This buffer is not attached to an e chat session"))
   (setq prompt (or prompt (e-chat--composer-text)))
-  (when (string-empty-p prompt)
-    (user-error "Prompt must not be empty"))
+  (e-chat-session-submit e-chat-harness e-chat-session-id prompt
+                         :delay e-chat-submit-backend-delay)
   (e-chat--delete-composer)
   (e-chat--set-status "queued")
-  (e-harness-prompt-async e-chat-harness e-chat-session-id prompt
-                          :delay e-chat-submit-backend-delay)
   (e-chat--insert-pending-separator)
   (redisplay t))
 
@@ -1777,7 +1783,7 @@ reload.  User-facing commands should call `e-chat-new' or `e-chat-resume'."
   (interactive)
   (unless (and e-chat-harness e-chat-session-id)
     (user-error "This buffer is not attached to an e chat session"))
-  (e-harness-abort e-chat-harness e-chat-session-id))
+  (e-chat-session-abort e-chat-harness e-chat-session-id))
 
 ;;;###autoload
 (defun e-chat-reset ()
@@ -1786,7 +1792,7 @@ reload.  User-facing commands should call `e-chat-new' or `e-chat-resume'."
   (unless (and e-chat-harness e-chat-session-id)
     (user-error "This buffer is not attached to an e chat session"))
   (e-chat--clear)
-  (e-harness-reset e-chat-harness e-chat-session-id))
+  (e-chat-session-reset e-chat-harness e-chat-session-id))
 
 (provide 'e-chat)
 
