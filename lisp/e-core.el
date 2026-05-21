@@ -15,6 +15,7 @@
 (require 'e-backend)
 (require 'e-base)
 (require 'e-base-tools)
+(require 'e-capabilities)
 (require 'e-chat)
 (require 'e-context)
 (require 'e-emacs-base)
@@ -40,6 +41,7 @@
         :layers t
         :base t
         :base-tools t
+        :capabilities t
         :backends t
         :context t
         :emacs-base t

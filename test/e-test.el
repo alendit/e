@@ -85,7 +85,9 @@
   (should (fboundp 'e-harness-prompt-async))
   (should (fboundp 'e-harness-wait))
   (should (fboundp 'e-harness-context))
-  (should (fboundp 'e-harness-messages)))
+  (should (fboundp 'e-harness-messages))
+  (should (fboundp 'e-capability-create))
+  (should (fboundp 'e-capabilities-context-messages)))
 
 (provide 'e-test)
 
