@@ -14,6 +14,7 @@
 (require 'ert)
 (require 'e)
 (require 'e-backend)
+(require 'e-capabilities)
 (require 'e-context)
 (require 'e-harness)
 (require 'e-layers)
@@ -246,6 +247,36 @@
                      '("layer instructions" "provider context" "hello")))
       (should (equal (plist-get (plist-get context :options) :model)
                      "session-model")))))
+
+(ert-deftest e-harness-test-capability-context-precedes-legacy-layer-context ()
+  "Capability context is prepended before unmigrated legacy layer context."
+  (let* ((capability
+          (e-capability-create
+           :id 'capability-context
+           :instructions "capability instructions"))
+         (capability-layer
+          (e-layer-create
+           :id 'capability-layer
+           :name "Capability Layer"
+           :capabilities (list capability)
+           :instructions "ignored migrated layer instructions"))
+         (legacy-layer
+          (e-layer-create
+           :id 'legacy-layer
+           :name "Legacy Layer"
+           :instructions "legacy instructions"))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :active-layers (list capability-layer legacy-layer))))
+    (e-harness-create-session harness :id "session-1")
+    (e-session-append-message
+     (e-harness-sessions harness)
+     "session-1"
+     '(:role user :content "hello"))
+    (let ((context (e-harness-context harness "session-1")))
+      (should (equal (mapcar (lambda (message) (plist-get message :content))
+                             (plist-get context :messages))
+                     '("capability instructions" "legacy instructions" "hello"))))))
 
 (ert-deftest e-harness-test-prompt-passes-tool-definitions-as-options ()
   "Prompting includes registered tool definitions in backend options."

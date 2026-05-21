@@ -19,6 +19,8 @@
 (cl-defstruct (e-layer (:constructor e-layer-create))
   id
   name
+  capabilities
+  defaults
   instructions
   tools
   context-providers

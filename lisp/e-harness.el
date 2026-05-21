@@ -12,6 +12,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'e-capabilities)
 (require 'e-context)
 (require 'e-events)
 (require 'e-layers)
@@ -29,6 +30,7 @@
   (sessions (e-session-store-create))
   (tools (e-tools-registry-create))
   (active-layers nil)
+  (active-capabilities nil)
   (subscribers nil)
   active-turns)
 
@@ -49,10 +51,11 @@
   (format "msg-user-%d" e-harness--message-counter))
 
 (cl-defun e-harness-create
-    (&key backend context-strategy default-options sessions tools active-layers)
+    (&key backend context-strategy default-options sessions tools
+          active-layers active-capabilities)
   "Create a core harness.
-BACKEND, CONTEXT-STRATEGY, DEFAULT-OPTIONS, SESSIONS, TOOLS, and ACTIVE-LAYERS
-configure the provider-neutral runtime."
+BACKEND, CONTEXT-STRATEGY, DEFAULT-OPTIONS, SESSIONS, TOOLS, ACTIVE-LAYERS,
+and ACTIVE-CAPABILITIES configure the provider-neutral runtime."
   (let ((harness
          (e-harness--make :backend backend
                           :context-strategy (or context-strategy
@@ -60,16 +63,27 @@ configure the provider-neutral runtime."
                           :default-options default-options
                           :sessions (or sessions (e-session-store-create))
                           :tools (or tools (e-tools-registry-create))
+                          :active-capabilities active-capabilities
                           :active-turns (make-hash-table :test 'equal))))
+    (dolist (capability active-capabilities)
+      (e-capabilities-register-tools capability (e-harness-tools harness)))
     (dolist (layer active-layers)
       (e-harness-activate-layer harness layer))
     harness))
 
+(defun e-harness--legacy-context-layers (layers)
+  "Return LAYERS that still contribute context directly."
+  (cl-remove-if #'e-layer-capabilities layers))
+
 (defun e-harness-activate-layer (harness layer)
-  "Activate LAYER in HARNESS and register its tools."
-  (e-layers-register-tools layer (e-harness-tools harness))
+  "Activate LAYER in HARNESS and register its tools and capabilities."
   (setf (e-harness-active-layers harness)
         (append (e-harness-active-layers harness) (list layer)))
+  (dolist (capability (e-layer-capabilities layer))
+    (e-capabilities-register-tools capability (e-harness-tools harness))
+    (setf (e-harness-active-capabilities harness)
+          (append (e-harness-active-capabilities harness) (list capability))))
+  (e-layers-register-tools layer (e-harness-tools harness))
   layer)
 
 (cl-defun e-harness-create-session (harness &key id metadata)
@@ -193,11 +207,17 @@ TURN-ID is passed to active layer context providers when present."
    :session-id session-id
    :options (e-harness--turn-options harness session-id)
    :prefix-messages
-   (e-layers-context-messages
-    (e-harness-active-layers harness)
-    :harness harness
-    :session-id session-id
-    :turn-id turn-id)))
+   (append
+    (e-capabilities-context-messages
+     (e-harness-active-capabilities harness)
+     :harness harness
+     :session-id session-id
+     :turn-id turn-id)
+    (e-layers-context-messages
+     (e-harness--legacy-context-layers (e-harness-active-layers harness))
+     :harness harness
+     :session-id session-id
+     :turn-id turn-id))))
 
 (defun e-harness--active-turn-id (entry)
   "Return active turn id from ENTRY."
