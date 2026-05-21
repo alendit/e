@@ -54,6 +54,14 @@
   :type '(repeat function)
   :group 'e-chat)
 
+(defcustom e-chat-progress-interval 0.6
+  "Seconds between active assistant progress indicator frames."
+  :type 'number
+  :group 'e-chat)
+
+(when (equal e-chat-progress-interval 0.35)
+  (setq e-chat-progress-interval 0.6))
+
 (defface e-chat-user-face
   '((t :inherit default
        :foreground "#d7ecff"
@@ -68,6 +76,15 @@
        :background "#2b3526"
        :extend t))
   "Face used for assistant response chat blocks."
+  :group 'e-chat)
+
+(defface e-chat-final-assistant-face
+  '((t :inherit e-chat-assistant-face
+       :foreground "#edf7df"
+       :background "#24301f"
+       :box (:line-width 1 :color "#6f925a")
+       :extend t))
+  "Face used for settled assistant response chat blocks."
   :group 'e-chat)
 
 (defface e-chat-system-face
@@ -164,6 +181,14 @@
        :extend t))
   "Default face spec for assistant response chat blocks.")
 
+(defconst e-chat--final-assistant-face-spec
+  '((t :inherit e-chat-assistant-face
+       :foreground "#edf7df"
+       :background "#24301f"
+       :box (:line-width 1 :color "#6f925a")
+       :extend t))
+  "Default face spec for settled assistant response chat blocks.")
+
 (defconst e-chat--system-face-spec
   '((t :inherit default
        :foreground "#ded2ec"
@@ -175,6 +200,8 @@
   "Refresh chat face defaults after live reload."
   (face-spec-set 'e-chat-user-face e-chat--user-face-spec)
   (face-spec-set 'e-chat-assistant-face e-chat--assistant-face-spec)
+  (face-spec-set 'e-chat-final-assistant-face
+                 e-chat--final-assistant-face-spec)
   (face-spec-set 'e-chat-system-face e-chat--system-face-spec))
 
 (e-chat--refresh-face-specs)
@@ -215,6 +242,21 @@
 (defvar-local e-chat--focused-turn-overlay nil
   "Overlay highlighting the focused response-navigation turn.")
 
+(defvar-local e-chat--progress-turn-id nil
+  "Turn id currently represented by the assistant progress indicator.")
+
+(defvar-local e-chat--progress-frame 0
+  "Current active assistant progress indicator frame.")
+
+(defvar-local e-chat--progress-start-marker nil
+  "Marker at the start of the active assistant progress indicator.")
+
+(defvar-local e-chat--progress-end-marker nil
+  "Marker at the end of the active assistant progress indicator.")
+
+(defvar-local e-chat--progress-timer nil
+  "Timer advancing the active assistant progress indicator.")
+
 (defconst e-chat--user-glyph ">"
   "Glyph shown before user-authored chat blocks.")
 
@@ -223,6 +265,9 @@
 
 (defconst e-chat--system-glyph "·"
   "Glyph shown before compact system chat blocks.")
+
+(defconst e-chat--progress-glyphs ["◐" "◓" "◑" "◒"]
+  "Glyphs used for the active assistant progress indicator.")
 
 (defconst e-chat--composer-glyph "❯ "
   "Glyph shown before editable e chat composer text.")
@@ -289,7 +334,8 @@
 (setq e-chat-mode-map (e-chat--make-mode-map e-chat-mode-map))
 
 (define-derived-mode e-chat-mode text-mode "e-chat"
-  "Major mode for e chat buffers.")
+  "Major mode for e chat buffers."
+  (add-hook 'kill-buffer-hook #'e-chat--stop-progress-indicator nil t))
 
 (define-minor-mode e-chat-response-navigation-mode
   "Navigate rendered turn blocks in an e chat buffer."
@@ -383,15 +429,16 @@
       e-chat-session-id)
      t)))
 
-(defun e-chat--subscribe (harness buffer)
-  "Subscribe BUFFER to HARNESS chat events."
+(defun e-chat--subscribe (harness buffer session-id)
+  "Subscribe BUFFER to HARNESS chat events for SESSION-ID."
   (e-harness-subscribe
    harness
    (lambda (event)
      (when (buffer-live-p buffer)
        (with-current-buffer buffer
          (when (eq e-chat-harness harness)
-           (e-chat--render-event event)))))))
+           (e-chat--render-event event)))))
+   :session-id session-id))
 
 (defun e-chat--mark-protected (start end)
   "Mark text between START and END as protected presentation text."
@@ -672,6 +719,42 @@ Return non-nil when a composer was removed."
           (plist-get entry :title)
           (plist-get entry :content)))
 
+(defun e-chat--activity-tool-count-text (count)
+  "Return collapsed display text for COUNT tool calls."
+  (format "%d tool call%s" count (if (= count 1) "" "s")))
+
+(defun e-chat--activity-visible-chunks (entries)
+  "Return visible collapsed activity chunks for intermittent ENTRIES.
+Tool calls are counted after the reasoning chunk they followed."
+  (let ((chunks nil)
+        (current nil)
+        (tool-count 0))
+    (cl-labels
+        ((finish-current
+          ()
+          (when (> tool-count 0)
+            (setq current
+                  (append current
+                          (list (e-chat--activity-tool-count-text
+                                 tool-count))))
+            (setq tool-count 0))
+          (when current
+            (push (string-join current "\n") chunks)
+            (setq current nil))))
+      (dolist (entry entries)
+        (let ((title (plist-get entry :title))
+              (content (plist-get entry :content)))
+          (pcase title
+            ("Tool call"
+             (setq tool-count (1+ tool-count)))
+            ("Tool")
+            (_
+             (finish-current)
+             (when (and content (not (string-empty-p content)))
+               (setq current (list content)))))))
+      (finish-current)
+      (nreverse chunks))))
+
 (defun e-chat--intermittent-details-text (record)
   "Return expanded intermittent details text for RECORD."
   (when-let ((entries (plist-get record :intermittent-entries)))
@@ -686,13 +769,25 @@ Return non-nil when a composer was removed."
 (defun e-chat--transient-text (record)
   "Return visible transient text for RECORD."
   (when-let ((entries (plist-get record :intermittent-entries)))
-    (concat
-     (mapconcat #'e-chat--intermittent-entry-text entries "\n\n")
-     "\n\n")))
+    (let ((chunks (e-chat--activity-visible-chunks entries)))
+      (when chunks
+        (concat (mapconcat #'identity chunks "\n\n") "\n\n")))))
 
-(defun e-chat--add-intermittent-entry (record title content &optional append)
+(defun e-chat--intermittent-entry-exists-p (record title content &optional source)
+  "Return non-nil when RECORD already has TITLE and CONTENT.
+When SOURCE is non-nil, only match entries from that source."
+  (cl-some
+   (lambda (entry)
+     (and (equal (plist-get entry :title) title)
+          (equal (plist-get entry :content) content)
+          (or (not source)
+              (eq (plist-get entry :source) source))))
+   (plist-get record :intermittent-entries)))
+
+(defun e-chat--add-intermittent-entry (record title content &optional append source)
   "Add intermittent TITLE and CONTENT to RECORD.
-When APPEND is non-nil, merge CONTENT into the previous entry with TITLE."
+When APPEND is non-nil, merge CONTENT into the previous entry with TITLE.
+SOURCE identifies where the entry came from for duplicate suppression."
   (when (and record content (not (string-empty-p content)))
     (let* ((entries (plist-get record :intermittent-entries))
            (last-entry (car (last entries))))
@@ -705,7 +800,9 @@ When APPEND is non-nil, merge CONTENT into the previous entry with TITLE."
         (plist-put record
                    :intermittent-entries
                    (append entries
-                           (list (list :title title :content content))))))))
+                           (list (list :title title
+                                       :content content
+                                       :source source))))))))
 
 (defun e-chat--delete-turn-transient (record)
   "Delete the currently visible transient block for RECORD."
@@ -740,13 +837,91 @@ When APPEND is non-nil, merge CONTENT into the previous entry with TITLE."
         (when had-composer
           (e-chat--insert-composer))))))
 
-(defun e-chat--append-intermittent-entry (turn-id title content &optional append)
+(defun e-chat--progress-dots ()
+  "Return the current active assistant progress glyph string."
+  (aref e-chat--progress-glyphs
+        (mod e-chat--progress-frame
+             (length e-chat--progress-glyphs))))
+
+(defun e-chat--cancel-progress-timer ()
+  "Cancel the active assistant progress timer."
+  (when (timerp e-chat--progress-timer)
+    (cancel-timer e-chat--progress-timer))
+  (setq e-chat--progress-timer nil))
+
+(defun e-chat--delete-progress-indicator ()
+  "Delete the active assistant progress indicator."
+  (when (and (markerp e-chat--progress-start-marker)
+             (markerp e-chat--progress-end-marker)
+             (marker-position e-chat--progress-start-marker)
+             (marker-position e-chat--progress-end-marker))
+    (let ((inhibit-read-only t))
+      (delete-region e-chat--progress-start-marker
+                     e-chat--progress-end-marker)))
+  (setq e-chat--progress-start-marker nil)
+  (setq e-chat--progress-end-marker nil))
+
+(defun e-chat--render-progress-indicator (turn-id)
+  "Render active assistant progress indicator for TURN-ID."
+  (e-chat--delete-composer)
+  (e-chat--delete-progress-indicator)
+  (let ((inhibit-read-only t))
+    (goto-char (point-max))
+    (unless (or (bobp) (bolp))
+      (insert "\n"))
+    (let ((start (point)))
+      (e-chat--insert-protected
+       (e-chat--entry-text "Assistant" (e-chat--progress-dots))
+       'e-chat-assistant-face
+       `(e-chat-progress-turn-id ,turn-id))
+      (setq e-chat--progress-start-marker (copy-marker start nil))
+      (setq e-chat--progress-end-marker (copy-marker (point) nil))))
+  (e-chat--insert-pending-separator))
+
+(defun e-chat--advance-progress-indicator ()
+  "Advance and rerender the active assistant progress indicator."
+  (when e-chat--progress-turn-id
+    (setq e-chat--progress-frame (1+ e-chat--progress-frame))
+    (e-chat--render-progress-indicator e-chat--progress-turn-id)
+    (e-chat--redisplay-running-activity)))
+
+(defun e-chat--start-progress-indicator (turn-id)
+  "Start the active assistant progress indicator for TURN-ID."
+  (e-chat--cancel-progress-timer)
+  (setq e-chat--progress-turn-id turn-id)
+  (setq e-chat--progress-frame 0)
+  (e-chat--render-progress-indicator turn-id)
+  (let ((buffer (current-buffer)))
+    (setq e-chat--progress-timer
+          (run-at-time e-chat-progress-interval
+                       e-chat-progress-interval
+                       (lambda ()
+                         (when (buffer-live-p buffer)
+                           (with-current-buffer buffer
+                             (e-chat--advance-progress-indicator))))))))
+
+(defun e-chat--stop-progress-indicator (&optional turn-id)
+  "Stop and delete the active assistant progress indicator.
+When TURN-ID is non-nil, only stop a matching active indicator."
+  (when (or (not turn-id)
+            (equal turn-id e-chat--progress-turn-id))
+    (e-chat--cancel-progress-timer)
+    (e-chat--delete-progress-indicator)
+    (setq e-chat--progress-turn-id nil)
+    (setq e-chat--progress-frame 0)))
+
+(defun e-chat--append-intermittent-entry (turn-id title content &optional append source)
   "Append intermittent TITLE and CONTENT to TURN-ID.
-When APPEND is non-nil, merge CONTENT into the previous entry with TITLE."
+When APPEND is non-nil, merge CONTENT into the previous entry with TITLE.
+SOURCE identifies where the entry came from for duplicate suppression."
   (when (and turn-id content (not (string-empty-p content)))
     (let ((record (e-chat--turn-record turn-id)))
-      (e-chat--add-intermittent-entry record title content append)
+      (e-chat--add-intermittent-entry record title content append source)
       (e-chat--render-turn-transient turn-id record))))
+
+(defun e-chat--redisplay-running-activity ()
+  "Force running turn activity to repaint before the turn settles."
+  (redisplay t))
 
 (defun e-chat--format-tool-call (payload)
   "Return a compact display string for tool-call PAYLOAD."
@@ -768,15 +943,17 @@ When APPEND is non-nil, merge CONTENT into the previous entry with TITLE."
   (when-let ((record (e-chat--turn-record turn-id)))
     (pcase (plist-get message :role)
       ('tool-call
-       (e-chat--add-intermittent-entry
-        record
-        "Tool call"
-        (e-chat--format-tool-call (plist-get message :content))))
+       (let ((content (e-chat--format-tool-call (plist-get message :content))))
+         (unless (e-chat--intermittent-entry-exists-p
+                  record "Tool call" content 'activity)
+           (e-chat--add-intermittent-entry
+            record "Tool call" content nil 'transcript))))
       ('tool
-       (e-chat--add-intermittent-entry
-        record
-        "Tool"
-        (format "%S" (plist-get message :content)))))))
+       (let ((content (format "%S" (plist-get message :content))))
+         (unless (e-chat--intermittent-entry-exists-p
+                  record "Tool" content 'activity)
+           (e-chat--add-intermittent-entry
+            record "Tool" content nil 'transcript)))))))
 
 (defun e-chat--record-replayed-message-time (record message)
   "Record MESSAGE's replay timestamp into RECORD."
@@ -785,10 +962,54 @@ When APPEND is non-nil, merge CONTENT into the previous entry with TITLE."
       (plist-put record :started-at created-at))
     (plist-put record :ended-at created-at)))
 
-(defun e-chat--finalize-turn-display (turn-id)
-  "Replace visible transient TURN-ID display with the final response."
+(defun e-chat--record-activity-event (turn-id activity-event)
+  "Record durable ACTIVITY-EVENT for TURN-ID without re-emitting it."
+  (let ((record (e-chat--turn-record turn-id)))
+    (pcase (plist-get activity-event :event-type)
+      ('turn-started
+       (e-chat--set-turn-time turn-id
+                              :started-at
+                              (plist-get activity-event :created-at)))
+      ('turn-finished
+       (e-chat--set-turn-time turn-id
+                              :ended-at
+                              (plist-get activity-event :created-at)))
+      ('reasoning-delta
+       (e-chat--add-intermittent-entry
+        record
+        "Reasoning"
+        (plist-get (plist-get activity-event :payload) :content)
+        t
+        'activity))
+      ('tool-started
+       (e-chat--add-intermittent-entry
+        record
+        "Tool call"
+        (e-chat--format-tool-call (plist-get activity-event :payload))
+        nil
+        'activity))
+      ('tool-finished
+       (e-chat--add-intermittent-entry
+        record
+        "Tool"
+        (format "%S" (plist-get (plist-get activity-event :payload)
+                                :result))
+        nil
+        'activity)))))
+
+(defun e-chat--render-turn-activity-events (turn-id activity-events)
+  "Render durable ACTIVITY-EVENTS for TURN-ID once."
   (when-let ((record (e-chat--turn-record turn-id)))
-    (e-chat--delete-turn-transient record)
+    (unless (plist-get record :activity-rendered)
+      (dolist (event activity-events)
+        (when (equal (plist-get event :turn-id) turn-id)
+          (e-chat--record-activity-event turn-id event)))
+      (plist-put record :activity-rendered t)
+      (e-chat--render-turn-transient turn-id record))))
+
+(defun e-chat--finalize-turn-display (turn-id)
+  "Mark TURN-ID as having rendered its final response."
+  (when-let ((record (e-chat--turn-record turn-id)))
     (plist-put record :final-rendered t)))
 
 (defun e-chat--delete-block-details (block)
@@ -850,7 +1071,7 @@ When APPEND is non-nil, merge CONTENT into the previous entry with TITLE."
   "Return face for chat entry TITLE."
   (pcase title
     ("You" 'e-chat-user-face)
-    ("Assistant" 'e-chat-assistant-face)
+    ("Assistant" 'e-chat-final-assistant-face)
     (_ 'e-chat-system-face)))
 
 (defun e-chat--entry-glyph (title)
@@ -1049,6 +1270,15 @@ Hide REGEXP groups 1 and 3 as Markdown syntax."
       (e-chat--apply-markdown-emphasis-face content-start content-end)
       (e-chat--apply-markdown-link-faces content-start content-end))))
 
+(defun e-chat--apply-final-assistant-face (content-start content-end)
+  "Apply settled assistant styling from CONTENT-START to CONTENT-END.
+Preserve Markdown faces already present in the range."
+  (when (< content-start content-end)
+    (add-face-text-property content-start
+                            content-end
+                            'e-chat-final-assistant-face
+                            t)))
+
 (defun e-chat--insert-entry (title content &optional ensure-composer turn-id)
   "Insert a protected chat entry with TITLE and CONTENT.
 When ENSURE-COMPOSER is non-nil, recreate the composer after inserting.
@@ -1068,6 +1298,9 @@ TURN-ID tags the rendered entry for response navigation."
              e-chat-block-id ,block-id)))
         (when (equal title "Assistant")
           (e-chat--apply-assistant-markdown
+           (+ start (e-chat--entry-content-offset title))
+           (point))
+          (e-chat--apply-final-assistant-face
            (+ start (e-chat--entry-content-offset title))
            (point)))
         (e-chat--update-block-bounds block-id turn-id start (point))))
@@ -1168,6 +1401,7 @@ TURN-ID tags the rendered entry for response navigation."
     (when (overlayp e-chat--focused-turn-overlay)
       (delete-overlay e-chat--focused-turn-overlay))
     (setq e-chat--focused-turn-overlay nil)
+    (e-chat--stop-progress-indicator)
     (let ((title (and e-chat-harness
                       e-chat-session-id
                       (ignore-errors
@@ -1241,6 +1475,8 @@ TURN-ID tags the rendered entry for response navigation."
      (e-chat--set-turn-time (plist-get event :turn-id)
                              :started-at
                              (plist-get event :created-at))
+     (e-chat--start-progress-indicator (plist-get event :turn-id))
+     (e-chat--redisplay-running-activity)
      (e-chat--set-status (format "running %s" (plist-get event :turn-id))))
     ('turn-finished
      (e-chat--set-turn-time (plist-get event :turn-id)
@@ -1253,6 +1489,7 @@ TURN-ID tags the rendered entry for response navigation."
      (e-chat--set-turn-time (plist-get event :turn-id)
                              :ended-at
                              (plist-get event :created-at))
+     (e-chat--stop-progress-indicator (plist-get event :turn-id))
      (e-chat--set-status "error")
      (e-chat--insert-entry
       "System"
@@ -1264,16 +1501,31 @@ TURN-ID tags the rendered entry for response navigation."
      (e-chat--set-turn-time (plist-get event :turn-id)
                              :ended-at
                              (plist-get event :created-at))
+     (e-chat--stop-progress-indicator (plist-get event :turn-id))
      (e-chat--set-status "cancelled")
      (e-chat--insert-entry "System" "Turn cancelled" t
                            (plist-get event :turn-id)))
     ('message-added
      (let* ((message (plist-get (plist-get event :payload) :message))
             (entry (e-chat--message-entry message)))
-       (when (eq (plist-get message :role) 'assistant)
-         (e-chat--finalize-turn-display (plist-get event :turn-id)))
-       (e-chat--insert-entry (car entry) (cdr entry) nil
+       (cond
+        ((e-chat--tool-message-p message)
+         (e-chat--record-tool-message (plist-get event :turn-id) message)
+         (when-let ((record (e-chat--existing-turn-record
                              (plist-get event :turn-id))))
+           (e-chat--render-turn-transient (plist-get event :turn-id) record)))
+        (t
+         (when (eq (plist-get message :role) 'assistant)
+           (e-chat--set-turn-time (plist-get event :turn-id)
+                                  :ended-at
+                                  (plist-get event :created-at))
+           (e-chat--stop-progress-indicator (plist-get event :turn-id))
+           (when-let ((record (e-chat--existing-turn-record
+                               (plist-get event :turn-id))))
+             (e-chat--render-turn-transient (plist-get event :turn-id) record))
+           (e-chat--finalize-turn-display (plist-get event :turn-id)))
+         (e-chat--insert-entry (car entry) (cdr entry) nil
+                               (plist-get event :turn-id))))))
     ('assistant-delta
      (e-chat--set-status "streaming"))
     ('reasoning-delta
@@ -1282,13 +1534,18 @@ TURN-ID tags the rendered entry for response navigation."
       (plist-get event :turn-id)
       "Reasoning"
       (plist-get (plist-get event :payload) :content)
-      t))
+      t
+      'activity)
+     (e-chat--redisplay-running-activity))
     ('tool-started
      (e-chat--set-status "tool")
      (e-chat--append-intermittent-entry
       (plist-get event :turn-id)
       "Tool call"
-      (e-chat--format-tool-call (plist-get event :payload))))
+      (e-chat--format-tool-call (plist-get event :payload))
+      nil
+      'activity)
+     (e-chat--redisplay-running-activity))
     ('tool-finished
      (e-chat--set-status "tool done")
      (when-let ((record (e-chat--existing-turn-record
@@ -1296,11 +1553,16 @@ TURN-ID tags the rendered entry for response navigation."
        (e-chat--add-intermittent-entry
         record
         "Tool"
-        (format "%S" (plist-get (plist-get event :payload) :result)))
-       (e-chat--render-turn-transient (plist-get event :turn-id) record)))
+        (format "%S" (plist-get (plist-get event :payload) :result))
+        nil
+        'activity)
+       (e-chat--render-turn-transient (plist-get event :turn-id) record)
+       (e-chat--redisplay-running-activity)))
     ('backend-empty-output
+     (e-chat--stop-progress-indicator (plist-get event :turn-id))
      (e-chat--set-status "done"))
     ('session-reset
+     (e-chat--stop-progress-indicator)
      (e-chat--set-status "idle")
      (e-chat--insert-entry "System" "Session reset" t))
     (_
@@ -1309,18 +1571,27 @@ TURN-ID tags the rendered entry for response navigation."
 (defun e-chat--render-session ()
   "Render the attached session transcript in the current buffer."
   (let ((turn-index 0)
+        (activity-events (ignore-errors
+                           (e-session-activity-events
+                            (e-harness-sessions e-chat-harness)
+                            e-chat-session-id)))
         turn-id
         record)
     (dolist (message (e-harness-messages e-chat-harness e-chat-session-id))
-      (when (or (not turn-id)
+      (when (or (plist-get message :turn-id)
+                (not turn-id)
                 (eq (plist-get message :role) 'user))
         (setq turn-index (1+ turn-index))
-        (setq turn-id (format "replayed-turn-%d" turn-index))
+        (setq turn-id (or (plist-get message :turn-id)
+                          (format "replayed-turn-%d" turn-index)))
         (setq record (e-chat--turn-record turn-id)))
       (e-chat--record-replayed-message-time record message)
       (if (e-chat--tool-message-p message)
           (e-chat--record-tool-message turn-id message)
         (let ((entry (e-chat--message-entry message)))
+          (when (eq (plist-get message :role) 'assistant)
+            (e-chat--render-turn-activity-events turn-id activity-events)
+            (e-chat--finalize-turn-display turn-id))
           (e-chat--insert-entry (car entry) (cdr entry) t turn-id))))))
 
 (cl-defun e-chat-open (&key harness session-id new-session)
@@ -1355,7 +1626,7 @@ reload.  User-facing commands should call `e-chat-new' or `e-chat-resume'."
     (e-chat--clear)
     (e-chat--render-session)
     (e-chat--set-status "idle")
-    (e-chat--subscribe harness buffer))
+    (e-chat--subscribe harness buffer session-id))
   buffer)
 
 (defun e-chat-reload-buffers ()

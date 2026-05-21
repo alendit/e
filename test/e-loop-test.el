@@ -32,7 +32,9 @@
                   :backend backend
                   :tools (e-tools-registry-create)
                   :options '(:model "fake")
-                  :on-event (lambda (event) (push event events))
+                  :on-event (lambda (type payload)
+                              (push (list :type type :payload payload)
+                                    events))
                   :append-message (lambda (message) (push message messages)))))
     (should (equal (plist-get result :status) 'done))
     (should (equal (plist-get (car messages) :role) 'assistant))
@@ -61,31 +63,26 @@
                    '(assistant)))
     (should (equal (plist-get (car messages) :content) "hello"))))
 
-(ert-deftest e-loop-test-persists-empty-output-assistant-message ()
-  "Turns with no assistant output append a visible assistant placeholder."
+(ert-deftest e-loop-test-empty-output-does-not-persist-assistant-message ()
+  "Turns with no assistant output surface an error without fake content."
   (let* ((backend (e-backend-fake-create
                    :items '((:type done :reason stop))))
          (events nil)
          (messages nil))
-    (e-loop-run-turn
-     :session-id "session-1"
-     :turn-id "turn-1"
-     :messages '((:role user :content "hi"))
-     :backend backend
-     :tools (e-tools-registry-create)
-     :options nil
-     :on-event (lambda (event) (push event events))
-     :append-message (lambda (message) (push message messages)))
-    (should (equal (mapcar (lambda (message) (plist-get message :role))
-                           messages)
-                   '(assistant)))
-    (should (equal (plist-get (car messages) :content) "✅ Done"))
-    (should (equal (plist-get (plist-get (car messages) :metadata) :synthetic)
-                   t))
+    (should-error
+     (e-loop-run-turn
+      :session-id "session-1"
+      :turn-id "turn-1"
+      :messages '((:role user :content "hi"))
+      :backend backend
+      :tools (e-tools-registry-create)
+      :options nil
+      :on-event (lambda (type payload)
+                  (push (list :type type :payload payload) events))
+      :append-message (lambda (message) (push message messages)))
+     :type 'e-loop-empty-output)
+    (should (null messages))
     (should (member 'backend-empty-output
-                    (mapcar (lambda (event) (plist-get event :type))
-                            events)))
-    (should (member 'message-added
                     (mapcar (lambda (event) (plist-get event :type))
                             events)))))
 
@@ -102,48 +99,40 @@
       :backend backend
       :tools (e-tools-registry-create)
       :options nil
-      :on-event (lambda (event) (push event events))
+      :on-event (lambda (type payload)
+                  (push (list :type type :payload payload) events))
       :append-message #'ignore)
      :type 'e-loop-backend-error)
     (should (member 'turn-started
                     (mapcar (lambda (event) (plist-get event :type))
                             events)))))
 
-(ert-deftest e-loop-test-executes-tool-call-and-appends-result ()
-  "Tool calls execute through the registry and append tool result messages."
-  (let* ((backend (e-backend-fake-create
-                   :items '((:type tool-call :id "call-1" :name "echo" :arguments (:text "hi"))
-                            (:type done :reason stop))))
-         (tools (e-tools-registry-create))
-         (messages nil))
-    (e-tools-register tools
-                      :name "echo"
-                      :description "Echo text."
-                      :handler (lambda (arguments) (plist-get arguments :text)))
-    (e-loop-run-turn
-     :session-id "session-1"
-     :turn-id "turn-1"
-     :messages '((:role user :content "hi"))
-     :backend backend
-     :tools tools
-     :options '(:max-tool-iterations 1)
-     :on-event #'ignore
-     :append-message (lambda (message) (push message messages)))
-    (let ((ordered (nreverse messages)))
-      (should (equal (mapcar (lambda (message) (plist-get message :role))
-                             ordered)
-                     '(tool-call tool assistant)))
-      (should (equal (plist-get (plist-get (cadr ordered) :content) :status)
-                     'ok))
-      (should (equal (plist-get (cl-third ordered) :content) "✅ Done")))))
-
 (ert-deftest e-loop-test-emits-intermittent-reasoning-and-tool-call-events ()
   "Reasoning deltas and tool calls are surfaced before the final message."
-  (let* ((backend (e-backend-fake-create
-                   :items '((:type reasoning-delta :content "thinking")
-                            (:type tool-call :id "call-1" :name "echo" :arguments (:text "hi"))
-                            (:type assistant-message :content "done")
-                            (:type done :reason stop))))
+  (let* ((calls 0)
+         (backend (e-backend-create
+                   :name "fake-tool-followup"
+                   :stream (cl-function
+                            (lambda (&key messages options on-item)
+                              (ignore messages options)
+                              (setq calls (1+ calls))
+                              (if (= calls 1)
+                                  (progn
+                                    (funcall on-item
+                                             '(:type reasoning-delta
+                                               :content "thinking"))
+                                    (funcall on-item
+                                             '(:type tool-call
+                                               :id "call-1"
+                                               :name "echo"
+                                               :arguments (:text "hi")))
+                                    (funcall on-item
+                                             '(:type done :reason tool-use)))
+                                (funcall on-item
+                                         '(:type assistant-message
+                                           :content "done"))
+                                (funcall on-item
+                                         '(:type done :reason stop)))))))
          (tools (e-tools-registry-create))
          (events nil))
     (e-tools-register tools
@@ -157,7 +146,8 @@
      :backend backend
      :tools tools
      :options nil
-     :on-event (lambda (event) (push event events))
+     :on-event (lambda (type payload)
+                 (push (list :type type :payload payload) events))
      :append-message #'ignore)
     (let ((types (mapcar (lambda (event) (plist-get event :type))
                          (nreverse events))))
@@ -166,8 +156,54 @@
                        reasoning-delta
                        tool-started
                        tool-finished
-                       message-added
                        turn-finished))))))
+
+(ert-deftest e-loop-test-tool-finished-includes-call-and-result ()
+  "Tool-finished descriptors include the original call and executed result."
+  (let* ((calls 0)
+         (backend (e-backend-create
+                   :name "fake-tool-finished-followup"
+                   :stream (cl-function
+                            (lambda (&key messages options on-item)
+                              (ignore messages options)
+                              (setq calls (1+ calls))
+                              (if (= calls 1)
+                                  (progn
+                                    (funcall on-item
+                                             '(:type tool-call
+                                               :id "call-1"
+                                               :name "echo"
+                                               :arguments (:text "hi")))
+                                    (funcall on-item
+                                             '(:type done :reason tool-use)))
+                                (funcall on-item
+                                         '(:type assistant-message
+                                           :content "done"))
+                                (funcall on-item
+                                         '(:type done :reason stop)))))))
+         (tools (e-tools-registry-create))
+         (events nil))
+    (e-tools-register tools
+                      :name "echo"
+                      :description "Echo text."
+                      :handler (lambda (arguments) (plist-get arguments :text)))
+    (e-loop-run-turn
+     :session-id "session-1"
+     :turn-id "turn-1"
+     :messages '((:role user :content "hi"))
+     :backend backend
+     :tools tools
+     :options nil
+     :on-event (lambda (type payload)
+                 (push (list :type type :payload payload) events))
+     :append-message #'ignore)
+    (let* ((event (cl-find 'tool-finished events
+                           :key (lambda (event) (plist-get event :type))))
+           (payload (plist-get event :payload)))
+      (should (equal (plist-get (plist-get payload :tool-call) :id)
+                     "call-1"))
+      (should (equal (plist-get (plist-get payload :result) :content)
+                     "hi")))))
 
 (ert-deftest e-loop-test-requeries-backend-after-tool-result ()
   "Tool results are fed back into the backend until an assistant message settles."
@@ -217,6 +253,70 @@
     (should (equal (mapcar (lambda (message) (plist-get message :role))
                            (nreverse messages))
                    '(tool-call tool assistant)))))
+
+(ert-deftest e-loop-test-tool-call-response-commentary-does-not-settle-turn ()
+  "Assistant commentary before a tool call does not prevent tool follow-up."
+  (let* ((calls 0)
+         (events nil)
+         (backend (e-backend-create
+                   :name "tool-commentary-followup"
+                   :stream (cl-function
+                            (lambda (&key messages options on-item)
+                              (ignore options)
+                              (setq calls (1+ calls))
+                              (if (= calls 1)
+                                  (progn
+                                    (should (equal (mapcar (lambda (message)
+                                                             (plist-get message :role))
+                                                           messages)
+                                                   '(user)))
+                                    (funcall on-item
+                                             '(:type assistant-delta
+                                               :content "I'll inspect."))
+                                    (funcall on-item
+                                             '(:type assistant-message
+                                               :content "I'll inspect."))
+                                    (funcall on-item
+                                             '(:type tool-call
+                                               :id "call-1"
+                                               :name "echo"
+                                               :arguments (:text "hi")))
+                                    (funcall on-item '(:type done :reason stop)))
+                                (should (equal (mapcar (lambda (message)
+                                                         (plist-get message :role))
+                                                       messages)
+                                               '(user tool-call tool)))
+                                (funcall on-item
+                                         '(:type assistant-message
+                                           :content "final after tool"))
+                                (funcall on-item '(:type done :reason stop)))))))
+         (tools (e-tools-registry-create))
+         (messages nil))
+    (e-tools-register tools
+                      :name "echo"
+                      :description "Echo text."
+                      :handler (lambda (arguments) (plist-get arguments :text)))
+    (e-loop-run-turn
+     :session-id "session-1"
+     :turn-id "turn-1"
+     :messages '((:role user :content "hi"))
+     :backend backend
+     :tools tools
+     :options nil
+     :on-event (lambda (type payload)
+                 (push (list :type type :payload payload) events))
+     :append-message (lambda (message) (push message messages)))
+    (should (equal calls 2))
+    (should (equal (mapcar (lambda (message) (plist-get message :role))
+                           (nreverse messages))
+                   '(tool-call tool assistant)))
+    (should (equal (plist-get (car (last (nreverse messages))) :content)
+                   "final after tool"))
+    (should (cl-find "I'll inspect."
+                     events
+                     :test #'equal
+                     :key (lambda (event)
+                            (plist-get (plist-get event :payload) :content))))))
 
 (provide 'e-loop-test)
 

@@ -18,6 +18,7 @@
 (require 'e-chat)
 (require 'e-events)
 (require 'e-harness)
+(require 'e-tools)
 
 (defun e-chat-test--buffer (&optional items session-id)
   "Return a chat buffer backed by fake backend ITEMS and SESSION-ID."
@@ -163,6 +164,32 @@
           (should (equal (e-chat--composer-text) "")))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-shared-harness-buffers-render-only-their-session ()
+  "Chat buffers attached to one harness ignore events for other sessions."
+  (let* ((backend (e-backend-fake-create
+                   :items '((:type assistant-message :content "answer one")
+                            (:type done :reason stop))))
+         (harness (e-harness-create :backend backend))
+         (first-buffer nil)
+         (second-buffer nil))
+    (unwind-protect
+        (progn
+          (setq first-buffer
+                (e-chat-open :harness harness :session-id "chat-one"))
+          (setq second-buffer
+                (e-chat-open :harness harness :session-id "chat-two"))
+          (e-harness-prompt harness "chat-one" "question one")
+          (with-current-buffer first-buffer
+            (should (string-match-p "question one" (buffer-string)))
+            (should (string-match-p "answer one" (buffer-string))))
+          (with-current-buffer second-buffer
+            (should-not (string-match-p "question one" (buffer-string)))
+            (should-not (string-match-p "answer one" (buffer-string)))))
+      (when (buffer-live-p first-buffer)
+        (kill-buffer first-buffer))
+      (when (buffer-live-p second-buffer)
+        (kill-buffer second-buffer)))))
 
 (ert-deftest e-chat-test-submit-immediately-clears-composer-and-keeps-separator ()
   "Submitting shows the user turn and keeps bottom separator chrome visible."
@@ -386,7 +413,7 @@
         (kill-buffer buffer)))))
 
 (ert-deftest e-chat-test-hides-empty-output-diagnostic ()
-  "The chat buffer does not render transient empty-output diagnostics."
+  "The chat buffer renders empty backend output as an error."
   (let ((buffer (e-chat-test--buffer
                  '((:type done :reason stop))
                  "chat-empty-output")))
@@ -394,13 +421,14 @@
         (with-current-buffer buffer
           (e-chat-submit "hello")
           (e-harness-wait e-chat-harness e-chat-session-id 1.0)
-          (should-not (string-match-p "Backend returned no assistant output"
-                                      (buffer-string)))
-          (should (string-match-p
-                   (concat (regexp-quote e-chat--assistant-glyph)
-                           " ✅ Done")
-                   (buffer-string)))
-          (should (string-match-p "E Chat: done" header-line-format)))
+          (should (string-match-p "Backend returned no assistant output"
+                                  (buffer-string)))
+          (should-not (string-match-p "✅ Done" (buffer-string)))
+          (should-not (seq-some
+                       (lambda (message)
+                         (eq (plist-get message :role) 'assistant))
+                       (e-harness-messages e-chat-harness e-chat-session-id)))
+          (should (string-match-p "E Chat: error" header-line-format)))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -436,8 +464,100 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest e-chat-test-replaces-intermittent-events-with-final-response ()
-  "Reasoning and tool-call entries are visible until final assistant output arrives."
+(ert-deftest e-chat-test-turn-started-shows-moving-assistant-progress ()
+  "An active assistant turn shows a protected moving glyph indicator."
+  (let ((buffer (e-chat-test--buffer nil "chat-progress")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat--render-event
+           (e-events-make :type 'turn-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 10))
+          (let ((content (buffer-string)))
+            (should (string-match-p
+                     (concat (regexp-quote e-chat--assistant-glyph)
+                             " ◐")
+                     content))
+            (goto-char (point-min))
+            (search-forward "◐")
+            (should (get-text-property (1- (point)) 'read-only)))
+          (e-chat--advance-progress-indicator)
+          (should (string-match-p
+                   (concat (regexp-quote e-chat--assistant-glyph)
+                           " ◓")
+                   (buffer-string)))
+          (should (>= e-chat-progress-interval 0.5))
+          (e-chat--render-event
+           (e-events-make :type 'message-added
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 11
+                          :payload '(:message (:role assistant
+                                                :content "Final answer."))))
+          (let ((content (buffer-string)))
+            (should (string-match-p
+                     (concat (regexp-quote e-chat--assistant-glyph)
+                             " Final answer.")
+                     content))
+            (should-not (string-match-p
+                         (concat (regexp-quote e-chat--assistant-glyph)
+                                 " [◐◓◑◒]")
+                         content))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-running-activity-forces-redisplay ()
+  "Running turn activity forces Emacs to repaint before the final response."
+  (let ((buffer (e-chat-test--buffer nil "chat-activity-redisplay"))
+        redisplays)
+    (unwind-protect
+        (with-current-buffer buffer
+          (cl-letf (((symbol-function 'redisplay)
+                     (lambda (&optional force)
+                       (push force redisplays))))
+            (e-chat--render-event
+             (e-events-make :type 'turn-started
+                            :session-id e-chat-session-id
+                            :turn-id "turn-1"
+                            :created-at 10))
+            (e-chat--render-event
+             (e-events-make :type 'tool-started
+                            :session-id e-chat-session-id
+                            :turn-id "turn-1"
+                            :payload '(:type tool-call
+                                        :id "call-1"
+                                        :name "read"
+                                        :arguments (:path "x")))))
+          (should (equal redisplays '(t t)))
+          (let ((content (buffer-string)))
+            (should (string-match-p "1 tool call" content))
+            (should-not (string-match-p "Working" content))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-progress-frame-forces-redisplay ()
+  "Advancing the assistant progress indicator forces Emacs to repaint."
+  (let ((buffer (e-chat-test--buffer nil "chat-progress-redisplay"))
+        redisplays)
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat--render-event
+           (e-events-make :type 'turn-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 10))
+          (setq redisplays nil)
+          (cl-letf (((symbol-function 'redisplay)
+                     (lambda (&optional force)
+                       (push force redisplays))))
+            (e-chat--advance-progress-indicator))
+          (should (equal redisplays '(t))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-keeps-activity-timeline-with-final-response ()
+  "Intermittent text remains visible and tool details expand after final output."
   (let ((buffer (e-chat-test--buffer nil "chat-intermittent")))
     (unwind-protect
         (with-current-buffer buffer
@@ -460,10 +580,49 @@
                                       :id "call-1"
                                       :name "buffer-read"
                                       :arguments (:buffer "*scratch*"))))
+          (e-chat--render-event
+           (e-events-make :type 'message-added
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 10
+                          :payload '(:message
+                                     (:role tool-call
+                                      :content
+                                      (:type tool-call
+                                       :id "call-1"
+                                       :name "buffer-read"
+                                       :arguments (:buffer "*scratch*"))))))
+          (e-chat--render-event
+           (e-events-make :type 'tool-finished
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :payload '(:tool-call
+                                     (:type tool-call
+                                      :id "call-1"
+                                      :name "buffer-read"
+                                     :arguments (:buffer "*scratch*"))
+                                     :result (:status ok
+                                              :content "scratch contents"))))
+          (e-chat--render-event
+           (e-events-make :type 'message-added
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 10
+                          :payload '(:message
+                                     (:role tool
+                                      :content (:status ok
+                                                :content "scratch contents")))))
           (let ((content (buffer-string)))
-            (should (string-match-p "Reasoning\nNeed current buffer state."
+            (should (string-match-p "Need current buffer state\\." content))
+            (should (string-match-p "Need current buffer state\\.\n1 tool call"
                                     content))
-            (should (string-match-p "Tool call\nbuffer-read" content)))
+            (should-not (string-match-p "Working" content))
+            (should-not (string-match-p "buffer-read" content))
+            (should-not (string-match-p "\\*scratch\\*" content))
+            (should-not (string-match-p "scratch contents" content))
+            (should-not (string-match-p "Reasoning" content))
+            (let ((case-fold-search nil))
+              (should-not (string-match-p "Tool call\n" content))))
           (e-chat--render-event
            (e-events-make :type 'message-added
                           :session-id e-chat-session-id
@@ -476,8 +635,121 @@
                      (concat (regexp-quote e-chat--assistant-glyph)
                              " Final answer.")
                      content))
-            (should-not (string-match-p "Need current buffer state." content))
-            (should-not (string-match-p "Tool call\nbuffer-read" content))))
+            (should (string-match-p "Need current buffer state\\." content))
+            (should (string-match-p
+                     "Need current buffer state\\.\n1 tool call"
+                     content))
+            (should-not (string-match-p "Worked for" content))
+            (should-not (string-match-p "buffer-read" content))
+            (should-not (string-match-p "\\*scratch\\*" content))
+            (should-not (string-match-p "scratch contents" content))
+            (goto-char (point-min))
+            (search-forward "1 tool call")
+            (call-interactively #'e-chat-enter-response-navigation)
+            (call-interactively #'e-chat-response-navigation-expand)
+            (let ((expanded (buffer-string)))
+              (should (string-match-p "buffer-read" expanded))
+              (should (string-match-p "\\*scratch\\*" expanded))
+              (should (string-match-p "scratch contents" expanded))
+              (goto-char (point-min))
+              (should (= (how-many "buffer-read") 1))
+              (goto-char (point-min))
+              (should (= (how-many "scratch contents") 1)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-activity-groups-tool-counts-after-reasoning ()
+  "Collapsed activity shows tool counts after the reasoning they followed."
+  (let ((buffer (e-chat-test--buffer nil "chat-activity-groups")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat--render-event
+           (e-events-make :type 'turn-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 10))
+          (e-chat--render-event
+           (e-events-make :type 'reasoning-delta
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :payload '(:content "reasoning 1")))
+          (dotimes (index 2)
+            (e-chat--render-event
+             (e-events-make :type 'tool-started
+                            :session-id e-chat-session-id
+                            :turn-id "turn-1"
+                            :payload (list :type 'tool-call
+                                           :id (format "call-a-%d" index)
+                                           :name "read"))))
+          (e-chat--render-event
+           (e-events-make :type 'reasoning-delta
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :payload '(:content "reasoning 2")))
+          (dotimes (index 4)
+            (e-chat--render-event
+             (e-events-make :type 'tool-started
+                            :session-id e-chat-session-id
+                            :turn-id "turn-1"
+                            :payload (list :type 'tool-call
+                                           :id (format "call-b-%d" index)
+                                           :name "read"))))
+          (let ((content (buffer-string)))
+            (should (string-match-p
+                     "reasoning 1\n2 tool calls\n\nreasoning 2\n4 tool calls"
+                     content))
+            (should-not (string-match-p "6 tool calls" content))
+            (should-not (string-match-p "Working" content))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-final-response-uses-visual-marker-face ()
+  "Final assistant output is visually distinguished without a text label."
+  (let ((buffer (e-chat-test--buffer nil "chat-final-face")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat--render-event
+           (e-events-make :type 'turn-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 10))
+          (e-chat--render-event
+           (e-events-make :type 'message-added
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 11
+                          :payload '(:message (:role assistant
+                                                :content "Final answer."))))
+          (goto-char (point-min))
+          (search-forward "Final answer.")
+          (should (memq 'e-chat-final-assistant-face
+                        (ensure-list
+                         (get-text-property (1- (point)) 'face))))
+          (should-not (string-match-p "\nFinal\n" (buffer-string))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-final-response-keeps-markdown-faces ()
+  "Settled assistant styling preserves Markdown presentation faces."
+  (let ((buffer (e-chat-test--buffer nil "chat-final-markdown")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat--insert-entry
+           "Assistant"
+           "Use **bold** and `code`.")
+          (goto-char (point-min))
+          (search-forward "bold")
+          (let ((faces (ensure-list
+                        (get-text-property (1- (point)) 'face))))
+            (should (memq 'e-chat-final-assistant-face faces))
+            (should (memq 'e-chat-markdown-strong-face faces))
+            (should-not (eq (get-text-property (1- (point)) 'font-lock-face)
+                            'e-chat-final-assistant-face)))
+          (search-forward "code")
+          (let ((faces (ensure-list
+                        (get-text-property (1- (point)) 'face))))
+            (should (memq 'e-chat-final-assistant-face faces))
+            (should (memq 'e-chat-markdown-code-face faces))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -751,6 +1023,61 @@
               (should (string-match-p "  Tool\n  (:tool-call-id" content)))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-replayed-session-restores-activity-timeline ()
+  "Replayed durable activity events render before the final answer."
+  (let* ((directory (make-temp-file "e-chat-activity-" t))
+         (store (e-session-persistent-store-create directory))
+         (backend (e-backend-fake-create :items nil))
+         (harness (e-harness-create :backend backend :sessions store))
+         (buffer nil))
+    (unwind-protect
+        (progn
+          (e-harness-create-session harness :id "chat-activity-replay")
+          (e-session-append-message
+           store "chat-activity-replay"
+           '(:role user :content "inspect" :turn-id "turn-1"))
+          (e-session-append-activity-event
+           store "chat-activity-replay" "turn-1" 'turn-started nil)
+          (e-session-append-activity-event
+           store "chat-activity-replay" "turn-1" 'reasoning-delta
+           '(:content "Need current buffer state."))
+          (e-session-append-activity-event
+           store "chat-activity-replay" "turn-1" 'tool-started
+           '(:type tool-call
+             :id "call-1"
+             :name "buffer-read"
+             :arguments (:buffer "*scratch*")))
+          (e-session-append-activity-event
+           store "chat-activity-replay" "turn-1" 'tool-finished
+           '(:tool-call
+             (:type tool-call
+              :id "call-1"
+              :name "buffer-read"
+              :arguments (:buffer "*scratch*"))
+             :result (:status ok :content "scratch contents")))
+          (e-session-append-message
+           store "chat-activity-replay"
+           '(:role assistant :content "Final answer." :turn-id "turn-1"))
+          (setq buffer (e-chat-open :harness harness
+                                    :session-id "chat-activity-replay"))
+          (with-current-buffer buffer
+            (let ((content (buffer-string)))
+              (should (string-match-p "Need current buffer state\\." content))
+              (should (string-match-p "Need current buffer state\\.\n1 tool call"
+                                      content))
+              (should-not (string-match-p "Worked for" content))
+              (should-not (string-match-p "buffer-read" content))
+              (should (string-match-p "Final answer\\." content))
+              (should-not (string-match-p "scratch contents" content)))
+            (goto-char (point-min))
+            (search-forward "Final answer.")
+            (call-interactively #'e-chat-enter-response-navigation)
+            (call-interactively #'e-chat-response-navigation-expand)
+            (should (string-match-p "scratch contents" (buffer-string)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (delete-directory directory t))))
 
 (ert-deftest e-chat-test-composer-uses-bottom-spacer-when-buffer-is-visible ()
   "Displayed chat buffers keep the composer visually near the window bottom."

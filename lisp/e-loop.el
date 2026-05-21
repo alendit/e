@@ -14,16 +14,13 @@
 (require 'cl-lib)
 (require 'subr-x)
 (require 'e-backend)
-(require 'e-events)
 (require 'e-tools)
 
 (define-error 'e-loop-backend-error "Backend returned an error")
+(define-error 'e-loop-empty-output "Backend returned no assistant output")
 
 (defvar e-loop--message-counter 0
   "Monotonic message id counter for loop-created messages.")
-
-(defvar e-loop-empty-assistant-content "✅ Done"
-  "Assistant content to persist when a turn finishes without model text.")
 
 (defun e-loop--next-message-id ()
   "Return a new in-process message id."
@@ -37,14 +34,9 @@
         :content content
         :metadata metadata))
 
-(cl-defun e-loop--emit (&key on-event session-id turn-id type payload)
-  "Emit event TYPE for SESSION-ID and TURN-ID through ON-EVENT.
-PAYLOAD is stored as the event payload."
-  (funcall on-event
-           (e-events-make :type type
-                          :session-id session-id
-                          :turn-id turn-id
-                          :payload payload)))
+(cl-defun e-loop--emit (&key on-event type payload)
+  "Report internal turn descriptor TYPE and PAYLOAD through ON-EVENT."
+  (funcall on-event type payload))
 
 (cl-defun e-loop-run-turn
     (&key session-id turn-id messages backend tools options on-event append-message)
@@ -54,22 +46,19 @@ turn context and output callbacks.
 The loop is synchronous for the first core implementation.  Async process
 management stays outside this task until the core event and state semantics are
 stable."
+  (ignore session-id turn-id)
   (let ((assistant-content nil)
         (assistant-message-written nil)
         (done-reason nil)
         (turn-messages (copy-sequence messages))
-        (continue t)
-        (iteration 0)
-        (max-iterations (or (plist-get options :max-tool-iterations) 4)))
+        (continue t))
     (e-loop--emit :on-event on-event
-                  :session-id session-id
-                  :turn-id turn-id
                   :type 'turn-started
                   :payload nil)
     (while continue
-      (setq iteration (1+ iteration))
       (let ((tool-called nil)
-            (assistant-message nil))
+            (response-assistant-content nil)
+            (response-assistant-message nil))
         (e-backend-stream
          backend
          :messages turn-messages
@@ -78,29 +67,17 @@ stable."
          (lambda (item)
            (pcase (plist-get item :type)
              ('assistant-delta
-              (setq assistant-content
-                    (concat assistant-content (plist-get item :content)))
+              (setq response-assistant-content
+                    (concat response-assistant-content
+                            (plist-get item :content)))
               (e-loop--emit :on-event on-event
-                            :session-id session-id
-                            :turn-id turn-id
                             :type 'assistant-delta
                             :payload item))
              ('assistant-message
-              (setq assistant-message t)
-              (setq assistant-message-written t)
-              (let ((message (e-loop--assistant-message
-                              (plist-get item :content))))
-                (setq turn-messages (append turn-messages (list message)))
-                (funcall append-message message)
-                (e-loop--emit :on-event on-event
-                              :session-id session-id
-                              :turn-id turn-id
-                              :type 'message-added
-                              :payload (list :message message))))
+              (setq response-assistant-message
+                    (plist-get item :content)))
              ('reasoning-delta
               (e-loop--emit :on-event on-event
-                            :session-id session-id
-                            :turn-id turn-id
                             :type 'reasoning-delta
                             :payload item))
              ('tool-call
@@ -111,8 +88,6 @@ stable."
                             :content item
                             :metadata nil)))
                 (e-loop--emit :on-event on-event
-                              :session-id session-id
-                              :turn-id turn-id
                               :type 'tool-started
                               :payload item)
                 (let* ((result (e-tools-execute tools item))
@@ -126,10 +101,9 @@ stable."
                   (setq turn-messages (append turn-messages (list message)))
                   (funcall append-message message)
                   (e-loop--emit :on-event on-event
-                                :session-id session-id
-                                :turn-id turn-id
                                 :type 'tool-finished
-                                :payload (list :result result)))))
+                                :payload (list :tool-call item
+                                               :result result)))))
              ('done
               (setq done-reason (plist-get item :reason)))
              ('backend-error
@@ -137,42 +111,34 @@ stable."
                       (list (plist-get item :content))))
              (_
               (e-loop--emit :on-event on-event
-                            :session-id session-id
-                            :turn-id turn-id
                             :type 'backend-item-ignored
                             :payload item)))))
-        (setq continue (and tool-called
-                            (not assistant-message)
-                            (< iteration max-iterations)))))
+        (let ((response-text
+               (or response-assistant-message
+                   response-assistant-content)))
+          (if tool-called
+              (progn
+                (when (not (string-empty-p (or response-text "")))
+                  (e-loop--emit :on-event on-event
+                                :type 'reasoning-delta
+                                :payload (list :type 'reasoning-delta
+                                               :content response-text)))
+                (setq continue t))
+            (setq continue nil)
+            (when (not (string-empty-p (or response-text "")))
+              (setq assistant-content response-text)
+              (setq assistant-message-written t)
+              (let ((message (e-loop--assistant-message response-text)))
+                (setq turn-messages (append turn-messages (list message)))
+                (funcall append-message message)))))))
     (cond
      ((and (not assistant-message-written)
-           (not (string-empty-p (or assistant-content ""))))
-      (let ((message (e-loop--assistant-message assistant-content)))
-        (funcall append-message message)
-        (e-loop--emit :on-event on-event
-                      :session-id session-id
-                      :turn-id turn-id
-                      :type 'message-added
-                      :payload (list :message message))))
-     ((and (not assistant-message-written)
            (string-empty-p (or assistant-content "")))
-      (let ((message (e-loop--assistant-message
-                      e-loop-empty-assistant-content
-                      (list :synthetic t :reason done-reason))))
-        (funcall append-message message)
-        (e-loop--emit :on-event on-event
-                      :session-id session-id
-                      :turn-id turn-id
-                      :type 'message-added
-                      :payload (list :message message)))
       (e-loop--emit :on-event on-event
-                    :session-id session-id
-                    :turn-id turn-id
                     :type 'backend-empty-output
-                    :payload (list :reason done-reason))))
+                    :payload (list :reason done-reason))
+      (signal 'e-loop-empty-output nil)))
     (e-loop--emit :on-event on-event
-                  :session-id session-id
-                  :turn-id turn-id
                   :type 'turn-finished
                   :payload (list :reason done-reason))
     (list :status 'done
