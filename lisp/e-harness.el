@@ -78,15 +78,54 @@ configure the provider-neutral runtime."
                     :id id
                     :metadata metadata))
 
-(defun e-harness-subscribe (harness subscriber)
-  "Register SUBSCRIBER for core events from HARNESS."
-  (push subscriber (e-harness-subscribers harness))
-  subscriber)
+(cl-defun e-harness-subscribe (harness subscriber &key session-id)
+  "Register SUBSCRIBER for core events from HARNESS.
+When SESSION-ID is non-nil, SUBSCRIBER only receives events for that session."
+  (let ((record (list :callback subscriber :session-id session-id)))
+    (push record (e-harness-subscribers harness))
+    record))
 
 (defun e-harness--emit (harness event)
   "Emit EVENT to HARNESS subscribers."
-  (dolist (subscriber (reverse (e-harness-subscribers harness)))
-    (funcall subscriber event)))
+  (let ((event-session-id (plist-get event :session-id)))
+    (dolist (subscriber (reverse (e-harness-subscribers harness)))
+      (let ((callback (if (functionp subscriber)
+                          subscriber
+                        (plist-get subscriber :callback)))
+            (session-id (and (listp subscriber)
+                             (plist-get subscriber :session-id))))
+        (when (or (not session-id)
+                  (equal session-id event-session-id))
+          (funcall callback event))))))
+
+(defconst e-harness--durable-activity-event-types
+  '(turn-started reasoning-delta tool-started tool-finished turn-finished
+    turn-failed turn-cancelled backend-empty-output)
+  "Turn event types stored as durable session activity.")
+
+(defun e-harness--durable-activity-event-p (type)
+  "Return non-nil when TYPE should be stored as session activity."
+  (memq type e-harness--durable-activity-event-types))
+
+(defun e-harness--emit-turn-event (harness session-id turn-id type payload)
+  "Emit public event TYPE with PAYLOAD for HARNESS SESSION-ID TURN-ID."
+  (when (and session-id
+             turn-id
+             (e-harness--durable-activity-event-p type)
+             (ignore-errors
+               (e-session-get (e-harness-sessions harness) session-id)))
+    (e-session-append-activity-event
+     (e-harness-sessions harness)
+     session-id
+     turn-id
+     type
+     payload))
+  (e-harness--emit
+   harness
+   (e-events-make :type type
+                  :session-id session-id
+                  :turn-id turn-id
+                  :payload payload)))
 
 (defun e-harness-messages (harness session-id)
   "Return messages for SESSION-ID in HARNESS."
@@ -175,29 +214,32 @@ TURN-ID is passed to active layer context providers when present."
   "Emit a turn-failed event from HARNESS.
 SESSION-ID and TURN-ID identify the failed turn.  ERROR-MESSAGE describes the
 provider or loop failure."
-  (e-harness--emit
-   harness
-   (e-events-make :type 'turn-failed
-                  :session-id session-id
-                  :turn-id turn-id
-                  :payload (list :error error-message))))
+  (e-harness--emit-turn-event
+   harness session-id turn-id 'turn-failed (list :error error-message)))
+
+(defun e-harness--append-message (harness session-id turn-id message)
+  "Append MESSAGE in HARNESS for SESSION-ID TURN-ID and emit `message-added'."
+  (let ((message (copy-sequence message)))
+    (when turn-id
+      (plist-put message :turn-id turn-id))
+    (setq message
+          (e-session-append-message (e-harness-sessions harness)
+                                    session-id
+                                    message))
+    (e-harness--emit-turn-event
+     harness session-id turn-id 'message-added (list :message message))
+    message))
 
 (defun e-harness--append-user-message (harness session-id turn-id prompt)
   "Append PROMPT as the user message in HARNESS for SESSION-ID and TURN-ID."
-  (let ((user-message (list :id (e-harness--next-message-id)
-                            :role 'user
-                            :content prompt
-                            :metadata nil)))
-    (e-session-append-message (e-harness-sessions harness)
-                              session-id
-                              user-message)
-    (e-harness--emit
-     harness
-     (e-events-make :type 'message-added
-                    :session-id session-id
-                    :turn-id turn-id
-                    :payload (list :message user-message)))
-    user-message))
+  (e-harness--append-message
+   harness
+   session-id
+   turn-id
+   (list :id (e-harness--next-message-id)
+         :role 'user
+         :content prompt
+         :metadata nil)))
 
 (defun e-harness--run-prompt-turn (harness session-id turn-id)
   "Run the queued prompt turn for SESSION-ID and TURN-ID in HARNESS."
@@ -209,12 +251,12 @@ provider or loop failure."
      :backend (e-harness-backend harness)
      :tools (e-harness-tools harness)
      :options (plist-get context :options)
-     :on-event (lambda (event) (e-harness--emit harness event))
+     :on-event (lambda (type payload)
+                 (e-harness--emit-turn-event
+                  harness session-id turn-id type payload))
      :append-message
      (lambda (message)
-       (e-session-append-message (e-harness-sessions harness)
-                                 session-id
-                                 message)))))
+       (e-harness--append-message harness session-id turn-id message)))))
 
 (defun e-harness-prompt (harness session-id prompt)
   "Append PROMPT and run one backend turn for SESSION-ID in HARNESS."
@@ -304,12 +346,8 @@ cancellation.  SESSION-ID identifies the session."
             (cancel-timer timer))
           (plist-put entry :cancelled t)
           (plist-put entry :status 'cancelled)
-          (e-harness--emit
-           harness
-           (e-events-make :type 'turn-cancelled
-                          :session-id session-id
-                          :turn-id turn-id
-                          :payload nil))
+          (e-harness--emit-turn-event
+           harness session-id turn-id 'turn-cancelled nil)
           entry)
       (signal 'e-harness-no-active-turn (list session-id)))))
 

@@ -160,6 +160,19 @@
   (plist-put message :role (e-session--known-role (plist-get message :role)))
   message)
 
+(defun e-session--known-event-type (event-type)
+  "Return EVENT-TYPE normalized for in-memory activity events."
+  (if (stringp event-type)
+      (intern event-type)
+    event-type))
+
+(defun e-session--normalize-activity-event (event)
+  "Return EVENT normalized after JSON replay."
+  (plist-put event
+             :event-type
+             (e-session--known-event-type (plist-get event :event-type)))
+  event)
+
 (defun e-session--message-with-created-at (message timestamp)
   "Return normalized MESSAGE with TIMESTAMP as its creation time when missing."
   (let ((normalized (e-session--normalize-message (copy-sequence message))))
@@ -180,6 +193,7 @@
        (let ((session (list :id session-id
                             :metadata (plist-get record :metadata)
                             :messages nil
+                            :activity-events nil
                             :current-branch nil
                             :compactions nil
                             :created-at (or (plist-get record :created-at)
@@ -201,6 +215,17 @@
                                    (plist-get record :message)
                                    timestamp))))
          (e-session--touch store session timestamp)))
+      ("activity-event"
+       (when session
+         (plist-put session
+                    :activity-events
+                    (append (plist-get session :activity-events)
+                            (list (e-session--normalize-activity-event
+                                   (list :turn-id (plist-get record :turn-id)
+                                         :event-type (plist-get record :event-type)
+                                         :payload (plist-get record :payload)
+                                         :created-at timestamp)))))
+         (e-session--touch store session timestamp)))
       ("session-info"
        (when session
          (when (plist-member record :name)
@@ -214,6 +239,7 @@
       ("messages-cleared"
        (when session
          (plist-put session :messages nil)
+         (plist-put session :activity-events nil)
          (e-session--touch store session timestamp))))
     (when session
       (e-session--refresh-derived-fields store session))))
@@ -262,6 +288,7 @@
          (session (list :id id
                         :metadata metadata
                         :messages nil
+                        :activity-events nil
                         :current-branch nil
                         :compactions nil
                         :turn-options nil
@@ -290,6 +317,10 @@
 (defun e-session-messages (store session-id)
   "Return messages for SESSION-ID in STORE in insertion order."
   (copy-sequence (plist-get (e-session-get store session-id) :messages)))
+
+(defun e-session-activity-events (store session-id)
+  "Return durable activity events for SESSION-ID in STORE in insertion order."
+  (copy-sequence (plist-get (e-session-get store session-id) :activity-events)))
 
 (defun e-session-turn-options (store session-id)
   "Return session-scoped turn options for SESSION-ID in STORE."
@@ -329,10 +360,34 @@
     (e-session--write-index store)
     message))
 
+(defun e-session-append-activity-event
+    (store session-id turn-id event-type payload)
+  "Append a durable activity EVENT-TYPE to STORE for SESSION-ID and TURN-ID."
+  (let* ((session (e-session-get store session-id))
+         (events (plist-get session :activity-events))
+         (timestamp (e-session--timestamp))
+         (event (list :turn-id turn-id
+                      :event-type event-type
+                      :payload payload
+                      :created-at timestamp)))
+    (plist-put session :activity-events (append events (list event)))
+    (e-session--touch store session timestamp)
+    (e-session--append-record
+     store session-id
+     (list :type "activity-event"
+           :session-id session-id
+           :turn-id turn-id
+           :timestamp timestamp
+           :event-type event-type
+           :payload payload))
+    (e-session--write-index store)
+    event))
+
 (defun e-session-clear-messages (store session-id)
   "Clear all messages for SESSION-ID in STORE."
   (let ((session (e-session-get store session-id)))
     (plist-put session :messages nil)
+    (plist-put session :activity-events nil)
     (e-session--touch store session)
     (e-session--refresh-derived-fields store session)
     (e-session--append-record

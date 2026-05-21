@@ -34,6 +34,40 @@
       (should (equal (plist-get (cadr messages) :content) "answer")))
     (should (member 'turn-started (mapcar (lambda (event) (plist-get event :type)) events)))))
 
+(ert-deftest e-harness-test-subscribe-can-filter-events-by-session ()
+  "Session-scoped subscribers only receive events for their session."
+  (let* ((harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)))
+         (first-events nil)
+         (second-events nil)
+         (all-events nil))
+    (e-harness-subscribe harness
+                         (lambda (event) (push event first-events))
+                         :session-id "session-1")
+    (e-harness-subscribe harness
+                         (lambda (event) (push event second-events))
+                         :session-id "session-2")
+    (e-harness-subscribe harness
+                         (lambda (event) (push event all-events)))
+    (e-harness--emit-turn-event harness "session-1" "turn-1" 'turn-started nil)
+    (e-harness--emit-turn-event harness "session-2" "turn-2" 'turn-started nil)
+    (should (equal (mapcar (lambda (event) (plist-get event :session-id))
+                           (nreverse first-events))
+                   '("session-1")))
+    (should (equal (mapcar (lambda (event) (plist-get event :session-id))
+                           (nreverse second-events))
+                   '("session-2")))
+    (should (equal (mapcar (lambda (event) (plist-get event :session-id))
+                           (nreverse all-events))
+                   '("session-1" "session-2")))
+    (dolist (event all-events)
+      (should (plist-get event :id))
+      (should (plist-get event :type))
+      (should (plist-get event :session-id))
+      (should (plist-member event :turn-id))
+      (should (plist-member event :payload))
+      (should (plist-get event :created-at)))))
+
 (ert-deftest e-harness-test-abort-idle-session-is-explicit-error ()
   "Aborting without an active turn surfaces a lifecycle error."
   (let ((harness (e-harness-create
@@ -138,7 +172,9 @@
 (ert-deftest e-harness-test-reset-clears-session-messages ()
   "Reset clears transcript messages for a session."
   (let ((harness (e-harness-create
-                  :backend (e-backend-fake-create :items nil))))
+                  :backend (e-backend-fake-create
+                            :items '((:type assistant-message :content "answer")
+                                     (:type done :reason stop))))))
     (e-harness-create-session harness :id "session-1")
     (e-harness-prompt harness "session-1" "question")
     (e-harness-reset harness "session-1")
@@ -161,6 +197,8 @@
                             (lambda (&key messages options on-item)
                               (ignore options)
                               (setq captured-messages messages)
+                              (funcall on-item
+                                       '(:type assistant-message :content "ok"))
                               (funcall on-item '(:type done :reason stop))))))
          (context-strategy
           (e-context-create
@@ -218,6 +256,8 @@
                             (lambda (&key messages options on-item)
                               (ignore messages)
                               (setq captured-options options)
+                              (funcall on-item
+                                       '(:type assistant-message :content "ok"))
                               (funcall on-item '(:type done :reason stop))))))
          (tools (e-tools-registry-create))
          (harness (e-harness-create :backend backend :tools tools)))
@@ -248,6 +288,8 @@
                             (lambda (&key messages options on-item)
                               (ignore messages)
                               (setq captured-options options)
+                              (funcall on-item
+                                       '(:type assistant-message :content "ok"))
                               (funcall on-item '(:type done :reason stop))))))
          (tools (e-tools-registry-create))
          (harness (e-harness-create
@@ -281,6 +323,28 @@
       (should (equal (plist-get event :session-id) "session-1"))
       (should (equal (plist-get (plist-get event :payload) :turn-options)
                      '(:model "gpt-test"))))))
+
+(ert-deftest e-harness-test-persists-activity-events-and-tags_turn_messages ()
+  "Harness turn events persist as activity, and messages keep their turn id."
+  (let* ((backend (e-backend-fake-create
+                   :items '((:type reasoning-delta :content "thinking")
+                            (:type assistant-message :content "done")
+                            (:type done :reason stop))))
+         (store (e-session-store-create))
+         (harness (e-harness-create :backend backend :sessions store)))
+    (e-harness-create-session harness :id "session-1")
+    (e-harness-prompt harness "session-1" "hello")
+    (let ((messages (e-session-messages store "session-1"))
+          (events (e-session-activity-events store "session-1")))
+      (should (equal (length (delete-dups
+                              (mapcar (lambda (message)
+                                        (plist-get message :turn-id))
+                                      messages)))
+                     1))
+      (should (equal (mapcar (lambda (event)
+                               (plist-get event :event-type))
+                             events)
+                     '(turn-started reasoning-delta turn-finished))))))
 
 (provide 'e-harness-test)
 

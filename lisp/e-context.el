@@ -60,6 +60,7 @@ backend-neutral messages that should appear before the session transcript."
   "Return MESSAGE without presentation/storage-only metadata."
   (let ((copy (copy-sequence message)))
     (cl-remf copy :created-at)
+    (cl-remf copy :turn-id)
     copy))
 
 (defun e-context--backend-messages (messages)

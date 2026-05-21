@@ -70,7 +70,7 @@ When nil, `shell-command-switch' is used."
     (buffer-string)))
 
 (defun e-base-tools--binary-string-p (content)
-  "Return non-nil when CONTENT looks binary."
+  "Return non-nil when CONTENT appears binary."
   (or (string-search "\0" content)
       (and (> (length content) 1)
            (let ((first (aref content 0))

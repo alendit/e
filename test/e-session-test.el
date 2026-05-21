@@ -157,6 +157,33 @@
                                       (buffer-string))))))
       (delete-directory directory t))))
 
+(ert-deftest e-session-test-activity-events-persist-and-clear-with-messages ()
+  "Activity events are durable session records and clear with transcript state."
+  (let* ((directory (make-temp-file "e-session-" t))
+         (store (e-session-persistent-store-create directory))
+         (session-id (plist-get (e-session-create store :id "session-1") :id)))
+    (unwind-protect
+        (progn
+          (e-session-append-activity-event
+           store
+           session-id
+           "turn-1"
+           'reasoning-delta
+           '(:content "Need current buffer state."))
+          (let ((loaded (e-session-persistent-store-create directory)))
+            (should (equal (mapcar (lambda (event)
+                                     (plist-get event :event-type))
+                                   (e-session-activity-events loaded session-id))
+                           '(reasoning-delta)))
+            (should (equal (plist-get
+                            (car (e-session-activity-events loaded session-id))
+                            :payload)
+                           '(:content "Need current buffer state.")))))
+          (e-session-clear-messages store session-id)
+          (let ((loaded (e-session-persistent-store-create directory)))
+            (should (equal (e-session-activity-events loaded session-id) nil)))
+      (delete-directory directory t))))
+
 (ert-deftest e-session-test-list-sessions-sorted-with-display-metadata ()
   "Session list returns recent sessions with title, counts, and file path."
   (let* ((directory (make-temp-file "e-session-" t))

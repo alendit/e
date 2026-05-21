@@ -47,6 +47,8 @@
                             (lambda (&key messages options on-item)
                               (ignore options)
                               (setq captured-messages messages)
+                              (funcall on-item
+                                       '(:type assistant-message :content "ok"))
                               (funcall on-item '(:type done :reason stop))))))
          (provider (e-context-provider-create
                     :name 'test-context
