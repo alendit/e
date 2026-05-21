@@ -224,6 +224,11 @@ TURN-ID is passed to active layer context providers when present."
   (and (listp entry)
        (eq (plist-get entry :status) 'running)))
 
+(defun e-harness--cancel-active-request (entry)
+  "Cancel ENTRY's active provider request when one exists."
+  (when-let ((request (plist-get entry :request)))
+    (e-backend-cancel-request request)))
+
 (defun e-harness--emit-turn-failed (harness session-id turn-id error-message)
   "Emit a turn-failed event from HARNESS.
 SESSION-ID and TURN-ID identify the failed turn.  ERROR-MESSAGE describes the
@@ -255,7 +260,8 @@ provider or loop failure."
          :content prompt
          :metadata nil)))
 
-(defun e-harness--run-prompt-turn (harness session-id turn-id)
+(cl-defun e-harness--run-prompt-turn
+    (harness session-id turn-id &key on-request-start)
   "Run the queued prompt turn for SESSION-ID and TURN-ID in HARNESS."
   (let ((context (e-harness-context harness session-id turn-id)))
     (e-loop-run-turn
@@ -268,6 +274,7 @@ provider or loop failure."
      :on-event (lambda (type payload)
                  (e-harness--emit-turn-event
                   harness session-id turn-id type payload))
+     :on-request-start on-request-start
      :append-message
      (lambda (message)
        (e-harness--append-message harness session-id turn-id message)))))
@@ -316,14 +323,20 @@ cancellation.  SESSION-ID identifies the session."
         (unless (plist-get entry :cancelled)
           (condition-case err
               (let ((result (e-harness--run-prompt-turn
-                             harness session-id turn-id)))
-                (plist-put entry :result result)
-                (plist-put entry :status 'done))
+                             harness session-id turn-id
+                             :on-request-start
+                             (lambda (request)
+                               (plist-put entry :request request)))))
+                (unless (plist-get entry :cancelled)
+                  (plist-put entry :result result)
+                  (plist-put entry :status 'done)))
             (error
              (let ((message (error-message-string err)))
-               (plist-put entry :status 'error)
-               (plist-put entry :error message)
-               (e-harness--emit-turn-failed harness session-id turn-id message))))))))
+               (unless (plist-get entry :cancelled)
+                 (plist-put entry :status 'error)
+                 (plist-put entry :error message)
+                 (e-harness--emit-turn-failed
+                  harness session-id turn-id message)))))))))
     turn-id))
 
 (defun e-harness-follow-up (harness session-id prompt)
@@ -358,6 +371,7 @@ cancellation.  SESSION-ID identifies the session."
         (let ((turn-id (plist-get entry :id)))
           (when-let ((timer (plist-get entry :timer)))
             (cancel-timer timer))
+          (e-harness--cancel-active-request entry)
           (plist-put entry :cancelled t)
           (plist-put entry :status 'cancelled)
           (e-harness--emit-turn-event

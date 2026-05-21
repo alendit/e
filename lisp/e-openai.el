@@ -554,17 +554,28 @@ default when turn options do not include `:model'."
                        :options effective-options
                        :tools (plist-get effective-options :tools))))
                (session-id (plist-get effective-options :session-id))
-               (response (funcall (or request-function
-                                      #'e-openai-codex--http-request)
-                                  :url (e-openai-responses-url
-                                        (or base-url
-                                            (e-openai--provider-base-url
-                                             profile)))
-                                  :headers (e-openai--headers
-                                            :profile profile
-                                            :auth-file auth-file
-                                            :session-id session-id)
-                                  :body body)))
+               (url (e-openai-responses-url
+                     (or base-url
+                         (e-openai--provider-base-url profile))))
+               (headers (e-openai--headers
+                         :profile profile
+                         :auth-file auth-file
+                         :session-id session-id))
+               (requester (or request-function
+                              #'e-openai-codex--http-request))
+               (response nil))
+          (e-backend-note-request-started
+           (e-backend-request-create
+            :metadata
+            (list :provider provider
+                  :url url
+                  :cancellable nil
+                  :limitation 'url-retrieve-synchronously)))
+          (setq response
+                (funcall requester
+                         :url url
+                         :headers headers
+                         :body body))
           (dolist (item (e-openai-codex-parse-stream response))
             (funcall on-item item))))))))
 

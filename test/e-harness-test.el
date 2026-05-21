@@ -137,6 +137,39 @@
                    'cancelled))
     (should (equal called nil))))
 
+(ert-deftest e-harness-test-abort-cancels-active-provider-request ()
+  "Aborting an active async provider call cancels its request handle."
+  (let* ((cancelled nil)
+         (backend
+          (e-backend-create
+           :name "cancellable"
+           :stream
+           (cl-function
+            (lambda (&key messages options on-item)
+              (ignore messages options)
+              (e-backend-note-request-started
+               (e-backend-request-create
+                :cancel (lambda ()
+                          (setq cancelled t)
+                          t)))
+              (while (not cancelled)
+                (accept-process-output nil 0.01))
+              (funcall on-item '(:type done :reason cancelled))))))
+         (harness (e-harness-create :backend backend))
+         (events nil))
+    (e-harness-subscribe harness (lambda (event) (push event events)))
+    (e-harness-create-session harness :id "session-1")
+    (e-harness-prompt-async harness "session-1" "question")
+    (run-at-time 0.01 nil (lambda ()
+                            (e-harness-abort harness "session-1")))
+    (should (equal (plist-get (e-harness-wait harness "session-1" 1.0)
+                              :status)
+                   'cancelled))
+    (should cancelled)
+    (should (member 'turn-cancelled
+                    (mapcar (lambda (event) (plist-get event :type))
+                            events)))))
+
 (ert-deftest e-harness-test-async-provider-error-is-surfaced ()
   "Async provider failures settle as errors and emit turn-failed."
   (let* ((backend (e-backend-create

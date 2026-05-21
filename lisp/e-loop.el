@@ -39,7 +39,8 @@
   (funcall on-event type payload))
 
 (cl-defun e-loop-run-turn
-    (&key session-id turn-id messages backend tools options on-event append-message)
+    (&key session-id turn-id messages backend tools options on-event
+          append-message on-request-start)
   "Run one agent turn for SESSION-ID and TURN-ID.
 MESSAGES, BACKEND, TOOLS, OPTIONS, ON-EVENT, and APPEND-MESSAGE define the
 turn context and output callbacks.
@@ -63,6 +64,7 @@ stable."
          backend
          :messages turn-messages
          :options options
+         :on-request-start on-request-start
          :on-item
          (lambda (item)
            (pcase (plist-get item :type)

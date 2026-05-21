@@ -517,6 +517,37 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
           (should (assoc "chatgpt-account-id" (plist-get captured :headers))))
       (delete-file auth-file))))
 
+(ert-deftest e-openai-test-backend-documents-sync-request-cancellation-limit ()
+  "The default OpenAI request path exposes an explicit non-cancellable handle."
+  (let* ((token (e-openai-test--jwt))
+         (auth-file (make-temp-file "e-auth" nil ".json"
+                                    (json-encode
+                                     (list :tokens
+                                           (list :access_token token
+                                                 :refresh_token "refresh")))))
+         (request nil)
+         (backend
+          (e-openai-codex-backend-create
+           :auth-file auth-file
+           :request-function
+           (lambda (&rest _args)
+             "data: {\"type\":\"response.output_text.done\",\"text\":\"ok\"}\n\n\
+data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n"))))
+    (unwind-protect
+        (progn
+          (e-backend-stream backend
+                            :messages '((:role user :content "hello"))
+                            :options '(:model "gpt-test")
+                            :on-item #'ignore
+                            :on-request-start (lambda (handle)
+                                                (setq request handle)))
+          (should (e-backend-request-p request))
+          (should-not (e-backend-cancel-request request))
+          (should (equal (plist-get (e-backend-request-metadata request)
+                                    :limitation)
+                         'url-retrieve-synchronously)))
+      (delete-file auth-file))))
+
 (ert-deftest e-openai-test-codex-harness-runs-minimal-prompt-flow ()
   "The Codex harness helper can run prompt to persisted assistant message."
   (let* ((token (e-openai-test--jwt))
