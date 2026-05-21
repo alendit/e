@@ -18,6 +18,7 @@
 (require 'e-capabilities)
 (require 'e-chat)
 (require 'e-context)
+(require 'e-emacs-capabilities)
 (require 'e-emacs-base)
 (require 'e-emacs-tools)
 (require 'e-events)
@@ -46,6 +47,7 @@
         :capabilities t
         :backends t
         :context t
+        :emacs-capabilities t
         :emacs-base t
         :emacs-tools t
         :openai t

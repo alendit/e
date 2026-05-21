@@ -14,6 +14,7 @@
 (require 'ert)
 (require 'e)
 (require 'e-backend)
+(require 'e-capabilities)
 (require 'e-emacs-base)
 (require 'e-harness)
 
@@ -32,6 +33,17 @@
                      "edit_buffer"
                      "save_buffer"
                      "run_elisp")))))
+
+(ert-deftest e-emacs-base-test-layer-activates-emacs-capabilities ()
+  "The emacs-base layer remains a compatibility preset over capabilities."
+  (let ((layer (e-emacs-base-layer-create)))
+    (should (equal (mapcar #'e-capability-id
+                           (e-layer-capabilities layer))
+                   '(emacs-awareness
+                     buffer-read
+                     selection-context
+                     buffer-edit
+                     elisp-eval)))))
 
 (ert-deftest e-emacs-base-test-visible-buffer-context-uses-visible-windows ()
   "Visible-buffer context includes visible buffers and excludes hidden ones."

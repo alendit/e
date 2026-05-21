@@ -234,14 +234,29 @@ When VISIBLE-ONLY is non-nil, include only buffers visible in windows."
          (setq result (eval form t)))
        (list :result (prin1-to-string result))))))
 
-(defun e-emacs-tools-register-defaults (registry)
-  "Register default concrete Emacs tools in REGISTRY."
+(defun e-emacs-tools-register-buffer-read (registry)
+  "Register buffer read tools in REGISTRY."
   (e-emacs-tools-register-list-buffers registry)
   (e-emacs-tools-register-read-buffer registry)
+  registry)
+
+(defun e-emacs-tools-register-buffer-edit (registry)
+  "Register buffer mutation tools in REGISTRY."
   (e-emacs-tools-register-write-buffer registry)
   (e-emacs-tools-register-edit-buffer registry)
   (e-emacs-tools-register-save-buffer registry)
+  registry)
+
+(defun e-emacs-tools-register-elisp-eval (registry)
+  "Register explicit elisp evaluation tools in REGISTRY."
   (e-emacs-tools-register-run-elisp registry)
+  registry)
+
+(defun e-emacs-tools-register-defaults (registry)
+  "Register default concrete Emacs tools in REGISTRY."
+  (e-emacs-tools-register-buffer-read registry)
+  (e-emacs-tools-register-buffer-edit registry)
+  (e-emacs-tools-register-elisp-eval registry)
   registry)
 
 (provide 'e-emacs-tools)
