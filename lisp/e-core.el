@@ -13,6 +13,8 @@
 ;;; Code:
 
 (require 'e-backend)
+(require 'e-base)
+(require 'e-base-tools)
 (require 'e-chat)
 (require 'e-context)
 (require 'e-emacs-base)
@@ -36,6 +38,8 @@
         :session-persistence t
         :chat t
         :layers t
+        :base t
+        :base-tools t
         :backends t
         :context t
         :emacs-base t

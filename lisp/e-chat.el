@@ -15,6 +15,7 @@
 (require 'cl-lib)
 (require 'pp)
 (require 'subr-x)
+(require 'e-base)
 (require 'e-emacs-base)
 (require 'e-harness)
 (require 'e-openai)
@@ -43,6 +44,12 @@
 (defcustom e-chat-submit-backend-delay 0.05
   "Seconds to delay backend work after rendering a submitted human turn."
   :type 'number
+  :group 'e-chat)
+
+(defcustom e-chat-default-layer-functions
+  '(e-base-layer-create e-emacs-base-layer-create)
+  "Layer factory functions activated by default chat harnesses."
+  :type '(repeat function)
   :group 'e-chat)
 
 (defface e-chat-user-face
@@ -315,7 +322,8 @@
   (let ((harness (e-openai-create-harness
                   :provider e-openai-default-provider
                   :sessions (e-chat--default-session-store))))
-    (e-harness-activate-layer harness (e-emacs-base-layer-create))
+    (dolist (create-layer e-chat-default-layer-functions)
+      (e-harness-activate-layer harness (funcall create-layer)))
     harness))
 
 (defun e-chat--default-session-store ()

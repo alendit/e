@@ -64,6 +64,8 @@
                   "lisp/e-backend.el"
                   "lisp/e-openai.el"
                   "lisp/e-tools.el"
+                  "lisp/e-base-tools.el"
+                  "lisp/e-base.el"
                   "lisp/e-emacs-tools.el"
                   "lisp/e-emacs-base.el"
                   "lisp/e-loop.el"
