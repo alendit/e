@@ -22,6 +22,7 @@
 (require 'e-emacs-capabilities)
 (require 'e-emacs-base)
 (require 'e-emacs-tools)
+(require 'e-evidence-tools)
 (require 'e-events)
 (require 'e-file-capabilities)
 (require 'e-harness)
@@ -52,6 +53,7 @@
         :emacs-capabilities t
         :emacs-base t
         :emacs-tools t
+        :evidence-tools t
         :openai t
         :tools t
         :loop t
