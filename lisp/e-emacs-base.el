@@ -32,12 +32,7 @@
                        (e-buffer-read-capability-create)
                        (e-selection-context-capability-create)
                        (e-buffer-edit-capability-create)
-                       (e-elisp-eval-capability-create))
-   :instructions nil
-   :tools nil
-   :context-providers nil
-   :skills nil
-   :prompts nil))
+                       (e-elisp-eval-capability-create))))
 
 (provide 'e-emacs-base)
 

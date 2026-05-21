@@ -28,12 +28,7 @@
      :capabilities (list (e-base-guidance-capability-create e-base-instructions)
                          (e-file-inspection-capability-create root)
                          (e-file-mutation-capability-create root)
-                         (e-shell-process-capability-create root))
-     :instructions nil
-     :tools nil
-     :context-providers nil
-     :skills nil
-     :prompts nil)))
+                         (e-shell-process-capability-create root)))))
 
 (provide 'e-base)
 

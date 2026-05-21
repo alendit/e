@@ -63,27 +63,26 @@ and ACTIVE-CAPABILITIES configure the provider-neutral runtime."
                           :default-options default-options
                           :sessions (or sessions (e-session-store-create))
                           :tools (or tools (e-tools-registry-create))
-                          :active-capabilities active-capabilities
                           :active-turns (make-hash-table :test 'equal))))
     (dolist (capability active-capabilities)
-      (e-capabilities-register-tools capability (e-harness-tools harness)))
+      (e-harness-activate-capability harness capability))
     (dolist (layer active-layers)
       (e-harness-activate-layer harness layer))
     harness))
 
-(defun e-harness--legacy-context-layers (layers)
-  "Return LAYERS that still contribute context directly."
-  (cl-remove-if #'e-layer-capabilities layers))
+(defun e-harness-activate-capability (harness capability)
+  "Activate CAPABILITY in HARNESS and register its tools."
+  (e-capabilities-register-tools capability (e-harness-tools harness))
+  (setf (e-harness-active-capabilities harness)
+        (append (e-harness-active-capabilities harness) (list capability)))
+  capability)
 
 (defun e-harness-activate-layer (harness layer)
   "Activate LAYER in HARNESS and register its tools and capabilities."
   (setf (e-harness-active-layers harness)
         (append (e-harness-active-layers harness) (list layer)))
   (dolist (capability (e-layer-capabilities layer))
-    (e-capabilities-register-tools capability (e-harness-tools harness))
-    (setf (e-harness-active-capabilities harness)
-          (append (e-harness-active-capabilities harness) (list capability))))
-  (e-layers-register-tools layer (e-harness-tools harness))
+    (e-harness-activate-capability harness capability))
   layer)
 
 (cl-defun e-harness-create-session (harness &key id metadata)
@@ -210,11 +209,6 @@ TURN-ID is passed to active layer context providers when present."
    (append
     (e-capabilities-context-messages
      (e-harness-active-capabilities harness)
-     :harness harness
-     :session-id session-id
-     :turn-id turn-id)
-    (e-layers-context-messages
-     (e-harness--legacy-context-layers (e-harness-active-layers harness))
      :harness harness
      :session-id session-id
      :turn-id turn-id))))

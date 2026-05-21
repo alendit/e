@@ -226,11 +226,14 @@
                             (lambda (&key harness session-id turn-id)
                               (ignore harness session-id turn-id)
                               '((:role system :content "provider context"))))))
+         (capability (e-capability-create
+                      :id 'test-capability
+                      :instructions "capability instructions"
+                      :context-providers (list provider)))
          (layer (e-layer-create
                  :id 'test-layer
                  :name "Test Layer"
-                 :instructions "layer instructions"
-                 :context-providers (list provider)))
+                 :capabilities (list capability)))
          (harness (e-harness-create
                    :backend (e-backend-fake-create :items nil)
                    :default-options '(:model "default-model")
@@ -244,30 +247,25 @@
     (let ((context (e-harness-context harness "session-1")))
       (should (equal (mapcar (lambda (message) (plist-get message :content))
                              (plist-get context :messages))
-                     '("layer instructions" "provider context" "hello")))
+                     '("capability instructions" "provider context" "hello")))
       (should (equal (plist-get (plist-get context :options) :model)
                      "session-model")))))
 
-(ert-deftest e-harness-test-capability-context-precedes-legacy-layer-context ()
-  "Capability context is prepended before unmigrated legacy layer context."
+(ert-deftest e-harness-test-activate-capability-registers-tools-and-context ()
+  "Direct capability activation registers capability contributions."
   (let* ((capability
           (e-capability-create
-           :id 'capability-context
-           :instructions "capability instructions"))
-         (capability-layer
-          (e-layer-create
-           :id 'capability-layer
-           :name "Capability Layer"
-           :capabilities (list capability)
-           :instructions "ignored migrated layer instructions"))
-         (legacy-layer
-          (e-layer-create
-           :id 'legacy-layer
-           :name "Legacy Layer"
-           :instructions "legacy instructions"))
+           :id 'direct-capability
+           :instructions "direct instructions"
+           :tools (list (lambda (registry)
+                          (e-tools-register
+                           registry
+                           :name "direct_tool"
+                           :description "Direct capability tool."
+                           :handler (lambda (_arguments) "direct"))))))
          (harness (e-harness-create
-                   :backend (e-backend-fake-create :items nil)
-                   :active-layers (list capability-layer legacy-layer))))
+                   :backend (e-backend-fake-create :items nil))))
+    (e-harness-activate-capability harness capability)
     (e-harness-create-session harness :id "session-1")
     (e-session-append-message
      (e-harness-sessions harness)
@@ -276,7 +274,11 @@
     (let ((context (e-harness-context harness "session-1")))
       (should (equal (mapcar (lambda (message) (plist-get message :content))
                              (plist-get context :messages))
-                     '("capability instructions" "legacy instructions" "hello"))))))
+                     '("direct instructions" "hello"))))
+    (should (equal (mapcar (lambda (definition)
+                             (plist-get definition :name))
+                           (e-tools-definitions (e-harness-tools harness)))
+                   '("direct_tool")))))
 
 (ert-deftest e-harness-test-prompt-passes-tool-definitions-as-options ()
   "Prompting includes registered tool definitions in backend options."

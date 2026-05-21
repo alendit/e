@@ -1224,15 +1224,11 @@
          (list (lambda ()
                  (e-layer-create
                   :id 'first-layer
-                  :name "First"
-                  :tools nil
-                  :context-providers nil))
+                  :name "First"))
                (lambda ()
                  (e-layer-create
                   :id 'second-layer
-                  :name "Second"
-                  :tools nil
-                  :context-providers nil)))))
+                  :name "Second")))))
     (cl-letf (((symbol-function 'e-openai-create-harness)
                (lambda (&rest _args)
                  (e-harness-create
