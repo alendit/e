@@ -194,6 +194,7 @@
                             :metadata (plist-get record :metadata)
                             :messages nil
                             :activity-events nil
+                            :branch-summaries nil
                             :current-branch nil
                             :compactions nil
                             :created-at (or (plist-get record :created-at)
@@ -225,6 +226,39 @@
                                          :event-type (plist-get record :event-type)
                                          :payload (plist-get record :payload)
                                          :created-at timestamp)))))
+         (e-session--touch store session timestamp)))
+      ("branch-summary"
+       (when session
+         (plist-put session
+                    :branch-summaries
+                    (append (plist-get session :branch-summaries)
+                            (list (list :branch-id
+                                        (plist-get record :branch-id)
+                                        :summary
+                                        (plist-get record :summary)
+                                        :metadata
+                                        (plist-get record :metadata)
+                                        :created-at timestamp))))
+         (e-session--touch store session timestamp)))
+      ("compaction"
+       (when session
+         (plist-put session
+                    :compactions
+                    (append (plist-get session :compactions)
+                            (list (list :summary
+                                        (plist-get record :summary)
+                                        :branch-id
+                                        (plist-get record :branch-id)
+                                        :range
+                                        (plist-get record :range)
+                                        :metadata
+                                        (plist-get record :metadata)
+                                        :created-at timestamp))))
+         (e-session--touch store session timestamp)))
+      ("current-branch"
+       (when session
+         (plist-put session :current-branch
+                    (plist-get record :branch-id))
          (e-session--touch store session timestamp)))
       ("session-info"
        (when session
@@ -289,6 +323,7 @@
                         :metadata metadata
                         :messages nil
                         :activity-events nil
+                        :branch-summaries nil
                         :current-branch nil
                         :compactions nil
                         :turn-options nil
@@ -382,6 +417,77 @@
            :payload payload))
     (e-session--write-index store)
     event))
+
+(cl-defun e-session-append-branch-summary
+    (store session-id branch-id summary &key metadata)
+  "Append BRANCH-ID SUMMARY metadata to SESSION-ID in STORE."
+  (let* ((session (e-session-get store session-id))
+         (timestamp (e-session--timestamp))
+         (record (list :branch-id branch-id
+                       :summary summary
+                       :metadata metadata
+                       :created-at timestamp)))
+    (plist-put session
+               :branch-summaries
+               (append (plist-get session :branch-summaries)
+                       (list record)))
+    (e-session--touch store session timestamp)
+    (e-session--refresh-derived-fields store session)
+    (e-session--append-record
+     store session-id
+     (list :type "branch-summary"
+           :session-id session-id
+           :timestamp timestamp
+           :branch-id branch-id
+           :summary summary
+           :metadata metadata))
+    (e-session--write-index store)
+    record))
+
+(cl-defun e-session-append-compaction
+    (store session-id summary &key branch-id range metadata)
+  "Append compaction SUMMARY for SESSION-ID in STORE.
+BRANCH-ID, RANGE, and METADATA describe the compacted source when available."
+  (let* ((session (e-session-get store session-id))
+         (timestamp (e-session--timestamp))
+         (record (list :summary summary
+                       :branch-id branch-id
+                       :range range
+                       :metadata metadata
+                       :created-at timestamp)))
+    (plist-put session
+               :compactions
+               (append (plist-get session :compactions)
+                       (list record)))
+    (e-session--touch store session timestamp)
+    (e-session--refresh-derived-fields store session)
+    (e-session--append-record
+     store session-id
+     (list :type "compaction"
+           :session-id session-id
+           :timestamp timestamp
+           :summary summary
+           :branch-id branch-id
+           :range range
+           :metadata metadata))
+    (e-session--write-index store)
+    record))
+
+(defun e-session-set-current-branch (store session-id branch-id)
+  "Set SESSION-ID current branch cursor to BRANCH-ID in STORE."
+  (let* ((session (e-session-get store session-id))
+         (timestamp (e-session--timestamp)))
+    (plist-put session :current-branch branch-id)
+    (e-session--touch store session timestamp)
+    (e-session--refresh-derived-fields store session)
+    (e-session--append-record
+     store session-id
+     (list :type "current-branch"
+           :session-id session-id
+           :timestamp timestamp
+           :branch-id branch-id))
+    (e-session--write-index store)
+    branch-id))
 
 (defun e-session-clear-messages (store session-id)
   "Clear all messages for SESSION-ID in STORE."

@@ -133,6 +133,64 @@
                            '(:model "gpt-test" :reasoning-effort "high")))))
       (delete-directory directory t))))
 
+(ert-deftest e-session-test-branch-summary-persists-through-replay ()
+  "Branch summary records append and replay into session state."
+  (let* ((directory (make-temp-file "e-session-" t))
+         (store (e-session-persistent-store-create directory))
+         (session-id (plist-get (e-session-create store :id "session-1") :id)))
+    (unwind-protect
+        (progn
+          (e-session-append-branch-summary
+           store session-id "branch-a" "Built the first slice."
+           :metadata '(:from "turn-1"))
+          (let* ((loaded (e-session-persistent-store-create directory))
+                 (summary (car (plist-get
+                                (e-session-get loaded session-id)
+                                :branch-summaries))))
+            (should (equal (plist-get summary :branch-id) "branch-a"))
+            (should (equal (plist-get summary :summary)
+                           "Built the first slice."))
+            (should (equal (plist-get summary :metadata)
+                           '(:from "turn-1")))))
+      (delete-directory directory t))))
+
+(ert-deftest e-session-test-compaction-persists-through-replay ()
+  "Compaction records append and replay into session state."
+  (let* ((directory (make-temp-file "e-session-" t))
+         (store (e-session-persistent-store-create directory))
+         (session-id (plist-get (e-session-create store :id "session-1") :id)))
+    (unwind-protect
+        (progn
+          (e-session-append-compaction
+           store session-id "Compacted early transcript."
+           :branch-id "branch-a"
+           :range '(:from "msg-1" :to "msg-9"))
+          (let* ((loaded (e-session-persistent-store-create directory))
+                 (compaction (car (plist-get
+                                   (e-session-get loaded session-id)
+                                   :compactions))))
+            (should (equal (plist-get compaction :summary)
+                           "Compacted early transcript."))
+            (should (equal (plist-get compaction :branch-id) "branch-a"))
+            (should (equal (plist-get compaction :range)
+                           '(:from "msg-1" :to "msg-9")))))
+      (delete-directory directory t))))
+
+(ert-deftest e-session-test-current-branch-persists-through-replay ()
+  "Current branch cursor records append and replay into session state."
+  (let* ((directory (make-temp-file "e-session-" t))
+         (store (e-session-persistent-store-create directory))
+         (session-id (plist-get (e-session-create store :id "session-1") :id)))
+    (unwind-protect
+        (progn
+          (e-session-set-current-branch store session-id "branch-a")
+          (e-session-set-current-branch store session-id "branch-b")
+          (let ((loaded (e-session-persistent-store-create directory)))
+            (should (equal (plist-get (e-session-get loaded session-id)
+                                      :current-branch)
+                           "branch-b"))))
+      (delete-directory directory t))))
+
 (ert-deftest e-session-test-clear-messages-is-append-only ()
   "Clearing a session empties replayed transcript without truncating JSONL."
   (let* ((directory (make-temp-file "e-session-" t))
