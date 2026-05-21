@@ -158,8 +158,8 @@
             (should (eq (get-text-property (point) 'font-lock-face)
                         'e-chat-user-face))
             (search-forward "hello back")
-            (should (eq (get-text-property (point) 'font-lock-face)
-                        'e-chat-assistant-face)))
+            (should-not (eq (get-text-property (point) 'font-lock-face)
+                            'e-chat-assistant-face)))
           (should (equal (e-chat--composer-text) "")))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
@@ -312,38 +312,76 @@
   (should (equal e-chat--assistant-glyph "●")))
 
 (ert-deftest e-chat-test-assistant-markdown-renders-with-text-properties ()
-  "Assistant messages keep Markdown text and apply Markdown presentation faces."
+  "Assistant messages keep Markdown text and use markdown-mode faces."
+  (skip-unless (require 'markdown-mode nil t))
   (let ((buffer (e-chat-test--buffer nil "chat-markdown")))
     (unwind-protect
         (with-current-buffer buffer
           (e-chat--insert-entry
            "Assistant"
-           "Use **bold** and `code`.\n- item\n\n```elisp\n(message \"hi\")\n```\n\n[docs](https://example.test)")
+           "## Heading\nUse **bold**, *italic*, and `code`.\n- item\n\n```elisp\n(message \"hi\")\n```\n\n[docs](https://example.test)")
           (let ((content (buffer-string)))
+            (should (string-match-p "## Heading" content))
             (should (string-match-p "\\*\\*bold\\*\\*" content))
             (should (string-match-p "`code`" content))
+            (should (string-match-p "```elisp" content))
             (should (string-match-p "\\[docs\\](https://example.test)" content)))
           (save-excursion
             (goto-char (point-min))
+            (search-forward "##")
+            (should-not (get-text-property (1- (point)) 'invisible))
+            (should (memq 'markdown-header-face-2
+                          (ensure-list (get-text-property (1- (point)) 'face))))
+            (search-forward "Heading")
+            (should (memq 'markdown-header-face-2
+                          (ensure-list (get-text-property (1- (point)) 'face))))
+            (should-not (eq (get-text-property (1- (point)) 'font-lock-face)
+                            'e-chat-assistant-face))
             (search-forward "bold")
-            (should (memq 'e-chat-markdown-strong-face
+            (should (memq 'markdown-bold-face
                           (ensure-list (get-text-property (1- (point)) 'face))))
+            (search-backward "**")
+            (should (memq 'markdown-bold-face
+                          (ensure-list (get-text-property (point) 'face))))
+            (should-not (get-text-property (point) 'invisible))
+            (search-forward "italic")
+            (should (memq 'markdown-italic-face
+                          (ensure-list (get-text-property (1- (point)) 'face))))
+            (search-backward "*")
+            (should (memq 'markdown-italic-face
+                          (ensure-list (get-text-property (point) 'face))))
+            (should-not (get-text-property (point) 'invisible))
             (search-forward "code")
-            (should (memq 'e-chat-markdown-code-face
+            (should (memq 'markdown-inline-code-face
                           (ensure-list (get-text-property (1- (point)) 'face))))
+            (search-backward "`")
+            (should (memq 'markdown-inline-code-face
+                          (ensure-list (get-text-property (point) 'face))))
+            (should-not (get-text-property (point) 'invisible))
             (search-forward "- item")
-            (should (memq 'e-chat-markdown-list-face
+            (should (memq 'markdown-list-face
                           (ensure-list (get-text-property (1- (point)) 'face))))
+            (search-forward "```elisp")
+            (should (memq 'markdown-code-face
+                          (ensure-list (get-text-property (1- (point)) 'face))))
+            (should-not (get-text-property (1- (point)) 'invisible))
             (search-forward "(message \"hi\")")
-            (should (memq 'e-chat-markdown-code-block-face
+            (should (memq 'markdown-code-face
+                          (ensure-list (get-text-property (1- (point)) 'face))))
+            (search-forward "```")
+            (should (memq 'markdown-code-face
                           (ensure-list (get-text-property (1- (point)) 'face))))
             (search-forward "docs")
-            (should (memq 'e-chat-markdown-link-face
+            (should (memq 'markdown-link-face
                           (ensure-list (get-text-property (1- (point)) 'face))))
             (should (equal (get-text-property (1- (point)) 'help-echo)
                            "https://example.test"))
             (should (equal (get-text-property (1- (point)) 'e-chat-link-url)
-                           "https://example.test"))))
+                           "https://example.test"))
+            (search-backward "[")
+            (should (memq 'markdown-link-face
+                          (ensure-list (get-text-property (point) 'face))))
+            (should-not (get-text-property (point) 'invisible))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 

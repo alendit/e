@@ -21,6 +21,8 @@
 (require 'e-openai)
 (require 'e-session)
 
+(declare-function markdown-mode "markdown-mode")
+
 (defgroup e-chat nil
   "Chat presentation for e."
   :group 'e
@@ -109,12 +111,12 @@
   :group 'e-chat)
 
 (defface e-chat-markdown-strong-face
-  '((t :weight bold))
+  '((t :inherit e-chat-assistant-face :weight bold))
   "Face used for strong Markdown spans in assistant messages."
   :group 'e-chat)
 
 (defface e-chat-markdown-emphasis-face
-  '((t :slant italic))
+  '((t :inherit e-chat-assistant-face :slant italic))
   "Face used for emphasized Markdown spans in assistant messages."
   :group 'e-chat)
 
@@ -134,12 +136,12 @@
   :group 'e-chat)
 
 (defface e-chat-markdown-heading-face
-  '((t :inherit font-lock-keyword-face :weight bold))
+  '((t :inherit e-chat-assistant-face :weight bold :height 1.08))
   "Face used for Markdown headings in assistant messages."
   :group 'e-chat)
 
 (defface e-chat-markdown-list-face
-  '((t :inherit font-lock-builtin-face))
+  '((t :inherit e-chat-assistant-face :weight bold))
   "Face used for Markdown list items in assistant messages."
   :group 'e-chat)
 
@@ -881,6 +883,61 @@ When APPEND is non-nil, merge CONTENT into the previous entry with TITLE."
   (when (< start end)
     (add-face-text-property start end face t)))
 
+(defconst e-chat--markdown-mode-copied-properties
+  '(face font-lock-face font-lock-multiline keymap mouse-face help-echo)
+  "Text properties copied from `markdown-mode' fontification.")
+
+(defun e-chat--clear-markdown-presentation (start end)
+  "Clear Markdown presentation properties between START and END."
+  (when (< start end)
+    (remove-list-of-text-properties
+     start end
+     '(face font-lock-face font-lock-multiline keymap mouse-face help-echo
+       invisible display e-chat-markdown-syntax))))
+
+(defun e-chat--apply-markdown-mode-properties (content-start content-end)
+  "Apply `markdown-mode' fontification between CONTENT-START and CONTENT-END.
+Return non-nil when `markdown-mode' was available and used."
+  (when (and (< content-start content-end)
+             (require 'markdown-mode nil t))
+    (let ((content (buffer-substring-no-properties content-start content-end))
+          (target-buffer (current-buffer)))
+      (e-chat--clear-markdown-presentation content-start content-end)
+      (with-temp-buffer
+        (insert content)
+        (markdown-mode)
+        (font-lock-ensure (point-min) (point-max))
+        (let ((source-end (point-max))
+              (source-pos (point-min)))
+          (while (< source-pos source-end)
+            (let ((next-pos (or (next-property-change source-pos nil source-end)
+                                source-end)))
+              (dolist (property e-chat--markdown-mode-copied-properties)
+                (let ((value (get-text-property source-pos property)))
+                  (when value
+                    (with-current-buffer target-buffer
+                      (add-text-properties
+                       (+ content-start (1- source-pos))
+                       (+ content-start (1- next-pos))
+                       (if (eq property 'face)
+                           (list 'face value 'font-lock-face value)
+                         (list property value)))))))
+              (setq source-pos next-pos)))))
+      t)))
+
+(defun e-chat--conceal-markdown-syntax (start end)
+  "Hide Markdown syntax between START and END."
+  (when (< start end)
+    (add-text-properties
+     start end
+     '(invisible e-chat-markdown-syntax
+       e-chat-markdown-syntax t))))
+
+(defun e-chat--display-markdown-syntax (start end display)
+  "Display Markdown syntax between START and END as DISPLAY."
+  (when (< start end)
+    (add-text-properties start end `(display ,display e-chat-markdown-syntax t))))
+
 (defun e-chat--line-content-start (line-start content-start)
   "Return CONTENT-START or LINE-START, whichever is later."
   (max line-start content-start))
@@ -899,18 +956,33 @@ When APPEND is non-nil, merge CONTENT into the previous entry with TITLE."
                            line-content-start line-end)))
           (cond
            ((string-match-p "\\`[ \t]*```" line-text)
-            (e-chat--add-markdown-face line-content-start line-end
-                                       'e-chat-markdown-code-block-face)
+            (e-chat--conceal-markdown-syntax
+             line-content-start
+             (min (1+ line-end) content-end))
             (setq in-code-block (not in-code-block)))
            (in-code-block
             (e-chat--add-markdown-face line-content-start line-end
                                        'e-chat-markdown-code-block-face))
-           ((string-match-p "\\`[ \t]*#{1,6}[ \t]+" line-text)
-            (e-chat--add-markdown-face line-content-start line-end
-                                       'e-chat-markdown-heading-face))
-           ((string-match-p "\\`[ \t]*\\([-+*]\\|[0-9]+\\.\\)[ \t]+" line-text)
-            (e-chat--add-markdown-face line-content-start line-end
-                                       'e-chat-markdown-list-face)))
+           ((string-match "\\`[ \t]*\\(#[#]*[ \t]+\\)" line-text)
+            (let ((heading-start (+ line-content-start (match-beginning 1)))
+                  (heading-text-start (+ line-content-start (match-end 1))))
+              (e-chat--conceal-markdown-syntax
+               heading-start heading-text-start)
+              (e-chat--add-markdown-face heading-text-start line-end
+                                         'e-chat-markdown-heading-face)))
+           ((string-match
+             "\\`[ \t]*\\([-+*]\\|[0-9]+\\.\\)\\([ \t]+\\)"
+             line-text)
+            (let ((marker-start (+ line-content-start (match-beginning 1)))
+                  (marker-end (+ line-content-start (match-end 1)))
+                  (content-start (+ line-content-start (match-end 0)))
+                  (marker (match-string 1 line-text)))
+              (if (string-match-p "\\`[-+*]\\'" marker)
+                  (e-chat--display-markdown-syntax marker-start marker-end "•")
+                (e-chat--add-markdown-face marker-start marker-end
+                                           'e-chat-markdown-list-face))
+              (e-chat--add-markdown-face content-start line-end
+                                         'e-chat-markdown-list-face))))
           (forward-line 1))))))
 
 (defun e-chat--apply-markdown-inline-face
@@ -922,6 +994,29 @@ When APPEND is non-nil, merge CONTENT into the previous entry with TITLE."
       (let ((group (or group 1)))
         (e-chat--add-markdown-face
          (match-beginning group) (match-end group) face)))))
+
+(defun e-chat--apply-markdown-delimited-face
+    (regexp content-start content-end face)
+  "Apply FACE to REGEXP group 2 between CONTENT-START and CONTENT-END.
+Hide REGEXP groups 1 and 3 as Markdown syntax."
+  (save-excursion
+    (goto-char content-start)
+    (while (re-search-forward regexp content-end t)
+      (e-chat--conceal-markdown-syntax (match-beginning 1) (match-end 1))
+      (e-chat--add-markdown-face (match-beginning 2) (match-end 2) face)
+      (e-chat--conceal-markdown-syntax (match-beginning 3) (match-end 3)))))
+
+(defun e-chat--apply-markdown-emphasis-face (content-start content-end)
+  "Apply emphasis presentation between CONTENT-START and CONTENT-END."
+  (save-excursion
+    (goto-char content-start)
+    (while (re-search-forward
+            "\\(^\\|[[:space:]]\\)\\(\\*\\)\\([^*\n]+\\)\\(\\*\\)"
+            content-end t)
+      (e-chat--conceal-markdown-syntax (match-beginning 2) (match-end 2))
+      (e-chat--add-markdown-face
+       (match-beginning 3) (match-end 3) 'e-chat-markdown-emphasis-face)
+      (e-chat--conceal-markdown-syntax (match-beginning 4) (match-end 4)))))
 
 (defun e-chat--apply-markdown-link-faces (content-start content-end)
   "Apply Markdown link faces and metadata between CONTENT-START and CONTENT-END."
@@ -935,23 +1030,24 @@ When APPEND is non-nil, merge CONTENT into the previous entry with TITLE."
         (e-chat--add-markdown-face label-start label-end
                                    'e-chat-markdown-link-face)
         (add-text-properties label-start label-end
-                             `(help-echo ,url e-chat-link-url ,url))))))
+                             `(help-echo ,url e-chat-link-url ,url))
+        (e-chat--conceal-markdown-syntax (match-beginning 0) label-start)
+        (e-chat--conceal-markdown-syntax label-end (match-end 0))))))
 
 (defun e-chat--apply-assistant-markdown (content-start content-end)
   "Apply Markdown presentation between CONTENT-START and CONTENT-END."
   (when (< content-start content-end)
-    (e-chat--apply-markdown-line-faces content-start content-end)
-    (e-chat--apply-markdown-inline-face
-     "`\\([^`\n]+\\)`" content-start content-end
-     'e-chat-markdown-code-face)
-    (e-chat--apply-markdown-inline-face
-     "\\*\\*\\([^*\n]+\\)\\*\\*" content-start content-end
-     'e-chat-markdown-strong-face)
-    (e-chat--apply-markdown-inline-face
-     "\\(^\\|[[:space:]]\\)\\*\\([^*\n]+\\)\\*"
-     content-start content-end
-     'e-chat-markdown-emphasis-face 2)
-    (e-chat--apply-markdown-link-faces content-start content-end)))
+    (unless (e-chat--apply-markdown-mode-properties content-start content-end)
+      (e-chat--clear-markdown-presentation content-start content-end)
+      (e-chat--apply-markdown-line-faces content-start content-end)
+      (e-chat--apply-markdown-delimited-face
+       "\\(`\\)\\([^`\n]+\\)\\(`\\)" content-start content-end
+       'e-chat-markdown-code-face)
+      (e-chat--apply-markdown-delimited-face
+       "\\(\\*\\*\\)\\([^*\n]+\\)\\(\\*\\*\\)" content-start content-end
+       'e-chat-markdown-strong-face)
+      (e-chat--apply-markdown-emphasis-face content-start content-end)
+      (e-chat--apply-markdown-link-faces content-start content-end))))
 
 (defun e-chat--insert-entry (title content &optional ensure-composer turn-id)
   "Insert a protected chat entry with TITLE and CONTENT.
