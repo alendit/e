@@ -306,6 +306,53 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-post-command-keeps-point-inside-composer ()
+  "Cursor commands cannot leave an active composer in normal edit mode."
+  (let ((buffer (e-chat-test--buffer nil "chat-composer-post-command")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (goto-char (point-min))
+          (run-hooks 'post-command-hook)
+          (should (>= (point) (marker-position e-chat--composer-start-marker)))
+          (should-not (get-text-property (point) 'e-chat-protected)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-interactive-new-neutralizes-evil-after-display ()
+  "Interactive display does not leave the chat buffer in Evil normal state."
+  (let* ((backend (e-backend-fake-create :items nil))
+         (harness (e-chat-test--activate-chat-session
+                   (e-harness-create :backend backend)))
+         buffer)
+    (unwind-protect
+        (e-chat-test--with-empty-harness-registry
+          (let ((e-chat-default-harness-id :chat-test))
+            (e-harness-registry-register :chat-test harness)
+            (cl-letf (((symbol-function 'called-interactively-p)
+                       (lambda (_kind) t))
+                      ((symbol-function 'evil-local-mode)
+                       (lambda (argument)
+                         (setq-local evil-local-mode
+                                     (not (and (numberp argument)
+                                               (< argument 0))))
+                         (unless evil-local-mode
+                           (setq-local evil-state nil))))
+                      ((symbol-function 'pop-to-buffer)
+                       (lambda (display-buffer &rest _args)
+                         (setq buffer display-buffer)
+                         (with-current-buffer display-buffer
+                           (setq-local evil-local-mode t)
+                           (setq-local evil-state 'normal)
+                           (goto-char (point-min)))
+                         display-buffer)))
+              (setq buffer (e-chat-new))
+              (with-current-buffer buffer
+                (should-not evil-local-mode)
+                (should-not evil-state)
+                (should (e-chat--point-in-composer-p))))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-captures-point-reference-with-two-line-context ()
   "Point capture uses the current line with two surrounding lines."
   (with-temp-buffer

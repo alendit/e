@@ -479,7 +479,8 @@
 
 (define-derived-mode e-chat-mode text-mode "e-chat"
   "Major mode for e chat buffers."
-  (add-hook 'kill-buffer-hook #'e-chat--stop-progress-indicator nil t))
+  (add-hook 'kill-buffer-hook #'e-chat--stop-progress-indicator nil t)
+  (add-hook 'post-command-hook #'e-chat--clamp-to-composer nil t))
 
 (define-minor-mode e-chat-response-navigation-mode
   "Navigate rendered turn blocks in an e chat buffer."
@@ -736,6 +737,9 @@ Return non-nil when a composer was removed."
 (defun e-chat--clamp-to-composer ()
   "Move point back to the editable composer boundary when it escaped upward."
   (when (and (e-chat--composer-active-p)
+             (not e-chat-response-navigation-mode)
+             (not e-chat-block-view-mode)
+             (not e-chat-tool-list-mode)
              (< (point) (marker-position e-chat--composer-start-marker)))
     (goto-char e-chat--composer-start-marker)))
 
@@ -2298,6 +2302,15 @@ TURN-ID tags the rendered entry for response navigation."
       (ignore-errors
         (recenter -1)))))
 
+(defun e-chat--pop-to-buffer (buffer)
+  "Display BUFFER and restore chat-local editing invariants."
+  (pop-to-buffer buffer)
+  (with-current-buffer buffer
+    (e-chat--disable-modal-editing)
+    (e-chat--disable-completion)
+    (e-chat--show-composer))
+  buffer)
+
 (defun e-chat--clear ()
   "Clear and initialize the current chat buffer."
   (let ((inhibit-read-only t))
@@ -2589,7 +2602,7 @@ reload.  User-facing commands should call `e-chat-new' or `e-chat-resume'."
   (interactive)
   (let ((buffer (e-chat-open :new-session t)))
     (when (called-interactively-p 'interactive)
-      (pop-to-buffer buffer))
+      (e-chat--pop-to-buffer buffer))
     buffer))
 
 (defun e-chat--session-choice-label (session)
@@ -2636,7 +2649,7 @@ When DISPLAY is non-nil, show the target chat buffer."
       (e-chat--insert-context-reference reference)
       (e-chat--show-composer))
     (when display
-      (pop-to-buffer buffer))
+      (e-chat--pop-to-buffer buffer))
     buffer))
 
 ;;;###autoload
@@ -2654,7 +2667,7 @@ When DISPLAY is non-nil, show the target chat buffer."
            (buffer (e-chat-open :harness harness
                                 :session-id (plist-get session :id))))
       (when (called-interactively-p 'interactive)
-        (pop-to-buffer buffer))
+        (e-chat--pop-to-buffer buffer))
       buffer)))
 
 ;;;###autoload
