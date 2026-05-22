@@ -393,6 +393,8 @@
   (let ((map (or map (make-sparse-keymap))))
     (set-keymap-parent map text-mode-map)
     (define-key map (kbd "<escape>") #'e-chat-enter-response-navigation)
+    (define-key map (kbd "C-p") #'e-chat-previous-line)
+    (define-key map (kbd "<up>") #'e-chat-previous-line)
     (define-key map (kbd "M-o") #'e-chat-open-latest-response)
     (define-key map (kbd "M-y") #'e-chat-copy-latest-response)
     (define-key map (kbd "C-c C-c") #'e-chat-submit)
@@ -659,6 +661,26 @@ Return non-nil when a composer was removed."
   "Ensure the current chat buffer has an active composer."
   (unless (e-chat--composer-active-p)
     (e-chat--insert-composer)))
+
+(defun e-chat--point-in-composer-p (&optional position)
+  "Return non-nil when POSITION, or point, is in editable composer text."
+  (and (e-chat--composer-active-p)
+       (>= (or position (point))
+           (marker-position e-chat--composer-start-marker))))
+
+(defun e-chat--clamp-to-composer ()
+  "Move point back to the editable composer boundary when it escaped upward."
+  (when (and (e-chat--composer-active-p)
+             (< (point) (marker-position e-chat--composer-start-marker)))
+    (goto-char e-chat--composer-start-marker)))
+
+(defun e-chat-previous-line (&optional arg try-vscroll)
+  "Move up like `previous-line', without leaving the composer."
+  (interactive "^p\np")
+  (let ((started-in-composer (e-chat--point-in-composer-p)))
+    (previous-line arg try-vscroll)
+    (when started-in-composer
+      (e-chat--clamp-to-composer))))
 
 (defun e-chat--composer-text ()
   "Return the current editable composer text."

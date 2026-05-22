@@ -293,6 +293,19 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-control-p-stays-inside-composer ()
+  "C-p from the first composer line does not move point into transcript text."
+  (let ((buffer (e-chat-test--buffer nil "chat-composer-c-p")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (goto-char e-chat--composer-start-marker)
+          (let ((composer-start (marker-position e-chat--composer-start-marker)))
+            (call-interactively (key-binding (kbd "C-p")))
+            (should (>= (point) composer-start))
+            (should-not (get-text-property (point) 'e-chat-protected))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-no-evil-setup-is-required ()
   "Opening chat does not configure or force Evil modal state."
   (let (evil-configured evil-insert-called evil-local-mode-argument buffer)
