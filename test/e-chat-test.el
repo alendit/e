@@ -306,6 +306,116 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-captures-point-reference-with-two-line-context ()
+  "Point capture uses the current line with two surrounding lines."
+  (with-temp-buffer
+    (insert "one\ntwo\nthree\nfour\nfive\n")
+    (goto-char (point-min))
+    (forward-line 1)
+    (let ((reference (e-chat--capture-context-reference)))
+      (should (equal (plist-get reference :text)
+                     "one\ntwo\nthree\nfour\n"))
+      (should (equal (plist-get reference :start-line) 1))
+      (should (equal (plist-get reference :end-line) 4))
+      (should (equal (plist-get reference :point-line) 2))
+      (should (string-prefix-p "buffer://" (plist-get reference :uri))))))
+
+(ert-deftest e-chat-test-captures-region-reference-exactly ()
+  "Region capture uses the exact selected text and range metadata."
+  (let ((file (make-temp-file "e-chat-ref-" nil ".el")))
+    (unwind-protect
+        (with-temp-buffer
+          (setq buffer-file-name file)
+          (insert "alpha\nbeta\ngamma\n")
+          (goto-char (point-min))
+          (search-forward "beta")
+          (set-mark (match-beginning 0))
+          (goto-char (match-end 0))
+          (setq mark-active t)
+          (let ((reference (e-chat--capture-context-reference)))
+            (should (equal (plist-get reference :text) "beta"))
+            (should (equal (plist-get reference :start-line) 2))
+            (should (equal (plist-get reference :end-line) 2))
+            (should (equal (plist-get reference :point-line) 2))
+            (should (equal (plist-get reference :uri)
+                           (concat "file://" file)))))
+      (delete-file file))))
+
+(ert-deftest e-chat-test-submits-composer-text-with-inline-references ()
+  "Submitting converts inline reference atoms into ordered prompt context."
+  (let ((buffer (e-chat-test--buffer nil "chat-reference-submit")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (goto-char (point-max))
+          (insert "Look at ")
+          (e-chat--insert-context-reference
+           '(:id "ref-1"
+             :uri "buffer://source"
+             :label "source:2-4"
+             :text "two\nthree\nfour\n"
+             :start-line 2
+             :end-line 4
+             :point-line 3))
+          (insert ", then explain it.")
+          (e-chat-submit)
+          (let* ((message (car (e-harness-messages
+                                e-chat-harness
+                                e-chat-session-id)))
+                 (content (plist-get message :content))
+                 (metadata (plist-get message :metadata)))
+            (should (string-match-p
+                     "Look at <reference id=\"ref-1\" label=\"source:2-4\">"
+                     content))
+            (should (string-match-p
+                     "\\[ref-1\\] source:2-4 (buffer://source)"
+                     content))
+            (should (string-match-p "two\nthree\nfour" content))
+            (should (equal (plist-get metadata :references)
+                           '((:id "ref-1"
+                              :uri "buffer://source"
+                              :label "source:2-4"
+                              :text "two\nthree\nfour\n"
+                              :start-line 2
+                              :end-line 4
+                              :point-line 3))))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-composer-delete-removes-inline-reference-at-boundary ()
+  "Backspace and forward delete remove whole inline reference atoms."
+  (let ((buffer (e-chat-test--buffer nil "chat-reference-delete")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (goto-char (point-max))
+          (insert "before ")
+          (e-chat--insert-context-reference
+           '(:id "ref-1"
+             :uri "buffer://source"
+             :label "source:2"
+             :text "two"
+             :start-line 2
+             :end-line 2
+             :point-line 2))
+          (insert "after")
+          (search-backward "after")
+          (call-interactively (key-binding (kbd "DEL")))
+          (should (equal (e-chat--composer-text) "before after"))
+          (goto-char e-chat--composer-start-marker)
+          (insert "again ")
+          (e-chat--insert-context-reference
+           '(:id "ref-2"
+             :uri "buffer://source"
+             :label "source:3"
+             :text "three"
+             :start-line 3
+             :end-line 3
+             :point-line 3))
+          (search-backward "@[source:3]")
+          (call-interactively (key-binding (kbd "C-d")))
+          (should (equal (e-chat--composer-text) "again before after")))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-no-evil-setup-is-required ()
   "Opening chat does not configure or force Evil modal state."
   (let (evil-configured evil-insert-called evil-local-mode-argument buffer)
@@ -1594,6 +1704,99 @@
       (e-chat-test--kill-chat-buffers)
       (delete-directory directory t))))
 
+(ert-deftest e-chat-test-add-context-to-latest-targets-most-recent-session ()
+  "Latest context insertion opens the most recently updated chat session."
+  (let* ((store (e-session-store-create))
+         (backend (e-backend-fake-create :items nil))
+         (harness (e-chat-test--activate-chat-session
+                   (e-harness-create :backend backend :sessions store))))
+    (unwind-protect
+        (e-chat-test--with-empty-harness-registry
+          (let ((e-chat-default-harness-id :chat-test))
+            (e-harness-registry-register :chat-test harness)
+            (e-session-create store :id "old-session"
+                              :metadata '(:name "old-session"))
+            (e-session-create store :id "latest-session"
+                              :metadata '(:name "latest-session"))
+            (with-temp-buffer
+              (insert "alpha\nbeta\ngamma\n")
+              (goto-char (point-min))
+              (forward-line 1)
+              (let ((chat-buffer (e-chat-add-context-to-latest)))
+                (with-current-buffer chat-buffer
+                  (should (equal e-chat-session-id "latest-session"))
+                  (should (string-match-p
+                           "latest-session"
+                           (buffer-name)))
+                  (should (string-match-p
+                           "@\\[.*:1-3\\]"
+                           (buffer-substring-no-properties
+                            e-chat--composer-start-marker
+                            (point-max)))))))))
+      (e-chat-test--kill-chat-buffers))))
+
+(ert-deftest e-chat-test-add-context-picker-can-create-new-session ()
+  "Picker context insertion can create a new session target."
+  (let* ((store (e-session-store-create))
+         (backend (e-backend-fake-create :items nil))
+         (harness (e-chat-test--activate-chat-session
+                   (e-harness-create :backend backend :sessions store))))
+    (unwind-protect
+        (e-chat-test--with-empty-harness-registry
+          (let ((e-chat-default-harness-id :chat-test))
+            (e-harness-registry-register :chat-test harness)
+            (e-session-create store :id "existing-session")
+            (cl-letf (((symbol-function 'completing-read)
+                       (lambda (_prompt collection &rest _args)
+                         (car collection))))
+              (with-temp-buffer
+                (insert "one\ntwo\nthree\n")
+                (goto-char (point-min))
+                (let ((chat-buffer (e-chat-add-context-to-session)))
+                  (with-current-buffer chat-buffer
+                    (should-not (equal e-chat-session-id
+                                       "existing-session"))
+                    (should (= (length (e-harness-session-list
+                                        e-chat-harness))
+                               2))
+                    (should (string-match-p
+                             "@\\[.*:1-3\\]"
+                             (buffer-substring-no-properties
+                              e-chat--composer-start-marker
+                              (point-max))))))))))
+      (e-chat-test--kill-chat-buffers))))
+
+(ert-deftest e-chat-test-add-context-picker-can-select-existing-session ()
+  "Picker context insertion can target an existing chat session."
+  (let* ((store (e-session-store-create))
+         (backend (e-backend-fake-create :items nil))
+         (harness (e-chat-test--activate-chat-session
+                   (e-harness-create :backend backend :sessions store))))
+    (unwind-protect
+        (e-chat-test--with-empty-harness-registry
+          (let ((e-chat-default-harness-id :chat-test))
+            (e-harness-registry-register :chat-test harness)
+            (e-session-create store :id "target-session"
+                              :metadata '(:name "target-session"))
+            (cl-letf (((symbol-function 'completing-read)
+                       (lambda (_prompt collection &rest _args)
+                         (cadr collection))))
+              (with-temp-buffer
+                (insert "one\ntwo\nthree\n")
+                (goto-char (point-min))
+                (let ((chat-buffer (e-chat-add-context-to-session)))
+                  (with-current-buffer chat-buffer
+                    (should (equal e-chat-session-id "target-session"))
+                    (should (= (length (e-harness-session-list
+                                        e-chat-harness))
+                               1))
+                    (should (string-match-p
+                             "@\\[.*:1-3\\]"
+                             (buffer-substring-no-properties
+                              e-chat--composer-start-marker
+                              (point-max))))))))))
+      (e-chat-test--kill-chat-buffers))))
+
 (ert-deftest e-chat-test-rename-updates-session-and-buffer-display ()
   "Renaming updates persistent metadata and the attached buffer name."
   (let* ((directory (make-temp-file "e-chat-" t))
@@ -1707,6 +1910,34 @@
     (should (eq (lookup-key e-chat-mode-map (kbd "M-o"))
                 'e-chat-open-latest-response))))
 
+(ert-deftest e-chat-test-context-mode-binds-default-reference-shortcuts ()
+  "The opt-in context keymap binds latest and picker insertion shortcuts."
+  (should (eq (lookup-key e-chat-context-mode-map (kbd "s-i"))
+              'e-chat-add-context-to-latest))
+  (should (eq (lookup-key e-chat-context-mode-map (kbd "s-I"))
+              'e-chat-add-context-to-session)))
+
+(ert-deftest e-chat-test-evil-normal-context-bindings-use-super-i ()
+  "Evil normal bindings use s-i and s-I without taking over bare I."
+  (let (calls)
+    (cl-letf (((symbol-function 'evil-define-key*)
+               (lambda (&rest args)
+                 (push args calls))))
+      (e-chat--configure-evil-context-bindings))
+    (should (member (list 'normal
+                          e-chat-context-mode-map
+                          (kbd "s-i")
+                          #'e-chat-add-context-to-latest)
+                    calls))
+    (should (member (list 'normal
+                          e-chat-context-mode-map
+                          (kbd "s-I")
+                          #'e-chat-add-context-to-session)
+                    calls))
+    (should-not (seq-some (lambda (call)
+                            (equal (nth 2 call) (kbd "I")))
+                          calls))))
+
 (ert-deftest e-chat-test-shell-descriptor-advertises-chat-surface ()
   "The chat presentation publishes a generic shell manifest."
   (let* ((shell (e-chat-shell))
@@ -1733,7 +1964,9 @@
                           response-navigation-details
                           response-navigation-insert
                           open-latest-response
-                          copy-latest-response))
+                          copy-latest-response
+                          add-context-to-latest
+                          add-context-to-session))
       (should (memq command-id command-ids)))
     (should (eq (plist-get (car keymaps) :keymap) e-chat-mode-map))
     (should (eq (plist-get (cadr keymaps) :keymap)

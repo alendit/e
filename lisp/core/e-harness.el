@@ -129,7 +129,7 @@ configure the provider-neutral runtime."
      "\n")))
 
 (defun e-harness--register-resource-operation-tool (registry resources operation)
-  "Register OPERATION as a model-facing tool backed by RESOURCES."
+  "Register OPERATION in REGISTRY as a model-facing tool backed by RESOURCES."
   (let ((dispatch (e-operation-dispatch operation)))
     (when (functionp dispatch)
       (e-tools-register
@@ -155,7 +155,7 @@ configure the provider-neutral runtime."
       (e-harness--register-resource-operation-tool registry resources operation))))
 
 (defun e-harness--register-resource-tools (registry resources)
-  "Compatibility wrapper for registering resource operation tools."
+  "Register resource operation tools from RESOURCES in REGISTRY."
   (e-harness--register-resource-operation-tools registry resources))
 
 (defun e-harness-activate-capability (harness capability)
@@ -358,7 +358,8 @@ provider or loop failure."
      harness session-id turn-id 'message-added (list :message message))
     message))
 
-(defun e-harness--append-user-message (harness session-id turn-id prompt)
+(defun e-harness--append-user-message
+    (harness session-id turn-id prompt &optional metadata)
   "Append PROMPT as the user message in HARNESS for SESSION-ID and TURN-ID."
   (e-harness--append-message
    harness
@@ -367,7 +368,7 @@ provider or loop failure."
    (list :id (e-harness--next-message-id)
          :role 'user
          :content prompt
-         :metadata nil)))
+         :metadata metadata)))
 
 (cl-defun e-harness--run-prompt-turn
     (harness session-id turn-id &key on-request-start)
@@ -388,14 +389,15 @@ provider or loop failure."
      (lambda (message)
        (e-harness--append-message harness session-id turn-id message)))))
 
-(defun e-harness-prompt (harness session-id prompt)
+(cl-defun e-harness-prompt (harness session-id prompt &key metadata)
   "Append PROMPT and run one backend turn for SESSION-ID in HARNESS."
   (let ((turn-id (e-harness--next-turn-id)))
     (puthash session-id turn-id (e-harness-active-turns harness))
     (unwind-protect
         (condition-case err
             (progn
-              (e-harness--append-user-message harness session-id turn-id prompt)
+              (e-harness--append-user-message
+               harness session-id turn-id prompt metadata)
               (e-harness--run-prompt-turn harness session-id turn-id))
           (error
            (let ((message (error-message-string err)))
@@ -403,7 +405,8 @@ provider or loop failure."
              (signal (car err) (cdr err)))))
       (remhash session-id (e-harness-active-turns harness)))))
 
-(cl-defun e-harness-prompt-async (harness session-id prompt &key delay)
+(cl-defun e-harness-prompt-async
+    (harness session-id prompt &key delay metadata)
   "Append PROMPT and run one backend turn asynchronously in HARNESS.
 Return the queued turn id.  DELAY is primarily for tests and queued-turn
 cancellation.  SESSION-ID identifies the session."
@@ -415,7 +418,8 @@ cancellation.  SESSION-ID identifies the session."
                       :timer nil)))
     (puthash session-id entry (e-harness-active-turns harness))
     (condition-case err
-        (e-harness--append-user-message harness session-id turn-id prompt)
+        (e-harness--append-user-message
+         harness session-id turn-id prompt metadata)
       (error
        (let ((message (error-message-string err)))
          (plist-put entry :status 'error)
@@ -448,9 +452,9 @@ cancellation.  SESSION-ID identifies the session."
                   harness session-id turn-id message)))))))))
     turn-id))
 
-(defun e-harness-follow-up (harness session-id prompt)
+(cl-defun e-harness-follow-up (harness session-id prompt &key metadata)
   "Submit PROMPT as the next turn for SESSION-ID in HARNESS."
-  (e-harness-prompt harness session-id prompt))
+  (e-harness-prompt harness session-id prompt :metadata metadata))
 
 (defun e-harness-reset (harness session-id)
   "Clear SESSION-ID transcript state in HARNESS."

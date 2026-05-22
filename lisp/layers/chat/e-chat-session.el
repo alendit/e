@@ -16,12 +16,19 @@
 (require 'e-session)
 (require 'subr-x)
 
-(cl-defun e-chat-session-submit (harness session-id prompt &key delay)
+(cl-defun e-chat-session-submit
+    (harness session-id prompt &key delay references)
   "Submit PROMPT to SESSION-ID through HARNESS.
-When DELAY is non-nil, pass it to `e-harness-prompt-async'."
+When DELAY is non-nil, pass it to `e-harness-prompt-async'.
+REFERENCES are ordered source references from the composer."
   (unless (and (stringp prompt) (not (string-empty-p prompt)))
     (user-error "Prompt must not be empty"))
-  (e-harness-prompt-async harness session-id prompt :delay delay))
+  (e-harness-prompt-async
+   harness
+   session-id
+   prompt
+   :delay delay
+   :metadata (and references (list :references references))))
 
 (defun e-chat-session-abort (harness session-id)
   "Abort the active chat turn for SESSION-ID through HARNESS."
