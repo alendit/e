@@ -21,6 +21,8 @@
 (require 'e-layers)
 (require 'e-operations)
 (require 'e-resources)
+(require 'e-skills)
+(require 'e-store)
 
 (ert-deftest e-harness-test-prompt-writes-user-and-assistant-messages ()
   "Prompting writes user and assistant messages to the session."
@@ -517,9 +519,179 @@
                            (e-harness-active-capabilities harness))
                    '(direct-capability)))))
 
+(ert-deftest e-harness-test-store-is-derived-from-active-layers ()
+  "Harness e:// stores are derived from active capability resource contributions."
+  (let* ((capability
+          (e-capability-create
+           :id 'skill-capability
+           :resources
+           (list (lambda (store capability)
+                   (e-skills-register
+                    store
+                    (e-capability-id capability)
+                    (e-skill-create
+                     :name "focused-work"
+                     :description "Use for focused work."
+                     :content "Stay focused."))))))
+         (layer (e-layer-create
+                 :id 'skill-layer
+                 :name "Skill Layer"
+                 :capabilities (list capability)))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil))))
+    (e-harness-activate-layer harness layer)
+    (should (equal (mapcar #'e-store-entry-uri
+                           (e-store-list (e-harness-store harness)))
+                   '("e://skill-capability/skills/focused-work")))))
+
+(ert-deftest e-harness-test-skill-catalog-enters-context-without-full-content ()
+  "Context advertises active skill metadata, not full skill instructions."
+  (let* ((captured-messages nil)
+         (backend (e-backend-create
+                   :name "capture"
+                   :stream (cl-function
+                            (lambda (&key messages options on-item)
+                              (ignore options)
+                              (setq captured-messages messages)
+                              (funcall on-item
+                                       '(:type assistant-message :content "ok"))
+                              (funcall on-item '(:type done :reason stop))))))
+         (capability
+          (e-capability-create
+           :id 'skill-capability
+           :resources
+           (list (lambda (store capability)
+                   (e-skills-register
+                    store
+                    (e-capability-id capability)
+                    (e-skill-create
+                     :name "review"
+                     :description "Review implementation changes."
+                     :content "Secret detailed review checklist."))
+                   (e-store-register
+                    store
+                    (e-capability-id capability)
+                    "refs/review.md"
+                    :description "Review reference."
+                    :content "Reference content.")))))
+         (layer (e-layer-create
+                 :id 'skill-layer
+                 :name "Skill Layer"
+                 :capabilities (list capability)))
+         (harness (e-harness-create :backend backend)))
+    (e-harness-activate-layer harness layer)
+    (e-harness-create-session harness :id "session-1")
+    (e-harness-prompt harness "session-1" "question")
+    (let ((catalog (seq-find
+                    (lambda (message)
+                      (string-match-p "Available skills"
+                                      (plist-get message :content)))
+                    captured-messages)))
+      (should catalog)
+      (should (string-match-p "review" (plist-get catalog :content)))
+      (should (string-match-p "Review implementation changes"
+                              (plist-get catalog :content)))
+      (should (string-match-p "e://skill-capability/skills/review"
+                              (plist-get catalog :content)))
+      (should-not (string-match-p "Secret detailed review checklist"
+                                  (plist-get catalog :content)))
+      (should-not (string-match-p "review.md"
+                                  (plist-get catalog :content))))))
+
+(ert-deftest e-harness-test-built-in-read-loads-skill-resource ()
+  "The built-in read tool can load full skill instructions on demand."
+  (let* ((capability
+          (e-capability-create
+           :id 'skill-capability
+           :resources
+           (list (lambda (store capability)
+                   (e-skills-register
+                    store
+                    (e-capability-id capability)
+                    (e-skill-create
+                     :name "planner"
+                     :description "Plan work."
+                     :content "Full planning instructions."))))))
+         (layer (e-layer-create
+                 :id 'skill-layer
+                 :name "Skill Layer"
+                 :capabilities (list capability)))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)))
+         (read-call '(:id "call-1"
+                      :name "read"
+                      :arguments (:uri "e://skill-capability/skills/planner"))))
+    (e-harness-activate-layer harness layer)
+    (let ((result (e-tools-execute (e-harness-tools harness) read-call)))
+      (should (equal (plist-get result :status) 'ok))
+      (should (equal (plist-get result :content)
+                     "Full planning instructions.")))))
+
+(ert-deftest e-harness-test-built-in-read-loads-reference-resource ()
+  "The built-in read tool can load capability reference resources on demand."
+  (let* ((capability
+          (e-capability-create
+           :id 'reference-capability
+           :resources
+           (list (lambda (store capability)
+                   (e-store-register
+                    store
+                    (e-capability-id capability)
+                    "refs/guide.md"
+                    :description "Reference guide."
+                    :content "Reference guide content.")))))
+         (layer (e-layer-create
+                 :id 'reference-layer
+                 :name "Reference Layer"
+                 :capabilities (list capability)))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)))
+         (read-call '(:id "call-1"
+                      :name "read"
+                      :arguments (:uri
+                                  "e://reference-capability/refs/guide.md"))))
+    (e-harness-activate-layer harness layer)
+    (let ((result (e-tools-execute (e-harness-tools harness) read-call)))
+      (should (equal (plist-get result :status) 'ok))
+      (should (equal (plist-get result :content)
+                     "Reference guide content.")))))
+
+(ert-deftest e-harness-test-skill-resources-do-not-support-write-or-edit ()
+  "Skill resources are read-only even when advertised through resource tools."
+  (let* ((capability
+          (e-capability-create
+           :id 'skill-capability
+           :resources
+           (list (lambda (store capability)
+                   (e-skills-register
+                    store
+                    (e-capability-id capability)
+                    (e-skill-create
+                     :name "readonly"
+                     :description "Read-only skill."
+                     :content "Read-only instructions."))))))
+         (layer (e-layer-create
+                 :id 'skill-layer
+                 :name "Skill Layer"
+                 :capabilities (list capability)))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil))))
+    (e-harness-activate-layer harness layer)
+    (should-error
+     (e-resources-write (e-harness-resources harness)
+                        "e://skill-capability/skills/readonly"
+                        "Replacement")
+     :type 'e-resources-unsupported-operation)
+    (should-error
+     (e-resources-edit (e-harness-resources harness)
+                       "e://skill-capability/skills/readonly"
+                       '((:oldText "Read" :newText "Write")))
+     :type 'e-resources-unsupported-operation)))
+
 (ert-deftest e-harness-test-derived-views-do-not-keep-struct-compiler-macros ()
   "Derived harness view functions must not expand into stale struct slots."
   (should-not (get 'e-harness-active-capabilities 'compiler-macro))
+  (should-not (get 'e-harness-store 'compiler-macro))
   (should-not (get 'e-harness-resources 'compiler-macro))
   (should-not (get 'e-harness-tools 'compiler-macro)))
 

@@ -34,15 +34,17 @@ Add `elayers` as harness-side layer descriptors with these fields:
 - `:instructions`
 - `:tools`
 - `:context-providers`
-- `:skills`
+- `:resources`
 - `:prompts`
 
 Multiple active layers should be supported by shape, but MVP only ships and
 exercises one layer: `emacs-base`.
 
 Layer activation should affect the harness, not the presentation shell. Active
-layers contribute instructions, context providers, and tool registrations before
-a turn reaches the backend.
+layers contribute instructions, context providers, generic `e://` resources,
+and tool registrations before a turn reaches the backend. Skills are resources
+under `e://<capability>/skills/<skill-name>`; references conventionally live
+under `e://<capability>/refs/<reference-name>.md`.
 
 ## Context Providers
 
@@ -93,8 +95,9 @@ permissions or confirmation layer in MVP.
 
 Tools:
 
-- `read`: read URI-addressed resources such as `buffer://<buffer-name>` and
-  `file://<path>` with optional structured ranges.
+- `read`: read URI-addressed resources such as `buffer://<buffer-name>`,
+  `file://<path>`, and capability-scoped `e://<capability>/<path>` entries
+  with optional structured ranges.
 - `write`: replace URI-addressed resource contents where the active capability
   supports writes.
 - `edit`: apply exact `oldText`/`newText` replacements to URI-addressed

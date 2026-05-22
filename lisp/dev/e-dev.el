@@ -83,6 +83,8 @@
                   "lisp/core/e-tools.el"
                   "lisp/core/e-operations.el"
                   "lisp/core/e-resources.el"
+                  "lisp/core/e-store.el"
+                  "lisp/core/e-skills.el"
                   "lisp/core/e-capabilities.el"
                   "lisp/core/e-startup.el"
                   "lisp/layers/e-layers.el"

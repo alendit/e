@@ -16,6 +16,8 @@
 (require 'e-capabilities)
 (require 'e-operations)
 (require 'e-resources)
+(require 'e-skills)
+(require 'e-store)
 
 (ert-deftest e-capabilities-test-create-capability ()
   "A capability carries independent contribution types."
@@ -26,6 +28,7 @@
           :instructions "Read buffers."
           :tools (list #'ignore)
           :resource-methods (list #'ignore)
+          :resources (list #'ignore)
           :context-providers nil
           :actions '(:read-buffer ignore))))
     (should (eq (e-capability-id capability) 'buffer-read))
@@ -33,6 +36,7 @@
     (should (equal (e-capability-instructions capability) "Read buffers."))
     (should (= (length (e-capability-tools capability)) 1))
     (should (= (length (e-capability-resource-methods capability)) 1))
+    (should (= (length (e-capability-resources capability)) 1))
     (should (plist-member (e-capability-actions capability) :read-buffer))))
 
 (ert-deftest e-capabilities-test-register-tools ()
@@ -64,6 +68,41 @@
      registry)
     (should (equal (e-resources-read registry "cap://value" nil)
                    "resource"))))
+
+(ert-deftest e-capabilities-test-register-resources ()
+  "Capability resource providers register under the capability e:// namespace."
+  (let ((store (e-store-create)))
+    (e-capabilities-register-resources
+     (e-capability-create
+      :id 'capability-resources
+      :resources
+      (list (lambda (actual-store capability)
+              (e-skills-register
+               actual-store
+               (e-capability-id capability)
+               (e-skill-create
+                :name "cap-skill"
+                :description "Capability skill."
+                :content "Capability skill instructions.")))))
+     store)
+    (should (equal (e-store-read store
+                                 "e://capability-resources/skills/cap-skill"
+                                 nil)
+                   "Capability skill instructions."))))
+
+(ert-deftest e-capabilities-test-derived-accessors-tolerate-stale-records ()
+  "Capability accessors tolerate stale records compiled before resources existed."
+  (let ((legacy (vector 'cl-struct-e-capability
+                        'legacy
+                        "Legacy"
+                        "Instructions."
+                        nil
+                        nil
+                        nil
+                        '(:legacy ignore))))
+    (should-not (e-capability-resources legacy))
+    (should (equal (e-capability-actions legacy)
+                   '(:legacy ignore)))))
 
 (ert-deftest e-capabilities-test-context-messages ()
   "Context messages include instructions before provider messages."

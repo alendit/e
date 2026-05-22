@@ -151,7 +151,7 @@ The harness is the source of truth for runtime ordering and durable records, not
 
 ### Capabilities And Layers
 
-Capabilities are the behavior units. A capability can contribute instructions, prompt fragments, context providers, model-facing tool registration, resource methods, shell-facing actions, schemas, and side-effect policy for one named behavior. These contributions are registered into explicit harness registries; the harness should not treat a capability as an opaque object that handles every concern through one callback.
+Capabilities are the behavior units. A capability can contribute instructions, prompt fragments, context providers, model-facing tool registration, in-memory `e://` resources, resource methods, shell-facing actions, schemas, and side-effect policy for one named behavior. These contributions are registered into explicit harness registries; the harness should not treat a capability as an opaque object that handles every concern through one callback.
 
 Layers are packaging units. A layer names a coherent capability set and optional defaults so users, shells, or profiles can activate useful behavior without manually selecting every capability. A layer may remain a convenience preset such as `base` or `emacs`, but the behavior contract should still live in capabilities such as `file-inspection`, `buffer-read`, or `elisp-eval`.
 
@@ -161,6 +161,7 @@ Capability contribution types should stay separate even when they ship together:
 
 - context providers: read harness/session records or external state and produce backend-neutral context messages
 - tool providers: register model-facing tools with explicit argument/result shapes
+- in-memory resources: register read-only capability-scoped entries under `e://<capability>/<path>`; skills conventionally live under `skills/<skill-name>` and references under `refs/<reference-name>.md`
 - resource methods: implement operation contracts such as `read`, `write`, and `edit` for URI schemes such as `file://` and `buffer://`
 - prompt fragments: add model guidance that belongs with a capability
 - shell actions: expose operator-facing operations that shells can host
@@ -264,7 +265,7 @@ The current store in `lisp/core/e-session.el` supports both in-memory stores and
 
 The execution environment is the shell boundary for Emacs side effects. It should expose narrow capabilities for reading buffers, editing buffers, writing files, running processes, evaluating elisp, and modifying harness-owned configuration or code when explicit tools allow it.
 
-Resources are the stable model-facing address space for inspectable and mutable state. Operation contracts define shared model-facing tools such as `read`, `write`, and `edit`; capabilities contribute resource methods that implement those contracts for URI schemes. The harness exposes an operation tool only when the active capabilities register at least one method for that operation. `file-inspection` contributes read-only `file://` methods, `file-mutation` contributes writable `file://` methods, `buffer-read` contributes read-only `buffer://` methods, and `buffer-edit` contributes writable `buffer://` methods. Range addressing is structured tool input rather than URI syntax, so a model calls `read` with a URI plus a range object such as `(:unit "line" :start 10 :end 20)` or `(:unit "offset" :start 2001 :limit 2000)`.
+Resources are the stable model-facing address space for inspectable and mutable state. Operation contracts define shared model-facing tools such as `read`, `write`, and `edit`; capabilities contribute resource methods that implement those contracts for URI schemes. The harness exposes an operation tool only when the active capabilities register at least one method for that operation. The core also provides a read-only in-memory `e://` resource method when active capabilities contribute store entries. Capability-owned resources live under `e://<capability>/<path>`; by convention skills are stored under `e://<capability>/skills/<skill-name>` and references under `e://<capability>/refs/<reference-name>.md`. Skill catalog context advertises only active skill names, descriptions, and URIs. Reference resources remain discoverable through their URIs but are not injected into context as full content unless read through the normal tool-result transcript path. `file-inspection` contributes read-only `file://` methods, `file-mutation` contributes writable `file://` methods, `buffer-read` contributes read-only `buffer://` methods, and `buffer-edit` contributes writable `buffer://` methods. Range addressing is structured tool input rather than URI syntax, so a model calls `read` with a URI plus a range object such as `(:unit "line" :start 10 :end 20)` or `(:unit "offset" :start 2001 :limit 2000)`.
 
 Tools depend on the execution environment. The core harness depends only on tool contracts, backend-neutral tool definitions, resource registry dispatch, and structured tool results. Permission checks, confirmation, observability, and audit records should stay close to concrete side effects.
 
@@ -371,6 +372,8 @@ The current public package surface is:
 - `e-harness-registry-register-factory`, `e-harness-registry-register`, `e-harness-registry-get`, `e-harness-registry-get-or-create`, `e-harness-registry-list`, and `e-harness-registry-clear-instance`: named live harness lookup and lazy factory registration.
 - `e-default-harnesses-register`, `e-default-chat-harness-create`, and `e-default-session-store`: default startup harness spec registration and default chat harness assembly for the `:chat-default` path.
 - `e-operation-create`, `e-operation-read`, `e-operation-write`, `e-operation-edit`, `e-resources-registry-create`, `e-resource-method-create`, `e-resources-register`, `e-resources-call`, `e-resources-read`, `e-resources-write`, `e-resources-edit`, `e-resources-operations`, and `e-resources-methods-for-operation`: core URI resource operation registry and method surface.
+- `e-store-create`, `e-store-register`, `e-store-uri`, `e-store-read`, `e-store-list`, and `e-store-resource-method`: capability-scoped read-only in-memory resources exposed through `e://`.
+- `e-skill-create`, `e-skills-register`, `e-skills-uri-for-name`, `e-skills-list`, and `e-skills-catalog-text`: skill descriptors and catalog projection backed by conventional `e://<capability>/skills/<skill-name>` resources.
 - `e-openai-create-harness`: create a harness configured for `e-openai-default-provider` or an explicit OpenAI-like provider profile.
 - `e-openai-backend-create`: create the concrete OpenAI-like Responses backend adapter.
 - `e-openai-codex-create-harness`: compatibility wrapper for ChatGPT-backed Codex access.
@@ -386,7 +389,7 @@ Presentation commands should ultimately call capability-facing operations that u
 
 ## Extension Points
 
-Established extension points now exist for backend adapters, OpenAI-like provider profiles, context-management strategies, context providers, harness-owned layers, pure tool definitions, URI resource methods, operation contracts, concrete Emacs tool registration, and presentation shells. Target extension points are LLM backend adapters, context-management strategies, capability contribution bundles, layer presets, tool definitions, execution environment adapters, resource providers, session repositories, and presentation shells.
+Established extension points now exist for backend adapters, OpenAI-like provider profiles, context-management strategies, context providers, harness-owned layers, pure tool definitions, `e://` resource providers, URI resource methods, operation contracts, concrete Emacs tool registration, and presentation shells. Target extension points are LLM backend adapters, context-management strategies, capability contribution bundles, layer presets, tool definitions, execution environment adapters, resource providers, session repositories, and presentation shells.
 
 These are architectural seams because they keep the harness substrate separate from volatile UI, provider, context, and side-effect details.
 

@@ -38,6 +38,8 @@
     e-capabilities
     e-context
     e-events
+    e-store
+    e-skills
     e-startup
     e-session
     e-tools
@@ -92,6 +94,8 @@
                            :capabilities
                            :context
                            :events
+                           :store
+                           :skills
                            :sessions
                            :tools
                            :loop
@@ -140,6 +144,10 @@
                         "lisp/core/e-harness.el"
                         "lisp/core/e-harness-registry.el"
                         "lisp/core/e-loop.el"
+                        "lisp/core/e-operations.el"
+                        "lisp/core/e-resources.el"
+                        "lisp/core/e-skills.el"
+                        "lisp/core/e-store.el"
                         "lisp/core/e-session.el"
                         "lisp/core/e-startup.el"
                         "lisp/core/e-tools.el"

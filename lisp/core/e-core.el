@@ -13,11 +13,13 @@
 ;;; Code:
 
 (require 'e-backend)
-(require 'e-capabilities)
 (require 'e-context)
 (require 'e-events)
 (require 'e-operations)
 (require 'e-resources)
+(require 'e-store)
+(require 'e-skills)
+(require 'e-capabilities)
 (require 'e-startup)
 (require 'e-session)
 (require 'e-tools)
@@ -38,6 +40,8 @@
         :events t
         :operations t
         :resources t
+        :store t
+        :skills t
         :startup t
         :sessions t
         :session-persistence t

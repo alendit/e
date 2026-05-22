@@ -8,24 +8,28 @@
 ;;; Commentary:
 
 ;; Capabilities are semantic behavior bundles.  They contribute instructions,
-;; model-facing tools, resource methods, context providers, and shell-facing
-;; actions while layers remain packaging presets over those capabilities.
+;; model-facing tools, resource methods, in-memory resources, context providers,
+;; and shell-facing actions while layers remain packaging presets over those
+;; capabilities.
 
 ;;; Code:
 
 (require 'cl-lib)
 (require 'e-context)
 (require 'e-resources)
+(require 'e-store)
 
 (cl-defstruct (e-capability
                (:constructor e-capability--create
                              (&key id name instructions tools
-                                   resource-methods context-providers actions)))
+                                   resource-methods resources
+                                   context-providers actions)))
   id
   name
   instructions
   tools
   resource-methods
+  resources
   context-providers
   actions)
 
@@ -56,20 +60,33 @@ This accessor tolerates stale capability records compiled before the
 (defun e-capability-context-providers (capability)
   "Return CAPABILITY context providers.
 This accessor tolerates stale capability records compiled before the
-`resource-methods' slot existed."
-  (if (>= (length capability) 8)
+`resources' or `resource-methods' slot existed."
+  (if (>= (length capability) 9)
+      (aref capability 7)
+    (if (>= (length capability) 8)
+        (aref capability 6)
+      (aref capability 5))))
+
+(defun e-capability-resources (capability)
+  "Return CAPABILITY in-memory resource providers.
+This accessor tolerates stale capability records compiled before the
+`resources' slot existed."
+  (if (>= (length capability) 9)
       (aref capability 6)
-    (aref capability 5)))
+    nil))
 
 (defun e-capability-actions (capability)
   "Return CAPABILITY shell actions.
-This accessor tolerates stale capability records compiled before the
-`resource-methods' slot existed."
-  (if (>= (length capability) 8)
-      (aref capability 7)
-    (aref capability 6)))
+This accessor tolerates stale capability records compiled before the `resources'
+or `resource-methods' slot existed."
+  (if (>= (length capability) 9)
+      (aref capability 8)
+    (if (>= (length capability) 8)
+        (aref capability 7)
+      (aref capability 6))))
 
 (dolist (symbol '(e-capability-resource-methods
+                  e-capability-resources
                   e-capability-context-providers
                   e-capability-actions))
   (put symbol 'compiler-macro nil)
@@ -85,6 +102,13 @@ This accessor tolerates stale capability records compiled before the
   "Register CAPABILITY resource method providers in REGISTRY."
   (dolist (register (e-capability-resource-methods capability))
     (e-resources-register registry register)))
+
+(defun e-capabilities-register-resources (capability store)
+  "Register CAPABILITY in-memory resource providers in STORE."
+  (dolist (register (e-capability-resources capability))
+    (unless (functionp register)
+      (signal 'wrong-type-argument (list 'functionp register)))
+    (funcall register store capability)))
 
 (cl-defun e-capabilities--provider-messages
     (provider &key harness session-id turn-id)

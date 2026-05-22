@@ -20,6 +20,8 @@
 (require 'e-operations)
 (require 'e-resources)
 (require 'e-session)
+(require 'e-skills)
+(require 'e-store)
 (require 'e-tools)
 (require 'subr-x)
 
@@ -43,6 +45,7 @@
 (defun e-harness--clear-derived-accessor-metadata ()
   "Clear stale struct accessor metadata for derived harness views."
   (dolist (symbol '(e-harness-active-capabilities
+                    e-harness-store
                     e-harness-resources
                     e-harness-tools))
     (put symbol 'compiler-macro nil)
@@ -95,11 +98,21 @@ configure the provider-neutral runtime."
       (e-capabilities-register-tools capability registry))
     registry))
 
+(defun e-harness-store (harness)
+  "Return a fresh e:// store view over HARNESS active layers."
+  (let ((store (e-store-create)))
+    (dolist (capability (e-harness-active-capabilities harness))
+      (e-capabilities-register-resources capability store))
+    store))
+
 (defun e-harness-resources (harness)
   "Return a fresh resource registry view over HARNESS active layers."
-  (let ((registry (e-resources-registry-create)))
+  (let ((registry (e-resources-registry-create))
+        (store (e-harness-store harness)))
     (dolist (capability (e-harness-active-capabilities harness))
       (e-capabilities-register-resource-methods capability registry))
+    (when (e-store-list store)
+      (e-resources-register registry (e-store-resource-method store)))
     registry))
 
 (defun e-harness--resource-method-description (method)
@@ -306,6 +319,11 @@ When SESSION-ID is non-nil, SUBSCRIBER only receives events for that session."
   "Return backend-neutral turn options for HARNESS and SESSION-ID."
   (e-harness-turn-options harness session-id))
 
+(defun e-harness--skill-catalog-context-messages (harness)
+  "Return context messages advertising active skills for HARNESS."
+  (when-let ((catalog (e-skills-catalog-text (e-harness-store harness))))
+    (list (list :role 'system :content catalog))))
+
 (defun e-harness-context (harness session-id &optional turn-id)
   "Return backend-neutral context for SESSION-ID in HARNESS.
 TURN-ID is passed to active capability context providers when present."
@@ -316,6 +334,7 @@ TURN-ID is passed to active capability context providers when present."
    :options (e-harness-turn-options harness session-id)
    :prefix-messages
    (append
+    (e-harness--skill-catalog-context-messages harness)
     (e-capabilities-context-messages
      (e-harness-active-capabilities harness)
      :harness harness
