@@ -140,7 +140,10 @@
   :group 'e-chat)
 
 (defface e-chat-focused-turn-face
-  '((t :inherit highlight :extend t))
+  '((t :inherit nil
+       :background "#27313d"
+       :box nil
+       :extend t))
   "Face used for the focused turn in response navigation mode."
   :group 'e-chat)
 
@@ -219,13 +222,22 @@
        :extend t))
   "Default face spec for compact system chat blocks.")
 
+(defconst e-chat--focused-turn-face-spec
+  '((t :inherit nil
+       :background "#27313d"
+       :box nil
+       :extend t))
+  "Default face spec for focused response-navigation blocks.")
+
 (defun e-chat--refresh-face-specs ()
   "Refresh chat face defaults after live reload."
   (face-spec-set 'e-chat-user-face e-chat--user-face-spec)
   (face-spec-set 'e-chat-assistant-face e-chat--assistant-face-spec)
   (face-spec-set 'e-chat-final-assistant-face
                  e-chat--final-assistant-face-spec)
-  (face-spec-set 'e-chat-system-face e-chat--system-face-spec))
+  (face-spec-set 'e-chat-system-face e-chat--system-face-spec)
+  (face-spec-set 'e-chat-focused-turn-face
+                 e-chat--focused-turn-face-spec))
 
 (e-chat--refresh-face-specs)
 

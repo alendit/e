@@ -595,6 +595,40 @@
   (should (eq (face-attribute 'e-chat-assistant-face :extend) t))
   (should (eq (face-attribute 'e-chat-system-face :extend) t)))
 
+(ert-deftest e-chat-test-focused-turn-face-is-subtle ()
+  "Response navigation focus uses a subdued package-owned fill only."
+  (should (equal (face-attribute 'e-chat-focused-turn-face :background)
+                 "#27313d"))
+  (should-not (face-attribute 'e-chat-focused-turn-face :box))
+  (should (eq (face-attribute 'e-chat-focused-turn-face :extend) t))
+  (should-not (eq (face-attribute 'e-chat-focused-turn-face :inherit)
+                  'highlight)))
+
+(ert-deftest e-chat-test-face-refresh-clears-focused-turn-strong-decoration ()
+  "Live reload removes older strong decorations from response focus."
+  (let ((old-defface-spec (get 'e-chat-focused-turn-face 'face-defface-spec)))
+    (unwind-protect
+        (progn
+          (put 'e-chat-focused-turn-face
+               'face-defface-spec
+               '((t :inherit highlight
+                    :box (:line-width 1 :color "#3b4b5c")
+                    :extend t)))
+          (set-face-attribute 'e-chat-focused-turn-face nil
+                              :inherit 'highlight
+                              :background 'unspecified
+                              :box '(:line-width 1 :color "#3b4b5c")
+                              :extend nil)
+          (e-chat--refresh-face-specs)
+          (should (equal (face-attribute 'e-chat-focused-turn-face :background)
+                         "#27313d"))
+          (should-not (face-attribute 'e-chat-focused-turn-face :box))
+          (should (eq (face-attribute 'e-chat-focused-turn-face :extend) t))
+          (should-not (eq (face-attribute 'e-chat-focused-turn-face :inherit)
+                          'highlight)))
+      (put 'e-chat-focused-turn-face 'face-defface-spec old-defface-spec)
+      (e-chat--refresh-face-specs))))
+
 (ert-deftest e-chat-test-owned-face-defaults-refresh-separator-face ()
   "Live reload reapplies package-owned separator face defaults."
   (unwind-protect
