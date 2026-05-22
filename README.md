@@ -36,16 +36,7 @@ Add this to `$DOOMDIR/packages.el`:
 ```elisp
 (package! e
   :recipe (:local-repo "/Users/dimitrivorona/projects/elisp/e"
-           :files ("e.el"
-                   "lisp/core/*.el"
-                   "lisp/layers/*.el"
-                   "lisp/layers/base/*.el"
-                   "lisp/layers/emacs/*.el"
-                   "lisp/layers/evidence/*.el"
-                   "lisp/layers/chat/*.el"
-                   "lisp/shells/chat/*.el"
-                   "lisp/adapters/openai/*.el"
-                   "lisp/dev/*.el")
+           :files ("e.el" "lisp")
            :build (:not compile)))
 ```
 
