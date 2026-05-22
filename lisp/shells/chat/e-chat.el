@@ -356,6 +356,10 @@
     (define-key map (kbd "j") #'e-chat-block-view-down)
     (define-key map (kbd "k") #'e-chat-block-view-up)
     (define-key map (kbd "l") #'e-chat-block-view-right)
+    (define-key map (kbd "G") #'e-chat-block-view-end)
+    (define-key map (kbd "g g") #'e-chat-block-view-beginning)
+    (define-key map (kbd "v") #'e-chat-block-view-select)
+    (define-key map (kbd "y") #'e-chat-block-view-copy)
     (define-key map (kbd "i") #'e-chat-block-view-insert)
     (define-key map (kbd "<escape>") #'e-chat-block-view-back)
     map))
@@ -1631,7 +1635,7 @@ TURN-ID tags the rendered entry for response navigation."
            (e-chat--block-kind-for-title title)
            content
            content-start
-           (point)))))
+           (+ content-start (length content))))))
     (if active-turn-id
         (e-chat--render-running-status active-turn-id active-record)
       (when (or ensure-composer had-composer)
@@ -1754,39 +1758,84 @@ TURN-ID tags the rendered entry for response navigation."
     (when (> (point) (cdr bounds))
       (goto-char (cdr bounds)))))
 
+(defun e-chat--block-view-keep-region-active ()
+  "Keep an active block-view region active after modal motion."
+  (when (region-active-p)
+    (setq deactivate-mark nil)))
+
 (defun e-chat-block-view-left ()
   "Move left inside the focused block."
   (interactive)
   (let ((bounds (e-chat--block-content-bounds (e-chat--block-view-block))))
     (when (> (point) (car bounds))
-      (backward-char 1))))
+      (backward-char 1)))
+  (e-chat--block-view-keep-region-active))
 
 (defun e-chat-block-view-right ()
   "Move right inside the focused block."
   (interactive)
   (let ((bounds (e-chat--block-content-bounds (e-chat--block-view-block))))
     (when (< (point) (cdr bounds))
-      (forward-char 1))))
+      (forward-char 1)))
+  (e-chat--block-view-keep-region-active))
 
 (defun e-chat-block-view-down ()
   "Move down inside the focused block."
   (interactive)
   (forward-line 1)
-  (e-chat--block-view-clamp-point))
+  (e-chat--block-view-clamp-point)
+  (e-chat--block-view-keep-region-active))
 
 (defun e-chat-block-view-up ()
   "Move up inside the focused block."
   (interactive)
   (forward-line -1)
-  (e-chat--block-view-clamp-point))
+  (e-chat--block-view-clamp-point)
+  (e-chat--block-view-keep-region-active))
+
+(defun e-chat-block-view-beginning ()
+  "Move to the beginning of the focused block content."
+  (interactive)
+  (goto-char (car (e-chat--block-content-bounds (e-chat--block-view-block))))
+  (e-chat--block-view-keep-region-active))
+
+(defun e-chat-block-view-end ()
+  "Move to the end of the focused block content."
+  (interactive)
+  (goto-char (cdr (e-chat--block-content-bounds (e-chat--block-view-block))))
+  (e-chat--block-view-keep-region-active))
+
+(defun e-chat-block-view-select ()
+  "Start or cancel a block-view text selection at point."
+  (interactive)
+  (if (region-active-p)
+      (deactivate-mark)
+    (set-mark (point))
+    (activate-mark)))
+
+(defun e-chat-block-view-copy ()
+  "Copy the active block-view selection or the whole focused block."
+  (interactive)
+  (let ((text (if (region-active-p)
+                  (buffer-substring-no-properties
+                   (region-beginning)
+                   (region-end))
+                (e-chat--block-action-text (e-chat--block-view-block)))))
+    (kill-new text)
+    (when (region-active-p)
+      (deactivate-mark))
+    (message "Copied e chat block view text")
+    text))
 
 (defun e-chat-block-view-back ()
   "Return from block view to block navigation."
   (interactive)
-  (let ((block-id e-chat--block-view-block-id))
-    (e-chat-block-view-mode -1)
-    (e-chat-response-navigation-mode 1)
-    (e-chat--focus-block block-id)))
+  (if (region-active-p)
+      (deactivate-mark t)
+    (let ((block-id e-chat--block-view-block-id))
+      (e-chat-block-view-mode -1)
+      (e-chat-response-navigation-mode 1)
+      (e-chat--focus-block block-id))))
 
 (defun e-chat-block-view-insert ()
   "Leave block view and focus the composer."

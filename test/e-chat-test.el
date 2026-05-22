@@ -1007,6 +1007,74 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-block-view-gg-and-g-move-within-focused-block ()
+  "Block view gg/G move to the focused block content text bounds."
+  (let ((buffer (e-chat-test--buffer nil "chat-block-view-goto")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat-test--render-turn "turn-1" 10 11 "first" "one\ntwo\nthree")
+          (call-interactively #'e-chat-enter-response-navigation)
+          (call-interactively #'e-chat-response-navigation-activate)
+          (let ((bounds (e-chat--block-content-bounds
+                         (e-chat--block-view-block))))
+            (goto-char (+ (car bounds) 4))
+            (call-interactively
+             (lookup-key e-chat-block-view-mode-map (kbd "G")))
+            (should (= (point) (cdr bounds)))
+            (should (equal (char-before) ?e))
+            (should (equal (char-after) ?\n))
+            (call-interactively
+             (lookup-key e-chat-block-view-mode-map (kbd "g g")))
+            (should (= (point) (car bounds)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-block-view-can-select-and-copy-text ()
+  "Block view v starts a region, h/l keep it active, and y copies it."
+  (let ((buffer (e-chat-test--buffer nil "chat-block-view-select")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat-test--render-turn "turn-1" 10 11 "first" "alpha beta")
+          (call-interactively #'e-chat-enter-response-navigation)
+          (call-interactively #'e-chat-response-navigation-activate)
+          (call-interactively
+           (lookup-key e-chat-block-view-mode-map (kbd "v")))
+          (dotimes (_ 5)
+            (call-interactively
+             (lookup-key e-chat-block-view-mode-map (kbd "l"))))
+          (should (region-active-p))
+          (call-interactively
+           (lookup-key e-chat-block-view-mode-map (kbd "y")))
+          (should (equal (current-kill 0) "alpha")))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-block-view-esc-clears-selection-before-exiting ()
+  "In block-view selection mode, ESC resets selection before returning to nav."
+  (let ((buffer (e-chat-test--buffer nil "chat-block-view-selection-esc")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat-test--render-turn "turn-1" 10 11 "first" "alpha beta")
+          (call-interactively #'e-chat-enter-response-navigation)
+          (call-interactively #'e-chat-response-navigation-activate)
+          (call-interactively
+           (lookup-key e-chat-block-view-mode-map (kbd "v")))
+          (dotimes (_ 5)
+            (call-interactively
+             (lookup-key e-chat-block-view-mode-map (kbd "l"))))
+          (should (region-active-p))
+          (call-interactively
+           (lookup-key e-chat-block-view-mode-map (kbd "<escape>")))
+          (should-not (region-active-p))
+          (should e-chat-block-view-mode)
+          (should-not e-chat-response-navigation-mode)
+          (call-interactively
+           (lookup-key e-chat-block-view-mode-map (kbd "<escape>")))
+          (should-not e-chat-block-view-mode)
+          (should e-chat-response-navigation-mode))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-response-navigation-i-returns-to-composer ()
   "Pressing i leaves navigation mode and focuses the composer."
   (let ((buffer (e-chat-test--buffer nil "chat-nav-insert")))
@@ -1626,6 +1694,14 @@
                 'e-chat-response-navigation-activate))
     (should (eq (lookup-key e-chat-response-navigation-mode-map (kbd "y"))
                 'e-chat-response-navigation-copy))
+    (should (eq (lookup-key e-chat-block-view-mode-map (kbd "G"))
+                'e-chat-block-view-end))
+    (should (eq (lookup-key e-chat-block-view-mode-map (kbd "g g"))
+                'e-chat-block-view-beginning))
+    (should (eq (lookup-key e-chat-block-view-mode-map (kbd "v"))
+                'e-chat-block-view-select))
+    (should (eq (lookup-key e-chat-block-view-mode-map (kbd "y"))
+                'e-chat-block-view-copy))
     (should (eq (lookup-key e-chat-mode-map (kbd "M-y"))
                 'e-chat-copy-latest-response))
     (should (eq (lookup-key e-chat-mode-map (kbd "M-o"))
