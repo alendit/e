@@ -117,6 +117,20 @@
                            "Named session"))))
       (delete-directory directory t))))
 
+(ert-deftest e-session-test-default-title-uses-first-25-prompt-chars ()
+  "Default session titles use only the first prompt snippet."
+  (let ((store (e-session-store-create)))
+    (e-session-create store :id "short")
+    (e-session-append-message
+     store "short" '(:id "msg-1" :role user :content "abcdefghijklmnopqrstuvwxy"))
+    (should (equal (e-session-display-title store "short")
+                   "abcdefghijklmnopqrstuvwxy"))
+    (e-session-create store :id "long")
+    (e-session-append-message
+     store "long" '(:id "msg-2" :role user :content "abcdefghijklmnopqrstuvwxyz"))
+    (should (equal (e-session-display-title store "long")
+                   "abcdefghijklmnopqrstuvwxy..."))))
+
 (ert-deftest e-session-test-turn-options-persist-through-session-info ()
   "Session turn options survive persistent replay."
   (let* ((directory (make-temp-file "e-session-" t))

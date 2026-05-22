@@ -71,8 +71,8 @@ append-only JSONL files with a recent-session `index.json`.
 Use `M-x e-chat-resume` to pick a recent session, `M-x e-chat-rename` to set
 an explicit display name for the current session, and `M-x e-chat-set-model` or
 `M-x e-chat-set-effort` to override the model settings for that session. If a
-session has no explicit name, chat buffers use the first user message as a
-fallback title.
+session has no explicit name, chat buffers use the first 25 characters of the
+first user message as a fallback title, adding `...` when the prompt is longer.
 
 ## OpenAI-Like Providers
 

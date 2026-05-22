@@ -96,6 +96,12 @@
           (when (stringp content)
             (throw 'found content)))))))
 
+(defun e-session--default-title (prompt)
+  "Return PROMPT formatted as a default session title."
+  (if (> (length prompt) 25)
+      (concat (substring prompt 0 25) "...")
+    prompt))
+
 (defun e-session--refresh-derived-fields (store session)
   "Refresh derived display fields for SESSION in STORE."
   (let ((messages (plist-get session :messages)))
@@ -526,7 +532,8 @@ BRANCH-ID, RANGE, and METADATA describe the compacted source when available."
   "Return display title for SESSION-ID in STORE."
   (let ((session (e-session-get store session-id)))
     (or (plist-get session :name)
-        (plist-get session :summary)
+        (when-let ((summary (plist-get session :summary)))
+          (e-session--default-title summary))
         (when-let ((created-at (plist-get session :created-at)))
           (format "Untitled %s" created-at))
         (format "Untitled %s" session-id))))
