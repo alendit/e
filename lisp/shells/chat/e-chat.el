@@ -46,6 +46,11 @@
 (defconst e-chat--resume-preview-buffer-name "*e-chat-resume-preview*"
   "Buffer name for temporary resume candidate previews.")
 
+(defcustom e-chat-resume-preview-message-limit 2
+  "Maximum number of transcript messages rendered in resume previews."
+  :type 'integer
+  :group 'e-chat)
+
 (defcustom e-chat-details-buffer-name "*e-chat-details*"
   "Buffer name for read-only focused block details."
   :type 'string
@@ -407,10 +412,26 @@
   (e-chat--make-tool-output-mode-map)
   "Keymap for read-only tool output buffers.")
 
+(defun e-chat--host-alt-leader-binding ()
+  "Return a host-provided alternate leader key and map, when available."
+  (let ((key (and (boundp 'doom-leader-alt-key)
+                  (symbol-value 'doom-leader-alt-key)))
+        (map (and (boundp 'doom-leader-map)
+                  (symbol-value 'doom-leader-map))))
+    (when (and (stringp key)
+               (keymapp map))
+      (cons key map))))
+
+(defun e-chat--preserve-host-alt-leader (map)
+  "Preserve a host-provided alternate leader prefix in MAP."
+  (when-let ((binding (e-chat--host-alt-leader-binding)))
+    (define-key map (kbd (car binding)) (cdr binding))))
+
 (defun e-chat--make-mode-map (&optional map)
   "Return MAP configured as the local keymap for `e-chat-mode'."
   (let ((map (or map (make-sparse-keymap))))
     (set-keymap-parent map text-mode-map)
+    (e-chat--preserve-host-alt-leader map)
     (define-key map (kbd "<escape>") #'e-chat-enter-response-navigation)
     (define-key map (kbd "C-p") #'e-chat-previous-line)
     (define-key map (kbd "<up>") #'e-chat-previous-line)
@@ -1192,6 +1213,13 @@ describe block actions."
     (or (and block-id (gethash block-id e-chat--block-registry))
         (user-error "No final e chat response"))))
 
+(defun e-chat--editable-buffer-mode ()
+  "Enable the preferred major mode for editable chat text buffers."
+  (if (or (fboundp 'markdown-mode)
+          (require 'markdown-mode nil t))
+      (markdown-mode)
+    (text-mode)))
+
 (defun e-chat--buffer-with-text (name text &optional read-only)
   "Display NAME containing TEXT, optionally READ-ONLY."
   (let ((buffer (generate-new-buffer name)))
@@ -1201,9 +1229,9 @@ describe block actions."
         (insert text))
       (if read-only
           (special-mode)
-        (text-mode))
+        (e-chat--editable-buffer-mode))
       (goto-char (point-min)))
-    (display-buffer buffer)
+    (pop-to-buffer buffer)
     buffer))
 
 (defun e-chat--format-time-value (value)
@@ -1414,16 +1442,6 @@ When RECORD is nil, clear only buffer-local status markers."
             (unless (or (bobp) (bolp))
               (insert "\n"))
             (let ((status-start (point)))
-              (when has-progress
-                (let ((progress-start (point)))
-                  (e-chat--insert-protected
-                   (e-chat--entry-text "Assistant" (e-chat--progress-dots))
-                   'e-chat-assistant-face
-                   `(e-chat-progress-turn-id ,turn-id))
-                  (setq e-chat--progress-start-marker
-                        (copy-marker progress-start nil))
-                  (setq e-chat--progress-end-marker
-                        (copy-marker (point) nil))))
               (when text
                 (let* ((transient-start (point))
                        (activity-block-id
@@ -1458,6 +1476,16 @@ When RECORD is nil, clear only buffer-local status markers."
                      (point)
                      (e-chat--activity-tool-items
                       (plist-get record :intermittent-entries))))))
+              (when has-progress
+                (let ((progress-start (point)))
+                  (e-chat--insert-protected
+                   (e-chat--entry-text "Assistant" (e-chat--progress-dots))
+                   'e-chat-assistant-face
+                   `(e-chat-progress-turn-id ,turn-id))
+                  (setq e-chat--progress-start-marker
+                        (copy-marker progress-start nil))
+                  (setq e-chat--progress-end-marker
+                        (copy-marker (point) nil))))
               (setq e-chat--running-status-start-marker
                     (copy-marker status-start nil))
               (setq e-chat--running-status-end-marker
@@ -2541,16 +2569,28 @@ TURN-ID tags the rendered entry for response navigation."
     (_
      (e-chat--insert-entry "System" (format "Event: %S" event) t))))
 
-(defun e-chat--render-session ()
-  "Render the attached session transcript in the current buffer."
-  (let ((turn-index 0)
+(defun e-chat--tail-messages (messages limit)
+  "Return at most LIMIT trailing MESSAGES."
+  (if (and (integerp limit)
+           (> limit 0)
+           (> (length messages) limit))
+      (nthcdr (- (length messages) limit) messages)
+    messages))
+
+(defun e-chat--render-session (&optional messages)
+  "Render the attached session transcript in the current buffer.
+When MESSAGES is non-nil, render that message list instead of the
+attached session's full transcript."
+  (let ((messages (or messages
+                      (e-harness-messages e-chat-harness e-chat-session-id)))
+        (turn-index 0)
         (activity-events (ignore-errors
                            (e-harness-session-activity-events
                             e-chat-harness
                             e-chat-session-id)))
         turn-id
         record)
-    (dolist (message (e-harness-messages e-chat-harness e-chat-session-id))
+    (dolist (message messages)
       (when (or (plist-get message :turn-id)
                 (not turn-id)
                 (eq (plist-get message :role) 'user))
@@ -2661,7 +2701,11 @@ With prefix argument POP-TO-SIDE, use the pop display path."
 
 (defun e-chat--render-resume-preview (harness session)
   "Render SESSION from HARNESS into the reusable resume preview buffer."
-  (let ((buffer (get-buffer-create e-chat--resume-preview-buffer-name)))
+  (let* ((session-id (plist-get session :id))
+         (messages (e-chat--tail-messages
+                    (e-harness-messages harness session-id)
+                    e-chat-resume-preview-message-limit))
+         (buffer (get-buffer-create e-chat--resume-preview-buffer-name)))
     (with-current-buffer buffer
       (let ((inhibit-read-only t))
         (erase-buffer))
@@ -2669,10 +2713,10 @@ With prefix argument POP-TO-SIDE, use the pop display path."
       (e-chat--disable-modal-editing)
       (e-chat--disable-completion)
       (setq-local e-chat-harness harness)
-      (setq-local e-chat-session-id (plist-get session :id))
+      (setq-local e-chat-session-id session-id)
       (setq-local cursor-type nil)
       (e-chat--clear)
-      (e-chat--render-session)
+      (e-chat--render-session messages)
       (setq buffer-read-only t)
       (goto-char (point-min)))
     buffer))

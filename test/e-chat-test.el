@@ -992,7 +992,7 @@
         (kill-buffer buffer)))))
 
 (ert-deftest e-chat-test-progress-and-tool-count-order-stays-stable ()
-  "Progress ticks do not reorder the running activity summary."
+  "Progress stays below the running activity summary."
   (let ((buffer (e-chat-test--buffer nil "chat-running-status-order")))
     (unwind-protect
         (with-current-buffer buffer
@@ -1009,13 +1009,15 @@
                                       :id "call-1"
                                       :name "read")))
           (should (string-match-p
-                   (concat (regexp-quote e-chat--assistant-glyph)
-                           " ◐\n\n1 tool call")
+                   (concat "1 tool call\n\n"
+                           (regexp-quote e-chat--assistant-glyph)
+                           " ◐")
                    (buffer-string)))
           (e-chat--advance-progress-indicator)
           (should (string-match-p
-                   (concat (regexp-quote e-chat--assistant-glyph)
-                           " ◓\n\n1 tool call")
+                   (concat "1 tool call\n\n"
+                           (regexp-quote e-chat--assistant-glyph)
+                           " ◓")
                    (buffer-string))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
@@ -1855,6 +1857,43 @@
       (when (buffer-live-p origin)
         (kill-buffer origin)))))
 
+(ert-deftest e-chat-test-resume-preview-renders-only-tail-messages ()
+  "Resume previews render a small transcript tail for responsive selection."
+  (let* ((store (e-session-store-create))
+         (backend (e-backend-fake-create :items nil))
+         (harness (e-chat-test--activate-chat-session
+                   (e-harness-create :backend backend :sessions store)))
+         (origin (get-buffer-create "chat-resume-preview-tail-origin"))
+         (e-chat-resume-preview-message-limit 2))
+    (unwind-protect
+        (progn
+          (e-session-create store :id "preview-tail"
+                            :metadata '(:name "Tail preview"))
+          (dotimes (index 6)
+            (e-session-append-message
+             store
+             "preview-tail"
+             (list :id (format "msg-%d" index)
+                   :role (if (cl-evenp index) 'user 'assistant)
+                   :content (format "preview message %d" index))))
+          (let* ((sessions (e-harness-session-list harness))
+                 (labels (mapcar #'e-chat--session-choice-label sessions))
+                 (state (e-chat--resume-preview-state harness sessions labels)))
+            (switch-to-buffer origin)
+            (funcall state 'preview (car labels))
+            (let ((preview (get-buffer e-chat--resume-preview-buffer-name)))
+              (should preview)
+              (with-current-buffer preview
+                (let ((text (buffer-string)))
+                  (should-not (string-match-p "preview message 0" text))
+                  (should-not (string-match-p "preview message 3" text))
+                  (should (string-match-p "preview message 4" text))
+                  (should (string-match-p "preview message 5" text)))))
+            (funcall state 'exit nil)))
+      (e-chat-test--kill-chat-buffers)
+      (when (buffer-live-p origin)
+        (kill-buffer origin)))))
+
 (ert-deftest e-chat-test-resume-reader-uses-consult-preview-when-available ()
   "Resume selection uses Consult preview state when Consult is available."
   (let* ((store (e-session-store-create))
@@ -2040,10 +2079,13 @@
 
 (ert-deftest e-chat-test-composer-meta-actions-target-latest-response ()
   "Composer M-y and M-o target the latest final assistant response block."
+  (unless (fboundp 'markdown-mode)
+    (define-derived-mode markdown-mode text-mode "Markdown"))
   (let ((buffer (e-chat-test--buffer nil "chat-meta-actions"))
         (opened nil))
     (unwind-protect
-        (with-current-buffer buffer
+        (progn
+          (switch-to-buffer buffer)
           (e-chat-test--render-turn "turn-1" 10 11 "first" "old final")
           (e-chat-test--render-turn "turn-2" 20 21 "second" "latest final")
           (goto-char e-chat--composer-start-marker)
@@ -2053,8 +2095,9 @@
           (setq opened
                 (call-interactively
                  (lookup-key e-chat-mode-map (kbd "M-o"))))
+          (should (eq (window-buffer (selected-window)) opened))
           (with-current-buffer opened
-            (should (derived-mode-p 'text-mode))
+            (should (derived-mode-p 'markdown-mode))
             (should (equal (buffer-string) "latest final"))))
       (when (buffer-live-p opened)
         (kill-buffer opened))
@@ -2116,6 +2159,33 @@
     (should-not (seq-some (lambda (call)
                             (equal (nth 2 call) (kbd "I")))
                           calls))))
+
+(ert-deftest e-chat-test-keymap-preserves-host-alt-leader ()
+  "The chat mode keymap preserves a host-provided alternate leader prefix."
+  (let ((e-chat-mode-map (make-sparse-keymap))
+        (had-alt-key (boundp 'doom-leader-alt-key))
+        (old-alt-key (and (boundp 'doom-leader-alt-key)
+                          (symbol-value 'doom-leader-alt-key)))
+        (had-leader-map (boundp 'doom-leader-map))
+        (old-leader-map (and (boundp 'doom-leader-map)
+                             (symbol-value 'doom-leader-map)))
+        (leader-map (make-sparse-keymap)))
+    (unwind-protect
+        (progn
+          (define-key leader-map (kbd "f") #'find-file)
+          (set 'doom-leader-alt-key "M-SPC")
+          (set 'doom-leader-map leader-map)
+          (e-chat--refresh-keymaps)
+          (should (eq (lookup-key e-chat-mode-map (kbd "M-SPC"))
+                      leader-map))
+          (should (eq (lookup-key e-chat-mode-map (kbd "M-SPC f"))
+                      #'find-file)))
+      (if had-alt-key
+          (set 'doom-leader-alt-key old-alt-key)
+        (makunbound 'doom-leader-alt-key))
+      (if had-leader-map
+          (set 'doom-leader-map old-leader-map)
+        (makunbound 'doom-leader-map)))))
 
 (ert-deftest e-chat-test-shell-descriptor-advertises-chat-surface ()
   "The chat presentation publishes a generic shell manifest."
