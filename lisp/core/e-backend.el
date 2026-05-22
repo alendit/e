@@ -53,7 +53,8 @@ backend-neutral stream items.  ON-REQUEST-START receives an optional
              :on-item on-item)))
 
 (cl-defun e-backend-fake-create (&key name items cancel-function)
-  "Create fake backend NAME that streams ITEMS synchronously."
+  "Create fake backend NAME that streams ITEMS synchronously.
+CANCEL-FUNCTION is attached to the fake request handle when non-nil."
   (e-backend-create
    :name (or name "fake")
    :stream (cl-function

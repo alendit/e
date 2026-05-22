@@ -76,7 +76,8 @@
 
 (defun e-evidence-fetch-tool-result
     (store session-id turn-id tool-call-id)
-  "Return one read-only tool result for SESSION-ID by TURN-ID and TOOL-CALL-ID."
+  "Return one read-only tool result from STORE for SESSION-ID.
+TURN-ID and TOOL-CALL-ID identify the tool result."
   (let ((message
          (cl-find-if
           (lambda (candidate)

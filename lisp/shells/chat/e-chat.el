@@ -256,6 +256,12 @@
 (defvar-local e-chat--progress-end-marker nil
   "Marker at the end of the active assistant progress indicator.")
 
+(defvar-local e-chat--running-status-start-marker nil
+  "Marker at the start of the active running-turn status region.")
+
+(defvar-local e-chat--running-status-end-marker nil
+  "Marker at the end of the active running-turn status region.")
+
 (defvar-local e-chat--progress-timer nil
   "Timer advancing the active assistant progress indicator.")
 
@@ -728,12 +734,12 @@ Return non-nil when a composer was removed."
           (plist-get entry :content)))
 
 (defun e-chat--activity-tool-count-text (count)
-  "Return collapsed display text for COUNT tool calls."
+  "Return collapsed display text for COUNT tool invocations."
   (format "%d tool call%s" count (if (= count 1) "" "s")))
 
 (defun e-chat--activity-visible-chunks (entries)
   "Return visible collapsed activity chunks for intermittent ENTRIES.
-Tool calls are counted after the reasoning chunk they followed."
+Count tool invocations after the reasoning chunk they followed."
   (let ((chunks nil)
         (current nil)
         (tool-count 0))
@@ -812,38 +818,95 @@ SOURCE identifies where the entry came from for duplicate suppression."
                                        :content content
                                        :source source))))))))
 
-(defun e-chat--delete-turn-transient (record)
-  "Delete the currently visible transient block for RECORD."
-  (let ((start (plist-get record :transient-start-marker))
-        (end (plist-get record :transient-end-marker)))
-    (when (and (markerp start)
-               (markerp end)
-               (marker-position start)
-               (marker-position end))
+(defun e-chat--delete-running-status (record)
+  "Delete the currently visible running-turn status region for RECORD.
+When RECORD is nil, clear only buffer-local status markers."
+  (let* ((running-start (and (markerp e-chat--running-status-start-marker)
+                             (marker-position
+                              e-chat--running-status-start-marker)))
+         (start (or running-start
+                    (and (markerp e-chat--progress-start-marker)
+                         (marker-position e-chat--progress-start-marker))
+                    (and record
+                         (markerp (plist-get record :transient-start-marker))
+                         (marker-position
+                          (plist-get record :transient-start-marker)))))
+         (end (or (and running-start
+                       (markerp e-chat--composer-spacer-marker)
+                       (marker-position e-chat--composer-spacer-marker))
+                  (and (markerp e-chat--running-status-end-marker)
+                       (marker-position e-chat--running-status-end-marker))
+                  (and record
+                       (markerp (plist-get record :transient-end-marker))
+                       (marker-position
+                        (plist-get record :transient-end-marker)))
+                  (and (markerp e-chat--progress-end-marker)
+                       (marker-position e-chat--progress-end-marker)))))
+    (when (and start end (< start end))
       (let ((inhibit-read-only t))
-        (delete-region start end)))
+        (delete-region start end))))
+  (setq e-chat--running-status-start-marker nil)
+  (setq e-chat--running-status-end-marker nil)
+  (setq e-chat--progress-start-marker nil)
+  (setq e-chat--progress-end-marker nil)
+  (when record
     (plist-put record :transient-start-marker nil)
     (plist-put record :transient-end-marker nil)))
 
+(defun e-chat--delete-turn-transient (record)
+  "Delete the currently visible transient block for RECORD."
+  (e-chat--delete-running-status record))
+
+(defun e-chat--render-running-status (turn-id record)
+  "Render TURN-ID's active progress and RECORD transient summary together."
+  (let* ((has-progress (and e-chat--progress-turn-id
+                            (equal turn-id e-chat--progress-turn-id)))
+         (text (and record
+                    (not (plist-get record :final-rendered))
+                    (e-chat--transient-text record))))
+    (e-chat--delete-running-status record)
+    (e-chat--delete-composer)
+    (if (or has-progress text)
+        (progn
+          (let ((inhibit-read-only t))
+            (goto-char (point-max))
+            (unless (or (bobp) (bolp))
+              (insert "\n"))
+            (let ((status-start (point)))
+              (when has-progress
+                (let ((progress-start (point)))
+                  (e-chat--insert-protected
+                   (e-chat--entry-text "Assistant" (e-chat--progress-dots))
+                   'e-chat-assistant-face
+                   `(e-chat-progress-turn-id ,turn-id))
+                  (setq e-chat--progress-start-marker
+                        (copy-marker progress-start nil))
+                  (setq e-chat--progress-end-marker
+                        (copy-marker (point) nil))))
+              (when text
+                (let ((transient-start (point)))
+                  (e-chat--insert-protected
+                   text
+                   'e-chat-system-face
+                   `(e-chat-transient-turn-id ,turn-id))
+                  (plist-put record
+                             :transient-start-marker
+                             (copy-marker transient-start nil))
+                  (plist-put record
+                             :transient-end-marker
+                             (copy-marker (point) nil))))
+              (setq e-chat--running-status-start-marker
+                    (copy-marker status-start nil))
+              (setq e-chat--running-status-end-marker
+                    (copy-marker (point) nil))))
+          (if has-progress
+              (e-chat--insert-pending-separator)
+            (e-chat--insert-composer)))
+      (e-chat--insert-composer))))
+
 (defun e-chat--render-turn-transient (turn-id record)
   "Render RECORD's intermittent entries as a temporary block for TURN-ID."
-  (e-chat--delete-turn-transient record)
-  (unless (plist-get record :final-rendered)
-    (when-let ((text (e-chat--transient-text record)))
-      (let ((had-composer (e-chat--delete-composer)))
-        (let ((inhibit-read-only t))
-          (goto-char (point-max))
-          (unless (or (bobp) (bolp))
-            (insert "\n"))
-          (let ((start (point)))
-            (e-chat--insert-protected
-             text
-             'e-chat-system-face
-             `(e-chat-transient-turn-id ,turn-id))
-            (plist-put record :transient-start-marker (copy-marker start nil))
-            (plist-put record :transient-end-marker (copy-marker (point) nil))))
-        (when had-composer
-          (e-chat--insert-composer))))))
+  (e-chat--render-running-status turn-id record))
 
 (defun e-chat--progress-dots ()
   "Return the current active assistant progress glyph string."
@@ -859,32 +922,16 @@ SOURCE identifies where the entry came from for duplicate suppression."
 
 (defun e-chat--delete-progress-indicator ()
   "Delete the active assistant progress indicator."
-  (when (and (markerp e-chat--progress-start-marker)
-             (markerp e-chat--progress-end-marker)
-             (marker-position e-chat--progress-start-marker)
-             (marker-position e-chat--progress-end-marker))
-    (let ((inhibit-read-only t))
-      (delete-region e-chat--progress-start-marker
-                     e-chat--progress-end-marker)))
-  (setq e-chat--progress-start-marker nil)
-  (setq e-chat--progress-end-marker nil))
+  (let ((record (and e-chat--progress-turn-id
+                     (e-chat--existing-turn-record
+                      e-chat--progress-turn-id))))
+    (e-chat--delete-running-status record)))
 
 (defun e-chat--render-progress-indicator (turn-id)
   "Render active assistant progress indicator for TURN-ID."
-  (e-chat--delete-composer)
-  (e-chat--delete-progress-indicator)
-  (let ((inhibit-read-only t))
-    (goto-char (point-max))
-    (unless (or (bobp) (bolp))
-      (insert "\n"))
-    (let ((start (point)))
-      (e-chat--insert-protected
-       (e-chat--entry-text "Assistant" (e-chat--progress-dots))
-       'e-chat-assistant-face
-       `(e-chat-progress-turn-id ,turn-id))
-      (setq e-chat--progress-start-marker (copy-marker start nil))
-      (setq e-chat--progress-end-marker (copy-marker (point) nil))))
-  (e-chat--insert-pending-separator))
+  (e-chat--render-running-status
+   turn-id
+   (e-chat--existing-turn-record turn-id)))
 
 (defun e-chat--advance-progress-indicator ()
   "Advance and rerender the active assistant progress indicator."
@@ -911,12 +958,21 @@ SOURCE identifies where the entry came from for duplicate suppression."
 (defun e-chat--stop-progress-indicator (&optional turn-id)
   "Stop and delete the active assistant progress indicator.
 When TURN-ID is non-nil, only stop a matching active indicator."
-  (when (or (not turn-id)
-            (equal turn-id e-chat--progress-turn-id))
+  (when (and e-chat--progress-turn-id
+             (or (not turn-id)
+                 (equal turn-id e-chat--progress-turn-id)))
     (e-chat--cancel-progress-timer)
-    (e-chat--delete-progress-indicator)
-    (setq e-chat--progress-turn-id nil)
-    (setq e-chat--progress-frame 0)))
+    (let ((old-turn-id e-chat--progress-turn-id))
+      (setq e-chat--progress-turn-id nil)
+      (setq e-chat--progress-frame 0)
+      (if-let ((record (and old-turn-id
+                            (e-chat--existing-turn-record old-turn-id))))
+          (e-chat--render-running-status old-turn-id record)
+        (progn
+          (e-chat--delete-composer)
+          (e-chat--delete-running-status nil)
+          (unless (derived-mode-p 'special-mode)
+            (e-chat--insert-composer)))))))
 
 (defun e-chat--append-intermittent-entry (turn-id title content &optional append source)
   "Append intermittent TITLE and CONTENT to TURN-ID.
@@ -1291,8 +1347,14 @@ Preserve Markdown faces already present in the range."
   "Insert a protected chat entry with TITLE and CONTENT.
 When ENSURE-COMPOSER is non-nil, recreate the composer after inserting.
 TURN-ID tags the rendered entry for response navigation."
-  (let ((had-composer (e-chat--delete-composer))
-        (block-id (and turn-id (e-chat--next-block-id))))
+  (let* ((active-turn-id e-chat--progress-turn-id)
+         (active-record (and active-turn-id
+                             (e-chat--existing-turn-record active-turn-id)))
+         (had-composer nil)
+         (block-id (and turn-id (e-chat--next-block-id))))
+    (when active-turn-id
+      (e-chat--delete-running-status active-record))
+    (setq had-composer (e-chat--delete-composer))
     (let ((inhibit-read-only t))
       (goto-char (point-max))
       (unless (or (bobp) (bolp))
@@ -1312,8 +1374,10 @@ TURN-ID tags the rendered entry for response navigation."
            (+ start (e-chat--entry-content-offset title))
            (point)))
         (e-chat--update-block-bounds block-id turn-id start (point))))
-    (when (or ensure-composer had-composer)
-      (e-chat--insert-composer))))
+    (if active-turn-id
+        (e-chat--render-running-status active-turn-id active-record)
+      (when (or ensure-composer had-composer)
+        (e-chat--insert-composer)))))
 
 (defun e-chat-enter-response-navigation ()
   "Enter response navigation mode and focus the nearest rendered turn."
@@ -1409,7 +1473,13 @@ TURN-ID tags the rendered entry for response navigation."
     (when (overlayp e-chat--focused-turn-overlay)
       (delete-overlay e-chat--focused-turn-overlay))
     (setq e-chat--focused-turn-overlay nil)
-    (e-chat--stop-progress-indicator)
+    (e-chat--cancel-progress-timer)
+    (setq e-chat--progress-turn-id nil)
+    (setq e-chat--progress-frame 0)
+    (setq e-chat--progress-start-marker nil)
+    (setq e-chat--progress-end-marker nil)
+    (setq e-chat--running-status-start-marker nil)
+    (setq e-chat--running-status-end-marker nil)
     (let ((title (and e-chat-harness
                       e-chat-session-id
                       (ignore-errors

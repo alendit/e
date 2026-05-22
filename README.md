@@ -36,7 +36,16 @@ Add this to `$DOOMDIR/packages.el`:
 ```elisp
 (package! e
   :recipe (:local-repo "/Users/dimitrivorona/projects/elisp/e"
-           :files ("e.el" "lisp/*.el")
+           :files ("e.el"
+                   "lisp/core/*.el"
+                   "lisp/layers/*.el"
+                   "lisp/layers/base/*.el"
+                   "lisp/layers/emacs/*.el"
+                   "lisp/layers/evidence/*.el"
+                   "lisp/layers/chat/*.el"
+                   "lisp/shells/chat/*.el"
+                   "lisp/adapters/openai/*.el"
+                   "lisp/dev/*.el")
            :build (:not compile)))
 ```
 
@@ -57,8 +66,8 @@ For an already-running Emacs session, the one-time manual bootstrap is:
 ```
 
 After that, `M-x e-dev-reload` reloads the package modules from the checkout in
-dependency order, including new MVP modules such as `e-layers`,
-`e-emacs-base`, and `e-chat`.
+dependency order, including layer-local capability modules and presentation
+shells such as `e-layers`, `e-emacs-base`, and `e-chat`.
 
 The package itself does not depend on Doom-specific APIs.
 

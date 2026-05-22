@@ -24,7 +24,7 @@
   "Directory containing this development helper file.")
 
 (defcustom e-dev-source-directory
-  (expand-file-name ".." e-dev--directory)
+  (expand-file-name "../.." e-dev--directory)
   "Root directory of the local e checkout used for live reloading."
   :type 'directory
   :group 'e-dev)
@@ -57,23 +57,28 @@
   (interactive)
   (let* ((root (file-name-as-directory
                 (expand-file-name (or directory e-dev-source-directory))))
-         (files '("lisp/e-events.el"
-                  "lisp/e-session.el"
-                  "lisp/e-context.el"
-                  "lisp/e-layers.el"
-                  "lisp/e-backend.el"
-                  "lisp/e-openai.el"
-                  "lisp/e-tools.el"
-                  "lisp/e-base-tools.el"
-                  "lisp/e-base.el"
-                  "lisp/e-emacs-tools.el"
-                  "lisp/e-emacs-base.el"
-                  "lisp/e-loop.el"
-                  "lisp/e-harness.el"
-                  "lisp/e-chat.el"
-                  "lisp/e-core.el"
+         (files '("lisp/core/e-events.el"
+                  "lisp/core/e-session.el"
+                  "lisp/core/e-context.el"
+                  "lisp/core/e-tools.el"
+                  "lisp/core/e-capabilities.el"
+                  "lisp/layers/e-layers.el"
+                  "lisp/core/e-backend.el"
+                  "lisp/core/e-loop.el"
+                  "lisp/core/e-harness.el"
+                  "lisp/layers/base/e-base-tools.el"
+                  "lisp/layers/base/e-file-capabilities.el"
+                  "lisp/layers/base/e-base.el"
+                  "lisp/layers/emacs/e-emacs-tools.el"
+                  "lisp/layers/emacs/e-emacs-capabilities.el"
+                  "lisp/layers/emacs/e-emacs-base.el"
+                  "lisp/layers/evidence/e-evidence-tools.el"
+                  "lisp/layers/chat/e-chat-session.el"
+                  "lisp/adapters/openai/e-openai.el"
+                  "lisp/shells/chat/e-chat.el"
+                  "lisp/core/e-core.el"
                   "e.el"
-                  "lisp/e-dev.el")))
+                  "lisp/dev/e-dev.el")))
     (dolist (file files)
       (load (expand-file-name file root) nil 'nomessage))
     (e-dev--clear-obsolete-functions)

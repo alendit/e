@@ -31,7 +31,8 @@
 
 (cl-defun e-capabilities--provider-messages
     (provider &key harness session-id turn-id)
-  "Return context messages from PROVIDER for the current turn."
+  "Return context messages from PROVIDER for the current turn.
+HARNESS, SESSION-ID, and TURN-ID identify the active turn."
   (cond
    ((e-context-provider-p provider)
     (e-context-provider-build

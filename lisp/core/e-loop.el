@@ -43,7 +43,8 @@
           append-message on-request-start)
   "Run one agent turn for SESSION-ID and TURN-ID.
 MESSAGES, BACKEND, TOOLS, OPTIONS, ON-EVENT, and APPEND-MESSAGE define the
-turn context and output callbacks.
+turn context and output callbacks.  ON-REQUEST-START receives the backend
+request handle when an adapter exposes one.
 The loop is synchronous for the first core implementation.  Async process
 management stays outside this task until the core event and state semantics are
 stable."

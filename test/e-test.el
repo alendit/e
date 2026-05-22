@@ -36,6 +36,21 @@
   (require 'e)
   (should (string= e-version "0.1.0")))
 
+(ert-deftest e-test-adds-source-subdirectories-to-load-path ()
+  "The package makes nested source directories available for require/autoload."
+  (require 'e)
+  (dolist (directory '("lisp/core"
+                       "lisp/layers"
+                       "lisp/layers/base"
+                       "lisp/layers/emacs"
+                       "lisp/layers/evidence"
+                       "lisp/layers/chat"
+                       "lisp/shells/chat"
+                       "lisp/adapters/openai"
+                       "lisp/dev"))
+    (should (member (expand-file-name directory default-directory)
+                    load-path))))
+
 (ert-deftest e-test-exposes-interactive-entrypoints ()
   "The package exposes status and live-reload commands."
   (require 'e)
@@ -74,8 +89,12 @@
       (when (file-exists-p (concat generated-autoload-file "~"))
         (delete-file (concat generated-autoload-file "~")))
       (load (expand-file-name "e.el" default-directory) nil 'nomessage)
-      (load (expand-file-name "lisp/e-chat.el" default-directory) nil 'nomessage)
-      (load (expand-file-name "lisp/e-dev.el" default-directory) nil 'nomessage))))
+      (load (expand-file-name "lisp/shells/chat/e-chat.el" default-directory)
+            nil
+            'nomessage)
+      (load (expand-file-name "lisp/dev/e-dev.el" default-directory)
+            nil
+            'nomessage))))
 
 (ert-deftest e-test-exposes-core-harness-api ()
   "The package exposes the core harness API after requiring e."

@@ -23,12 +23,27 @@
     (file-name-directory
      (file-truename (or load-file-name buffer-file-name default-directory)))
     "Directory containing the e package entry point.")
-  (add-to-list 'load-path (expand-file-name "lisp" e--directory)))
+  (defconst e--source-subdirectories
+    '("lisp/core"
+      "lisp/layers"
+      "lisp/layers/base"
+      "lisp/layers/emacs"
+      "lisp/layers/evidence"
+      "lisp/layers/chat"
+      "lisp/shells/chat"
+      "lisp/adapters/openai"
+      "lisp/dev")
+    "Source directories containing e libraries.")
+  (defun e--add-source-directories (directory)
+    "Add e source subdirectories rooted at DIRECTORY to `load-path'."
+    (dolist (subdirectory (reverse e--source-subdirectories))
+      (add-to-list 'load-path (expand-file-name subdirectory directory))))
+  (e--add-source-directories e--directory))
 
 ;;;###autoload
 (let ((directory (file-name-directory
                   (or load-file-name buffer-file-name default-directory))))
-  (add-to-list 'load-path (expand-file-name "lisp" directory)))
+  (e--add-source-directories directory))
 
 (require 'e-core)
 
@@ -59,34 +74,34 @@
     summary))
 
 ;;;###autoload
-(autoload 'e-dev-reload "lisp/e-dev" "Reload e package files during development." t)
+(autoload 'e-dev-reload "e-dev" "Reload e package files during development." t)
 
 ;;;###autoload
-(autoload 'e-chat-new "lisp/e-chat" "Create and open a new persisted e chat session." t)
+(autoload 'e-chat-new "e-chat" "Create and open a new persisted e chat session." t)
 
 ;;;###autoload
-(autoload 'e-chat-resume "lisp/e-chat" "Resume a recent persisted e chat session." t)
+(autoload 'e-chat-resume "e-chat" "Resume a recent persisted e chat session." t)
 
 ;;;###autoload
-(autoload 'e-chat-rename "lisp/e-chat" "Rename the current e chat session." t)
+(autoload 'e-chat-rename "e-chat" "Rename the current e chat session." t)
 
 ;;;###autoload
-(autoload 'e-chat-set-model "lisp/e-chat" "Set the current e chat session model." t)
+(autoload 'e-chat-set-model "e-chat" "Set the current e chat session model." t)
 
 ;;;###autoload
-(autoload 'e-chat-set-effort "lisp/e-chat" "Set the current e chat session reasoning effort." t)
+(autoload 'e-chat-set-effort "e-chat" "Set the current e chat session reasoning effort." t)
 
 ;;;###autoload
-(autoload 'e-chat-show-context "lisp/e-chat" "Show the current e chat session context." t)
+(autoload 'e-chat-show-context "e-chat" "Show the current e chat session context." t)
 
 ;;;###autoload
-(autoload 'e-chat-submit "lisp/e-chat" "Submit the current e chat prompt." t)
+(autoload 'e-chat-submit "e-chat" "Submit the current e chat prompt." t)
 
 ;;;###autoload
-(autoload 'e-chat-abort "lisp/e-chat" "Abort the active e chat turn." t)
+(autoload 'e-chat-abort "e-chat" "Abort the active e chat turn." t)
 
 ;;;###autoload
-(autoload 'e-chat-reset "lisp/e-chat" "Reset the current e chat session." t)
+(autoload 'e-chat-reset "e-chat" "Reset the current e chat session." t)
 
 (provide 'e)
 

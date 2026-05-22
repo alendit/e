@@ -110,34 +110,28 @@ Current repository mapping:
 - `docs/mvp.md`: completed MVP implementation plan for chat, layers, visible-buffer context, and Emacs tools.
 - `docs/feat-canvas.md`: deferred design note for canvas-state context management.
 - `e.el`: package entry point, public smoke commands, package metadata, and autoloads.
-- `lisp/e-core.el`: core module aggregator and status surface.
-- `lisp/e-events.el`: event construction helpers for stable core event plists.
-- `lisp/e-session.el`: session repository, JSONL persistence, recent-session index, metadata, and message APIs.
-- `lisp/e-context.el`: provider-neutral context strategy and context-provider contracts, plus the `transcript-stack` strategy.
-- `lisp/e-layers.el`: harness-owned layer descriptors for capability presets and defaults.
-- `lisp/e-backend.el`: backend-neutral adapter contract and fake backend.
-- `lisp/e-openai.el`: profile-configurable OpenAI-like Responses adapter for Codex auth, token-auth gateways, request mapping, and SSE parsing.
-- `lisp/e-tools.el`: pure tool registry and structured tool-result handling.
-- `lisp/e-base.el`: base workspace layer preset over file inspection, file mutation, shell/process, and base-guidance capabilities.
-- `lisp/e-emacs-tools.el`: concrete Emacs buffer, save, and elisp tools.
-- `lisp/e-emacs-base.el`: default Emacs layer preset over Emacs awareness, buffer read, buffer edit, and elisp-eval capabilities.
-- `lisp/e-loop.el`: backend/tool/message/event turn loop with tool-result follow-up.
-- `lisp/e-harness.el`: public core harness service for sessions, prompts, async prompts, wait, follow-ups, reset, state access, cancellation, and event subscription.
-- `lisp/e-chat.el`: basic chat presentation buffer, commands, keymap, and harness event rendering.
-- `lisp/e-dev.el`: interactive development helpers for live reloading local source in Emacs.
+- `lisp/core/`: core harness/runtime contracts, including module aggregation, events, sessions, context strategy, backend contract, capability contract, tool registry, turn loop, and harness service.
+- `lisp/layers/e-layers.el`: harness-owned layer descriptor contract.
+- `lisp/layers/base/`: the `base` layer preset, its file/process capabilities, and the concrete file/shell tool modules those capabilities use.
+- `lisp/layers/emacs/`: the `emacs-base` layer preset, its Emacs awareness/buffer/elisp capabilities, and the concrete Emacs buffer/elisp tool modules those capabilities use.
+- `lisp/layers/chat/`: the `chat-session` capability actions hosted by chat presentation shells.
+- `lisp/layers/evidence/`: the read-only session evidence retrieval capability and tools.
+- `lisp/shells/chat/`: basic chat presentation buffer, commands, keymap, and harness event rendering.
+- `lisp/adapters/openai/`: profile-configurable OpenAI-like Responses adapter for Codex auth, token-auth gateways, request mapping, and SSE parsing.
+- `lisp/dev/`: interactive development helpers for live reloading local source in Emacs.
 - `test/e-test.el`: ERT smoke tests for the package surface and exposed harness API.
 - `test/e-*-test.el`: focused ERT tests for events, sessions, backend contract, layers, Emacs base, tools, loop, harness behavior, and chat presentation.
 - `Eldev`: Eldev test/build/lint/package tooling configuration.
 
-Expected future mapping should keep these roles separate:
+The source tree should keep architecture visible:
 
 - Harness modules: common runtime substrate, no presentation dependencies, no provider-specific auth, no direct UI side effects.
-- Capability modules: package behavior contracts; depend on harness/layer/tool/context contracts, not shells.
-- Layer modules: package capability ids, defaults, and presets; avoid direct behavior except trivial activation metadata.
+- Layer directories: each layer directory contains the layer preset plus the capabilities and concrete tool modules primarily composed by that layer.
+- Capability modules: package behavior contracts; depend on harness/layer/tool/context contracts, not shells. Do not move a capability to a shared top-level location until a second real layer uses the same semantic contract.
 - Context strategy modules: provider-neutral context assembly and interpretation of context-state outputs.
 - Presentation modules: Emacs UI commands, interaction adapters, and rendering only; host capabilities instead of owning semantic state.
 - Backend adapters: provider-specific auth, request mapping, streaming, and model capability translation.
-- Execution adapters and tools: side effects against Emacs, files, processes, and harness mutation capabilities.
+- Execution adapters and tools: side effects against Emacs, files, processes, and harness mutation capabilities; keep layer-local tool modules next to the capabilities that use them unless reuse proves otherwise.
 - Session storage: durable messages, branches, compaction, summaries, and metadata.
 - Tests: fake backends and fake execution environments for core behavior; adapter tests for concrete side effects.
 
@@ -229,7 +223,7 @@ The agent loop owns turn execution. It accepts backend-ready messages, streams a
 
 The loop depends on generic contracts supplied by the harness. It should not know which presentation shell requested the turn or which provider implements the backend.
 
-The current loop in `lisp/e-loop.el` is backend-neutral. It consumes backend stream items, appends assistant and tool-result messages through callbacks, emits structured events, and can re-query the backend after tool results so function-call flows can settle with an assistant message. It does not accumulate policy for how context is assembled; that belongs in a context-management strategy.
+The current loop in `lisp/core/e-loop.el` is backend-neutral. It consumes backend stream items, appends assistant and tool-result messages through callbacks, emits structured events, and can re-query the backend after tool results so function-call flows can settle with an assistant message. It does not accumulate policy for how context is assembled; that belongs in a context-management strategy.
 
 ### Context Management Strategies
 
@@ -256,7 +250,7 @@ The session store owns durable conversation state. The target model should suppo
 
 The store should persist user, assistant, tool-result, and custom harness messages; track model and thinking-level changes; represent compaction and branch summaries; and expose a current leaf or branch cursor for resume and navigation. Presentation shells may display this state but must not become its source of truth.
 
-The current store in `lisp/e-session.el` supports both in-memory stores and a default persistent store rooted at `(locate-user-emacs-file "e/sessions/")`. Persistent sessions use append-only JSONL files under `sessions/<id>.jsonl` for `session`, `message`, `session-info`, and `messages-cleared` records, plus `index.json` for recent-session completion metadata. The implemented display title policy is explicit manual name, first 25 characters of the first user-message fallback with `...` for longer prompts, then an untitled timestamp. Future context-state artifacts such as canvas revisions should remain separate from the append-only evidence log: logs are evidence, while canvas or summary documents are editable semantic state.
+The current store in `lisp/core/e-session.el` supports both in-memory stores and a default persistent store rooted at `(locate-user-emacs-file "e/sessions/")`. Persistent sessions use append-only JSONL files under `sessions/<id>.jsonl` for `session`, `message`, `session-info`, and `messages-cleared` records, plus `index.json` for recent-session completion metadata. The implemented display title policy is explicit manual name, first 25 characters of the first user-message fallback with `...` for longer prompts, then an untitled timestamp. Future context-state artifacts such as canvas revisions should remain separate from the append-only evidence log: logs are evidence, while canvas or summary documents are editable semantic state.
 
 ### Execution Environment And Tools
 

@@ -703,6 +703,35 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-progress-and-tool-count-order-stays-stable ()
+  "Progress ticks do not reorder the running activity summary."
+  (let ((buffer (e-chat-test--buffer nil "chat-running-status-order")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat--render-event
+           (e-events-make :type 'turn-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 10))
+          (e-chat--render-event
+           (e-events-make :type 'tool-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :payload '(:type tool-call
+                                      :id "call-1"
+                                      :name "read")))
+          (should (string-match-p
+                   (concat (regexp-quote e-chat--assistant-glyph)
+                           " ◐\n\n1 tool call")
+                   (buffer-string)))
+          (e-chat--advance-progress-indicator)
+          (should (string-match-p
+                   (concat (regexp-quote e-chat--assistant-glyph)
+                           " ◓\n\n1 tool call")
+                   (buffer-string))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-final-response-uses-visual-marker-face ()
   "Final assistant output is visually distinguished without a text label."
   (let ((buffer (e-chat-test--buffer nil "chat-final-face")))
