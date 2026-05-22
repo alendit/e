@@ -2326,14 +2326,23 @@ TURN-ID tags the rendered entry for response navigation."
       (ignore-errors
         (recenter -1)))))
 
-(defun e-chat--pop-to-buffer (buffer)
-  "Display BUFFER and restore chat-local editing invariants."
-  (pop-to-buffer buffer)
+(defun e-chat--after-display-buffer (buffer)
+  "Restore chat-local editing invariants after displaying BUFFER."
   (with-current-buffer buffer
     (e-chat--disable-modal-editing)
     (e-chat--disable-completion)
     (e-chat--show-composer))
   buffer)
+
+(defun e-chat--switch-to-buffer (buffer)
+  "Display BUFFER in the selected window and restore chat-local editing invariants."
+  (switch-to-buffer buffer)
+  (e-chat--after-display-buffer buffer))
+
+(defun e-chat--pop-to-buffer (buffer)
+  "Pop to BUFFER and restore chat-local editing invariants."
+  (pop-to-buffer buffer)
+  (e-chat--after-display-buffer buffer))
 
 (defun e-chat--clear ()
   "Clear and initialize the current chat buffer."
@@ -2621,12 +2630,15 @@ reload.  User-facing commands should call `e-chat-new' or `e-chat-resume'."
   (e-chat-new))
 
 ;;;###autoload
-(defun e-chat-new ()
-  "Create and open a new persisted e chat session."
-  (interactive)
+(defun e-chat-new (&optional pop-to-side)
+  "Create and open a new persisted e chat session.
+With prefix argument POP-TO-SIDE, use the pop display path."
+  (interactive "P")
   (let ((buffer (e-chat-open :new-session t)))
     (when (called-interactively-p 'interactive)
-      (e-chat--pop-to-buffer buffer))
+      (if pop-to-side
+          (e-chat--pop-to-buffer buffer)
+        (e-chat--switch-to-buffer buffer)))
     buffer))
 
 (defun e-chat--session-choice-label (session)

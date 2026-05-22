@@ -318,6 +318,58 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-interactive-new-uses-selected-window-by-default ()
+  "Interactive new chat opens in the selected window without a prefix argument."
+  (let* ((backend (e-backend-fake-create :items nil))
+         (harness (e-chat-test--activate-chat-session
+                   (e-harness-create :backend backend)))
+         buffer
+         selected-buffer)
+    (unwind-protect
+        (e-chat-test--with-empty-harness-registry
+          (let ((e-chat-default-harness-id :chat-test)
+                (current-prefix-arg nil))
+            (e-harness-registry-register :chat-test harness)
+            (cl-letf (((symbol-function 'called-interactively-p)
+                       (lambda (_kind) t))
+                      ((symbol-function 'switch-to-buffer)
+                       (lambda (display-buffer &rest _args)
+                         (setq selected-buffer display-buffer)
+                         display-buffer))
+                      ((symbol-function 'pop-to-buffer)
+                       (lambda (&rest _args)
+                         (ert-fail "Default e-chat-new should not use pop-to-buffer"))))
+              (setq buffer (call-interactively #'e-chat-new))
+              (should (eq selected-buffer buffer)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-interactive-new-with-prefix-uses-pop-display ()
+  "Interactive new chat uses the pop display path with a prefix argument."
+  (let* ((backend (e-backend-fake-create :items nil))
+         (harness (e-chat-test--activate-chat-session
+                   (e-harness-create :backend backend)))
+         buffer
+         popped-buffer)
+    (unwind-protect
+        (e-chat-test--with-empty-harness-registry
+          (let ((e-chat-default-harness-id :chat-test)
+                (current-prefix-arg '(4)))
+            (e-harness-registry-register :chat-test harness)
+            (cl-letf (((symbol-function 'called-interactively-p)
+                       (lambda (_kind) t))
+                      ((symbol-function 'switch-to-buffer)
+                       (lambda (&rest _args)
+                         (ert-fail "Prefix e-chat-new should not use switch-to-buffer")))
+                      ((symbol-function 'pop-to-buffer)
+                       (lambda (display-buffer &rest _args)
+                         (setq popped-buffer display-buffer)
+                         display-buffer)))
+              (setq buffer (call-interactively #'e-chat-new))
+              (should (eq popped-buffer buffer)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-interactive-new-neutralizes-evil-after-display ()
   "Interactive display does not leave the chat buffer in Evil normal state."
   (let* ((backend (e-backend-fake-create :items nil))
@@ -337,7 +389,7 @@
                                                (< argument 0))))
                          (unless evil-local-mode
                            (setq-local evil-state nil))))
-                      ((symbol-function 'pop-to-buffer)
+                      ((symbol-function 'switch-to-buffer)
                        (lambda (display-buffer &rest _args)
                          (setq buffer display-buffer)
                          (with-current-buffer display-buffer
