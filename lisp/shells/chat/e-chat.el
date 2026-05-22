@@ -43,6 +43,9 @@
   :type 'string
   :group 'e-chat)
 
+(defconst e-chat--resume-preview-buffer-name "*e-chat-resume-preview*"
+  "Buffer name for temporary resume candidate previews.")
+
 (defcustom e-chat-details-buffer-name "*e-chat-details*"
   "Buffer name for read-only focused block details."
   :type 'string
@@ -2611,6 +2614,90 @@ reload.  User-facing commands should call `e-chat-new' or `e-chat-resume'."
           (plist-get session :title)
           (plist-get session :id)))
 
+(defun e-chat--session-for-label (sessions labels label)
+  "Return the session from SESSIONS corresponding to LABELS LABEL."
+  (when-let ((index (cl-position label labels :test #'equal)))
+    (nth index sessions)))
+
+(defun e-chat--resume-preview-origin-window ()
+  "Return the window that should display resume previews."
+  (or (and (minibufferp)
+           (window-live-p (minibuffer-selected-window))
+           (minibuffer-selected-window))
+      (selected-window)))
+
+(defun e-chat--render-resume-preview (harness session)
+  "Render SESSION from HARNESS into the reusable resume preview buffer."
+  (let ((buffer (get-buffer-create e-chat--resume-preview-buffer-name)))
+    (with-current-buffer buffer
+      (let ((inhibit-read-only t))
+        (erase-buffer))
+      (e-chat-mode)
+      (e-chat--disable-modal-editing)
+      (e-chat--disable-completion)
+      (setq-local e-chat-harness harness)
+      (setq-local e-chat-session-id (plist-get session :id))
+      (setq-local cursor-type nil)
+      (e-chat--clear)
+      (e-chat--render-session)
+      (setq buffer-read-only t)
+      (goto-char (point-min)))
+    buffer))
+
+(defun e-chat--resume-preview-state (harness sessions labels)
+  "Return Consult preview state for HARNESS resume SESSIONS and LABELS."
+  (let (origin-window origin-buffer preview-buffer)
+    (cl-labels
+        ((ensure-origin ()
+           (unless (window-live-p origin-window)
+             (setq origin-window (e-chat--resume-preview-origin-window))
+             (setq origin-buffer (window-buffer origin-window))))
+         (restore-origin (&optional kill-preview)
+           (when (and (window-live-p origin-window)
+                      (buffer-live-p origin-buffer))
+             (with-selected-window origin-window
+               (switch-to-buffer origin-buffer 'norecord)))
+           (when (and kill-preview
+                      (buffer-live-p preview-buffer))
+             (kill-buffer preview-buffer)
+             (setq preview-buffer nil))))
+      (lambda (action candidate)
+        (pcase action
+          ('setup
+           (ensure-origin))
+          ('preview
+           (ensure-origin)
+           (if-let ((session (e-chat--session-for-label
+                              sessions labels candidate)))
+               (when (window-live-p origin-window)
+                 (setq preview-buffer
+                       (e-chat--render-resume-preview harness session))
+                 (with-selected-window origin-window
+                   (switch-to-buffer preview-buffer 'norecord)))
+             (restore-origin)))
+          ((or 'exit 'return)
+           (restore-origin t)))))))
+
+(defun e-chat--consult-read-available-p ()
+  "Return non-nil when Consult's previewing reader is available."
+  (and (require 'consult nil t)
+       (fboundp 'consult--read)))
+
+(defun e-chat--read-session-choice (harness sessions &optional labels)
+  "Read and return a resume choice for SESSIONS in HARNESS."
+  (let ((labels (or labels
+                    (mapcar #'e-chat--session-choice-label sessions))))
+    (if (e-chat--consult-read-available-p)
+        (funcall (symbol-function 'consult--read)
+                 labels
+                 :prompt "Resume e session: "
+                 :require-match t
+                 :sort nil
+                 :category 'e-chat-session
+                 :state (e-chat--resume-preview-state
+                         harness sessions labels))
+      (completing-read "Resume e session: " labels nil t))))
+
 (defun e-chat--latest-session-id (harness)
   "Return the latest session id in HARNESS, creating one when none exists."
   (or (plist-get (car (e-harness-session-list harness)) :id)
@@ -2661,7 +2748,7 @@ When DISPLAY is non-nil, show the target chat buffer."
     (unless sessions
       (user-error "No e chat sessions to resume"))
     (let* ((labels (mapcar #'e-chat--session-choice-label sessions))
-           (selected (completing-read "Resume e session: " labels nil t))
+           (selected (e-chat--read-session-choice harness sessions labels))
            (index (cl-position selected labels :test #'equal))
            (session (nth index sessions))
            (buffer (e-chat-open :harness harness

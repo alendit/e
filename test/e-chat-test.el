@@ -1751,6 +1751,64 @@
       (e-chat-test--kill-chat-buffers)
       (delete-directory directory t))))
 
+(ert-deftest e-chat-test-resume-preview-state-renders-selected-session ()
+  "Resume completion preview renders the highlighted session in a preview buffer."
+  (let* ((store (e-session-store-create))
+         (backend (e-backend-fake-create :items nil))
+         (harness (e-chat-test--activate-chat-session
+                   (e-harness-create :backend backend :sessions store)))
+         (origin (get-buffer-create "chat-resume-preview-origin")))
+    (unwind-protect
+        (progn
+          (e-session-create store :id "preview-me")
+          (e-session-append-message
+           store "preview-me" '(:id "msg-1" :role user :content "preview hello"))
+          (let* ((sessions (e-harness-session-list harness))
+                 (labels (mapcar #'e-chat--session-choice-label sessions))
+                 (state (e-chat--resume-preview-state harness sessions labels)))
+            (switch-to-buffer origin)
+            (funcall state 'preview (car labels))
+            (let ((preview (get-buffer e-chat--resume-preview-buffer-name)))
+              (should preview)
+              (should (eq (window-buffer (selected-window)) preview))
+              (with-current-buffer preview
+                (should (equal e-chat-session-id "preview-me"))
+                (should (string-match-p "preview hello" (buffer-string)))))
+            (funcall state 'exit nil)
+            (should (eq (window-buffer (selected-window)) origin))
+            (should-not (get-buffer e-chat--resume-preview-buffer-name))))
+      (e-chat-test--kill-chat-buffers)
+      (when (buffer-live-p origin)
+        (kill-buffer origin)))))
+
+(ert-deftest e-chat-test-resume-reader-uses-consult-preview-when-available ()
+  "Resume selection uses Consult preview state when Consult is available."
+  (let* ((store (e-session-store-create))
+         (backend (e-backend-fake-create :items nil))
+         (harness (e-chat-test--activate-chat-session
+                   (e-harness-create :backend backend :sessions store)))
+         selected-state selected-sort)
+    (e-session-create store :id "resume-me")
+    (e-session-append-message
+     store "resume-me" '(:id "msg-1" :role user :content "saved hello"))
+    (let ((original-require (symbol-function 'require)))
+      (cl-letf (((symbol-function 'require)
+                 (lambda (feature &optional filename noerror)
+                   (if (eq feature 'consult)
+                       t
+                     (funcall original-require feature filename noerror))))
+                ((symbol-function 'consult--read)
+                 (lambda (collection &rest options)
+                   (setq selected-state (plist-get options :state))
+                   (setq selected-sort (plist-get options :sort))
+                   (car collection))))
+        (let* ((sessions (e-harness-session-list harness))
+               (labels (mapcar #'e-chat--session-choice-label sessions)))
+          (should (equal (e-chat--read-session-choice harness sessions)
+                         (car labels)))
+          (should (functionp selected-state))
+          (should (eq selected-sort nil)))))))
+
 (ert-deftest e-chat-test-add-context-to-latest-targets-most-recent-session ()
   "Latest context insertion opens the most recently updated chat session."
   (let* ((store (e-session-store-create))

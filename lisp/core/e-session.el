@@ -112,6 +112,11 @@
                  (e-session--session-file store (plist-get session :id)))))
   session)
 
+(defun e-session--last-message-at (session)
+  "Return SESSION's latest message timestamp, when it has messages."
+  (when-let ((message (car (last (plist-get session :messages)))))
+    (plist-get message :created-at)))
+
 (defun e-session--session-index-entry (store session)
   "Return public index metadata for SESSION in STORE."
   (e-session--refresh-derived-fields store session)
@@ -123,6 +128,7 @@
         :created-at (plist-get session :created-at)
         :updated-at (plist-get session :updated-at)
         :updated-seq (plist-get session :updated-seq)
+        :last-message-at (e-session--last-message-at session)
         :file (plist-get session :file)))
 
 (defun e-session--normalize-turn-options (options)
@@ -539,15 +545,19 @@ BRANCH-ID, RANGE, and METADATA describe the compacted source when available."
         (format "Untitled %s" session-id))))
 
 (defun e-session-list (store)
-  "Return STORE sessions sorted by most recent update."
+  "Return STORE sessions sorted by most recent message."
   (let (sessions)
     (maphash (lambda (_id session)
                (push (e-session--session-index-entry store session) sessions))
              (e-session-store-sessions store))
     (sort sessions
           (lambda (left right)
-            (let ((left-time (or (plist-get left :updated-at) ""))
-                  (right-time (or (plist-get right :updated-at) ""))
+            (let ((left-time (or (plist-get left :last-message-at)
+                                 (plist-get left :created-at)
+                                 ""))
+                  (right-time (or (plist-get right :last-message-at)
+                                  (plist-get right :created-at)
+                                  ""))
                   (left-seq (or (plist-get left :updated-seq) 0))
                   (right-seq (or (plist-get right :updated-seq) 0)))
               (or (string> left-time right-time)

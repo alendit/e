@@ -283,6 +283,42 @@
                      (plist-get (car sessions) :file)))))
       (delete-directory directory t))))
 
+(ert-deftest e-session-test-list-sessions-sorted-by-last-message ()
+  "Session list order follows last message time, not metadata touches."
+  (let* ((directory (make-temp-file "e-session-" t))
+         (store (e-session-persistent-store-create directory))
+         (timestamps '("2026-05-22T10:00:00Z"
+                       "2026-05-22T10:00:01Z"
+                       "2026-05-22T10:00:02Z"
+                       "2026-05-22T10:00:03Z"
+                       "2026-05-22T10:00:04Z")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'e-session--timestamp)
+                   (lambda (&optional _time)
+                     (prog1 (car timestamps)
+                       (setq timestamps (cdr timestamps))))))
+          (e-session-create store :id "older")
+          (e-session-append-message
+           store "older" '(:id "old-msg" :role user :content "older prompt"))
+          (e-session-create store :id "newer")
+          (e-session-append-message
+           store "newer" '(:id "new-msg" :role user :content "newer prompt"))
+          (e-session-rename store "older" "Touched older title")
+          (let ((ids (mapcar (lambda (session) (plist-get session :id))
+                             (e-session-list store))))
+            (should (equal ids '("newer" "older"))))
+          (let* ((index-json
+                  (with-temp-buffer
+                    (insert-file-contents
+                     (expand-file-name "index.json" directory))
+                    (buffer-string)))
+                 (newer-position (string-match "\"newer\"" index-json))
+                 (older-position (string-match "\"older\"" index-json)))
+            (should newer-position)
+            (should older-position)
+            (should (< newer-position older-position))))
+      (delete-directory directory t))))
+
 (provide 'e-session-test)
 
 ;;; e-session-test.el ends here
