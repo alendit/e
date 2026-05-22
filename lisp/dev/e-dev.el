@@ -30,7 +30,17 @@
   :group 'e-dev)
 
 (defconst e-dev--obsolete-functions
-  nil
+  '(e-resource-handler-create
+    e-resource-handler-p
+    e-resource-handler-scheme
+    e-resource-handler-read
+    e-resource-handler-write
+    e-resource-handler-edit
+    e-resource-handler-list
+    e-capability-resource-handlers
+    e-capabilities-register-resource-handlers
+    e-emacs-tools-register-buffer-read
+    e-emacs-tools-register-buffer-edit)
   "Functions removed from the public surface that reload should unbind.")
 
 (defconst e-dev--obsolete-variables
@@ -71,6 +81,8 @@
                   "lisp/core/e-session.el"
                   "lisp/core/e-context.el"
                   "lisp/core/e-tools.el"
+                  "lisp/core/e-operations.el"
+                  "lisp/core/e-resources.el"
                   "lisp/core/e-capabilities.el"
                   "lisp/core/e-startup.el"
                   "lisp/layers/e-layers.el"

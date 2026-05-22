@@ -93,20 +93,22 @@ permissions or confirmation layer in MVP.
 
 Tools:
 
+- `read`: read URI-addressed resources such as `buffer://<buffer-name>` and
+  `file://<path>` with optional structured ranges.
+- `write`: replace URI-addressed resource contents where the active capability
+  supports writes.
+- `edit`: apply exact `oldText`/`newText` replacements to URI-addressed
+  resources where the active capability supports edits.
 - `list_buffers`: return buffer names, modes, file-backed status, modified
   status, and visibility.
-- `read_buffer`: return full contents or a requested range from a named buffer.
-- `write_buffer`: replace a named buffer's live contents; do not save.
-- `edit_buffer`: exact old-text/new-text replacement in a named live buffer; do
-  not save.
 - `save_buffer`: persist a file-backed buffer using its existing
   `buffer-file-name`; fail clearly for non-file buffers.
 - `run_elisp`: evaluate explicit elisp in Emacs and return printed result or
   surfaced error.
 
-`write_buffer` and `edit_buffer` modify live Emacs buffers only. Persistence is
-a separate `save_buffer` action. Autosave is not treated as a persistence
-mechanism.
+`write` and `edit` against `buffer://` resources modify live Emacs buffers only.
+Persistence is a separate `save_buffer` action. Autosave is not treated as a
+persistence mechanism.
 
 ## Chat Buffer
 
@@ -132,9 +134,9 @@ Required tests:
   coupling.
 - Visible-buffer context includes visible buffers and excludes hidden buffers by
   default.
-- `write_buffer` and `edit_buffer` mutate temporary buffers without saving.
+- `write` and `edit` mutate temporary `buffer://` resources without saving.
 - `save_buffer` saves file-backed buffers and errors for non-file buffers.
-- `edit_buffer` rejects missing text, duplicate matches, and no-op replacements.
+- `edit` rejects missing text, duplicate matches, and no-op replacements.
 - `run_elisp` returns values and surfaces evaluation errors.
 - Chat UI smoke test with fake backend opens a chat buffer, submits a prompt,
   and renders the assistant response.

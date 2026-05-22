@@ -151,7 +151,7 @@ The harness is the source of truth for runtime ordering and durable records, not
 
 ### Capabilities And Layers
 
-Capabilities are the behavior units. A capability can contribute instructions, prompt fragments, context providers, model-facing tool registration, shell-facing actions, schemas, and side-effect policy for one named behavior. These contributions are registered into explicit harness registries; the harness should not treat a capability as an opaque object that handles every concern through one callback.
+Capabilities are the behavior units. A capability can contribute instructions, prompt fragments, context providers, model-facing tool registration, resource methods, shell-facing actions, schemas, and side-effect policy for one named behavior. These contributions are registered into explicit harness registries; the harness should not treat a capability as an opaque object that handles every concern through one callback.
 
 Layers are packaging units. A layer names a coherent capability set and optional defaults so users, shells, or profiles can activate useful behavior without manually selecting every capability. A layer may remain a convenience preset such as `base` or `emacs`, but the behavior contract should still live in capabilities such as `file-inspection`, `buffer-read`, or `elisp-eval`.
 
@@ -161,6 +161,7 @@ Capability contribution types should stay separate even when they ship together:
 
 - context providers: read harness/session records or external state and produce backend-neutral context messages
 - tool providers: register model-facing tools with explicit argument/result shapes
+- resource methods: implement operation contracts such as `read`, `write`, and `edit` for URI schemes such as `file://` and `buffer://`
 - prompt fragments: add model guidance that belongs with a capability
 - shell actions: expose operator-facing operations that shells can host
 - permission and audit policy: describe expected approval and evidence records for side-effecting operations
@@ -173,12 +174,14 @@ flowchart TD
     Layer["Layer package or preset"] --> Capability["Capability ids and defaults"]
     Capability --> ContextProvider["Context providers"]
     Capability --> ToolProvider["Tool providers"]
+    Capability --> ResourceMethod["Resource methods"]
     Capability --> PromptFragment["Prompt fragments"]
     Capability --> ShellAction["Shell actions"]
     Capability --> Policy["Permission and audit policy"]
 
     ContextProvider --> ContextRegistry["Context provider registry"]
     ToolProvider --> ToolRegistry["Tool registry"]
+    ResourceMethod --> ResourceRegistry["Resource registry"]
     PromptFragment --> PromptRegistry["Prompt/context prefix assembly"]
     ShellAction --> ShellHost["Presentation shell host"]
     Policy --> ToolExecution["Tool execution boundary"]
@@ -188,6 +191,9 @@ flowchart TD
     ContextRegistry --> ContextStrategy["Context strategy"]
     PromptRegistry --> ContextStrategy
     ToolRegistry --> AgentLoop["Agent loop"]
+    OperationContract["Operation contracts"] --> OperationTools["Resource operation tools"]
+    ResourceRegistry --> OperationTools
+    OperationTools --> ToolRegistry
     LayerActivation --> Harness["Core harness"]
     CapabilityActivation --> Harness
 ```
@@ -197,8 +203,8 @@ The `base` layer is a workspace-oriented preset over smaller capabilities: `base
 The `emacs-base` layer is also a preset rather than an atomic behavior unit. Its implementation composes smaller capabilities:
 
 - `emacs-awareness`: Emacs-specific instructions and visible-buffer metadata/context
-- `buffer-read`: buffer listing and range reads
-- `buffer-edit`: buffer writes, edits, and saves
+- `buffer-read`: buffer listing and read-only `buffer://` resource semantics
+- `buffer-edit`: writable `buffer://` resource semantics and explicit buffer saves
 - `elisp-eval`: explicit elisp evaluation
 - `selection-context`: explicit context entries for selected regions or buffer ranges
 
@@ -254,13 +260,15 @@ The store should persist user, assistant, tool-result, and custom harness messag
 
 The current store in `lisp/core/e-session.el` supports both in-memory stores and a default persistent store rooted at `(locate-user-emacs-file "e/sessions/")`. Persistent sessions use append-only JSONL files under `sessions/<id>.jsonl` for `session`, `message`, `session-info`, and `messages-cleared` records, plus `index.json` for recent-session completion metadata. The implemented display title policy is explicit manual name, first 25 characters of the first user-message fallback with `...` for longer prompts, then an untitled timestamp. Future context-state artifacts such as canvas revisions should remain separate from the append-only evidence log: logs are evidence, while canvas or summary documents are editable semantic state.
 
-### Execution Environment And Tools
+### Execution Environment, Resources, And Tools
 
 The execution environment is the shell boundary for Emacs side effects. It should expose narrow capabilities for reading buffers, editing buffers, writing files, running processes, evaluating elisp, and modifying harness-owned configuration or code when explicit tools allow it.
 
-Tools depend on the execution environment. The core harness depends only on tool contracts, backend-neutral tool definitions, and structured tool results. Permission checks, confirmation, observability, and audit records should stay close to concrete side effects.
+Resources are the stable model-facing address space for inspectable and mutable state. Operation contracts define shared model-facing tools such as `read`, `write`, and `edit`; capabilities contribute resource methods that implement those contracts for URI schemes. The harness exposes an operation tool only when the active capabilities register at least one method for that operation. `file-inspection` contributes read-only `file://` methods, `file-mutation` contributes writable `file://` methods, `buffer-read` contributes read-only `buffer://` methods, and `buffer-edit` contributes writable `buffer://` methods. Range addressing is structured tool input rather than URI syntax, so a model calls `read` with a URI plus a range object such as `(:unit "line" :start 10 :end 20)` or `(:unit "offset" :start 2001 :limit 2000)`.
 
-The current concrete tool surface is the MVP `emacs-base` set: `list_buffers`, `read_buffer`, `write_buffer`, `edit_buffer`, `save_buffer`, and `run_elisp`. Buffer write/edit tools mutate live buffers without saving; `save_buffer` is the explicit persistence action for file-backed buffers. Process execution, permission/confirmation controls, and harness mutation remain deferred.
+Tools depend on the execution environment. The core harness depends only on tool contracts, backend-neutral tool definitions, resource registry dispatch, and structured tool results. Permission checks, confirmation, observability, and audit records should stay close to concrete side effects.
+
+The current concrete model-facing tool surface is a stable resource operation family, `read`, `write`, and `edit`, plus capability-specific operational tools such as `list_buffers`, `save_buffer`, `run_elisp`, and `bash`. Buffer write/edit resources mutate live buffers without saving; `save_buffer` is the explicit persistence action for file-backed buffers. Process execution, permission/confirmation controls, and harness mutation remain separate from the resource abstraction.
 
 In the capability vision, tools are not the same thing as operator commands. A model-facing tool and a shell-facing command may converge on the same underlying capability operation, but they keep separate public shapes. Tools are compact, explicit, schema-driven model affordances. Shell commands are interactive operator affordances that can read current Emacs interaction facts before invoking a shared operation or storing a harness record.
 
@@ -362,12 +370,13 @@ The current public package surface is:
 - `e-harness-create`, `e-harness-create-session`, `e-harness-subscribe`, `e-harness-activate-layer`, `e-harness-prompt`, `e-harness-prompt-async`, `e-harness-wait`, `e-harness-follow-up`, `e-harness-abort`, `e-harness-reset`, `e-harness-state`, `e-harness-messages`, `e-harness-session-title`, `e-harness-session-name`, `e-harness-session-list`, `e-harness-session-activity-events`, and `e-harness-turn-options`: core harness API and session projection surface.
 - `e-harness-registry-register-factory`, `e-harness-registry-register`, `e-harness-registry-get`, `e-harness-registry-get-or-create`, `e-harness-registry-list`, and `e-harness-registry-clear-instance`: named live harness lookup and lazy factory registration.
 - `e-default-harnesses-register`, `e-default-chat-harness-create`, and `e-default-session-store`: default startup harness spec registration and default chat harness assembly for the `:chat-default` path.
+- `e-operation-create`, `e-operation-read`, `e-operation-write`, `e-operation-edit`, `e-resources-registry-create`, `e-resource-method-create`, `e-resources-register`, `e-resources-call`, `e-resources-read`, `e-resources-write`, `e-resources-edit`, `e-resources-operations`, and `e-resources-methods-for-operation`: core URI resource operation registry and method surface.
 - `e-openai-create-harness`: create a harness configured for `e-openai-default-provider` or an explicit OpenAI-like provider profile.
 - `e-openai-backend-create`: create the concrete OpenAI-like Responses backend adapter.
 - `e-openai-codex-create-harness`: compatibility wrapper for ChatGPT-backed Codex access.
 - `e-openai-codex-backend-create`: compatibility wrapper for the concrete OpenAI/Codex backend adapter.
 - `e-emacs-base-layer-create`: create the default Emacs layer.
-- `e-emacs-tools-register-buffer-read`, `e-emacs-tools-register-buffer-edit`, and `e-emacs-tools-register-elisp-eval`: register focused concrete Emacs tool groups used by capabilities.
+- `e-emacs-tools-register-buffer-read-resource`, `e-emacs-tools-register-buffer-resource`, and `e-emacs-tools-register-elisp-eval`: register focused concrete Emacs resource and tool groups used by capabilities.
 - `e-shell-create`, `e-shell-command-create`, `e-shell-register`, `e-shell-get`, `e-shell-list`, and `e-shell-command-by-id`: generic shell manifest and discovery API.
 - `e-chat-shell`: return the registered chat presentation shell manifest.
 
@@ -377,7 +386,7 @@ Presentation commands should ultimately call capability-facing operations that u
 
 ## Extension Points
 
-Established extension points now exist for backend adapters, OpenAI-like provider profiles, context-management strategies, context providers, harness-owned layers, pure tool definitions, concrete Emacs tool registration, and presentation shells. Target extension points are LLM backend adapters, context-management strategies, capability contribution bundles, layer presets, tool definitions, execution environment adapters, resource providers, session repositories, and presentation shells.
+Established extension points now exist for backend adapters, OpenAI-like provider profiles, context-management strategies, context providers, harness-owned layers, pure tool definitions, URI resource methods, operation contracts, concrete Emacs tool registration, and presentation shells. Target extension points are LLM backend adapters, context-management strategies, capability contribution bundles, layer presets, tool definitions, execution environment adapters, resource providers, session repositories, and presentation shells.
 
 These are architectural seams because they keep the harness substrate separate from volatile UI, provider, context, and side-effect details.
 
@@ -385,7 +394,7 @@ These are architectural seams because they keep the harness substrate separate f
 
 `test/e-test.el` contains ERT smoke tests for loading the package, exposing `e-version`, exposing the interactive status/chat/reload commands, and exposing the harness API. Eldev is the project test/build/lint/package runner.
 
-The current implementation makes the core harness testable with fake backends, injected OpenAI/Codex transports, registered default harness factories, pure fake tools, concrete Emacs buffer/elisp tools, layer/context-provider fixtures, chat presentation fixtures, and in-memory or persisted sessions. Current tests prove event shape, session writes and replay, backend independence, context construction, layer activation, visible-buffer context, OpenAI/Codex request/stream mapping, default harness registration and assembly, tool-result handling, buffer mutation/save behavior, elisp evaluation, tool follow-up, async settlement, cancellation, lifecycle operations, chat rendering, resume and rename behavior, and package exposure. Future capability tests should prove each capability independently of the layer presets that activate it.
+The current implementation makes the core harness testable with fake backends, injected OpenAI/Codex transports, registered default harness factories, pure fake tools, concrete file and Emacs resource methods, concrete Emacs elisp tools, layer/context-provider fixtures, chat presentation fixtures, and in-memory or persisted sessions. Current tests prove event shape, session writes and replay, backend independence, context construction, layer activation, visible-buffer context, operation-method resource dispatch, file and buffer read/write/edit semantics, OpenAI/Codex request/stream mapping, default harness registration and assembly, tool-result handling, buffer save behavior, elisp evaluation, tool follow-up, async settlement, cancellation, lifecycle operations, chat rendering, resume and rename behavior, and package exposure. Future capability tests should prove each capability independently of the layer presets that activate it.
 
 Adapter tests should separately verify Emacs side effects, provider auth, provider streaming behavior, and context strategy behavior. Presentation tests should verify command wiring and rendering against harness events, not duplicate harness behavior.
 

@@ -17,6 +17,8 @@
 (require 'e-events)
 (require 'e-layers)
 (require 'e-loop)
+(require 'e-operations)
+(require 'e-resources)
 (require 'e-session)
 (require 'e-tools)
 (require 'subr-x)
@@ -40,7 +42,9 @@
 
 (defun e-harness--clear-derived-accessor-metadata ()
   "Clear stale struct accessor metadata for derived harness views."
-  (dolist (symbol '(e-harness-active-capabilities e-harness-tools))
+  (dolist (symbol '(e-harness-active-capabilities
+                    e-harness-resources
+                    e-harness-tools))
     (put symbol 'compiler-macro nil)
     (put symbol 'side-effect-free nil)
     (put symbol 'gv-expander nil)))
@@ -86,9 +90,73 @@ configure the provider-neutral runtime."
 (defun e-harness-tools (harness)
   "Return a fresh tool registry view over HARNESS active layers."
   (let ((registry (e-tools-registry-create)))
+    (e-harness--register-resource-operation-tools registry (e-harness-resources harness))
     (dolist (capability (e-harness-active-capabilities harness))
       (e-capabilities-register-tools capability registry))
     registry))
+
+(defun e-harness-resources (harness)
+  "Return a fresh resource registry view over HARNESS active layers."
+  (let ((registry (e-resources-registry-create)))
+    (dolist (capability (e-harness-active-capabilities harness))
+      (e-capabilities-register-resource-methods capability registry))
+    registry))
+
+(defun e-harness--resource-method-description (method)
+  "Return model-facing description fragment for METHOD."
+  (let ((patterns (or (e-resource-method-uri-patterns method)
+                      (list (format "%s://<resource>"
+                                    (e-resource-method-scheme method)))))
+        (description (e-resource-method-description method))
+        (range-modes (e-resource-method-range-modes method)))
+    (string-join
+     (delq nil
+           (list
+            (format "- %s" (string-join patterns ", "))
+            description
+            (when range-modes
+              (format "Range units: %s." (string-join range-modes ", ")))))
+     " ")))
+
+(defun e-harness--resource-operation-description (resources operation)
+  "Return model-facing description for OPERATION over active RESOURCES."
+  (let ((methods (e-resources-methods-for-operation resources operation)))
+    (string-join
+     (list (e-operation-description operation)
+           ""
+           "Active URI schemes:"
+           (mapconcat #'e-harness--resource-method-description methods "\n"))
+     "\n")))
+
+(defun e-harness--register-resource-operation-tool (registry resources operation)
+  "Register OPERATION as a model-facing tool backed by RESOURCES."
+  (let ((dispatch (e-operation-dispatch operation)))
+    (when (functionp dispatch)
+      (e-tools-register
+       registry
+       :name (e-operation-tool-name operation)
+       :description (e-harness--resource-operation-description resources operation)
+       :parameters (e-operation-parameters operation)
+       :handler
+       (lambda (arguments)
+         (funcall dispatch
+                  (lambda (uri &rest operation-arguments)
+                    (apply #'e-resources-call
+                           resources
+                           operation
+                           uri
+                           operation-arguments))
+                  arguments))))))
+
+(defun e-harness--register-resource-operation-tools (registry resources)
+  "Register active resource operation tools in REGISTRY backed by RESOURCES."
+  (dolist (operation (e-resources-operations resources))
+    (when (e-operation-p operation)
+      (e-harness--register-resource-operation-tool registry resources operation))))
+
+(defun e-harness--register-resource-tools (registry resources)
+  "Compatibility wrapper for registering resource operation tools."
+  (e-harness--register-resource-operation-tools registry resources))
 
 (defun e-harness-activate-capability (harness capability)
   "Activate CAPABILITY in HARNESS as an anonymous capability layer."

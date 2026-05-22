@@ -33,8 +33,9 @@
     (e-capability-create
      :id 'file-inspection
      :name "File Inspection"
-     :tools (list (lambda (registry)
-                    (e-base-tools-register-read registry root))))))
+     :resource-methods (list (lambda (registry)
+                               (e-base-tools-register-file-read-resource
+                                registry root))))))
 
 (defun e-file-mutation-capability-create (&optional directory)
   "Create a file mutation capability rooted at DIRECTORY."
@@ -42,9 +43,9 @@
     (e-capability-create
      :id 'file-mutation
      :name "File Mutation"
-     :tools (list (lambda (registry)
-                    (e-base-tools-register-write registry root)
-                    (e-base-tools-register-edit registry root))))))
+     :resource-methods (list (lambda (registry)
+                               (e-base-tools-register-file-resource
+                                registry root))))))
 
 (defun e-shell-process-capability-create (&optional directory)
   "Create a shell process capability rooted at DIRECTORY."

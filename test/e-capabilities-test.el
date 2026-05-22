@@ -14,6 +14,8 @@
 (require 'ert)
 (require 'e)
 (require 'e-capabilities)
+(require 'e-operations)
+(require 'e-resources)
 
 (ert-deftest e-capabilities-test-create-capability ()
   "A capability carries independent contribution types."
@@ -23,12 +25,14 @@
           :name "Buffer Read"
           :instructions "Read buffers."
           :tools (list #'ignore)
+          :resource-methods (list #'ignore)
           :context-providers nil
           :actions '(:read-buffer ignore))))
     (should (eq (e-capability-id capability) 'buffer-read))
     (should (equal (e-capability-name capability) "Buffer Read"))
     (should (equal (e-capability-instructions capability) "Read buffers."))
     (should (= (length (e-capability-tools capability)) 1))
+    (should (= (length (e-capability-resource-methods capability)) 1))
     (should (plist-member (e-capability-actions capability) :read-buffer))))
 
 (ert-deftest e-capabilities-test-register-tools ()
@@ -42,6 +46,24 @@
                      (setq called actual-registry))))
      registry)
     (should (eq called registry))))
+
+(ert-deftest e-capabilities-test-register-resource-methods ()
+  "Capability resource method providers register against the given registry."
+  (let ((registry (e-resources-registry-create)))
+    (e-capabilities-register-resource-methods
+     (e-capability-create
+      :id 'resources
+      :resource-methods
+      (list (lambda (actual-registry)
+              (e-resources-register
+               actual-registry
+               (e-resource-method-create
+                :scheme "cap"
+                :operation e-operation-read
+                :handler (lambda (_uri _range) "resource"))))))
+     registry)
+    (should (equal (e-resources-read registry "cap://value" nil)
+                   "resource"))))
 
 (ert-deftest e-capabilities-test-context-messages ()
   "Context messages include instructions before provider messages."

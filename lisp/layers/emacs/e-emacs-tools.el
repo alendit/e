@@ -14,6 +14,8 @@
 
 (require 'cl-lib)
 (require 'subr-x)
+(require 'e-operations)
+(require 'e-resources)
 (require 'e-tools)
 
 (define-error 'e-emacs-tools-buffer-missing "Emacs buffer is missing")
@@ -80,6 +82,57 @@ When VISIBLE-ONLY is non-nil, include only buffers visible in windows."
             :exclusive-end exclusive-end
             :reported-end (or requested-end (1- exclusive-end))))))
 
+(defun e-emacs-tools--range-positive-number (range key)
+  "Return optional positive integer KEY from RANGE."
+  (let ((value (plist-get range key)))
+    (when value
+      (unless (and (integerp value) (> value 0))
+        (signal 'wrong-type-argument (list 'positive-integer-p key)))
+      value)))
+
+(defun e-emacs-tools--line-range (range)
+  "Return character bounds for line-based RANGE in the current buffer."
+  (let ((start-line (e-emacs-tools--range-positive-number range :start))
+        (end-line (e-emacs-tools--range-positive-number range :end)))
+    (unless start-line
+      (signal 'args-out-of-range (list :start nil)))
+    (when (and end-line (< end-line start-line))
+      (signal 'args-out-of-range (list start-line end-line)))
+    (save-excursion
+      (goto-char (point-min))
+      (when (> (forward-line (1- start-line)) 0)
+        (signal 'args-out-of-range (list start-line end-line)))
+      (let ((start (point)))
+        (if end-line
+            (progn
+              (goto-char (point-min))
+              (when (> (forward-line (1- end-line)) 0)
+                (signal 'args-out-of-range (list start-line end-line)))
+              (list :start start
+                    :exclusive-end (min (point-max) (1+ (line-end-position)))
+                    :reported-end end-line))
+          (list :start start
+                :exclusive-end (point-max)
+                :reported-end (1- (point-max))))))))
+
+(defun e-emacs-tools--resource-read-range (range)
+  "Return validated character bounds for structured resource RANGE."
+  (if (null range)
+      (e-emacs-tools--read-range nil)
+    (pcase (plist-get range :unit)
+      ((or "offset" "char")
+       (let* ((start (or (e-emacs-tools--range-positive-number range :start) 1))
+              (limit (e-emacs-tools--range-positive-number range :limit))
+              (end (or (plist-get range :end)
+                       (and limit (1- (+ start limit))))))
+         (e-emacs-tools--read-range (list :start start :end end))))
+      ("line"
+       (e-emacs-tools--line-range range))
+      (_
+       (signal 'args-out-of-range
+               (list (format "Unsupported buffer range unit: %s"
+                             (plist-get range :unit))))))))
+
 (defun e-emacs-tools--replacement-count (old-text)
   "Return match positions for OLD-TEXT in current buffer."
   (let ((matches nil))
@@ -88,6 +141,142 @@ When VISIBLE-ONLY is non-nil, include only buffers visible in windows."
       (while (search-forward old-text nil t)
         (push (cons (match-beginning 0) (match-end 0)) matches)))
     (nreverse matches)))
+
+(defun e-emacs-tools--edit-field (edit key)
+  "Return string KEY from EDIT."
+  (let ((value (plist-get edit key)))
+    (unless (stringp value)
+      (signal 'wrong-type-argument (list 'stringp key)))
+    value))
+
+(defun e-emacs-tools--normalize-edits (edits)
+  "Return normalized resource EDITS for exact buffer replacement."
+  (unless (and (listp edits) edits)
+    (signal 'e-emacs-tools-edit-invalid
+            '("edits must contain at least one replacement")))
+  (cl-loop for edit in edits
+           collect (let ((old-text (e-emacs-tools--edit-field edit :oldText))
+                         (new-text (e-emacs-tools--edit-field edit :newText)))
+                     (when (string-empty-p old-text)
+                       (signal 'e-emacs-tools-edit-invalid
+                               '("oldText must not be empty")))
+                     (when (equal old-text new-text)
+                       (signal 'e-emacs-tools-edit-invalid
+                               '("oldText and newText are identical")))
+                     (list :old-text old-text :new-text new-text))))
+
+(defun e-emacs-tools--apply-edits-to-current-buffer (edits)
+  "Apply exact resource EDITS to the current buffer."
+  (let ((matches nil)
+        (index 0))
+    (dolist (edit edits)
+      (let* ((old-text (plist-get edit :old-text))
+             (positions (e-emacs-tools--replacement-count old-text)))
+        (pcase (length positions)
+          (0 (signal 'e-emacs-tools-edit-invalid
+                     (list (format "edits[%d].oldText was not found" index))))
+          (1 (let ((match (car positions)))
+               (push (list :edit-index index
+                           :start (car match)
+                           :end (cdr match)
+                           :new-text (plist-get edit :new-text))
+                     matches)))
+          (_ (signal 'e-emacs-tools-edit-invalid
+                     (list (format "edits[%d].oldText matched more than once"
+                                   index))))))
+      (setq index (1+ index)))
+    (setq matches (sort matches
+                        (lambda (left right)
+                          (< (plist-get left :start)
+                             (plist-get right :start)))))
+    (cl-loop for previous in matches
+             for current in (cdr matches)
+             when (> (plist-get previous :end) (plist-get current :start))
+             do (signal 'e-emacs-tools-edit-invalid
+                        (list (format "edits[%d] and edits[%d] overlap"
+                                      (plist-get previous :edit-index)
+                                      (plist-get current :edit-index)))))
+    (dolist (match (reverse matches))
+      (goto-char (plist-get match :start))
+      (delete-region (plist-get match :start) (plist-get match :end))
+      (insert (plist-get match :new-text)))
+    (length matches)))
+
+(defun e-emacs-tools--buffer-resource-name (uri)
+  "Return buffer name addressed by parsed buffer URI."
+  (plist-get uri :address))
+
+(defun e-emacs-tools--read-buffer-resource (uri range)
+  "Read parsed buffer URI with structured RANGE."
+  (let ((name (e-emacs-tools--buffer-resource-name uri)))
+    (with-current-buffer (e-emacs-tools--buffer name)
+      (let* ((bounds (e-emacs-tools--resource-read-range range))
+             (start (plist-get bounds :start))
+             (exclusive-end (plist-get bounds :exclusive-end))
+             (reported-end (plist-get bounds :reported-end)))
+        (list :name name
+              :content (buffer-substring-no-properties start exclusive-end)
+              :start start
+              :end reported-end)))))
+
+(defun e-emacs-tools--write-buffer-resource (uri content)
+  "Replace parsed buffer URI contents with CONTENT."
+  (let ((name (e-emacs-tools--buffer-resource-name uri)))
+    (with-current-buffer (e-emacs-tools--buffer name)
+      (erase-buffer)
+      (insert content)
+      (list :name name
+            :chars (length content)
+            :saved nil))))
+
+(defun e-emacs-tools--edit-buffer-resource (uri edits)
+  "Apply exact resource EDITS to parsed buffer URI."
+  (let* ((name (e-emacs-tools--buffer-resource-name uri))
+         (normalized-edits (e-emacs-tools--normalize-edits edits)))
+    (with-current-buffer (e-emacs-tools--buffer name)
+      (list :name name
+            :replacements (e-emacs-tools--apply-edits-to-current-buffer
+                           normalized-edits)
+            :saved nil))))
+
+(defun e-emacs-tools--buffer-read-method ()
+  "Return a buffer read resource method."
+  (e-resource-method-create
+   :scheme "buffer"
+   :operation e-operation-read
+   :description "Live Emacs buffers. Buffer names are matched exactly."
+   :uri-patterns '("buffer://<buffer-name>")
+   :range-modes '("offset" "char" "line")
+   :handler #'e-emacs-tools--read-buffer-resource))
+
+(defun e-emacs-tools--buffer-write-method ()
+  "Return a buffer write resource method."
+  (e-resource-method-create
+   :scheme "buffer"
+   :operation e-operation-write
+   :description "Live Emacs buffers. Writes mutate buffers but do not save file-backed buffers."
+   :uri-patterns '("buffer://<buffer-name>")
+   :handler #'e-emacs-tools--write-buffer-resource))
+
+(defun e-emacs-tools--buffer-edit-method ()
+  "Return a buffer edit resource method."
+  (e-resource-method-create
+   :scheme "buffer"
+   :operation e-operation-edit
+   :description "Live Emacs buffers. Edits mutate buffers but do not save file-backed buffers."
+   :uri-patterns '("buffer://<buffer-name>")
+   :handler #'e-emacs-tools--edit-buffer-resource))
+
+(defun e-emacs-tools-register-buffer-read-resource (registry)
+  "Register read-only buffer resource methods in REGISTRY."
+  (e-resources-register registry (e-emacs-tools--buffer-read-method)))
+
+(defun e-emacs-tools-register-buffer-resource (registry)
+  "Register read/write/edit buffer resource methods in REGISTRY."
+  (dolist (method (list (e-emacs-tools--buffer-read-method)
+                        (e-emacs-tools--buffer-write-method)
+                        (e-emacs-tools--buffer-edit-method)))
+    (e-resources-register registry method)))
 
 (defun e-emacs-tools--read-forms (code)
   "Read all elisp forms from CODE."
@@ -115,85 +304,6 @@ When VISIBLE-ONLY is non-nil, include only buffers visible in windows."
               (list :buffers
                     (e-emacs-tools-buffer-metadata-list
                      (plist-get arguments :visible_only))))))
-
-(defun e-emacs-tools-register-read-buffer (registry)
-  "Register a tool to read live Emacs buffer text in REGISTRY."
-  (e-tools-register
-   registry
-   :name "read_buffer"
-   :description "Read full or ranged contents from a named live Emacs buffer."
-   :parameters '(:type "object"
-                 :properties (:name (:type "string")
-                              :start (:type "integer")
-                              :end (:type "integer"))
-                 :required ["name"])
-   :handler
-   (lambda (arguments)
-     (let ((name (e-emacs-tools--argument-string arguments :name)))
-       (with-current-buffer (e-emacs-tools--buffer name)
-         (let* ((range (e-emacs-tools--read-range arguments))
-                (start (plist-get range :start))
-                (exclusive-end (plist-get range :exclusive-end))
-                (reported-end (plist-get range :reported-end)))
-           (list :name name
-                 :content (buffer-substring-no-properties start exclusive-end)
-                 :start start
-                 :end reported-end)))))))
-
-(defun e-emacs-tools-register-write-buffer (registry)
-  "Register a tool to replace live Emacs buffer text in REGISTRY."
-  (e-tools-register
-   registry
-   :name "write_buffer"
-   :description "Replace the live contents of a named Emacs buffer without saving."
-   :parameters '(:type "object"
-                 :properties (:name (:type "string")
-                              :content (:type "string"))
-                 :required ["name" "content"])
-   :handler
-   (lambda (arguments)
-     (let ((name (e-emacs-tools--argument-string arguments :name))
-           (content (e-emacs-tools--argument-string arguments :content)))
-       (with-current-buffer (e-emacs-tools--buffer name)
-         (erase-buffer)
-         (insert content)
-         (list :name name
-               :chars (length content)
-               :saved nil))))))
-
-(defun e-emacs-tools-register-edit-buffer (registry)
-  "Register an exact replacement tool for live Emacs buffers in REGISTRY."
-  (e-tools-register
-   registry
-   :name "edit_buffer"
-   :description "Replace one exact old-text match in a named Emacs buffer without saving."
-   :parameters '(:type "object"
-                 :properties (:name (:type "string")
-                              :old_text (:type "string")
-                              :new_text (:type "string"))
-                 :required ["name" "old_text" "new_text"])
-   :handler
-   (lambda (arguments)
-     (let ((name (e-emacs-tools--argument-string arguments :name))
-           (old-text (e-emacs-tools--argument-string arguments :old_text))
-           (new-text (e-emacs-tools--argument-string arguments :new_text)))
-       (when (string-empty-p old-text)
-         (signal 'e-emacs-tools-edit-invalid '("old_text must not be empty")))
-       (when (equal old-text new-text)
-         (signal 'e-emacs-tools-edit-invalid '("old_text and new_text are identical")))
-       (with-current-buffer (e-emacs-tools--buffer name)
-         (let ((matches (e-emacs-tools--replacement-count old-text)))
-           (pcase (length matches)
-             (0 (signal 'e-emacs-tools-edit-invalid '("old_text was not found")))
-             (1 (let ((match (car matches)))
-                  (goto-char (car match))
-                  (delete-region (car match) (cdr match))
-                  (insert new-text)
-                  (list :name name
-                        :replacements 1
-                        :saved nil)))
-             (_ (signal 'e-emacs-tools-edit-invalid
-                        '("old_text matched more than once"))))))))))
 
 (defun e-emacs-tools-register-save-buffer (registry)
   "Register a tool to save file-backed Emacs buffers in REGISTRY."
@@ -233,19 +343,6 @@ When VISIBLE-ONLY is non-nil, include only buffers visible in windows."
        (dolist (form forms)
          (setq result (eval form t)))
        (list :result (prin1-to-string result))))))
-
-(defun e-emacs-tools-register-buffer-read (registry)
-  "Register buffer read tools in REGISTRY."
-  (e-emacs-tools-register-list-buffers registry)
-  (e-emacs-tools-register-read-buffer registry)
-  registry)
-
-(defun e-emacs-tools-register-buffer-edit (registry)
-  "Register buffer mutation tools in REGISTRY."
-  (e-emacs-tools-register-write-buffer registry)
-  (e-emacs-tools-register-edit-buffer registry)
-  (e-emacs-tools-register-save-buffer registry)
-  registry)
 
 (defun e-emacs-tools-register-elisp-eval (registry)
   "Register explicit elisp evaluation tools in REGISTRY."

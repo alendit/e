@@ -170,8 +170,8 @@ workflow unless it builds deeper runtime abstractions later.
 
 ### e Should Not Compete as Another Tool Bundle
 
-If `e` tries to win by merely adding `read_buffer`, `edit_buffer`, `run_elisp`,
-web search, Bash, and a chat buffer, it will be behind `gptel-agent` on day one.
+If `e` tries to win by merely adding buffer reads/edits, `run_elisp`, web
+search, Bash, and a chat buffer, it will be behind `gptel-agent` on day one.
 That surface already exists upstream and benefits from `gptel` maturity.
 
 The stronger direction is to treat those tools as the MVP proof that the

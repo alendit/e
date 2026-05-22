@@ -248,8 +248,8 @@ Commit the base split separately from Emacs and chat work.
 Cover these expectations:
 
 - `emacs-awareness` contributes instructions and visible-buffer context
-- `buffer-read` registers `list_buffers` and `read_buffer`
-- `buffer-edit` registers `write_buffer`, `edit_buffer`, and `save_buffer`
+- `buffer-read` registers `list_buffers` and read-only `buffer://` resource methods
+- `buffer-edit` registers writable `buffer://` resource methods and `save_buffer`
 - `elisp-eval` registers `run_elisp`
 - `selection-context` exists as a capability placeholder only if no current selection implementation exists
 - `emacs` layer activates `emacs-awareness`, `buffer-read`, and optionally `selection-context`
@@ -259,8 +259,8 @@ Cover these expectations:
 
 The old aggregate `e-emacs-tools-register-defaults` path is too coarse; add focused registration helpers:
 
-- `e-emacs-tools-register-buffer-read`: registers `list_buffers` and `read_buffer`.
-- `e-emacs-tools-register-buffer-edit`: registers `write_buffer`, `edit_buffer`, and `save_buffer`.
+- `e-emacs-tools-register-buffer-read-resource`: registers `list_buffers` and read-only `buffer://` resource methods.
+- `e-emacs-tools-register-buffer-resource`: registers writable `buffer://` resource methods and `save_buffer`.
 - `e-emacs-tools-register-elisp-eval`: registers `run_elisp`.
 
 Reuse the existing individual tool registration functions instead of duplicating handlers.

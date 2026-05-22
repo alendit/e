@@ -573,7 +573,7 @@
                             :payload '(:type tool-call
                                         :id "call-1"
                                         :name "read"
-                                        :arguments (:path "x")))))
+                                        :arguments (:uri "file://x")))))
           (should (equal redisplays '(t t)))
           (let ((content (buffer-string)))
             (should (string-match-p "1 tool call" content))

@@ -34,10 +34,11 @@ test/e-context-test.el test/e-harness-test.el`.
 **Scenario enabled:** The default `emacs-base` layer gives the model an
 Emacs-aware operating surface.
 
-With `emacs-base` active, the harness exposes these tools: `list_buffers`,
-`read_buffer`, `write_buffer`, `edit_buffer`, `save_buffer`, and `run_elisp`.
-It also contributes instructions that buffer edits are live mutations and
-saving is explicit.
+With `emacs-base` active, the harness exposes built-in resource tools `read`,
+`write`, and `edit`, plus `list_buffers`, `save_buffer`, and `run_elisp`.
+`buffer-read` and `buffer-edit` provide `buffer://` resource semantics. It also
+contributes instructions that buffer edits are live mutations and saving is
+explicit.
 
 The visible-buffer context provider reports names, modes, file paths when
 present, modified status, and visibility for buffers visible in windows. It
@@ -62,7 +63,8 @@ wait/abort/reset behavior, and receives state through harness events.
 
 **Scenario enabled:** The architecture document now reflects the MVP runtime
 shape: harness-owned layers, context-provider prefix messages, `emacs-base`,
-concrete buffer/elisp tools, and a thin chat presentation shell.
+URI resource-backed buffer operations, concrete elisp tools, and a thin chat
+presentation shell.
 
 The project quality gate proves the MVP can be loaded and exercised through the
 normal Eldev workflow and a clean batch reload.
@@ -80,8 +82,9 @@ With valid Codex-managed ChatGPT auth available at `CODEX_HOME/auth.json` or
 3. Have the default harness activate `emacs-base`.
 4. Send layer instructions and visible-buffer metadata into transcript-stack
    context.
-5. Let the model call buffer tools or `run_elisp`.
-6. Mutate live buffers with `write_buffer` or `edit_buffer` without saving.
+5. Let the model call resource tools or `run_elisp`.
+6. Mutate live buffers with `write` or `edit` against `buffer://` URIs without
+   saving.
 7. Persist a file-backed buffer only when `save_buffer` is called.
 8. See assistant messages, tool results, failures, starts, finishes, resets,
    and cancellations rendered in the chat buffer.

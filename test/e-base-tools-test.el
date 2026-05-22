@@ -14,7 +14,20 @@
 (require 'ert)
 (require 'e)
 (require 'e-base-tools)
+(require 'e-harness)
+(require 'e-resources)
 (require 'e-tools)
+
+(defun e-base-tools-test--resource-tools (directory &optional read-only)
+  "Return resource-backed tools rooted at DIRECTORY.
+When READ-ONLY is non-nil, file resources only support reads."
+  (let ((resources (e-resources-registry-create))
+        (tools (e-tools-registry-create)))
+    (if read-only
+        (e-base-tools-register-file-read-resource resources directory)
+      (e-base-tools-register-file-resource resources directory))
+    (e-harness--register-resource-tools tools resources)
+    tools))
 
 (defun e-base-tools-test--execute (registry name arguments)
   "Execute NAME with ARGUMENTS against REGISTRY."
@@ -26,21 +39,23 @@
   "The read tool reads full and ranged text files."
   (let* ((directory (make-temp-file "e-base-read-" t))
          (file (expand-file-name "sample.txt" directory))
-         (registry (e-tools-registry-create)))
+         (registry (e-base-tools-test--resource-tools directory)))
     (unwind-protect
         (progn
           (write-region "one\ntwo\nthree\n" nil file nil 'silent)
-          (e-base-tools-register-read registry directory)
           (should
            (equal (plist-get
                    (e-base-tools-test--execute
-                    registry "read" '(:path "sample.txt"))
+                    registry "read" '(:uri "file://sample.txt"))
                    :content)
                   "one\ntwo\nthree\n"))
           (should
            (equal (plist-get
                    (e-base-tools-test--execute
-                    registry "read" '(:path "sample.txt" :offset 2 :limit 1))
+                    registry
+                    "read"
+                    '(:uri "file://sample.txt"
+                      :range (:unit "line" :start 2 :end 2)))
                    :content)
                   "two\n\n[2 more lines in file. Use offset=3 to continue.]")))
       (delete-directory directory t))))
@@ -49,16 +64,15 @@
   "The read tool fails clearly for missing and binary files."
   (let* ((directory (make-temp-file "e-base-read-errors-" t))
          (binary-file (expand-file-name "image.png" directory))
-         (registry (e-tools-registry-create)))
+         (registry (e-base-tools-test--resource-tools directory t)))
     (unwind-protect
         (progn
           (write-region (unibyte-string 137 80 78 71 13 10 26 10 0)
                         nil binary-file nil 'silent)
-          (e-base-tools-register-read registry directory)
           (let ((missing (e-base-tools-test--execute
-                          registry "read" '(:path "missing.txt")))
+                          registry "read" '(:uri "file://missing.txt")))
                 (binary (e-base-tools-test--execute
-                         registry "read" '(:path "image.png"))))
+                         registry "read" '(:uri "file://image.png"))))
             (should (equal (plist-get missing :status) 'error))
             (should (string-match-p "File is not readable"
                                     (plist-get missing :content)))
@@ -71,7 +85,7 @@
   "The read tool truncates large text files with a continuation hint."
   (let* ((directory (make-temp-file "e-base-read-truncate-" t))
          (file (expand-file-name "large.txt" directory))
-         (registry (e-tools-registry-create)))
+         (registry (e-base-tools-test--resource-tools directory)))
     (unwind-protect
         (progn
           (write-region
@@ -79,10 +93,9 @@
                       (number-sequence 1 2105)
                       "\n")
            nil file nil 'silent)
-          (e-base-tools-register-read registry directory)
           (let ((content (plist-get
                           (e-base-tools-test--execute
-                           registry "read" '(:path "large.txt"))
+                           registry "read" '(:uri "file://large.txt"))
                           :content)))
             (should (string-match-p "line-0001" content))
             (should-not (string-match-p "line-2105" content))
@@ -95,14 +108,13 @@
   "The write tool creates parent directories and overwrites files."
   (let* ((directory (make-temp-file "e-base-write-" t))
          (target (expand-file-name "nested/file.txt" directory))
-         (registry (e-tools-registry-create)))
+         (registry (e-base-tools-test--resource-tools directory)))
     (unwind-protect
         (progn
-          (e-base-tools-register-write registry directory)
           (let ((result (e-base-tools-test--execute
                          registry
                          "write"
-                         '(:path "nested/file.txt" :content "new text"))))
+                         '(:uri "file://nested/file.txt" :content "new text"))))
             (should (equal (plist-get result :status) 'ok))
             (should (string-match-p "Successfully wrote 8 bytes"
                                     (plist-get result :content)))
@@ -113,7 +125,7 @@
           (e-base-tools-test--execute
            registry
            "write"
-           '(:path "nested/file.txt" :content "replacement"))
+           '(:uri "file://nested/file.txt" :content "replacement"))
           (should (equal (with-temp-buffer
                            (insert-file-contents target)
                            (buffer-string))
@@ -124,15 +136,14 @@
   "The edit tool applies multiple exact edits and preserves CRLF endings."
   (let* ((directory (make-temp-file "e-base-edit-" t))
          (file (expand-file-name "sample.txt" directory))
-         (registry (e-tools-registry-create)))
+         (registry (e-base-tools-test--resource-tools directory)))
     (unwind-protect
         (progn
           (write-region "alpha\r\nbeta\r\ngamma\r\n" nil file nil 'silent)
-          (e-base-tools-register-edit registry directory)
           (let ((result (e-base-tools-test--execute
                          registry
                          "edit"
-                         '(:path "sample.txt"
+                         '(:uri "file://sample.txt"
                            :edits ((:oldText "alpha" :newText "ALPHA")
                                    (:oldText "gamma" :newText "GAMMA"))))))
             (should (equal (plist-get result :status) 'ok))
@@ -149,21 +160,20 @@
   "The edit tool rejects missing, duplicate, empty, overlapping, and no-op edits."
   (let* ((directory (make-temp-file "e-base-edit-errors-" t))
          (file (expand-file-name "sample.txt" directory))
-         (registry (e-tools-registry-create)))
+         (registry (e-base-tools-test--resource-tools directory)))
     (unwind-protect
         (progn
           (write-region "alpha beta beta gamma" nil file nil 'silent)
-          (e-base-tools-register-edit registry directory)
-          (dolist (case '(("missing" (:path "sample.txt"
+          (dolist (case '(("missing" (:uri "file://sample.txt"
                                      :edits ((:oldText "missing" :newText "x"))))
-                          ("unique" (:path "sample.txt"
+                          ("unique" (:uri "file://sample.txt"
                                     :edits ((:oldText "beta" :newText "x"))))
-                          ("empty" (:path "sample.txt"
+                          ("empty" (:uri "file://sample.txt"
                                    :edits ((:oldText "" :newText "x"))))
-                          ("overlap" (:path "sample.txt"
+                          ("overlap" (:uri "file://sample.txt"
                                      :edits ((:oldText "alpha beta" :newText "x")
                                              (:oldText "beta beta" :newText "y"))))
-                          ("No changes" (:path "sample.txt"
+                          ("No changes" (:uri "file://sample.txt"
                                         :edits ((:oldText "alpha" :newText "alpha"))))))
             (let ((result (e-base-tools-test--execute registry "edit" (cadr case))))
               (should (equal (plist-get result :status) 'error))

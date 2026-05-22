@@ -16,6 +16,8 @@
 (require 'e-capabilities)
 (require 'e-context)
 (require 'e-events)
+(require 'e-operations)
+(require 'e-resources)
 (require 'e-startup)
 (require 'e-session)
 (require 'e-tools)
@@ -34,6 +36,8 @@
         :capabilities t
         :context t
         :events t
+        :operations t
+        :resources t
         :startup t
         :sessions t
         :session-persistence t

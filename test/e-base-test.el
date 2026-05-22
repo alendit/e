@@ -56,7 +56,9 @@
            (equal (plist-get
                    (e-tools-execute
                     (e-harness-tools harness)
-                    '(:id "call-1" :name "read" :arguments (:path "sample.txt")))
+                    '(:id "call-1"
+                      :name "read"
+                      :arguments (:uri "file://sample.txt")))
                    :content)
                   "captured")))
       (delete-directory directory t))))

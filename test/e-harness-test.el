@@ -12,12 +12,15 @@
 ;;; Code:
 
 (require 'ert)
+(require 'seq)
 (require 'e)
 (require 'e-backend)
 (require 'e-capabilities)
 (require 'e-context)
 (require 'e-harness)
 (require 'e-layers)
+(require 'e-operations)
+(require 'e-resources)
 
 (ert-deftest e-harness-test-prompt-writes-user-and-assistant-messages ()
   "Prompting writes user and assistant messages to the session."
@@ -361,6 +364,146 @@
                     :content)
                    "derived"))))
 
+(ert-deftest e-harness-test-resources-are-derived-from-active-layers ()
+  "The harness resource surface is rebuilt from active layers on demand."
+  (let* ((capability
+          (e-capability-create
+           :id 'resource-capability
+           :resource-methods
+           (list (lambda (registry)
+                   (e-resources-register
+                    registry
+                    (e-resource-method-create
+                     :scheme "derived"
+                     :operation e-operation-read
+                     :description "Derived resources."
+                     :handler (lambda (_uri _range) "derived")))))))
+         (layer (e-layer-create
+                 :id 'resource-layer
+                 :name "Resource Layer"
+                 :capabilities (list capability)))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)))
+         (stale-resources (e-harness-resources harness)))
+    (e-harness-activate-layer harness layer)
+    (should-error (e-resources-read stale-resources "derived://value" nil)
+                  :type 'e-resources-unknown-scheme)
+    (should (equal (e-resources-read
+                    (e-harness-resources harness)
+                    "derived://value"
+                    nil)
+                   "derived"))))
+
+(ert-deftest e-harness-test-built-in-resource-tools-dispatch-through-resources ()
+  "Resource operation tools dispatch through active resource methods."
+  (let* ((calls nil)
+         (capability
+          (e-capability-create
+           :id 'resource-tool-capability
+           :resource-methods
+           (list (lambda (registry)
+                   (dolist (method
+                            (list
+                             (e-resource-method-create
+                              :scheme "test"
+                              :operation e-operation-read
+                              :description "Readable test resources."
+                              :uri-patterns '("test://<value>")
+                              :range-modes '("line")
+                              :handler (lambda (uri range)
+                                         (push (list :read uri range) calls)
+                                         "read-result"))
+                             (e-resource-method-create
+                              :scheme "test"
+                              :operation e-operation-write
+                              :description "Writable test resources."
+                              :uri-patterns '("test://<value>")
+                              :handler (lambda (uri content)
+                                         (push (list :write uri content) calls)
+                                         "write-result"))
+                             (e-resource-method-create
+                              :scheme "test"
+                              :operation e-operation-edit
+                              :description "Editable test resources."
+                              :uri-patterns '("test://<value>")
+                              :handler (lambda (uri edits)
+                                         (push (list :edit uri edits) calls)
+                                         "edit-result"))))
+                     (e-resources-register registry method))))))
+         (layer (e-layer-create
+                 :id 'resource-tool-layer
+                 :name "Resource Tool Layer"
+                 :capabilities (list capability)))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :active-layers (list layer)))
+         (tools (e-harness-tools harness)))
+    (should (equal (plist-get
+                    (e-tools-execute
+                     tools
+                     '(:id "call-1"
+                       :name "read"
+                       :arguments (:uri "test://value"
+                                   :range (:unit "line" :start 1 :end 2))))
+                    :content)
+                   "read-result"))
+    (should (equal (plist-get
+                    (e-tools-execute
+                     tools
+                     '(:id "call-2"
+                       :name "write"
+                       :arguments (:uri "test://value" :content "content")))
+                    :content)
+                   "write-result"))
+    (should (equal (plist-get
+                    (e-tools-execute
+                     tools
+                     '(:id "call-3"
+                       :name "edit"
+                       :arguments (:uri "test://value"
+                                   :edits ((:oldText "a" :newText "b")))))
+                    :content)
+                   "edit-result"))
+    (should (equal (nreverse calls)
+                   '((:read (:scheme "test" :address "value" :uri "test://value")
+                            (:unit "line" :start 1 :end 2))
+                     (:write (:scheme "test" :address "value" :uri "test://value")
+                             "content")
+                     (:edit (:scheme "test" :address "value" :uri "test://value")
+                            ((:oldText "a" :newText "b"))))))))
+
+(ert-deftest e-harness-test-resource-tool-descriptions-include-active-methods ()
+  "Generated operation tool descriptions include active URI scheme metadata."
+  (let* ((capability
+          (e-capability-create
+           :id 'resource-description-capability
+           :resource-methods
+           (list (lambda (registry)
+                   (e-resources-register
+                    registry
+                    (e-resource-method-create
+                     :scheme "described"
+                     :operation e-operation-read
+                     :description "Described resources."
+                     :uri-patterns '("described://<id>")
+                     :range-modes '("line" "offset")
+                     :handler (lambda (_uri _range) "ok")))))))
+         (layer (e-layer-create
+                 :id 'resource-description-layer
+                 :name "Resource Description Layer"
+                 :capabilities (list capability)))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :active-layers (list layer)))
+         (read-tool (seq-find (lambda (definition)
+                                (equal (plist-get definition :name) "read"))
+                              (e-tools-definitions (e-harness-tools harness))))
+         (description (plist-get read-tool :description)))
+    (should read-tool)
+    (should (string-match-p "described://<id>" description))
+    (should (string-match-p "Described resources" description))
+    (should (string-match-p "line, offset" description))))
+
 (ert-deftest e-harness-test-direct-capability-activation-uses-layer-source ()
   "Direct capability activation wraps the capability as a layer."
   (let* ((capability (e-capability-create :id 'direct-capability))
@@ -377,6 +520,7 @@
 (ert-deftest e-harness-test-derived-views-do-not-keep-struct-compiler-macros ()
   "Derived harness view functions must not expand into stale struct slots."
   (should-not (get 'e-harness-active-capabilities 'compiler-macro))
+  (should-not (get 'e-harness-resources 'compiler-macro))
   (should-not (get 'e-harness-tools 'compiler-macro)))
 
 (ert-deftest e-harness-test-prompt-passes-tool-definitions-as-options ()
@@ -409,8 +553,11 @@
     (e-harness-activate-layer harness layer)
     (e-harness-create-session harness :id "session-1")
     (e-harness-prompt harness "session-1" "raw prompt")
-    (let* ((tool (car (plist-get captured-options :tools)))
+    (let* ((tool (seq-find (lambda (definition)
+                             (equal (plist-get definition :name) "noop"))
+                           (plist-get captured-options :tools)))
            (parameters (plist-get tool :parameters)))
+      (should tool)
       (should (equal (plist-get parameters :type) "object"))
       (should (hash-table-p (plist-get parameters :properties)))
       (should (equal tool
@@ -495,8 +642,9 @@
                            (e-harness-session-activity-events
                             harness "session-1"))
                    '(tool-started)))
-    (should (equal (e-harness-turn-options harness "session-1")
-                   '(:model "gpt-test")))))
+    (let ((options (e-harness-turn-options harness "session-1")))
+      (should (equal (plist-get options :model) "gpt-test"))
+      (should-not (plist-get options :tools)))))
 
 (ert-deftest e-harness-test-persists-activity-events-and-tags_turn_messages ()
   "Harness turn events persist as activity, and messages keep their turn id."

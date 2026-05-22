@@ -64,14 +64,16 @@
   (e-capability-create
    :id 'buffer-read
    :name "Buffer Read"
-   :tools (list #'e-emacs-tools-register-buffer-read)))
+   :tools (list #'e-emacs-tools-register-list-buffers)
+   :resource-methods (list #'e-emacs-tools-register-buffer-read-resource)))
 
 (defun e-buffer-edit-capability-create ()
   "Create a capability for mutating live Emacs buffers."
   (e-capability-create
    :id 'buffer-edit
    :name "Buffer Edit"
-   :tools (list #'e-emacs-tools-register-buffer-edit)))
+   :tools (list #'e-emacs-tools-register-save-buffer)
+   :resource-methods (list #'e-emacs-tools-register-buffer-resource)))
 
 (defun e-elisp-eval-capability-create ()
   "Create a capability for explicit Emacs Lisp evaluation."

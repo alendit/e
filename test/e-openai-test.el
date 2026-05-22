@@ -149,8 +149,8 @@
      :messages '((:role user :content "hello")
                  (:role tool-call
                   :content (:id "call-1"
-                            :name "read_buffer"
-                            :arguments (:name "README.md")))
+                            :name "read"
+                            :arguments (:uri "buffer://README.md")))
                  (:role tool
                   :content (:tool-call-id "call-1"
                             :content (:ok t))))
@@ -164,8 +164,8 @@
                :content [(:type "input_text" :text "hello")])
               (:type "function_call"
                :call_id "call-1"
-               :name "read_buffer"
-               :arguments "{\"name\":\"README.md\"}")
+               :name "read"
+               :arguments "{\"uri\":\"buffer://README.md\"}")
               (:type "function_call_output"
                :call_id "call-1"
                :output "(:ok t)")]

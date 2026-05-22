@@ -27,10 +27,10 @@
     (should (equal (mapcar (lambda (definition)
                              (plist-get definition :name))
                            (e-tools-definitions (e-harness-tools harness)))
-                   '("list_buffers"
-                     "read_buffer"
-                     "write_buffer"
-                     "edit_buffer"
+                   '("read"
+                     "write"
+                     "edit"
+                     "list_buffers"
                      "save_buffer"
                      "run_elisp")))))
 

@@ -15,7 +15,20 @@
 (require 'seq)
 (require 'e)
 (require 'e-emacs-tools)
+(require 'e-harness)
+(require 'e-resources)
 (require 'e-tools)
+
+(defun e-emacs-tools-test--resource-tools (&optional read-only)
+  "Return resource-backed buffer tools.
+When READ-ONLY is non-nil, buffer resources only support reads."
+  (let ((resources (e-resources-registry-create))
+        (tools (e-tools-registry-create)))
+    (if read-only
+        (e-emacs-tools-register-buffer-read-resource resources)
+      (e-emacs-tools-register-buffer-resource resources))
+    (e-harness--register-resource-tools tools resources)
+    tools))
 
 (ert-deftest e-emacs-tools-test-list-buffers-reports-buffer-metadata ()
   "The list-buffers tool returns live buffer metadata."
@@ -42,40 +55,39 @@
       (kill-buffer buffer))))
 
 (ert-deftest e-emacs-tools-test-read-buffer-returns-content ()
-  "The read-buffer tool reads live buffer text."
-  (let ((registry (e-tools-registry-create))
+  "The read tool reads live buffer text through buffer:// URIs."
+  (let ((registry (e-emacs-tools-test--resource-tools t))
         (buffer (generate-new-buffer " *e-test-read*")))
     (unwind-protect
         (progn
           (with-current-buffer buffer
             (insert "abcdef"))
-          (e-emacs-tools-register-read-buffer registry)
           (should
            (equal (plist-get
                    (e-tools-execute
                     registry
                     `(:id "call-1"
-                      :name "read_buffer"
-                      :arguments (:name ,(buffer-name buffer) :start 2 :end 4)))
+                      :name "read"
+                      :arguments (:uri ,(concat "buffer://" (buffer-name buffer))
+                                  :range (:unit "offset" :start 2 :limit 3))))
                    :content)
                   '(:name " *e-test-read*" :content "bcd" :start 2 :end 4))))
       (kill-buffer buffer))))
 
 (ert-deftest e-emacs-tools-test-write-buffer-mutates-without-saving ()
-  "The write-buffer tool replaces live buffer text without saving."
-  (let ((registry (e-tools-registry-create))
+  "The write tool replaces live buffer text without saving."
+  (let ((registry (e-emacs-tools-test--resource-tools))
         (buffer (generate-new-buffer " *e-test-write*")))
     (unwind-protect
         (progn
           (with-current-buffer buffer
             (setq buffer-file-name "/tmp/e-test-write.txt")
             (insert "old"))
-          (e-emacs-tools-register-write-buffer registry)
           (let ((result (e-tools-execute
                          registry
                          `(:id "call-1"
-                           :name "write_buffer"
-                           :arguments (:name ,(buffer-name buffer)
+                           :name "write"
+                           :arguments (:uri ,(concat "buffer://" (buffer-name buffer))
                                              :content "new text")))))
             (should (equal (plist-get result :status) 'ok))
             (should (equal (with-current-buffer buffer (buffer-string))
@@ -85,63 +97,61 @@
       (kill-buffer buffer))))
 
 (ert-deftest e-emacs-tools-test-edit-buffer-replaces-unique-match ()
-  "The edit-buffer tool replaces exactly one old-text match."
-  (let ((registry (e-tools-registry-create))
+  "The edit tool replaces exactly one old-text match in a live buffer."
+  (let ((registry (e-emacs-tools-test--resource-tools))
         (buffer (generate-new-buffer " *e-test-edit*")))
     (unwind-protect
         (progn
           (with-current-buffer buffer
             (insert "alpha beta gamma"))
-          (e-emacs-tools-register-edit-buffer registry)
           (let ((result (e-tools-execute
                          registry
                          `(:id "call-1"
-                           :name "edit_buffer"
-                           :arguments (:name ,(buffer-name buffer)
-                                             :old_text "beta"
-                                             :new_text "delta")))))
+                           :name "edit"
+                           :arguments (:uri ,(concat "buffer://" (buffer-name buffer))
+                                      :edits ((:oldText "beta"
+                                               :newText "delta")))))))
             (should (equal (plist-get result :status) 'ok))
             (should (equal (with-current-buffer buffer (buffer-string))
                            "alpha delta gamma"))))
       (kill-buffer buffer))))
 
 (ert-deftest e-emacs-tools-test-edit-buffer-rejects-invalid-replacements ()
-  "The edit-buffer tool rejects missing, duplicate, and no-op replacements."
-  (let ((registry (e-tools-registry-create))
+  "The edit tool rejects missing, duplicate, and no-op buffer replacements."
+  (let ((registry (e-emacs-tools-test--resource-tools))
         (buffer (generate-new-buffer " *e-test-edit-errors*")))
     (unwind-protect
         (progn
           (with-current-buffer buffer
             (insert "alpha beta beta"))
-          (e-emacs-tools-register-edit-buffer registry)
           (should (equal (plist-get
                           (e-tools-execute
                            registry
                            `(:id "call-1"
-                             :name "edit_buffer"
-                             :arguments (:name ,(buffer-name buffer)
-                                               :old_text "missing"
-                                               :new_text "x")))
+                             :name "edit"
+                             :arguments (:uri ,(concat "buffer://" (buffer-name buffer))
+                                        :edits ((:oldText "missing"
+                                                 :newText "x")))))
                           :status)
                          'error))
           (should (equal (plist-get
                           (e-tools-execute
                            registry
                            `(:id "call-2"
-                             :name "edit_buffer"
-                             :arguments (:name ,(buffer-name buffer)
-                                               :old_text "beta"
-                                               :new_text "x")))
+                             :name "edit"
+                             :arguments (:uri ,(concat "buffer://" (buffer-name buffer))
+                                        :edits ((:oldText "beta"
+                                                 :newText "x")))))
                           :status)
                          'error))
           (should (equal (plist-get
                           (e-tools-execute
                            registry
                            `(:id "call-3"
-                             :name "edit_buffer"
-                             :arguments (:name ,(buffer-name buffer)
-                                               :old_text "alpha"
-                                               :new_text "alpha")))
+                             :name "edit"
+                             :arguments (:uri ,(concat "buffer://" (buffer-name buffer))
+                                        :edits ((:oldText "alpha"
+                                                 :newText "alpha")))))
                           :status)
                          'error)))
       (kill-buffer buffer))))

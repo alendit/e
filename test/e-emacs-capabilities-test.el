@@ -15,6 +15,7 @@
 (require 'e)
 (require 'e-capabilities)
 (require 'e-emacs-capabilities)
+(require 'e-resources)
 (require 'e-tools)
 
 (defun e-emacs-capabilities-test--tool-names (capability)
@@ -24,6 +25,12 @@
     (mapcar (lambda (definition)
               (plist-get definition :name))
             (e-tools-definitions registry))))
+
+(defun e-emacs-capabilities-test--resources (capability)
+  "Return resource registry registered by CAPABILITY."
+  (let ((registry (e-resources-registry-create)))
+    (e-capabilities-register-resource-methods capability registry)
+    registry))
 
 (ert-deftest e-emacs-capabilities-test-awareness-contributes-context ()
   "Emacs awareness contributes instructions and visible-buffer context."
@@ -39,16 +46,52 @@
                             (plist-get (cadr messages) :content)))))
 
 (ert-deftest e-emacs-capabilities-test-buffer-read-registers-read-tools ()
-  "Buffer read capability registers listing and read tools."
+  "Buffer read capability registers listing tools and read-only resources."
   (should (equal (e-emacs-capabilities-test--tool-names
                   (e-buffer-read-capability-create))
-                 '("list_buffers" "read_buffer"))))
+                 '("list_buffers")))
+  (let* ((buffer (generate-new-buffer " *e-cap-buffer-read*"))
+         (resources (e-emacs-capabilities-test--resources
+                     (e-buffer-read-capability-create))))
+    (unwind-protect
+        (progn
+          (with-current-buffer buffer
+            (insert "content"))
+          (should (equal (plist-get
+                          (e-resources-read
+                           resources
+                           (concat "buffer://" (buffer-name buffer)))
+                          :content)
+                         "content"))
+          (should-error
+           (e-resources-write
+            resources
+            (concat "buffer://" (buffer-name buffer))
+            "new")
+           :type 'e-resources-unsupported-operation))
+      (kill-buffer buffer))))
 
 (ert-deftest e-emacs-capabilities-test-buffer-edit-registers-edit-tools ()
-  "Buffer edit capability registers mutation and save tools."
+  "Buffer edit capability registers save tools and writable resources."
   (should (equal (e-emacs-capabilities-test--tool-names
                   (e-buffer-edit-capability-create))
-                 '("write_buffer" "edit_buffer" "save_buffer"))))
+                 '("save_buffer")))
+  (let* ((buffer (generate-new-buffer " *e-cap-buffer-edit*"))
+         (resources (e-emacs-capabilities-test--resources
+                     (e-buffer-edit-capability-create))))
+    (unwind-protect
+        (progn
+          (e-resources-write
+           resources
+           (concat "buffer://" (buffer-name buffer))
+           "old")
+          (e-resources-edit
+           resources
+           (concat "buffer://" (buffer-name buffer))
+           '((:oldText "old" :newText "new")))
+          (should (equal (with-current-buffer buffer (buffer-string))
+                         "new")))
+      (kill-buffer buffer))))
 
 (ert-deftest e-emacs-capabilities-test-elisp-eval-registers-run-elisp ()
   "Elisp eval capability registers run_elisp only."

@@ -14,6 +14,8 @@
 (require 'cl-lib)
 (require 'seq)
 (require 'subr-x)
+(require 'e-operations)
+(require 'e-resources)
 (require 'e-tools)
 
 (defgroup e-base-tools nil
@@ -213,47 +215,116 @@ TOTAL-LINES is the full file line count.  START-LINE is 1-based."
                (plist-get truncation :next-offset))
             (plist-get truncation :content)))))))
 
-(defun e-base-tools-register-read (registry directory)
-  "Register the base read tool in REGISTRY rooted at DIRECTORY."
-  (e-tools-register
-   registry
-   :name "read"
-   :description "Read text file contents by path, with optional 1-based offset and line limit."
-   :parameters '(:type "object"
-                 :properties (:path (:type "string")
-                              :offset (:type "number")
-                              :limit (:type "number"))
-                 :required ["path"])
-   :handler
-   (lambda (arguments)
-     (let ((path (e-base-tools--argument-string arguments :path))
-           (offset (e-base-tools--optional-positive-number arguments :offset))
-           (limit (e-base-tools--optional-positive-number arguments :limit)))
-       (e-base-tools--read-text
-        (e-base-tools--resolve-path path directory)
-        offset
-        limit)))))
+(defun e-base-tools--range-number (range key)
+  "Return optional positive numeric KEY from RANGE."
+  (let ((value (plist-get range key)))
+    (when value
+      (unless (and (numberp value) (> value 0))
+        (signal 'wrong-type-argument (list 'positive-number-p key)))
+      value)))
 
-(defun e-base-tools-register-write (registry directory)
-  "Register the base write tool in REGISTRY rooted at DIRECTORY."
-  (e-tools-register
+(defun e-base-tools--range-offset-limit (range)
+  "Return line offset and limit for structured RANGE."
+  (if (null range)
+      (list nil nil)
+    (let ((unit (plist-get range :unit))
+          (start (e-base-tools--range-number range :start)))
+      (unless start
+        (signal 'e-base-tools-read-invalid
+                '("range.start must be a positive number")))
+      (pcase unit
+        ("line"
+         (let ((end (e-base-tools--range-number range :end)))
+           (when (and end (< end start))
+             (signal 'e-base-tools-read-invalid
+                     '("range.end must be greater than or equal to range.start")))
+           (list start (and end (1+ (- end start))))))
+        ("offset"
+         (list start (e-base-tools--range-number range :limit)))
+        (_
+         (signal 'e-base-tools-read-invalid
+                 (list (format "Unsupported file range unit: %s" unit))))))))
+
+(defun e-base-tools--resource-path (uri directory)
+  "Resolve parsed file URI against DIRECTORY."
+  (e-base-tools--resolve-path (plist-get uri :address) directory))
+
+(defun e-base-tools--write-file-resource (uri content directory)
+  "Write CONTENT to parsed file URI in DIRECTORY."
+  (let* ((path (plist-get uri :address))
+         (absolute-path (e-base-tools--resource-path uri directory)))
+    (make-directory (file-name-directory absolute-path) t)
+    (write-region content nil absolute-path nil 'silent)
+    (format "Successfully wrote %d bytes to %s"
+            (string-bytes content)
+            path)))
+
+(defun e-base-tools--edit-file-resource (uri edits directory)
+  "Apply exact EDITS to parsed file URI in DIRECTORY."
+  (let* ((path (plist-get uri :address))
+         (absolute-path (e-base-tools--resource-path uri directory))
+         (raw-content (e-base-tools--file-text absolute-path))
+         (line-ending (e-base-tools--line-ending raw-content))
+         (content (e-base-tools--normalize-line-endings raw-content))
+         (normalized-edits (e-base-tools--normalize-edits edits))
+         (new-content (e-base-tools--apply-edits content normalized-edits path))
+         (final-content
+          (e-base-tools--restore-line-endings new-content line-ending)))
+    (write-region final-content nil absolute-path nil 'silent)
+    (list :message (format "Successfully replaced %d block(s) in %s."
+                           (length normalized-edits)
+                           path)
+          :replacements (length normalized-edits)
+          :diff (e-base-tools--simple-diff content new-content))))
+
+(defun e-base-tools--file-read-method (directory)
+  "Return a file read resource method rooted at DIRECTORY."
+  (e-resource-method-create
+   :scheme "file"
+   :operation e-operation-read
+   :description "Workspace text files."
+   :uri-patterns '("file://<path>")
+   :range-modes '("line" "offset")
+   :handler (lambda (uri range)
+              (pcase-let ((`(,offset ,limit)
+                           (e-base-tools--range-offset-limit range)))
+                (e-base-tools--read-text
+                 (e-base-tools--resource-path uri directory)
+                 offset
+                 limit)))))
+
+(defun e-base-tools--file-write-method (directory)
+  "Return a file write resource method rooted at DIRECTORY."
+  (e-resource-method-create
+   :scheme "file"
+   :operation e-operation-write
+   :description "Workspace text files."
+   :uri-patterns '("file://<path>")
+   :handler (lambda (uri content)
+              (e-base-tools--write-file-resource uri content directory))))
+
+(defun e-base-tools--file-edit-method (directory)
+  "Return a file edit resource method rooted at DIRECTORY."
+  (e-resource-method-create
+   :scheme "file"
+   :operation e-operation-edit
+   :description "Workspace text files. Preserves CRLF line endings when possible."
+   :uri-patterns '("file://<path>")
+   :handler (lambda (uri edits)
+              (e-base-tools--edit-file-resource uri edits directory))))
+
+(defun e-base-tools-register-file-read-resource (registry directory)
+  "Register read-only file resource methods in REGISTRY rooted at DIRECTORY."
+  (e-resources-register
    registry
-   :name "write"
-   :description "Write content to a file, creating parent directories and overwriting existing content."
-   :parameters '(:type "object"
-                 :properties (:path (:type "string")
-                              :content (:type "string"))
-                 :required ["path" "content"])
-   :handler
-   (lambda (arguments)
-     (let* ((path (e-base-tools--argument-string arguments :path))
-            (content (e-base-tools--argument-string arguments :content))
-            (absolute-path (e-base-tools--resolve-path path directory)))
-       (make-directory (file-name-directory absolute-path) t)
-       (write-region content nil absolute-path nil 'silent)
-       (format "Successfully wrote %d bytes to %s"
-               (string-bytes content)
-               path)))))
+   (e-base-tools--file-read-method directory)))
+
+(defun e-base-tools-register-file-resource (registry directory)
+  "Register read/write/edit file resource methods in REGISTRY rooted at DIRECTORY."
+  (dolist (method (list (e-base-tools--file-read-method directory)
+                        (e-base-tools--file-write-method directory)
+                        (e-base-tools--file-edit-method directory)))
+    (e-resources-register registry method)))
 
 (defun e-base-tools--line-ending (content)
   "Return the dominant line ending in CONTENT."
@@ -367,39 +438,6 @@ TOTAL-LINES is the full file line count.  START-LINE is 1-based."
             (push (concat "+" new-line) output)
             (setq new-lines (cdr new-lines)))))))
     (mapconcat #'identity (nreverse output) "\n")))
-
-(defun e-base-tools-register-edit (registry directory)
-  "Register the base edit tool in REGISTRY rooted at DIRECTORY."
-  (e-tools-register
-   registry
-   :name "edit"
-   :description "Edit a single file using exact text replacements in edits[].oldText and edits[].newText."
-   :parameters '(:type "object"
-                 :properties (:path (:type "string")
-                              :edits (:type "array"
-                                      :items (:type "object"
-                                              :properties (:oldText (:type "string")
-                                                           :newText (:type "string"))
-                                              :required ["oldText" "newText"])))
-                 :required ["path" "edits"])
-   :handler
-   (lambda (arguments)
-     (let* ((path (e-base-tools--argument-string arguments :path))
-            (absolute-path (e-base-tools--resolve-path path directory))
-            (raw-content (e-base-tools--file-text absolute-path))
-            (line-ending (e-base-tools--line-ending raw-content))
-            (content (e-base-tools--normalize-line-endings raw-content))
-            (edits (e-base-tools--normalize-edits
-                    (plist-get arguments :edits)))
-            (new-content (e-base-tools--apply-edits content edits path))
-            (final-content
-             (e-base-tools--restore-line-endings new-content line-ending)))
-       (write-region final-content nil absolute-path nil 'silent)
-       (list :message (format "Successfully replaced %d block(s) in %s."
-                              (length edits)
-                              path)
-             :replacements (length edits)
-             :diff (e-base-tools--simple-diff content new-content))))))
 
 (defun e-base-tools--shell-command ()
   "Return command list prefix for the base bash tool."
