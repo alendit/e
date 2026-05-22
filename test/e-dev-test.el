@@ -18,6 +18,7 @@
 
 (ert-deftest e-dev-test-reload-restores-mvp-entrypoints ()
   "Reload loads the MVP modules and restores their entry points."
+  (fmakunbound 'e-chat)
   (fmakunbound 'e-chat-new)
   (fmakunbound 'e-chat-resume)
   (fmakunbound 'e-chat-rename)
@@ -31,6 +32,7 @@
   (fmakunbound 'e-shell-command-create)
   (fmakunbound 'e-chat-shell)
   (e-dev-reload default-directory)
+  (should (commandp 'e-chat))
   (should (commandp 'e-chat-new))
   (should (commandp 'e-chat-resume))
   (should (commandp 'e-chat-rename))
@@ -47,10 +49,8 @@
 
 (ert-deftest e-dev-test-reload-clears-obsolete-entrypoints-and-refreshes-defaults ()
   "Reload removes stale functions and reapplies changed default options."
-  (fset 'e-chat (lambda () (interactive)))
   (setq e-openai-default-model "gpt-5.4")
   (e-dev-reload default-directory)
-  (should-not (fboundp 'e-chat))
   (should (equal e-openai-default-model "gpt-5.5")))
 
 (provide 'e-dev-test)

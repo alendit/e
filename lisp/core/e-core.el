@@ -16,11 +16,13 @@
 (require 'e-capabilities)
 (require 'e-context)
 (require 'e-events)
+(require 'e-startup)
 (require 'e-session)
 (require 'e-tools)
 (require 'e-loop)
 (require 'e-layers)
 (require 'e-harness)
+(require 'e-harness-registry)
 
 (defconst e-core-scaffold-state 'ready
   "Minimal state marker for the core runtime scaffold.")
@@ -32,12 +34,14 @@
         :capabilities t
         :context t
         :events t
+        :startup t
         :sessions t
         :session-persistence t
         :tools t
         :loop t
         :layers t
-        :harness t))
+        :harness t
+        :harness-registry t))
 
 (provide 'e-core)
 

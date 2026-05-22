@@ -28,9 +28,7 @@
   context-strategy
   default-options
   (sessions (e-session-store-create))
-  (tools (e-tools-registry-create))
   (active-layers nil)
-  (active-capabilities nil)
   (subscribers nil)
   active-turns)
 
@@ -39,6 +37,15 @@
 
 (defvar e-harness--message-counter 0
   "Monotonic harness message id counter.")
+
+(defun e-harness--clear-derived-accessor-metadata ()
+  "Clear stale struct accessor metadata for derived harness views."
+  (dolist (symbol '(e-harness-active-capabilities e-harness-tools))
+    (put symbol 'compiler-macro nil)
+    (put symbol 'side-effect-free nil)
+    (put symbol 'gv-expander nil)))
+
+(e-harness--clear-derived-accessor-metadata)
 
 (defun e-harness--next-turn-id ()
   "Return a new in-process turn id."
@@ -51,38 +58,52 @@
   (format "msg-user-%d" e-harness--message-counter))
 
 (cl-defun e-harness-create
-    (&key backend context-strategy default-options sessions tools
-          active-layers active-capabilities)
+    (&key backend context-strategy default-options sessions active-layers)
   "Create a core harness.
-BACKEND, CONTEXT-STRATEGY, DEFAULT-OPTIONS, SESSIONS, TOOLS, ACTIVE-LAYERS,
-and ACTIVE-CAPABILITIES configure the provider-neutral runtime."
+BACKEND, CONTEXT-STRATEGY, DEFAULT-OPTIONS, SESSIONS, and ACTIVE-LAYERS
+configure the provider-neutral runtime."
   (let ((harness
          (e-harness--make :backend backend
                           :context-strategy (or context-strategy
                                                 (e-context-transcript-stack-create))
                           :default-options default-options
                           :sessions (or sessions (e-session-store-create))
-                          :tools (or tools (e-tools-registry-create))
+                          :active-layers nil
                           :active-turns (make-hash-table :test 'equal))))
-    (dolist (capability active-capabilities)
-      (e-harness-activate-capability harness capability))
     (dolist (layer active-layers)
       (e-harness-activate-layer harness layer))
     harness))
 
+(defun e-harness-active-capabilities (harness)
+  "Return HARNESS capabilities derived from its active layers."
+  (let (capabilities)
+    (dolist (layer (e-harness-active-layers harness))
+      (setq capabilities
+            (append capabilities
+                    (copy-sequence (or (e-layer-capabilities layer) nil)))))
+    capabilities))
+
+(defun e-harness-tools (harness)
+  "Return a fresh tool registry view over HARNESS active layers."
+  (let ((registry (e-tools-registry-create)))
+    (dolist (capability (e-harness-active-capabilities harness))
+      (e-capabilities-register-tools capability registry))
+    registry))
+
 (defun e-harness-activate-capability (harness capability)
-  "Activate CAPABILITY in HARNESS and register its tools."
-  (e-capabilities-register-tools capability (e-harness-tools harness))
-  (setf (e-harness-active-capabilities harness)
-        (append (e-harness-active-capabilities harness) (list capability)))
+  "Activate CAPABILITY in HARNESS as an anonymous capability layer."
+  (e-harness-activate-layer
+   harness
+   (e-layer-create
+    :id (e-capability-id capability)
+    :name (e-capability-name capability)
+    :capabilities (list capability)))
   capability)
 
 (defun e-harness-activate-layer (harness layer)
-  "Activate LAYER in HARNESS and register its tools and capabilities."
+  "Activate LAYER in HARNESS."
   (setf (e-harness-active-layers harness)
         (append (e-harness-active-layers harness) (list layer)))
-  (dolist (capability (e-layer-capabilities layer))
-    (e-harness-activate-capability harness capability))
   layer)
 
 (cl-defun e-harness-create-session (harness &key id metadata)
@@ -144,6 +165,22 @@ When SESSION-ID is non-nil, SUBSCRIBER only receives events for that session."
   "Return messages for SESSION-ID in HARNESS."
   (e-session-messages (e-harness-sessions harness) session-id))
 
+(defun e-harness-session-title (harness session-id)
+  "Return display title for SESSION-ID in HARNESS."
+  (e-session-display-title (e-harness-sessions harness) session-id))
+
+(defun e-harness-session-name (harness session-id)
+  "Return explicit name for SESSION-ID in HARNESS, or nil."
+  (plist-get (e-session-get (e-harness-sessions harness) session-id) :name))
+
+(defun e-harness-session-list (harness)
+  "Return display metadata for sessions owned by HARNESS."
+  (e-session-list (e-harness-sessions harness)))
+
+(defun e-harness-session-activity-events (harness session-id)
+  "Return activity events for SESSION-ID in HARNESS."
+  (e-session-activity-events (e-harness-sessions harness) session-id))
+
 (defun e-harness--merge-turn-options (base overrides)
   "Return BASE options with OVERRIDES applied."
   (let ((options (copy-sequence base))
@@ -187,7 +224,7 @@ When SESSION-ID is non-nil, SUBSCRIBER only receives events for that session."
       (cl-remf options :reasoning-effort))
     (e-harness--set-session-options harness session-id options)))
 
-(defun e-harness--turn-options (harness session-id)
+(defun e-harness-turn-options (harness session-id)
   "Return backend-neutral turn options for HARNESS and SESSION-ID."
   (let ((options (e-harness--merge-turn-options
                   (e-harness-default-options harness)
@@ -197,6 +234,10 @@ When SESSION-ID is non-nil, SUBSCRIBER only receives events for that session."
         (plist-put options :tools tool-definitions)
       options)))
 
+(defun e-harness--turn-options (harness session-id)
+  "Return backend-neutral turn options for HARNESS and SESSION-ID."
+  (e-harness-turn-options harness session-id))
+
 (defun e-harness-context (harness session-id &optional turn-id)
   "Return backend-neutral context for SESSION-ID in HARNESS.
 TURN-ID is passed to active capability context providers when present."
@@ -204,7 +245,7 @@ TURN-ID is passed to active capability context providers when present."
    (e-harness-context-strategy harness)
    :sessions (e-harness-sessions harness)
    :session-id session-id
-   :options (e-harness--turn-options harness session-id)
+   :options (e-harness-turn-options harness session-id)
    :prefix-messages
    (append
     (e-capabilities-context-messages

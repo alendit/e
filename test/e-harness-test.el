@@ -313,6 +313,72 @@
                            (e-tools-definitions (e-harness-tools harness)))
                    '("direct_tool")))))
 
+(ert-deftest e-harness-test-active-capabilities-are-derived-from-layers ()
+  "Active capabilities are a view over active layers, not duplicated state."
+  (let* ((first-capability (e-capability-create :id 'first-capability))
+         (second-capability (e-capability-create :id 'second-capability))
+         (layer (e-layer-create
+                 :id 'derived-layer
+                 :name "Derived Layer"
+                 :capabilities (list first-capability second-capability)))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil))))
+    (e-harness-activate-layer harness layer)
+    (should (equal (mapcar #'e-capability-id
+                           (e-harness-active-capabilities harness))
+                   '(first-capability second-capability)))))
+
+(ert-deftest e-harness-test-tools-are-derived-from-active-layers ()
+  "The harness tool surface is rebuilt from active layers on demand."
+  (let* ((capability
+          (e-capability-create
+           :id 'tool-capability
+           :tools (list (lambda (registry)
+                          (e-tools-register
+                           registry
+                           :name "derived_tool"
+                           :description "Derived tool."
+                           :handler (lambda (_arguments) "derived"))))))
+         (layer (e-layer-create
+                 :id 'tool-layer
+                 :name "Tool Layer"
+                 :capabilities (list capability)))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)))
+         (stale-tools (e-harness-tools harness)))
+    (e-harness-activate-layer harness layer)
+    (should-not (e-tools-definitions stale-tools))
+    (should (equal (mapcar (lambda (definition)
+                             (plist-get definition :name))
+                           (e-tools-definitions (e-harness-tools harness)))
+                   '("derived_tool")))
+    (should (equal (plist-get
+                    (e-tools-execute
+                     (e-harness-tools harness)
+                     '(:id "call-1"
+                       :name "derived_tool"
+                       :arguments nil))
+                    :content)
+                   "derived"))))
+
+(ert-deftest e-harness-test-direct-capability-activation-uses-layer-source ()
+  "Direct capability activation wraps the capability as a layer."
+  (let* ((capability (e-capability-create :id 'direct-capability))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil))))
+    (e-harness-activate-capability harness capability)
+    (should (equal (mapcar #'e-layer-id
+                           (e-harness-active-layers harness))
+                   '(direct-capability)))
+    (should (equal (mapcar #'e-capability-id
+                           (e-harness-active-capabilities harness))
+                   '(direct-capability)))))
+
+(ert-deftest e-harness-test-derived-views-do-not-keep-struct-compiler-macros ()
+  "Derived harness view functions must not expand into stale struct slots."
+  (should-not (get 'e-harness-active-capabilities 'compiler-macro))
+  (should-not (get 'e-harness-tools 'compiler-macro)))
+
 (ert-deftest e-harness-test-prompt-passes-tool-definitions-as-options ()
   "Prompting includes registered tool definitions in backend options."
   (let* ((captured-options nil)
@@ -325,13 +391,22 @@
                               (funcall on-item
                                        '(:type assistant-message :content "ok"))
                               (funcall on-item '(:type done :reason stop))))))
-         (tools (e-tools-registry-create))
-         (harness (e-harness-create :backend backend :tools tools)))
-    (e-tools-register tools
-                      :name "noop"
-                      :description "Accept no arguments."
-                      :parameters '(:type "object" :properties nil)
-                      :handler (lambda (_arguments) "now"))
+         (capability
+          (e-capability-create
+           :id 'noop-capability
+           :tools (list (lambda (registry)
+                          (e-tools-register
+                           registry
+                           :name "noop"
+                           :description "Accept no arguments."
+                           :parameters '(:type "object" :properties nil)
+                           :handler (lambda (_arguments) "now"))))))
+         (layer (e-layer-create
+                 :id 'noop-layer
+                 :name "Noop Layer"
+                 :capabilities (list capability)))
+         (harness (e-harness-create :backend backend)))
+    (e-harness-activate-layer harness layer)
     (e-harness-create-session harness :id "session-1")
     (e-harness-prompt harness "session-1" "raw prompt")
     (let* ((tool (car (plist-get captured-options :tools)))
@@ -357,17 +432,25 @@
                               (funcall on-item
                                        '(:type assistant-message :content "ok"))
                               (funcall on-item '(:type done :reason stop))))))
-         (tools (e-tools-registry-create))
+         (capability
+          (e-capability-create
+           :id 'noop-capability
+           :tools (list (lambda (registry)
+                          (e-tools-register
+                           registry
+                           :name "noop"
+                           :description "Accept no arguments."
+                           :parameters '(:type "object" :properties nil)
+                           :handler (lambda (_arguments) "now"))))))
+         (layer (e-layer-create
+                 :id 'noop-layer
+                 :name "Noop Layer"
+                 :capabilities (list capability)))
          (harness (e-harness-create
                    :backend backend
-                   :tools tools
                    :default-options '(:model "default-model"
                                       :reasoning-effort "medium"))))
-    (e-tools-register tools
-                      :name "noop"
-                      :description "Accept no arguments."
-                      :parameters '(:type "object" :properties nil)
-                      :handler (lambda (_arguments) "now"))
+    (e-harness-activate-layer harness layer)
     (e-harness-create-session harness :id "session-1")
     (e-harness-set-session-model harness "session-1" "session-model")
     (e-harness-set-session-reasoning-effort harness "session-1" "high")
@@ -389,6 +472,31 @@
       (should (equal (plist-get event :session-id) "session-1"))
       (should (equal (plist-get (plist-get event :payload) :turn-options)
                      '(:model "gpt-test"))))))
+
+(ert-deftest e-harness-test-session-projection-accessors ()
+  "Harness exposes public read-only projections for presentation shells."
+  (let* ((store (e-session-store-create))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :sessions store
+                   :default-options '(:model "default-model"))))
+    (e-harness-create-session harness :id "session-1")
+    (e-session-append-message
+     store "session-1" '(:id "msg-1" :role user :content "hello title"))
+    (e-session-append-activity-event
+     store "session-1" "turn-1" 'tool-started '(:name "tool"))
+    (e-harness-set-session-model harness "session-1" "gpt-test")
+    (should (equal (e-harness-session-title harness "session-1")
+                   "hello title"))
+    (should (equal (mapcar (lambda (session) (plist-get session :id))
+                           (e-harness-session-list harness))
+                   '("session-1")))
+    (should (equal (mapcar (lambda (event) (plist-get event :event-type))
+                           (e-harness-session-activity-events
+                            harness "session-1"))
+                   '(tool-started)))
+    (should (equal (e-harness-turn-options harness "session-1")
+                   '(:model "gpt-test")))))
 
 (ert-deftest e-harness-test-persists-activity-events-and-tags_turn_messages ()
   "Harness turn events persist as activity, and messages keep their turn id."

@@ -16,7 +16,8 @@
 (require 'ert)
 
 (defconst e-test--autoload-commands
-  '(e-chat-new
+  '(e-chat
+    e-chat-new
     e-chat-resume
     e-chat-rename
     e-chat-set-model
@@ -37,16 +38,19 @@
     e-capabilities
     e-context
     e-events
+    e-startup
     e-session
     e-tools
     e-loop
     e-layers
     e-harness
+    e-harness-registry
     e-core)
   "Features expected after requiring the pure core runtime.")
 
 (defconst e-test--non-core-features
   '(e-chat
+    e-default-harnesses
     e-openai
     e-emacs-tools
     e-base-tools)
@@ -92,7 +96,8 @@
                            :tools
                            :loop
                            :layers
-                           :harness))
+                           :harness
+                           :harness-registry))
               (should (plist-get status key)))
             (dolist (key '(:chat
                            :openai
@@ -115,6 +120,7 @@
                        "lisp/layers/emacs"
                        "lisp/layers/evidence"
                        "lisp/layers/chat"
+                       "lisp/defaults"
                        "lisp/shells"
                        "lisp/shells/chat"
                        "lisp/adapters/openai"
@@ -122,10 +128,52 @@
     (should (member (expand-file-name directory default-directory)
                     load-path))))
 
+(ert-deftest e-test-symlinked-package-load-stays-rooted-in-build-directory ()
+  "Loading a straight-style symlinked package should use the build directory."
+  (let ((build-directory (make-temp-file "e-build-" t))
+        (source-files '("e.el"
+                        "lisp/core/e-backend.el"
+                        "lisp/core/e-capabilities.el"
+                        "lisp/core/e-context.el"
+                        "lisp/core/e-core.el"
+                        "lisp/core/e-events.el"
+                        "lisp/core/e-harness.el"
+                        "lisp/core/e-harness-registry.el"
+                        "lisp/core/e-loop.el"
+                        "lisp/core/e-session.el"
+                        "lisp/core/e-startup.el"
+                        "lisp/core/e-tools.el"
+                        "lisp/layers/e-layers.el"
+                        "lisp/layers/chat/e-chat-session.el"
+                        "lisp/defaults/e-default-harnesses.el"
+                        "lisp/shells/e-shells.el"
+                        "lisp/shells/chat/e-chat.el"))
+        (original-features features))
+    (unwind-protect
+        (progn
+          (dolist (file source-files)
+            (make-symbolic-link
+             (expand-file-name file default-directory)
+             (expand-file-name (file-name-nondirectory file) build-directory)
+             t))
+          (setq features
+                (cl-remove-if
+                 (lambda (feature)
+                   (string-prefix-p "e" (symbol-name feature)))
+                 features))
+          (let ((load-path (cons build-directory load-path)))
+            (load (expand-file-name "e.el" build-directory) nil 'nomessage))
+          (should (equal (file-name-as-directory build-directory)
+                         (e-source-directory))))
+      (setq features original-features)
+      (delete-directory build-directory t)
+      (load (expand-file-name "e.el" default-directory) nil 'nomessage))))
+
 (ert-deftest e-test-exposes-interactive-entrypoints ()
   "The package exposes status and live-reload commands."
   (require 'e)
   (should (commandp 'e-status))
+  (should (commandp 'e-chat))
   (should (commandp 'e-chat-new))
   (should (commandp 'e-chat-resume))
   (should (commandp 'e-chat-rename))
@@ -137,8 +185,56 @@
   (should (commandp 'e-chat-reset))
   (should (commandp 'e-dev-reload)))
 
+(ert-deftest e-test-startup-loads-chat-shell-provider ()
+  "Startup loads shell command providers instead of hand-autoloading commands."
+  (let ((original-features features))
+    (unwind-protect
+        (progn
+          (setq features (cl-set-difference features '(e e-chat)))
+          (load (expand-file-name "e.el" default-directory) nil 'nomessage)
+          (should (featurep 'e-chat))
+          (should (eq (e-shell-id (e-shell-get 'chat)) 'chat)))
+      (setq features original-features)
+      (load (expand-file-name "e.el" default-directory) nil 'nomessage))))
+
+(ert-deftest e-test-startup-runs-provider-load-hooks-in-order ()
+  "Startup hooks run capability, layer, then shell providers."
+  (require 'e-startup)
+  (let ((events nil)
+        (e-startup-capability-hook nil)
+        (e-startup-layer-hook nil)
+        (e-startup-shell-hook nil))
+    (add-hook 'e-startup-capability-hook
+              (lambda () (push 'capability events)))
+    (add-hook 'e-startup-layer-hook
+              (lambda () (push 'layer events)))
+    (add-hook 'e-startup-shell-hook
+              (lambda () (push 'shell events)))
+    (e-startup-run)
+    (should (equal (nreverse events)
+                   '(capability layer shell)))))
+
+(ert-deftest e-test-startup-refreshes-chat-shell-keymaps ()
+  "Package startup uses the chat shell hook to refresh initial keymaps."
+  (require 'e)
+  (let ((e-chat-mode-map (make-sparse-keymap))
+        (e-chat-response-navigation-mode-map (make-sparse-keymap)))
+    (e-startup-run)
+    (should (eq (lookup-key e-chat-mode-map (kbd "<escape>"))
+                'e-chat-enter-response-navigation))
+    (should (eq (lookup-key e-chat-response-navigation-mode-map (kbd "j"))
+                'e-chat-response-navigation-next))))
+
+(ert-deftest e-test-entrypoint-does-not-own-chat-command-autoloads ()
+  "Chat commands are owned by the chat shell provider, not e.el."
+  (let ((entrypoint
+         (with-temp-buffer
+           (insert-file-contents (expand-file-name "e.el" default-directory))
+           (buffer-string))))
+    (should-not (string-match-p "(autoload 'e-chat" entrypoint))))
+
 (ert-deftest e-test-autoloads-expose-chat-commands-at-startup ()
-  "Generated package autoloads expose chat commands before reload."
+  "Generated provider autoloads expose chat commands before reload."
   (let ((generated-autoload-file
          (make-temp-file
           (expand-file-name "e-generated-autoloads-" default-directory)
@@ -152,7 +248,11 @@
           (dolist (function e-test--autoload-functions)
             (when (fboundp function)
               (fmakunbound function)))
-          (update-directory-autoloads default-directory)
+          (when (fboundp 'e--add-source-directories)
+            (fmakunbound 'e--add-source-directories))
+          (dolist (directory '("." "lisp/shells/chat" "lisp/dev"))
+            (update-directory-autoloads
+             (expand-file-name directory default-directory)))
           (let ((load-path (cons default-directory load-path)))
             (load generated-autoload-file nil 'nomessage)
             (dolist (command e-test--autoload-commands)
@@ -203,8 +303,16 @@
   (should (fboundp 'e-harness-reset))
   (should (fboundp 'e-harness-state))
   (should (fboundp 'e-harness-messages))
+  (should (fboundp 'e-harness-registry-register-factory))
+  (should (fboundp 'e-harness-registry-get-or-create))
   (should (fboundp 'e-capability-create))
   (should (fboundp 'e-capabilities-context-messages)))
+
+(ert-deftest e-test-requiring-e-registers-chat-default-factory ()
+  "Requiring e registers the startup default chat harness factory lazily."
+  (require 'e)
+  (require 'e-harness-registry)
+  (should (member :chat-default (e-harness-registry-list))))
 
 (provide 'e-test)
 

@@ -21,7 +21,7 @@
 (eval-and-compile
   (defconst e--directory
     (file-name-directory
-     (file-truename (or load-file-name buffer-file-name default-directory)))
+     (expand-file-name (or load-file-name buffer-file-name default-directory)))
     "Directory containing the e package entry point.")
   (defconst e--source-subdirectories
     '("lisp/core"
@@ -30,6 +30,7 @@
       "lisp/layers/emacs"
       "lisp/layers/evidence"
       "lisp/layers/chat"
+      "lisp/defaults"
       "lisp/shells"
       "lisp/shells/chat"
       "lisp/adapters/openai"
@@ -44,10 +45,25 @@
 ;;;###autoload
 (let ((directory (file-name-directory
                   (or load-file-name buffer-file-name default-directory))))
-  (e--add-source-directories directory))
+  (dolist (subdirectory (reverse
+                         '("lisp/core"
+                           "lisp/layers"
+                           "lisp/layers/base"
+                           "lisp/layers/emacs"
+                           "lisp/layers/evidence"
+                           "lisp/layers/chat"
+                           "lisp/defaults"
+                           "lisp/shells"
+                           "lisp/shells/chat"
+                           "lisp/adapters/openai"
+                           "lisp/dev")))
+    (add-to-list 'load-path (expand-file-name subdirectory directory))))
 
 (require 'e-core)
+(require 'e-default-harnesses)
 (require 'e-shells)
+(require 'e-chat)
+(e-startup-run)
 
 (defgroup e nil
   "Emacs-hosted agent runtime."
@@ -77,36 +93,6 @@
 
 ;;;###autoload
 (autoload 'e-dev-reload "e-dev" "Reload e package files during development." t)
-
-;;;###autoload
-(autoload 'e-chat-new "e-chat" "Create and open a new persisted e chat session." t)
-
-;;;###autoload
-(autoload 'e-chat-resume "e-chat" "Resume a recent persisted e chat session." t)
-
-;;;###autoload
-(autoload 'e-chat-rename "e-chat" "Rename the current e chat session." t)
-
-;;;###autoload
-(autoload 'e-chat-set-model "e-chat" "Set the current e chat session model." t)
-
-;;;###autoload
-(autoload 'e-chat-set-effort "e-chat" "Set the current e chat session reasoning effort." t)
-
-;;;###autoload
-(autoload 'e-chat-show-context "e-chat" "Show the current e chat session context." t)
-
-;;;###autoload
-(autoload 'e-chat-submit "e-chat" "Submit the current e chat prompt." t)
-
-;;;###autoload
-(autoload 'e-chat-abort "e-chat" "Abort the active e chat turn." t)
-
-;;;###autoload
-(autoload 'e-chat-reset "e-chat" "Reset the current e chat session." t)
-
-;;;###autoload
-(autoload 'e-chat-shell "e-chat" "Return the e chat shell manifest." nil)
 
 (provide 'e)
 

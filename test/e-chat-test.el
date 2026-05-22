@@ -16,8 +16,10 @@
 (require 'e)
 (require 'e-backend)
 (require 'e-chat)
+(require 'e-chat-session)
 (require 'e-events)
 (require 'e-harness)
+(require 'e-harness-registry)
 (require 'e-tools)
 
 (defun e-chat-test--buffer (&optional items session-id)
@@ -34,6 +36,20 @@
       (with-current-buffer buffer
         (when (derived-mode-p 'e-chat-mode)
           (kill-buffer buffer))))))
+
+(defmacro e-chat-test--with-empty-harness-registry (&rest body)
+  "Run BODY with an isolated harness registry."
+  (declare (indent 0) (debug t))
+  `(let ((e-harness-registry--instances (make-hash-table :test 'equal))
+         (e-harness-registry--factories (make-hash-table :test 'equal)))
+     ,@body))
+
+(defun e-chat-test--activate-chat-session (harness)
+  "Activate the chat-session capability in HARNESS."
+  (e-harness-activate-capability
+   harness
+   (e-chat-session-capability-create))
+  harness)
 
 (defun e-chat-test--render-turn (turn-id start-time end-time prompt response)
   "Render TURN-ID with START-TIME, END-TIME, PROMPT, and RESPONSE."
@@ -1374,7 +1390,8 @@
          (new-backend (e-backend-fake-create
                        :items '((:type assistant-message :content "fresh answer")
                                 (:type done :reason stop))))
-         (new-harness (e-harness-create :backend new-backend :sessions store))
+         (new-harness (e-chat-test--activate-chat-session
+                       (e-harness-create :backend new-backend :sessions store)))
          (buffer (e-chat-open :harness old-harness :session-id "chat-reload")))
     (unwind-protect
         (progn
@@ -1383,9 +1400,12 @@
           (with-current-buffer buffer
             (goto-char (point-max))
             (insert "stale prompt"))
-          (cl-letf (((symbol-function 'e-chat--default-harness)
-                     (lambda () new-harness)))
-            (should (= (e-chat-reload-buffers) 1)))
+          (e-chat-test--with-empty-harness-registry
+            (let ((e-chat-default-harness-id :chat-test))
+              (e-harness-registry-register-factory
+               :chat-test
+               (lambda () new-harness))
+              (should (= (e-chat-reload-buffers) 1))))
           (with-current-buffer buffer
             (should (eq e-chat-harness new-harness))
             (should (equal e-chat-session-id "chat-reload"))
@@ -1401,81 +1421,71 @@
         (kill-buffer buffer))
       (delete-directory directory t))))
 
-(ert-deftest e-chat-test-default-harness-uses-default-openai-provider ()
-  "Default chat harness creation honors `e-openai-default-provider'."
-  (let ((e-openai-default-provider 'openai-compatible-gateway)
-        (seen-provider nil)
-        (seen-sessions nil))
-    (cl-letf (((symbol-function 'e-openai-create-harness)
-               (lambda (&rest args)
-                 (setq seen-provider (plist-get args :provider))
-                 (setq seen-sessions (plist-get args :sessions))
-                 (e-harness-create
-                  :backend (e-backend-fake-create :items nil)
-                  :sessions seen-sessions))))
-      (should (e-harness-p (e-chat--default-harness)))
-      (should (eq seen-provider 'openai-compatible-gateway))
-      (should (e-session-store-p seen-sessions)))))
+(ert-deftest e-chat-test-default-harness-requests-configured-registry-id ()
+  "Chat shell asks the harness registry for the configured default id."
+  (e-chat-test--with-empty-harness-registry
+    (let* ((e-chat-default-harness-id :chat-test)
+           (harness (e-chat-test--activate-chat-session
+                     (e-harness-create
+                      :backend (e-backend-fake-create :items nil)))))
+      (e-harness-registry-register :chat-test harness)
+      (should (eq (e-chat--default-harness) harness)))))
 
-(ert-deftest e-chat-test-default-harness-activates-chat-session-base-and-emacs ()
-  "Default chat harness activation includes chat-session and default layers."
-  (let ((e-chat-default-layer-functions
-         '(e-base-layer-create e-emacs-base-layer-create)))
-    (cl-letf (((symbol-function 'e-openai-create-harness)
-               (lambda (&rest _args)
-                 (e-harness-create
-                  :backend (e-backend-fake-create :items nil)))))
-      (should (equal (mapcar #'e-layer-id
-                             (e-harness-active-layers
-                              (e-chat--default-harness)))
-                     '(chat-session base emacs-base)))
-      (should (memq 'chat-session
-                    (mapcar #'e-capability-id
-                            (e-harness-active-capabilities
-                             (e-chat--default-harness))))))))
+(ert-deftest e-chat-test-default-harness-missing-id-is-user-error ()
+  "Missing configured harness ids surface as chat command errors."
+  (e-chat-test--with-empty-harness-registry
+    (let ((e-chat-default-harness-id :missing-chat))
+      (should-error (e-chat--default-harness) :type 'user-error))))
 
-(ert-deftest e-chat-test-default-layer-functions-control-activation-order ()
-  "Default chat layer functions control activated layer order."
-  (let ((e-chat-default-layer-functions
-         (list (lambda ()
-                 (e-layer-create
-                  :id 'first-layer
-                  :name "First"))
-               (lambda ()
-                 (e-layer-create
-                  :id 'second-layer
-                  :name "Second")))))
-    (cl-letf (((symbol-function 'e-openai-create-harness)
-               (lambda (&rest _args)
-                 (e-harness-create
-                  :backend (e-backend-fake-create :items nil)))))
-      (should (equal (mapcar #'e-layer-id
-                             (e-harness-active-layers
-                              (e-chat--default-harness)))
-                     '(chat-session first-layer second-layer))))))
+(ert-deftest e-chat-test-default-harness-requires-chat-session ()
+  "The configured default harness must expose the chat-session capability."
+  (e-chat-test--with-empty-harness-registry
+    (let ((e-chat-default-harness-id :chat-test)
+          (harness (e-harness-create
+                    :backend (e-backend-fake-create :items nil))))
+      (e-harness-registry-register :chat-test harness)
+      (should-error (e-chat--default-harness) :type 'user-error))))
+
+(ert-deftest e-chat-test-source-does-not-cross-harness-boundaries ()
+  "Chat shell uses registry lookup and public harness projections."
+  (let ((source (with-temp-buffer
+                  (insert-file-contents
+                   (expand-file-name "lisp/shells/chat/e-chat.el"
+                                     (e-source-directory)))
+                  (buffer-string))))
+    (dolist (forbidden '("e-openai-create-harness"
+                         "e-harness--turn-options"
+                         "e-session-display-title"
+                         "e-session-list"
+                         "e-session-activity-events"
+                         "e-session-get"))
+      (should-not (string-match-p forbidden source)))))
 
 (ert-deftest e-chat-test-new-creates-distinct-persisted-sessions ()
   "Each new chat command invocation creates a distinct persisted session."
   (let* ((directory (make-temp-file "e-chat-" t))
          (store (e-session-persistent-store-create directory))
          (backend (e-backend-fake-create :items nil))
-         (harness (e-harness-create :backend backend :sessions store))
+         (harness (e-chat-test--activate-chat-session
+                   (e-harness-create :backend backend :sessions store)))
          first-id second-id)
     (unwind-protect
-        (cl-letf (((symbol-function 'e-chat--default-harness)
-                   (lambda () harness)))
-          (e-chat-test--kill-chat-buffers)
-          (with-current-buffer (e-chat-new)
-            (setq first-id e-chat-session-id))
-          (with-current-buffer (e-chat-new)
-            (setq second-id e-chat-session-id))
-          (should (not (equal first-id second-id)))
-          (should (file-exists-p
-                   (expand-file-name (concat first-id ".jsonl")
-                                     (expand-file-name "sessions" directory))))
-          (should (file-exists-p
-                   (expand-file-name (concat second-id ".jsonl")
-                                     (expand-file-name "sessions" directory)))))
+        (e-chat-test--with-empty-harness-registry
+          (let ((e-chat-default-harness-id :chat-test))
+            (e-harness-registry-register :chat-test harness)
+            (e-chat-test--kill-chat-buffers)
+            (with-current-buffer (e-chat-new)
+              (setq first-id e-chat-session-id))
+            (with-current-buffer (e-chat-new)
+              (setq second-id e-chat-session-id))
+            (should (not (equal first-id second-id)))
+            (should (file-exists-p
+                     (expand-file-name (concat first-id ".jsonl")
+                                       (expand-file-name "sessions" directory))))
+            (should (file-exists-p
+                     (expand-file-name
+                      (concat second-id ".jsonl")
+                      (expand-file-name "sessions" directory))))))
       (e-chat-test--kill-chat-buffers)
       (delete-directory directory t))))
 
@@ -1484,20 +1494,22 @@
   (let* ((directory (make-temp-file "e-chat-" t))
          (store (e-session-persistent-store-create directory))
          (backend (e-backend-fake-create :items nil))
-         (harness (e-harness-create :backend backend :sessions store)))
+         (harness (e-chat-test--activate-chat-session
+                   (e-harness-create :backend backend :sessions store))))
     (unwind-protect
         (progn
           (e-session-create store :id "resume-me")
           (e-session-append-message
            store "resume-me" '(:id "msg-1" :role user :content "saved hello"))
-          (cl-letf (((symbol-function 'e-chat--default-harness)
-                     (lambda () harness))
-                    ((symbol-function 'completing-read)
+          (cl-letf (((symbol-function 'completing-read)
                      (lambda (_prompt collection &rest _args)
                        (car collection))))
-            (with-current-buffer (e-chat-resume)
-              (should (equal e-chat-session-id "resume-me"))
-              (should (string-match-p "saved hello" (buffer-string))))))
+            (e-chat-test--with-empty-harness-registry
+              (let ((e-chat-default-harness-id :chat-test))
+                (e-harness-registry-register :chat-test harness)
+                (with-current-buffer (e-chat-resume)
+                  (should (equal e-chat-session-id "resume-me"))
+                  (should (string-match-p "saved hello" (buffer-string))))))))
       (e-chat-test--kill-chat-buffers)
       (delete-directory directory t))))
 
