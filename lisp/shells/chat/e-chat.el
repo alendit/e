@@ -46,6 +46,16 @@
   :type 'string
   :group 'e-chat)
 
+(defcustom e-chat-details-buffer-name "*e-chat-details*"
+  "Buffer name for read-only focused block details."
+  :type 'string
+  :group 'e-chat)
+
+(defcustom e-chat-tool-output-buffer-name "*e-chat-tool-output*"
+  "Buffer name for read-only focused tool output."
+  :type 'string
+  :group 'e-chat)
+
 (defcustom e-chat-submit-backend-delay 0.05
   "Seconds to delay backend work after rendering a submitted human turn."
   :type 'number
@@ -245,6 +255,24 @@
 (defvar-local e-chat--focused-turn-overlay nil
   "Overlay highlighting the focused response-navigation turn.")
 
+(defvar-local e-chat--latest-final-block-id nil
+  "Most recent final assistant block id in this chat buffer.")
+
+(defvar-local e-chat--block-view-block-id nil
+  "Block id currently active in block view mode.")
+
+(defvar-local e-chat--tool-list-block-id nil
+  "Activity block id currently showing a tool list.")
+
+(defvar-local e-chat--tool-list-index 0
+  "Selected tool item index in the focused activity tool list.")
+
+(defvar-local e-chat--tool-list-overlay nil
+  "Overlay highlighting the selected activity tool list item.")
+
+(defvar-local e-chat--tool-output-origin-buffer nil
+  "Chat buffer that opened the current tool output buffer.")
+
 (defvar-local e-chat--progress-turn-id nil
   "Turn id currently represented by the assistant progress indicator.")
 
@@ -312,24 +340,68 @@
     field e-chat-transcript)
   "Text properties applied to protected e chat presentation text.")
 
-(defun e-chat--make-response-navigation-mode-map ()
-  "Return the keymap for `e-chat-response-navigation-mode'."
-  (let ((map (make-sparse-keymap)))
+(defun e-chat--make-response-navigation-mode-map (&optional map)
+  "Return MAP configured for `e-chat-response-navigation-mode'."
+  (let ((map (or map (make-sparse-keymap))))
     (define-key map (kbd "j") #'e-chat-response-navigation-next)
     (define-key map (kbd "k") #'e-chat-response-navigation-previous)
-    (define-key map (kbd "RET") #'e-chat-response-navigation-expand)
+    (define-key map (kbd "RET") #'e-chat-response-navigation-activate)
     (define-key map (kbd "i") #'e-chat-response-navigation-insert)
+    (define-key map (kbd "y") #'e-chat-response-navigation-copy)
+    (define-key map (kbd "o") #'e-chat-response-navigation-open)
+    (define-key map (kbd "d") #'e-chat-response-navigation-details)
     map))
 
 (defvar e-chat-response-navigation-mode-map
   (e-chat--make-response-navigation-mode-map)
   "Keymap for response navigation inside `e-chat-mode'.")
 
+(defun e-chat--make-block-view-mode-map (&optional map)
+  "Return MAP configured for `e-chat-block-view-mode'."
+  (let ((map (or map (make-sparse-keymap))))
+    (define-key map (kbd "h") #'e-chat-block-view-left)
+    (define-key map (kbd "j") #'e-chat-block-view-down)
+    (define-key map (kbd "k") #'e-chat-block-view-up)
+    (define-key map (kbd "l") #'e-chat-block-view-right)
+    (define-key map (kbd "i") #'e-chat-block-view-insert)
+    (define-key map (kbd "<escape>") #'e-chat-block-view-back)
+    map))
+
+(defvar e-chat-block-view-mode-map
+  (e-chat--make-block-view-mode-map)
+  "Keymap for block-local view mode inside `e-chat-mode'.")
+
+(defun e-chat--make-tool-list-mode-map (&optional map)
+  "Return MAP configured for `e-chat-tool-list-mode'."
+  (let ((map (or map (make-sparse-keymap))))
+    (define-key map (kbd "j") #'e-chat-tool-list-next)
+    (define-key map (kbd "k") #'e-chat-tool-list-previous)
+    (define-key map (kbd "RET") #'e-chat-tool-list-open-output)
+    (define-key map (kbd "<escape>") #'e-chat-tool-list-back)
+    map))
+
+(defvar e-chat-tool-list-mode-map
+  (e-chat--make-tool-list-mode-map)
+  "Keymap for activity tool-list mode inside `e-chat-mode'.")
+
+(defun e-chat--make-tool-output-mode-map (&optional map)
+  "Return MAP configured for `e-chat-tool-output-mode'."
+  (let ((map (or map (make-sparse-keymap))))
+    (set-keymap-parent map special-mode-map)
+    (define-key map (kbd "<escape>") #'e-chat-tool-output-back)
+    map))
+
+(defvar e-chat-tool-output-mode-map
+  (e-chat--make-tool-output-mode-map)
+  "Keymap for read-only tool output buffers.")
+
 (defun e-chat--make-mode-map (&optional map)
   "Return MAP configured as the local keymap for `e-chat-mode'."
   (let ((map (or map (make-sparse-keymap))))
     (set-keymap-parent map text-mode-map)
     (define-key map (kbd "<escape>") #'e-chat-enter-response-navigation)
+    (define-key map (kbd "M-o") #'e-chat-open-latest-response)
+    (define-key map (kbd "M-y") #'e-chat-copy-latest-response)
     (define-key map (kbd "C-c C-c") #'e-chat-submit)
     (define-key map (kbd "RET") #'newline)
     (define-key map (kbd "C-c C-k") #'e-chat-abort)
@@ -340,7 +412,20 @@
 (defvar e-chat-mode-map (e-chat--make-mode-map)
   "Keymap for `e-chat-mode'.")
 
-(setq e-chat-mode-map (e-chat--make-mode-map e-chat-mode-map))
+(defun e-chat--refresh-keymaps ()
+  "Refresh chat keymaps after live reload."
+  (setq e-chat-response-navigation-mode-map
+        (e-chat--make-response-navigation-mode-map
+         e-chat-response-navigation-mode-map))
+  (setq e-chat-block-view-mode-map
+        (e-chat--make-block-view-mode-map e-chat-block-view-mode-map))
+  (setq e-chat-tool-list-mode-map
+        (e-chat--make-tool-list-mode-map e-chat-tool-list-mode-map))
+  (setq e-chat-tool-output-mode-map
+        (e-chat--make-tool-output-mode-map e-chat-tool-output-mode-map))
+  (setq e-chat-mode-map (e-chat--make-mode-map e-chat-mode-map)))
+
+(e-chat--refresh-keymaps)
 
 (define-derived-mode e-chat-mode text-mode "e-chat"
   "Major mode for e chat buffers."
@@ -355,6 +440,26 @@
     (setq e-chat--focused-block-id nil)
     (when (overlayp e-chat--focused-turn-overlay)
       (delete-overlay e-chat--focused-turn-overlay))))
+
+(define-minor-mode e-chat-block-view-mode
+  "Move within the focused e chat block."
+  :lighter " View"
+  :keymap e-chat-block-view-mode-map
+  (unless e-chat-block-view-mode
+    (setq e-chat--block-view-block-id nil)))
+
+(define-minor-mode e-chat-tool-list-mode
+  "Navigate tool calls for a focused e chat activity block."
+  :lighter " Tools"
+  :keymap e-chat-tool-list-mode-map
+  (unless e-chat-tool-list-mode
+    (setq e-chat--tool-list-block-id nil)
+    (setq e-chat--tool-list-index 0)
+    (when (overlayp e-chat--tool-list-overlay)
+      (delete-overlay e-chat--tool-list-overlay))))
+
+(define-derived-mode e-chat-tool-output-mode special-mode "e-chat-tool-output"
+  "Major mode for read-only e chat tool output buffers.")
 
 (defun e-chat--disable-modal-editing ()
   "Disable local modal editing state for the chat buffer when available."
@@ -608,6 +713,7 @@ Return non-nil when a composer was removed."
                               :intermittent-entries nil
                               :transient-start-marker nil
                               :transient-end-marker nil
+                              :activity-block-id nil
                               :final-rendered nil)))
             (puthash turn-id record registry)
             record)))))
@@ -628,6 +734,13 @@ Return non-nil when a composer was removed."
     (or (gethash block-id registry)
         (let ((record (list :id block-id
                             :turn-id turn-id
+                            :kind nil
+                            :action-text nil
+                            :content-start-marker nil
+                            :content-end-marker nil
+                            :tool-items nil
+                            :tool-list-start-marker nil
+                            :tool-list-end-marker nil
                             :start-marker nil
                             :end-marker nil)))
           (puthash block-id record registry)
@@ -639,13 +752,29 @@ Return non-nil when a composer was removed."
   (when (and turn-id value)
     (plist-put (e-chat--turn-record turn-id) field value)))
 
-(defun e-chat--update-block-bounds (block-id turn-id start end)
-  "Set BLOCK-ID bounds for TURN-ID to START through END."
+(defun e-chat--update-block-bounds
+    (block-id turn-id start end
+              &optional kind action-text content-start content-end tool-items)
+  "Set BLOCK-ID bounds START through END and action metadata for TURN-ID.
+Optional KIND, ACTION-TEXT, CONTENT-START, CONTENT-END, and TOOL-ITEMS
+describe block actions."
   (when block-id
     (e-chat--turn-record turn-id)
     (let ((record (e-chat--block-record block-id turn-id)))
       (plist-put record :start-marker (copy-marker start nil))
-      (plist-put record :end-marker (copy-marker end nil)))))
+      (plist-put record :end-marker (copy-marker end nil))
+      (when kind
+        (plist-put record :kind kind))
+      (when action-text
+        (plist-put record :action-text action-text))
+      (when content-start
+        (plist-put record :content-start-marker (copy-marker content-start nil)))
+      (when content-end
+        (plist-put record :content-end-marker (copy-marker content-end nil)))
+      (when tool-items
+        (plist-put record :tool-items tool-items))
+      (when (eq kind 'final)
+        (setq e-chat--latest-final-block-id block-id)))))
 
 (defun e-chat--block-at-point ()
   "Return the rendered block id at point, or nil."
@@ -695,6 +824,72 @@ Return non-nil when a composer was removed."
     (let ((next-index (max 0 (min (1- (length e-chat--block-order))
                                   (+ found step)))))
       (e-chat--focus-block (nth next-index e-chat--block-order)))))
+
+(defun e-chat--focused-block ()
+  "Return the focused block record."
+  (unless e-chat--focused-block-id
+    (user-error "No focused e chat block"))
+  (or (and (hash-table-p e-chat--block-registry)
+           (gethash e-chat--focused-block-id e-chat--block-registry))
+      (user-error "Focused e chat block is no longer rendered")))
+
+(defun e-chat--block-kind-for-title (title)
+  "Return block kind for rendered entry TITLE."
+  (cond
+   ((equal title "You") 'user)
+   ((equal title "Assistant") 'final)
+   ((equal title "System") 'system)
+   (t 'system)))
+
+(defun e-chat--block-content-bounds (block)
+  "Return content bounds for BLOCK."
+  (let* ((start-marker (or (plist-get block :content-start-marker)
+                           (plist-get block :start-marker)))
+         (end-marker (or (plist-get block :content-end-marker)
+                         (plist-get block :end-marker)))
+         (start (and (markerp start-marker) (marker-position start-marker)))
+         (end (and (markerp end-marker) (marker-position end-marker))))
+    (unless (and start end (<= start end))
+      (user-error "Focused e chat block has no content bounds"))
+    (cons start end)))
+
+(defun e-chat--block-action-text (block)
+  "Return action text for BLOCK."
+  (or (plist-get block :action-text)
+      (let ((bounds (e-chat--block-content-bounds block)))
+        (string-trim-right
+         (buffer-substring-no-properties (car bounds) (cdr bounds))))))
+
+(defun e-chat--latest-final-block ()
+  "Return the latest final assistant block record."
+  (let ((block-id e-chat--latest-final-block-id))
+    (unless (and block-id
+                 (hash-table-p e-chat--block-registry)
+                 (gethash block-id e-chat--block-registry))
+      (setq block-id
+            (and (hash-table-p e-chat--block-registry)
+                 (cl-find-if
+                  (lambda (candidate)
+                    (eq (plist-get (gethash candidate e-chat--block-registry)
+                                   :kind)
+                        'final))
+                  (reverse e-chat--block-order)))))
+    (or (and block-id (gethash block-id e-chat--block-registry))
+        (user-error "No final e chat response"))))
+
+(defun e-chat--buffer-with-text (name text &optional read-only)
+  "Display NAME containing TEXT, optionally READ-ONLY."
+  (let ((buffer (generate-new-buffer name)))
+    (with-current-buffer buffer
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert text))
+      (if read-only
+          (special-mode)
+        (text-mode))
+      (goto-char (point-min)))
+    (display-buffer buffer)
+    buffer))
 
 (defun e-chat--format-time-value (value)
   "Return VALUE as a compact display string."
@@ -781,6 +976,29 @@ Count tool invocations after the reasoning chunk they followed."
       "\n\n")
      "\n\n")))
 
+(defun e-chat--activity-tool-items (entries)
+  "Return tool call/output items derived from intermittent ENTRIES."
+  (let ((items nil)
+        current)
+    (dolist (entry entries)
+      (pcase (plist-get entry :title)
+        ("Tool call"
+         (when current
+           (push current items))
+         (setq current (list :call (plist-get entry :content)
+                             :output nil)))
+        ("Tool"
+         (if current
+             (progn
+               (plist-put current :output (plist-get entry :content))
+               (push current items)
+               (setq current nil))
+           (push (list :call "Tool" :output (plist-get entry :content))
+                 items)))))
+    (when current
+      (push current items))
+    (nreverse items)))
+
 (defun e-chat--transient-text (record)
   "Return visible transient text for RECORD."
   (when-let ((entries (plist-get record :intermittent-entries)))
@@ -854,6 +1072,13 @@ When RECORD is nil, clear only buffer-local status markers."
     (plist-put record :transient-start-marker nil)
     (plist-put record :transient-end-marker nil)))
 
+(defun e-chat--clear-running-status-markers ()
+  "Clear buffer-local running status markers without deleting text."
+  (setq e-chat--running-status-start-marker nil)
+  (setq e-chat--running-status-end-marker nil)
+  (setq e-chat--progress-start-marker nil)
+  (setq e-chat--progress-end-marker nil))
+
 (defun e-chat--delete-turn-transient (record)
   "Delete the currently visible transient block for RECORD."
   (e-chat--delete-running-status record))
@@ -885,17 +1110,39 @@ When RECORD is nil, clear only buffer-local status markers."
                   (setq e-chat--progress-end-marker
                         (copy-marker (point) nil))))
               (when text
-                (let ((transient-start (point)))
+                (let* ((transient-start (point))
+                       (activity-block-id
+                        (and (not has-progress)
+                             (or (plist-get record :activity-block-id)
+                                 (let ((id (e-chat--next-block-id)))
+                                   (plist-put record :activity-block-id id)
+                                   id)))))
                   (e-chat--insert-protected
                    text
                    'e-chat-system-face
-                   `(e-chat-transient-turn-id ,turn-id))
+                   (if activity-block-id
+                       `(e-chat-transient-turn-id ,turn-id
+                         e-chat-turn-id ,turn-id
+                         e-chat-block-id ,activity-block-id)
+                     `(e-chat-transient-turn-id ,turn-id)))
                   (plist-put record
                              :transient-start-marker
                              (copy-marker transient-start nil))
                   (plist-put record
                              :transient-end-marker
-                             (copy-marker (point) nil))))
+                             (copy-marker (point) nil))
+                  (when activity-block-id
+                    (e-chat--update-block-bounds
+                     activity-block-id
+                     turn-id
+                     transient-start
+                     (point)
+                     'activity
+                     (string-trim-right text)
+                     transient-start
+                     (point)
+                     (e-chat--activity-tool-items
+                      (plist-get record :intermittent-entries))))))
               (setq e-chat--running-status-start-marker
                     (copy-marker status-start nil))
               (setq e-chat--running-status-end-marker
@@ -1075,7 +1322,8 @@ SOURCE identifies where the entry came from for duplicate suppression."
 (defun e-chat--finalize-turn-display (turn-id)
   "Mark TURN-ID as having rendered its final response."
   (when-let ((record (e-chat--turn-record turn-id)))
-    (plist-put record :final-rendered t)))
+    (plist-put record :final-rendered t)
+    (e-chat--clear-running-status-markers)))
 
 (defun e-chat--delete-block-details (block)
   "Delete expanded detail text for BLOCK."
@@ -1361,20 +1609,29 @@ TURN-ID tags the rendered entry for response navigation."
       (unless (or (bobp) (bolp))
         (insert "\n"))
       (let ((start (point)))
-        (e-chat--insert-protected
-         (e-chat--entry-text title content)
-         (e-chat--entry-face title)
-         (when block-id
-           `(e-chat-turn-id ,turn-id
-             e-chat-block-id ,block-id)))
-        (when (equal title "Assistant")
-          (e-chat--apply-assistant-markdown
-           (+ start (e-chat--entry-content-offset title))
-           (point))
-          (e-chat--apply-final-assistant-face
-           (+ start (e-chat--entry-content-offset title))
-           (point)))
-        (e-chat--update-block-bounds block-id turn-id start (point))))
+        (let ((content-start (+ start (e-chat--entry-content-offset title))))
+          (e-chat--insert-protected
+           (e-chat--entry-text title content)
+           (e-chat--entry-face title)
+           (when block-id
+             `(e-chat-turn-id ,turn-id
+               e-chat-block-id ,block-id)))
+          (when (equal title "Assistant")
+            (e-chat--apply-assistant-markdown
+             content-start
+             (point))
+            (e-chat--apply-final-assistant-face
+             content-start
+             (point)))
+          (e-chat--update-block-bounds
+           block-id
+           turn-id
+           start
+           (point)
+           (e-chat--block-kind-for-title title)
+           content
+           content-start
+           (point)))))
     (if active-turn-id
         (e-chat--render-running-status active-turn-id active-record)
       (when (or ensure-composer had-composer)
@@ -1402,23 +1659,274 @@ TURN-ID tags the rendered entry for response navigation."
   (interactive)
   (e-chat--move-focused-block -1))
 
-(defun e-chat-response-navigation-expand ()
-  "Expand metadata under the focused turn block."
+(defun e-chat-response-navigation-activate ()
+  "Activate the focused block according to its kind."
   (interactive)
-  (unless e-chat--focused-turn-id
-    (user-error "No focused e chat turn"))
-  (let* ((block (gethash e-chat--focused-block-id e-chat--block-registry))
-         (turn-id (plist-get block :turn-id))
-         (record (gethash turn-id e-chat--turn-registry)))
-    (if (e-chat--block-details-visible-p block)
-        (e-chat--delete-block-details block)
-      (e-chat--insert-block-details block turn-id record))))
+  (let ((block (e-chat--focused-block)))
+    (pcase (plist-get block :kind)
+      ('activity
+       (e-chat--open-tool-list block))
+      (_
+       (e-chat--enter-block-view block)))))
 
 (defun e-chat-response-navigation-insert ()
   "Leave response navigation and focus the composer."
   (interactive)
   (e-chat-response-navigation-mode -1)
   (e-chat--show-composer))
+
+(defun e-chat-response-navigation-copy ()
+  "Copy the focused block's action text."
+  (interactive)
+  (let ((text (e-chat--block-action-text (e-chat--focused-block))))
+    (kill-new text)
+    (message "Copied e chat block")
+    text))
+
+(defun e-chat--open-block-text (block)
+  "Open BLOCK action text in a new editable buffer."
+  (e-chat--buffer-with-text "*e-chat-block*" (e-chat--block-action-text block)))
+
+(defun e-chat-response-navigation-open ()
+  "Open the focused block in a new editable buffer."
+  (interactive)
+  (e-chat--open-block-text (e-chat--focused-block)))
+
+(defun e-chat--display-details-buffer (text)
+  "Display read-only details TEXT."
+  (let ((buffer (get-buffer-create e-chat-details-buffer-name)))
+    (with-current-buffer buffer
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert text))
+      (special-mode)
+      (goto-char (point-min)))
+    (display-buffer buffer)
+    buffer))
+
+(defun e-chat-response-navigation-details ()
+  "Open details for the focused block's turn."
+  (interactive)
+  (let* ((block (e-chat--focused-block))
+         (turn-id (plist-get block :turn-id))
+         (record (and turn-id (gethash turn-id e-chat--turn-registry))))
+    (unless record
+      (user-error "Focused e chat block has no turn details"))
+    (e-chat--display-details-buffer
+     (e-chat--turn-details-text turn-id record))))
+
+(defun e-chat-copy-latest-response ()
+  "Copy the latest final assistant response."
+  (interactive)
+  (let ((text (e-chat--block-action-text (e-chat--latest-final-block))))
+    (kill-new text)
+    (message "Copied latest e chat response")
+    text))
+
+(defun e-chat-open-latest-response ()
+  "Open the latest final assistant response in an editable buffer."
+  (interactive)
+  (e-chat--open-block-text (e-chat--latest-final-block)))
+
+(defun e-chat--enter-block-view (block)
+  "Enter block-local view mode for BLOCK."
+  (let* ((block-id (plist-get block :id))
+         (bounds (e-chat--block-content-bounds block)))
+    (e-chat-response-navigation-mode -1)
+    (setq e-chat--focused-block-id block-id)
+    (setq e-chat--focused-turn-id (plist-get block :turn-id))
+    (setq e-chat--block-view-block-id block-id)
+    (e-chat-block-view-mode 1)
+    (goto-char (car bounds))))
+
+(defun e-chat--block-view-block ()
+  "Return block active in block view mode."
+  (or (and e-chat--block-view-block-id
+           (hash-table-p e-chat--block-registry)
+           (gethash e-chat--block-view-block-id e-chat--block-registry))
+      (user-error "No e chat block view is active")))
+
+(defun e-chat--block-view-clamp-point ()
+  "Keep point inside the active block content bounds."
+  (let ((bounds (e-chat--block-content-bounds (e-chat--block-view-block))))
+    (when (< (point) (car bounds))
+      (goto-char (car bounds)))
+    (when (> (point) (cdr bounds))
+      (goto-char (cdr bounds)))))
+
+(defun e-chat-block-view-left ()
+  "Move left inside the focused block."
+  (interactive)
+  (let ((bounds (e-chat--block-content-bounds (e-chat--block-view-block))))
+    (when (> (point) (car bounds))
+      (backward-char 1))))
+
+(defun e-chat-block-view-right ()
+  "Move right inside the focused block."
+  (interactive)
+  (let ((bounds (e-chat--block-content-bounds (e-chat--block-view-block))))
+    (when (< (point) (cdr bounds))
+      (forward-char 1))))
+
+(defun e-chat-block-view-down ()
+  "Move down inside the focused block."
+  (interactive)
+  (forward-line 1)
+  (e-chat--block-view-clamp-point))
+
+(defun e-chat-block-view-up ()
+  "Move up inside the focused block."
+  (interactive)
+  (forward-line -1)
+  (e-chat--block-view-clamp-point))
+
+(defun e-chat-block-view-back ()
+  "Return from block view to block navigation."
+  (interactive)
+  (let ((block-id e-chat--block-view-block-id))
+    (e-chat-block-view-mode -1)
+    (e-chat-response-navigation-mode 1)
+    (e-chat--focus-block block-id)))
+
+(defun e-chat-block-view-insert ()
+  "Leave block view and focus the composer."
+  (interactive)
+  (e-chat-block-view-mode -1)
+  (e-chat-response-navigation-mode -1)
+  (e-chat--show-composer))
+
+(defun e-chat--delete-tool-list (block)
+  "Delete the visible tool list for BLOCK."
+  (let ((start (plist-get block :tool-list-start-marker))
+        (end (plist-get block :tool-list-end-marker)))
+    (when (and (markerp start)
+               (markerp end)
+               (marker-position start)
+               (marker-position end))
+      (let ((inhibit-read-only t))
+        (delete-region start end)))
+    (plist-put block :tool-list-start-marker nil)
+    (plist-put block :tool-list-end-marker nil)))
+
+(defun e-chat--open-tool-list (block)
+  "Open a collapsed tool-call list for activity BLOCK."
+  (let ((items (plist-get block :tool-items)))
+    (unless items
+      (user-error "Focused activity block has no tool calls"))
+    (e-chat--delete-tool-list block)
+    (let* ((end-marker (plist-get block :end-marker))
+           (end (and (markerp end-marker) (marker-position end-marker)))
+           (had-composer (e-chat--delete-composer)))
+      (unless end
+        (user-error "Focused activity block has no insertion point"))
+      (let ((inhibit-read-only t))
+        (goto-char end)
+        (let ((start (point)))
+          (e-chat--insert-protected "\n" 'e-chat-system-face
+                                    '(e-chat-tool-list t))
+          (cl-loop for item in items
+                   for index from 0
+                   do
+                   (let ((item-start (point)))
+                     (e-chat--insert-protected
+                      (format "  %d. %s\n" (1+ index)
+                              (plist-get item :call))
+                      'e-chat-system-face
+                      `(e-chat-tool-list t e-chat-tool-index ,index))
+                     (plist-put item :start-marker (copy-marker item-start nil))
+                     (plist-put item :end-marker (copy-marker (point) nil))))
+          (plist-put block :tool-list-start-marker (copy-marker start nil))
+          (plist-put block :tool-list-end-marker (copy-marker (point) nil))))
+      (when had-composer
+        (goto-char (point-max))
+        (e-chat--insert-composer)))
+    (let ((block-id (plist-get block :id)))
+      (e-chat-response-navigation-mode -1)
+      (setq e-chat--focused-block-id block-id)
+      (setq e-chat--focused-turn-id (plist-get block :turn-id))
+      (setq e-chat--tool-list-block-id block-id)
+      (setq e-chat--tool-list-index 0)
+      (e-chat-tool-list-mode 1)
+      (e-chat--focus-tool-list-item))))
+
+(defun e-chat--tool-list-block ()
+  "Return active tool-list block."
+  (or (and e-chat--tool-list-block-id
+           (hash-table-p e-chat--block-registry)
+           (gethash e-chat--tool-list-block-id e-chat--block-registry))
+      (user-error "No e chat tool list is active")))
+
+(defun e-chat--focus-tool-list-item ()
+  "Highlight the selected tool-list item."
+  (let* ((block (e-chat--tool-list-block))
+         (items (plist-get block :tool-items))
+         (item (nth e-chat--tool-list-index items))
+         (start (and item
+                     (markerp (plist-get item :start-marker))
+                     (marker-position (plist-get item :start-marker))))
+         (end (and item
+                   (markerp (plist-get item :end-marker))
+                   (marker-position (plist-get item :end-marker)))))
+    (unless (and start end)
+      (user-error "No e chat tool item to focus"))
+    (unless (overlayp e-chat--tool-list-overlay)
+      (setq e-chat--tool-list-overlay (make-overlay start end nil t nil)))
+    (move-overlay e-chat--tool-list-overlay start end)
+    (overlay-put e-chat--tool-list-overlay 'face 'e-chat-focused-turn-face)
+    (goto-char start)))
+
+(defun e-chat-tool-list-next ()
+  "Focus the next tool call in the active tool list."
+  (interactive)
+  (let* ((items (plist-get (e-chat--tool-list-block) :tool-items))
+         (max-index (1- (length items))))
+    (setq e-chat--tool-list-index (min max-index
+                                       (1+ e-chat--tool-list-index)))
+    (e-chat--focus-tool-list-item)))
+
+(defun e-chat-tool-list-previous ()
+  "Focus the previous tool call in the active tool list."
+  (interactive)
+  (setq e-chat--tool-list-index (max 0 (1- e-chat--tool-list-index)))
+  (e-chat--focus-tool-list-item))
+
+(defun e-chat-tool-list-open-output ()
+  "Open the selected tool output in a read-only buffer."
+  (interactive)
+  (let* ((block (e-chat--tool-list-block))
+         (item (nth e-chat--tool-list-index (plist-get block :tool-items)))
+         (output (or (plist-get item :output) ""))
+         (origin (current-buffer)))
+    (let ((buffer (get-buffer-create e-chat-tool-output-buffer-name)))
+      (with-current-buffer buffer
+        (let ((inhibit-read-only t))
+          (erase-buffer)
+          (insert output))
+        (e-chat-tool-output-mode)
+        (setq e-chat--tool-output-origin-buffer origin)
+        (goto-char (point-min)))
+      (display-buffer buffer)
+      buffer)))
+
+(defun e-chat-tool-list-back ()
+  "Collapse the tool list and return to block navigation."
+  (interactive)
+  (let* ((block (e-chat--tool-list-block))
+         (block-id (plist-get block :id)))
+    (e-chat--delete-tool-list block)
+    (e-chat-tool-list-mode -1)
+    (e-chat-response-navigation-mode 1)
+    (e-chat--focus-block block-id)))
+
+(defun e-chat-tool-output-back ()
+  "Close tool output and return to its originating tool list."
+  (interactive)
+  (let ((origin e-chat--tool-output-origin-buffer)
+        (buffer (current-buffer)))
+    (when (buffer-live-p buffer)
+      (kill-buffer buffer))
+    (when (buffer-live-p origin)
+      (pop-to-buffer origin))))
 
 (defun e-chat--refresh-composer-position ()
   "Refresh composer spacer for the current visible window."
@@ -1471,9 +1979,16 @@ TURN-ID tags the rendered entry for response navigation."
     (setq e-chat--block-counter 0)
     (setq e-chat--focused-turn-id nil)
     (setq e-chat--focused-block-id nil)
+    (setq e-chat--latest-final-block-id nil)
+    (setq e-chat--block-view-block-id nil)
+    (setq e-chat--tool-list-block-id nil)
+    (setq e-chat--tool-list-index 0)
     (when (overlayp e-chat--focused-turn-overlay)
       (delete-overlay e-chat--focused-turn-overlay))
     (setq e-chat--focused-turn-overlay nil)
+    (when (overlayp e-chat--tool-list-overlay)
+      (delete-overlay e-chat--tool-list-overlay))
+    (setq e-chat--tool-list-overlay nil)
     (e-chat--cancel-progress-timer)
     (setq e-chat--progress-turn-id nil)
     (setq e-chat--progress-frame 0)
@@ -1948,16 +2463,46 @@ reload.  User-facing commands should call `e-chat-new' or `e-chat-resume'."
      :function 'e-chat-response-navigation-previous
      :scope 'session)
     (e-shell-command-create
-     :id 'response-navigation-expand
-     :summary "Expand or collapse focused response block details."
-     :interactive 'e-chat-response-navigation-expand
-     :function 'e-chat-response-navigation-expand
+     :id 'response-navigation-activate
+     :summary "Activate the focused response block."
+     :interactive 'e-chat-response-navigation-activate
+     :function 'e-chat-response-navigation-activate
+     :scope 'session)
+    (e-shell-command-create
+     :id 'response-navigation-copy
+     :summary "Copy the focused response block."
+     :interactive 'e-chat-response-navigation-copy
+     :function 'e-chat-response-navigation-copy
+     :scope 'session)
+    (e-shell-command-create
+     :id 'response-navigation-open
+     :summary "Open the focused response block in an editable buffer."
+     :interactive 'e-chat-response-navigation-open
+     :function 'e-chat-response-navigation-open
+     :scope 'session)
+    (e-shell-command-create
+     :id 'response-navigation-details
+     :summary "Open focused response block details."
+     :interactive 'e-chat-response-navigation-details
+     :function 'e-chat-response-navigation-details
      :scope 'session)
     (e-shell-command-create
      :id 'response-navigation-insert
      :summary "Leave response navigation and focus the composer."
      :interactive 'e-chat-response-navigation-insert
      :function 'e-chat-response-navigation-insert
+     :scope 'session)
+    (e-shell-command-create
+     :id 'open-latest-response
+     :summary "Open the latest final assistant response."
+     :interactive 'e-chat-open-latest-response
+     :function 'e-chat-open-latest-response
+     :scope 'session)
+    (e-shell-command-create
+     :id 'copy-latest-response
+     :summary "Copy the latest final assistant response."
+     :interactive 'e-chat-copy-latest-response
+     :function 'e-chat-copy-latest-response
      :scope 'session))
    :keymaps
    (list (list :id 'chat-mode
@@ -1965,6 +2510,12 @@ reload.  User-facing commands should call `e-chat-new' or `e-chat-resume'."
                :scope 'mode)
          (list :id 'response-navigation
                :keymap e-chat-response-navigation-mode-map
+               :scope 'mode)
+         (list :id 'block-view
+               :keymap e-chat-block-view-mode-map
+               :scope 'mode)
+         (list :id 'tool-list
+               :keymap e-chat-tool-list-mode-map
                :scope 'mode))))
 
 (e-shell-register (e-chat-shell))

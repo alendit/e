@@ -74,6 +74,22 @@
    (overlay-start e-chat--focused-turn-overlay)
    (overlay-end e-chat--focused-turn-overlay)))
 
+(defun e-chat-test--focused-block ()
+  "Return the currently focused block record."
+  (gethash e-chat--focused-block-id e-chat--block-registry))
+
+(defun e-chat-test--focus-block-containing (text)
+  "Enter response navigation at rendered block containing TEXT."
+  (goto-char (point-min))
+  (search-forward text)
+  (call-interactively #'e-chat-enter-response-navigation)
+  (e-chat-test--focused-block))
+
+(defun e-chat-test--kill-buffer-name (name)
+  "Kill buffer NAME when it exists."
+  (when-let ((buffer (get-buffer name)))
+    (kill-buffer buffer)))
+
 (defun e-chat-test--turn-bounds (turn-id)
   "Return registered bounds for TURN-ID."
   (let ((turn (gethash turn-id e-chat--turn-registry)))
@@ -646,15 +662,27 @@
             (goto-char (point-min))
             (search-forward "1 tool call")
             (call-interactively #'e-chat-enter-response-navigation)
-            (call-interactively #'e-chat-response-navigation-expand)
-            (let ((expanded (buffer-string)))
-              (should (string-match-p "buffer-read" expanded))
-              (should (string-match-p "\\*scratch\\*" expanded))
-              (should (string-match-p "scratch contents" expanded))
+            (should (eq (plist-get (e-chat-test--focused-block) :kind)
+                        'activity))
+            (call-interactively #'e-chat-response-navigation-activate)
+            (should e-chat-tool-list-mode)
+            (let ((tool-list (buffer-string)))
+              (should (string-match-p "buffer-read" tool-list))
+              (should (string-match-p "\\*scratch\\*" tool-list))
+              (should-not (string-match-p "scratch contents" tool-list)))
+            (let ((output (e-chat-tool-list-open-output)))
+              (with-current-buffer output
+                (should (derived-mode-p 'e-chat-tool-output-mode))
+                (should (string-match-p "scratch contents" (buffer-string)))
+                (call-interactively #'e-chat-tool-output-back)))
+            (with-current-buffer buffer
+              (should e-chat-tool-list-mode)
+              (call-interactively #'e-chat-tool-list-back)
+              (should e-chat-response-navigation-mode)
               (goto-char (point-min))
-              (should (= (how-many "buffer-read") 1))
+              (should (= (how-many "buffer-read") 0))
               (goto-char (point-min))
-              (should (= (how-many "scratch contents") 1)))))
+              (should (= (how-many "scratch contents") 0)))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -782,8 +810,8 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest e-chat-test-response-navigation-expand-shows-intermittent-events-first ()
-  "Expanding the final block shows intermittent reasoning before metadata."
+(ert-deftest e-chat-test-response-navigation-details-shows-intermittent-events ()
+  "Details buffer shows intermittent reasoning before metadata."
   (let ((buffer (e-chat-test--buffer nil "chat-intermittent-expand")))
     (unwind-protect
         (with-current-buffer buffer
@@ -812,13 +840,14 @@
                           :created-at 12
                           :payload '(:reason stop)))
           (call-interactively #'e-chat-enter-response-navigation)
-          (call-interactively #'e-chat-response-navigation-expand)
-          (let ((content (buffer-string)))
-            (should (string-match-p
-                     "Final answer\\.\n\n  Reasoning\n  Need current buffer state\\.\n\n  Turn: turn-1"
-                     content))))
+          (let ((details (e-chat-response-navigation-details)))
+            (with-current-buffer details
+              (should (string-match-p
+                       "Reasoning\n  Need current buffer state\\.\n\n  Turn: turn-1"
+                       (buffer-string))))))
       (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
+        (kill-buffer buffer))
+      (e-chat-test--kill-buffer-name e-chat-details-buffer-name))))
 
 (ert-deftest e-chat-test-response-navigation-starts-at-latest-from-composer ()
   "Response navigation starts at the latest turn when point is in the composer."
@@ -914,43 +943,38 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest e-chat-test-response-navigation-expand-inserts-readable-turn-details ()
-  "Expanding a focused turn inserts readable metadata under that turn."
+(ert-deftest e-chat-test-response-navigation-ret-enters-block-view ()
+  "RET on a final block enters block-local view and ESC returns to navigation."
   (let ((buffer (e-chat-test--buffer nil "chat-nav-expand")))
     (unwind-protect
         (with-current-buffer buffer
           (e-chat-test--render-turn "turn-1" 10 11 "first" "one")
           (e-chat-test--render-turn "turn-2" 20 23.5 "second" "two")
           (call-interactively #'e-chat-enter-response-navigation)
-          (call-interactively #'e-chat-response-navigation-expand)
-          (let ((content (buffer-string)))
-            (should (string-match-p
-                     (concat (regexp-quote e-chat--assistant-glyph)
-                             " two\n\n  Turn: turn-2")
-                     content))
-            (should (string-match-p
-                     "  Started: 1970-01-01 00:00:20 UTC"
-                     content))
-            (should (string-match-p
-                     "  Ended: 1970-01-01 00:00:23 UTC"
-                     content))
-            (should (string-match-p "  Duration: 3.50s" content))))
+          (call-interactively #'e-chat-response-navigation-activate)
+          (should e-chat-block-view-mode)
+          (should-not e-chat-response-navigation-mode)
+          (should (equal (plist-get (e-chat-test--focused-block) :action-text)
+                         "two"))
+          (call-interactively #'e-chat-block-view-back)
+          (should-not e-chat-block-view-mode)
+          (should e-chat-response-navigation-mode)
+          (should (equal e-chat--focused-turn-id "turn-2")))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest e-chat-test-response-navigation-expand-folds-visible-turn-details ()
-  "Pressing RET on an unfolded focused turn removes its inline metadata."
+(ert-deftest e-chat-test-block-view-i-returns-to-composer ()
+  "Pressing i in block view leaves navigation and focuses the composer."
   (let ((buffer (e-chat-test--buffer nil "chat-nav-fold")))
     (unwind-protect
         (with-current-buffer buffer
           (e-chat-test--render-turn "turn-1" 10 11 "first" "one")
           (call-interactively #'e-chat-enter-response-navigation)
-          (call-interactively #'e-chat-response-navigation-expand)
-          (should (string-match-p "  Turn: turn-1" (buffer-string)))
-          (call-interactively #'e-chat-response-navigation-expand)
-          (should-not (string-match-p "  Turn: turn-1" (buffer-string)))
-          (should e-chat-response-navigation-mode)
-          (should (equal e-chat--focused-turn-id "turn-1")))
+          (call-interactively #'e-chat-response-navigation-activate)
+          (call-interactively #'e-chat-block-view-insert)
+          (should-not e-chat-block-view-mode)
+          (should-not e-chat-response-navigation-mode)
+          (should (>= (point) (marker-position e-chat--composer-start-marker))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -965,6 +989,119 @@
            (lookup-key e-chat-response-navigation-mode-map (kbd "i")))
           (should-not e-chat-response-navigation-mode)
           (should (>= (point) (marker-position e-chat--composer-start-marker))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-response-navigation-copy-and-open-use-block-content ()
+  "Copy and open actions use the focused block action text without chrome."
+  (let ((buffer (e-chat-test--buffer nil "chat-nav-actions"))
+        (opened nil))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat-test--render-turn "turn-1" 10 11 "first prompt" "final text")
+          (e-chat-test--focus-block-containing "first prompt")
+          (should (eq (plist-get (e-chat-test--focused-block) :kind) 'user))
+          (call-interactively #'e-chat-response-navigation-copy)
+          (should (equal (current-kill 0) "first prompt"))
+          (setq opened (e-chat-response-navigation-open))
+          (with-current-buffer opened
+            (should (derived-mode-p 'text-mode))
+            (should-not buffer-read-only)
+            (should (equal (buffer-string) "first prompt")))
+          (with-current-buffer buffer
+            (e-chat-test--focus-block-containing "final text")
+            (should (eq (plist-get (e-chat-test--focused-block) :kind) 'final))
+            (call-interactively #'e-chat-response-navigation-copy)
+            (should (equal (current-kill 0) "final text"))))
+      (when (buffer-live-p opened)
+        (kill-buffer opened))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-response-navigation-details-open-read-only-buffer ()
+  "Details command opens turn metadata and tool details outside the chat buffer."
+  (let ((buffer (e-chat-test--buffer nil "chat-nav-details")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat-test--render-turn "turn-1" 10 11 "inspect" "done")
+          (e-chat--record-tool-message
+           "turn-1"
+           '(:role tool-call
+             :content (:type tool-call :name "buffer-read"
+                       :arguments (:buffer "*scratch*"))))
+          (e-chat--record-tool-message
+           "turn-1"
+           '(:role tool
+             :content (:status ok :content "scratch contents")))
+          (e-chat-test--focus-block-containing "done")
+          (let ((details (e-chat-response-navigation-details)))
+            (with-current-buffer details
+              (should (derived-mode-p 'special-mode))
+              (should buffer-read-only)
+              (should (string-match-p "Turn: turn-1" (buffer-string)))
+              (should (string-match-p "buffer-read" (buffer-string)))
+              (should (string-match-p "scratch contents" (buffer-string)))
+              (should-error (insert "mutate") :type 'buffer-read-only))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (e-chat-test--kill-buffer-name e-chat-details-buffer-name))))
+
+(ert-deftest e-chat-test-activity-tool-list-navigates-calls-and-output ()
+  "Intermittent blocks open a call list; j/k move and RET opens output."
+  (let ((buffer (e-chat-test--buffer nil "chat-tool-list"))
+        (output nil))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat--render-event
+           (e-events-make :type 'turn-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 10))
+          (dolist (tool '(("call-1" "buffer-read" "first result")
+                          ("call-2" "buffer-write" "second result")))
+            (e-chat--render-event
+             (e-events-make :type 'tool-started
+                            :session-id e-chat-session-id
+                            :turn-id "turn-1"
+                            :payload (list :type 'tool-call
+                                           :id (nth 0 tool)
+                                           :name (nth 1 tool)
+                                           :arguments '(:buffer "*scratch*"))))
+            (e-chat--render-event
+             (e-events-make :type 'tool-finished
+                            :session-id e-chat-session-id
+                            :turn-id "turn-1"
+                            :payload (list :tool-call
+                                           (list :type 'tool-call
+                                                 :id (nth 0 tool)
+                                                 :name (nth 1 tool)
+                                                 :arguments '(:buffer "*scratch*"))
+                                           :result (list :status 'ok
+                                                         :content (nth 2 tool))))))
+          (e-chat--render-event
+           (e-events-make :type 'message-added
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 11
+                          :payload '(:message (:role assistant
+                                                :content "Final answer."))))
+          (e-chat-test--focus-block-containing "2 tool calls")
+          (call-interactively #'e-chat-response-navigation-activate)
+          (should e-chat-tool-list-mode)
+          (should (equal e-chat--tool-list-index 0))
+          (call-interactively #'e-chat-tool-list-next)
+          (should (equal e-chat--tool-list-index 1))
+          (setq output (e-chat-tool-list-open-output))
+          (with-current-buffer output
+            (should (derived-mode-p 'e-chat-tool-output-mode))
+            (should (string-match-p "second result" (buffer-string)))
+            (call-interactively #'e-chat-tool-output-back))
+          (should (eq (current-buffer) buffer))
+          (should e-chat-tool-list-mode)
+          (call-interactively #'e-chat-tool-list-back)
+          (should e-chat-response-navigation-mode))
+      (when (buffer-live-p output)
+        (kill-buffer output))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -1002,17 +1139,19 @@
           (with-current-buffer buffer
             (call-interactively #'e-chat-enter-response-navigation)
             (should (equal e-chat--focused-turn-id "replayed-turn-2"))
-            (call-interactively #'e-chat-response-navigation-expand)
-            (let ((content (buffer-string)))
-              (should (string-match-p
-                       "  Started: 1970-01-01T00:00:20Z"
-                       content))
-              (should (string-match-p
-                       "  Ended: 1970-01-01T00:00:22Z"
-                       content))
-              (should (string-match-p "  Duration: 2.00s" content)))))
+            (let ((details (e-chat-response-navigation-details)))
+              (with-current-buffer details
+                (should (string-match-p
+                         "  Started: 1970-01-01T00:00:20Z"
+                         (buffer-string)))
+                (should (string-match-p
+                         "  Ended: 1970-01-01T00:00:22Z"
+                         (buffer-string)))
+                (should (string-match-p "  Duration: 2.00s"
+                                        (buffer-string)))))))
       (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
+        (kill-buffer buffer))
+      (e-chat-test--kill-buffer-name e-chat-details-buffer-name))))
 
 (ert-deftest e-chat-test-replayed-session-hides-tool-messages-in-final-turn ()
   "Replayed tool messages stay out of the transcript and move to details."
@@ -1046,12 +1185,15 @@
               (should-not (string-match-p "· Tool" content))
               (should-not (string-match-p ":tool-call-id" content)))
             (call-interactively #'e-chat-enter-response-navigation)
-            (call-interactively #'e-chat-response-navigation-expand)
-            (let ((content (buffer-string)))
-              (should (string-match-p "  Tool call\n  run_elisp" content))
-              (should (string-match-p "  Tool\n  (:tool-call-id" content)))))
+            (let ((details (e-chat-response-navigation-details)))
+              (with-current-buffer details
+                (should (string-match-p "  Tool call\n  run_elisp"
+                                        (buffer-string)))
+                (should (string-match-p "  Tool\n  (:tool-call-id"
+                                        (buffer-string)))))))
       (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
+        (kill-buffer buffer))
+      (e-chat-test--kill-buffer-name e-chat-details-buffer-name))))
 
 (ert-deftest e-chat-test-replayed-session-restores-activity-timeline ()
   "Replayed durable activity events render before the final answer."
@@ -1102,8 +1244,53 @@
             (goto-char (point-min))
             (search-forward "Final answer.")
             (call-interactively #'e-chat-enter-response-navigation)
-            (call-interactively #'e-chat-response-navigation-expand)
-            (should (string-match-p "scratch contents" (buffer-string)))))
+            (let ((details (e-chat-response-navigation-details)))
+              (with-current-buffer details
+                (should (string-match-p "scratch contents"
+                                        (buffer-string)))))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (e-chat-test--kill-buffer-name e-chat-details-buffer-name)
+      (delete-directory directory t))))
+
+(ert-deftest e-chat-test-replayed-activity-keeps-earlier-turns-visible ()
+  "Replayed activity summaries do not erase earlier transcript blocks."
+  (let* ((directory (make-temp-file "e-chat-activity-history-" t))
+         (store (e-session-persistent-store-create directory))
+         (backend (e-backend-fake-create :items nil))
+         (harness (e-harness-create :backend backend :sessions store))
+         (buffer nil))
+    (unwind-protect
+        (progn
+          (e-harness-create-session harness :id "chat-activity-history")
+          (e-session-append-message
+           store "chat-activity-history"
+           '(:role user :content "first prompt" :turn-id "turn-1"))
+          (e-session-append-activity-event
+           store "chat-activity-history" "turn-1" 'reasoning-delta
+           '(:content "First reasoning."))
+          (e-session-append-message
+           store "chat-activity-history"
+           '(:role assistant :content "First final." :turn-id "turn-1"))
+          (e-session-append-message
+           store "chat-activity-history"
+           '(:role user :content "second prompt" :turn-id "turn-2"))
+          (e-session-append-activity-event
+           store "chat-activity-history" "turn-2" 'reasoning-delta
+           '(:content "Second reasoning."))
+          (e-session-append-message
+           store "chat-activity-history"
+           '(:role assistant :content "Second final." :turn-id "turn-2"))
+          (setq buffer (e-chat-open :harness harness
+                                    :session-id "chat-activity-history"))
+          (with-current-buffer buffer
+            (let ((content (buffer-string)))
+              (should (string-match-p "first prompt" content))
+              (should (string-match-p "First reasoning\\." content))
+              (should (string-match-p "First final\\." content))
+              (should (string-match-p "second prompt" content))
+              (should (string-match-p "Second reasoning\\." content))
+              (should (string-match-p "Second final\\." content)))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer))
       (delete-directory directory t))))
@@ -1376,6 +1563,49 @@
       (when-let ((context-buffer (get-buffer e-chat-context-buffer-name)))
         (kill-buffer context-buffer)))))
 
+(ert-deftest e-chat-test-composer-meta-actions-target-latest-response ()
+  "Composer M-y and M-o target the latest final assistant response block."
+  (let ((buffer (e-chat-test--buffer nil "chat-meta-actions"))
+        (opened nil))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat-test--render-turn "turn-1" 10 11 "first" "old final")
+          (e-chat-test--render-turn "turn-2" 20 21 "second" "latest final")
+          (goto-char e-chat--composer-start-marker)
+          (call-interactively
+           (lookup-key e-chat-mode-map (kbd "M-y")))
+          (should (equal (current-kill 0) "latest final"))
+          (setq opened
+                (call-interactively
+                 (lookup-key e-chat-mode-map (kbd "M-o"))))
+          (with-current-buffer opened
+            (should (derived-mode-p 'text-mode))
+            (should (equal (buffer-string) "latest final"))))
+      (when (buffer-live-p opened)
+        (kill-buffer opened))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-keymap-refresh-updates-stale-reload-bindings ()
+  "Reload-time keymap refresh replaces bindings preserved by `defvar'."
+  (let ((e-chat-response-navigation-mode-map (make-sparse-keymap))
+        (e-chat-mode-map (make-sparse-keymap))
+        (e-chat-block-view-mode-map (make-sparse-keymap))
+        (e-chat-tool-list-mode-map (make-sparse-keymap))
+        (e-chat-tool-output-mode-map (make-sparse-keymap)))
+    (define-key e-chat-response-navigation-mode-map
+                (kbd "RET")
+                'e-chat-response-navigation-expand)
+    (e-chat--refresh-keymaps)
+    (should (eq (lookup-key e-chat-response-navigation-mode-map (kbd "RET"))
+                'e-chat-response-navigation-activate))
+    (should (eq (lookup-key e-chat-response-navigation-mode-map (kbd "y"))
+                'e-chat-response-navigation-copy))
+    (should (eq (lookup-key e-chat-mode-map (kbd "M-y"))
+                'e-chat-copy-latest-response))
+    (should (eq (lookup-key e-chat-mode-map (kbd "M-o"))
+                'e-chat-open-latest-response))))
+
 (ert-deftest e-chat-test-shell-descriptor-advertises-chat-surface ()
   "The chat presentation publishes a generic shell manifest."
   (let* ((shell (e-chat-shell))
@@ -1396,8 +1626,13 @@
                           enter-response-navigation
                           response-navigation-next
                           response-navigation-previous
-                          response-navigation-expand
-                          response-navigation-insert))
+                          response-navigation-activate
+                          response-navigation-copy
+                          response-navigation-open
+                          response-navigation-details
+                          response-navigation-insert
+                          open-latest-response
+                          copy-latest-response))
       (should (memq command-id command-ids)))
     (should (eq (plist-get (car keymaps) :keymap) e-chat-mode-map))
     (should (eq (plist-get (cadr keymaps) :keymap)
