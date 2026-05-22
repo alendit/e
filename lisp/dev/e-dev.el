@@ -75,6 +75,7 @@
                   "lisp/layers/evidence/e-evidence-tools.el"
                   "lisp/layers/chat/e-chat-session.el"
                   "lisp/adapters/openai/e-openai.el"
+                  "lisp/shells/e-shells.el"
                   "lisp/shells/chat/e-chat.el"
                   "lisp/core/e-core.el"
                   "e.el"

@@ -22,6 +22,7 @@
 (require 'e-layers)
 (require 'e-openai)
 (require 'e-session)
+(require 'e-shells)
 
 (declare-function markdown-mode "markdown-mode")
 
@@ -1863,6 +1864,110 @@ reload.  User-facing commands should call `e-chat-new' or `e-chat-resume'."
     (user-error "This buffer is not attached to an e chat session"))
   (e-chat--clear)
   (e-chat-session-reset e-chat-harness e-chat-session-id))
+
+;;;###autoload
+(defun e-chat-shell ()
+  "Return the chat presentation shell manifest."
+  (e-shell-create
+   :id 'chat
+   :name "Chat"
+   :summary "Session chat buffer."
+   :required-capabilities '(chat-session)
+   :commands
+   (list
+    (e-shell-command-create
+     :id 'new
+     :summary "Create and open a new persisted chat session."
+     :interactive 'e-chat-new
+     :function 'e-chat-new
+     :scope 'global)
+    (e-shell-command-create
+     :id 'resume
+     :summary "Resume a recent persisted chat session."
+     :interactive 'e-chat-resume
+     :function 'e-chat-resume
+     :scope 'global)
+    (e-shell-command-create
+     :id 'rename
+     :summary "Rename the current chat session."
+     :interactive 'e-chat-rename
+     :function 'e-chat-rename
+     :scope 'session)
+    (e-shell-command-create
+     :id 'set-model
+     :summary "Set the current chat session model."
+     :interactive 'e-chat-set-model
+     :function 'e-chat-set-model
+     :scope 'session)
+    (e-shell-command-create
+     :id 'set-effort
+     :summary "Set the current chat session reasoning effort."
+     :interactive 'e-chat-set-effort
+     :function 'e-chat-set-effort
+     :scope 'session)
+    (e-shell-command-create
+     :id 'show-context
+     :summary "Show the current chat session context."
+     :interactive 'e-chat-show-context
+     :function 'e-chat-show-context
+     :scope 'session)
+    (e-shell-command-create
+     :id 'submit
+     :summary "Submit the current chat prompt."
+     :interactive 'e-chat-submit
+     :function 'e-chat-submit
+     :scope 'session)
+    (e-shell-command-create
+     :id 'abort
+     :summary "Abort the active chat turn."
+     :interactive 'e-chat-abort
+     :function 'e-chat-abort
+     :scope 'session)
+    (e-shell-command-create
+     :id 'reset
+     :summary "Reset the current chat session."
+     :interactive 'e-chat-reset
+     :function 'e-chat-reset
+     :scope 'session)
+    (e-shell-command-create
+     :id 'enter-response-navigation
+     :summary "Enter response navigation mode."
+     :interactive 'e-chat-enter-response-navigation
+     :function 'e-chat-enter-response-navigation
+     :scope 'session)
+    (e-shell-command-create
+     :id 'response-navigation-next
+     :summary "Focus the next rendered response block."
+     :interactive 'e-chat-response-navigation-next
+     :function 'e-chat-response-navigation-next
+     :scope 'session)
+    (e-shell-command-create
+     :id 'response-navigation-previous
+     :summary "Focus the previous rendered response block."
+     :interactive 'e-chat-response-navigation-previous
+     :function 'e-chat-response-navigation-previous
+     :scope 'session)
+    (e-shell-command-create
+     :id 'response-navigation-expand
+     :summary "Expand or collapse focused response block details."
+     :interactive 'e-chat-response-navigation-expand
+     :function 'e-chat-response-navigation-expand
+     :scope 'session)
+    (e-shell-command-create
+     :id 'response-navigation-insert
+     :summary "Leave response navigation and focus the composer."
+     :interactive 'e-chat-response-navigation-insert
+     :function 'e-chat-response-navigation-insert
+     :scope 'session))
+   :keymaps
+   (list (list :id 'chat-mode
+               :keymap e-chat-mode-map
+               :scope 'mode)
+         (list :id 'response-navigation
+               :keymap e-chat-response-navigation-mode-map
+               :scope 'mode))))
+
+(e-shell-register (e-chat-shell))
 
 (provide 'e-chat)
 

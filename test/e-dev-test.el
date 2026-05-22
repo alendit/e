@@ -27,6 +27,9 @@
   (fmakunbound 'e-base-layer-create)
   (fmakunbound 'e-emacs-base-layer-create)
   (fmakunbound 'e-layer-create)
+  (fmakunbound 'e-shell-create)
+  (fmakunbound 'e-shell-command-create)
+  (fmakunbound 'e-chat-shell)
   (e-dev-reload default-directory)
   (should (commandp 'e-chat-new))
   (should (commandp 'e-chat-resume))
@@ -36,7 +39,11 @@
   (should (fboundp 'e-chat-open))
   (should (fboundp 'e-base-layer-create))
   (should (fboundp 'e-emacs-base-layer-create))
-  (should (fboundp 'e-layer-create)))
+  (should (fboundp 'e-layer-create))
+  (should (fboundp 'e-shell-create))
+  (should (fboundp 'e-shell-command-create))
+  (should (fboundp 'e-chat-shell))
+  (should (eq (e-shell-id (e-shell-get 'chat)) 'chat)))
 
 (ert-deftest e-dev-test-reload-clears-obsolete-entrypoints-and-refreshes-defaults ()
   "Reload removes stale functions and reapplies changed default options."

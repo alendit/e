@@ -30,6 +30,7 @@
       "lisp/layers/emacs"
       "lisp/layers/evidence"
       "lisp/layers/chat"
+      "lisp/shells"
       "lisp/shells/chat"
       "lisp/adapters/openai"
       "lisp/dev")
@@ -46,6 +47,7 @@
   (e--add-source-directories directory))
 
 (require 'e-core)
+(require 'e-shells)
 
 (defgroup e nil
   "Emacs-hosted agent runtime."
@@ -102,6 +104,9 @@
 
 ;;;###autoload
 (autoload 'e-chat-reset "e-chat" "Reset the current e chat session." t)
+
+;;;###autoload
+(autoload 'e-chat-shell "e-chat" "Return the e chat shell manifest." nil)
 
 (provide 'e)
 

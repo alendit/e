@@ -27,6 +27,10 @@
     e-dev-reload)
   "Interactive commands expected to exist from package autoloads.")
 
+(defconst e-test--autoload-functions
+  '(e-chat-shell)
+  "Non-command functions expected to exist from package autoloads.")
+
 (ert-deftest e-test-loads-feature ()
   "The package feature can be required from the project load path."
   (should (require 'e nil t)))
@@ -45,6 +49,7 @@
                        "lisp/layers/emacs"
                        "lisp/layers/evidence"
                        "lisp/layers/chat"
+                       "lisp/shells"
                        "lisp/shells/chat"
                        "lisp/adapters/openai"
                        "lisp/dev"))
@@ -75,15 +80,22 @@
           (dolist (command e-test--autoload-commands)
             (when (fboundp command)
               (fmakunbound command)))
+          (dolist (function e-test--autoload-functions)
+            (when (fboundp function)
+              (fmakunbound function)))
           (update-directory-autoloads default-directory)
           (let ((load-path (list default-directory)))
             (load generated-autoload-file nil 'nomessage)
             (dolist (command e-test--autoload-commands)
               (should (commandp command)))
+            (dolist (function e-test--autoload-functions)
+              (should (fboundp function)))
             (autoload-do-load (symbol-function 'e-chat-new) 'e-chat-new)
             (autoload-do-load (symbol-function 'e-dev-reload) 'e-dev-reload))
           (dolist (command e-test--autoload-commands)
-            (should (commandp command))))
+            (should (commandp command)))
+          (dolist (function e-test--autoload-functions)
+            (should (fboundp function))))
       (when (file-exists-p generated-autoload-file)
         (delete-file generated-autoload-file))
       (when (file-exists-p (concat generated-autoload-file "~"))
@@ -95,6 +107,16 @@
       (load (expand-file-name "lisp/dev/e-dev.el" default-directory)
             nil
             'nomessage))))
+
+(ert-deftest e-test-exposes-shell-manifest-api ()
+  "The package exposes generic shell manifest constructors and registry."
+  (require 'e)
+  (should (fboundp 'e-shell-create))
+  (should (fboundp 'e-shell-command-create))
+  (should (fboundp 'e-shell-register))
+  (should (fboundp 'e-shell-get))
+  (should (fboundp 'e-shell-list))
+  (should (fboundp 'e-shell-command-by-id)))
 
 (ert-deftest e-test-exposes-core-harness-api ()
   "The package exposes the core harness API after requiring e."

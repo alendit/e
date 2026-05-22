@@ -1376,6 +1376,40 @@
       (when-let ((context-buffer (get-buffer e-chat-context-buffer-name)))
         (kill-buffer context-buffer)))))
 
+(ert-deftest e-chat-test-shell-descriptor-advertises-chat-surface ()
+  "The chat presentation publishes a generic shell manifest."
+  (let* ((shell (e-chat-shell))
+         (command-ids (mapcar #'e-shell-command-id
+                              (e-shell-commands shell)))
+         (keymaps (e-shell-keymaps shell)))
+    (should (eq (e-shell-id shell) 'chat))
+    (should (equal (e-shell-required-capabilities shell) '(chat-session)))
+    (dolist (command-id '(new
+                          resume
+                          rename
+                          set-model
+                          set-effort
+                          show-context
+                          submit
+                          abort
+                          reset
+                          enter-response-navigation
+                          response-navigation-next
+                          response-navigation-previous
+                          response-navigation-expand
+                          response-navigation-insert))
+      (should (memq command-id command-ids)))
+    (should (eq (plist-get (car keymaps) :keymap) e-chat-mode-map))
+    (should (eq (plist-get (cadr keymaps) :keymap)
+                e-chat-response-navigation-mode-map))))
+
+(ert-deftest e-chat-test-registers-chat-shell-on-load ()
+  "Loading e-chat registers the chat shell manifest."
+  (should (eq (e-shell-id (e-shell-get 'chat)) 'chat))
+  (should (eq (e-shell-command-interactive
+               (e-shell-command-by-id (e-shell-get 'chat) 'new))
+              'e-chat-new)))
+
 (ert-deftest e-chat-test-reset-clears-rendered-session ()
   "Reset clears the rendered chat buffer and harness session transcript."
   (let ((buffer (e-chat-test--buffer

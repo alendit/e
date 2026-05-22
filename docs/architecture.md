@@ -116,6 +116,7 @@ Current repository mapping:
 - `lisp/layers/emacs/`: the `emacs-base` layer preset, its Emacs awareness/buffer/elisp capabilities, and the concrete Emacs buffer/elisp tool modules those capabilities use.
 - `lisp/layers/chat/`: the `chat-session` capability actions hosted by chat presentation shells.
 - `lisp/layers/evidence/`: the read-only session evidence retrieval capability and tools.
+- `lisp/shells/e-shells.el`: first-class presentation shell manifest structs and the in-process discovery registry.
 - `lisp/shells/chat/`: basic chat presentation buffer, commands, keymap, and harness event rendering.
 - `lisp/adapters/openai/`: profile-configurable OpenAI-like Responses adapter for Codex auth, token-auth gateways, request mapping, and SSE parsing.
 - `lisp/dev/`: interactive development helpers for live reloading local source in Emacs.
@@ -129,7 +130,7 @@ The source tree should keep architecture visible:
 - Layer directories: each layer directory contains the layer preset plus the capabilities and concrete tool modules primarily composed by that layer.
 - Capability modules: package behavior contracts; depend on harness/layer/tool/context contracts, not shells. Do not move a capability to a shared top-level location until a second real layer uses the same semantic contract.
 - Context strategy modules: provider-neutral context assembly and interpretation of context-state outputs.
-- Presentation modules: Emacs UI commands, interaction adapters, and rendering only; host capabilities instead of owning semantic state.
+- Presentation modules: Emacs UI commands, interaction adapters, manifests, and rendering only; host capabilities instead of owning semantic state.
 - Backend adapters: provider-specific auth, request mapping, streaming, and model capability translation.
 - Execution adapters and tools: side effects against Emacs, files, processes, and harness mutation capabilities; keep layer-local tool modules next to the capabilities that use them unless reuse proves otherwise.
 - Session storage: durable messages, branches, compaction, summaries, and metadata.
@@ -276,9 +277,13 @@ Presentation shells are Emacs-facing UI layers. They render sessions, messages, 
 
 Presentation shells must not own session semantics, provider routing, backend-specific auth, or harness lifecycle behavior. Their durable input and output should converge on harness records and capability actions instead of creating parallel shell-only state.
 
-The current presentation shell is `e-chat`: a basic session-specific chat buffer with prompt submission, event rendering, reset, abort, new-session, resume, and rename commands. Today it calls harness APIs directly, creates a Codex-backed harness by default, attaches it to the persistent session store, and activates `base` plus `emacs-base`, while tests inject fake backends to keep UI behavior independent of provider details.
+Shells now also publish first-class manifests through `e-shells`. A shell manifest is a discovery contract for a shell id, human-readable metadata, required and optional capabilities, operator commands, and keymaps. The registry is intentionally narrow: it supports in-process discovery and replacement by shell id, but it does not define lifecycle, instances, surfaces, origins, dependency resolution, command argument schemas, or shell-to-shell handoff.
+
+The current presentation shell is `e-chat`: a basic session-specific chat buffer with prompt submission, event rendering, reset, abort, new-session, resume, and rename commands. It publishes an `e-chat-shell` manifest registered under `chat`, creates a Codex-backed harness by default, attaches it to the persistent session store, and activates `base` plus `emacs-base`, while tests inject fake backends to keep UI behavior independent of provider details.
 
 In the target shape, `e-chat` should become a host for a `chat-session` capability rather than a privileged harness client. It will still render buffers, manage keymaps, collect composer text, and display events, but the semantic actions should be exposed by that capability: submit message, abort turn, reset session, select model, inspect context, and manage attachments. That likely means the chat shell will require at least the `chat-session` capability, and can optionally host capabilities such as `selection-context` when those capabilities are active through a layer or direct activation.
+
+Shell instances remain implementation details. `e-chat` currently represents live chat state with buffer-local variables, markers, timers, overlays, and harness subscriptions; that runtime shape is not part of the generic shell interface until multiple shells prove a shared instance protocol is real.
 
 ```mermaid
 flowchart TD
@@ -358,6 +363,8 @@ The current public package surface is:
 - `e-openai-codex-backend-create`: compatibility wrapper for the concrete OpenAI/Codex backend adapter.
 - `e-emacs-base-layer-create`: create the default Emacs layer.
 - `e-emacs-tools-register-buffer-read`, `e-emacs-tools-register-buffer-edit`, and `e-emacs-tools-register-elisp-eval`: register focused concrete Emacs tool groups used by capabilities.
+- `e-shell-create`, `e-shell-command-create`, `e-shell-register`, `e-shell-get`, `e-shell-list`, and `e-shell-command-by-id`: generic shell manifest and discovery API.
+- `e-chat-shell`: return the registered chat presentation shell manifest.
 
 The target public surface should be an Emacs Lisp harness API rather than a UI-only command set. It should cover lifecycle operations, state access, event subscription, backend and tool configuration, session selection, and adapter registration.
 
@@ -398,6 +405,7 @@ Delta to the architectural vision:
 - The OpenAI/ChatGPT adapter now builds on the backend-neutral contract instead of changing harness policy.
 - Context construction has been extracted as a strategy before transcript replay could be hard-coded into the OpenAI backend.
 - Layers are harness-owned presets over capability modules; behavior contributions now live in capabilities rather than layer fields.
-- The chat presentation starts as a thin shell over harness events and delegates chat semantics through the `chat-session` capability. Further shells can host optional capabilities such as `selection-context`.
+- Presentation shells now have minimal first-class manifests and a discovery registry, while live shell instances remain implementation details.
+- The chat presentation starts as a thin shell over harness events, publishes the `chat` shell manifest, and delegates chat semantics through the `chat-session` capability. Further shells can host optional capabilities such as `selection-context`.
 - Self-modifying agent capabilities need explicit tools and session records before they are exposed through UI commands.
 - Canvas-state context management should remain deferred until the transcript-stack strategy and OpenAI backend are working, but `docs/feat-canvas.md` records the invariants the architecture should preserve.
