@@ -13,9 +13,6 @@
 
 ;;; Code:
 
-(defvar e-startup-capability-hook nil
-  "Hook run for capability provider startup.")
-
 (defvar e-startup-layer-hook nil
   "Hook run for layer/default provider startup.")
 
@@ -24,7 +21,6 @@
 
 (defun e-startup-run ()
   "Run e provider startup hooks in dependency order."
-  (run-hooks 'e-startup-capability-hook)
   (run-hooks 'e-startup-layer-hook)
   (run-hooks 'e-startup-shell-hook))
 

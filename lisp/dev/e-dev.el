@@ -33,6 +33,10 @@
   nil
   "Functions removed from the public surface that reload should unbind.")
 
+(defconst e-dev--obsolete-variables
+  '(e-startup-capability-hook)
+  "Variables removed from the public surface that reload should unbind.")
+
 (defconst e-dev--reevaluated-defaults
   '(e-openai-default-model
     e-openai-default-reasoning-effort)
@@ -43,6 +47,12 @@
   (dolist (symbol e-dev--obsolete-functions)
     (when (fboundp symbol)
       (fmakunbound symbol))))
+
+(defun e-dev--clear-obsolete-variables ()
+  "Remove stale obsolete variable bindings after a live reload."
+  (dolist (symbol e-dev--obsolete-variables)
+    (when (boundp symbol)
+      (makunbound symbol))))
 
 (defun e-dev--reevaluate-uncustomized-defaults ()
   "Reapply changed defcustom defaults unless the user customized them."
@@ -86,6 +96,7 @@
     (dolist (file files)
       (load (expand-file-name file root) nil 'nomessage))
     (e-dev--clear-obsolete-functions)
+    (e-dev--clear-obsolete-variables)
     (e-dev--reevaluate-uncustomized-defaults)
     (message "Reloaded e from %s"
              (abbreviate-file-name root))

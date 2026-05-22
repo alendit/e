@@ -50,7 +50,9 @@
 (ert-deftest e-dev-test-reload-clears-obsolete-entrypoints-and-refreshes-defaults ()
   "Reload removes stale functions and reapplies changed default options."
   (setq e-openai-default-model "gpt-5.4")
+  (setq e-startup-capability-hook '(stale))
   (e-dev-reload default-directory)
+  (should-not (boundp 'e-startup-capability-hook))
   (should (equal e-openai-default-model "gpt-5.5")))
 
 (provide 'e-dev-test)

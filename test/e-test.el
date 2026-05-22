@@ -198,21 +198,23 @@
       (load (expand-file-name "e.el" default-directory) nil 'nomessage))))
 
 (ert-deftest e-test-startup-runs-provider-load-hooks-in-order ()
-  "Startup hooks run capability, layer, then shell providers."
+  "Startup hooks run layer, then shell providers."
   (require 'e-startup)
   (let ((events nil)
-        (e-startup-capability-hook nil)
         (e-startup-layer-hook nil)
         (e-startup-shell-hook nil))
-    (add-hook 'e-startup-capability-hook
-              (lambda () (push 'capability events)))
     (add-hook 'e-startup-layer-hook
               (lambda () (push 'layer events)))
     (add-hook 'e-startup-shell-hook
               (lambda () (push 'shell events)))
     (e-startup-run)
     (should (equal (nreverse events)
-                   '(capability layer shell)))))
+                   '(layer shell)))))
+
+(ert-deftest e-test-startup-does-not-define-unused-capability-hook ()
+  "Startup should not expose speculative capability-provider hooks."
+  (require 'e-startup)
+  (should-not (boundp 'e-startup-capability-hook)))
 
 (ert-deftest e-test-startup-refreshes-chat-shell-keymaps ()
   "Package startup uses the chat shell hook to refresh initial keymaps."
