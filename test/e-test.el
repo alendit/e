@@ -12,6 +12,7 @@
 ;;; Code:
 
 (require 'autoload)
+(require 'cl-lib)
 (require 'ert)
 
 (defconst e-test--autoload-commands
@@ -31,9 +32,74 @@
   '(e-chat-shell)
   "Non-command functions expected to exist from package autoloads.")
 
+(defconst e-test--core-features
+  '(e-backend
+    e-capabilities
+    e-context
+    e-events
+    e-session
+    e-tools
+    e-loop
+    e-layers
+    e-harness
+    e-core)
+  "Features expected after requiring the pure core runtime.")
+
+(defconst e-test--non-core-features
+  '(e-chat
+    e-openai
+    e-emacs-tools
+    e-base-tools)
+  "Concrete shell, provider, and side-effect features excluded from e-core.")
+
 (ert-deftest e-test-loads-feature ()
   "The package feature can be required from the project load path."
   (should (require 'e nil t)))
+
+(ert-deftest e-test-core-loads-only-pure-runtime-features ()
+  "Requiring e-core does not load shells, providers, or concrete tools."
+  (let ((original-features features))
+    (unwind-protect
+        (progn
+          (setq features
+                (cl-set-difference features
+                                   (append e-test--core-features
+                                           e-test--non-core-features)))
+          (should (require 'e-core nil t))
+          (dolist (feature e-test--core-features)
+            (should (featurep feature)))
+          (dolist (feature e-test--non-core-features)
+            (should-not (featurep feature))))
+      (setq features original-features))))
+
+(ert-deftest e-test-core-status-reports-only-pure-runtime-components ()
+  "The core status plist describes the pure runtime boundary."
+  (let ((original-features features))
+    (unwind-protect
+        (progn
+          (setq features
+                (cl-set-difference features
+                                   (append e-test--core-features
+                                           e-test--non-core-features)))
+          (require 'e-core)
+          (let ((status (e-core-status)))
+            (should (eq (plist-get status :state) 'ready))
+            (dolist (key '(:backends
+                           :capabilities
+                           :context
+                           :events
+                           :sessions
+                           :tools
+                           :loop
+                           :layers
+                           :harness))
+              (should (plist-get status key)))
+            (dolist (key '(:chat
+                           :openai
+                           :emacs-tools
+                           :base-tools))
+              (should-not (plist-member status key)))))
+      (setq features original-features))))
 
 (ert-deftest e-test-exposes-version ()
   "The package exposes its scaffold version."
@@ -66,6 +132,9 @@
   (should (commandp 'e-chat-set-model))
   (should (commandp 'e-chat-set-effort))
   (should (commandp 'e-chat-show-context))
+  (should (commandp 'e-chat-submit))
+  (should (commandp 'e-chat-abort))
+  (should (commandp 'e-chat-reset))
   (should (commandp 'e-dev-reload)))
 
 (ert-deftest e-test-autoloads-expose-chat-commands-at-startup ()
@@ -84,7 +153,7 @@
             (when (fboundp function)
               (fmakunbound function)))
           (update-directory-autoloads default-directory)
-          (let ((load-path (list default-directory)))
+          (let ((load-path (cons default-directory load-path)))
             (load generated-autoload-file nil 'nomessage)
             (dolist (command e-test--autoload-commands)
               (should (commandp command)))
@@ -122,10 +191,17 @@
   "The package exposes the core harness API after requiring e."
   (require 'e)
   (should (fboundp 'e-harness-create))
+  (should (fboundp 'e-harness-create-session))
+  (should (fboundp 'e-harness-subscribe))
+  (should (fboundp 'e-harness-activate-layer))
+  (should (fboundp 'e-harness-activate-capability))
   (should (fboundp 'e-harness-prompt))
   (should (fboundp 'e-harness-prompt-async))
   (should (fboundp 'e-harness-wait))
-  (should (fboundp 'e-harness-context))
+  (should (fboundp 'e-harness-follow-up))
+  (should (fboundp 'e-harness-abort))
+  (should (fboundp 'e-harness-reset))
+  (should (fboundp 'e-harness-state))
   (should (fboundp 'e-harness-messages))
   (should (fboundp 'e-capability-create))
   (should (fboundp 'e-capabilities-context-messages)))

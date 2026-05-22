@@ -13,24 +13,14 @@
 ;;; Code:
 
 (require 'e-backend)
-(require 'e-base)
-(require 'e-base-tools)
 (require 'e-capabilities)
-(require 'e-chat-session)
-(require 'e-chat)
 (require 'e-context)
-(require 'e-emacs-capabilities)
-(require 'e-emacs-base)
-(require 'e-emacs-tools)
-(require 'e-evidence-tools)
 (require 'e-events)
-(require 'e-file-capabilities)
-(require 'e-harness)
-(require 'e-layers)
-(require 'e-loop)
-(require 'e-openai)
 (require 'e-session)
 (require 'e-tools)
+(require 'e-loop)
+(require 'e-layers)
+(require 'e-harness)
 
 (defconst e-core-scaffold-state 'ready
   "Minimal state marker for the core runtime scaffold.")
@@ -38,25 +28,15 @@
 (defun e-core-status ()
   "Return a plist describing the current core state."
   (list :state e-core-scaffold-state
+        :backends t
+        :capabilities t
+        :context t
         :events t
-        :file-capabilities t
         :sessions t
         :session-persistence t
-        :chat-session t
-        :chat t
-        :layers t
-        :base t
-        :base-tools t
-        :capabilities t
-        :backends t
-        :context t
-        :emacs-capabilities t
-        :emacs-base t
-        :emacs-tools t
-        :evidence-tools t
-        :openai t
         :tools t
         :loop t
+        :layers t
         :harness t))
 
 (provide 'e-core)

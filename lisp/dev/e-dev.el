@@ -66,6 +66,7 @@
                   "lisp/core/e-backend.el"
                   "lisp/core/e-loop.el"
                   "lisp/core/e-harness.el"
+                  "lisp/core/e-core.el"
                   "lisp/layers/base/e-base-tools.el"
                   "lisp/layers/base/e-file-capabilities.el"
                   "lisp/layers/base/e-base.el"
@@ -77,7 +78,6 @@
                   "lisp/adapters/openai/e-openai.el"
                   "lisp/shells/e-shells.el"
                   "lisp/shells/chat/e-chat.el"
-                  "lisp/core/e-core.el"
                   "e.el"
                   "lisp/dev/e-dev.el")))
     (dolist (file files)
