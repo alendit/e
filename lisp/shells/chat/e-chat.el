@@ -483,6 +483,7 @@
 (define-derived-mode e-chat-mode text-mode "e-chat"
   "Major mode for e chat buffers."
   (add-hook 'kill-buffer-hook #'e-chat--stop-progress-indicator nil t)
+  (add-hook 'evil-local-mode-hook #'e-chat--enforce-modal-editing-policy nil t)
   (add-hook 'post-command-hook #'e-chat--clamp-to-composer nil t))
 
 (define-minor-mode e-chat-response-navigation-mode
@@ -526,7 +527,27 @@
 (defun e-chat--disable-modal-editing ()
   "Disable local modal editing state for the chat buffer when available."
   (when (fboundp 'evil-local-mode)
-    (evil-local-mode -1)))
+    (evil-local-mode -1))
+  (when (boundp 'evil-local-mode)
+    (setq-local evil-local-mode nil))
+  (when (boundp 'evil-state)
+    (setq-local evil-state nil)))
+
+(defun e-chat--enforce-modal-editing-policy ()
+  "Disable modal editing when it is reactivated in chat buffers."
+  (when (and (derived-mode-p 'e-chat-mode)
+             (boundp 'evil-local-mode)
+             evil-local-mode)
+    (e-chat--disable-modal-editing)))
+
+(defun e-chat--configure-modal-editing-policy ()
+  "Configure modal editors to keep `e-chat-mode' non-normal."
+  (when (fboundp 'evil-set-initial-state)
+    (evil-set-initial-state 'e-chat-mode 'emacs)))
+
+(e-chat--configure-modal-editing-policy)
+(with-eval-after-load 'evil
+  (e-chat--configure-modal-editing-policy))
 
 (defun e-chat--disable-completion ()
   "Disable completion sources and completion UI in the chat composer."
@@ -3042,6 +3063,7 @@ When DISPLAY is non-nil, show the target chat buffer."
 
 (defun e-chat-startup ()
   "Refresh and register the chat shell provider for package startup."
+  (e-chat--configure-modal-editing-policy)
   (e-chat--refresh-keymaps)
   (e-shell-register (e-chat-shell))
   (e-chat-reload-buffers))

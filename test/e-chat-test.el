@@ -353,6 +353,28 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-configures-evil-initial-state-as-emacs ()
+  "Chat mode declares a non-normal Evil state when Evil is available."
+  (let (configured)
+    (cl-letf (((symbol-function 'evil-set-initial-state)
+               (lambda (mode state)
+                 (setq configured (list mode state)))))
+      (e-chat--configure-modal-editing-policy)
+      (should (equal configured '(e-chat-mode emacs))))))
+
+(ert-deftest e-chat-test-evil-local-mode-hook-disables-reactivation ()
+  "If Evil local mode is reactivated, chat mode turns it off again."
+  (let ((buffer (e-chat-test--buffer nil "chat-evil-reactivation")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (setq-local evil-local-mode t)
+          (setq-local evil-state 'normal)
+          (run-hooks 'evil-local-mode-hook)
+          (should-not evil-local-mode)
+          (should-not evil-state))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-captures-point-reference-with-two-line-context ()
   "Point capture uses the current line with two surrounding lines."
   (with-temp-buffer
