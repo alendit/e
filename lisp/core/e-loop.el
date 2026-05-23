@@ -216,7 +216,8 @@ turn settlement are callback-driven."
                                               (plist-get item :reason)))
                                        ('backend-error
                                         (fail (list 'e-loop-backend-error
-                                                    (plist-get item :content))))
+                                                    (plist-get item :content)
+                                                    (plist-get item :payload))))
                                        (_
                                         (e-loop--emit
                                          :on-event on-event

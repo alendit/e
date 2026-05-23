@@ -1248,6 +1248,9 @@ KILLP is passed through to `delete-char' for normal text."
                               :started-at nil
                               :ended-at nil
                               :intermittent-entries nil
+                              :failure-error nil
+                              :failure-details nil
+                              :failure-rendered nil
                               :transient-start-marker nil
                               :transient-end-marker nil
                               :activity-block-id nil
@@ -1274,6 +1277,7 @@ KILLP is passed through to `delete-char' for normal text."
                             :turn-id turn-id
                             :kind nil
                             :action-text nil
+                            :details-text nil
                             :content-start-marker nil
                             :content-end-marker nil
                             :tool-items nil
@@ -1292,10 +1296,11 @@ KILLP is passed through to `delete-char' for normal text."
 
 (defun e-chat--update-block-bounds
     (block-id turn-id start end
-              &optional kind action-text content-start content-end tool-items)
+              &optional kind action-text content-start content-end tool-items
+              details-text)
   "Set BLOCK-ID bounds START through END and action metadata for TURN-ID.
-Optional KIND, ACTION-TEXT, CONTENT-START, CONTENT-END, and TOOL-ITEMS
-describe block actions."
+Optional KIND, ACTION-TEXT, CONTENT-START, CONTENT-END, TOOL-ITEMS, and
+DETAILS-TEXT describe block actions."
   (when block-id
     (e-chat--turn-record turn-id)
     (let ((record (e-chat--block-record block-id turn-id)))
@@ -1311,6 +1316,8 @@ describe block actions."
         (plist-put record :content-end-marker (copy-marker content-end nil)))
       (when tool-items
         (plist-put record :tool-items tool-items))
+      (when details-text
+        (plist-put record :details-text details-text))
       (when (eq kind 'final)
         (setq e-chat--latest-final-block-id block-id)))))
 
@@ -1520,6 +1527,19 @@ Count tool invocations after the reasoning chunk they followed."
       entries
       "\n\n")
      "\n\n")))
+
+(defun e-chat--failure-details-text (record)
+  "Return expanded failure details text for RECORD."
+  (when-let ((error-message (plist-get record :failure-error)))
+    (concat
+     (e-chat--indent-detail-text
+      (format "Failure\n%s" error-message))
+     "\n\n"
+     (when-let ((details (plist-get record :failure-details)))
+       (concat
+        (e-chat--indent-detail-text
+         (format "Provider details\n%s" (pp-to-string details)))
+        "\n\n")))))
 
 (defun e-chat--activity-tool-items (entries)
   "Return tool call/output items derived from intermittent ENTRIES."
@@ -1948,7 +1968,11 @@ sessions without durable activity."
         (format "%S" (plist-get (plist-get activity-event :payload)
                                 :result))
         nil
-        'activity)))))
+        'activity))
+      ('turn-failed
+       (e-chat--record-turn-failure
+        turn-id
+        (plist-get activity-event :payload))))))
 
 (defun e-chat--render-turn-activity-events (turn-id activity-events)
   "Render durable ACTIVITY-EVENTS for TURN-ID once."
@@ -1959,6 +1983,30 @@ sessions without durable activity."
           (e-chat--record-activity-event turn-id event)))
       (plist-put record :activity-rendered t)
       (e-chat--render-turn-transient turn-id record))))
+
+(defun e-chat--record-turn-failure (turn-id payload)
+  "Record failed-turn PAYLOAD for TURN-ID."
+  (when-let ((record (e-chat--turn-record turn-id)))
+    (plist-put record :failure-error
+               (or (plist-get payload :error) "Turn failed"))
+    (plist-put record :failure-details (plist-get payload :details))
+    record))
+
+(defun e-chat--render-turn-failure
+    (turn-id created-at payload &optional ensure-composer)
+  "Render failed TURN-ID with CREATED-AT and failure PAYLOAD."
+  (e-chat--set-turn-time turn-id :ended-at created-at)
+  (e-chat--stop-progress-indicator turn-id)
+  (let* ((record (e-chat--record-turn-failure turn-id payload))
+         (error-message (or (plist-get payload :error) "Turn failed")))
+    (e-chat--insert-entry
+     "System"
+     (format "Turn failed: %s" error-message)
+     ensure-composer
+     turn-id
+     (and record (e-chat--turn-details-text turn-id record)))
+    (when record
+      (plist-put record :failure-rendered t))))
 
 (defun e-chat--finalize-turn-display (turn-id)
   "Mark TURN-ID as having rendered its final response."
@@ -1993,6 +2041,7 @@ sessions without durable activity."
   "Return expanded details text for TURN-ID using RECORD."
   (concat
    (or (e-chat--intermittent-details-text record) "")
+   (or (e-chat--failure-details-text record) "")
    (format "  Turn: %s\n  Started: %s\n  Ended: %s\n  Duration: %s\n\n"
            turn-id
            (e-chat--format-time-value (plist-get record :started-at))
@@ -2233,10 +2282,12 @@ Preserve Markdown faces already present in the range."
                             'e-chat-final-assistant-face
                             t)))
 
-(defun e-chat--insert-entry (title content &optional ensure-composer turn-id)
+(defun e-chat--insert-entry
+    (title content &optional ensure-composer turn-id details-text)
   "Insert a protected chat entry with TITLE and CONTENT.
 When ENSURE-COMPOSER is non-nil, recreate the composer after inserting.
-TURN-ID tags the rendered entry for response navigation."
+TURN-ID tags the rendered entry for response navigation.  DETAILS-TEXT, when
+non-nil, is used by focused block activation."
   (let* ((active-turn-id e-chat--progress-turn-id)
          (active-record (and active-turn-id
                              (e-chat--existing-turn-record active-turn-id)))
@@ -2274,7 +2325,9 @@ TURN-ID tags the rendered entry for response navigation."
            (e-chat--block-kind-for-title title)
            content
            content-start
-           (+ content-start (length content)))
+           (+ content-start (length content))
+           nil
+           details-text)
           (e-chat--record-durable-entry-rendered turn-id side))))
     (if active-turn-id
         (e-chat--render-running-status active-turn-id active-record)
@@ -2310,6 +2363,10 @@ TURN-ID tags the rendered entry for response navigation."
     (pcase (plist-get block :kind)
       ('activity
        (e-chat--open-tool-list block))
+      ('system
+       (if-let ((details-text (plist-get block :details-text)))
+           (e-chat--display-details-buffer details-text)
+         (e-chat--enter-block-view block)))
       (_
        (e-chat--enter-block-view block)))))
 
@@ -2801,17 +2858,12 @@ TURN-ID tags the rendered entry for response navigation."
      (e-chat--ensure-composer)
      (e-chat--refresh-composer-position))
     ('turn-failed
-     (e-chat--set-turn-time (plist-get event :turn-id)
-                             :ended-at
-                             (plist-get event :created-at))
-     (e-chat--stop-progress-indicator (plist-get event :turn-id))
      (e-chat--set-status "error")
-     (e-chat--insert-entry
-      "System"
-      (format "Turn failed: %s"
-              (plist-get (plist-get event :payload) :error))
-      t
-      (plist-get event :turn-id)))
+     (e-chat--render-turn-failure
+      (plist-get event :turn-id)
+      (plist-get event :created-at)
+      (plist-get event :payload)
+      t))
     ('turn-cancelled
      (e-chat--set-turn-time (plist-get event :turn-id)
                              :ended-at
@@ -2891,6 +2943,28 @@ TURN-ID tags the rendered entry for response navigation."
       (nthcdr (- (length messages) limit) messages)
     messages))
 
+(defun e-chat--terminal-activity-event (turn-id activity-events)
+  "Return TURN-ID's terminal failure activity event, or nil."
+  (cl-find-if
+   (lambda (event)
+     (and (equal (plist-get event :turn-id) turn-id)
+          (eq (plist-get event :event-type) 'turn-failed)))
+   activity-events))
+
+(defun e-chat--render-replayed-terminal-event (turn-id activity-events)
+  "Render replayed terminal activity for TURN-ID when no final block exists."
+  (when-let ((activity-event
+              (e-chat--terminal-activity-event turn-id activity-events)))
+    (let ((record (e-chat--turn-record turn-id)))
+      (unless (or (plist-get record :final-rendered)
+                  (plist-get record :failure-rendered))
+        (e-chat--render-turn-activity-events turn-id activity-events)
+        (e-chat--render-turn-failure
+         turn-id
+         (plist-get activity-event :created-at)
+         (plist-get activity-event :payload)
+         t)))))
+
 (defun e-chat--render-session (&optional messages)
   "Render the attached session transcript in the current buffer.
 When MESSAGES is non-nil, render that message list instead of the
@@ -2908,9 +2982,13 @@ attached session's full transcript."
       (when (or (plist-get message :turn-id)
                 (not turn-id)
                 (eq (plist-get message :role) 'user))
-        (setq turn-index (1+ turn-index))
-        (setq turn-id (or (plist-get message :turn-id)
-                          (format "replayed-turn-%d" turn-index)))
+        (let ((next-turn-id
+               (or (plist-get message :turn-id)
+                   (format "replayed-turn-%d" (1+ turn-index)))))
+          (when (and turn-id (not (equal turn-id next-turn-id)))
+            (e-chat--render-replayed-terminal-event turn-id activity-events))
+          (setq turn-index (1+ turn-index))
+          (setq turn-id next-turn-id))
         (setq record (e-chat--turn-record turn-id)))
       (e-chat--record-replayed-message-time record message)
       (if (e-chat--tool-message-p message)
@@ -2921,7 +2999,9 @@ attached session's full transcript."
           (when (eq (plist-get message :role) 'assistant)
             (e-chat--render-turn-activity-events turn-id activity-events)
             (e-chat--finalize-turn-display turn-id))
-          (e-chat--insert-entry (car entry) (cdr entry) t turn-id))))))
+          (e-chat--insert-entry (car entry) (cdr entry) t turn-id))))
+    (when turn-id
+      (e-chat--render-replayed-terminal-event turn-id activity-events))))
 
 (cl-defun e-chat-open (&key harness session-id new-session)
   "Attach and return an e chat buffer.

@@ -399,12 +399,19 @@ condition list.  Return a cancellable `e-backend-request' handle."
                    (condition-case err
                        (let ((url-error (plist-get status :error)))
                          (if url-error
-                             (when on-error
-                               (funcall
-                                on-error
-                                (list 'error
-                                      (format "OpenAI request failed: %S"
-                                              url-error))))
+                             (let ((response-text
+                                    (e-openai-codex--http-response-text
+                                     buffer)))
+                               (if (not (string-empty-p
+                                         (string-trim response-text)))
+                                   (when on-complete
+                                     (funcall on-complete response-text))
+                                 (when on-error
+                                   (funcall
+                                    on-error
+                                    (list 'error
+                                          (format "OpenAI request failed: %S"
+                                                  url-error))))))
                            (when on-complete
                              (funcall
                               on-complete
@@ -482,6 +489,16 @@ condition list.  Return a cancellable `e-backend-request' handle."
                          (plist-get provider-part :type))
           :parsed-type (plist-get item :type))))
 
+(defun e-openai-codex--response-error-message (event)
+  "Return a readable error message for a Responses failure EVENT."
+  (let* ((response (plist-get event :response))
+         (error (or (plist-get response :error)
+                    (plist-get event :error))))
+    (or (and (listp error)
+             (plist-get error :message))
+        (and (stringp error) error)
+        (format "%S" event))))
+
 (defun e-openai-codex--json-error-item (stream-text)
   "Return a backend error item when STREAM-TEXT is a JSON error response."
   (when (string-prefix-p "{" (string-trim-left stream-text))
@@ -535,7 +552,9 @@ condition list.  Return a cancellable `e-backend-request' handle."
      ((member type '("response.completed" "response.done"))
       (list :type 'done :reason 'stop))
      ((equal type "response.failed")
-      (list :type 'backend-error :content event))
+      (list :type 'backend-error
+            :content (e-openai-codex--response-error-message event)
+            :payload event))
      (t nil))))
 
 (defun e-openai-codex-parse-stream (stream-text)

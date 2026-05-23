@@ -355,12 +355,34 @@ TURN-ID is passed to active capability context providers when present."
      ((e-tools-request-p request)
       (e-tools-cancel-request request)))))
 
-(defun e-harness--emit-turn-failed (harness session-id turn-id error-message)
+(defun e-harness--backend-error-message (err)
+  "Return the compact user-visible error message for condition ERR."
+  (if (and (consp err)
+           (eq (car err) 'e-loop-backend-error)
+           (stringp (cadr err)))
+      (cadr err)
+    (error-message-string err)))
+
+(defun e-harness--backend-error-details (err)
+  "Return structured provider details from condition ERR, or nil."
+  (when (and (consp err)
+             (eq (car err) 'e-loop-backend-error))
+    (nth 2 err)))
+
+(defun e-harness--emit-turn-failed
+    (harness session-id turn-id error-message &optional details)
   "Emit a turn-failed event from HARNESS.
 SESSION-ID and TURN-ID identify the failed turn.  ERROR-MESSAGE describes the
 provider or loop failure."
   (e-harness--emit-turn-event
-   harness session-id turn-id 'turn-failed (list :error error-message)))
+   harness
+   session-id
+   turn-id
+   'turn-failed
+   (let ((payload (list :error error-message)))
+     (when details
+       (plist-put payload :details details))
+     payload)))
 
 (defun e-harness--append-message (harness session-id turn-id message)
   "Append MESSAGE in HARNESS for SESSION-ID TURN-ID and emit `message-added'."
@@ -463,6 +485,7 @@ cancellation.  SESSION-ID identifies the session."
                       :status 'running
                       :result nil
                       :error nil
+                      :error-details nil
                       :condition nil
                       :timer nil
                       :request nil)))
@@ -471,10 +494,13 @@ cancellation.  SESSION-ID identifies the session."
         (e-harness--append-user-message
          harness session-id turn-id prompt metadata)
       (error
-       (let ((message (error-message-string err)))
+       (let ((message (e-harness--backend-error-message err))
+             (details (e-harness--backend-error-details err)))
          (plist-put entry :status 'error)
          (plist-put entry :error message)
-         (e-harness--emit-turn-failed harness session-id turn-id message)
+         (plist-put entry :error-details details)
+         (e-harness--emit-turn-failed
+          harness session-id turn-id message details)
          (remhash session-id (e-harness-active-turns harness))
          (signal (car err) (cdr err)))))
     (cl-labels
@@ -485,14 +511,16 @@ cancellation.  SESSION-ID identifies the session."
            (or (plist-get entry :cancelled)
                (not (active-entry-p))))
          (finish-error
-          (err)
-          (when (and (active-entry-p) (not (plist-get entry :cancelled)))
-            (let ((message (error-message-string err)))
+         (err)
+         (when (and (active-entry-p) (not (plist-get entry :cancelled)))
+            (let ((message (e-harness--backend-error-message err))
+                  (details (e-harness--backend-error-details err)))
               (plist-put entry :status 'error)
               (plist-put entry :condition err)
               (plist-put entry :error message)
+              (plist-put entry :error-details details)
               (e-harness--emit-turn-failed
-               harness session-id turn-id message))))
+               harness session-id turn-id message details))))
          (finish-done
           (result)
           (when (and (active-entry-p) (not (plist-get entry :cancelled)))

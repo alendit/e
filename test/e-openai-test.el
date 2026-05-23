@@ -417,6 +417,24 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
       :payload (:error (:message "Invalid schema"
                        :type "invalid_request_error")))))))
 
+(ert-deftest e-openai-test-response-failed-keeps-summary-and-payload ()
+  "Responses failure events keep a readable summary and full payload."
+  (let* ((items
+          (e-openai-codex-parse-stream
+           "data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"error\":{\"code\":\"context_length_exceeded\",\"message\":\"Your input exceeds the context window of this model.\"}}}\n\n"))
+         (item (car items)))
+    (should (equal (plist-get item :type) 'backend-error))
+    (should (equal (plist-get item :content)
+                   "Your input exceeds the context window of this model."))
+    (should (equal (plist-get (plist-get item :payload) :type)
+                   "response.failed"))
+    (should (equal (plist-get
+                    (plist-get
+                     (plist-get (plist-get item :payload) :response)
+                     :error)
+                    :code)
+                   "context_length_exceeded"))))
+
 (ert-deftest e-openai-test-default-http-request-start-accepts-keyword-arguments ()
   "The default async HTTP requester accepts the backend keyword call shape."
   (let (captured-url captured-method captured-headers captured-body)
@@ -447,6 +465,31 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
       (should (equal captured-method "POST"))
       (should (equal captured-headers '(("Authorization" . "Bearer test"))))
       (should (equal (decode-coding-string captured-body 'utf-8) "{}")))))
+
+(ert-deftest e-openai-test-default-http-request-start-returns-error-body ()
+  "HTTP error responses with bodies continue through backend parsing."
+  (cl-letf (((symbol-function 'url-retrieve)
+             (lambda (_url callback &rest _args)
+               (let ((buffer (generate-new-buffer " *e-openai-test-http*")))
+                 (with-current-buffer buffer
+                   (insert "HTTP/1.1 400 Bad Request\n\n"
+                           "{\"error\":{\"message\":\"Invalid request\"}}"))
+                 (with-current-buffer buffer
+                   (funcall callback '(:error (error http 400))))
+                 buffer))))
+    (let (response error)
+      (e-openai-codex--http-request-start
+       :url "https://example.test/codex/responses"
+       :headers '(("Authorization" . "Bearer test"))
+       :body "{}"
+       :on-complete (lambda (value) (setq response value))
+       :on-error (lambda (err) (setq error err)))
+      (should-not error)
+      (should (equal response
+                     "{\"error\":{\"message\":\"Invalid request\"}}"))
+      (should (equal (plist-get (car (e-openai-codex-parse-stream response))
+                                :content)
+                     "Invalid request")))))
 
 (ert-deftest e-openai-test-default-http-request-start-normalizes-header-bytes ()
   "Multibyte ASCII headers must not make a Unicode request body invalid."

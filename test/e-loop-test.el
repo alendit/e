@@ -98,20 +98,25 @@
 (ert-deftest e-loop-test-surfaces-backend-error ()
   "Backend error items stop the turn with an explicit error."
   (let* ((backend (e-backend-fake-create
-                   :items '((:type backend-error :content "provider failed"))))
+                   :items '((:type backend-error
+                              :content "provider failed"
+                              :payload (:provider-error full)))))
          (events nil))
-    (should-error
-     (e-loop-run-turn
-      :session-id "session-1"
-      :turn-id "turn-1"
-      :messages '((:role user :content "hi"))
-      :backend backend
-      :tools (e-tools-registry-create)
-      :options nil
-      :on-event (lambda (type payload)
-                  (push (list :type type :payload payload) events))
-      :append-message #'ignore)
-     :type 'e-loop-backend-error)
+    (let ((err
+           (should-error
+            (e-loop-run-turn
+             :session-id "session-1"
+             :turn-id "turn-1"
+             :messages '((:role user :content "hi"))
+             :backend backend
+             :tools (e-tools-registry-create)
+             :options nil
+             :on-event (lambda (type payload)
+                         (push (list :type type :payload payload) events))
+             :append-message #'ignore)
+            :type 'e-loop-backend-error)))
+      (should (equal (cdr err)
+                     '("provider failed" (:provider-error full)))))
     (should (member 'turn-started
                     (mapcar (lambda (event) (plist-get event :type))
                             events)))))

@@ -1104,6 +1104,50 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-failed-turn-opens-full-error-from-navigation ()
+  "RET on a focused failed system block opens full provider details."
+  (let ((buffer (e-chat-test--buffer nil "chat-failed-details"))
+        (details nil))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat--render-event
+           (e-events-make
+            :type 'turn-failed
+            :session-id e-chat-session-id
+            :turn-id "turn-1"
+            :created-at 10
+            :payload
+            '(:error "OpenAI request failed: (error http 400)"
+              :details (:type "response.failed"
+                        :response
+                        (:error
+                         (:code "context_length_exceeded"
+                          :message
+                          "Your input exceeds the context window."))))))
+          (let ((content (buffer-string)))
+            (should (string-match-p
+                     "Turn failed: OpenAI request failed: (error http 400)"
+                     content))
+            (should-not (string-match-p "context_length_exceeded" content)))
+          (e-chat-test--focus-block-containing "Turn failed")
+          (should (eq (plist-get (e-chat-test--focused-block) :kind)
+                      'system))
+          (setq details (e-chat-response-navigation-activate))
+          (with-current-buffer details
+            (should (derived-mode-p 'special-mode))
+            (should buffer-read-only)
+            (should (string-match-p "OpenAI request failed"
+                                    (buffer-string)))
+            (should (string-match-p "context_length_exceeded"
+                                    (buffer-string)))
+            (should (string-match-p
+                     "Your input exceeds the context window"
+                     (buffer-string)))))
+      (when (buffer-live-p details)
+        (kill-buffer details))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-turn-started-shows-moving-assistant-progress ()
   "An active assistant turn shows a protected moving glyph indicator."
   (let ((buffer (e-chat-test--buffer nil "chat-progress")))
@@ -2064,6 +2108,48 @@
         (kill-buffer buffer))
       (e-chat-test--kill-buffer-name e-chat-details-buffer-name)
       (delete-directory directory t))))
+
+(ert-deftest e-chat-test-replayed-failed-turn-is-navigable ()
+  "Replayed turn-failed activity renders as a compact navigable block."
+  (let* ((store (e-session-store-create))
+         (backend (e-backend-fake-create :items nil))
+         (harness (e-harness-create :backend backend :sessions store))
+         (buffer nil)
+         (details nil))
+    (unwind-protect
+        (progn
+          (e-harness-create-session harness :id "chat-failed-replay")
+          (e-session-append-message
+           store "chat-failed-replay"
+           '(:role user :content "too much context" :turn-id "turn-1"))
+          (e-session-append-activity-event
+           store "chat-failed-replay" "turn-1" 'turn-failed
+           '(:error "OpenAI request failed: (error http 400)"
+             :details (:type "response.failed"
+                       :response
+                       (:error
+                        (:code "context_length_exceeded"
+                         :message
+                         "Your input exceeds the context window.")))))
+          (setq buffer (e-chat-open :harness harness
+                                    :session-id "chat-failed-replay"))
+          (with-current-buffer buffer
+            (let ((content (buffer-string)))
+              (should (string-match-p "too much context" content))
+              (should (string-match-p
+                       "Turn failed: OpenAI request failed: (error http 400)"
+                       content))
+              (should-not (string-match-p "context_length_exceeded" content)))
+            (e-chat-test--focus-block-containing "Turn failed")
+            (setq details (e-chat-response-navigation-activate))
+            (with-current-buffer details
+              (should (string-match-p "context_length_exceeded"
+                                      (buffer-string))))))
+      (when (buffer-live-p details)
+        (kill-buffer details))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (e-chat-test--kill-buffer-name e-chat-details-buffer-name))))
 
 (ert-deftest e-chat-test-replayed-activity-prefers-durable-tool-events ()
   "Replayed activity does not duplicate transcript tool messages."

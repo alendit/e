@@ -195,6 +195,31 @@
                     (mapcar (lambda (event) (plist-get event :type))
                             events)))))
 
+(ert-deftest e-harness-test-backend-error-details-are-surfaced ()
+  "Structured backend error details survive in the turn-failed payload."
+  (let* ((backend (e-backend-fake-create
+                   :items '((:type backend-error
+                              :content "provider failed"
+                              :payload (:provider-error full)))))
+         (harness (e-harness-create :backend backend))
+         (events nil))
+    (e-harness-subscribe harness (lambda (event) (push event events)))
+    (e-harness-create-session harness :id "session-1")
+    (e-harness-prompt-async harness "session-1" "question")
+    (let ((settled (e-harness-wait harness "session-1" 1.0)))
+      (should (equal (plist-get settled :status) 'error))
+      (should (equal (plist-get settled :error) "provider failed"))
+      (should (equal (plist-get settled :error-details)
+                     '(:provider-error full))))
+    (let* ((failed-event
+            (seq-find (lambda (event)
+                        (eq (plist-get event :type) 'turn-failed))
+                      events))
+           (payload (plist-get failed-event :payload)))
+      (should (equal (plist-get payload :error) "provider failed"))
+      (should (equal (plist-get payload :details)
+                     '(:provider-error full))))))
+
 (ert-deftest e-harness-test-async-prompt-rejects-concurrent-session-turn ()
   "A session cannot start a second async turn while the first is running."
   (let* ((finish nil)
