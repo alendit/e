@@ -1790,6 +1790,75 @@
       (e-chat-test--kill-buffer-name e-chat-details-buffer-name)
       (delete-directory directory t))))
 
+(ert-deftest e-chat-test-replayed-activity-prefers-durable-tool-events ()
+  "Replayed activity does not duplicate transcript tool messages."
+  (let* ((directory (make-temp-file "e-chat-activity-dedupe-" t))
+         (store (e-session-persistent-store-create directory))
+         (backend (e-backend-fake-create :items nil))
+         (harness (e-harness-create :backend backend :sessions store))
+         (buffer nil))
+    (unwind-protect
+        (progn
+          (e-harness-create-session harness :id "chat-activity-dedupe")
+          (e-session-append-message
+           store "chat-activity-dedupe"
+           '(:role user :content "inspect" :turn-id "turn-1"))
+          (e-session-append-activity-event
+           store "chat-activity-dedupe" "turn-1" 'reasoning-delta
+           '(:content "Need current buffer state."))
+          (e-session-append-activity-event
+           store "chat-activity-dedupe" "turn-1" 'tool-started
+           '(:type tool-call
+             :id "call-1"
+             :name "buffer-read"
+             :arguments (:buffer "*scratch*")))
+          (e-session-append-message
+           store "chat-activity-dedupe"
+           '(:role tool-call
+             :content (:type tool-call
+                       :id "call-1"
+                       :name "buffer-read"
+                       :arguments (:buffer "*scratch*"))
+             :turn-id "turn-1"))
+          (e-session-append-activity-event
+           store "chat-activity-dedupe" "turn-1" 'tool-finished
+           '(:tool-call
+             (:type tool-call
+              :id "call-1"
+              :name "buffer-read"
+              :arguments (:buffer "*scratch*"))
+             :result (:status ok :content "scratch contents")))
+          (e-session-append-message
+           store "chat-activity-dedupe"
+           '(:role tool
+             :content (:tool-call-id "call-1"
+                       :name "buffer-read"
+                       :status ok
+                       :content "scratch contents")
+             :turn-id "turn-1"))
+          (e-session-append-message
+           store "chat-activity-dedupe"
+           '(:role assistant :content "Final answer." :turn-id "turn-1"))
+          (setq buffer (e-chat-open :harness harness
+                                    :session-id "chat-activity-dedupe"))
+          (with-current-buffer buffer
+            (let ((content (buffer-string)))
+              (should (string-match-p "Need current buffer state\\.\n1 tool call"
+                                      content))
+              (should-not (string-match-p "2 tool calls" content)))
+            (e-chat-test--focus-block-containing "1 tool call")
+            (call-interactively #'e-chat-response-navigation-activate)
+            (let* ((block (e-chat--focused-block))
+                   (items (plist-get block :tool-items)))
+              (should (= (length items) 1))
+              (should (string-prefix-p
+                       "buffer-read"
+                       (plist-get (car items) :call))))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (e-chat-test--kill-buffer-name e-chat-details-buffer-name)
+      (delete-directory directory t))))
+
 (ert-deftest e-chat-test-replayed-activity-keeps-earlier-turns-visible ()
   "Replayed activity summaries do not erase earlier transcript blocks."
   (let* ((directory (make-temp-file "e-chat-activity-history-" t))

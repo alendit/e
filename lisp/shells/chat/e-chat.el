@@ -1688,6 +1688,34 @@ SOURCE identifies where the entry came from for duplicate suppression."
   "Return non-nil when MESSAGE is a tool transcript message."
   (memq (plist-get message :role) '(tool-call tool)))
 
+(defun e-chat--tool-message-covered-by-activity-p
+    (message turn-id activity-events)
+  "Return non-nil when ACTIVITY-EVENTS already represent tool MESSAGE.
+Replay prefers durable activity events because they preserve the model-visible
+reasoning/tool timeline. Transcript tool messages remain a fallback for older
+sessions without durable activity."
+  (let ((role (plist-get message :role))
+        (content (plist-get message :content)))
+    (cl-some
+     (lambda (event)
+       (and
+        (equal (plist-get event :turn-id) turn-id)
+        (let ((payload (plist-get event :payload)))
+          (pcase role
+            ('tool-call
+             (and (eq (plist-get event :event-type) 'tool-started)
+                  (equal (plist-get payload :id)
+                         (plist-get content :id))))
+            ('tool
+             (and (eq (plist-get event :event-type) 'tool-finished)
+                  (let ((tool-call (plist-get payload :tool-call))
+                        (result (plist-get payload :result))
+                        (tool-call-id (plist-get content :tool-call-id)))
+                    (or (equal (plist-get tool-call :id) tool-call-id)
+                        (equal (plist-get result :tool-call-id)
+                               tool-call-id)))))))))
+     activity-events)))
+
 (defun e-chat--record-tool-message (turn-id message)
   "Record tool MESSAGE as expandable details for TURN-ID."
   (when-let ((record (e-chat--turn-record turn-id)))
@@ -2703,7 +2731,9 @@ attached session's full transcript."
         (setq record (e-chat--turn-record turn-id)))
       (e-chat--record-replayed-message-time record message)
       (if (e-chat--tool-message-p message)
-          (e-chat--record-tool-message turn-id message)
+          (unless (e-chat--tool-message-covered-by-activity-p
+                   message turn-id activity-events)
+            (e-chat--record-tool-message turn-id message))
         (let ((entry (e-chat--message-entry message)))
           (when (eq (plist-get message :role) 'assistant)
             (e-chat--render-turn-activity-events turn-id activity-events)
