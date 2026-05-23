@@ -179,6 +179,27 @@
                      :content "tool exploded"
                      :metadata (:error error))))))
 
+(ert-deftest e-tools-test-handler-quit-returns-structured-results ()
+  "Tool handler quits remain structured tool results."
+  (let ((registry (e-tools-registry-create))
+        result)
+    (e-tools-register registry
+                      :name "quit"
+                      :description "Quit."
+                      :handler (lambda (_arguments)
+                                 (signal 'quit nil)))
+    (e-tools-start
+     registry
+     '(:id "call-1" :name "quit" :arguments nil)
+     :on-done (lambda (value) (setq result value)))
+    (should (e-tools-test--wait-until (lambda () result)))
+    (should (equal result
+                   '(:tool-call-id "call-1"
+                     :name "quit"
+                     :status error
+                     :content "Quit"
+                     :metadata (:error quit))))))
+
 (provide 'e-tools-test)
 
 ;;; e-tools-test.el ends here

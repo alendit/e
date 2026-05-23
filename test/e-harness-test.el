@@ -348,9 +348,17 @@
       (should (member 'turn-cancelled
                       (mapcar (lambda (event) (plist-get event :type))
                               events)))
-      (should (equal (mapcar (lambda (message) (plist-get message :role))
-                             (e-harness-messages harness "session-1"))
-                     '(user tool-call))))))
+      (should (member 'tool-finished
+                      (mapcar (lambda (event) (plist-get event :type))
+                              events)))
+      (let* ((messages (e-harness-messages harness "session-1"))
+             (tool-result (plist-get (nth 2 messages) :content)))
+        (should (equal (mapcar (lambda (message) (plist-get message :role))
+                               messages)
+                       '(user tool-call tool)))
+        (should (equal (plist-get tool-result :tool-call-id) "call-1"))
+        (should (eq (plist-get tool-result :status) 'error))
+        (should (equal (plist-get tool-result :content) "Cancelled"))))))
 
 (ert-deftest e-harness-test-follow-up-appends-user-message ()
   "Follow-up submits another turn against the same session."

@@ -431,6 +431,88 @@
                            (nreverse events))
                    '(turn-started tool-started tool-finished turn-finished)))))
 
+(ert-deftest e-loop-test-start-turn-persists-tool-result-when-tool-quits ()
+  "Async turn execution records a tool result when tool execution quits."
+  (let* ((calls 0)
+         (backend (e-backend-create
+                   :name "async-tool-quit-followup"
+                   :start
+                   (cl-function
+                    (lambda (&key messages options on-item on-done on-error
+                                   on-request-start)
+                      (ignore options on-error on-request-start)
+                      (setq calls (1+ calls))
+                      (run-at-time
+                       0 nil
+                       (lambda ()
+                         (if (= calls 1)
+                             (progn
+                               (should (equal (mapcar (lambda (message)
+                                                        (plist-get message :role))
+                                                      messages)
+                                              '(user)))
+                               (funcall on-item
+                                        '(:type tool-call
+                                          :id "call-quit"
+                                          :name "quit-tool"
+                                          :arguments nil))
+                               (funcall on-item
+                                        '(:type done :reason tool-use)))
+                           (should (equal (mapcar (lambda (message)
+                                                    (plist-get message :role))
+                                                  messages)
+                                          '(user tool-call tool)))
+                           (let ((tool-result (nth 2 messages)))
+                             (should (equal (plist-get
+                                             (plist-get tool-result :content)
+                                             :tool-call-id)
+                                            "call-quit"))
+                             (should (eq (plist-get
+                                          (plist-get tool-result :content)
+                                          :status)
+                                         'error))
+                             (should (equal (plist-get
+                                             (plist-get tool-result :content)
+                                             :content)
+                                            "Quit")))
+                           (funcall on-item
+                                    '(:type assistant-message
+                                      :content "handled quit"))
+                           (funcall on-item
+                                    '(:type done :reason stop)))
+                         (funcall on-done '(:status done))))
+                      nil))))
+         (tools (e-tools-registry-create))
+         (events nil)
+         (messages nil)
+         (settled nil))
+    (e-tools-register tools
+                      :name "quit-tool"
+                      :description "Quit."
+                      :handler (lambda (_arguments)
+                                 (signal 'quit nil)))
+    (e-loop-start-turn
+     :session-id "session-1"
+     :turn-id "turn-1"
+     :messages '((:role user :content "hi"))
+     :backend backend
+     :tools tools
+     :options nil
+     :on-event (lambda (type payload)
+                 (push (list :type type :payload payload) events))
+     :append-message (lambda (message) (push message messages))
+     :on-done (lambda (result) (setq settled result))
+     :on-error (lambda (err) (setq settled (list :error err))))
+    (should (e-loop-test--wait-until (lambda () settled)))
+    (should (equal calls 2))
+    (should (equal (plist-get settled :status) 'done))
+    (should (equal (mapcar (lambda (message) (plist-get message :role))
+                           (nreverse messages))
+                   '(tool-call tool assistant)))
+    (should (equal (mapcar (lambda (event) (plist-get event :type))
+                           (nreverse events))
+                   '(turn-started tool-started tool-finished turn-finished)))))
+
 (ert-deftest e-loop-test-start-turn-waits-for-delayed-async-tool-result ()
   "Async turn execution waits for async tools before the follow-up request."
   (let* ((calls 0)

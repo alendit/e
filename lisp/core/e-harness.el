@@ -355,6 +355,28 @@ TURN-ID is passed to active capability context providers when present."
      ((e-tools-request-p request)
       (e-tools-cancel-request request)))))
 
+(defun e-harness--cancelled-tool-result (tool-call)
+  "Return a structured cancellation result for TOOL-CALL."
+  (list :tool-call-id (plist-get tool-call :id)
+        :name (plist-get tool-call :name)
+        :status 'error
+        :content "Cancelled"
+        :metadata '(:error cancelled)))
+
+(defun e-harness--append-cancelled-tool-result (harness session-id turn-id entry)
+  "Append a cancellation tool result when ENTRY has an open tool call."
+  (when-let ((tool-call (plist-get entry :open-tool-call)))
+    (let* ((result (e-harness--cancelled-tool-result tool-call))
+           (message (list :id (e-harness--next-message-id)
+                          :role 'tool
+                          :content result
+                          :metadata nil)))
+      (e-harness--append-message harness session-id turn-id message)
+      (e-harness--emit-turn-event
+       harness session-id turn-id 'tool-finished
+       (list :tool-call tool-call :result result))
+      (plist-put entry :open-tool-call nil))))
+
 (defun e-harness--backend-error-message (err)
   "Return the compact user-visible error message for condition ERR."
   (if (and (consp err)
@@ -544,6 +566,11 @@ cancellation.  SESSION-ID identifies the session."
              (lambda (type payload)
                (when (and (active-entry-p)
                           (not (plist-get entry :cancelled)))
+                 (pcase type
+                   ('tool-started
+                    (plist-put entry :open-tool-call payload))
+                   ('tool-finished
+                    (plist-put entry :open-tool-call nil)))
                  (e-harness--emit-turn-event
                   harness session-id turn-id type payload)))
              :append-message
@@ -589,8 +616,10 @@ cancellation.  SESSION-ID identifies the session."
         (let ((turn-id (plist-get entry :id)))
           (when-let ((timer (plist-get entry :timer)))
             (cancel-timer timer))
-          (e-harness--cancel-active-request entry)
           (plist-put entry :cancelled t)
+          (e-harness--cancel-active-request entry)
+          (e-harness--append-cancelled-tool-result
+           harness session-id turn-id entry)
           (plist-put entry :status 'cancelled)
           (e-harness--emit-turn-event
            harness session-id turn-id 'turn-cancelled nil)

@@ -177,9 +177,14 @@ condition lists.  ON-REQUEST-START receives an optional `e-tools-request'."
                                  (finish-ok
                                   (funcall handler
                                            (plist-get call :arguments)))
+                               (quit
+                                (finish-error err))
                                (error
                                 (finish-error err)))))))
                   request))
+            (quit
+             (finish-error err)
+             nil)
             (error
              (finish-error err)
              nil)))))))
