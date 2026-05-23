@@ -1,0 +1,309 @@
+#+title: Feature sketch: Web layer (basic)
+#+author: planning
+#+date: 2026-05-23
+#+startup: overview
+
+* Status
+Draft for discussion.
+
+* Goal
+Add a =web= layer that gives agents a small, explicit set of internet-facing skills:
+
+1. Web search, backed by =bx=.
+2. Web page fetch, implementation to be selected.
+3. Browser control, implementation to be selected.
+
+The basic layer should be reliable enough for research workflows while keeping side effects, credentials, and browser state explicit.
+
+* Non-goals for the first cut
+- Full autonomous browsing without user-visible actions.
+- Login/session management beyond what the chosen browser-control backend naturally supports.
+- Scraping at scale, crawling, or bypassing access controls.
+- Hidden network access from non-web skills.
+
+* Layer shape
+The =web= layer should expose three skills with narrow contracts.
+
+** Naming and wire representation
+Tool/capability naming should distinguish logical names from wire names. Logical capability IDs may be dotted for grouping and documentation, for example =web.browser.open=. Model-provider function/tool names are often constrained by the wire API, commonly to short ASCII identifiers such as letters, digits, underscores, and hyphens, and sometimes length-limited. The adapter should therefore either choose conservative advertised names such as =web_browser_open=, or maintain an explicit mapping from logical IDs to provider-safe aliases. Avoid opaque hash-only names as the primary model-facing surface; they are harder for the model and humans to understand and weaken semantic audit logs. Hashes are useful as internal IDs or collision-proof aliases, not as the capability contract.
+
+** Skill 1: Web search
+Backend: =bx=.
+
+Purpose:
+- Turn a user query into ranked web results.
+- Provide titles, URLs, snippets, and maybe source/date metadata when available.
+
+Skill behavior:
+- This skill is exposed to the agent as a semantic =web.search= tool, not as an instruction to run a shell command.
+- The first implementation may be a thin wrapper that invokes =bx web= internally and consumes its JSON stdout.
+- The skill should hide CLI/process details from the agent, but preserve the important =bx= concepts: query, count, freshness, locale, site filters, result filters, goggles, and JSON diagnostics.
+
+Current =bx= CLI surface checked in this install:
+
+#+begin_src sh
+bx web "site:docs.rs axum middleware" --count 5
+bx web "rust error handling" --include-site docs.rs --count 5
+bx web "ECONNREFUSED PostgreSQL connection refused fix" --freshness pw
+#+end_src
+
+Relevant =bx web= options:
+- query argument: =<Q>=
+- =--count <COUNT>=
+- =--offset <OFFSET>=
+- =--freshness <pd|pw|pm|py|YYYY-MM-DDtoYYYY-MM-DD>=
+- =--country <COUNTRY>=
+- =--search-lang <LANG>=
+- =--ui-lang <LANG>=
+- =--safesearch <off|moderate|strict>=
+- =--result-filter <web,discussions,faq,infobox,news,query,summarizer,videos,locations>=
+- =--include-site <DOMAIN>=, repeatable
+- =--exclude-site <DOMAIN>=, repeatable
+- =--goggles <RULES_OR_FILE>=
+- =--operators= to enable Brave search operators such as =site:=
+- global =--timeout <SECONDS>=
+
+Expected output:
+- =bx= writes JSON to stdout and errors to stderr.
+- For =bx web=, useful result paths include =.web.results[]=, =.news.results[]=, =.videos.results[]=, and =.discussions.results[]=.
+
+Normalization for the skill:
+- The skill can return a compact normalized list for common use, extracted from =.web.results[]= by default.
+- It should also keep raw/structured =bx= JSON available for callers that need non-web result types or backend-specific fields.
+- Search results are not page evidence by themselves; agents should fetch/open result pages before citing detailed claims.
+- Keep query and result logging policy explicit.
+
+** Skill 2: Web page fetch
+Purpose:
+- Retrieve a URL as a document-like artifact suitable for reading, quoting, summarizing, and extracting links.
+- Prefer stable, text-first output for agent reasoning.
+
+Open design question: should fetch be a lightweight HTTP/document extraction tool, a browser-backed renderer, or a hybrid?
+
+*** Option A: plain HTTP fetch + readability extraction
+Use an HTTP client to request the URL, then convert HTML to readable text/Markdown plus metadata.
+
+Pros:
+- Simple, fast, deterministic.
+- Easy to sandbox and log.
+- Good for static pages, docs, blogs, articles, raw text, JSON, PDFs if converters are added.
+- No persistent browser state or UI requirements.
+
+Cons:
+- Fails or degrades on JS-rendered applications.
+- Cookie/login flows are awkward.
+- Bot protection and consent walls may block content.
+- Rendered DOM may differ from fetched HTML.
+
+Useful outputs:
+- final URL after redirects
+- status code and content type
+- title and metadata
+- extracted text/Markdown
+- raw HTML optionally, behind an explicit flag
+- link list
+- byte/token limits and truncation marker
+
+*** Option B: browser-backed fetch/render
+Use a headless or controlled browser to load the page and extract the rendered DOM/text.
+
+Pros:
+- Handles client-side rendering.
+- Shares machinery with browser control.
+- Can support screenshots and accessibility tree extraction.
+- Better approximation of what a user sees.
+
+Cons:
+- Slower and heavier.
+- More complex sandboxing.
+- More privacy/session risk if it uses a real profile.
+- Pages can execute scripts and produce side effects such as analytics, popups, or background requests.
+
+*** Option C: hybrid fetch
+Default to plain HTTP fetch; fall back to browser-backed rendering when the result appears empty, blocked, or JS-dependent, or when the caller requests rendering.
+
+Pros:
+- Fast path for normal pages.
+- Handles modern web apps when needed.
+- Allows explicit escalation from passive fetch to active page load.
+
+Cons:
+- More implementation complexity.
+- Need clear result provenance: =http= vs =browser=.
+- Fallback heuristics can be surprising unless surfaced.
+
+*** Initial recommendation
+Use Option C eventually, but start with Option A as the minimum viable fetch if we want the smallest first cut. Define the API so a later browser-backed =render=true= mode can be added without breaking callers.
+
+Possible operation shape:
+
+#+begin_src text
+web.fetch(url, options?) -> page
+
+options:
+  render?: false | true | auto
+  max_bytes?: integer
+  max_tokens?: integer
+  format?: text | markdown | html
+  include_links?: boolean
+  include_screenshot?: boolean
+  timeout_ms?: integer
+
+page:
+  url: string
+  final_url: string
+  status?: integer
+  content_type?: string
+  fetched_at: timestamp
+  mode: http | browser
+  title?: string
+  text?: string
+  markdown?: string
+  html?: string
+  links?: link[]
+  truncated?: boolean
+  diagnostics?: string[]
+#+end_src
+
+** Skill 3: Browser control
+Purpose:
+- Interact with real web pages when static fetch is insufficient: navigate, click, type, inspect current page, maybe take screenshots.
+- Support workflows such as form filling, comparing rendered UI, using authenticated sites with user consent, and debugging web apps.
+
+Open design question: which control surface should be the first supported backend?
+
+*** Option A: Playwright-controlled browser
+Run/control a Chromium/WebKit/Firefox instance through Playwright.
+
+Pros:
+- Mature automation API.
+- Cross-browser support.
+- Strong selectors, screenshots, accessibility snapshots, downloads, tracing.
+- Can be headless or headed.
+- Good fit for deterministic testing-like tasks.
+
+Cons:
+- Requires Playwright runtime/browser install.
+- A separate browser profile may not have user's logged-in sessions.
+- Automation can be detected or blocked by some sites.
+- Need careful management of profiles, downloads, and permissions.
+
+Best for:
+- Reproducible browser tasks.
+- Web app inspection/testing.
+- Pages that need rendering but not a user's existing browser state.
+
+*** Option B: Chrome DevTools Protocol against an existing browser
+Attach to a browser launched with remote debugging enabled.
+
+Pros:
+- Can inspect/control a real visible browser.
+- Rich protocol for DOM, network, screenshots, console, performance.
+- Potentially compatible with existing browser profiles if launched that way.
+
+Cons:
+- Browser must be started with debugging port, which is a security-sensitive mode.
+- Profile/session isolation needs discipline.
+- Chrome/Chromium-centered unless abstracted.
+- Lower-level protocol than Playwright.
+
+Best for:
+- User-visible interactive sessions.
+- Debugging a page the user can see.
+- Cases where network/console details matter.
+
+*** Option C: OS/browser UI automation
+Control the browser through OS accessibility APIs, keyboard/mouse events, and screenshots.
+
+Pros:
+- Works with the user's actual browser and current session.
+- Closest to what a human would do.
+- Useful for sites that resist automation APIs.
+
+Cons:
+- Fragile and platform-specific.
+- Harder to make deterministic.
+- Needs accessibility permissions.
+- Harder to extract semantic page state unless paired with OCR/accessibility tree.
+
+Best for:
+- Last-resort interactive automation.
+- Tasks requiring the exact user's visible browser context.
+
+*** Option D: MCP/browser service adapter
+Use an existing browser-control service or MCP server as the layer backend.
+
+Pros:
+- May avoid building/maintaining browser plumbing.
+- Can swap implementations behind a stable =web.browser=* contract.
+- Good for experimentation.
+
+Cons:
+- Quality and capability vary by server.
+- Need to audit security and data flow.
+- Another moving part to install/configure.
+
+*** Initial recommendation
+Start with Playwright as the clean automation backend, but keep the interface backend-neutral. For user-session workflows, discuss whether we need an explicit "attach to existing browser" mode via CDP or OS automation later.
+
+Possible operation shape:
+
+#+begin_src text
+web.browser.open(url?, options?) -> session
+web.browser.observe(session) -> page_state
+web.browser.click(session, target)
+web.browser.type(session, target, text, options?)
+web.browser.press(session, key)
+web.browser.navigate(session, url)
+web.browser.screenshot(session, options?) -> image
+web.browser.close(session)
+
+page_state:
+  url: string
+  title?: string
+  text?: string
+  accessibility_tree?: object
+  elements?: element_summary[]
+#+end_src
+
+* Safety and permissions
+- Network access should be visible as =web= activity.
+- Agent-facing internet access should go through semantic capabilities such as =web.search=, =web.fetch=, and =web.browser.*= rather than raw shell commands; backend CLIs such as =bx= are implementation details.
+- A capability may be implemented as a native tool, or as a small skill/script entry point with a minimal description plus references to schemas, docs, examples, and policy resources for progressive discovery. The important boundary is the semantic contract and audit surface, not whether the implementation is "tool" code or a script.
+- Treat network-capable shell commands as a separate, harder-to-audit permission surface; either block them for internet access or require explicit confirmation/policy.
+- Browser-control actions that mutate state should be distinguishable from read-only actions.
+- Downloads, file uploads, clipboard, geolocation, camera/microphone, notifications, and credential prompts should require explicit policy/confirmation.
+- Profiles should default to isolated ephemeral state unless user-session access is explicitly requested.
+- Respect robots.txt/terms where applicable; do not design this as a scraping/circumvention layer.
+
+* Suggested MVP
+1. Expose first-class semantic capabilities for =web.search=, =web.fetch=, and =web.browser.*= so audit logs can distinguish search, passive document fetch, and active browser control. These may be native tools or skill/script wrappers with discoverable resource references.
+2. =web.search= using =bx= internally.
+3. =web.fetch= with plain HTTP + readable text/Markdown extraction.
+4. Minimal =web.browser= based on Playwright:
+   - open/navigate
+   - observe text/accessibility snapshot
+   - click/type/press
+   - screenshot
+   - close
+5. Shared result metadata and diagnostics.
+6. Explicit distinction between passive fetch and active browser load.
+
+* Questions to resolve
+- What is the exact =bx= invocation and result format we want to standardize on?
+- Should =web.fetch= return Markdown, plain text, or both by default?
+- Do we need PDF support in the first cut?
+- Should browser sessions be ephemeral by default, persistent per project, or attachable to an existing profile?
+- Do browser-control skills require user confirmation for each mutating action, or only for sensitive capabilities?
+- Should rendered fetch be part of =web.fetch= or implemented internally by delegating to =web.browser=?
+- What logging/redaction policy applies to URLs, queries, page text, and screenshots?
+
+* Next planning steps
+- Decide the first fetch backend and default output format.
+- Decide whether browser control starts with Playwright or an adapter to an existing browser service.
+- Write concrete skill schemas once the backend choices are settled.
+- Build a small acceptance suite:
+  - search for a query and return ranked results
+  - fetch a static article page and extract readable text
+  - fetch or render a JS-heavy page
+  - open a browser, navigate, observe, click/type, screenshot, close
