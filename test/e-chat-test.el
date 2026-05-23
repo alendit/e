@@ -653,6 +653,34 @@
   (should (eq (face-attribute 'e-chat-assistant-face :extend) t))
   (should (eq (face-attribute 'e-chat-system-face :extend) t)))
 
+(ert-deftest e-chat-test-final-assistant-face-has-no-border ()
+  "Settled assistant entries use fill styling without a visible border."
+  (should (equal (face-attribute 'e-chat-final-assistant-face :background)
+                 "#24301f"))
+  (should-not (face-attribute 'e-chat-final-assistant-face :box))
+  (should (eq (face-attribute 'e-chat-final-assistant-face :extend) t)))
+
+(ert-deftest e-chat-test-face-refresh-clears-final-assistant-border ()
+  "Live reload removes older border decoration from settled assistant output."
+  (let ((old-defface-spec (get 'e-chat-final-assistant-face 'face-defface-spec)))
+    (unwind-protect
+        (progn
+          (put 'e-chat-final-assistant-face
+               'face-defface-spec
+               '((t :inherit e-chat-assistant-face
+                    :box (:line-width 1 :color "#6f925a")
+                    :extend t)))
+          (set-face-attribute 'e-chat-final-assistant-face nil
+                              :box '(:line-width 1 :color "#6f925a")
+                              :extend nil)
+          (e-chat--refresh-face-specs)
+          (should (equal (face-attribute 'e-chat-final-assistant-face :background)
+                         "#24301f"))
+          (should-not (face-attribute 'e-chat-final-assistant-face :box))
+          (should (eq (face-attribute 'e-chat-final-assistant-face :extend) t)))
+      (put 'e-chat-final-assistant-face 'face-defface-spec old-defface-spec)
+      (e-chat--refresh-face-specs))))
+
 (ert-deftest e-chat-test-focused-turn-face-is-subtle ()
   "Response navigation focus uses a subdued package-owned fill only."
   (should (equal (face-attribute 'e-chat-focused-turn-face :background)

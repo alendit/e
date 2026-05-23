@@ -99,7 +99,7 @@
   '((t :inherit e-chat-assistant-face
        :foreground "#edf7df"
        :background "#24301f"
-       :box (:line-width 1 :color "#6f925a")
+       :box nil
        :extend t))
   "Face used for settled assistant response chat blocks."
   :group 'e-chat)
@@ -211,7 +211,7 @@
   '((t :inherit e-chat-assistant-face
        :foreground "#edf7df"
        :background "#24301f"
-       :box (:line-width 1 :color "#6f925a")
+       :box nil
        :extend t))
   "Default face spec for settled assistant response chat blocks.")
 
