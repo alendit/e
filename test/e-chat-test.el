@@ -446,6 +446,23 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-after-display-clears-chat-navigation-modes ()
+  "Displaying chat returns it to a plain composer input state."
+  (let ((buffer (e-chat-test--buffer nil "chat-display-input-state")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat-test--render-turn "turn-1" 10 11 "first" "one")
+          (call-interactively #'e-chat-enter-response-navigation)
+          (call-interactively #'e-chat-response-navigation-activate)
+          (e-chat-tool-list-mode 1)
+          (e-chat--after-display-buffer buffer)
+          (should-not e-chat-tool-list-mode)
+          (should-not e-chat-block-view-mode)
+          (should-not e-chat-response-navigation-mode)
+          (should (e-chat--point-in-composer-p)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-configures-evil-initial-state-as-emacs ()
   "Chat mode declares a non-normal Evil state when Evil is available."
   (let (configured)
@@ -2027,6 +2044,59 @@
                             e-chat--composer-start-marker
                             (point-max)))))))))
       (e-chat-test--kill-chat-buffers))))
+
+(ert-deftest e-chat-test-add-context-clears-target-block-view-mode ()
+  "Context insertion into a chat target exits stale block view state."
+  (let ((buffer (e-chat-test--buffer nil "chat-context-block-view"))
+        (reference '(:uri "buffer://source"
+                     :label "source:1"
+                     :text "source"
+                     :start-line 1
+                     :end-line 1
+                     :point-line 1)))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat-test--render-turn "turn-1" 10 11 "first" "one")
+          (call-interactively #'e-chat-enter-response-navigation)
+          (call-interactively #'e-chat-response-navigation-activate)
+          (should e-chat-block-view-mode)
+          (e-chat--add-context-reference-to-session
+           reference
+           e-chat-harness
+           e-chat-session-id)
+          (should-not e-chat-block-view-mode)
+          (should-not e-chat-response-navigation-mode)
+          (should (e-chat--point-in-composer-p))
+          (should-not (eq (key-binding (kbd "h") t)
+                          #'e-chat-block-view-left)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-add-context-clears-target-response-navigation-mode ()
+  "Context insertion into a chat target exits stale response navigation state."
+  (let ((buffer (e-chat-test--buffer nil "chat-context-response-nav"))
+        (reference '(:uri "buffer://source"
+                     :label "source:1"
+                     :text "source"
+                     :start-line 1
+                     :end-line 1
+                     :point-line 1)))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat-test--render-turn "turn-1" 10 11 "first" "one")
+          (call-interactively #'e-chat-enter-response-navigation)
+          (should e-chat-response-navigation-mode)
+          (e-chat--add-context-reference-to-session
+           reference
+           e-chat-harness
+           e-chat-session-id)
+          (should-not e-chat-response-navigation-mode)
+          (should-not e-chat-block-view-mode)
+          (should (e-chat--point-in-composer-p))
+          (should-not (eq (key-binding (kbd "j") t)
+                          #'e-chat-response-navigation-next)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
 
 (ert-deftest e-chat-test-add-context-picker-can-create-new-session ()
   "Picker context insertion can create a new session target."

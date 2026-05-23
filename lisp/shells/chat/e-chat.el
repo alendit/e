@@ -2027,8 +2027,7 @@ TURN-ID tags the rendered entry for response navigation."
 (defun e-chat-response-navigation-insert ()
   "Leave response navigation and focus the composer."
   (interactive)
-  (e-chat-response-navigation-mode -1)
-  (e-chat--show-composer))
+  (e-chat--enter-composer-input-state))
 
 (defun e-chat-response-navigation-copy ()
   "Copy the focused block's action text."
@@ -2191,9 +2190,7 @@ TURN-ID tags the rendered entry for response navigation."
 (defun e-chat-block-view-insert ()
   "Leave block view and focus the composer."
   (interactive)
-  (e-chat-block-view-mode -1)
-  (e-chat-response-navigation-mode -1)
-  (e-chat--show-composer))
+  (e-chat--enter-composer-input-state))
 
 (defun e-chat--delete-tool-list (block)
   "Delete the visible tool list for BLOCK."
@@ -2366,12 +2363,25 @@ TURN-ID tags the rendered entry for response navigation."
       (ignore-errors
         (recenter -1)))))
 
+(defun e-chat--enter-composer-input-state ()
+  "Leave chat-local navigation states and focus editable composer input."
+  (when (region-active-p)
+    (deactivate-mark t))
+  (when e-chat-tool-list-mode
+    (e-chat-tool-list-mode -1))
+  (when e-chat-block-view-mode
+    (e-chat-block-view-mode -1))
+  (when e-chat-response-navigation-mode
+    (e-chat-response-navigation-mode -1))
+  (e-chat--ensure-composer)
+  (e-chat--show-composer))
+
 (defun e-chat--after-display-buffer (buffer)
   "Restore chat-local editing invariants after displaying BUFFER."
   (with-current-buffer buffer
     (e-chat--disable-modal-editing)
     (e-chat--disable-completion)
-    (e-chat--show-composer))
+    (e-chat--enter-composer-input-state))
   buffer)
 
 (defun e-chat--switch-to-buffer (buffer)
@@ -2819,9 +2829,7 @@ With prefix argument POP-TO-SIDE, use the pop display path."
 When DISPLAY is non-nil, show the target chat buffer."
   (let ((buffer (e-chat--session-buffer-for-context harness session-id)))
     (with-current-buffer buffer
-      (e-chat--ensure-composer)
-      (unless (e-chat--point-in-composer-p)
-        (goto-char (point-max)))
+      (e-chat--enter-composer-input-state)
       (e-chat--insert-context-reference reference)
       (e-chat--show-composer))
     (when display
