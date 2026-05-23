@@ -444,52 +444,125 @@ TOTAL-LINES is the full file line count.  START-LINE is 1-based."
   (list (or e-base-tools-shell-file-name shell-file-name "/bin/sh")
         (or e-base-tools-shell-command-switch shell-command-switch "-c")))
 
-(defun e-base-tools--run-shell-command (command directory timeout)
-  "Run shell COMMAND in DIRECTORY with optional TIMEOUT seconds."
+(cl-defun e-base-tools--run-shell-command-start
+    (command directory timeout &key on-done on-error on-request-start)
+  "Start shell COMMAND in DIRECTORY with optional TIMEOUT seconds.
+ON-DONE receives captured output.  ON-ERROR receives an Emacs condition list.
+ON-REQUEST-START receives the cancellable process request."
   (let* ((buffer (generate-new-buffer " *e-base-bash*"))
          (default-directory directory)
-         (done nil)
-         (exit-code nil)
-         (timed-out nil)
          (command-prefix (e-base-tools--shell-command))
          (shell-command (format "{\n%s\n} 2>&1" command))
-         (process
-          (make-process
-           :name "e-base-bash"
-           :buffer buffer
-           :command (append command-prefix (list shell-command))
-           :connection-type 'pipe
-           :coding 'utf-8-unix
-           :noquery t
-           :sentinel (lambda (proc _event)
-                        (when (memq (process-status proc) '(exit signal))
-                          (setq exit-code (process-exit-status proc))
-                         (setq done t))))))
-    (unwind-protect
-        (let ((deadline (and timeout (time-add (current-time) timeout))))
-          (set-process-query-on-exit-flag process nil)
-          (while (not done)
-            (when (and deadline (not (time-less-p (current-time) deadline)))
-              (setq timed-out t)
-              (when (process-live-p process)
-                (kill-process process)))
-            (accept-process-output process 0.05))
-          (let ((output (with-current-buffer buffer
-                          (buffer-string))))
-            (cond
-             (timed-out
-              (signal 'e-base-tools-bash-invalid
-                      (list (string-trim-right
-                             (format "%s\n\nCommand timed out after %s seconds"
-                                     output timeout)))))
-             ((and exit-code (not (zerop exit-code)))
-              (signal 'e-base-tools-bash-invalid
-                      (list (string-trim-right
-                             (format "%s\n\nCommand exited with code %d"
-                                     output exit-code)))))
-             (t output))))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
+         (settled nil)
+         process
+         timeout-timer
+         request)
+    (cl-labels
+        ((cleanup
+          ()
+          (when (timerp timeout-timer)
+            (cancel-timer timeout-timer))
+          (when (buffer-live-p buffer)
+            (kill-buffer buffer)))
+         (output
+          ()
+          (if (buffer-live-p buffer)
+              (with-current-buffer buffer
+                (buffer-string))
+            ""))
+         (finish-ok
+          ()
+          (unless settled
+            (setq settled t)
+            (let ((content (output)))
+              (cleanup)
+              (when on-done
+                (funcall on-done content)))))
+         (finish-error
+          (message)
+          (unless settled
+            (setq settled t)
+            (let ((content (output)))
+              (cleanup)
+              (when on-error
+                (funcall on-error
+                         (list 'e-base-tools-bash-invalid
+                               (string-trim-right
+                                (format "%s\n\n%s"
+                                        content
+                                        message))))))))
+         (cancel
+          ()
+          (unless settled
+            (setq settled t)
+            (when (timerp timeout-timer)
+              (cancel-timer timeout-timer))
+            (when (and process (process-live-p process))
+              (kill-process process))
+            (when (buffer-live-p buffer)
+              (kill-buffer buffer)))
+          t))
+      (setq process
+            (make-process
+             :name "e-base-bash"
+             :buffer buffer
+             :command (append command-prefix (list shell-command))
+             :connection-type 'pipe
+             :coding 'utf-8-unix
+             :noquery t
+             :sentinel
+             (lambda (proc _event)
+               (when (and (not settled)
+                          (memq (process-status proc) '(exit signal)))
+                 (let ((exit-code (process-exit-status proc)))
+                   (if (zerop exit-code)
+                       (finish-ok)
+                     (finish-error
+                      (format "Command exited with code %d"
+                              exit-code))))))))
+      (set-process-query-on-exit-flag process nil)
+      (setq request
+            (e-tools-request-create
+             :cancel #'cancel
+             :metadata (list :transport 'process
+                             :process process
+                             :buffer buffer
+                             :cancellable t)))
+      (when on-request-start
+        (funcall on-request-start request))
+      (when timeout
+        (setq timeout-timer
+              (run-at-time
+               timeout nil
+               (lambda ()
+                 (unless settled
+                   (when (process-live-p process)
+                     (kill-process process))
+                   (finish-error
+                    (format "Command timed out after %s seconds"
+                            timeout)))))))
+      request)))
+
+(defun e-base-tools--run-shell-command (command directory timeout)
+  "Run shell COMMAND in DIRECTORY with optional TIMEOUT seconds."
+  (let ((done nil)
+        (result nil)
+        (failure nil))
+    (e-base-tools--run-shell-command-start
+     command
+     directory
+     timeout
+     :on-done (lambda (output)
+                (setq result output)
+                (setq done t))
+     :on-error (lambda (err)
+                 (setq failure err)
+                 (setq done t)))
+    (while (not done)
+      (accept-process-output nil 0.05))
+    (when failure
+      (signal (car failure) (cdr failure)))
+    result))
 
 (defun e-base-tools--truncate-bash-output (output)
   "Return bash OUTPUT, truncating and persisting full output when needed."
@@ -515,12 +588,20 @@ TOTAL-LINES is the full file line count.  START-LINE is 1-based."
                  :properties (:command (:type "string")
                               :timeout (:type "number"))
                  :required ["command"])
-   :handler
-   (lambda (arguments)
-     (let ((command (e-base-tools--argument-string arguments :command))
-           (timeout (e-base-tools--optional-positive-number arguments :timeout)))
-       (e-base-tools--truncate-bash-output
-        (e-base-tools--run-shell-command command directory timeout))))))
+   :start
+   (cl-function
+    (lambda (&key arguments on-done on-error on-request-start)
+      (let ((command (e-base-tools--argument-string arguments :command))
+            (timeout (e-base-tools--optional-positive-number arguments :timeout)))
+        (e-base-tools--run-shell-command-start
+         command
+         directory
+         timeout
+         :on-request-start on-request-start
+         :on-done (lambda (output)
+                    (funcall on-done
+                             (e-base-tools--truncate-bash-output output)))
+         :on-error on-error))))))
 
 (provide 'e-base-tools)
 

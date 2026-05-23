@@ -16,6 +16,15 @@
 (require 'e)
 (require 'e-tools)
 
+(defun e-tools-test--wait-until (predicate &optional timeout)
+  "Wait until PREDICATE returns non-nil or TIMEOUT seconds elapse."
+  (let ((deadline (+ (float-time) (or timeout 1.0)))
+        value)
+    (while (and (not (setq value (funcall predicate)))
+                (< (float-time) deadline))
+      (accept-process-output nil 0.01))
+    value))
+
 (ert-deftest e-tools-test-register-and-execute ()
   "Registered tools execute through structured calls."
   (let ((registry (e-tools-registry-create)))
@@ -64,6 +73,111 @@
                      :status error
                      :content "Unknown tool: missing"
                      :metadata (:error e-tool-missing))))))
+
+(ert-deftest e-tools-test-start-delivers-async-tool-result ()
+  "Async-only tools deliver structured results through callbacks."
+  (let ((registry (e-tools-registry-create))
+        result
+        request-started)
+    (e-tools-register registry
+                      :name "later"
+                      :description "Return later."
+                      :start
+                      (cl-function
+                       (lambda (&key arguments on-done on-error
+                                      on-request-start)
+                         (ignore on-error)
+                         (let ((request
+                                (e-tools-request-create
+                                 :metadata '(:source async-test))))
+                           (setq request-started request)
+                           (funcall on-request-start request)
+                           (run-at-time
+                            0.01 nil
+                            (lambda ()
+                              (funcall on-done
+                                       (plist-get arguments :text))))
+                           request))))
+    (let ((request
+           (e-tools-start
+            registry
+            '(:id "call-1" :name "later" :arguments (:text "done"))
+            :on-done (lambda (value) (setq result value)))))
+      (should (e-tools-request-p request))
+      (should (eq request request-started))
+      (should (null result))
+      (should (e-tools-test--wait-until (lambda () result)))
+      (should (equal result
+                     '(:tool-call-id "call-1"
+                       :name "later"
+                       :status ok
+                       :content "done"
+                       :metadata nil))))))
+
+(ert-deftest e-tools-test-execute-waits-for-async-only-tool ()
+  "The sync execute wrapper waits for async-only tools."
+  (let ((registry (e-tools-registry-create)))
+    (e-tools-register registry
+                      :name "later"
+                      :description "Return later."
+                      :start
+                      (cl-function
+                       (lambda (&key arguments on-done on-error
+                                      on-request-start)
+                         (ignore on-error on-request-start)
+                         (run-at-time
+                          0.01 nil
+                          (lambda ()
+                            (funcall on-done
+                                     (plist-get arguments :text))))
+                         nil)))
+    (should (equal (e-tools-execute
+                    registry
+                    '(:id "call-1" :name "later" :arguments (:text "done")))
+                   '(:tool-call-id "call-1"
+                     :name "later"
+                     :status ok
+                     :content "done"
+                     :metadata nil)))))
+
+(ert-deftest e-tools-test-start-adapts-sync-handler-and-can-cancel-queued ()
+  "Sync handlers can start asynchronously and be cancelled before execution."
+  (let ((registry (e-tools-registry-create))
+        called
+        result)
+    (e-tools-register registry
+                      :name "sync"
+                      :description "Return now."
+                      :handler (lambda (_arguments)
+                                 (setq called t)
+                                 "now"))
+    (let ((request
+           (e-tools-start
+            registry
+            '(:id "call-1" :name "sync" :arguments nil)
+            :on-done (lambda (value) (setq result value)))))
+      (should (e-tools-request-p request))
+      (should (e-tools-cancel-request request))
+      (accept-process-output nil 0.05)
+      (should (null called))
+      (should (null result)))))
+
+(ert-deftest e-tools-test-handler-errors-return-structured-results ()
+  "Tool handler errors remain structured tool results."
+  (let ((registry (e-tools-registry-create)))
+    (e-tools-register registry
+                      :name "boom"
+                      :description "Fail."
+                      :handler (lambda (_arguments)
+                                 (error "tool exploded")))
+    (should (equal (e-tools-execute
+                    registry
+                    '(:id "call-1" :name "boom" :arguments nil))
+                   '(:tool-call-id "call-1"
+                     :name "boom"
+                     :status error
+                     :content "tool exploded"
+                     :metadata (:error error))))))
 
 (provide 'e-tools-test)
 

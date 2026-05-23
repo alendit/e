@@ -21,7 +21,8 @@
 (eval-and-compile
   (defconst e--directory
     (file-name-directory
-     (expand-file-name (or load-file-name buffer-file-name default-directory)))
+     (file-truename
+      (expand-file-name (or load-file-name buffer-file-name default-directory))))
     "Directory containing the e package entry point.")
   (defconst e--source-subdirectories
     '("lisp/core"
@@ -43,8 +44,14 @@
   (e--add-source-directories e--directory))
 
 ;;;###autoload
-(let ((directory (file-name-directory
-                  (or load-file-name buffer-file-name default-directory))))
+(let ((directory
+       (file-name-directory
+        (file-truename
+         (expand-file-name
+          (or (locate-library "e")
+              load-file-name
+              buffer-file-name
+              default-directory))))))
   (dolist (subdirectory (reverse
                          '("lisp/core"
                            "lisp/layers"
@@ -59,10 +66,11 @@
                            "lisp/dev")))
     (add-to-list 'load-path (expand-file-name subdirectory directory))))
 
-(require 'e-core)
-(require 'e-default-harnesses)
-(require 'e-shells)
-(require 'e-chat)
+(let ((load-prefer-newer t))
+  (require 'e-core)
+  (require 'e-default-harnesses)
+  (require 'e-shells)
+  (require 'e-chat))
 (e-startup-run)
 
 (defgroup e nil

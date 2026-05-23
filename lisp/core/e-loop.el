@@ -46,8 +46,8 @@ MESSAGES, BACKEND, TOOLS, and OPTIONS describe the turn input.  ON-EVENT,
 APPEND-MESSAGE, ON-REQUEST-START, ON-DONE, ON-ERROR, and CANCELLED-P receive
 turn progress, output, provider request handles, settlement, failures, and
 cancellation state.  The provider request is started through `e-backend-start'.
-Tool execution and session writes remain synchronous at this layer, while
-provider I/O and turn settlement are callback-driven."
+Tool execution is started through `e-tools-start'.  Provider I/O, tool I/O, and
+turn settlement are callback-driven."
   (ignore session-id turn-id)
   (let ((turn-messages (copy-sequence messages))
         (settled nil)
@@ -73,122 +73,192 @@ provider I/O and turn settlement are callback-driven."
                        (list :status 'done
                              :reason done-reason
                              :assistant-content assistant-content)))))
+         (publish-request
+          (request)
+          (setq active-request request)
+          (when on-request-start
+            (funcall on-request-start request)))
          (start-request
           ()
           (unless (or settled (cancelled))
             (let ((tool-called nil)
+                  (tool-queue nil)
+                  (active-tool nil)
+                  (provider-done nil)
+                  (followup-started nil)
                   (response-assistant-content nil)
                   (response-assistant-message nil)
                   (done-reason nil))
+              (cl-labels
+                  ((response-text ()
+                     (or response-assistant-message
+                         response-assistant-content))
+                   (maybe-start-followup
+                    ()
+                    (when (and provider-done
+                               tool-called
+                               (not active-tool)
+                               (null tool-queue)
+                               (not followup-started)
+                               (not settled)
+                               (not (cancelled)))
+                      (setq followup-started t)
+                      (when (not (string-empty-p
+                                  (or (response-text) "")))
+                        (e-loop--emit
+                         :on-event on-event
+                         :type 'reasoning-delta
+                         :payload
+                         (list :type 'reasoning-delta
+                               :content (response-text))))
+                      (start-request)))
+                   (finish-tool
+                    (tool-call result)
+                    (unless (or settled (cancelled))
+                      (setq active-tool nil)
+                      (let ((message
+                             (list :id (e-loop--next-message-id)
+                                   :role 'tool
+                                   :content result
+                                   :metadata nil)))
+                        (setq turn-messages
+                              (append turn-messages (list message)))
+                        (funcall append-message message)
+                        (e-loop--emit
+                         :on-event on-event
+                         :type 'tool-finished
+                         :payload (list :tool-call tool-call
+                                        :result result)))
+                      (start-next-tool)
+                      (maybe-start-followup)))
+                   (start-next-tool
+                    ()
+                    (when (and (not active-tool)
+                               tool-queue
+                               (not settled)
+                               (not (cancelled)))
+                      (let* ((entry (pop tool-queue))
+                             (tool-call (plist-get entry :tool-call))
+                             (tool-call-message
+                              (list :id (e-loop--next-message-id)
+                                    :role 'tool-call
+                                    :content tool-call
+                                    :metadata nil)))
+                        (setq active-tool t)
+                        (setq turn-messages
+                              (append turn-messages
+                                      (list tool-call-message)))
+                        (funcall append-message tool-call-message)
+                        (e-loop--emit :on-event on-event
+                                      :type 'tool-started
+                                      :payload tool-call)
+                        (let ((request
+                               (condition-case err
+                                   (e-tools-start
+                                    tools
+                                    tool-call
+                                    :on-request-start
+                                    (lambda (request)
+                                      (setq active-tool request)
+                                      (publish-request request))
+                                    :on-done
+                                    (lambda (result)
+                                      (finish-tool tool-call result))
+                                    :on-error #'fail)
+                                 (error
+                                  (fail err)
+                                  nil))))
+                          (when request
+                            (setq active-tool request))))))
+                  (enqueue-tool-call
+                   (item)
+                    (setq tool-called t)
+                    (setq tool-queue
+                          (append tool-queue
+                                  (list (list :tool-call item))))
+                    (start-next-tool)))
               (setq
                active-request
                (condition-case err
-                   (e-backend-start
-                    backend
-                    :messages turn-messages
-                    :options options
-                    :on-request-start
-                    (lambda (request)
-                      (when on-request-start
-                        (funcall on-request-start request)))
-                    :on-item
-                    (lambda (item)
-                      (unless (or settled (cancelled))
-                        (condition-case err
-                            (pcase (plist-get item :type)
-                              ('assistant-delta
-                               (setq response-assistant-content
-                                     (concat response-assistant-content
-                                             (plist-get item :content)))
-                               (e-loop--emit :on-event on-event
-                                             :type 'assistant-delta
-                                             :payload item))
-                              ('assistant-message
-                               (setq response-assistant-message
-                                     (plist-get item :content)))
-                              ('reasoning-delta
-                               (e-loop--emit :on-event on-event
-                                             :type 'reasoning-delta
-                                             :payload item))
-                              ('tool-call
-                               (setq tool-called t)
-                               (let* ((tool-call-message
-                                       (list :id (e-loop--next-message-id)
-                                             :role 'tool-call
-                                             :content item
-                                             :metadata nil)))
-                                 (e-loop--emit :on-event on-event
-                                               :type 'tool-started
-                                               :payload item)
-                                 (let* ((result (e-tools-execute tools item))
-                                        (message
-                                         (list :id (e-loop--next-message-id)
-                                               :role 'tool
-                                               :content result
-                                               :metadata nil)))
-                                   (setq turn-messages
-                                         (append turn-messages
-                                                 (list tool-call-message)))
-                                   (funcall append-message tool-call-message)
-                                   (setq turn-messages
-                                         (append turn-messages
-                                                 (list message)))
-                                   (funcall append-message message)
-                                   (e-loop--emit
-                                    :on-event on-event
-                                    :type 'tool-finished
-                                    :payload (list :tool-call item
-                                                   :result result)))))
-                              ('done
-                               (setq done-reason (plist-get item :reason)))
-                              ('backend-error
-                               (fail (list 'e-loop-backend-error
-                                           (plist-get item :content))))
-                              (_
-                               (e-loop--emit :on-event on-event
-                                             :type 'backend-item-ignored
-                                             :payload item)))
-                          (error
-                           (fail err)))))
-                    :on-done
-                    (lambda (_backend-result)
-                      (unless (or settled (cancelled))
-                        (condition-case err
-                            (let ((response-text
-                                   (or response-assistant-message
-                                       response-assistant-content)))
-                              (if tool-called
-                                  (progn
-                                    (when (not (string-empty-p
-                                                (or response-text "")))
-                                      (e-loop--emit
-                                       :on-event on-event
-                                       :type 'reasoning-delta
-                                       :payload
-                                       (list :type 'reasoning-delta
-                                             :content response-text)))
-                                    (start-request))
-                                (if (string-empty-p (or response-text ""))
-                                    (progn
-                                      (e-loop--emit
-                                       :on-event on-event
-                                       :type 'backend-empty-output
-                                       :payload (list :reason done-reason))
-                                      (fail '(e-loop-empty-output)))
-                                  (let ((message
-                                         (e-loop--assistant-message
-                                          response-text)))
-                                    (setq turn-messages
-                                          (append turn-messages
-                                                  (list message)))
-                                    (funcall append-message message)
-                                    (finish done-reason response-text)))))
-                          (error
-                           (fail err)))))
-                    :on-error #'fail)
+                   (let ((reported-request nil))
+                     (let ((request
+                            (e-backend-start
+                             backend
+                             :messages turn-messages
+                             :options options
+                             :on-request-start
+                             (lambda (request)
+                               (setq reported-request request)
+                               (publish-request request))
+                             :on-item
+                             (lambda (item)
+                               (unless (or settled (cancelled))
+                                 (condition-case err
+                                     (pcase (plist-get item :type)
+                                       ('assistant-delta
+                                        (setq response-assistant-content
+                                              (concat response-assistant-content
+                                                      (plist-get item :content)))
+                                        (e-loop--emit :on-event on-event
+                                                      :type 'assistant-delta
+                                                      :payload item))
+                                       ('assistant-message
+                                        (setq response-assistant-message
+                                              (plist-get item :content)))
+                                       ('reasoning-delta
+                                        (e-loop--emit :on-event on-event
+                                                      :type 'reasoning-delta
+                                                      :payload item))
+                                       ('tool-call
+                                        (enqueue-tool-call item))
+                                       ('done
+                                        (setq done-reason
+                                              (plist-get item :reason)))
+                                       ('backend-error
+                                        (fail (list 'e-loop-backend-error
+                                                    (plist-get item :content))))
+                                       (_
+                                        (e-loop--emit
+                                         :on-event on-event
+                                         :type 'backend-item-ignored
+                                         :payload item)))
+                                   (error
+                                    (fail err)))))
+                             :on-done
+                             (lambda (_backend-result)
+                               (unless (or settled (cancelled))
+                                 (condition-case err
+                                     (progn
+                                       (setq provider-done t)
+                                       (if tool-called
+                                           (maybe-start-followup)
+                                         (if (string-empty-p
+                                              (or (response-text) ""))
+                                             (progn
+                                               (e-loop--emit
+                                                :on-event on-event
+                                                :type 'backend-empty-output
+                                                :payload (list :reason
+                                                               done-reason))
+                                               (fail '(e-loop-empty-output)))
+                                           (let ((message
+                                                  (e-loop--assistant-message
+                                                   (response-text))))
+                                             (setq turn-messages
+                                                   (append turn-messages
+                                                           (list message)))
+                                             (funcall append-message message)
+                                             (finish done-reason
+                                                     (response-text))))))
+                                   (error
+                                    (fail err)))))
+                             :on-error #'fail)))
+                       (when (and request (not (eq request reported-request)))
+                         (publish-request request))
+                       request))
                  (error
                   (fail err)
-                  nil)))))))
+                  nil))))))))
       (e-loop--emit :on-event on-event
                     :type 'turn-started
                     :payload nil)
@@ -201,109 +271,32 @@ provider I/O and turn settlement are callback-driven."
   "Run one agent turn for SESSION-ID and TURN-ID.
 MESSAGES, BACKEND, TOOLS, OPTIONS, ON-EVENT, and APPEND-MESSAGE define the
 turn context and output callbacks.  ON-REQUEST-START receives the backend
-request handle when an adapter exposes one.
-The loop is synchronous for the first core implementation.  Async process
-management stays outside this task until the core event and state semantics are
-stable."
-  (ignore session-id turn-id)
-  (let ((assistant-content nil)
-        (assistant-message-written nil)
-        (done-reason nil)
-        (turn-messages (copy-sequence messages))
-        (continue t))
-    (e-loop--emit :on-event on-event
-                  :type 'turn-started
-                  :payload nil)
-    (while continue
-      (let ((tool-called nil)
-            (response-assistant-content nil)
-            (response-assistant-message nil))
-        (e-backend-stream
-         backend
-         :messages turn-messages
-         :options options
-         :on-request-start on-request-start
-         :on-item
-         (lambda (item)
-           (pcase (plist-get item :type)
-             ('assistant-delta
-              (setq response-assistant-content
-                    (concat response-assistant-content
-                            (plist-get item :content)))
-              (e-loop--emit :on-event on-event
-                            :type 'assistant-delta
-                            :payload item))
-             ('assistant-message
-              (setq response-assistant-message
-                    (plist-get item :content)))
-             ('reasoning-delta
-              (e-loop--emit :on-event on-event
-                            :type 'reasoning-delta
-                            :payload item))
-             ('tool-call
-              (setq tool-called t)
-              (let* ((tool-call-message
-                      (list :id (e-loop--next-message-id)
-                            :role 'tool-call
-                            :content item
-                            :metadata nil)))
-                (e-loop--emit :on-event on-event
-                              :type 'tool-started
-                              :payload item)
-                (let* ((result (e-tools-execute tools item))
-                       (message (list :id (e-loop--next-message-id)
-                                      :role 'tool
-                                      :content result
-                                      :metadata nil)))
-                  (setq turn-messages
-                        (append turn-messages (list tool-call-message)))
-                  (funcall append-message tool-call-message)
-                  (setq turn-messages (append turn-messages (list message)))
-                  (funcall append-message message)
-                  (e-loop--emit :on-event on-event
-                                :type 'tool-finished
-                                :payload (list :tool-call item
-                                               :result result)))))
-             ('done
-              (setq done-reason (plist-get item :reason)))
-             ('backend-error
-              (signal 'e-loop-backend-error
-                      (list (plist-get item :content))))
-             (_
-              (e-loop--emit :on-event on-event
-                            :type 'backend-item-ignored
-                            :payload item)))))
-        (let ((response-text
-               (or response-assistant-message
-                   response-assistant-content)))
-          (if tool-called
-              (progn
-                (when (not (string-empty-p (or response-text "")))
-                  (e-loop--emit :on-event on-event
-                                :type 'reasoning-delta
-                                :payload (list :type 'reasoning-delta
-                                               :content response-text)))
-                (setq continue t))
-            (setq continue nil)
-            (when (not (string-empty-p (or response-text "")))
-              (setq assistant-content response-text)
-              (setq assistant-message-written t)
-              (let ((message (e-loop--assistant-message response-text)))
-                (setq turn-messages (append turn-messages (list message)))
-                (funcall append-message message)))))))
-    (cond
-     ((and (not assistant-message-written)
-           (string-empty-p (or assistant-content "")))
-      (e-loop--emit :on-event on-event
-                    :type 'backend-empty-output
-                    :payload (list :reason done-reason))
-      (signal 'e-loop-empty-output nil)))
-    (e-loop--emit :on-event on-event
-                  :type 'turn-finished
-                  :payload (list :reason done-reason))
-    (list :status 'done
-          :reason done-reason
-          :assistant-content assistant-content)))
+request handle when an adapter exposes one.  This is a blocking convenience
+wrapper over `e-loop-start-turn'."
+  (let ((done nil)
+        (result nil)
+        (failure nil))
+    (e-loop-start-turn
+     :session-id session-id
+     :turn-id turn-id
+     :messages messages
+     :backend backend
+     :tools tools
+     :options options
+     :on-event on-event
+     :append-message append-message
+     :on-request-start on-request-start
+     :on-done (lambda (value)
+                (setq result value)
+                (setq done t))
+     :on-error (lambda (err)
+                 (setq failure err)
+                 (setq done t)))
+    (while (not done)
+      (accept-process-output nil 0.01))
+    (when failure
+      (signal (car failure) (cdr failure)))
+    result))
 
 (provide 'e-loop)
 

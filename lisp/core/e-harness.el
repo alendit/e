@@ -355,9 +355,13 @@ TURN-ID is passed to active capability context providers when present."
        (eq (plist-get entry :status) 'running)))
 
 (defun e-harness--cancel-active-request (entry)
-  "Cancel ENTRY's active provider request when one exists."
+  "Cancel ENTRY's active backend or tool request when one exists."
   (when-let ((request (plist-get entry :request)))
-    (e-backend-cancel-request request)))
+    (cond
+     ((e-backend-request-p request)
+      (e-backend-cancel-request request))
+     ((e-tools-request-p request)
+      (e-tools-cancel-request request)))))
 
 (defun e-harness--emit-turn-failed (harness session-id turn-id error-message)
   "Emit a turn-failed event from HARNESS.

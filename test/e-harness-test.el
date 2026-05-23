@@ -270,6 +270,63 @@
                         (mapcar (lambda (event) (plist-get event :type))
                                 events)))))
 
+(ert-deftest e-harness-test-abort-cancels-active-tool-request ()
+  "Aborting during async tool execution cancels the active tool request."
+  (let* ((tool-callbacks nil)
+         (tool-cancelled nil)
+         (backend (e-backend-create
+                   :name "tool-abort"
+                   :start
+                   (cl-function
+                    (lambda (&key messages options on-item on-done on-error
+                                   on-request-start)
+                      (ignore messages options on-error on-request-start)
+                      (funcall on-item
+                               '(:type tool-call
+                                 :id "call-1"
+                                 :name "held-tool"
+                                 :arguments (:text "hi")))
+                      (funcall on-item '(:type done :reason tool-use))
+                      (funcall on-done '(:status done))
+                      nil))))
+         (tools (e-tools-registry-create))
+         (harness (e-harness-create :backend backend))
+         (events nil))
+    (e-tools-register tools
+                      :name "held-tool"
+                      :description "Hold."
+                      :start
+                      (cl-function
+                       (lambda (&key arguments on-done on-error
+                                      on-request-start)
+                         (ignore arguments on-error)
+                         (setq tool-callbacks (list :on-done on-done))
+                         (let ((request
+                                (e-tools-request-create
+                                 :cancel (lambda ()
+                                           (setq tool-cancelled t)
+                                           t))))
+                           (funcall on-request-start request)
+                           request))))
+    (cl-letf (((symbol-function 'e-harness-tools)
+               (lambda (_harness) tools)))
+      (e-harness-subscribe harness (lambda (event) (push event events)))
+      (e-harness-create-session harness :id "session-1")
+      (e-harness-prompt-async harness "session-1" "question")
+      (should tool-callbacks)
+      (e-harness-abort harness "session-1")
+      (funcall (plist-get tool-callbacks :on-done) "late result")
+      (should (equal (plist-get (e-harness-wait harness "session-1" 0.1)
+                                :status)
+                     'cancelled))
+      (should tool-cancelled)
+      (should (member 'turn-cancelled
+                      (mapcar (lambda (event) (plist-get event :type))
+                              events)))
+      (should (equal (mapcar (lambda (message) (plist-get message :role))
+                             (e-harness-messages harness "session-1"))
+                     '(user tool-call))))))
+
 (ert-deftest e-harness-test-follow-up-appends-user-message ()
   "Follow-up submits another turn against the same session."
   (let* ((backend (e-backend-fake-create

@@ -132,38 +132,19 @@
     (should (member (expand-file-name directory default-directory)
                     load-path))))
 
-(ert-deftest e-test-symlinked-package-load-stays-rooted-in-build-directory ()
-  "Loading a straight-style symlinked package should use the build directory."
+(ert-deftest e-test-symlinked-package-load-resolves-real-source-directory ()
+  "Loading a straight-style symlinked package should use the real source root."
   (let ((build-directory (make-temp-file "e-build-" t))
-        (source-files '("e.el"
-                        "lisp/core/e-backend.el"
-                        "lisp/core/e-capabilities.el"
-                        "lisp/core/e-context.el"
-                        "lisp/core/e-core.el"
-                        "lisp/core/e-events.el"
-                        "lisp/core/e-harness.el"
-                        "lisp/core/e-harness-registry.el"
-                        "lisp/core/e-loop.el"
-                        "lisp/core/e-operations.el"
-                        "lisp/core/e-resources.el"
-                        "lisp/core/e-skills.el"
-                        "lisp/core/e-store.el"
-                        "lisp/core/e-session.el"
-                        "lisp/core/e-startup.el"
-                        "lisp/core/e-tools.el"
-                        "lisp/layers/e-layers.el"
-                        "lisp/layers/chat/e-chat-session.el"
-                        "lisp/defaults/e-default-harnesses.el"
-                        "lisp/shells/e-shells.el"
-                        "lisp/shells/chat/e-chat.el"))
         (original-features features))
     (unwind-protect
         (progn
-          (dolist (file source-files)
-            (make-symbolic-link
-             (expand-file-name file default-directory)
-             (expand-file-name (file-name-nondirectory file) build-directory)
-             t))
+          (make-symbolic-link
+           (expand-file-name "e.el" default-directory)
+           (expand-file-name "e.el" build-directory)
+           t)
+          (should-not
+           (file-exists-p (expand-file-name "e-operations.el"
+                                            build-directory)))
           (setq features
                 (cl-remove-if
                  (lambda (feature)
@@ -171,8 +152,10 @@
                  features))
           (let ((load-path (cons build-directory load-path)))
             (load (expand-file-name "e.el" build-directory) nil 'nomessage))
-          (should (equal (file-name-as-directory build-directory)
-                         (e-source-directory))))
+          (should (equal (file-name-as-directory
+                          (file-truename default-directory))
+                         (e-source-directory)))
+          (should (featurep 'e-operations)))
       (setq features original-features)
       (delete-directory build-directory t)
       (load (expand-file-name "e.el" default-directory) nil 'nomessage))))

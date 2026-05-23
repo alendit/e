@@ -35,6 +35,15 @@ When READ-ONLY is non-nil, file resources only support reads."
    registry
    (list :id "call-1" :name name :arguments arguments)))
 
+(defun e-base-tools-test--wait-until (predicate &optional timeout)
+  "Wait until PREDICATE returns non-nil or TIMEOUT seconds elapse."
+  (let ((deadline (+ (float-time) (or timeout 1.0)))
+        value)
+    (while (and (not (setq value (funcall predicate)))
+                (< (float-time) deadline))
+      (accept-process-output nil 0.01))
+    value))
+
 (ert-deftest e-base-tools-test-read-file-full-and-range ()
   "The read tool reads full and ranged text files."
   (let* ((directory (make-temp-file "e-base-read-" t))
@@ -228,6 +237,58 @@ When READ-ONLY is non-nil, file resources only support reads."
                                     content))
             (when (string-match "Full output: \\([^]\n]+\\)" content)
               (should (file-readable-p (match-string 1 content))))))
+      (delete-directory directory t))))
+
+(ert-deftest e-base-tools-test-bash-starts-asynchronously ()
+  "The native bash tool start path returns before command completion."
+  (let* ((directory (make-temp-file "e-base-bash-async-" t))
+         (registry (e-tools-registry-create))
+         result)
+    (unwind-protect
+        (progn
+          (e-base-tools-register-bash registry directory)
+          (let ((request
+                 (e-tools-start
+                  registry
+                  '(:id "call-1"
+                    :name "bash"
+                    :arguments (:command "sleep 0.1; printf done"))
+                  :on-done (lambda (value) (setq result value)))))
+            (should (e-tools-request-p request))
+            (should (null result))
+            (should (e-base-tools-test--wait-until
+                     (lambda () result)
+                     1.0))
+            (should (equal (plist-get result :status) 'ok))
+            (should (equal (plist-get result :content) "done"))))
+      (delete-directory directory t))))
+
+(ert-deftest e-base-tools-test-bash-timeout-kills-process-asynchronously ()
+  "The native bash timeout path kills the process and reports a tool error."
+  (let* ((directory (make-temp-file "e-base-bash-timeout-" t))
+         (registry (e-tools-registry-create))
+         result
+         request)
+    (unwind-protect
+        (progn
+          (e-base-tools-register-bash registry directory)
+          (setq request
+                (e-tools-start
+                 registry
+                 '(:id "call-1"
+                   :name "bash"
+                   :arguments (:command "sleep 2" :timeout 0.1))
+                 :on-done (lambda (value) (setq result value))))
+          (should (e-tools-request-p request))
+          (should (e-base-tools-test--wait-until
+                   (lambda () result)
+                   1.0))
+          (should (equal (plist-get result :status) 'error))
+          (should (string-match-p "Command timed out after 0.1 seconds"
+                                  (plist-get result :content)))
+          (when-let ((process (plist-get (e-tools-request-metadata request)
+                                         :process)))
+            (should-not (process-live-p process))))
       (delete-directory directory t))))
 
 (provide 'e-base-tools-test)
