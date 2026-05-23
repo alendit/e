@@ -157,22 +157,6 @@ resources register each full skill body under e://."
      :context-providers context-providers
      :actions actions)))
 
-(define-obsolete-function-alias
-  'e-skill-create #'e-skill-spec-create "0.1"
-  "Use `e-skill-spec-create' with `e-capability-with-skills-create' instead.")
-
-(defun e-skills-register (store capability skill-or-register)
-  "Compatibility helper for registering SKILL-OR-REGISTER in STORE.
-Prefer `e-capability-with-skills-create' so skill references are part of normal
-capability instructions."
-  (cond
-   ((e-skill-spec-p skill-or-register)
-    (e-skills--register-spec store capability skill-or-register))
-   ((functionp skill-or-register)
-    (funcall skill-or-register store capability))
-   (t
-    (signal 'wrong-type-argument (list 'e-skill-spec-p skill-or-register)))))
-
 (provide 'e-skills)
 
 ;;; e-skills.el ends here

@@ -39,6 +39,8 @@
     e-resource-handler-list
     e-capability-resource-handlers
     e-capabilities-register-resource-handlers
+    e-skill-create
+    e-skills-register
     e-emacs-tools-register-buffer-read
     e-emacs-tools-register-buffer-edit)
   "Functions removed from the public surface that reload should unbind.")
