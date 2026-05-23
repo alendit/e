@@ -99,6 +99,11 @@
                  :name "missing-body"
                  :description "Invalid."))
   (should-error (e-skill-spec-create
+                 :name "ambiguous-body"
+                 :description "Invalid."
+                 :content "Body."
+                 :reader (lambda (_skill _range) "Dynamic body.")))
+  (should-error (e-skill-spec-create
                  :name "bad-path"
                  :description "Invalid."
                  :path "/skills/bad-path"
@@ -122,6 +127,17 @@
                                  "e://assistant/guides/grouped-name.md"
                                  nil)
                    "Explicit path body."))))
+
+(ert-deftest e-skills-test-static-content-is-normalized-to-reader ()
+  "Static skill content is stored through the same callable reader contract."
+  (let ((skill (e-skill-spec-create
+                :name "static"
+                :description "Static guidance."
+                :content "Static body.")))
+    (should (functionp (e-skill-spec-reader skill)))
+    (should-not (fboundp 'e-skill-spec-content))
+    (should (equal (funcall (e-skill-spec-reader skill) skill nil)
+                   "Static body."))))
 
 (ert-deftest e-skills-test-builder-preserves-caller-resources ()
   "Generated skill providers are appended after caller-provided resources."

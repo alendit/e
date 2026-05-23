@@ -19,10 +19,9 @@
 
 (cl-defstruct (e-skill-spec
                (:constructor e-skill-spec--create
-                             (&key name description content reader path metadata)))
+                             (&key name description reader path metadata)))
   name
   description
-  content
   reader
   path
   metadata)
@@ -57,18 +56,26 @@
 
 (cl-defun e-skill-spec-create (&key name description content reader path metadata)
   "Create a construction-time skill spec.
-NAME and DESCRIPTION are compact model-facing metadata.  CONTENT or READER
-provides the full guidance body stored under the capability's e:// resources.
-When PATH is omitted, the resource path is `skills/NAME'."
+NAME and DESCRIPTION are compact model-facing metadata.  CONTENT is a static
+string convenience that is normalized into the same callable READER contract
+used for dynamic guidance bodies.  When PATH is omitted, the resource path is
+`skills/NAME'."
   (let* ((path (e-skills--normalize-path path))
          (name (e-skills--normalize-name name path))
          (description (e-skills--normalize-description description)))
-    (unless (or (stringp content) (functionp reader))
+    (when (and content reader)
+      (signal 'wrong-type-argument (list 'skill-body name)))
+    (setq reader
+          (cond
+           ((stringp content)
+            (lambda (_skill _range) content))
+           ((functionp reader) reader)
+           (t nil)))
+    (unless reader
       (signal 'wrong-type-argument (list 'string-or-function-p name)))
     (e-skill-spec--create
      :name name
      :description description
-     :content content
      :reader reader
      :path path
      :metadata metadata)))
@@ -120,10 +127,8 @@ When PATH is omitted, the resource path is `skills/NAME'."
    capability
    (e-skills--path skill)
    :description (e-skill-spec-description skill)
-   :content (e-skill-spec-content skill)
-   :reader (when (e-skill-spec-reader skill)
-             (lambda (_entry range)
-               (funcall (e-skill-spec-reader skill) skill range)))
+   :reader (lambda (_entry range)
+             (funcall (e-skill-spec-reader skill) skill range))
    :metadata (e-skill-spec-metadata skill)))
 
 (defun e-skills--resource-provider (skills)

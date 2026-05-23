@@ -40,6 +40,7 @@
     e-capability-resource-handlers
     e-capabilities-register-resource-handlers
     e-skill-create
+    e-skill-spec-content
     e-skills-register
     e-emacs-tools-register-buffer-read
     e-emacs-tools-register-buffer-edit)
