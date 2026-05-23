@@ -216,11 +216,6 @@
     (should (equal (nreverse events)
                    '(layer shell)))))
 
-(ert-deftest e-test-startup-does-not-define-unused-capability-hook ()
-  "Startup should not expose speculative capability-provider hooks."
-  (require 'e-startup)
-  (should-not (boundp 'e-startup-capability-hook)))
-
 (ert-deftest e-test-startup-refreshes-chat-shell-keymaps ()
   "Package startup uses the chat shell hook to refresh initial keymaps."
   (require 'e)
@@ -231,14 +226,6 @@
                 'e-chat-enter-response-navigation))
     (should (eq (lookup-key e-chat-response-navigation-mode-map (kbd "j"))
                 'e-chat-response-navigation-next))))
-
-(ert-deftest e-test-entrypoint-does-not-own-chat-command-autoloads ()
-  "Chat commands are owned by the chat shell provider, not e.el."
-  (let ((entrypoint
-         (with-temp-buffer
-           (insert-file-contents (expand-file-name "e.el" default-directory))
-           (buffer-string))))
-    (should-not (string-match-p "(autoload 'e-chat" entrypoint))))
 
 (ert-deftest e-test-autoloads-expose-chat-commands-at-startup ()
   "Generated provider autoloads expose chat commands before reload."

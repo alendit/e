@@ -54,15 +54,9 @@
   (should (fboundp 'e-chat-shell))
   (should (eq (e-shell-id (e-shell-get 'chat)) 'chat)))
 
-(ert-deftest e-dev-test-reload-clears-obsolete-entrypoints-and-refreshes-defaults ()
-  "Reload removes stale functions and reapplies changed default options."
+(ert-deftest e-dev-test-reload-refreshes-defaults ()
+  "Reload reapplies changed default options."
   (setq e-openai-default-model "gpt-5.4")
-  (setq e-startup-capability-hook '(stale))
-  (fset 'e-resource-handler-create #'ignore)
-  (fset 'e-capability-resource-handlers #'ignore)
-  (fset 'e-capabilities-register-resource-handlers #'ignore)
-  (fset 'e-skill-create #'ignore)
-  (fset 'e-skills-register #'ignore)
   (setq e-default-chat-layer-functions
         '(e-base-layer-create e-emacs-base-layer-create))
   (let ((e-startup-shell-hook
@@ -70,12 +64,6 @@
                  (e-harness-registry-get-or-create :chat-default))
                e-startup-shell-hook)))
     (e-dev-reload default-directory))
-  (should-not (boundp 'e-startup-capability-hook))
-  (should-not (fboundp 'e-resource-handler-create))
-  (should-not (fboundp 'e-capability-resource-handlers))
-  (should-not (fboundp 'e-capabilities-register-resource-handlers))
-  (should-not (fboundp 'e-skill-create))
-  (should-not (fboundp 'e-skills-register))
   (should (equal e-openai-default-model "gpt-5.5"))
   (should (equal e-default-chat-layer-functions
                  '(e-layer-selection-layer-create

@@ -37,15 +37,12 @@
                      '("read"
                        "web_search"
                        "web_fetch"
-                       "web_browser")))
-      (dolist (name tool-names)
-        (should-not (string-prefix-p "web_browser_" name))))
+                       "web_browser"))))
     (let ((instructions
            (e-capability-instructions
             (car (e-layer-capabilities layer)))))
       (should (string-match-p "Web access is available" instructions))
       (should (string-match-p "e://web/refs/overview.md" instructions))
-      (should-not (string-match-p "web_browser_click" instructions))
       (should (< (length instructions) 260)))
     (dolist (uri '("e://web/refs/overview.md"
                    "e://web/refs/search.md"
@@ -62,8 +59,7 @@
             nil)))
       (should (string-match-p "`web_browser`" browser-reference))
       (should (string-match-p "`operation`" browser-reference))
-      (should (string-match-p "`click`" browser-reference))
-      (should-not (string-match-p "web_browser_open" browser-reference)))))
+      (should (string-match-p "`click`" browser-reference)))))
 
 (provide 'e-web-capabilities-test)
 

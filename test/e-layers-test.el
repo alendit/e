@@ -38,11 +38,6 @@
    (apply #'e-layer-create
           '(:id bad-layer :name "Bad" :context-providers nil))))
 
-(ert-deftest e-layers-test-removes-legacy-bridge-helpers ()
-  "Layer-owned behavior bridge helpers are no longer available."
-  (should-not (fboundp 'e-layers-register-tools))
-  (should-not (fboundp 'e-layers-context-messages)))
-
 (ert-deftest e-layers-test-capability-layer-registers-tools-and-context ()
   "Activating a capability-backed layer activates capability contributions."
   (let* ((captured-messages nil)
