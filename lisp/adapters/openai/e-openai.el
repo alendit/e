@@ -499,6 +499,35 @@ condition list.  Return a cancellable `e-backend-request' handle."
         (and (stringp error) error)
         (format "%S" event))))
 
+(defun e-openai-codex--number-or-nil (value)
+  "Return VALUE when it is numeric, otherwise nil."
+  (when (numberp value)
+    value))
+
+(defun e-openai-codex--usage-item (usage)
+  "Return provider-neutral token usage item for Responses USAGE."
+  (when (consp usage)
+    (let* ((input-details (plist-get usage :input_tokens_details))
+           (output-details (plist-get usage :output_tokens_details))
+           (normalized
+            (list
+             :input-tokens
+             (e-openai-codex--number-or-nil
+              (plist-get usage :input_tokens))
+             :cached-input-tokens
+             (e-openai-codex--number-or-nil
+              (plist-get input-details :cached_tokens))
+             :output-tokens
+             (e-openai-codex--number-or-nil
+              (plist-get usage :output_tokens))
+             :reasoning-output-tokens
+             (e-openai-codex--number-or-nil
+              (plist-get output-details :reasoning_tokens))
+             :total-tokens
+             (e-openai-codex--number-or-nil
+              (plist-get usage :total_tokens)))))
+      (list :type 'token-usage :usage normalized))))
+
 (defun e-openai-codex--json-error-item (stream-text)
   "Return a backend error item when STREAM-TEXT is a JSON error response."
   (when (string-prefix-p "{" (string-trim-left stream-text))
@@ -593,9 +622,16 @@ condition list.  Return a cancellable `e-backend-request' handle."
             (let ((data (string-join (nreverse data-lines) "\n")))
               (unless (or (string-empty-p data) (equal data "[DONE]"))
                 (let* ((event (e-openai-codex--parse-json data))
-                       (item (e-openai-codex--event-item event)))
+                       (item (e-openai-codex--event-item event))
+                       (usage-item
+                        (when (member (plist-get event :type)
+                                      '("response.completed" "response.done"))
+                          (e-openai-codex--usage-item
+                           (plist-get (plist-get event :response) :usage)))))
                   (push (e-openai-codex--event-summary event item)
                         event-summaries)
+                  (when usage-item
+                    (handle-item usage-item))
                   (when item
                     (handle-item item)))))))))
     (unless assistant-message-seen

@@ -253,6 +253,34 @@
                            (e-harness-messages harness "session-1"))
                    '(user assistant)))))
 
+(ert-deftest e-harness-test-token-usage-events-are-durable ()
+  "Backend token usage events are retained in session activity."
+  (let* ((backend (e-backend-fake-create
+                   :items
+                   '((:type assistant-message :content "answer")
+                     (:type token-usage
+                      :usage (:input-tokens 202598
+                              :cached-input-tokens 7552
+                              :output-tokens 419
+                              :reasoning-output-tokens 139
+                              :total-tokens 203017))
+                     (:type done :reason stop))))
+         (harness (e-harness-create :backend backend)))
+    (e-harness-create-session harness :id "session-1")
+    (e-harness-prompt harness "session-1" "question")
+    (let* ((events (e-harness-session-activity-events harness "session-1"))
+           (usage-event
+            (seq-find (lambda (event)
+                        (eq (plist-get event :event-type) 'token-usage))
+                      events)))
+      (should usage-event)
+      (should (equal (plist-get usage-event :payload)
+                     '(:input-tokens 202598
+                       :cached-input-tokens 7552
+                       :output-tokens 419
+                       :reasoning-output-tokens 139
+                       :total-tokens 203017))))))
+
 (ert-deftest e-harness-test-abort-ignores-stale-provider-callbacks ()
   "Provider callbacks that arrive after abort do not mutate session state."
   (let* ((callbacks nil)

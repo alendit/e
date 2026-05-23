@@ -2869,6 +2869,110 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-mode-line-status-formats-model-effort-and-context ()
+  "Mode-line status includes model, effort, and estimated context usage."
+  (should (equal (e-chat--model-context-token-limit "gpt-5.5")
+                 258400))
+  (should
+   (equal
+    (e-chat--format-mode-line-status "gpt-5.5" "high" 18000 400000 t)
+    "e-chat gpt-5.5/high ~5% (~18k/400k tok)"))
+  (should
+   (equal
+    (e-chat--format-mode-line-status "gpt-5.5" "high" 40000 258400 nil)
+    "e-chat gpt-5.5/high 15% (40k/258k tok)")))
+
+(ert-deftest e-chat-test-mode-line-status-uses-session-context ()
+  "Attached chat buffers show session model, effort, and token context."
+  (let* ((store (e-session-store-create))
+         (backend (e-backend-fake-create :items nil))
+         (harness (e-harness-create
+                   :backend backend
+                   :sessions store
+                   :default-options
+                   '(:model "gpt-5.5" :reasoning-effort "high")))
+         (e-chat-model-context-token-limits '(("gpt-5.5" . 100)))
+         (e-chat-context-token-estimate-bytes-per-token 1.0)
+         (buffer (e-chat-open :harness harness :session-id "chat-mode-line")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-session-append-message
+           store
+           e-chat-session-id
+           '(:role user :content "context question"))
+          (e-chat--set-status "idle")
+          (should (string-match-p "gpt-5.5/high" mode-name))
+          (should (string-match-p "~[0-9]+%" mode-name))
+          (should (string-match-p "/100 tok" mode-name)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-mode-line-status-prefers-provider-token-usage ()
+  "Mode-line status uses provider token usage before estimated context size."
+  (let* ((store (e-session-store-create))
+         (backend (e-backend-fake-create :items nil))
+         (harness (e-harness-create
+                   :backend backend
+                   :sessions store
+                   :default-options
+                   '(:model "gpt-5.5" :reasoning-effort "high")))
+         (buffer (e-chat-open :harness harness :session-id "chat-mode-line-usage")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-session-append-activity-event
+           store
+           e-chat-session-id
+           "turn-1"
+           'token-usage
+           '(:input-tokens 202598
+             :cached-input-tokens 7552
+             :output-tokens 419
+             :reasoning-output-tokens 139
+             :total-tokens 203017))
+          (e-chat--set-status "idle")
+          (should (equal mode-name
+                         "e-chat gpt-5.5/high 78% (203k/258k tok)")))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-token-usage-events-update-mode-line-without-transcript ()
+  "Token usage events update status without rendering system transcript blocks."
+  (let* ((store (e-session-store-create))
+         (backend (e-backend-fake-create :items nil))
+         (harness (e-harness-create
+                   :backend backend
+                   :sessions store
+                   :default-options
+                   '(:model "gpt-5.5" :reasoning-effort "high")))
+         (buffer (e-chat-open :harness harness :session-id "chat-token-usage-event")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-session-append-activity-event
+           store
+           e-chat-session-id
+           "turn-1"
+           'token-usage
+           '(:input-tokens 54581
+             :cached-input-tokens 30720
+             :output-tokens 154
+             :reasoning-output-tokens 0
+             :total-tokens 54735))
+          (e-chat--render-event
+           (e-events-make :type 'token-usage
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :payload '(:input-tokens 54581
+                                     :cached-input-tokens 30720
+                                     :output-tokens 154
+                                     :reasoning-output-tokens 0
+                                     :total-tokens 54735)))
+          (should (equal mode-name
+                         "e-chat gpt-5.5/high 21% (55k/258k tok)"))
+          (should-not (string-match-p "token-usage" (buffer-string)))
+          (should-not (string-match-p "Event:" (buffer-string))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-show-context-opens-read-only-preview-buffer ()
   "Context command renders the current session context in a read-only buffer."
   (let ((buffer (e-chat-test--buffer nil "chat-context")))

@@ -357,6 +357,22 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
       (:type assistant-message :content "pong")
       (:type done :reason stop)))))
 
+(ert-deftest e-openai-test-parse-completed-usage ()
+  "Responses completed usage becomes provider-neutral token usage."
+  (should
+   (equal
+    (e-openai-codex-parse-stream
+     "data: {\"type\":\"response.output_text.done\",\"text\":\"ok\"}\n\n\
+data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":202598,\"input_tokens_details\":{\"cached_tokens\":7552},\"output_tokens\":419,\"output_tokens_details\":{\"reasoning_tokens\":139},\"total_tokens\":203017}}}\n\n")
+    '((:type assistant-message :content "ok")
+      (:type token-usage
+       :usage (:input-tokens 202598
+               :cached-input-tokens 7552
+               :output-tokens 419
+               :reasoning-output-tokens 139
+               :total-tokens 203017))
+      (:type done :reason stop)))))
+
 (ert-deftest e-openai-test-parse-identical-canonical-messages-are-preserved ()
   "Separate canonical text-done events with the same content are not deduped."
   (should

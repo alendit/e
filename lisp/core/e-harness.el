@@ -242,7 +242,7 @@ When SESSION-ID is non-nil, SUBSCRIBER only receives events for that session."
 
 (defconst e-harness--durable-activity-event-types
   '(turn-started reasoning-delta tool-started tool-finished turn-finished
-    turn-failed turn-cancelled backend-empty-output)
+    token-usage turn-failed turn-cancelled backend-empty-output)
   "Turn event types stored as durable session activity.")
 
 (defun e-harness--durable-activity-event-p (type)

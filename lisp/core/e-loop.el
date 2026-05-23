@@ -88,6 +88,7 @@ turn settlement are callback-driven."
                   (followup-started nil)
                   (response-assistant-content nil)
                   (response-assistant-message nil)
+                  (token-usage nil)
                   (done-reason nil))
               (cl-labels
                   ((response-text ()
@@ -211,6 +212,13 @@ turn settlement are callback-driven."
                                                       :payload item))
                                        ('tool-call
                                         (enqueue-tool-call item))
+                                       ('token-usage
+                                        (setq token-usage
+                                              (plist-get item :usage))
+                                        (e-loop--emit
+                                         :on-event on-event
+                                         :type 'token-usage
+                                         :payload token-usage))
                                        ('done
                                         (setq done-reason
                                               (plist-get item :reason)))

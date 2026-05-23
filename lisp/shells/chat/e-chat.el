@@ -76,6 +76,30 @@
   :type 'number
   :group 'e-chat)
 
+(defcustom e-chat-model-context-token-limits
+  '(("gpt-5.5" . 258400)
+    ("gpt-5.4" . 1050000)
+    ("gpt-5.4-pro" . 1050000)
+    ("gpt-5.3-codex" . 400000)
+    ("gpt-5.3-codex-spark" . 400000)
+    ("gpt-5.2" . 400000)
+    ("gpt-5.1" . 400000)
+    ("gpt-5.1-codex" . 400000)
+    ("gpt-5-codex" . 400000)
+    ("gpt-5-mini" . 400000)
+    ("gpt-5-nano" . 400000)
+    ("gpt-5" . 400000)
+    ("gpt-5-chat-latest" . 128000))
+  "Alist mapping model names to maximum context tokens.
+The mode line uses this presentation-owned table for context usage display."
+  :type '(alist :key-type string :value-type integer)
+  :group 'e-chat)
+
+(defcustom e-chat-context-token-estimate-bytes-per-token 4.0
+  "Approximate UTF-8 bytes per token for mode-line context estimates."
+  :type 'number
+  :group 'e-chat)
+
 (when (equal e-chat-progress-interval 0.35)
   (setq e-chat-progress-interval 0.6))
 
@@ -375,6 +399,9 @@
 
 (defvar-local e-chat--running-status-end-marker nil
   "Marker at the end of the active running-turn status region.")
+
+(defvar-local e-chat--mode-line-status nil
+  "Current compact e chat status text shown in the mode line.")
 
 (defvar-local e-chat--progress-timer nil
   "Timer advancing the active assistant progress indicator.")
@@ -2822,6 +2849,119 @@ non-nil, is used by focused block activation."
        'e-chat-title-face))
     (e-chat--insert-composer)))
 
+(defun e-chat--format-token-count (tokens)
+  "Return compact display text for TOKENS."
+  (cond
+   ((not (and (integerp tokens) (>= tokens 0)))
+    "?")
+   ((>= tokens 1000000)
+    (let ((millions (/ tokens 1000000.0)))
+      (replace-regexp-in-string
+       "\\.?0+M\\'"
+       "M"
+       (format "%.2fM" millions))))
+   ((>= tokens 1000)
+    (format "%dk" (round (/ tokens 1000.0))))
+   (t
+    (number-to-string tokens))))
+
+(defun e-chat--format-mode-line-status
+    (model effort used-tokens max-tokens &optional approximate)
+  "Return compact mode-line text for MODEL, EFFORT, and context token usage."
+  (let ((model-text (or model "model unset"))
+        (effort-text (or effort "effort unset")))
+    (if (and (integerp used-tokens) (>= used-tokens 0))
+        (let ((used-text (e-chat--format-token-count used-tokens))
+              (prefix (if approximate "~" "")))
+          (if (and (integerp max-tokens) (> max-tokens 0))
+              (let ((percent
+                     (if (= used-tokens 0)
+                         0
+                       (funcall (if approximate #'ceiling #'floor)
+                                (* 100.0
+                                   (/ used-tokens
+                                      (float max-tokens)))))))
+                (format "e-chat %s/%s %s%d%% (%s%s/%s tok)"
+                        model-text
+                        effort-text
+                        prefix
+                        percent
+                        prefix
+                        used-text
+                        (e-chat--format-token-count max-tokens)))
+            (format "e-chat %s/%s ?%% (%s%s/? tok)"
+                    model-text effort-text prefix used-text)))
+      (format "e-chat %s/%s" model-text effort-text))))
+
+(defun e-chat--model-context-token-limit (model)
+  "Return configured max context tokens for MODEL, or nil."
+  (when (stringp model)
+    (cdr (assoc-string model e-chat-model-context-token-limits t))))
+
+(defun e-chat--context-token-estimate (context)
+  "Return approximate token count for model-facing CONTEXT."
+  (let* ((options (plist-get context :options))
+         (model-facing-context
+          (list :messages (plist-get context :messages)
+                :tools (plist-get options :tools)))
+         (bytes (string-bytes (prin1-to-string model-facing-context)))
+         (bytes-per-token
+          (if (and (numberp e-chat-context-token-estimate-bytes-per-token)
+                   (> e-chat-context-token-estimate-bytes-per-token 0))
+              e-chat-context-token-estimate-bytes-per-token
+            4.0)))
+    (ceiling (/ bytes (float bytes-per-token)))))
+
+(defun e-chat--token-usage-input-tokens (usage)
+  "Return input token count from provider-neutral USAGE."
+  (let ((tokens (or (plist-get usage :input-tokens)
+                    (plist-get usage :input_tokens))))
+    (when (and (integerp tokens) (>= tokens 0))
+      tokens)))
+
+(defun e-chat--latest-token-usage ()
+  "Return latest durable provider token usage for this chat buffer."
+  (when (and e-chat-harness e-chat-session-id)
+    (let (usage)
+      (dolist (event (ignore-errors
+                       (e-harness-session-activity-events
+                        e-chat-harness
+                        e-chat-session-id))
+                     usage)
+        (when (eq (plist-get event :event-type) 'token-usage)
+          (setq usage (plist-get event :payload)))))))
+
+(defun e-chat--mode-line-status-text ()
+  "Return the current mode-line text for this e chat buffer."
+  (if (and e-chat-harness e-chat-session-id)
+      (let* ((context (ignore-errors
+                        (e-harness-context e-chat-harness e-chat-session-id)))
+             (options (or (plist-get context :options)
+                          (ignore-errors
+                            (e-harness-turn-options
+                             e-chat-harness
+                             e-chat-session-id))))
+             (model (plist-get options :model))
+             (effort (plist-get options :reasoning-effort))
+             (usage-tokens
+              (e-chat--token-usage-input-tokens
+               (e-chat--latest-token-usage)))
+             (estimated-tokens
+              (and context
+                   (ignore-errors
+                     (e-chat--context-token-estimate context))))
+             (used-tokens (or usage-tokens estimated-tokens))
+             (max-tokens (e-chat--model-context-token-limit model)))
+        (e-chat--format-mode-line-status
+         model effort used-tokens max-tokens (not usage-tokens)))
+    "e-chat"))
+
+(defun e-chat--refresh-mode-line-status ()
+  "Refresh this buffer's e chat mode-line text."
+  (setq-local e-chat--mode-line-status (e-chat--mode-line-status-text))
+  (setq-local mode-name e-chat--mode-line-status)
+  (force-mode-line-update))
+
 (defun e-chat--set-status (status)
   "Set chat buffer STATUS."
   (setq header-line-format
@@ -2841,7 +2981,8 @@ non-nil, is used by focused block activation."
                       title
                       (or model "model unset")
                       (or effort "effort unset")))
-          (format "E Chat: %s" status))))
+          (format "E Chat: %s" status)))
+  (e-chat--refresh-mode-line-status))
 
 (defun e-chat--context-buffer-text (context session-id)
   "Return display text for CONTEXT belonging to SESSION-ID."
@@ -2963,6 +3104,8 @@ non-nil, is used by focused block activation."
     ('backend-empty-output
      (e-chat--stop-progress-indicator (plist-get event :turn-id))
      (e-chat--set-status "done"))
+    ('token-usage
+     (e-chat--refresh-mode-line-status))
     ('session-reset
      (e-chat--stop-progress-indicator)
      (e-chat--set-status "idle")
