@@ -20,6 +20,12 @@
 (require 'e-layers)
 (require 'e-tools)
 
+(defmacro e-layers-test--with-empty-layer-registry (&rest body)
+  "Run BODY with an isolated layer registry."
+  (declare (indent 0) (debug t))
+  `(let ((e-layer--registry (make-hash-table :test 'eq)))
+     ,@body))
+
 (ert-deftest e-layers-test-rejects-direct-behavior-fields ()
   "Layer records are pure presets and reject direct behavior fields."
   (should-error
@@ -104,6 +110,41 @@
                      "second instructions"
                      "second context"
                      "hello")))))
+
+(ert-deftest e-layers-test-registers-known-layer-specs-by-id ()
+  "The layer registry stores lazy known layer specs by stable ids."
+  (e-layers-test--with-empty-layer-registry
+    (let ((created nil))
+      (e-layer-register
+       (e-layer-spec-create
+        :id 'optional
+        :name "Optional"
+        :summary "Optional layer."
+        :factory (lambda ()
+                   (setq created t)
+                   (e-layer-create :id 'optional :name "Optional"))))
+      (should (eq (e-layer-spec-id (e-layer-get 'optional)) 'optional))
+      (should (equal (mapcar #'e-layer-spec-id (e-layer-list))
+                     '(optional)))
+      (should-not created)
+      (let ((layer (e-layer-create-registered 'optional)))
+        (should created)
+        (should (eq (e-layer-id layer) 'optional))))))
+
+(ert-deftest e-layers-test-harness-deactivates-layer-by-id ()
+  "Harness layer state can be queried and deactivated by layer id."
+  (let ((harness (e-harness-create
+                  :backend (e-backend-fake-create :items nil)))
+        (first (e-layer-create :id 'first :name "First"))
+        (second (e-layer-create :id 'second :name "Second")))
+    (e-harness-activate-layer harness first)
+    (e-harness-activate-layer harness second)
+    (should (e-harness-layer-active-p harness 'first))
+    (should (eq (e-harness-active-layer harness 'second) second))
+    (should (eq (e-harness-deactivate-layer harness 'first) first))
+    (should-not (e-harness-layer-active-p harness 'first))
+    (should (equal (mapcar #'e-layer-id (e-harness-active-layers harness))
+                   '(second)))))
 
 (provide 'e-layers-test)
 

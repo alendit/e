@@ -51,7 +51,8 @@
 
 (defconst e-dev--reevaluated-defaults
   '(e-openai-default-model
-    e-openai-default-reasoning-effort)
+    e-openai-default-reasoning-effort
+    e-default-chat-layer-functions)
   "Uncustomized options whose changed defaults should apply after reload.")
 
 (defun e-dev--clear-obsolete-functions ()
@@ -95,6 +96,7 @@
                   "lisp/core/e-harness.el"
                   "lisp/core/e-harness-registry.el"
                   "lisp/core/e-core.el"
+                  "lisp/layers/e-layer-selection.el"
                   "lisp/layers/base/e-base-tools.el"
                   "lisp/layers/base/e-file-capabilities.el"
                   "lisp/layers/base/e-base.el"
@@ -107,8 +109,10 @@
                   "lisp/layers/web/e-web.el"
                   "lisp/layers/chat/e-chat-session.el"
                   "lisp/adapters/openai/e-openai.el"
+                  "lisp/defaults/e-default-layers.el"
                   "lisp/defaults/e-default-harnesses.el"
                   "lisp/shells/e-shells.el"
+                  "lisp/shells/e-layers-shell.el"
                   "lisp/shells/chat/e-chat.el"
                   "e.el"
                   "lisp/dev/e-dev.el")))
@@ -117,6 +121,8 @@
     (e-dev--clear-obsolete-functions)
     (e-dev--clear-obsolete-variables)
     (e-dev--reevaluate-uncustomized-defaults)
+    (when (fboundp 'e-startup-run)
+      (e-startup-run))
     (message "Reloaded e from %s"
              (abbreviate-file-name root))
     root))

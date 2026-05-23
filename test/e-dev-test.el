@@ -13,6 +13,7 @@
 
 (require 'ert)
 (require 'e)
+(require 'e-default-harnesses)
 (require 'e-dev)
 (require 'e-openai)
 
@@ -62,14 +63,28 @@
   (fset 'e-capabilities-register-resource-handlers #'ignore)
   (fset 'e-skill-create #'ignore)
   (fset 'e-skills-register #'ignore)
-  (e-dev-reload default-directory)
+  (setq e-default-chat-layer-functions
+        '(e-base-layer-create e-emacs-base-layer-create))
+  (let ((e-startup-shell-hook
+         (cons (lambda ()
+                 (e-harness-registry-get-or-create :chat-default))
+               e-startup-shell-hook)))
+    (e-dev-reload default-directory))
   (should-not (boundp 'e-startup-capability-hook))
   (should-not (fboundp 'e-resource-handler-create))
   (should-not (fboundp 'e-capability-resource-handlers))
   (should-not (fboundp 'e-capabilities-register-resource-handlers))
   (should-not (fboundp 'e-skill-create))
   (should-not (fboundp 'e-skills-register))
-  (should (equal e-openai-default-model "gpt-5.5")))
+  (should (equal e-openai-default-model "gpt-5.5"))
+  (should (equal e-default-chat-layer-functions
+                 '(e-layer-selection-layer-create
+                   e-base-layer-create
+                   e-emacs-base-layer-create)))
+  (should (equal (mapcar #'e-layer-id
+                         (e-harness-active-layers
+                          (e-harness-registry-get-or-create :chat-default)))
+                 '(chat-session e base emacs-base))))
 
 (provide 'e-dev-test)
 

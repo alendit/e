@@ -70,8 +70,10 @@
 
 (let ((load-prefer-newer t))
   (require 'e-core)
+  (require 'e-default-layers)
   (require 'e-default-harnesses)
   (require 'e-shells)
+  (require 'e-layers-shell)
   (require 'e-chat))
 (e-startup-run)
 

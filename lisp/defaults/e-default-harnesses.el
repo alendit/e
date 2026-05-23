@@ -30,7 +30,7 @@
   :group 'e-defaults)
 
 (defcustom e-default-chat-layer-functions
-  '(e-base-layer-create e-emacs-base-layer-create)
+  '(e-layer-selection-layer-create e-base-layer-create e-emacs-base-layer-create)
   "Layer factory functions activated by default chat harnesses."
   :type '(repeat function)
   :group 'e-defaults)
@@ -57,6 +57,7 @@ session store.  LAYER-FUNCTIONS overrides `e-default-chat-layer-functions'."
   (require 'e-chat-session)
   (require 'e-emacs-base)
   (require 'e-harness)
+  (require 'e-layer-selection)
   (require 'e-layers)
   (require 'e-openai)
   (let ((harness (e-openai-create-harness

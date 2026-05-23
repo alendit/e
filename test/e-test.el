@@ -26,11 +26,15 @@
     e-chat-submit
     e-chat-abort
     e-chat-reset
+    e-layers-toggle
+    e-layers-enable
+    e-layers-disable
     e-dev-reload)
   "Interactive commands expected to exist from package autoloads.")
 
 (defconst e-test--autoload-functions
-  '(e-chat-shell)
+  '(e-chat-shell
+    e-layers-shell)
   "Non-command functions expected to exist from package autoloads.")
 
 (defconst e-test--core-features
@@ -52,7 +56,10 @@
 
 (defconst e-test--non-core-features
   '(e-chat
+    e-default-layers
     e-default-harnesses
+    e-layer-selection
+    e-layers-shell
     e-openai
     e-emacs-tools
     e-base-tools)
@@ -123,6 +130,7 @@
                        "lisp/layers/base"
                        "lisp/layers/emacs"
                        "lisp/layers/evidence"
+                       "lisp/layers/web"
                        "lisp/layers/chat"
                        "lisp/defaults"
                        "lisp/shells"
@@ -174,17 +182,23 @@
   (should (commandp 'e-chat-submit))
   (should (commandp 'e-chat-abort))
   (should (commandp 'e-chat-reset))
+  (should (commandp 'e-layers-toggle))
+  (should (commandp 'e-layers-enable))
+  (should (commandp 'e-layers-disable))
   (should (commandp 'e-dev-reload)))
 
-(ert-deftest e-test-startup-loads-chat-shell-provider ()
+(ert-deftest e-test-startup-loads-shell-providers ()
   "Startup loads shell command providers instead of hand-autoloading commands."
   (let ((original-features features))
     (unwind-protect
         (progn
-          (setq features (cl-set-difference features '(e e-chat)))
+          (setq features (cl-set-difference features
+                                            '(e e-chat e-layers-shell)))
           (load (expand-file-name "e.el" default-directory) nil 'nomessage)
           (should (featurep 'e-chat))
-          (should (eq (e-shell-id (e-shell-get 'chat)) 'chat)))
+          (should (featurep 'e-layers-shell))
+          (should (eq (e-shell-id (e-shell-get 'chat)) 'chat))
+          (should (eq (e-shell-id (e-shell-get 'layers)) 'layers)))
       (setq features original-features)
       (load (expand-file-name "e.el" default-directory) nil 'nomessage))))
 
@@ -243,7 +257,8 @@
               (fmakunbound function)))
           (when (fboundp 'e--add-source-directories)
             (fmakunbound 'e--add-source-directories))
-          (dolist (directory '("." "lisp/shells/chat" "lisp/dev"))
+          (dolist (directory '("." "lisp/shells" "lisp/shells/chat"
+                               "lisp/dev"))
             (update-directory-autoloads
              (expand-file-name directory default-directory)))
           (let ((load-path (cons default-directory load-path)))
@@ -263,6 +278,10 @@
       (when (file-exists-p (concat generated-autoload-file "~"))
         (delete-file (concat generated-autoload-file "~")))
       (load (expand-file-name "e.el" default-directory) nil 'nomessage)
+      (load (expand-file-name "lisp/shells/e-layers-shell.el"
+                              default-directory)
+            nil
+            'nomessage)
       (load (expand-file-name "lisp/shells/chat/e-chat.el" default-directory)
             nil
             'nomessage)

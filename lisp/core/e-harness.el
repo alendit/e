@@ -43,6 +43,9 @@
 (defvar e-harness--message-counter 0
   "Monotonic harness message id counter.")
 
+(defvar-local e-current-harness nil
+  "Harness currently owned by the active presentation buffer, when any.")
+
 (defun e-harness--clear-derived-accessor-metadata ()
   "Clear stale struct accessor metadata for derived harness views."
   (dolist (symbol '(e-harness-active-capabilities
@@ -187,6 +190,29 @@ configure the provider-neutral runtime."
   (setf (e-harness-active-layers harness)
         (append (e-harness-active-layers harness) (list layer)))
   layer)
+
+(defun e-harness-active-layer (harness layer-id)
+  "Return HARNESS active layer matching LAYER-ID, or nil."
+  (cl-find layer-id
+           (e-harness-active-layers harness)
+           :key #'e-layer-id
+           :test #'eq))
+
+(defun e-harness-layer-active-p (harness layer-id)
+  "Return non-nil when HARNESS has an active layer matching LAYER-ID."
+  (and (e-harness-active-layer harness layer-id) t))
+
+(defun e-harness-deactivate-layer (harness layer-id)
+  "Deactivate HARNESS layer matching LAYER-ID and return it, or nil."
+  (let ((removed nil)
+        (layers nil))
+    (dolist (layer (e-harness-active-layers harness))
+      (if (and (not removed)
+               (eq (e-layer-id layer) layer-id))
+          (setq removed layer)
+        (push layer layers)))
+    (setf (e-harness-active-layers harness) (nreverse layers))
+    removed))
 
 (cl-defun e-harness-create-session (harness &key id metadata)
   "Create session ID with METADATA in HARNESS."

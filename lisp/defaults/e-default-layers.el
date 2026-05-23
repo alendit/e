@@ -1,0 +1,65 @@
+;;; e-default-layers.el --- Built-in known layer registrations -*- lexical-binding: t; -*-
+
+;; Copyright (C) 2026 Dimitri Vorona
+
+;; Author: Dimitri Vorona
+;; SPDX-License-Identifier: MIT
+
+;;; Commentary:
+
+;; Registers built-in layer ids lazily.  Concrete layer modules are required
+;; only when their layer is created.
+
+;;; Code:
+
+(require 'e-layers)
+(require 'e-startup)
+
+(defcustom e-default-layer-specs
+  '((:id e
+     :name "e"
+     :summary "Runtime self-management commands."
+     :feature e-layer-selection
+     :factory e-layer-selection-layer-create)
+    (:id base
+     :name "Base"
+     :summary "Workspace file and shell tools."
+     :feature e-base
+     :factory e-base-layer-create)
+    (:id emacs-base
+     :name "Emacs Base"
+     :summary "Live Emacs buffer awareness and editing tools."
+     :feature e-emacs-base
+     :factory e-emacs-base-layer-create)
+    (:id web
+     :name "Web"
+     :summary "Web search, passive fetch, and browser tools."
+     :feature e-web
+     :factory e-web-layer-create))
+  "Built-in layer specs registered during startup."
+  :type '(repeat sexp)
+  :group 'e)
+
+(defun e-default-layers-register (&optional specs)
+  "Register built-in known layer SPECS.
+When SPECS is nil, register `e-default-layer-specs'."
+  (dolist (spec (or specs e-default-layer-specs))
+    (e-layer-register
+     (e-layer-spec-create
+      :id (plist-get spec :id)
+      :name (plist-get spec :name)
+      :summary (plist-get spec :summary)
+      :feature (plist-get spec :feature)
+      :factory (plist-get spec :factory)
+      :metadata (plist-get spec :metadata))))
+  (or specs e-default-layer-specs))
+
+(defun e-default-layers-startup ()
+  "Register built-in known layer specs for package startup."
+  (e-default-layers-register))
+
+(add-hook 'e-startup-layer-hook #'e-default-layers-startup)
+
+(provide 'e-default-layers)
+
+;;; e-default-layers.el ends here

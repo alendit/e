@@ -18,6 +18,7 @@
 (require 'e-default-harnesses)
 (require 'e-harness)
 (require 'e-harness-registry)
+(require 'e-layer-selection)
 (require 'e-layers)
 (require 'e-openai)
 (require 'e-session)
@@ -92,7 +93,7 @@
         (should (eq seen-sessions store))))))
 
 (ert-deftest e-defaults-test-chat-harness-activates-chat-session-base-and-emacs ()
-  "Default chat harness activation includes chat-session then configured layers."
+  "Default chat harness activation includes chat-session, e, base, and emacs."
   (cl-letf (((symbol-function 'e-openai-create-harness)
              (lambda (&rest _args)
                (e-harness-create
@@ -100,8 +101,11 @@
     (let ((harness (e-default-chat-harness-create)))
       (should (equal (mapcar #'e-layer-id
                              (e-harness-active-layers harness))
-                     '(chat-session base emacs-base)))
+                     '(chat-session e base emacs-base)))
       (should (memq 'chat-session
+                    (mapcar #'e-capability-id
+                            (e-harness-active-capabilities harness))))
+      (should (memq 'layer-selection
                     (mapcar #'e-capability-id
                             (e-harness-active-capabilities harness)))))))
 

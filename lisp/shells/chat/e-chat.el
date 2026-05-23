@@ -3050,6 +3050,7 @@ reload.  User-facing commands should call `e-chat-new' or `e-chat-resume'."
     (e-chat--disable-modal-editing)
     (e-chat--disable-completion)
     (e-chat--ensure-window-refresh-hook)
+    (setq-local e-current-harness harness)
     (setq-local e-chat-harness harness)
     (setq-local e-chat-session-id session-id)
     (e-chat--rename-buffer-for-session)
