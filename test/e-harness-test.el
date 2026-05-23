@@ -654,17 +654,14 @@
 (ert-deftest e-harness-test-store-is-derived-from-active-layers ()
   "Harness e:// stores are derived from active capability resource contributions."
   (let* ((capability
-          (e-capability-create
+          (e-capability-with-skills-create
            :id 'skill-capability
-           :resources
-           (list (lambda (store capability)
-                   (e-skills-register
-                    store
-                    (e-capability-id capability)
-                    (e-skill-create
-                     :name "focused-work"
-                     :description "Use for focused work."
-                     :content "Stay focused."))))))
+           :skills
+           (list
+            (e-skill-spec-create
+             :name "focused-work"
+             :description "Use for focused work."
+             :content "Stay focused."))))
          (layer (e-layer-create
                  :id 'skill-layer
                  :name "Skill Layer"
@@ -676,8 +673,8 @@
                            (e-store-list (e-harness-store harness)))
                    '("e://skill-capability/skills/focused-work")))))
 
-(ert-deftest e-harness-test-skill-catalog-enters-context-without-full-content ()
-  "Context advertises active skill metadata, not full skill instructions."
+(ert-deftest e-harness-test-skill-preamble-enters-context-without-full-content ()
+  "Context advertises skill references through normal capability instructions."
   (let* ((captured-messages nil)
          (backend (e-backend-create
                    :name "capture"
@@ -689,17 +686,17 @@
                                        '(:type assistant-message :content "ok"))
                               (funcall on-item '(:type done :reason stop))))))
          (capability
-          (e-capability-create
+          (e-capability-with-skills-create
            :id 'skill-capability
+           :instructions "Capability instructions."
+           :skills
+           (list
+            (e-skill-spec-create
+             :name "review"
+             :description "Review implementation changes."
+             :content "Secret detailed review checklist."))
            :resources
            (list (lambda (store capability)
-                   (e-skills-register
-                    store
-                    (e-capability-id capability)
-                    (e-skill-create
-                     :name "review"
-                     :description "Review implementation changes."
-                     :content "Secret detailed review checklist."))
                    (e-store-register
                     store
                     (e-capability-id capability)
@@ -714,36 +711,36 @@
     (e-harness-activate-layer harness layer)
     (e-harness-create-session harness :id "session-1")
     (e-harness-prompt harness "session-1" "question")
-    (let ((catalog (seq-find
-                    (lambda (message)
-                      (string-match-p "Available skills"
-                                      (plist-get message :content)))
-                    captured-messages)))
-      (should catalog)
-      (should (string-match-p "review" (plist-get catalog :content)))
+    (let ((preamble (seq-find
+                     (lambda (message)
+                       (string-match-p
+                        "Additional guidance is available on demand"
+                        (plist-get message :content)))
+                     captured-messages)))
+      (should preamble)
+      (should (string-match-p "Capability instructions."
+                              (plist-get preamble :content)))
+      (should (string-match-p "review" (plist-get preamble :content)))
       (should (string-match-p "Review implementation changes"
-                              (plist-get catalog :content)))
+                              (plist-get preamble :content)))
       (should (string-match-p "e://skill-capability/skills/review"
-                              (plist-get catalog :content)))
+                              (plist-get preamble :content)))
       (should-not (string-match-p "Secret detailed review checklist"
-                                  (plist-get catalog :content)))
+                                  (plist-get preamble :content)))
       (should-not (string-match-p "review.md"
-                                  (plist-get catalog :content))))))
+                                  (plist-get preamble :content))))))
 
 (ert-deftest e-harness-test-built-in-read-loads-skill-resource ()
   "The built-in read tool can load full skill instructions on demand."
   (let* ((capability
-          (e-capability-create
+          (e-capability-with-skills-create
            :id 'skill-capability
-           :resources
-           (list (lambda (store capability)
-                   (e-skills-register
-                    store
-                    (e-capability-id capability)
-                    (e-skill-create
-                     :name "planner"
-                     :description "Plan work."
-                     :content "Full planning instructions."))))))
+           :skills
+           (list
+            (e-skill-spec-create
+             :name "planner"
+             :description "Plan work."
+             :content "Full planning instructions."))))
          (layer (e-layer-create
                  :id 'skill-layer
                  :name "Skill Layer"
@@ -791,17 +788,14 @@
 (ert-deftest e-harness-test-skill-resources-do-not-support-write-or-edit ()
   "Skill resources are read-only even when advertised through resource tools."
   (let* ((capability
-          (e-capability-create
+          (e-capability-with-skills-create
            :id 'skill-capability
-           :resources
-           (list (lambda (store capability)
-                   (e-skills-register
-                    store
-                    (e-capability-id capability)
-                    (e-skill-create
-                     :name "readonly"
-                     :description "Read-only skill."
-                     :content "Read-only instructions."))))))
+           :skills
+           (list
+            (e-skill-spec-create
+             :name "readonly"
+             :description "Read-only skill."
+             :content "Read-only instructions."))))
          (layer (e-layer-create
                  :id 'skill-layer
                  :name "Skill Layer"

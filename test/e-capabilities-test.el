@@ -16,7 +16,6 @@
 (require 'e-capabilities)
 (require 'e-operations)
 (require 'e-resources)
-(require 'e-skills)
 (require 'e-store)
 
 (ert-deftest e-capabilities-test-create-capability ()
@@ -77,18 +76,17 @@
       :id 'capability-resources
       :resources
       (list (lambda (actual-store capability)
-              (e-skills-register
+              (e-store-register
                actual-store
                (e-capability-id capability)
-               (e-skill-create
-                :name "cap-skill"
-                :description "Capability skill."
-                :content "Capability skill instructions.")))))
+               "refs/capability.md"
+               :description "Capability reference."
+               :content "Capability reference content."))))
      store)
     (should (equal (e-store-read store
-                                 "e://capability-resources/skills/cap-skill"
+                                 "e://capability-resources/refs/capability.md"
                                  nil)
-                   "Capability skill instructions."))))
+                   "Capability reference content."))))
 
 (ert-deftest e-capabilities-test-derived-accessors-tolerate-stale-records ()
   "Capability accessors tolerate stale records compiled before resources existed."

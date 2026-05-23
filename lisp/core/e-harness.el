@@ -20,7 +20,6 @@
 (require 'e-operations)
 (require 'e-resources)
 (require 'e-session)
-(require 'e-skills)
 (require 'e-store)
 (require 'e-tools)
 (require 'subr-x)
@@ -321,11 +320,6 @@ When SESSION-ID is non-nil, SUBSCRIBER only receives events for that session."
   "Return backend-neutral turn options for HARNESS and SESSION-ID."
   (e-harness-turn-options harness session-id))
 
-(defun e-harness--skill-catalog-context-messages (harness)
-  "Return context messages advertising active skills for HARNESS."
-  (when-let ((catalog (e-skills-catalog-text (e-harness-store harness))))
-    (list (list :role 'system :content catalog))))
-
 (defun e-harness-context (harness session-id &optional turn-id)
   "Return backend-neutral context for SESSION-ID in HARNESS.
 TURN-ID is passed to active capability context providers when present."
@@ -335,13 +329,11 @@ TURN-ID is passed to active capability context providers when present."
    :session-id session-id
    :options (e-harness-turn-options harness session-id)
    :prefix-messages
-   (append
-    (e-harness--skill-catalog-context-messages harness)
-    (e-capabilities-context-messages
-     (e-harness-active-capabilities harness)
-     :harness harness
-     :session-id session-id
-     :turn-id turn-id))))
+   (e-capabilities-context-messages
+    (e-harness-active-capabilities harness)
+    :harness harness
+    :session-id session-id
+    :turn-id turn-id)))
 
 (defun e-harness--active-turn-id (entry)
   "Return active turn id from ENTRY."

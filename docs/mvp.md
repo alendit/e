@@ -42,9 +42,11 @@ exercises one layer: `emacs-base`.
 
 Layer activation should affect the harness, not the presentation shell. Active
 layers contribute instructions, context providers, generic `e://` resources,
-and tool registrations before a turn reaches the backend. Skills are resources
-under `e://<capability>/skills/<skill-name>`; references conventionally live
-under `e://<capability>/refs/<reference-name>.md`.
+and tool registrations before a turn reaches the backend. Skill specs are
+builder sugar over capabilities: they append compact references to capability
+instructions and register full bodies as ordinary read-only resources under
+`e://<capability>/skills/<skill-name>`. References conventionally live under
+`e://<capability>/refs/<reference-name>.md`.
 
 ## Context Providers
 

@@ -1,4 +1,4 @@
-;;; e-skills.el --- Skill catalog entries backed by e:// resources -*- lexical-binding: t; -*-
+;;; e-skills.el --- Skill builder sugar for e capabilities -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 Dimitri Vorona
 
@@ -7,31 +7,38 @@
 
 ;;; Commentary:
 
-;; Skills are compact capability-contributed descriptors.  Their full
-;; instructions are stored as read-only e:// resources under the conventional
-;; path e://<capability>/skills/<skill-name>.
+;; Skills are construction-time specs for progressive guidance.  They build an
+;; ordinary capability whose instructions point to read-only e:// resources.
 
 ;;; Code:
 
 (require 'cl-lib)
+(require 'e-capabilities)
 (require 'e-store)
 (require 'subr-x)
 
-(cl-defstruct (e-skill
-               (:constructor e-skill--create
-                             (&key name description content reader metadata)))
+(cl-defstruct (e-skill-spec
+               (:constructor e-skill-spec--create
+                             (&key name description content reader path metadata)))
   name
   description
   content
   reader
+  path
   metadata)
 
-(defun e-skills--normalize-name (name)
-  "Return normalized skill NAME."
+(defconst e-skills-default-heading
+  "Additional guidance is available on demand. Load only what is relevant:"
+  "Default heading for generated skill preambles.")
+
+(defun e-skills--normalize-name (name path)
+  "Return normalized skill NAME for PATH."
   (unless (stringp name)
     (signal 'wrong-type-argument (list 'stringp name)))
-  (when (or (string-empty-p name)
-            (string-match-p "/" name))
+  (when (string-empty-p name)
+    (signal 'wrong-type-argument (list 'skill-name name)))
+  (when (and (not path)
+             (string-match-p "/" name))
     (signal 'wrong-type-argument (list 'skill-name name)))
   name)
 
@@ -39,86 +46,132 @@
   "Return normalized skill DESCRIPTION."
   (unless (stringp description)
     (signal 'wrong-type-argument (list 'stringp description)))
+  (when (string-empty-p description)
+    (signal 'wrong-type-argument (list 'skill-description description)))
   description)
 
-(defun e-skills-uri-for-name (capability name)
-  "Return the conventional skill resource URI for CAPABILITY and NAME."
-  (e-store-uri capability (format "skills/%s" (e-skills--normalize-name name))))
+(defun e-skills--normalize-path (path)
+  "Return normalized explicit skill PATH."
+  (when path
+    (e-store--normalize-path path)))
 
-(cl-defun e-skill-create (&key name description content reader metadata)
-  "Create a skill descriptor.
-NAME and DESCRIPTION are compact catalog metadata.  CONTENT or READER provides
-the full instructions stored under the capability's e:// skills path."
-  (let ((name (e-skills--normalize-name name))
-        (description (e-skills--normalize-description description)))
+(cl-defun e-skill-spec-create (&key name description content reader path metadata)
+  "Create a construction-time skill spec.
+NAME and DESCRIPTION are compact model-facing metadata.  CONTENT or READER
+provides the full guidance body stored under the capability's e:// resources.
+When PATH is omitted, the resource path is `skills/NAME'."
+  (let* ((path (e-skills--normalize-path path))
+         (name (e-skills--normalize-name name path))
+         (description (e-skills--normalize-description description)))
     (unless (or (stringp content) (functionp reader))
       (signal 'wrong-type-argument (list 'string-or-function-p name)))
-    (e-skill--create
+    (e-skill-spec--create
      :name name
      :description description
      :content content
      :reader reader
+     :path path
      :metadata metadata)))
 
-(defun e-skills--metadata (skill)
-  "Return store metadata for SKILL."
-  (append (list :kind 'skill
-                :skill-name (e-skill-name skill)
-                :skill-description (e-skill-description skill))
-          (e-skill-metadata skill)))
+(defun e-skills--path (skill)
+  "Return the store path for SKILL."
+  (or (e-skill-spec-path skill)
+      (format "skills/%s" (e-skill-spec-name skill))))
+
+(defun e-skills-uri-for-name (capability name)
+  "Return the conventional skill resource URI for CAPABILITY and NAME."
+  (e-store-uri capability
+               (format "skills/%s" (e-skills--normalize-name name nil))))
+
+(defun e-skills--uri-for-spec (capability skill)
+  "Return the resource URI for SKILL under CAPABILITY."
+  (e-store-uri capability (e-skills--path skill)))
+
+(defun e-skills--preamble (capability skills heading)
+  "Return generated preamble text for SKILLS under CAPABILITY."
+  (when skills
+    (string-join
+     (cons
+      (or heading e-skills-default-heading)
+      (mapcar
+       (lambda (skill)
+         (format "- %s: %s Read %s"
+                 (e-skill-spec-name skill)
+                 (e-skill-spec-description skill)
+                 (e-skills--uri-for-spec capability skill)))
+       skills))
+     "\n")))
+
+(defun e-skills--instructions (instructions preamble)
+  "Return INSTRUCTIONS with PREAMBLE appended when present."
+  (cond
+   ((not preamble) instructions)
+   ((and (stringp instructions)
+         (not (string-empty-p instructions)))
+    (concat instructions "\n\n" preamble))
+   (t preamble)))
+
+(defun e-skills--register-spec (store capability skill)
+  "Register SKILL under CAPABILITY in STORE."
+  (unless (e-skill-spec-p skill)
+    (signal 'wrong-type-argument (list 'e-skill-spec-p skill)))
+  (e-store-register
+   store
+   capability
+   (e-skills--path skill)
+   :description (e-skill-spec-description skill)
+   :content (e-skill-spec-content skill)
+   :reader (when (e-skill-spec-reader skill)
+             (lambda (_entry range)
+               (funcall (e-skill-spec-reader skill) skill range)))
+   :metadata (e-skill-spec-metadata skill)))
+
+(defun e-skills--resource-provider (skills)
+  "Return a capability resource provider for SKILLS."
+  (lambda (store capability)
+    (dolist (skill skills)
+      (e-skills--register-spec store (e-capability-id capability) skill))))
+
+(cl-defun e-capability-with-skills-create
+    (&key id name instructions skills tools resource-methods resources
+          context-providers actions skill-heading)
+  "Create an ordinary capability with discoverable skill resources.
+SKILLS are construction-time `e-skill-spec' values.  The returned object is an
+`e-capability' whose instructions contain compact skill references and whose
+resources register each full skill body under e://."
+  (dolist (skill skills)
+    (unless (e-skill-spec-p skill)
+      (signal 'wrong-type-argument (list 'e-skill-spec-p skill))))
+  (let* ((preamble (e-skills--preamble id skills skill-heading))
+         (all-resources
+          (append resources
+                  (when skills
+                    (list (e-skills--resource-provider skills))))))
+    (e-capability-create
+     :id id
+     :name name
+     :instructions (e-skills--instructions instructions preamble)
+     :tools tools
+     :resource-methods resource-methods
+     :resources all-resources
+     :context-providers context-providers
+     :actions actions)))
+
+(define-obsolete-function-alias
+  'e-skill-create #'e-skill-spec-create "0.1"
+  "Use `e-skill-spec-create' with `e-capability-with-skills-create' instead.")
 
 (defun e-skills-register (store capability skill-or-register)
-  "Register SKILL-OR-REGISTER under CAPABILITY in STORE.
-SKILL-OR-REGISTER may be an `e-skill' object or a function accepting STORE and
-CAPABILITY."
+  "Compatibility helper for registering SKILL-OR-REGISTER in STORE.
+Prefer `e-capability-with-skills-create' so skill references are part of normal
+capability instructions."
   (cond
-   ((e-skill-p skill-or-register)
-    (let ((skill skill-or-register))
-      (e-store-register
-       store
-       capability
-       (format "skills/%s" (e-skill-name skill))
-       :description (e-skill-description skill)
-       :content (e-skill-content skill)
-       :reader (when (e-skill-reader skill)
-                 (lambda (_entry range)
-                   (funcall (e-skill-reader skill) skill range)))
-       :metadata (e-skills--metadata skill))))
+   ((e-skill-spec-p skill-or-register)
+    (e-skills--register-spec store capability skill-or-register))
    ((functionp skill-or-register)
     (funcall skill-or-register store capability))
    (t
-    (signal 'wrong-type-argument (list 'e-skill-p skill-or-register)))))
-
-(defun e-skills--entry-item (entry)
-  "Return model-facing catalog item for skill ENTRY."
-  (let ((metadata (e-store-entry-metadata entry)))
-    (list :name (plist-get metadata :skill-name)
-          :description (plist-get metadata :skill-description)
-          :uri (e-store-entry-uri entry))))
-
-(defun e-skills-list (store)
-  "Return active skill catalog items from STORE in resource order."
-  (let (items)
-    (dolist (entry (e-store-list store))
-      (when (eq (plist-get (e-store-entry-metadata entry) :kind) 'skill)
-        (push (e-skills--entry-item entry) items)))
-    (nreverse items)))
-
-(defun e-skills-catalog-text (store)
-  "Return model-facing catalog text for skills in STORE."
-  (let ((skills (e-skills-list store)))
-    (when skills
-      (string-join
-       (cons
-        "Available skills. Load full instructions with read on the skill URI."
-        (mapcar
-         (lambda (skill)
-           (format "- %s: %s URI: %s"
-                   (plist-get skill :name)
-                   (plist-get skill :description)
-                   (plist-get skill :uri)))
-         skills))
-       "\n"))))
+    (signal 'wrong-type-argument (list 'e-skill-spec-p skill-or-register)))))
 
 (provide 'e-skills)
 
