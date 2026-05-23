@@ -12,6 +12,7 @@
 ;;; Code:
 
 (require 'ert)
+(require 'e)
 (require 'e-backend)
 (require 'e-capabilities)
 (require 'e-harness)

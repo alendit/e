@@ -13,6 +13,7 @@
 
 (require 'cl-lib)
 (require 'ert)
+(require 'e)
 (require 'e-backend)
 (require 'e-harness)
 (require 'e-layer-selection)
@@ -58,6 +59,37 @@
           (should (e-harness-layer-active-p harness 'optional))
           (e-layers-toggle)
           (should-not (e-harness-layer-active-p harness 'optional)))))))
+
+(ert-deftest e-layers-shell-test-interactive-commands-report-status ()
+  "Interactive layer commands report status without failing."
+  (e-layers-shell-test--with-empty-layer-registry
+    (e-layer-register
+     (e-layer-spec-create
+      :id 'optional
+      :name "Optional"
+      :factory (lambda ()
+                 (e-layer-create :id 'optional :name "Optional"))))
+    (let ((harness (e-harness-create
+                    :backend (e-backend-fake-create :items nil)))
+          messages)
+      (with-temp-buffer
+        (setq-local e-current-harness harness)
+        (cl-letf (((symbol-function 'completing-read)
+                   (lambda (_prompt collection &rest _args)
+                     (car collection)))
+                  ((symbol-function 'called-interactively-p)
+                   (lambda (&optional _kind) t))
+                  ((symbol-function 'message)
+                   (lambda (format-string &rest args)
+                     (push (apply #'format format-string args) messages))))
+          (call-interactively #'e-layers-enable)
+          (should (e-harness-layer-active-p harness 'optional))
+          (call-interactively #'e-layers-disable)
+          (should-not (e-harness-layer-active-p harness 'optional))
+          (call-interactively #'e-layers-toggle)
+          (should (e-harness-layer-active-p harness 'optional))
+          (should (member "Enabled optional layer" messages))
+          (should (member "Disabled optional layer" messages)))))))
 
 (provide 'e-layers-shell-test)
 

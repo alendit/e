@@ -53,6 +53,16 @@
       (user-error "No layer selected"))
     (e-layer-spec-id spec)))
 
+(defun e-layers--status-label (status)
+  "Return display label for layer selection STATUS."
+  (capitalize (replace-regexp-in-string "-" " " (symbol-name status))))
+
+(defun e-layers--message-result (result layer-id)
+  "Report layer command RESULT for LAYER-ID."
+  (message "%s %s layer"
+           (e-layers--status-label (plist-get result :status))
+           layer-id))
+
 ;;;###autoload
 (defun e-layers-toggle (&optional layer-id harness)
   "Toggle known LAYER-ID in HARNESS.
@@ -62,10 +72,7 @@ Interactively, choose a known layer and use the current presentation harness."
          (id (or layer-id (e-layers--read-layer-id target)))
          (result (e-layer-selection-toggle target id)))
     (when (called-interactively-p 'interactive)
-      (message "%s %s layer"
-               (string-capitalize
-                (symbol-name (plist-get result :status)))
-               id))
+      (e-layers--message-result result id))
     result))
 
 ;;;###autoload
@@ -76,10 +83,7 @@ Interactively, choose a known layer and use the current presentation harness."
          (id (or layer-id (e-layers--read-layer-id target)))
          (result (e-layer-selection-enable target id)))
     (when (called-interactively-p 'interactive)
-      (message "%s %s layer"
-               (string-capitalize
-                (symbol-name (plist-get result :status)))
-               id))
+      (e-layers--message-result result id))
     result))
 
 ;;;###autoload
@@ -90,10 +94,7 @@ Interactively, choose a known layer and use the current presentation harness."
          (id (or layer-id (e-layers--read-layer-id target)))
          (result (e-layer-selection-disable target id)))
     (when (called-interactively-p 'interactive)
-      (message "%s %s layer"
-               (string-capitalize
-                (symbol-name (plist-get result :status)))
-               id))
+      (e-layers--message-result result id))
     result))
 
 ;;;###autoload
