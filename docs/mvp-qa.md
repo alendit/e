@@ -83,8 +83,8 @@ With valid Codex-managed ChatGPT auth available at `CODEX_HOME/auth.json` or
 4. Send layer instructions and visible-buffer metadata into transcript-stack
    context.
 5. Let the model call resource tools or `run_elisp`.
-6. Mutate live buffers with `write` or `edit` against `buffer://` URIs without
-   saving.
+6. Create or replace live buffers with `write` against `buffer://` URIs, and
+   mutate existing live buffers with `edit`, without saving.
 7. Persist a file-backed buffer only when `save_buffer` is called.
 8. See assistant messages, tool results, failures, starts, finishes, resets,
    and cancellations rendered in the chat buffer.

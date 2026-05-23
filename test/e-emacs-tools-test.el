@@ -96,6 +96,30 @@ When READ-ONLY is non-nil, buffer resources only support reads."
             (should-not (plist-get (plist-get result :content) :saved))))
       (kill-buffer buffer))))
 
+(ert-deftest e-emacs-tools-test-write-buffer-creates-missing-live-buffer ()
+  "The write tool creates missing live buffers and inserts complete content."
+  (let* ((registry (e-emacs-tools-test--resource-tools))
+         (name (generate-new-buffer-name " *e-test-write-created*"))
+         (buffer nil))
+    (unwind-protect
+        (progn
+          (should-not (get-buffer name))
+          (let ((result (e-tools-execute
+                         registry
+                         `(:id "call-1"
+                           :name "write"
+                           :arguments (:uri ,(concat "buffer://" name)
+                                             :content "created text")))))
+            (setq buffer (get-buffer name))
+            (should (equal (plist-get result :status) 'ok))
+            (should (buffer-live-p buffer))
+            (should (equal (with-current-buffer buffer (buffer-string))
+                           "created text"))
+            (should-not (with-current-buffer buffer buffer-file-name))
+            (should-not (plist-get (plist-get result :content) :saved))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-emacs-tools-test-edit-buffer-replaces-unique-match ()
   "The edit tool replaces exactly one old-text match in a live buffer."
   (let ((registry (e-emacs-tools-test--resource-tools))
@@ -155,6 +179,22 @@ When READ-ONLY is non-nil, buffer resources only support reads."
                           :status)
                          'error)))
       (kill-buffer buffer))))
+
+(ert-deftest e-emacs-tools-test-edit-buffer-does-not-create-missing-buffer ()
+  "The edit tool stays strict and does not create missing buffers."
+  (let* ((registry (e-emacs-tools-test--resource-tools))
+         (name (generate-new-buffer-name " *e-test-edit-missing*")))
+    (let ((result (e-tools-execute
+                   registry
+                   `(:id "call-1"
+                     :name "edit"
+                     :arguments (:uri ,(concat "buffer://" name)
+                                :edits ((:oldText "old"
+                                         :newText "new")))))))
+      (should (equal (plist-get result :status) 'error))
+      (should (string-match-p "No buffer named"
+                              (plist-get result :content)))
+      (should-not (get-buffer name)))))
 
 (ert-deftest e-emacs-tools-test-save-buffer-persists-file-backed-buffer ()
   "The save-buffer tool saves a file-backed buffer."

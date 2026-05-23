@@ -222,7 +222,7 @@ When VISIBLE-ONLY is non-nil, include only buffers visible in windows."
 (defun e-emacs-tools--write-buffer-resource (uri content)
   "Replace parsed buffer URI contents with CONTENT."
   (let ((name (e-emacs-tools--buffer-resource-name uri)))
-    (with-current-buffer (e-emacs-tools--buffer name)
+    (with-current-buffer (get-buffer-create name)
       (erase-buffer)
       (insert content)
       (list :name name

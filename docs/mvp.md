@@ -100,8 +100,9 @@ Tools:
 - `read`: read URI-addressed resources such as `buffer://<buffer-name>`,
   `file://<path>`, and capability-scoped `e://<capability>/<path>` entries
   with optional structured ranges.
-- `write`: replace URI-addressed resource contents where the active capability
-  supports writes.
+- `write`: write complete content where the active capability supports writes,
+  creating missing parent paths and target resources inside the capability's
+  allowed scope, or overwriting existing content.
 - `edit`: apply exact `oldText`/`newText` replacements to URI-addressed
   resources where the active capability supports edits.
 - `list_buffers`: return buffer names, modes, file-backed status, modified
@@ -111,9 +112,10 @@ Tools:
 - `run_elisp`: evaluate explicit elisp in Emacs and return printed result or
   surfaced error.
 
-`write` and `edit` against `buffer://` resources modify live Emacs buffers only.
-Persistence is a separate `save_buffer` action. Autosave is not treated as a
-persistence mechanism.
+`write` against `buffer://` resources creates missing live buffers or replaces
+existing buffer contents. `edit` mutates existing buffers only. Persistence is a
+separate `save_buffer` action. Autosave is not treated as a persistence
+mechanism.
 
 ## Chat Buffer
 

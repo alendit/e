@@ -141,6 +141,45 @@ When READ-ONLY is non-nil, file resources only support reads."
                          "replacement")))
       (delete-directory directory t))))
 
+(ert-deftest e-base-tools-test-write-file-rejects-paths-outside-root ()
+  "The write tool does not create files outside its configured root."
+  (let* ((parent (make-temp-file "e-base-write-root-" t))
+         (directory (expand-file-name "workspace" parent))
+         (outside (expand-file-name "outside.txt" parent))
+         (registry nil))
+    (unwind-protect
+        (progn
+          (make-directory directory)
+          (setq registry (e-base-tools-test--resource-tools directory))
+          (let ((result (e-base-tools-test--execute
+                         registry
+                         "write"
+                         '(:uri "file://../outside.txt" :content "escape"))))
+            (should (equal (plist-get result :status) 'error))
+            (should (string-match-p "escapes workspace root"
+                                    (plist-get result :content)))
+            (should-not (file-exists-p outside))))
+      (delete-directory parent t))))
+
+(ert-deftest e-base-tools-test-write-file-reports-invalid-intermediate-path ()
+  "The write tool fails clearly when a parent segment is a file."
+  (let* ((directory (make-temp-file "e-base-write-invalid-parent-" t))
+         (parent-as-file (expand-file-name "nested" directory))
+         (target (expand-file-name "nested/file.txt" directory))
+         (registry (e-base-tools-test--resource-tools directory)))
+    (unwind-protect
+        (progn
+          (write-region "not a directory" nil parent-as-file nil 'silent)
+          (let ((result (e-base-tools-test--execute
+                         registry
+                         "write"
+                         '(:uri "file://nested/file.txt" :content "new"))))
+            (should (equal (plist-get result :status) 'error))
+            (should (string-match-p "Not a directory\\|File exists"
+                                    (plist-get result :content)))
+            (should-not (file-exists-p target))))
+      (delete-directory directory t))))
+
 (ert-deftest e-base-tools-test-edit-file-applies-disjoint-edits-and-preserves-crlf ()
   "The edit tool applies multiple exact edits and preserves CRLF endings."
   (let* ((directory (make-temp-file "e-base-edit-" t))
@@ -187,6 +226,25 @@ When READ-ONLY is non-nil, file resources only support reads."
             (let ((result (e-base-tools-test--execute registry "edit" (cadr case))))
               (should (equal (plist-get result :status) 'error))
               (should (string-match-p (car case) (plist-get result :content))))))
+      (delete-directory directory t))))
+
+(ert-deftest e-base-tools-test-edit-file-does-not-create-missing-targets ()
+  "The edit tool stays strict and does not create missing file paths."
+  (let* ((directory (make-temp-file "e-base-edit-missing-" t))
+         (parent (expand-file-name "nested" directory))
+         (target (expand-file-name "nested/file.txt" directory))
+         (registry (e-base-tools-test--resource-tools directory)))
+    (unwind-protect
+        (let ((result (e-base-tools-test--execute
+                       registry
+                       "edit"
+                       '(:uri "file://nested/file.txt"
+                         :edits ((:oldText "old" :newText "new"))))))
+          (should (equal (plist-get result :status) 'error))
+          (should (string-match-p "File is not readable"
+                                  (plist-get result :content)))
+          (should-not (file-exists-p parent))
+          (should-not (file-exists-p target)))
       (delete-directory directory t))))
 
 (ert-deftest e-base-tools-test-bash-captures-output-and-errors ()

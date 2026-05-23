@@ -638,6 +638,39 @@
     (should (string-match-p "Described resources" description))
     (should (string-match-p "line, offset" description))))
 
+(ert-deftest e-harness-test-write-tool-description-states-create-invariant ()
+  "Generated write descriptions state the shared create/overwrite contract."
+  (let* ((capability
+          (e-capability-create
+           :id 'write-description-capability
+           :resource-methods
+           (list (lambda (registry)
+                   (e-resources-register
+                    registry
+                    (e-resource-method-create
+                     :scheme "writable"
+                     :operation e-operation-write
+                     :description "Writable resources."
+                     :uri-patterns '("writable://<id>")
+                     :handler (lambda (_uri _content) "ok")))))))
+         (layer (e-layer-create
+                 :id 'write-description-layer
+                 :name "Write Description Layer"
+                 :capabilities (list capability)))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :active-layers (list layer)))
+         (write-tool (seq-find (lambda (definition)
+                                 (equal (plist-get definition :name) "write"))
+                               (e-tools-definitions (e-harness-tools harness))))
+         (description (plist-get write-tool :description)))
+    (should write-tool)
+    (should
+     (string-match-p
+      "write creates missing parent paths and the target resource, or overwrites existing content"
+      description))
+    (should (string-match-p "writable://<id>" description))))
+
 (ert-deftest e-harness-test-direct-capability-activation-uses-layer-source ()
   "Direct capability activation wraps the capability as a layer."
   (let* ((capability (e-capability-create :id 'direct-capability))

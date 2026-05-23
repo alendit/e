@@ -37,6 +37,8 @@ When nil, `shell-command-switch' is used."
   :group 'e-base-tools)
 
 (define-error 'e-base-tools-read-invalid "Base read tool input is invalid")
+(define-error 'e-base-tools-path-outside-root
+  "Base file resource path escapes the configured root")
 (define-error 'e-base-tools-edit-invalid "Base edit tool input is invalid")
 (define-error 'e-base-tools-bash-invalid "Base bash tool input is invalid")
 
@@ -63,7 +65,12 @@ When nil, `shell-command-switch' is used."
 
 (defun e-base-tools--resolve-path (path directory)
   "Resolve PATH against DIRECTORY."
-  (expand-file-name path (file-name-as-directory directory)))
+  (let* ((root (file-name-as-directory (expand-file-name directory)))
+         (absolute-path (expand-file-name path root)))
+    (unless (file-in-directory-p absolute-path root)
+      (signal 'e-base-tools-path-outside-root
+              (list (format "Path escapes workspace root: %s" path))))
+    absolute-path))
 
 (defun e-base-tools--read-file-literally (path)
   "Return literal contents of PATH."

@@ -58,7 +58,10 @@
   (e-operation-create
    :id 'write
    :tool-name "write"
-   :description "Write content to a URI-addressed resource."
+   :description (concat
+                 "Write complete content to a URI-addressed resource. "
+                 "For every URI scheme listed below, write creates missing parent paths "
+                 "and the target resource, or overwrites existing content.")
    :parameters '(:type "object"
                  :properties (:uri (:type "string"
                                     :description "Resource URI to write, such as file://README.md or buffer://*scratch*.")
