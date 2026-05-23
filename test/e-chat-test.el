@@ -347,15 +347,102 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest e-chat-test-post-command-keeps-point-inside-composer ()
-  "Cursor commands cannot leave an active composer in normal edit mode."
-  (let ((buffer (e-chat-test--buffer nil "chat-composer-post-command")))
+(ert-deftest e-chat-test-post-command-preserves-scrollback-position ()
+  "Plain post-command handling does not force readback back to the composer."
+  (let ((buffer (e-chat-test--buffer nil "chat-composer-post-command"))
+        (window nil))
+    (unwind-protect
+        (progn
+          (setq window (display-buffer buffer))
+          (with-current-buffer buffer
+            (goto-char (point-min))
+            (set-window-start window (point-min))
+            (let ((before-point (point))
+                  (before-start (window-start window)))
+              (run-hooks 'post-command-hook)
+              (should (= (point) before-point))
+              (should (= (window-start window) before-start)))))
+      (when (window-live-p window)
+        (delete-window window))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-mode-keeps-scroll-margin-user-controlled ()
+  "Chat buffers do not force a global bottom scroll margin."
+  (let ((scroll-margin 0)
+        (buffer (e-chat-test--buffer nil "chat-composer-scroll-margin")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (should (= scroll-margin 0)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-composer-edit-scrolls-bottom-into-view ()
+  "Editing composer text scrolls the active input down after the command."
+  (let ((buffer (e-chat-test--buffer nil "chat-composer-edit-scroll"))
+        (window nil)
+        recenter-argument)
+    (unwind-protect
+        (progn
+          (setq window (display-buffer buffer))
+          (cl-letf (((symbol-function 'recenter)
+                     (lambda (argument &rest _ignored)
+                       (setq recenter-argument argument))))
+            (with-current-buffer buffer
+              (goto-char (point-max))
+              (insert "typed")
+              (run-hooks 'post-command-hook)
+              (should (equal recenter-argument -2)))))
+      (when (window-live-p window)
+        (delete-window window))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-self-insert-from-scrollback-targets-composer ()
+  "Typing from readback moves to the composer before inserting text."
+  (let ((buffer (e-chat-test--buffer nil "chat-composer-self-insert")))
     (unwind-protect
         (with-current-buffer buffer
           (goto-char (point-min))
-          (run-hooks 'post-command-hook)
-          (should (>= (point) (marker-position e-chat--composer-start-marker)))
-          (should-not (get-text-property (point) 'e-chat-protected)))
+          (let ((this-command 'self-insert-command)
+                (last-command-event ?x))
+            (run-hooks 'pre-command-hook)
+            (call-interactively #'self-insert-command))
+          (should (e-chat--point-in-composer-p))
+          (should (equal (e-chat--composer-text) "x")))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-post-command-without-edit-does-not-scroll-composer ()
+  "Plain navigation commands do not force the window back to the composer."
+  (let ((buffer (e-chat-test--buffer nil "chat-composer-no-edit-scroll"))
+        recenter-called)
+    (unwind-protect
+        (cl-letf (((symbol-function 'recenter)
+                   (lambda (&rest _ignored)
+                     (setq recenter-called t))))
+          (with-current-buffer buffer
+            (run-hooks 'post-command-hook)
+            (should-not recenter-called)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-show-composer-leaves-bottom-margin ()
+  "Composer focus leaves a visible line between point and the mode line."
+  (let ((buffer (e-chat-test--buffer nil "chat-composer-recenter"))
+        (window nil)
+        recenter-argument)
+    (unwind-protect
+        (progn
+          (setq window (display-buffer buffer))
+          (cl-letf (((symbol-function 'recenter)
+                     (lambda (argument &rest _ignored)
+                       (setq recenter-argument argument))))
+            (with-current-buffer buffer
+              (e-chat--show-composer)))
+          (should (equal recenter-argument -2)))
+      (when (window-live-p window)
+        (delete-window window))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -1763,6 +1850,34 @@
                                     (buffer-substring-no-properties
                                      e-chat--composer-spacer-marker
                                      e-chat--composer-start-marker)))))
+      (when (window-live-p window)
+        (delete-window window))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-composer-spacer-shrinks-for-multiline-input ()
+  "Growing composer input reduces the protected bottom spacer."
+  (let ((buffer (e-chat-test--buffer nil "chat-bottom-multiline"))
+        (window nil))
+    (unwind-protect
+        (progn
+          (setq window (display-buffer buffer))
+          (with-current-buffer buffer
+            (let ((e-chat--test-window-body-height 12)
+                  (e-chat--test-transcript-screen-lines 4))
+              (e-chat--refresh-composer-position))
+            (let ((single-line-spacer
+                   (count-lines e-chat--composer-spacer-marker
+                                e-chat--transcript-end-marker)))
+              (goto-char (point-max))
+              (insert "one\ntwo\nthree")
+              (let ((e-chat--test-window-body-height 12)
+                    (e-chat--test-transcript-screen-lines 4))
+                (e-chat--refresh-composer-position))
+              (let ((multiline-spacer
+                     (count-lines e-chat--composer-spacer-marker
+                                  e-chat--transcript-end-marker)))
+                (should (< multiline-spacer single-line-spacer))))))
       (when (window-live-p window)
         (delete-window window))
       (when (buffer-live-p buffer)

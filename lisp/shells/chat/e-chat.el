@@ -256,6 +256,12 @@
 (defvar-local e-chat--composer-spacer-marker nil
   "Marker at the beginning of the visual spacer above the composer.")
 
+(defvar-local e-chat--composer-scroll-needed nil
+  "Non-nil when a composer edit should scroll input fully into view.")
+
+(defvar-local e-chat--composer-scroll-suppressed nil
+  "Non-nil while internal composer rewrites should not request scrolling.")
+
 (defvar-local e-chat--turn-registry nil
   "Hash table of rendered turn metadata keyed by turn id.")
 
@@ -364,6 +370,21 @@
     rear-nonsticky (read-only e-chat-protected field)
     field e-chat-transcript)
   "Text properties applied to protected e chat presentation text.")
+
+(defconst e-chat--composer-edit-commands
+  '(self-insert-command
+    newline
+    yank
+    yank-pop
+    clipboard-yank
+    quoted-insert
+    e-chat-delete-backward-char
+    e-chat-delete-forward-char
+    delete-backward-char
+    backward-delete-char-untabify
+    delete-forward-char
+    delete-char)
+  "Commands that should resume composer input from readback position.")
 
 (defun e-chat--make-response-navigation-mode-map (&optional map)
   "Return MAP configured for `e-chat-response-navigation-mode'."
@@ -517,7 +538,10 @@
   "Major mode for e chat buffers."
   (add-hook 'kill-buffer-hook #'e-chat--stop-progress-indicator nil t)
   (add-hook 'evil-local-mode-hook #'e-chat--enforce-modal-editing-policy nil t)
-  (add-hook 'post-command-hook #'e-chat--clamp-to-composer nil t))
+  (add-hook 'after-change-functions
+            #'e-chat--mark-composer-scroll-needed nil t)
+  (add-hook 'pre-command-hook #'e-chat--pre-command nil t)
+  (add-hook 'post-command-hook #'e-chat--post-command nil t))
 
 (define-minor-mode e-chat-response-navigation-mode
   "Navigate rendered turn blocks in an e chat buffer."
@@ -697,11 +721,13 @@ Return non-nil when a composer was removed."
                         (marker-position e-chat--composer-start-marker)))))
     (when start
       (let ((inhibit-read-only t))
-        (delete-region start (point-max))
+        (let ((e-chat--composer-scroll-suppressed t))
+          (delete-region start (point-max)))
         (set-marker e-chat--transcript-end-marker nil)
         (set-marker e-chat--composer-start-marker nil)
         (when (markerp e-chat--composer-spacer-marker)
           (set-marker e-chat--composer-spacer-marker nil))
+        (setq e-chat--composer-scroll-needed nil)
         t))))
 
 (defun e-chat--visible-height ()
@@ -721,32 +747,35 @@ Return non-nil when a composer was removed."
         (count-screen-lines (point-min) (point) nil window))
       (count-lines (point-min) (point))))
 
-(defun e-chat--composer-spacer-lines ()
+(defun e-chat--screen-lines (start end)
+  "Return screen lines between START and END in the visible chat window."
+  (if (>= start end)
+      0
+    (or (when-let ((window (e-chat--visible-window)))
+          (count-screen-lines start end nil window))
+        (count-lines start end))))
+
+(defun e-chat--composer-spacer-lines (&optional transcript-lines composer-lines)
   "Return how many protected blank lines should precede the composer."
   (let ((height (e-chat--visible-height)))
     (if (not height)
         0
       (max 0 (- height
-                (e-chat--transcript-screen-lines)
-                4)))))
+                (or transcript-lines (e-chat--transcript-screen-lines))
+                (or composer-lines 2)
+                2)))))
 
-(defun e-chat--insert-composer ()
+(defun e-chat--insert-composer (&optional text)
   "Insert an editable composer at the end of the current chat buffer."
   (e-chat--disable-completion)
   (e-chat--delete-composer)
-  (let ((inhibit-read-only t))
+  (let ((inhibit-read-only t)
+        (e-chat--composer-scroll-suppressed t))
     (goto-char (point-max))
     (unless (or (bobp) (bolp))
       (insert "\n"))
     (setq e-chat--composer-spacer-marker (point-marker))
     (set-marker-insertion-type e-chat--composer-spacer-marker nil)
-    (let ((spacer-lines (e-chat--composer-spacer-lines)))
-      (when (> spacer-lines 0)
-        (e-chat--insert-protected
-         (make-string spacer-lines ?\n)
-         'e-chat-separator-face)))
-    (setq e-chat--transcript-end-marker (point-marker))
-    (set-marker-insertion-type e-chat--transcript-end-marker nil)
     (e-chat--insert-protected
      (concat e-chat--composer-separator "\n")
      'e-chat-separator-face)
@@ -756,7 +785,25 @@ Return non-nil when a composer was removed."
      '(e-chat-composer t))
     (setq e-chat--composer-start-marker (point-marker))
     (set-marker-insertion-type e-chat--composer-start-marker nil)
-    (goto-char e-chat--composer-start-marker)
+    (when text
+      (insert text))
+    (let* ((transcript-lines
+            (save-excursion
+              (goto-char e-chat--composer-spacer-marker)
+              (e-chat--transcript-screen-lines)))
+           (composer-lines
+            (e-chat--screen-lines e-chat--composer-spacer-marker (point-max)))
+           (spacer-lines
+            (e-chat--composer-spacer-lines transcript-lines composer-lines)))
+      (goto-char e-chat--composer-spacer-marker)
+      (when (> spacer-lines 0)
+        (e-chat--insert-protected
+         (make-string spacer-lines ?\n)
+         'e-chat-separator-face)))
+    (setq e-chat--transcript-end-marker (point-marker))
+    (set-marker-insertion-type e-chat--transcript-end-marker nil)
+    (goto-char (point-max))
+    (setq e-chat--composer-scroll-needed nil)
     (e-chat--show-composer)))
 
 (defun e-chat--insert-pending-separator ()
@@ -799,6 +846,42 @@ Return non-nil when a composer was removed."
              (not e-chat-tool-list-mode)
              (< (point) (marker-position e-chat--composer-start-marker)))
     (goto-char e-chat--composer-start-marker)))
+
+(defun e-chat--mark-composer-scroll-needed (_begin end _length)
+  "Record that a composer edit ending at END needs bottom visibility."
+  (when (and (not e-chat--composer-scroll-suppressed)
+             (e-chat--composer-active-p)
+             (> end (marker-position e-chat--composer-start-marker)))
+    (setq e-chat--composer-scroll-needed t)))
+
+(defun e-chat--scroll-composer-edit-into-view ()
+  "Scroll the current composer edit down without changing user scroll policy."
+  (when-let ((window (e-chat--visible-window)))
+    (set-window-point window (point))
+    (with-selected-window window
+      (ignore-errors
+        (recenter -2)))))
+
+(defun e-chat--composer-edit-command-p (command)
+  "Return non-nil when COMMAND should target composer input."
+  (memq command e-chat--composer-edit-commands))
+
+(defun e-chat--pre-command ()
+  "Redirect edit commands from readback into the composer."
+  (when (and (e-chat--composer-active-p)
+             (not e-chat-response-navigation-mode)
+             (not e-chat-block-view-mode)
+             (not e-chat-tool-list-mode)
+             (not (e-chat--point-in-composer-p))
+             (e-chat--composer-edit-command-p this-command))
+    (e-chat--show-composer)))
+
+(defun e-chat--post-command ()
+  "Maintain composer editing invariants after interactive commands."
+  (when e-chat--composer-scroll-needed
+    (setq e-chat--composer-scroll-needed nil)
+    (when (e-chat--point-in-composer-p)
+      (e-chat--scroll-composer-edit-into-view))))
 
 (defun e-chat-previous-line (&optional arg try-vscroll)
   "Move up ARG lines like `previous-line', honoring TRY-VSCROLL.
@@ -2331,9 +2414,7 @@ TURN-ID tags the rendered entry for response navigation."
     (let ((text (buffer-substring e-chat--composer-start-marker
                                   (point-max))))
       (e-chat--delete-composer)
-      (e-chat--insert-composer)
-      (insert text)
-      (e-chat--show-composer))))
+      (e-chat--insert-composer text))))
 
 (defun e-chat--refresh-visible-composers ()
   "Refresh composer spacers for visible e chat buffers."
@@ -2361,7 +2442,7 @@ TURN-ID tags the rendered entry for response navigation."
     (set-window-point window (point))
     (with-selected-window window
       (ignore-errors
-        (recenter -1)))))
+        (recenter -2)))))
 
 (defun e-chat--enter-composer-input-state ()
   "Leave chat-local navigation states and focus editable composer input."
