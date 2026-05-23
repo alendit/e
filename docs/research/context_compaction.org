@@ -1,0 +1,438 @@
+#+title: Research: Pi context compaction
+#+author: e research
+#+date: 2026-05-23
+#+startup: overview
+
+* Scope
+This note summarizes how Pi implements context compaction and related summarization mechanisms, based on the published package =@earendil-works/pi-coding-agent@0.75.4=.
+
+Primary source files inspected:
+
+- =docs/compaction.md=
+- =docs/session-format.md=
+- =docs/sessions.md=
+- =dist/core/compaction/compaction.js=
+- =dist/core/compaction/branch-summarization.js=
+- =dist/core/compaction/utils.js=
+- =dist/core/session-manager.js=
+- =dist/core/agent-session.js=
+- =dist/core/extensions/types.d.ts=
+- =examples/extensions/custom-compaction.ts=
+- =examples/extensions/trigger-compact.ts=
+
+* Executive summary
+Pi has more than one context-reduction strategy:
+
+1. Default rolling context compaction.
+2. Manual compaction via =/compact [instructions]=.
+3. Auto-compaction when context usage crosses a threshold.
+4. Context-overflow recovery compaction with one automatic retry.
+5. Split-turn compaction for huge single turns.
+6. Branch summarization during session tree navigation.
+7. Extension-provided custom compaction through =session_before_compact=.
+
+The core design is append-only. Pi does not delete or rewrite old session entries during compaction. Instead, it appends a =compaction= entry containing a summary and a boundary pointer, then changes context reconstruction so the model sees:
+
+#+begin_example
+system prompt
+compaction summary
+recent kept messages
+messages after compaction
+#+end_example
+
+The durable session file still contains the full history.
+
+* Session model
+Pi stores sessions as JSONL files under a per-working-directory session directory. Entries form a tree using =id= and =parentId=, which enables branching inside one session file.
+
+Relevant entry types include:
+
+- =message= :: user, assistant, tool result, bash execution, and other model-facing messages.
+- =compaction= :: a summary of earlier context plus the first kept entry id.
+- =branch_summary= :: a summary of a branch abandoned during tree navigation.
+- =custom= :: extension state that does not enter LLM context.
+- =custom_message= :: extension-injected message that does enter LLM context.
+- =model_change= and =thinking_level_change= :: session settings events.
+- =label= and =session_info= :: user-facing session metadata.
+
+A compaction entry has this shape:
+
+#+begin_src typescript
+interface CompactionEntry<T = unknown> {
+  type: "compaction";
+  id: string;
+  parentId: string;
+  timestamp: number;
+  summary: string;
+  firstKeptEntryId: string;
+  tokensBefore: number;
+  fromHook?: boolean;
+  details?: T;
+}
+#+end_src
+
+Default Pi compaction uses details like:
+
+#+begin_src typescript
+interface CompactionDetails {
+  readFiles: string[];
+  modifiedFiles: string[];
+}
+#+end_src
+
+* Context reconstruction
+=session-manager.js= contains the important reconstruction rule in =buildSessionContext()=.
+
+If no compaction entry is present on the current branch path, Pi emits all context-contributing messages on that path.
+
+If a compaction entry is present, Pi emits:
+
+1. a =compactionSummary= message derived from the latest compaction entry;
+2. messages before the compaction entry, starting at =firstKeptEntryId=;
+3. messages after the compaction entry.
+
+In other words, =firstKeptEntryId= is the boundary between summarized history and verbatim recent context.
+
+This design means compaction is mostly a context-building policy, not a destructive storage operation.
+
+* Default compaction settings
+The default compaction settings are:
+
+#+begin_src json
+{
+  "enabled": true,
+  "reserveTokens": 16384,
+  "keepRecentTokens": 20000
+}
+#+end_src
+
+Meanings:
+
+| Setting | Default | Meaning |
+|---------+---------+---------|
+| =enabled= | =true= | Enable auto-compaction. |
+| =reserveTokens= | =16384= | Leave room for the model response. |
+| =keepRecentTokens= | =20000= | Keep approximately this many recent tokens verbatim. |
+
+Auto-compaction triggers when:
+
+#+begin_src typescript
+contextTokens > contextWindow - settings.reserveTokens
+#+end_src
+
+* Token accounting
+Pi combines provider-reported usage and local estimation.
+
+- If a recent non-error assistant message has usage data, Pi uses that usage as the base context size.
+- If messages were added after that usage measurement, Pi estimates trailing tokens.
+- If no usage data exists, Pi estimates all messages.
+- The rough local estimator is character based, approximately =ceil(chars / 4)=.
+
+After compaction, usage from pre-compaction assistant messages is considered stale. =getContextUsage()= can return unknown token usage until a post-compaction assistant response supplies fresh usage.
+
+* Default rolling compaction flow
+Default compaction is implemented around =prepareCompaction()= and =compact()=.
+
+** 1. Find previous compaction
+Pi scans the current branch for the latest previous =compaction= entry.
+
+If found:
+
+- =previousSummary= is set to that entry's summary.
+- The new summarization boundary starts at the previous compaction's =firstKeptEntryId= if that entry still exists in the path.
+- If the kept entry cannot be found, Pi falls back to the entry after the previous compaction.
+
+This matters for repeated compaction. Pi updates an existing rolling summary rather than only summarizing messages after the prior compaction entry.
+
+** 2. Find a cut point
+Pi walks backwards from the newest entries, accumulating estimated tokens until it reaches =keepRecentTokens=. The cut point is chosen so recent content remains verbatim.
+
+Valid cut points include:
+
+- user messages;
+- assistant messages;
+- bash execution messages;
+- custom messages;
+- branch summaries.
+
+Pi avoids cutting at tool results because tool results need to stay attached to their tool calls.
+
+** 3. Partition context
+After selecting the cut point, Pi partitions messages into:
+
+- =messagesToSummarize= :: older context that will be replaced by summary;
+- recent kept messages :: entries from =firstKeptEntryId= onward;
+- optionally =turnPrefixMessages= :: the early part of a huge split turn.
+
+** 4. Serialize conversation for summarization
+Before asking an LLM to summarize, Pi converts messages into a plain transcript so the summarizer does not treat it as a live conversation to continue.
+
+The serialization looks like:
+
+#+begin_example
+[User]: What they said
+[Assistant thinking]: Internal reasoning
+[Assistant]: Response text
+[Assistant tool calls]: read(path="foo.ts"); edit(path="bar.ts", ...)
+[Tool result]: Output from tool
+#+end_example
+
+Tool results are truncated to 2000 characters in this serialized summarization input.
+
+** 5. Generate structured summary
+Pi uses a summarization system prompt telling the model to produce only a structured summary.
+
+The default summary format is:
+
+#+begin_src markdown
+## Goal
+[What the user is trying to accomplish]
+
+## Constraints & Preferences
+- [Requirements mentioned by user]
+
+## Progress
+### Done
+- [x] [Completed tasks]
+
+### In Progress
+- [ ] [Current work]
+
+### Blocked
+- [Issues, if any]
+
+## Key Decisions
+- **[Decision]**: [Rationale]
+
+## Next Steps
+1. [What should happen next]
+
+## Critical Context
+- [Data needed to continue]
+
+<read-files>
+path/to/file1.ts
+</read-files>
+
+<modified-files>
+path/to/changed.ts
+</modified-files>
+#+end_src
+
+If there is a previous summary, Pi uses an update prompt instead of an initial summary prompt. The previous summary is passed in =<previous-summary>= tags, and the model is instructed to preserve prior information while incorporating new messages.
+
+** 6. Track file operations
+Pi extracts file operations from assistant tool calls:
+
+- =read= adds to the read set;
+- =write= adds to the written set;
+- =edit= adds to the edited set.
+
+It then computes:
+
+- =readFiles= :: files read but not modified;
+- =modifiedFiles= :: files written or edited.
+
+The lists are both included in =details= and appended to the summary as XML-style tags.
+
+** 7. Append compaction entry and reload context
+Pi appends the compaction entry to the session, rebuilds session context with =buildSessionContext()=, and replaces the agent state's messages with the rebuilt context.
+
+* Manual compaction
+Manual compaction is triggered by =/compact [instructions]=.
+
+It uses the same preparation and summary-generation machinery as automatic compaction, but:
+
+- it aborts any current agent operation first;
+- it emits manual compaction lifecycle events;
+- optional user instructions are appended as additional focus for the summary.
+
+If compaction cannot proceed, Pi surfaces errors such as:
+
+- no model selected;
+- already compacted;
+- nothing to compact.
+
+* Auto-compaction by threshold
+After assistant responses and before prompt submission in some cases, Pi checks whether context should be compacted.
+
+Threshold compaction:
+
+- only runs when compaction is enabled;
+- skips aborted messages by default;
+- checks whether the assistant response belongs to the current model;
+- avoids using stale pre-compaction usage;
+- runs compaction if current usage exceeds =contextWindow - reserveTokens=.
+
+For normal threshold compaction, Pi does not automatically retry a user turn. The user continues after compaction.
+
+* Overflow recovery compaction
+Pi also treats model context-overflow errors specially.
+
+If the current model returns a context overflow error:
+
+1. Pi removes the error assistant message from live agent state, while leaving it saved in the session.
+2. Pi runs auto-compaction with reason =overflow=.
+3. Pi retries once.
+
+If overflow recovery was already attempted, Pi stops and emits an error telling the user to reduce context or switch to a larger-context model.
+
+This is separate from normal threshold compaction because overflow recovery changes control flow: it can compact and automatically retry.
+
+* Split-turn compaction
+A single turn can exceed =keepRecentTokens=, especially when it contains many tool calls and outputs. If the cut point falls inside a turn, Pi marks the situation as a split turn.
+
+For split turns, Pi creates two summaries:
+
+1. A history summary for prior context.
+2. A turn-prefix summary for the early part of the oversized turn.
+
+The recent suffix of the turn is still kept verbatim.
+
+The final summary merges the two pieces:
+
+#+begin_src markdown
+[history summary]
+
+---
+
+**Turn Context (split turn):**
+
+[turn prefix summary]
+#+end_src
+
+The turn-prefix prompt asks for:
+
+- original request;
+- early progress;
+- context needed to understand the retained suffix.
+
+This strategy lets Pi reduce very large turns without blindly dropping the request or separating tool results from their associated calls.
+
+* Branch summarization
+Pi's session tree supports navigating between branches using =/tree=. When moving from one branch to another, Pi can summarize the branch being abandoned and attach the summary at the new location.
+
+Branch summarization flow:
+
+1. Find the common ancestor of the old leaf and target entry.
+2. Collect entries from the old leaf back to that common ancestor.
+3. Prepare messages newest-first within a token budget.
+4. Generate a structured branch summary.
+5. Append a =branch_summary= entry at the navigation target.
+6. Rebuild agent state from the new branch.
+
+A branch summary entry has this shape:
+
+#+begin_src typescript
+interface BranchSummaryEntry<T = unknown> {
+  type: "branch_summary";
+  id: string;
+  parentId: string;
+  timestamp: number;
+  summary: string;
+  fromId: string;
+  fromHook?: boolean;
+  details?: T;
+}
+#+end_src
+
+Branch summarization is not the same as context-window compaction, but it is a closely related context-preservation strategy. It preserves information from an abandoned branch without replaying that branch into the new branch's context.
+
+* Extension-provided compaction
+Pi exposes compaction as an extension point.
+
+Extensions can listen for =session_before_compact=:
+
+#+begin_src typescript
+pi.on("session_before_compact", async (event, ctx) => {
+  const { preparation, branchEntries, customInstructions, signal } = event;
+
+  return {
+    compaction: {
+      summary: "...",
+      firstKeptEntryId: preparation.firstKeptEntryId,
+      tokensBefore: preparation.tokensBefore,
+      details: { /* custom JSON */ }
+    }
+  };
+});
+#+end_src
+
+The event exposes:
+
+- =preparation.messagesToSummarize=;
+- =preparation.turnPrefixMessages=;
+- =preparation.previousSummary=;
+- =preparation.fileOps=;
+- =preparation.tokensBefore=;
+- =preparation.firstKeptEntryId=;
+- =preparation.settings=;
+- all current branch entries;
+- custom instructions;
+- an abort signal.
+
+An extension can:
+
+- cancel compaction;
+- provide a custom summary;
+- use a cheaper or specialized summarization model;
+- store custom =details=;
+- choose a different summarization scope while reusing Pi's kept boundary.
+
+The package includes an example that uses Gemini Flash and summarizes a wider set of messages than the default rolling strategy.
+
+Extensions can also call =ctx.compact(...)= directly, enabling custom trigger policies. The included =trigger-compact.ts= example starts compaction when a token threshold is crossed and also registers a command to trigger compaction immediately.
+
+* Strategy comparison
+| Strategy | Trigger | Storage effect | Context effect | Retry? |
+|----------+---------+----------------+----------------+--------|
+| Default rolling compaction | shared mechanism | append =compaction= | summary + recent tail | no by itself |
+| Manual compaction | =/compact= | append =compaction= | summary + recent tail | no |
+| Threshold auto-compaction | usage over threshold | append =compaction= | summary + recent tail | no |
+| Overflow recovery | context overflow error | append =compaction= | summary + recent tail | yes, once |
+| Split-turn compaction | cut falls inside huge turn | append =compaction= | history summary + turn-prefix summary + kept suffix | depends on caller |
+| Branch summarization | =/tree= navigation | append =branch_summary= | inject abandoned-branch summary | no |
+| Extension compaction | extension policy/hook | append =compaction= unless cancelled | extension-defined | extension/caller-defined |
+
+* Design implications for e
+A Pi-like design for =e= should separate four concerns:
+
+1. Session storage.
+2. Context reconstruction.
+3. Compaction preparation and policy.
+4. Summary generation backend.
+
+Recommended shape:
+
+- Store compaction records separately from normal messages, or as typed session entries.
+- Make context construction strategy-aware: transcript replay should be one strategy, compacted transcript another.
+- Keep compaction append-only where possible; avoid destructive mutation of session history.
+- Track a stable kept boundary, equivalent to =firstKeptEntryId=.
+- Support repeated compactions as summary updates, not independent disconnected summaries.
+- Preserve recent messages verbatim.
+- Avoid splitting tool results from their tool calls.
+- Represent split-turn handling explicitly rather than as an accidental truncation case.
+- Keep branch summarization separate from context-window compaction, even if they share summary utilities.
+- Expose a strategy or hook point for custom compaction only after the core contract is real: preparation in, compaction result out.
+
+* Open questions for e
+- What is the durable identity for messages/turn entries? Pi relies on stable entry ids and parent ids.
+- Should compaction be a harness-owned operation, a context strategy, or both?
+- Which backend should generate summaries? The active model, a configured cheaper model, or a backend-neutral summarizer service?
+- Should compaction be synchronous from the user's perspective, or queued like an agent turn?
+- How should tool-call/tool-result grouping be represented so cut-point validation is reliable?
+- How much file-operation metadata is useful in Emacs workflows beyond read/write/edit paths?
+- Do we need branch summarization before we have session tree navigation?
+
+* Minimal e implementation path
+A small, useful first version would be:
+
+1. Add a typed compaction record to session storage.
+2. Add =first-kept-message-id= or equivalent boundary support.
+3. Teach the context builder to emit summary + kept messages.
+4. Add a manual compaction command/action only; defer auto-triggering.
+5. Use the active backend to summarize with a structured prompt.
+6. Add tests for context reconstruction independent of any LLM call.
+7. Add threshold/overflow triggers later once token accounting is trustworthy.
+
+This preserves Pi's most important architectural property: compaction is durable context policy over an append-only session, not lossy transcript editing.
