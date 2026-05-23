@@ -17,6 +17,15 @@
 (require 'e-loop)
 (require 'e-tools)
 
+(defun e-loop-test--wait-until (predicate &optional timeout)
+  "Wait until PREDICATE returns non-nil or TIMEOUT seconds elapse."
+  (let ((deadline (+ (float-time) (or timeout 1.0)))
+        value)
+    (while (and (not (setq value (funcall predicate)))
+                (< (float-time) deadline))
+      (accept-process-output nil 0.01))
+    value))
+
 (ert-deftest e-loop-test-persists-assistant-message ()
   "Assistant stream messages are appended and lifecycle events are emitted."
   (let* ((backend (e-backend-fake-create
@@ -317,6 +326,105 @@
                      :test #'equal
                      :key (lambda (event)
                             (plist-get (plist-get event :payload) :content))))))
+
+(ert-deftest e-loop-test-start-turn-settles-after-async-backend-done ()
+  "Async turn execution does not append the assistant message before provider completion."
+  (let* ((backend (e-backend-fake-create
+                   :items '((:type assistant-message :content "async answer")
+                            (:type done :reason stop))))
+         (events nil)
+         (messages nil)
+         (settled nil))
+    (e-loop-start-turn
+     :session-id "session-1"
+     :turn-id "turn-1"
+     :messages '((:role user :content "hi"))
+     :backend backend
+     :tools (e-tools-registry-create)
+     :options nil
+     :on-event (lambda (type payload)
+                 (push (list :type type :payload payload) events))
+     :append-message (lambda (message) (push message messages))
+     :on-done (lambda (result) (setq settled result))
+     :on-error (lambda (err) (setq settled (list :error err))))
+    (should (null settled))
+    (should (null messages))
+    (should (e-loop-test--wait-until (lambda () settled)))
+    (should (equal (plist-get settled :status) 'done))
+    (should (equal (mapcar (lambda (message) (plist-get message :role))
+                           (nreverse messages))
+                   '(assistant)))
+    (should (equal (mapcar (lambda (event) (plist-get event :type))
+                           (nreverse events))
+                   '(turn-started turn-finished)))))
+
+(ert-deftest e-loop-test-start-turn-requeries-backend-after-async-tool-result ()
+  "Async turn execution starts a follow-up backend request after synchronous tool results."
+  (let* ((calls 0)
+         (backend (e-backend-create
+                   :name "async-tool-followup"
+                   :start
+                   (cl-function
+                    (lambda (&key messages options on-item on-done on-error
+                                   on-request-start)
+                      (ignore options on-error on-request-start)
+                      (setq calls (1+ calls))
+                      (run-at-time
+                       0 nil
+                       (lambda ()
+                         (if (= calls 1)
+                             (progn
+                               (should (equal (mapcar (lambda (message)
+                                                        (plist-get message :role))
+                                                      messages)
+                                              '(user)))
+                               (funcall on-item
+                                        '(:type tool-call
+                                          :id "call-1"
+                                          :name "echo"
+                                          :arguments (:text "hi")))
+                               (funcall on-item
+                                        '(:type done :reason tool-use)))
+                           (should (equal (mapcar (lambda (message)
+                                                    (plist-get message :role))
+                                                  messages)
+                                          '(user tool-call tool)))
+                           (funcall on-item
+                                    '(:type assistant-message
+                                      :content "final answer"))
+                           (funcall on-item
+                                    '(:type done :reason stop)))
+                         (funcall on-done '(:status done))))
+                      nil))))
+         (tools (e-tools-registry-create))
+         (events nil)
+         (messages nil)
+         (settled nil))
+    (e-tools-register tools
+                      :name "echo"
+                      :description "Echo text."
+                      :handler (lambda (arguments) (plist-get arguments :text)))
+    (e-loop-start-turn
+     :session-id "session-1"
+     :turn-id "turn-1"
+     :messages '((:role user :content "hi"))
+     :backend backend
+     :tools tools
+     :options nil
+     :on-event (lambda (type payload)
+                 (push (list :type type :payload payload) events))
+     :append-message (lambda (message) (push message messages))
+     :on-done (lambda (result) (setq settled result))
+     :on-error (lambda (err) (setq settled (list :error err))))
+    (should (e-loop-test--wait-until (lambda () settled)))
+    (should (equal calls 2))
+    (should (equal (plist-get settled :status) 'done))
+    (should (equal (mapcar (lambda (message) (plist-get message :role))
+                           (nreverse messages))
+                   '(tool-call tool assistant)))
+    (should (equal (mapcar (lambda (event) (plist-get event :type))
+                           (nreverse events))
+                   '(turn-started tool-started tool-finished turn-finished)))))
 
 (provide 'e-loop-test)
 

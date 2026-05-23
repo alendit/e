@@ -57,6 +57,57 @@
       (should (e-backend-cancel-request request))
       (should cancelled))))
 
+(ert-deftest e-backend-test-fake-starts-asynchronously ()
+  "Fake backends can deliver stream items through the async start contract."
+  (let* ((backend (e-backend-fake-create
+                   :items '((:type assistant-message :content "ok")
+                            (:type done :reason stop))))
+         (seen nil)
+         (settled nil)
+         (request nil))
+    (e-backend-start backend
+                     :messages '((:role user :content "hello"))
+                     :options '(:model "fake")
+                     :on-item (lambda (item) (push item seen))
+                     :on-done (lambda (result) (setq settled result))
+                     :on-error (lambda (err) (setq settled (list :error err)))
+                     :on-request-start (lambda (handle)
+                                         (setq request handle)))
+    (should (e-backend-request-p request))
+    (should (null seen))
+    (while (not settled)
+      (accept-process-output nil 0.01))
+    (should (equal (nreverse seen)
+                   '((:type assistant-message :content "ok")
+                     (:type done :reason stop))))
+    (should (equal (plist-get settled :status) 'done))))
+
+(ert-deftest e-backend-test-sync-stream-wrapper-waits-for-async-backend ()
+  "The synchronous stream wrapper can consume async-only backend adapters."
+  (let ((backend (e-backend-create
+                  :name "async-only"
+                  :start
+                  (cl-function
+                   (lambda (&key messages options on-item on-done on-error
+                                  on-request-start)
+                     (ignore messages options on-error on-request-start)
+                     (run-at-time
+                      0 nil
+                      (lambda ()
+                        (funcall on-item
+                                 '(:type assistant-message :content "ok"))
+                        (funcall on-item '(:type done :reason stop))
+                        (funcall on-done '(:status done))))
+                     nil))))
+        (seen nil))
+    (e-backend-stream backend
+                      :messages nil
+                      :options nil
+                      :on-item (lambda (item) (push item seen)))
+    (should (equal (nreverse seen)
+                   '((:type assistant-message :content "ok")
+                     (:type done :reason stop))))))
+
 (provide 'e-backend-test)
 
 ;;; e-backend-test.el ends here

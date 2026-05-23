@@ -195,6 +195,81 @@
                     (mapcar (lambda (event) (plist-get event :type))
                             events)))))
 
+(ert-deftest e-harness-test-async-prompt-rejects-concurrent-session-turn ()
+  "A session cannot start a second async turn while the first is running."
+  (let* ((finish nil)
+         (backend (e-backend-create
+                   :name "held"
+                   :start
+                   (cl-function
+                    (lambda (&key messages options on-item on-done on-error
+                                   on-request-start)
+                      (ignore messages options on-error on-request-start)
+                      (setq finish
+                            (lambda ()
+                              (funcall on-item
+                                       '(:type assistant-message
+                                         :content "answer"))
+                              (funcall on-item
+                                       '(:type done :reason stop))
+                              (funcall on-done '(:status done))))
+                      nil))))
+         (harness (e-harness-create :backend backend)))
+    (e-harness-create-session harness :id "session-1")
+    (e-harness-prompt-async harness "session-1" "first")
+    (should-error
+     (e-harness-prompt-async harness "session-1" "second")
+     :type 'e-harness-active-turn-exists)
+    (funcall finish)
+    (should (equal (plist-get (e-harness-wait harness "session-1" 1.0)
+                              :status)
+                   'done))
+    (should (equal (mapcar (lambda (message) (plist-get message :role))
+                           (e-harness-messages harness "session-1"))
+                   '(user assistant)))))
+
+(ert-deftest e-harness-test-abort-ignores-stale-provider-callbacks ()
+  "Provider callbacks that arrive after abort do not mutate session state."
+  (let* ((callbacks nil)
+         (cancelled nil)
+         (backend (e-backend-create
+                   :name "stale-callback"
+                   :start
+                   (cl-function
+                    (lambda (&key messages options on-item on-done on-error
+                                   on-request-start)
+                      (ignore messages options on-error)
+                      (setq callbacks (list :on-item on-item
+                                            :on-done on-done))
+                      (let ((request
+                             (e-backend-request-create
+                              :cancel (lambda ()
+                                        (setq cancelled t)
+                                        t))))
+                        (funcall on-request-start request)
+                        request)))))
+         (harness (e-harness-create :backend backend))
+         (events nil))
+    (e-harness-subscribe harness (lambda (event) (push event events)))
+    (e-harness-create-session harness :id "session-1")
+    (e-harness-prompt-async harness "session-1" "question")
+    (e-harness-abort harness "session-1")
+    (funcall (plist-get callbacks :on-item)
+             '(:type assistant-message :content "late answer"))
+    (funcall (plist-get callbacks :on-item)
+             '(:type done :reason stop))
+    (funcall (plist-get callbacks :on-done) '(:status done))
+    (should (equal (plist-get (e-harness-wait harness "session-1" 0.1)
+                              :status)
+                   'cancelled))
+    (should cancelled)
+    (should (equal (mapcar (lambda (message) (plist-get message :role))
+                           (e-harness-messages harness "session-1"))
+                   '(user)))
+    (should-not (member 'turn-finished
+                        (mapcar (lambda (event) (plist-get event :type))
+                                events)))))
+
 (ert-deftest e-harness-test-follow-up-appends-user-message ()
   "Follow-up submits another turn against the same session."
   (let* ((backend (e-backend-fake-create

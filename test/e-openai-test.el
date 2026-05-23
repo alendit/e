@@ -417,11 +417,11 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
       :payload (:error (:message "Invalid schema"
                        :type "invalid_request_error")))))))
 
-(ert-deftest e-openai-test-default-http-request-accepts-keyword-arguments ()
-  "The default HTTP requester accepts the keyword call shape used by backend."
+(ert-deftest e-openai-test-default-http-request-start-accepts-keyword-arguments ()
+  "The default async HTTP requester accepts the backend keyword call shape."
   (let (captured-url captured-method captured-headers captured-body)
-    (cl-letf (((symbol-function 'url-retrieve-synchronously)
-               (lambda (url &rest _args)
+    (cl-letf (((symbol-function 'url-retrieve)
+               (lambda (url callback &rest _args)
                  (setq captured-url url)
                  (setq captured-method url-request-method)
                  (setq captured-headers url-request-extra-headers)
@@ -430,24 +430,30 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
                    (with-current-buffer buffer
                      (insert "HTTP/1.1 200 OK\n\n"
                              "data: {\"type\":\"response.completed\"}\n\n"))
+                   (with-current-buffer buffer
+                     (funcall callback nil))
                    buffer))))
-      (should
-       (equal
-        (e-openai-codex--http-request
+      (let (response error)
+        (e-openai-codex--http-request-start
          :url "https://example.test/codex/responses"
          :headers '(("Authorization" . "Bearer test"))
-         :body "{}")
-        "data: {\"type\":\"response.completed\"}\n\n"))
+         :body "{}"
+         :on-complete (lambda (value) (setq response value))
+         :on-error (lambda (err) (setq error err)))
+        (should-not error)
+        (should (equal response
+                       "data: {\"type\":\"response.completed\"}\n\n")))
       (should (equal captured-url "https://example.test/codex/responses"))
       (should (equal captured-method "POST"))
       (should (equal captured-headers '(("Authorization" . "Bearer test"))))
       (should (equal (decode-coding-string captured-body 'utf-8) "{}")))))
 
-(ert-deftest e-openai-test-default-http-request-normalizes-header-bytes ()
+(ert-deftest e-openai-test-default-http-request-start-normalizes-header-bytes ()
   "Multibyte ASCII headers must not make a Unicode request body invalid."
   (let (captured-request)
-    (cl-letf (((symbol-function 'url-retrieve-synchronously)
-               (lambda (url &rest _args)
+    (cl-letf (((symbol-function 'url-retrieve)
+               (lambda (url callback &rest _args)
+                 (ignore url)
                  (let ((buffer (generate-new-buffer " *e-openai-test-http*")))
                    (with-current-buffer buffer
                      (mm-disable-multibyte)
@@ -471,15 +477,20 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
                      (setq captured-request (url-http-create-request))
                      (insert "HTTP/1.1 200 OK\n\n"
                              "data: {\"type\":\"response.completed\"}\n\n"))
+                   (with-current-buffer buffer
+                     (funcall callback nil))
                    buffer))))
-      (should
-       (equal
-        (e-openai-codex--http-request
+      (let (response error)
+        (e-openai-codex--http-request-start
          :url "https://example.test/codex/responses"
          :headers `(("Authorization" . ,(string-to-multibyte "Bearer test"))
                     ("Content-Type" . "application/json"))
-         :body (json-encode '(:text "▌ unicode body")))
-        "data: {\"type\":\"response.completed\"}\n\n"))
+         :body (json-encode '(:text "▌ unicode body"))
+         :on-complete (lambda (value) (setq response value))
+         :on-error (lambda (err) (setq error err)))
+        (should-not error)
+        (should (equal response
+                       "data: {\"type\":\"response.completed\"}\n\n")))
       (should (= (string-bytes captured-request)
                  (length captured-request))))))
 
@@ -517,8 +528,8 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
           (should (assoc "chatgpt-account-id" (plist-get captured :headers))))
       (delete-file auth-file))))
 
-(ert-deftest e-openai-test-backend-documents-sync-request-cancellation-limit ()
-  "The default OpenAI request path exposes an explicit non-cancellable handle."
+(ert-deftest e-openai-test-backend-default-request-is-cancellable ()
+  "The default OpenAI request path exposes a cancellable url-retrieve handle."
   (let* ((token (e-openai-test--jwt))
          (auth-file (make-temp-file "e-auth" nil ".json"
                                     (json-encode
@@ -526,26 +537,33 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
                                            (list :access_token token
                                                  :refresh_token "refresh")))))
          (request nil)
+         (buffer nil)
          (backend
-          (e-openai-codex-backend-create
-           :auth-file auth-file
-           :request-function
-           (lambda (&rest _args)
-             "data: {\"type\":\"response.output_text.done\",\"text\":\"ok\"}\n\n\
-data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n"))))
+          (e-openai-codex-backend-create :auth-file auth-file)))
     (unwind-protect
-        (progn
-          (e-backend-stream backend
-                            :messages '((:role user :content "hello"))
-                            :options '(:model "gpt-test")
-                            :on-item #'ignore
-                            :on-request-start (lambda (handle)
-                                                (setq request handle)))
+        (cl-letf (((symbol-function 'url-retrieve)
+                   (lambda (_url _callback &rest _args)
+                     (setq buffer
+                           (generate-new-buffer " *e-openai-test-http*"))
+                     buffer)))
+          (e-backend-start backend
+                           :messages '((:role user :content "hello"))
+                           :options '(:model "gpt-test")
+                           :on-item #'ignore
+                           :on-done #'ignore
+                           :on-error #'ignore
+                           :on-request-start (lambda (handle)
+                                               (setq request handle)))
           (should (e-backend-request-p request))
-          (should-not (e-backend-cancel-request request))
+          (should (buffer-live-p buffer))
+          (should (e-backend-cancel-request request))
+          (should-not (buffer-live-p buffer))
           (should (equal (plist-get (e-backend-request-metadata request)
-                                    :limitation)
-                         'url-retrieve-synchronously)))
+                                    :transport)
+                         'url-retrieve))
+          (should (equal (plist-get (e-backend-request-metadata request)
+                                    :cancellable)
+                         t)))
       (delete-file auth-file))))
 
 (ert-deftest e-openai-test-codex-harness-runs-minimal-prompt-flow ()

@@ -275,6 +275,47 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-submit-does-not-render-assistant-before-async-provider-completes ()
+  "Chat submit stays responsive while the provider request is still running."
+  (let* ((finish nil)
+         (backend (e-backend-create
+                   :name "held-chat"
+                   :start
+                   (cl-function
+                    (lambda (&key messages options on-item on-done on-error
+                                   on-request-start)
+                      (ignore messages options on-error on-request-start)
+                      (setq finish
+                            (lambda ()
+                              (funcall on-item
+                                       '(:type assistant-message
+                                         :content "late answer"))
+                              (funcall on-item
+                                       '(:type done :reason stop))
+                              (funcall on-done '(:status done))))
+                      nil))))
+         (harness (e-harness-create :backend backend))
+         (e-chat-submit-backend-delay 0)
+         (buffer (e-chat-open :harness harness
+                              :session-id "chat-async-submit")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (goto-char (point-max))
+          (insert "send async")
+          (e-chat-submit)
+          (should (string-match-p
+                   (concat (regexp-quote e-chat--user-glyph)
+                           " send async")
+                   (buffer-string)))
+          (should-not (string-match-p "late answer" (buffer-string)))
+          (should (string-match-p "queued" (format "%s" header-line-format)))
+          (funcall finish)
+          (e-harness-wait e-chat-harness e-chat-session-id 1.0)
+          (should (string-match-p "late answer" (buffer-string)))
+          (should (string-match-p "done" (format "%s" header-line-format))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-return-inserts-newline-in-composer ()
   "RET inserts a newline instead of submitting the prompt."
   (let ((buffer (e-chat-test--buffer

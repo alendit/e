@@ -26,6 +26,8 @@
 (require 'subr-x)
 
 (define-error 'e-harness-no-active-turn "No active turn")
+(define-error 'e-harness-active-turn-exists
+  "Session already has an active turn")
 
 (cl-defstruct (e-harness (:constructor e-harness--make))
   backend
@@ -408,33 +410,66 @@ provider or loop failure."
      (lambda (message)
        (e-harness--append-message harness session-id turn-id message)))))
 
+(cl-defun e-harness--run-prompt-turn-async
+    (harness session-id turn-id &key on-request-start on-done on-error
+             cancelled-p append-message on-event)
+  "Start a queued async prompt turn for SESSION-ID and TURN-ID in HARNESS."
+  (let ((context (e-harness-context harness session-id turn-id)))
+    (e-loop-start-turn
+     :session-id session-id
+     :turn-id turn-id
+     :messages (plist-get context :messages)
+     :backend (e-harness-backend harness)
+     :tools (e-harness-tools harness)
+     :options (plist-get context :options)
+     :on-event (or on-event
+                   (lambda (type payload)
+                     (e-harness--emit-turn-event
+                      harness session-id turn-id type payload)))
+     :on-request-start on-request-start
+     :cancelled-p cancelled-p
+     :on-done on-done
+     :on-error on-error
+     :append-message
+     (or append-message
+         (lambda (message)
+           (e-harness--append-message
+            harness session-id turn-id message))))))
+
 (cl-defun e-harness-prompt (harness session-id prompt &key metadata)
-  "Append PROMPT and run one backend turn for SESSION-ID in HARNESS."
-  (let ((turn-id (e-harness--next-turn-id)))
-    (puthash session-id turn-id (e-harness-active-turns harness))
-    (unwind-protect
-        (condition-case err
-            (progn
-              (e-harness--append-user-message
-               harness session-id turn-id prompt metadata)
-              (e-harness--run-prompt-turn harness session-id turn-id))
-          (error
-           (let ((message (error-message-string err)))
-             (e-harness--emit-turn-failed harness session-id turn-id message)
-             (signal (car err) (cdr err)))))
-      (remhash session-id (e-harness-active-turns harness)))))
+  "Append PROMPT and run one backend turn for SESSION-ID in HARNESS.
+This is the synchronous convenience wrapper over `e-harness-prompt-async'."
+  (e-harness-prompt-async harness session-id prompt :metadata metadata)
+  (let ((entry (e-harness-wait harness session-id)))
+    (pcase (plist-get entry :status)
+      ('done
+       (plist-get entry :result))
+      ('error
+       (let ((condition (plist-get entry :condition)))
+         (if condition
+             (signal (car condition) (cdr condition))
+           (error "%s" (or (plist-get entry :error)
+                           "Async prompt failed")))))
+      ('cancelled
+       (signal 'e-harness-no-active-turn (list session-id)))
+      (_ entry))))
 
 (cl-defun e-harness-prompt-async
     (harness session-id prompt &key delay metadata)
   "Append PROMPT and run one backend turn asynchronously in HARNESS.
 Return the queued turn id.  DELAY is primarily for tests and queued-turn
 cancellation.  SESSION-ID identifies the session."
+  (when (e-harness--active-turn-running-p
+         (gethash session-id (e-harness-active-turns harness)))
+    (signal 'e-harness-active-turn-exists (list session-id)))
   (let* ((turn-id (e-harness--next-turn-id))
          (entry (list :id turn-id
                       :status 'running
                       :result nil
                       :error nil
-                      :timer nil)))
+                      :condition nil
+                      :timer nil
+                      :request nil)))
     (puthash session-id entry (e-harness-active-turns harness))
     (condition-case err
         (e-harness--append-user-message
@@ -444,31 +479,58 @@ cancellation.  SESSION-ID identifies the session."
          (plist-put entry :status 'error)
          (plist-put entry :error message)
          (e-harness--emit-turn-failed harness session-id turn-id message)
+         (remhash session-id (e-harness-active-turns harness))
          (signal (car err) (cdr err)))))
-    (plist-put
-     entry
-     :timer
-     (run-at-time
-      (or delay 0)
-      nil
-      (lambda ()
-        (unless (plist-get entry :cancelled)
-          (condition-case err
-              (let ((result (e-harness--run-prompt-turn
-                             harness session-id turn-id
-                             :on-request-start
-                             (lambda (request)
-                               (plist-put entry :request request)))))
-                (unless (plist-get entry :cancelled)
-                  (plist-put entry :result result)
-                  (plist-put entry :status 'done)))
-            (error
-             (let ((message (error-message-string err)))
-               (unless (plist-get entry :cancelled)
-                 (plist-put entry :status 'error)
-                 (plist-put entry :error message)
-                 (e-harness--emit-turn-failed
-                  harness session-id turn-id message)))))))))
+    (cl-labels
+        ((active-entry-p ()
+           (eq (gethash session-id (e-harness-active-turns harness))
+               entry))
+         (cancelled-p ()
+           (or (plist-get entry :cancelled)
+               (not (active-entry-p))))
+         (finish-error
+          (err)
+          (when (and (active-entry-p) (not (plist-get entry :cancelled)))
+            (let ((message (error-message-string err)))
+              (plist-put entry :status 'error)
+              (plist-put entry :condition err)
+              (plist-put entry :error message)
+              (e-harness--emit-turn-failed
+               harness session-id turn-id message))))
+         (finish-done
+          (result)
+          (when (and (active-entry-p) (not (plist-get entry :cancelled)))
+            (plist-put entry :result result)
+            (plist-put entry :status 'done)))
+         (start-turn
+          ()
+          (when (and (active-entry-p) (not (plist-get entry :cancelled)))
+            (plist-put entry :timer nil)
+            (e-harness--run-prompt-turn-async
+             harness session-id turn-id
+             :cancelled-p #'cancelled-p
+             :on-request-start
+             (lambda (request)
+               (when (and (active-entry-p)
+                          (not (plist-get entry :cancelled)))
+                 (plist-put entry :request request)))
+             :on-done #'finish-done
+             :on-error #'finish-error
+             :on-event
+             (lambda (type payload)
+               (when (and (active-entry-p)
+                          (not (plist-get entry :cancelled)))
+                 (e-harness--emit-turn-event
+                  harness session-id turn-id type payload)))
+             :append-message
+             (lambda (message)
+               (when (and (active-entry-p)
+                          (not (plist-get entry :cancelled)))
+                 (e-harness--append-message
+                  harness session-id turn-id message)))))))
+      (if (and delay (> delay 0))
+          (plist-put entry :timer (run-at-time delay nil #'start-turn))
+        (start-turn)))
     turn-id))
 
 (cl-defun e-harness-follow-up (harness session-id prompt &key metadata)

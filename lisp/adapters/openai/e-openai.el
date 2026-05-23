@@ -355,16 +355,79 @@ profiles."
 
 (cl-defun e-openai-codex--http-request (&key url headers body)
   "POST BODY to URL with HEADERS and return response text."
+  (let ((response nil)
+        (failure nil)
+        (done nil))
+    (e-openai-codex--http-request-start
+     :url url
+     :headers headers
+     :body body
+     :on-complete (lambda (value)
+                    (setq response value)
+                    (setq done t))
+     :on-error (lambda (err)
+                 (setq failure err)
+                 (setq done t)))
+    (while (not done)
+      (accept-process-output nil 0.01))
+    (when failure
+      (signal (car failure) (cdr failure)))
+    response))
+
+(defun e-openai-codex--http-response-text (buffer)
+  "Return response body text from url.el BUFFER."
+  (with-current-buffer buffer
+    (goto-char (point-min))
+    (re-search-forward "\n\n" nil 'move)
+    (buffer-substring-no-properties (point) (point-max))))
+
+(cl-defun e-openai-codex--http-request-start
+    (&key url headers body on-complete on-error)
+  "POST BODY to URL with HEADERS asynchronously.
+ON-COMPLETE receives the response body text.  ON-ERROR receives an Emacs
+condition list.  Return a cancellable `e-backend-request' handle."
   (let ((url-request-method "POST")
         (url-request-extra-headers (e-openai-codex--http-header-list headers))
-        (url-request-data (encode-coding-string body 'utf-8)))
-    (with-current-buffer (url-retrieve-synchronously url 'silent nil nil)
-      (unwind-protect
-          (progn
-            (goto-char (point-min))
-            (re-search-forward "\n\n" nil 'move)
-            (buffer-substring-no-properties (point) (point-max)))
-        (kill-buffer (current-buffer))))))
+        (url-request-data (encode-coding-string body 'utf-8))
+        request-buffer)
+    (setq request-buffer
+          (url-retrieve
+           url
+           (lambda (status)
+             (let ((buffer (current-buffer)))
+               (unwind-protect
+                   (condition-case err
+                       (let ((url-error (plist-get status :error)))
+                         (if url-error
+                             (when on-error
+                               (funcall
+                                on-error
+                                (list 'error
+                                      (format "OpenAI request failed: %S"
+                                              url-error))))
+                           (when on-complete
+                             (funcall
+                              on-complete
+                              (e-openai-codex--http-response-text buffer)))))
+                     (error
+                      (when on-error
+                        (funcall on-error err))))
+                 (when (buffer-live-p buffer)
+                   (kill-buffer buffer)))))
+           nil
+           'silent
+           nil))
+    (e-backend-request-create
+     :cancel (lambda ()
+               (when (buffer-live-p request-buffer)
+                 (when-let ((process (get-buffer-process request-buffer)))
+                   (when (process-live-p process)
+                     (kill-process process)))
+                 (kill-buffer request-buffer))
+               t)
+     :metadata (list :transport 'url-retrieve
+                     :url url
+                     :cancellable t))))
 
 (defun e-openai-codex--parse-json (value)
   "Parse VALUE as JSON into plist data."
@@ -528,6 +591,41 @@ profiles."
                   :events (nreverse event-summaries))))
     (nreverse items)))
 
+(cl-defun e-openai--request-context
+    (&key provider auth-file base-url model messages options)
+  "Return adapter-local request context for PROVIDER request data.
+AUTH-FILE, BASE-URL, MODEL, MESSAGES, and OPTIONS contribute to the encoded
+OpenAI request and backend-neutral context."
+  (let* ((profile (e-openai-provider-profile provider))
+         (effective-options (copy-sequence options))
+         (_ (unless (plist-get effective-options :model)
+              (setq effective-options
+                    (plist-put effective-options
+                               :model
+                               (e-openai--provider-model profile model)))))
+         (body (json-encode
+                (e-openai-codex-request-body
+                 :messages messages
+                 :options effective-options
+                 :tools (plist-get effective-options :tools))))
+         (session-id (plist-get effective-options :session-id))
+         (url (e-openai-responses-url
+               (or base-url
+                   (e-openai--provider-base-url profile))))
+         (headers (e-openai--headers
+                   :profile profile
+                   :auth-file auth-file
+                   :session-id session-id)))
+    (list :provider provider
+          :url url
+          :headers headers
+          :body body)))
+
+(defun e-openai--emit-response-items (response on-item)
+  "Parse RESPONSE and emit backend-neutral items through ON-ITEM."
+  (dolist (item (e-openai-codex-parse-stream response))
+    (funcall on-item item)))
+
 (cl-defun e-openai-backend-create
     (&key provider auth-file base-url request-function name model)
   "Create an OpenAI-like Responses backend named NAME.
@@ -541,43 +639,101 @@ default when turn options do not include `:model'."
      :stream
      (cl-function
       (lambda (&key messages options on-item)
-        (let* ((profile (e-openai-provider-profile provider))
-               (effective-options (copy-sequence options))
-               (_ (unless (plist-get effective-options :model)
-                    (setq effective-options
-                          (plist-put effective-options
-                                     :model
-                                     (e-openai--provider-model profile model)))))
-               (body (json-encode
-                      (e-openai-codex-request-body
-                       :messages messages
-                       :options effective-options
-                       :tools (plist-get effective-options :tools))))
-               (session-id (plist-get effective-options :session-id))
-               (url (e-openai-responses-url
-                     (or base-url
-                         (e-openai--provider-base-url profile))))
-               (headers (e-openai--headers
-                         :profile profile
+        (let* ((context (e-openai--request-context
+                         :provider provider
                          :auth-file auth-file
-                         :session-id session-id))
+                         :base-url base-url
+                         :model model
+                         :messages messages
+                         :options options))
                (requester (or request-function
                               #'e-openai-codex--http-request))
                (response nil))
           (e-backend-note-request-started
            (e-backend-request-create
             :metadata
-            (list :provider provider
-                  :url url
+            (list :provider (plist-get context :provider)
+                  :url (plist-get context :url)
                   :cancellable nil
-                  :limitation 'url-retrieve-synchronously)))
+                  :transport 'sync-wrapper)))
           (setq response
                 (funcall requester
-                         :url url
-                         :headers headers
-                         :body body))
-          (dolist (item (e-openai-codex-parse-stream response))
-            (funcall on-item item))))))))
+                         :url (plist-get context :url)
+                         :headers (plist-get context :headers)
+                         :body (plist-get context :body)))
+          (e-openai--emit-response-items response on-item))))
+     :start
+     (cl-function
+      (lambda (&key messages options on-item on-done on-error
+                    on-request-start)
+        (let ((context (e-openai--request-context
+                        :provider provider
+                        :auth-file auth-file
+                        :base-url base-url
+                        :model model
+                        :messages messages
+                        :options options)))
+          (if request-function
+              (let ((cancelled nil)
+                    (timer nil)
+                    request)
+                (setq request
+                      (e-backend-request-create
+                       :cancel (lambda ()
+                                 (setq cancelled t)
+                                 (when (timerp timer)
+                                   (cancel-timer timer))
+                                 t)
+                       :metadata
+                       (list :provider (plist-get context :provider)
+                             :url (plist-get context :url)
+                             :cancellable 'queued-only
+                             :transport 'injected-request-function)))
+                (when on-request-start
+                  (funcall on-request-start request))
+                (setq timer
+                      (run-at-time
+                       0 nil
+                       (lambda ()
+                         (unless cancelled
+                           (condition-case err
+                               (let ((response
+                                      (funcall
+                                       request-function
+                                       :url (plist-get context :url)
+                                       :headers (plist-get context :headers)
+                                       :body (plist-get context :body))))
+                                 (e-openai--emit-response-items
+                                  response on-item)
+                                 (when on-done
+                                   (funcall on-done '(:status done))))
+                             (error
+                              (when on-error
+                                (funcall on-error err))))))))
+                request)
+            (let ((request
+                   (e-openai-codex--http-request-start
+                    :url (plist-get context :url)
+                    :headers (plist-get context :headers)
+                    :body (plist-get context :body)
+                    :on-complete
+                    (lambda (response)
+                      (condition-case err
+                          (progn
+                            (e-openai--emit-response-items response on-item)
+                            (when on-done
+                              (funcall on-done '(:status done))))
+                        (error
+                         (when on-error
+                           (funcall on-error err)))))
+                    :on-error on-error)))
+              (setf (e-backend-request-metadata request)
+                    (append
+                     (list :provider (plist-get context :provider))
+                     (e-backend-request-metadata request)))
+              (when on-request-start
+                (funcall on-request-start request))
+              request))))))))
 
 (cl-defun e-openai-create-harness
     (&key provider auth-file base-url request-function model sessions)
