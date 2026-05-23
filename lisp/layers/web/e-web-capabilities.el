@@ -24,7 +24,7 @@
      "Web overview"
      "# Web access overview
 
-Use `web_search` for search queries, `web_fetch` for passive HTTP reads, and browser tools for rendered or interactive pages. Prefer search before fetch when you need to discover sources. Prefer fetch before browser when a normal HTTP read is enough.")
+Use `web_search` for search queries, `web_fetch` for passive HTTP reads, and `web_browser` for rendered or interactive pages. Prefer search before fetch when you need to discover sources. Prefer fetch before browser when a normal HTTP read is enough.")
     ("refs/search.md"
      "Web search reference"
      "# Web search
@@ -34,12 +34,24 @@ Use `web_search` for query discovery. It calls the configured bx web backend dir
      "Web fetch reference"
      "# Web fetch
 
-Use `web_fetch` for passive HTTP or HTTPS page reads. It does not execute JavaScript. Use browser tools when rendering, interaction, login flows, or dynamic DOM state matter.")
+Use `web_fetch` for passive HTTP or HTTPS page reads. It does not execute JavaScript. Use `web_browser` when rendering, interaction, login flows, or dynamic DOM state matter.")
     ("refs/browser.md"
      "Web browser reference"
      "# Browser tools
 
-Use browser tools for rendered and interactive pages. Available provider-facing tools are `web_browser_open`, `web_browser_observe`, `web_browser_click`, `web_browser_type`, `web_browser_press`, `web_browser_screenshot`, and `web_browser_close`.")
+Use `web_browser` for rendered and interactive pages after normal search or fetch is not enough. Pass an `operation` and the operation-specific arguments.
+
+Supported operations:
+
+- `open`: open or navigate a rendered session. Arguments: `url`; optional `session`.
+- `observe`: inspect the current rendered page state. Arguments: optional `session`.
+- `click`: click an element. Arguments: `selector`; optional `session`.
+- `type`: type text into an element. Arguments: `selector`, `text`; optional `session`.
+- `press`: press a key. Arguments: `key`; optional `session`.
+- `screenshot`: capture a screenshot artifact. Arguments: optional `session`, `path`.
+- `close`: close a session. Arguments: optional `session`.
+
+All operations accept optional `timeout` in seconds.")
     ("refs/boundaries.md"
      "Web boundaries"
      "# Web boundaries

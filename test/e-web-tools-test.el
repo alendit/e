@@ -227,30 +227,37 @@ done
           (e-web-tools-browser-reset)
           (let* ((registry (e-web-tools-test--registry))
                  (calls '((:id "open"
-                           :name "web_browser_open"
-                           :arguments (:url "https://example.com"))
+                           :name "web_browser"
+                           :arguments (:operation "open"
+                                       :url "https://example.com"))
                           (:id "observe"
-                           :name "web_browser_observe"
-                           :arguments (:session "session-1"))
+                           :name "web_browser"
+                           :arguments (:operation "observe"
+                                       :session "session-1"))
                           (:id "click"
-                           :name "web_browser_click"
-                           :arguments (:session "session-1"
+                           :name "web_browser"
+                           :arguments (:operation "click"
+                                       :session "session-1"
                                        :selector "button"))
                           (:id "type"
-                           :name "web_browser_type"
-                           :arguments (:session "session-1"
+                           :name "web_browser"
+                           :arguments (:operation "type"
+                                       :session "session-1"
                                        :selector "input"
                                        :text "hello"))
                           (:id "press"
-                           :name "web_browser_press"
-                           :arguments (:session "session-1"
+                           :name "web_browser"
+                           :arguments (:operation "press"
+                                       :session "session-1"
                                        :key "Enter"))
                           (:id "screenshot"
-                           :name "web_browser_screenshot"
-                           :arguments (:session "session-1"))
+                           :name "web_browser"
+                           :arguments (:operation "screenshot"
+                                       :session "session-1"))
                           (:id "close"
-                           :name "web_browser_close"
-                           :arguments (:session "session-1"))))
+                           :name "web_browser"
+                           :arguments (:operation "close"
+                                       :session "session-1"))))
                  results)
             (dolist (call calls)
               (push (e-tools-execute registry call) results))
@@ -297,8 +304,9 @@ done
            (e-tools-execute
             (e-web-tools-test--registry)
             '(:id "call-1"
-              :name "web_browser_open"
-              :arguments (:url "https://example.com")))))
+              :name "web_browser"
+              :arguments (:operation "open"
+                          :url "https://example.com")))))
       (should (equal (plist-get result :status) 'error))
       (should (equal (plist-get (plist-get result :metadata) :error)
                      'e-web-backend-unavailable))

@@ -30,19 +30,16 @@
                            (e-layer-capabilities layer))
                    '(web)))
     (e-harness-activate-layer harness layer)
-    (should (equal (mapcar (lambda (definition)
-                             (plist-get definition :name))
-                           (e-tools-definitions (e-harness-tools harness)))
-                   '("read"
-                     "web_search"
-                     "web_fetch"
-                     "web_browser_open"
-                     "web_browser_observe"
-                     "web_browser_click"
-                     "web_browser_type"
-                     "web_browser_press"
-                     "web_browser_screenshot"
-                     "web_browser_close")))
+    (let ((tool-names (mapcar (lambda (definition)
+                                (plist-get definition :name))
+                              (e-tools-definitions (e-harness-tools harness)))))
+      (should (equal tool-names
+                     '("read"
+                       "web_search"
+                       "web_fetch"
+                       "web_browser")))
+      (dolist (name tool-names)
+        (should-not (string-prefix-p "web_browser_" name))))
     (let ((instructions
            (e-capability-instructions
             (car (e-layer-capabilities layer)))))
@@ -57,7 +54,16 @@
                    "e://web/refs/boundaries.md"))
       (should (string-match-p
                "web"
-               (e-resources-read (e-harness-resources harness) uri nil))))))
+               (e-resources-read (e-harness-resources harness) uri nil))))
+    (let ((browser-reference
+           (e-resources-read
+            (e-harness-resources harness)
+            "e://web/refs/browser.md"
+            nil)))
+      (should (string-match-p "`web_browser`" browser-reference))
+      (should (string-match-p "`operation`" browser-reference))
+      (should (string-match-p "`click`" browser-reference))
+      (should-not (string-match-p "web_browser_open" browser-reference)))))
 
 (provide 'e-web-capabilities-test)
 

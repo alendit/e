@@ -686,11 +686,15 @@ LABEL describes the executable in error messages."
   "Run browser OPERATION with model-facing ARGUMENTS."
   (let* ((request-arguments
           (or (e-web-tools--browser-arguments operation arguments) nil))
-         (result (e-web-tools--browser-request operation request-arguments)))
+         (timeout (e-web-tools--optional-number arguments :timeout))
+         (result (e-web-tools--browser-request
+                  operation
+                  request-arguments
+                  timeout)))
     (list :capability (format "web.browser.%s" operation)
           :backend "playwright"
           :operation operation
-          :requested arguments
+          :requested request-arguments
           :result result
           :diagnostics (list :stderr (e-web-tools--browser-stderr-string)))))
 
@@ -735,79 +739,26 @@ LABEL describes the executable in error messages."
    :handler (lambda (arguments)
               (e-web-tools--fetch arguments))))
 
-(defun e-web-tools--register-browser-tool
-    (registry name operation description properties required)
-  "Register browser tool NAME in REGISTRY for OPERATION with DESCRIPTION.
-PROPERTIES and REQUIRED describe the provider-facing JSON schema."
+(defun e-web-tools-register-browser (registry)
+  "Register the rendered browser entrypoint in REGISTRY."
   (e-tools-register
    registry
-   :name name
-   :description description
-   :parameters (list :type "object"
-                     :properties properties
-                     :required required)
+   :name "web_browser"
+   :description "Run a rendered browser operation. Read e://web/refs/browser.md for supported operations and arguments before calling."
+   :parameters '(:type "object"
+                 :properties (:operation (:type "string")
+                              :session (:type "string")
+                              :url (:type "string")
+                              :selector (:type "string")
+                              :text (:type "string")
+                              :key (:type "string")
+                              :path (:type "string")
+                              :timeout (:type "number"))
+                 :required ["operation"])
    :handler (lambda (arguments)
               (e-web-tools--browser
-               (car (last (split-string operation "\\.")))
+               (e-web-tools--argument-string arguments :operation)
                arguments))))
-
-(defun e-web-tools-register-browser (registry)
-  "Register basic browser tools in REGISTRY."
-  (e-web-tools--register-browser-tool
-   registry
-   "web_browser_open"
-   "web.browser.open"
-   "Open or navigate a browser session to a URL."
-   '(:url (:type "string")
-     :session (:type "string"))
-   ["url"])
-  (e-web-tools--register-browser-tool
-   registry
-   "web_browser_observe"
-   "web.browser.observe"
-   "Observe rendered browser page state."
-   '(:session (:type "string"))
-   [])
-  (e-web-tools--register-browser-tool
-   registry
-   "web_browser_click"
-   "web.browser.click"
-   "Click an element in a browser session."
-   '(:session (:type "string")
-     :selector (:type "string"))
-   ["selector"])
-  (e-web-tools--register-browser-tool
-   registry
-   "web_browser_type"
-   "web.browser.type"
-   "Type text into an element in a browser session."
-   '(:session (:type "string")
-     :selector (:type "string")
-     :text (:type "string"))
-   ["selector" "text"])
-  (e-web-tools--register-browser-tool
-   registry
-   "web_browser_press"
-   "web.browser.press"
-   "Press a key in a browser session."
-   '(:session (:type "string")
-     :key (:type "string"))
-   ["key"])
-  (e-web-tools--register-browser-tool
-   registry
-   "web_browser_screenshot"
-   "web.browser.screenshot"
-   "Capture a screenshot artifact for a browser session."
-   '(:session (:type "string")
-     :path (:type "string"))
-   [])
-  (e-web-tools--register-browser-tool
-   registry
-   "web_browser_close"
-   "web.browser.close"
-   "Close a browser session."
-   '(:session (:type "string"))
-   []))
 
 (provide 'e-web-tools)
 
