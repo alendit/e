@@ -1848,6 +1848,89 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-live-tool-list-dedupes-transcript-tool-messages ()
+  "Live tool activity ignores transcript tool messages already covered by events."
+  (let ((buffer (e-chat-test--buffer nil "chat-tool-list-live-dedupe")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat--render-event
+           (e-events-make :type 'turn-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 10))
+          (e-chat--render-event
+           (e-events-make :type 'message-added
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 10
+                          :payload '(:message
+                                     (:role tool-call
+                                      :content
+                                      (:type tool-call
+                                       :id "call-1"
+                                       :name "run_elisp"
+                                       :arguments (:form "(buffer-name)"))))))
+          (e-chat--render-event
+           (e-events-make :type 'tool-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :payload '(:type tool-call
+                                      :id "call-1"
+                                      :name "run_elisp"
+                                      :arguments (:form "(buffer-name)"))))
+          (e-chat--render-event
+           (e-events-make :type 'message-added
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 10
+                          :payload '(:message
+                                     (:role tool
+                                      :content
+                                      (:tool-call-id "call-1"
+                                       :name "run_elisp"
+                                       :status ok
+                                       :content (:result "*scratch*"))))))
+          (e-chat--render-event
+           (e-events-make :type 'tool-finished
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :payload '(:tool-call
+                                     (:type tool-call
+                                      :id "call-1"
+                                      :name "run_elisp"
+                                      :arguments (:form "(buffer-name)"))
+                                     :result
+                                     (:tool-call-id "call-1"
+                                      :name "run_elisp"
+                                      :status ok
+                                      :content (:result "*scratch*")))))
+          (e-chat--render-event
+           (e-events-make :type 'message-added
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 11
+                          :payload '(:message (:role assistant
+                                                :content "Final answer."))))
+          (let ((content (buffer-string)))
+            (should (string-match-p "1 tool call" content))
+            (should-not (string-match-p "2 tool calls" content)))
+          (e-chat-test--focus-block-containing "1 tool call")
+          (call-interactively #'e-chat-response-navigation-activate)
+          (let* ((block (e-chat--focused-block))
+                 (items (plist-get block :tool-items)))
+            (should (= (length items) 1))
+            (should (string-prefix-p "run_elisp"
+                                     (plist-get (car items) :call)))
+            (should-not (string-match-p
+                         "  [0-9]+\\. Tool\n"
+                         (buffer-substring-no-properties
+                          (marker-position
+                           (plist-get block :tool-list-start-marker))
+                          (marker-position
+                           (plist-get block :tool-list-end-marker)))))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-running-activity-is-navigable-while-progress-active ()
   "Running activity summary blocks are navigable before the turn settles."
   (let ((buffer (e-chat-test--buffer nil "chat-running-activity-nav")))

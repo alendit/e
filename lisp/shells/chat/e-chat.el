@@ -1596,11 +1596,25 @@ When SOURCE is non-nil, only match entries from that source."
               (eq (plist-get entry :source) source))))
    (plist-get record :intermittent-entries)))
 
+(defun e-chat--remove-intermittent-entry (record title content source)
+  "Remove intermittent RECORD entries matching TITLE, CONTENT, and SOURCE."
+  (plist-put
+   record
+   :intermittent-entries
+   (cl-remove-if
+    (lambda (entry)
+      (and (equal (plist-get entry :title) title)
+           (equal (plist-get entry :content) content)
+           (eq (plist-get entry :source) source)))
+    (plist-get record :intermittent-entries))))
+
 (defun e-chat--add-intermittent-entry (record title content &optional append source)
   "Add intermittent TITLE and CONTENT to RECORD.
 When APPEND is non-nil, merge CONTENT into the previous entry with TITLE.
 SOURCE identifies where the entry came from for duplicate suppression."
   (when (and record content (not (string-empty-p content)))
+    (when (eq source 'activity)
+      (e-chat--remove-intermittent-entry record title content 'transcript))
     (let* ((entries (plist-get record :intermittent-entries))
            (last-entry (car (last entries))))
       (if (and append
