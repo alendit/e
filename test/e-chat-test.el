@@ -112,6 +112,16 @@
     (list (marker-position (plist-get turn :start-marker))
           (marker-position (plist-get turn :end-marker)))))
 
+(defun e-chat-test--count-occurrences (needle text)
+  "Return the number of non-overlapping NEEDLE occurrences in TEXT."
+  (let ((count 0)
+        (start 0))
+    (while (and (not (string-empty-p needle))
+                (string-match (regexp-quote needle) text start))
+      (setq start (match-end 0))
+      (setq count (1+ count)))
+    count))
+
 (ert-deftest e-chat-test-open-creates-protected-transcript-and-composer ()
   "Opening chat creates protected transcript text and editable composer text."
   (let ((buffer (e-chat-test--buffer nil "chat-open")))
@@ -160,6 +170,153 @@
                            "#202833"))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-turns-and-responses-have-stable-separators ()
+  "Rendered turns use explicit separator text outside navigable blocks."
+  (let ((buffer (e-chat-test--buffer nil "chat-turn-separators")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat-test--render-turn "turn-1" 10 11 "first" "one")
+          (e-chat-test--render-turn "turn-2" 20 21 "second" "two")
+          (should (boundp 'e-chat--turn-separator))
+          (should (boundp 'e-chat--response-separator))
+          (let ((content (buffer-string)))
+            (should (= (e-chat-test--count-occurrences
+                        e-chat--turn-separator content)
+                       1))
+            (should (= (e-chat-test--count-occurrences
+                        e-chat--response-separator content)
+                       2))
+            (should (string-match-p
+                     (concat "one\\(.\\|\n\\)*"
+                             (regexp-quote e-chat--turn-separator)
+                             "\\(.\\|\n\\)*"
+                             (regexp-quote e-chat--user-glyph)
+                             " second")
+                     content)))
+          (goto-char (point-min))
+          (search-forward e-chat--turn-separator)
+          (should (eq (get-text-property (line-beginning-position)
+                                         'font-lock-face)
+                      'e-chat-turn-separator-face))
+          (should (get-text-property (line-beginning-position) 'read-only))
+          (should-not (get-text-property (line-beginning-position)
+                                         'e-chat-block-id))
+          (goto-char (point-min))
+          (search-forward e-chat--response-separator)
+          (should (eq (get-text-property (line-beginning-position)
+                                         'font-lock-face)
+                      'e-chat-response-separator-face))
+          (should (get-text-property (line-beginning-position) 'read-only))
+          (should-not (get-text-property (line-beginning-position)
+                                         'e-chat-block-id)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-running-activity-keeps-single-response-separator ()
+  "A running turn keeps one user/assistant separator after final output."
+  (let ((buffer (e-chat-test--buffer nil "chat-running-response-separator")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat--render-event
+           (e-events-make :type 'turn-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 10))
+          (e-chat--render-event
+           (e-events-make :type 'message-added
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 10
+                          :payload '(:message (:role user
+                                                :content "inspect"))))
+          (e-chat--render-event
+           (e-events-make :type 'tool-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :payload '(:type tool-call
+                                      :id "call-1"
+                                      :name "read")))
+          (e-chat--render-event
+           (e-events-make :type 'message-added
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 11
+                          :payload '(:message (:role assistant
+                                                :content "done"))))
+          (should (boundp 'e-chat--response-separator))
+          (should (= (e-chat-test--count-occurrences
+                      e-chat--response-separator
+                      (buffer-string))
+                     1))
+          (should-not (string-match-p "2 tool calls" (buffer-string))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-navigation-excludes-separators-and-does-not-reflow ()
+  "Block navigation changes focus without adding/removing separator text."
+  (let ((buffer (e-chat-test--buffer nil "chat-navigation-separator-stability")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat-test--render-turn "turn-1" 10 11 "first" "one")
+          (e-chat-test--render-turn "turn-2" 20 21 "second" "two")
+          (should (boundp 'e-chat--turn-separator))
+          (should (boundp 'e-chat--response-separator))
+          (let ((content-before (buffer-string))
+                (lines-before (count-lines (point-min) (point-max))))
+            (goto-char (point-min))
+            (search-forward "two")
+            (call-interactively #'e-chat-enter-response-navigation)
+            (should-not (string-match-p
+                         (regexp-quote e-chat--turn-separator)
+                         (e-chat-test--focused-turn-text)))
+            (should-not (string-match-p
+                         (regexp-quote e-chat--response-separator)
+                         (e-chat-test--focused-turn-text)))
+            (call-interactively
+             (lookup-key e-chat-response-navigation-mode-map (kbd "k")))
+            (should-not (string-match-p
+                         (regexp-quote e-chat--turn-separator)
+                         (e-chat-test--focused-turn-text)))
+            (should-not (string-match-p
+                         (regexp-quote e-chat--response-separator)
+                         (e-chat-test--focused-turn-text)))
+            (should (equal (buffer-string) content-before))
+            (should (= (count-lines (point-min) (point-max))
+                       lines-before))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-separator-faces-refresh-owned-defaults ()
+  "Live reload reapplies package-owned chat separator face defaults."
+  (should (facep 'e-chat-turn-separator-face))
+  (should (facep 'e-chat-response-separator-face))
+  (unwind-protect
+      (progn
+        (set-face-attribute 'e-chat-turn-separator-face nil
+                            :foreground 'unspecified
+                            :background 'unspecified
+                            :box '(:line-width 1 :color "#ffffff"))
+        (set-face-attribute 'e-chat-response-separator-face nil
+                            :foreground 'unspecified
+                            :background 'unspecified
+                            :box '(:line-width 1 :color "#ffffff"))
+        (e-chat--refresh-face-specs)
+        (should (equal (face-attribute 'e-chat-turn-separator-face
+                                       :foreground)
+                       "#7f8a99"))
+        (should (equal (face-attribute 'e-chat-turn-separator-face
+                                       :background)
+                       "#202833"))
+        (should-not (face-attribute 'e-chat-turn-separator-face :box))
+        (should (equal (face-attribute 'e-chat-response-separator-face
+                                       :foreground)
+                       "#5f6b78"))
+        (should (equal (face-attribute 'e-chat-response-separator-face
+                                       :background)
+                       "#202833"))
+        (should-not (face-attribute 'e-chat-response-separator-face :box)))
+    (e-chat--refresh-face-specs)))
 
 (ert-deftest e-chat-test-submit-multiline-composer-and-render-response ()
   "The composer submits multiline text and chat renders message blocks."
@@ -1639,6 +1796,124 @@
           (should e-chat-response-navigation-mode))
       (when (buffer-live-p output)
         (kill-buffer output))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-running-activity-is-navigable-while-progress-active ()
+  "Running activity summary blocks are navigable before the turn settles."
+  (let ((buffer (e-chat-test--buffer nil "chat-running-activity-nav")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat--render-event
+           (e-events-make :type 'turn-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 10))
+          (e-chat--render-event
+           (e-events-make :type 'tool-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :payload '(:type tool-call
+                                      :id "call-1"
+                                      :name "read")))
+          (goto-char (point-min))
+          (search-forward "1 tool call")
+          (call-interactively #'e-chat-enter-response-navigation)
+          (should (eq (plist-get (e-chat-test--focused-block) :kind)
+                      'activity))
+          (call-interactively #'e-chat-response-navigation-activate)
+          (should e-chat-tool-list-mode)
+          (should-not (e-chat--composer-active-p)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-progress-rerender-preserves-response-navigation ()
+  "Progress redraws keep response navigation focused on the same block."
+  (let ((buffer (e-chat-test--buffer nil "chat-running-nav-preserve")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat-test--render-turn "turn-1" 10 11 "first" "one")
+          (e-chat--render-event
+           (e-events-make :type 'turn-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-2"
+                          :created-at 20))
+          (goto-char (point-min))
+          (search-forward "one")
+          (call-interactively #'e-chat-enter-response-navigation)
+          (let ((focused-block-id e-chat--focused-block-id)
+                (focused-point (point)))
+            (e-chat--advance-progress-indicator)
+            (should e-chat-response-navigation-mode)
+            (should (equal e-chat--focused-block-id focused-block-id))
+            (should (= (point) focused-point))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-progress-rerender-preserves-block-view ()
+  "Progress redraws keep block view point inside the active block."
+  (let ((buffer (e-chat-test--buffer nil "chat-running-block-preserve")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat-test--render-turn "turn-1" 10 11 "first" "one two three")
+          (e-chat--render-event
+           (e-events-make :type 'turn-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-2"
+                          :created-at 20))
+          (goto-char (point-min))
+          (search-forward "one two")
+          (call-interactively #'e-chat-enter-response-navigation)
+          (call-interactively #'e-chat-response-navigation-activate)
+          (let* ((block-id e-chat--block-view-block-id)
+                 (bounds (e-chat--block-content-bounds
+                          (e-chat--block-view-block)))
+                 (target-point (+ (car bounds) 4)))
+            (goto-char target-point)
+            (e-chat--advance-progress-indicator)
+            (should e-chat-block-view-mode)
+            (should (equal e-chat--block-view-block-id block-id))
+            (should (= (point) target-point))
+            (let ((updated-bounds (e-chat--block-content-bounds
+                                   (e-chat--block-view-block))))
+              (should (<= (car updated-bounds) (point)))
+              (should (<= (point) (cdr updated-bounds))))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-progress-rerender-preserves-running-tool-list ()
+  "Progress redraws keep a running activity tool list and selected item."
+  (let ((buffer (e-chat-test--buffer nil "chat-running-tool-list-preserve")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat--render-event
+           (e-events-make :type 'turn-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 10))
+          (dolist (tool '(("call-1" "read")
+                          ("call-2" "write")))
+            (e-chat--render-event
+             (e-events-make :type 'tool-started
+                            :session-id e-chat-session-id
+                            :turn-id "turn-1"
+                            :payload (list :type 'tool-call
+                                           :id (nth 0 tool)
+                                           :name (nth 1 tool)))))
+          (goto-char (point-min))
+          (search-forward "2 tool calls")
+          (call-interactively #'e-chat-enter-response-navigation)
+          (call-interactively #'e-chat-response-navigation-activate)
+          (should e-chat-tool-list-mode)
+          (call-interactively #'e-chat-tool-list-next)
+          (should (= e-chat--tool-list-index 1))
+          (e-chat--advance-progress-indicator)
+          (should e-chat-tool-list-mode)
+          (should (= e-chat--tool-list-index 1))
+          (should (string-match-p "write"
+                                  (buffer-substring-no-properties
+                                   (overlay-start e-chat--tool-list-overlay)
+                                   (overlay-end e-chat--tool-list-overlay)))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 

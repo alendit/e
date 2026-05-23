@@ -125,11 +125,39 @@
   "Face used for the composer separator."
   :group 'e-chat)
 
+(defface e-chat-turn-separator-face
+  '((t :inherit shadow
+       :foreground "#7f8a99"
+       :background "#202833"
+       :box nil
+       :extend t))
+  "Face used for separators between chat turns."
+  :group 'e-chat)
+
+(defface e-chat-response-separator-face
+  '((t :inherit shadow
+       :foreground "#5f6b78"
+       :background "#202833"
+       :box nil
+       :extend t))
+  "Face used for separators between user prompt and agent-side blocks."
+  :group 'e-chat)
+
 (defun e-chat--apply-owned-face-defaults ()
   "Apply face defaults that should update during live reload."
   (set-face-attribute 'e-chat-separator-face nil
                       :foreground "#7f8a99"
                       :background "#202833"
+                      :extend t)
+  (set-face-attribute 'e-chat-turn-separator-face nil
+                      :foreground "#7f8a99"
+                      :background "#202833"
+                      :box nil
+                      :extend t)
+  (set-face-attribute 'e-chat-response-separator-face nil
+                      :foreground "#5f6b78"
+                      :background "#202833"
+                      :box nil
                       :extend t))
 
 (e-chat--apply-owned-face-defaults)
@@ -229,6 +257,22 @@
        :extend t))
   "Default face spec for focused response-navigation blocks.")
 
+(defconst e-chat--turn-separator-face-spec
+  '((t :inherit shadow
+       :foreground "#7f8a99"
+       :background "#202833"
+       :box nil
+       :extend t))
+  "Default face spec for separators between chat turns.")
+
+(defconst e-chat--response-separator-face-spec
+  '((t :inherit shadow
+       :foreground "#5f6b78"
+       :background "#202833"
+       :box nil
+       :extend t))
+  "Default face spec for separators between prompt and response blocks.")
+
 (defun e-chat--refresh-face-specs ()
   "Refresh chat face defaults after live reload."
   (face-spec-set 'e-chat-user-face e-chat--user-face-spec)
@@ -237,7 +281,11 @@
                  e-chat--final-assistant-face-spec)
   (face-spec-set 'e-chat-system-face e-chat--system-face-spec)
   (face-spec-set 'e-chat-focused-turn-face
-                 e-chat--focused-turn-face-spec))
+                 e-chat--focused-turn-face-spec)
+  (face-spec-set 'e-chat-turn-separator-face
+                 e-chat--turn-separator-face-spec)
+  (face-spec-set 'e-chat-response-separator-face
+                 e-chat--response-separator-face-spec))
 
 (e-chat--refresh-face-specs)
 
@@ -285,6 +333,12 @@
 
 (defvar-local e-chat--latest-final-block-id nil
   "Most recent final assistant block id in this chat buffer.")
+
+(defvar-local e-chat--last-rendered-turn-id nil
+  "Most recent turn id that rendered a durable transcript block.")
+
+(defvar-local e-chat--last-rendered-side nil
+  "Side of the most recent durable transcript block.")
 
 (defvar-local e-chat--block-view-block-id nil
   "Block id currently active in block view mode.")
@@ -343,6 +397,14 @@
 (defconst e-chat--composer-separator
   "────────────────────────────────────────────────────────────────"
   "Separator shown above the e chat composer.")
+
+(defconst e-chat--turn-separator
+  "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  "Separator shown between rendered e chat turns.")
+
+(defconst e-chat--response-separator
+  "┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄"
+  "Separator shown between prompt and agent-side blocks in a turn.")
 
 (defconst e-chat--title "E Agent Session"
   "Title shown at the top of e chat buffers.")
@@ -702,6 +764,50 @@ FACE is applied when non-nil.  PROPERTIES are added with text properties."
       (add-text-properties start (point) `(font-lock-face ,face)))
     (when properties
       (add-text-properties start (point) properties))))
+
+(defun e-chat--entry-side (title)
+  "Return the prompt/agent side represented by entry TITLE."
+  (if (equal title "You") 'user 'agent))
+
+(defun e-chat--insert-horizontal-separator (text face)
+  "Insert protected separator TEXT with FACE at point."
+  (e-chat--insert-protected
+   (concat text "\n")
+   face
+   '(e-chat-separator t)))
+
+(defun e-chat--maybe-insert-turn-separator (turn-id)
+  "Insert a stable separator before TURN-ID when crossing turns."
+  (when (and turn-id
+             e-chat--last-rendered-turn-id
+             (not (equal turn-id e-chat--last-rendered-turn-id)))
+    (e-chat--insert-horizontal-separator
+     e-chat--turn-separator
+     'e-chat-turn-separator-face)))
+
+(defun e-chat--maybe-insert-response-separator (turn-id side)
+  "Insert a stable separator before TURN-ID's first agent SIDE block."
+  (when (and turn-id
+             (eq side 'agent)
+             (equal e-chat--last-rendered-turn-id turn-id)
+             (eq e-chat--last-rendered-side 'user))
+    (let ((record (e-chat--turn-record turn-id)))
+      (unless (plist-get record :response-separator-rendered)
+        (e-chat--insert-horizontal-separator
+         e-chat--response-separator
+         'e-chat-response-separator-face)
+        (plist-put record :response-separator-rendered t)))))
+
+(defun e-chat--insert-durable-entry-separators (turn-id side)
+  "Insert separators needed before a durable TURN-ID block on SIDE."
+  (e-chat--maybe-insert-turn-separator turn-id)
+  (e-chat--maybe-insert-response-separator turn-id side))
+
+(defun e-chat--record-durable-entry-rendered (turn-id side)
+  "Record that a durable TURN-ID block on SIDE was rendered."
+  (when (and turn-id side)
+    (setq e-chat--last-rendered-turn-id turn-id)
+    (setq e-chat--last-rendered-side side)))
 
 (defun e-chat--composer-active-p ()
   "Return non-nil when the current buffer has an active composer."
@@ -1145,6 +1251,7 @@ KILLP is passed through to `delete-char' for normal text."
                               :transient-start-marker nil
                               :transient-end-marker nil
                               :activity-block-id nil
+                              :response-separator-rendered nil
                               :final-rendered nil)))
             (puthash turn-id record registry)
             record)))))
@@ -1521,13 +1628,82 @@ When RECORD is nil, clear only buffer-local status markers."
   "Delete the currently visible transient block for RECORD."
   (e-chat--delete-running-status record))
 
+(defun e-chat--live-block-record (block-id)
+  "Return live block record for BLOCK-ID, or nil."
+  (when-let ((record (and block-id
+                          (hash-table-p e-chat--block-registry)
+                          (gethash block-id e-chat--block-registry))))
+    (let* ((start-marker (plist-get record :start-marker))
+           (end-marker (plist-get record :end-marker))
+           (start (and (markerp start-marker)
+                       (marker-position start-marker)))
+           (end (and (markerp end-marker)
+                     (marker-position end-marker))))
+      (when (and start end (< start end))
+        record))))
+
+(defun e-chat--capture-running-status-navigation-state ()
+  "Capture chat-local navigation state before running status redraw."
+  (cond
+   (e-chat-tool-list-mode
+    (list :mode 'tool-list
+          :block-id e-chat--tool-list-block-id
+          :index e-chat--tool-list-index))
+   (e-chat-block-view-mode
+    (let* ((block-id e-chat--block-view-block-id)
+           (block (e-chat--live-block-record block-id))
+           (bounds (and block (e-chat--block-content-bounds block))))
+      (list :mode 'block-view
+            :block-id block-id
+            :offset (and bounds (max 0 (- (point) (car bounds)))))))
+   (e-chat-response-navigation-mode
+    (list :mode 'response-navigation
+          :block-id e-chat--focused-block-id))))
+
+(defun e-chat--restore-running-status-navigation-state (state)
+  "Restore chat-local navigation STATE after running status redraw."
+  (pcase (plist-get state :mode)
+    ('response-navigation
+     (when (e-chat--live-block-record (plist-get state :block-id))
+       (e-chat-response-navigation-mode 1)
+       (e-chat--focus-block (plist-get state :block-id))))
+    ('block-view
+     (let* ((block-id (plist-get state :block-id))
+            (block (e-chat--live-block-record block-id))
+            (bounds (and block (e-chat--block-content-bounds block))))
+       (when bounds
+         (e-chat-response-navigation-mode -1)
+         (setq e-chat--focused-block-id block-id)
+         (setq e-chat--focused-turn-id (plist-get block :turn-id))
+         (setq e-chat--block-view-block-id block-id)
+         (e-chat-block-view-mode 1)
+         (goto-char (min (cdr bounds)
+                         (+ (car bounds)
+                            (or (plist-get state :offset) 0)))))))
+    ('tool-list
+     (let* ((block-id (plist-get state :block-id))
+            (block (e-chat--live-block-record block-id))
+            (items (and block (plist-get block :tool-items))))
+       (cond
+        (items
+         (let ((index (min (max 0 (or (plist-get state :index) 0))
+                           (1- (length items)))))
+           (e-chat--open-tool-list block)
+           (setq e-chat--tool-list-index index)
+           (e-chat--focus-tool-list-item)))
+        (block
+         (e-chat-response-navigation-mode 1)
+         (e-chat--focus-block block-id)))))))
+
 (defun e-chat--render-running-status (turn-id record)
   "Render TURN-ID's active progress and RECORD transient summary together."
   (let* ((has-progress (and e-chat--progress-turn-id
                             (equal turn-id e-chat--progress-turn-id)))
          (text (and record
                     (not (plist-get record :final-rendered))
-                    (e-chat--transient-text record))))
+                    (e-chat--transient-text record)))
+         (navigation-state
+          (e-chat--capture-running-status-navigation-state)))
     (e-chat--delete-running-status record)
     (e-chat--delete-composer)
     (if (or has-progress text)
@@ -1536,23 +1712,21 @@ When RECORD is nil, clear only buffer-local status markers."
             (goto-char (point-max))
             (unless (or (bobp) (bolp))
               (insert "\n"))
+            (e-chat--maybe-insert-response-separator turn-id 'agent)
             (let ((status-start (point)))
               (when text
                 (let* ((transient-start (point))
                        (activity-block-id
-                        (and (not has-progress)
-                             (or (plist-get record :activity-block-id)
-                                 (let ((id (e-chat--next-block-id)))
-                                   (plist-put record :activity-block-id id)
-                                   id)))))
+                        (or (plist-get record :activity-block-id)
+                            (let ((id (e-chat--next-block-id)))
+                              (plist-put record :activity-block-id id)
+                              id))))
                   (e-chat--insert-protected
                    text
                    'e-chat-system-face
-                   (if activity-block-id
-                       `(e-chat-transient-turn-id ,turn-id
-                         e-chat-turn-id ,turn-id
-                         e-chat-block-id ,activity-block-id)
-                     `(e-chat-transient-turn-id ,turn-id)))
+                   `(e-chat-transient-turn-id ,turn-id
+                     e-chat-turn-id ,turn-id
+                     e-chat-block-id ,activity-block-id))
                   (plist-put record
                              :transient-start-marker
                              (copy-marker transient-start nil))
@@ -1588,7 +1762,8 @@ When RECORD is nil, clear only buffer-local status markers."
           (if has-progress
               (e-chat--insert-pending-separator)
             (e-chat--insert-composer)))
-      (e-chat--insert-composer))))
+      (e-chat--insert-composer))
+    (e-chat--restore-running-status-navigation-state navigation-state)))
 
 (defun e-chat--render-turn-transient (turn-id record)
   "Render RECORD's intermittent entries as a temporary block for TURN-ID."
@@ -2066,6 +2241,7 @@ TURN-ID tags the rendered entry for response navigation."
          (active-record (and active-turn-id
                              (e-chat--existing-turn-record active-turn-id)))
          (had-composer nil)
+         (side (e-chat--entry-side title))
          (block-id (and turn-id (e-chat--next-block-id))))
     (when active-turn-id
       (e-chat--delete-running-status active-record))
@@ -2074,6 +2250,7 @@ TURN-ID tags the rendered entry for response navigation."
       (goto-char (point-max))
       (unless (or (bobp) (bolp))
         (insert "\n"))
+      (e-chat--insert-durable-entry-separators turn-id side)
       (let ((start (point)))
         (let ((content-start (+ start (e-chat--entry-content-offset title))))
           (e-chat--insert-protected
@@ -2097,7 +2274,8 @@ TURN-ID tags the rendered entry for response navigation."
            (e-chat--block-kind-for-title title)
            content
            content-start
-           (+ content-start (length content))))))
+           (+ content-start (length content)))
+          (e-chat--record-durable-entry-rendered turn-id side))))
     (if active-turn-id
         (e-chat--render-running-status active-turn-id active-record)
       (when (or ensure-composer had-composer)
@@ -2324,7 +2502,8 @@ TURN-ID tags the rendered entry for response navigation."
     (e-chat--delete-tool-list block)
     (let* ((end-marker (plist-get block :end-marker))
            (end (and (markerp end-marker) (marker-position end-marker)))
-           (had-composer (e-chat--delete-composer)))
+           (had-active-composer (e-chat--composer-active-p))
+           (had-bottom-chrome (e-chat--delete-composer)))
       (unless end
         (user-error "Focused activity block has no insertion point"))
       (let ((inhibit-read-only t))
@@ -2345,9 +2524,11 @@ TURN-ID tags the rendered entry for response navigation."
                      (plist-put item :end-marker (copy-marker (point) nil))))
           (plist-put block :tool-list-start-marker (copy-marker start nil))
           (plist-put block :tool-list-end-marker (copy-marker (point) nil))))
-      (when had-composer
+      (when had-bottom-chrome
         (goto-char (point-max))
-        (e-chat--insert-composer)))
+        (if had-active-composer
+            (e-chat--insert-composer)
+          (e-chat--insert-pending-separator))))
     (let ((block-id (plist-get block :id)))
       (e-chat-response-navigation-mode -1)
       (setq e-chat--focused-block-id block-id)
@@ -2518,6 +2699,8 @@ TURN-ID tags the rendered entry for response navigation."
     (setq e-chat--focused-turn-id nil)
     (setq e-chat--focused-block-id nil)
     (setq e-chat--latest-final-block-id nil)
+    (setq e-chat--last-rendered-turn-id nil)
+    (setq e-chat--last-rendered-side nil)
     (setq e-chat--block-view-block-id nil)
     (setq e-chat--tool-list-block-id nil)
     (setq e-chat--tool-list-index 0)

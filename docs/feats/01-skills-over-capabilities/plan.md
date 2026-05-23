@@ -1,5 +1,9 @@
 # Skills over Capabilities Plan
 
+## Implementation Review
+
+Post-implementation review for commit `eeabcf6` lives at [`../../../review.md`](../../../review.md).
+
 ## Goal
 
 Refactor skills so they are not a first-level runtime construct. Capabilities remain the primitive unit exposed to the harness. Progressive discovery should be expressed with the mechanisms capabilities already have:

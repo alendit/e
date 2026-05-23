@@ -159,6 +159,11 @@
                    "Plain instructions."))
     (should-not (e-capability-resources capability))))
 
+(ert-deftest e-skills-test-no-compatibility-shims ()
+  "The skill builder exposes only the new construction-time API."
+  (should-not (fboundp 'e-skill-create))
+  (should-not (fboundp 'e-skills-register)))
+
 (provide 'e-skills-test)
 
 ;;; e-skills-test.el ends here
