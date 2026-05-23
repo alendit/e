@@ -1398,6 +1398,20 @@ DETAILS-TEXT describe block actions."
       (user-error "Focused e chat block has no content bounds"))
     (cons start end)))
 
+(defun e-chat--block-details-bounds (block)
+  "Return visible expanded detail bounds for BLOCK, or nil."
+  (let* ((start-marker (plist-get block :details-start-marker))
+         (end-marker (plist-get block :details-end-marker))
+         (start (and (markerp start-marker) (marker-position start-marker)))
+         (end (and (markerp end-marker) (marker-position end-marker))))
+    (when (and start end (< start end))
+      (cons start end))))
+
+(defun e-chat--block-view-bounds (block)
+  "Return bounds used by block-local view mode for BLOCK."
+  (or (e-chat--block-details-bounds block)
+      (e-chat--block-content-bounds block)))
+
 (defun e-chat--block-action-text (block)
   "Return action text for BLOCK."
   (or (plist-get block :action-text)
@@ -1672,7 +1686,7 @@ When RECORD is nil, clear only buffer-local status markers."
    (e-chat-block-view-mode
     (let* ((block-id e-chat--block-view-block-id)
            (block (e-chat--live-block-record block-id))
-           (bounds (and block (e-chat--block-content-bounds block))))
+           (bounds (and block (e-chat--block-view-bounds block))))
       (list :mode 'block-view
             :block-id block-id
             :offset (and bounds (max 0 (- (point) (car bounds)))))))
@@ -1690,7 +1704,7 @@ When RECORD is nil, clear only buffer-local status markers."
     ('block-view
      (let* ((block-id (plist-get state :block-id))
             (block (e-chat--live-block-record block-id))
-            (bounds (and block (e-chat--block-content-bounds block))))
+            (bounds (and block (e-chat--block-view-bounds block))))
        (when bounds
          (e-chat-response-navigation-mode -1)
          (setq e-chat--focused-block-id block-id)
@@ -2029,13 +2043,7 @@ sessions without durable activity."
 
 (defun e-chat--block-details-visible-p (block)
   "Return non-nil when BLOCK has visible expanded detail text."
-  (let ((start (plist-get block :details-start-marker))
-        (end (plist-get block :details-end-marker)))
-    (and (markerp start)
-         (markerp end)
-         (marker-position start)
-         (marker-position end)
-         (< (marker-position start) (marker-position end)))))
+  (not (null (e-chat--block-details-bounds block))))
 
 (defun e-chat--turn-details-text (turn-id record)
   "Return expanded details text for TURN-ID using RECORD."
@@ -2051,6 +2059,12 @@ sessions without durable activity."
 
 (defun e-chat--insert-block-details (block turn-id record)
   "Insert expanded details for BLOCK and TURN-ID using RECORD."
+  (e-chat--insert-block-details-text
+   block
+   (e-chat--turn-details-text turn-id record)))
+
+(defun e-chat--insert-block-details-text (block text)
+  "Insert expanded detail TEXT for BLOCK."
   (e-chat--delete-block-details block)
   (let* ((end-marker (plist-get block :end-marker))
          (end (and (markerp end-marker) (marker-position end-marker)))
@@ -2061,7 +2075,7 @@ sessions without durable activity."
       (goto-char end)
       (let ((start (point)))
         (e-chat--insert-protected
-         (e-chat--turn-details-text turn-id record)
+         text
          'e-chat-system-face
          '(e-chat-turn-details t))
         (plist-put block :details-start-marker (copy-marker start nil))
@@ -2069,6 +2083,13 @@ sessions without durable activity."
     (when had-composer
       (goto-char (point-max))
       (e-chat--insert-composer))))
+
+(defun e-chat--toggle-block-details-text (block text)
+  "Toggle inline detail TEXT for BLOCK."
+  (if (e-chat--block-details-visible-p block)
+      (e-chat--delete-block-details block)
+    (e-chat--insert-block-details-text block text)
+    (e-chat--enter-block-view block)))
 
 (defun e-chat--entry-face (title)
   "Return face for chat entry TITLE."
@@ -2365,7 +2386,7 @@ non-nil, is used by focused block activation."
        (e-chat--open-tool-list block))
       ('system
        (if-let ((details-text (plist-get block :details-text)))
-           (e-chat--display-details-buffer details-text)
+           (e-chat--toggle-block-details-text block details-text)
          (e-chat--enter-block-view block)))
       (_
        (e-chat--enter-block-view block)))))
@@ -2431,7 +2452,7 @@ non-nil, is used by focused block activation."
 (defun e-chat--enter-block-view (block)
   "Enter block-local view mode for BLOCK."
   (let* ((block-id (plist-get block :id))
-         (bounds (e-chat--block-content-bounds block)))
+         (bounds (e-chat--block-view-bounds block)))
     (e-chat-response-navigation-mode -1)
     (setq e-chat--focused-block-id block-id)
     (setq e-chat--focused-turn-id (plist-get block :turn-id))
@@ -2448,7 +2469,7 @@ non-nil, is used by focused block activation."
 
 (defun e-chat--block-view-clamp-point ()
   "Keep point inside the active block content bounds."
-  (let ((bounds (e-chat--block-content-bounds (e-chat--block-view-block))))
+  (let ((bounds (e-chat--block-view-bounds (e-chat--block-view-block))))
     (when (< (point) (car bounds))
       (goto-char (car bounds)))
     (when (> (point) (cdr bounds))
@@ -2462,7 +2483,7 @@ non-nil, is used by focused block activation."
 (defun e-chat-block-view-left ()
   "Move left inside the focused block."
   (interactive)
-  (let ((bounds (e-chat--block-content-bounds (e-chat--block-view-block))))
+  (let ((bounds (e-chat--block-view-bounds (e-chat--block-view-block))))
     (when (> (point) (car bounds))
       (backward-char 1)))
   (e-chat--block-view-keep-region-active))
@@ -2470,7 +2491,7 @@ non-nil, is used by focused block activation."
 (defun e-chat-block-view-right ()
   "Move right inside the focused block."
   (interactive)
-  (let ((bounds (e-chat--block-content-bounds (e-chat--block-view-block))))
+  (let ((bounds (e-chat--block-view-bounds (e-chat--block-view-block))))
     (when (< (point) (cdr bounds))
       (forward-char 1)))
   (e-chat--block-view-keep-region-active))
@@ -2492,13 +2513,13 @@ non-nil, is used by focused block activation."
 (defun e-chat-block-view-beginning ()
   "Move to the beginning of the focused block content."
   (interactive)
-  (goto-char (car (e-chat--block-content-bounds (e-chat--block-view-block))))
+  (goto-char (car (e-chat--block-view-bounds (e-chat--block-view-block))))
   (e-chat--block-view-keep-region-active))
 
 (defun e-chat-block-view-end ()
   "Move to the end of the focused block content."
   (interactive)
-  (goto-char (cdr (e-chat--block-content-bounds (e-chat--block-view-block))))
+  (goto-char (cdr (e-chat--block-view-bounds (e-chat--block-view-block))))
   (e-chat--block-view-keep-region-active))
 
 (defun e-chat-block-view-select ()

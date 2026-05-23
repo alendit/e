@@ -1104,10 +1104,9 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest e-chat-test-failed-turn-opens-full-error-from-navigation ()
-  "RET on a focused failed system block opens full provider details."
-  (let ((buffer (e-chat-test--buffer nil "chat-failed-details"))
-        (details nil))
+(ert-deftest e-chat-test-failed-turn-expands-full-error-inline ()
+  "RET on a focused failed system block expands provider details inline."
+  (let ((buffer (e-chat-test--buffer nil "chat-failed-details")))
     (unwind-protect
         (with-current-buffer buffer
           (e-chat--render-event
@@ -1132,19 +1131,25 @@
           (e-chat-test--focus-block-containing "Turn failed")
           (should (eq (plist-get (e-chat-test--focused-block) :kind)
                       'system))
-          (setq details (e-chat-response-navigation-activate))
-          (with-current-buffer details
-            (should (derived-mode-p 'special-mode))
-            (should buffer-read-only)
-            (should (string-match-p "OpenAI request failed"
-                                    (buffer-string)))
-            (should (string-match-p "context_length_exceeded"
-                                    (buffer-string)))
+          (e-chat-response-navigation-activate)
+          (let ((content (buffer-string))
+                (block (e-chat-test--focused-block)))
+            (should e-chat-block-view-mode)
+            (should-not e-chat-response-navigation-mode)
+            (should (e-chat--block-details-visible-p block))
+            (should (<= (marker-position (plist-get block :details-start-marker))
+                        (point)))
+            (should (<= (point)
+                        (marker-position (plist-get block :details-end-marker))))
+            (when (e-chat--composer-active-p)
+              (should (< (point)
+                         (marker-position e-chat--composer-start-marker))))
+            (should-not (get-buffer e-chat-details-buffer-name))
+            (should (string-match-p "OpenAI request failed" content))
+            (should (string-match-p "context_length_exceeded" content))
             (should (string-match-p
                      "Your input exceeds the context window"
-                     (buffer-string)))))
-      (when (buffer-live-p details)
-        (kill-buffer details))
+                     content))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -2109,13 +2114,12 @@
       (e-chat-test--kill-buffer-name e-chat-details-buffer-name)
       (delete-directory directory t))))
 
-(ert-deftest e-chat-test-replayed-failed-turn-is-navigable ()
-  "Replayed turn-failed activity renders as a compact navigable block."
+(ert-deftest e-chat-test-replayed-failed-turn-expands-inline ()
+  "Replayed turn-failed activity renders as a compact expandable block."
   (let* ((store (e-session-store-create))
          (backend (e-backend-fake-create :items nil))
          (harness (e-harness-create :backend backend :sessions store))
-         (buffer nil)
-         (details nil))
+         (buffer nil))
     (unwind-protect
         (progn
           (e-harness-create-session harness :id "chat-failed-replay")
@@ -2141,12 +2145,21 @@
                        content))
               (should-not (string-match-p "context_length_exceeded" content)))
             (e-chat-test--focus-block-containing "Turn failed")
-            (setq details (e-chat-response-navigation-activate))
-            (with-current-buffer details
-              (should (string-match-p "context_length_exceeded"
-                                      (buffer-string))))))
-      (when (buffer-live-p details)
-        (kill-buffer details))
+            (e-chat-response-navigation-activate)
+            (let ((content (buffer-string))
+                  (block (e-chat-test--focused-block)))
+              (should e-chat-block-view-mode)
+              (should-not e-chat-response-navigation-mode)
+              (should (e-chat--block-details-visible-p block))
+              (should (<= (marker-position (plist-get block :details-start-marker))
+                          (point)))
+              (should (<= (point)
+                          (marker-position (plist-get block :details-end-marker))))
+              (when (e-chat--composer-active-p)
+                (should (< (point)
+                           (marker-position e-chat--composer-start-marker))))
+              (should-not (get-buffer e-chat-details-buffer-name))
+              (should (string-match-p "context_length_exceeded" content)))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer))
       (e-chat-test--kill-buffer-name e-chat-details-buffer-name))))
