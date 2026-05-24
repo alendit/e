@@ -6,6 +6,8 @@
 ** Dev work plans
 Put dev work under =docs/feats/=.
 
+Before planning or implementing dev work, read =docs/feats/index.org=. Treat it as the compact source of truth for coding-agent orientation.
+
 Use one directory per dev work item, usually with a numeric prefix and short slug:
 
 #+begin_example
@@ -13,6 +15,22 @@ docs/feats/04-message-turn-identity/plan.org
 #+end_example
 
 Keep the plan in that directory. Add sketches or supporting notes there when they are specific to the dev work.
+
+Update =docs/feats/index.org= whenever creating a dev work item or changing its state. Use exactly these statuses:
+
+- =Planned= :: plan exists; implementation has not started.
+- =In-progress= :: implementation has started; review is not ready yet.
+- =In-review= :: =review.org= exists in the dev work directory and still has notes to resolve.
+- =Done= :: review finished and has no unresolved notes.
+
+Status transitions for agents:
+
+1. When you create a new dev work plan, add it to the index as =Planned=.
+2. When you begin implementation, change it to =In-progress=.
+3. When implementation is ready for review, create =review.org= in the same dev work directory. If the review has unresolved notes, change the index to =In-review=.
+4. When review produces no notes, or when all review notes are resolved, leave =review.org= as history and change the index to =Done=.
+
+Do not move dev work directories between status-specific folders; keep paths stable and let the index carry status.
 
 ** Tiny work
 Tiny work is for small changes like trivial styling changes.
