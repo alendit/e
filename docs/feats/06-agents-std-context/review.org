@@ -1,0 +1,60 @@
+#+title: Review: Feature 06 Agents Std Context
+#+startup: overview
+
+* Summary
+
+Feature 06 is substantially implemented and matches the main direction in =docs/feats/06-agents-std-context/plan.org=. The new =lisp/layers/agents/e-agents-std-context.el= layer contributes a single =agents-std-context= capability, discovers global and project =AGENTS.md= files, discovers filesystem skills from global =~/.agents/skills/*/SKILL.md= and project =.agents/skills/*/SKILL.md=, advertises skill URIs compactly through the existing skills builder, and exposes full skill bodies through ordinary read-only =e://agents-std-context/...= resources. The default chat harness now includes the layer via =e-default-chat-layer-ids=, and startup registers it through the built-in layer registry.
+
+The implementation keeps the layer stateless in the important runtime sense: it builds capabilities from filesystem state, contributes context providers/resources, and does not persist durable state itself. It also preserves the harness/presentation separation: discovery and capability construction stay in the layer/default harness code, while chat presentation continues to obtain the default harness from the registry.
+
+Verification is present and relevant. =test/e-agents-std-context-test.el= covers AGENTS context injection, global/project skill discovery and readback, and nearest project skill precedence for duplicate project slugs. =test/e-defaults-test.el= covers default chat activation of =agents-std-context=. I ran both the focused tests and the full suite successfully:
+
+- =eldev test test/e-agents-std-context-test.el test/e-defaults-test.el= — 12/12 expected passes.
+- =eldev test= — 368 tests, 367 expected passes and 1 expected skip.
+
+* Plan Compliance
+
+The core acceptance criteria are met:
+
+- A distinct =agents-std-context= layer exists and contributes one capability.
+- AGENTS discovery includes configured global files and project files discovered by walking up from the layer root.
+- Skills are discovered from global and project filesystem directories, advertised as compact references in capability instructions, and exposed as normal read-only =e://= resources.
+- Default chat harnesses activate the layer by default through registered layer specs.
+- Tests exercise both AGENTS discovery and skill resource discovery/readback.
+
+The implementation also benefits from feature 01's skills-over-capabilities direction: feature 06 does not create a new special runtime channel for skills, and instead uses =e-capability-with-skills-create= to produce ordinary capability instructions and store resources.
+
+* Issues and Risks
+
+** 1. Default registered layer factories capture =default-directory= at harness creation time, not at project/session use time
+
+This is not unique to =agents-std-context=, but feature 06 makes the problem more visible. =e-layer-create-registered= calls factories with no arguments, and =e-default-chat--activate-configured-layers= therefore creates =agents-std-context= with whatever =default-directory= is current when the default harness instance is created. The AGENTS and project skill roots are then closed over in the capability/context provider. Because the default chat harness is cached, later chats in another project can keep using the AGENTS and =.agents/skills= discovered for the first creation root until startup/reload reconciles the harness.
+
+That can make the default chat harness inject the wrong project's instructions and expose the wrong project skill resources. The same root-capture concern applies to other directory-rooted default layers such as =base=, but for feature 06 it directly affects the stated goal of standard project orientation. A follow-up should define where the project root for a default chat session comes from and pass it explicitly into registered layer factories, or recreate/reconcile directory-sensitive layers when opening/using a chat from a different root.
+
+** 2. Skill frontmatter parsing is too small for common YAML descriptions
+
+=e-agents-std-context--frontmatter-value= only handles single-line =key: value= entries. Real skill descriptions in this working environment include YAML block scalar markers such as =description: >-= and =description: |=; these are currently advertised literally as =>-= or =|= instead of the actual folded body. The full skill body remains readable, so this is not a resource correctness bug, but it weakens the compact skill catalog the model sees up front and can hide useful trigger text for those skills.
+
+A small frontmatter parser improvement would be enough: support indented continuation lines for =>= / =>-= and =|= / =|-=, or use an existing YAML parser when available with a simple fallback. Add tests for folded and literal description frontmatter so the prompt catalog remains useful.
+
+** 3. Project skill precedence is reasonable but under-documented
+
+Duplicate project skill slugs are deduped by resource path, with the nearest directory winning. The behavior is tested and is probably what users expect for nested projects. However, global and project skills with the same slug intentionally do not collide because their paths include =skills/global/...= and =skills/project/...=; both appear in the prompt. That may be desirable, but the precedence model is not documented in the feature plan or code comments.
+
+Documenting the rules would make future include/exclude work in feature 07 easier: nearest project skill wins within project scope; global and project scopes are separate resources; duplicate slugs across scopes both advertise unless filtered later.
+
+** 4. Tests miss a few integration details
+
+The focused tests are good, but they do not currently lock down these behaviors:
+
+- Multiple nested =AGENTS.md= files are included in root-to-leaf order.
+- The default cached chat harness does not accidentally keep stale =agents-std-context= roots across project changes, or, if that is accepted for now, the test documents that limitation explicitly.
+- Folded/literal YAML frontmatter descriptions are parsed into useful descriptions rather than =>-= or =|=.
+- Full skill resources remain read-only through the actual resource tool path, not only through direct =e-store-read=.
+
+These are not blockers for the current implementation, but they would catch the main risks above.
+
+* Recommendation
+
+Accept the feature 06 implementation with follow-up work before marking it fully done. The layer itself is clean, stateless, and well aligned with the plan. The main thing I would not leave implicit is the root-selection story for default cached harnesses: injecting the wrong project's AGENTS context is a high-impact failure mode for the feature's purpose. After that, improve frontmatter parsing and document/test skill precedence semantics.

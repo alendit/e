@@ -1,0 +1,100 @@
+#+title: Follow-up 04: Integration Test Coverage for Agents Std Context
+#+startup: overview
+
+* Surfaced issue
+
+The feature has useful focused tests, but review identified integration gaps that would catch the highest-risk regressions:
+
+- Multiple nested =AGENTS.md= files should be included in root-to-leaf order.
+- The default cached chat harness should not keep stale =agents-std-context= roots across project changes, or the limitation should be explicitly documented by a failing/expected test until fixed.
+- Folded/literal YAML frontmatter descriptions should flow into actual prompt catalog text.
+- Skill resources should be verified through the public read-only resource/tool path, not only through direct =e-store-read=.
+
+* Mitigation direction
+
+Add integration tests that exercise the public harness/context/resource behavior. Prefer tests that construct real temporary projects and a real harness with the =agents-std-context= layer active. Private parser tests can exist, but they should not replace end-to-end context/resource assertions.
+
+* Proposed implementation sketch
+
+** Step 1: Add nested AGENTS order test
+
+Create a temporary project tree:
+
+#+begin_example
+project/AGENTS.md
+project/packages/app/AGENTS.md
+project/packages/app/src/AGENTS.md
+#+end_example
+
+Create =agents-std-context= rooted at =project/packages/app/src=. Build =e-harness-context= and assert:
+
+- all three files appear;
+- content order is root to leaf;
+- global files still appear before project files when configured.
+
+Use string positions to verify ordering.
+
+** Step 2: Add stale default root regression test
+
+This test pairs with follow-up 01.
+
+Create two temporary projects A and B with distinct =AGENTS.md= and project skills. Reuse a cached default chat harness and simulate opening/creating sessions from each root. Expected final behavior after mitigation:
+
+- session A context contains A and not B;
+- session B context contains B and not A;
+- session B resource store reads B project skill content for B's slug;
+- layer order still includes =chat-session= followed by configured stateless layers.
+
+Before follow-up 01 is implemented, either keep this as a pending note in the test file or mark it with an explicit expected failure mechanism if the project uses one. Do not silently omit it once root mitigation work starts.
+
+** Step 3: Add frontmatter catalog integration tests
+
+Use temporary skill files with:
+
+- =description: >-= folded frontmatter;
+- =description: |= literal frontmatter.
+
+Build context through =e-harness-context= and assert the compact prompt catalog contains useful description text and does not contain literal-only marker descriptions such as =find-docs: >- Read ...=.
+
+These tests should be implemented with follow-up 02.
+
+** Step 4: Add read-only resource path test
+
+Instead of only calling =e-store-read= directly, exercise the same resource dispatch path used by the built-in =read= tool. Depending on the current test helpers, either:
+
+- call the harness resource operation dispatch for =e-operation-read= and an =e://agents-std-context/skills/...= URI; or
+- invoke the built-in read tool in a fake backend turn and assert the returned content.
+
+Also assert write/edit operations are unsupported for those skill URIs, matching the feature promise that skill resources are read-only.
+
+* Tests to add or update
+
+Primary files:
+
+- =test/e-agents-std-context-test.el=
+- =test/e-defaults-test.el= if cached default harness behavior is covered there
+- =test/e-harness-test.el= only if the public resource-tool path needs generic harness assertions
+
+Keep each test focused and named after behavior, for example:
+
+- =e-agents-std-context-test-includes-nested-agents-root-to-leaf=
+- =e-agents-std-context-test-folded-description-enters-skill-catalog=
+- =e-agents-std-context-test-skill-resource-is-read-only-through-resources=
+- =e-defaults-test-chat-harness-re-roots-agents-context-per-session=
+
+* Validation
+
+- Run =eldev test test/e-agents-std-context-test.el test/e-defaults-test.el=.
+- If resource/tool dispatch tests are added, also run =eldev test test/e-harness-test.el test/e-resources-test.el=.
+- Run full =eldev test= before marking feature 06 done.
+- After any =lisp/*.el= changes, run live reload:
+
+#+begin_src shell
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+* Design notes
+
+- Tests should prove user-visible behavior through context messages and resource operations, not only private helper return values.
+- Keep temporary filesystem setup local to each test with =unwind-protect= cleanup.
+- Avoid adding broad mocks around the layer. The value of these tests is exercising real layer construction, store/resource registration, and context building together.

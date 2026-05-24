@@ -1,0 +1,68 @@
+#+title: Follow-up 03: Skill Precedence Documentation
+#+startup: overview
+
+* Surfaced issue
+
+Project skill precedence is implemented and tested for one duplicate-slug case, but the intended rules are not documented. Current behavior is:
+
+- Global skills live under =e://agents-std-context/skills/global/<slug>=.
+- Project skills live under =e://agents-std-context/skills/project/<slug>=.
+- Duplicate project slugs from multiple ancestor =.agents/skills= directories are deduped by resource path, with the nearest project directory winning.
+- Global and project skills with the same slug do not collide because their resource paths differ; both can be advertised.
+
+This behavior is reasonable, but it should be explicit before feature 07 adds include/exclude filtering.
+
+* Mitigation direction
+
+Document the precedence model in both user-facing dev notes and code-level docstrings/comments, then add small tests that lock the intended semantics.
+
+This is mostly documentation/test hardening. Avoid changing runtime behavior unless the documented semantics uncover an actual mismatch.
+
+* Proposed implementation sketch
+
+** Step 1: Add a precedence section to feature 06 docs
+
+Add a section to =docs/feats/06-agents-std-context/plan.org= or a supporting note in the same directory. Suggested wording:
+
+- Skills are scoped by source: =global= and =project=.
+- The scope is part of the resource path, so same-slug global and project skills are distinct resources.
+- For project skills discovered from multiple ancestor directories, the nearest directory to the layer root wins for a duplicate slug.
+- Non-duplicate project skills from parent directories remain available.
+- Skill ordering is stable: global skills first, then project skills from outer to inner roots after duplicate resolution.
+
+If ordering should instead prefer nearest project skills earlier in the prompt, document and implement that deliberately; do not leave it accidental.
+
+** Step 2: Add code comments/docstrings
+
+Update private helpers in =lisp/layers/agents/e-agents-std-context.el=:
+
+- =e-agents-std-context--dedupe-skill-specs=
+- =e-agents-std-context--project-skills-directories=
+- =e-agents-std-context-skill-specs=
+
+The comments should explain why dedupe reverses the list and why global/project paths are separate scopes.
+
+** Step 3: Add tests for scope and ordering semantics
+
+Extend =test/e-agents-std-context-test.el= with tests for:
+
+- Same slug in global and project scopes produces two resources, one under =skills/global/<slug>= and one under =skills/project/<slug>=.
+- Same project slug in parent and nested project directories yields one project resource whose body comes from the nested directory.
+- Different project slugs in parent and nested directories are both advertised/readable.
+- The prompt catalog order is stable enough for humans to inspect. If exact order is intentionally part of the contract, assert it; otherwise assert only presence and precedence.
+
+* Validation
+
+- Run =eldev test test/e-agents-std-context-test.el=.
+- Run full =eldev test= if any runtime behavior changes.
+- No live reload is needed for docs-only changes. If code/test behavior changes under =lisp/*.el=, reload with:
+
+#+begin_src shell
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+* Design notes
+
+- Do not introduce a generalized precedence framework until feature 07 needs it. The current real variation is source scope plus nearest-project override.
+- Keep URIs stable. Changing =skills/global= or =skills/project= paths would break already-advertised references and should require a compatibility decision.
+- This follow-up should make future filtering semantics easier: include/exclude can refer to explicit scoped paths or to slugs with documented scope resolution.

@@ -1,0 +1,100 @@
+#+title: Follow-up 02: Skill Frontmatter Parsing
+#+startup: overview
+
+* Surfaced issue
+
+=e-agents-std-context--frontmatter-value= only reads single-line =key: value= frontmatter values. Common skill files can use YAML block scalars, for example:
+
+#+begin_src yaml
+---
+name: find-docs
+description: >-
+  Locate current project or library documentation before answering.
+---
+#+end_src
+
+With the current parser, the advertised compact skill description becomes the literal marker =>-= or =|= instead of the useful folded/literal body. The full skill resource is still readable, but the prompt's compact skill catalog loses the trigger text that helps the model decide which skill to load.
+
+* Mitigation direction
+
+Improve frontmatter extraction enough for the skill metadata this layer needs while keeping the dependency surface small.
+
+The layer only needs scalar string values for =name= and =description=. A small parser can support:
+
+- Plain single-line values: =description: text=
+- Quoted single-line values: =description: "text"=
+- Folded block scalars: =description: >=, =description: >-=, =description: >+=
+- Literal block scalars: =description: |=, =description: |-=, =description: |+=
+
+Avoid a broad YAML implementation unless an existing dependency is already guaranteed. The goal is robust metadata extraction, not complete YAML support.
+
+* Proposed implementation sketch
+
+** Step 1: Parse frontmatter into an alist/plist
+
+Replace or supplement =e-agents-std-context--frontmatter-value= with a helper that returns parsed scalar values:
+
+#+begin_src emacs-lisp
+(e-agents-std-context--frontmatter-values content)
+;; => (("name" . "find-docs") ("description" . "Locate current ..."))
+#+end_src
+
+Keep this helper private to the layer.
+
+** Step 2: Handle block scalar continuation
+
+For a line matching =KEY: MARKER= where =MARKER= is one of =>=, =>-=, =>+=, =|=, =|-=, or =|+=:
+
+- Collect following non-empty or indented lines until a non-indented top-level frontmatter key appears or the frontmatter ends.
+- Strip the common indentation from collected block lines.
+- For folded markers =>=, join logical lines with spaces while preserving paragraph breaks.
+- For literal markers =|=, join lines with newlines and then trim according to the chomping marker.
+
+A pragmatic implementation can be simpler:
+
+- Strip leading indentation from block lines.
+- For folded style, use =string-join= with spaces after removing purely structural newlines.
+- For literal style, use =string-join= with ="\n"=.
+- Always =string-trim= the final advertised description.
+
+This is sufficient for compact prompt descriptions.
+
+** Step 3: Keep fallback behavior
+
+If no =description= exists, keep the current fallback:
+
+#+begin_src emacs-lisp
+(format "Read %s guidance." name)
+#+end_src
+
+If malformed frontmatter is encountered, fail soft for the skill metadata and continue to expose the full resource body. Do not let one malformed skill prevent the layer from loading all other skills.
+
+* Tests
+
+Add tests to =test/e-agents-std-context-test.el= for:
+
+- Single-line description remains unchanged.
+- Quoted description strips matching quotes.
+- Folded =description: >-= advertises the folded sentence body, not =>-=.
+- Literal =description: |= advertises useful text, not =|=.
+- Missing description still uses the fallback.
+- Malformed block metadata does not prevent reading the full skill resource.
+
+Use temporary skill directories and inspect the generated context message from =e-harness-context=, not only the private parser, so the test covers the actual prompt catalog path.
+
+* Validation
+
+- Run =eldev test test/e-agents-std-context-test.el=.
+- Run =eldev test test/e-defaults-test.el= if capability construction changes.
+- Optionally inspect a live default chat context to confirm skills such as =find-docs= and =home-assistant-manager= no longer advertise only =>-= or =|=.
+- After changing =lisp/*.el=, run live reload:
+
+#+begin_src shell
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+* Design notes
+
+- Keep parsing owned by =agents-std-context= because it is adapting filesystem skill documents into =e-skill-spec= metadata.
+- Do not add broad defensive swallowing around file I/O. Missing/unreadable skill files are already filtered; unexpected read errors should remain visible unless a concrete user-facing recovery policy is added.
+- Keep the model-facing catalog compact. Block descriptions should be normalized to a short readable string, not copied as full markdown guidance.
