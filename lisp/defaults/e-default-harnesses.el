@@ -53,7 +53,7 @@ are reconciled from it during startup/reload."
                  (equal (e-session-store-directory e-default--chat-sessions)
                         directory))
       (setq e-default--chat-sessions
-            (e-session-persistent-store-create directory)))
+            (e-session-persistent-index-store-create directory)))
     e-default--chat-sessions))
 
 (defun e-default-chat--record-layer-ids (harness)

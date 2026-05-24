@@ -1,0 +1,10 @@
+#+title: e-chat-resume hangs on session replay
+#+startup: overview
+
+The user reported that Emacs hangs immediately after calling =e-chat-resume=,
+and that =emacsclient= would likely not succeed while Emacs is in that state.
+
+They then captured a debugger backtrace showing =e-chat-resume= entering
+=e-session-load= through the default chat harness. The interrupted record was a
+persisted =message= entry with role =tool= and a very large nested Elisp tool
+result.

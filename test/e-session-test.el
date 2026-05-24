@@ -75,6 +75,70 @@
                            '("msg-1" "msg-2")))))
       (delete-directory directory t))))
 
+(ert-deftest e-session-test-persistent-replay-refreshes-derived-fields-once-per-session ()
+  "Persistent replay avoids per-record derived-field refresh work."
+  (let* ((directory (make-temp-file "e-session-" t))
+         (store (e-session-persistent-store-create directory))
+         (session-id (plist-get (e-session-create store :id "session-1") :id)))
+    (unwind-protect
+        (progn
+          (dotimes (index 40)
+            (e-session-append-message
+             store
+             session-id
+             (list :id (format "msg-%d" index)
+                   :role (if (cl-evenp index) 'user 'tool)
+                   :content (list :payload (make-string 1000 ?x)))))
+          (let ((refresh-count 0)
+                (original-refresh
+                 (symbol-function 'e-session--refresh-derived-fields)))
+            (cl-letf (((symbol-function 'e-session--refresh-derived-fields)
+                       (lambda (refresh-store refresh-session)
+                         (setq refresh-count (1+ refresh-count))
+                         (funcall original-refresh
+                                  refresh-store
+                                  refresh-session))))
+              (let ((loaded (e-session-persistent-store-create directory)))
+                (should (= (length (e-session-messages loaded session-id)) 40))
+                (should (= refresh-count 1))))))
+      (delete-directory directory t))))
+
+(ert-deftest e-session-test-index-store-lists-without-loading-transcripts ()
+  "Index-backed persistent stores list sessions before transcript replay."
+  (let* ((directory (make-temp-file "e-session-" t))
+         (store (e-session-persistent-store-create directory))
+         (session-id (plist-get (e-session-create store :id "session-1") :id)))
+    (unwind-protect
+        (progn
+          (e-session-append-message
+           store session-id '(:id "msg-1" :role user :content "indexed hello"))
+          (e-session-append-message
+           store session-id '(:id "msg-2" :role tool :content (:payload "large")))
+          (should (string-prefix-p
+                   "["
+                   (with-temp-buffer
+                     (insert-file-contents
+                      (expand-file-name "index.json" directory))
+                     (buffer-string))))
+          (let ((original-insert (symbol-function 'insert-file-contents)))
+            (cl-letf (((symbol-function 'insert-file-contents)
+                       (lambda (filename &rest args)
+                         (when (string-suffix-p ".jsonl" filename)
+                           (error "index store loaded transcript"))
+                         (apply original-insert filename args))))
+              (let* ((indexed (e-session-persistent-index-store-create directory))
+                     (sessions (e-session-list indexed))
+                     (session (car sessions)))
+                (should (equal (plist-get session :id) session-id))
+                (should (equal (plist-get session :summary) "indexed hello"))
+                (should (= (plist-get session :message-count) 2))
+                (should-not (plist-get session :loaded)))))
+          (let ((indexed (e-session-persistent-index-store-create directory)))
+            (should (equal (mapcar (lambda (message) (plist-get message :id))
+                                   (e-session-messages indexed session-id))
+                           '("msg-1" "msg-2")))))
+      (delete-directory directory t))))
+
 (ert-deftest e-session-test-persistent-replay-preserves-message-timestamp ()
   "Persistent replay restores each message's journal timestamp."
   (let* ((directory (make-temp-file "e-session-" t))

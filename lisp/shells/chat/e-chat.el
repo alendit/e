@@ -3350,9 +3350,6 @@ With prefix argument POP-TO-SIDE, use the pop display path."
 (defun e-chat--render-resume-preview (harness session)
   "Render SESSION from HARNESS into the reusable resume preview buffer."
   (let* ((session-id (plist-get session :id))
-         (messages (e-chat--tail-messages
-                    (e-harness-messages harness session-id)
-                    e-chat-resume-preview-message-limit))
          (buffer (get-buffer-create e-chat--resume-preview-buffer-name)))
     (with-current-buffer buffer
       (let ((inhibit-read-only t))
@@ -3364,7 +3361,21 @@ With prefix argument POP-TO-SIDE, use the pop display path."
       (setq-local e-chat-session-id session-id)
       (setq-local cursor-type nil)
       (e-chat--clear)
-      (e-chat--render-session messages)
+      (if (plist-get session :loaded)
+          (let ((messages (e-chat--tail-messages
+                           (e-harness-messages harness session-id)
+                           e-chat-resume-preview-message-limit)))
+            (e-chat--render-session messages))
+        (e-chat--insert-protected
+         (string-join
+          (delq nil
+                (list (plist-get session :title)
+                      (plist-get session :summary)
+                      (when-let ((message-count
+                                  (plist-get session :message-count)))
+                        (format "%d messages" message-count))
+                      (plist-get session :last-message-at)))
+          "\n\n")))
       (setq buffer-read-only t)
       (goto-char (point-min)))
     buffer))

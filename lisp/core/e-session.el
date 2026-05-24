@@ -36,6 +36,10 @@
   persistent
   (sequence 0))
 
+(defconst e-session--replay-list-fields
+  '(:messages :activity-events :branch-summaries :compactions)
+  "Session fields accumulated in reverse order while replaying JSONL.")
+
 (defun e-session--timestamp (&optional time)
   "Return TIME as a compact UTC timestamp."
   (format-time-string "%Y-%m-%dT%H:%M:%SZ" time t))
@@ -112,6 +116,26 @@
                  (e-session--session-file store (plist-get session :id)))))
   session)
 
+(defun e-session--display-title-for-session (session)
+  "Return a display title for SESSION."
+  (or (plist-get session :name)
+      (when-let ((summary (plist-get session :summary)))
+        (e-session--default-title summary))
+      (when-let ((created-at (plist-get session :created-at)))
+        (format "Untitled %s" created-at))
+      (format "Untitled %s" (plist-get session :id))))
+
+(defun e-session--prepend-replayed-item (session field item)
+  "Prepend replayed ITEM to SESSION FIELD."
+  (plist-put session field (cons item (plist-get session field))))
+
+(defun e-session--finalize-replayed-session (store session)
+  "Restore replayed SESSION field ordering and derived metadata."
+  (dolist (field e-session--replay-list-fields)
+    (plist-put session field (nreverse (plist-get session field))))
+  (plist-put session :loaded t)
+  (e-session--refresh-derived-fields store session))
+
 (defun e-session--last-message-at (session)
   "Return SESSION's latest message timestamp, when it has messages."
   (when-let ((message (car (last (plist-get session :messages)))))
@@ -119,17 +143,20 @@
 
 (defun e-session--session-index-entry (store session)
   "Return public index metadata for SESSION in STORE."
-  (e-session--refresh-derived-fields store session)
+  (when (plist-get session :loaded)
+    (e-session--refresh-derived-fields store session))
   (list :id (plist-get session :id)
         :name (plist-get session :name)
         :summary (plist-get session :summary)
-        :title (e-session-display-title store (plist-get session :id))
+        :title (e-session--display-title-for-session session)
         :message-count (or (plist-get session :message-count) 0)
         :created-at (plist-get session :created-at)
         :updated-at (plist-get session :updated-at)
         :updated-seq (plist-get session :updated-seq)
-        :last-message-at (e-session--last-message-at session)
-        :file (plist-get session :file)))
+        :last-message-at (or (plist-get session :last-message-at)
+                             (e-session--last-message-at session))
+        :file (plist-get session :file)
+        :loaded (plist-get session :loaded)))
 
 (defun e-session--normalize-turn-options (options)
   "Return canonical session turn OPTIONS."
@@ -151,7 +178,7 @@
     (let ((coding-system-for-write 'utf-8)
           (index (e-session-list store)))
       (with-temp-file (e-session-store-index-file store)
-        (insert (json-encode index) "\n")))))
+        (insert (json-encode (vconcat index)) "\n")))))
 
 (defun e-session--json-read-line (line)
   "Parse one JSONL LINE as a plist."
@@ -221,51 +248,51 @@
          (puthash session-id session (e-session-store-sessions store))))
       ("message"
        (when session
-         (plist-put session
-                    :messages
-                    (append (plist-get session :messages)
-                            (list (e-session--message-with-created-at
-                                   (plist-get record :message)
-                                   timestamp))))
+         (e-session--prepend-replayed-item
+          session
+          :messages
+          (e-session--message-with-created-at
+           (plist-get record :message)
+           timestamp))
          (e-session--touch store session timestamp)))
       ("activity-event"
        (when session
-         (plist-put session
-                    :activity-events
-                    (append (plist-get session :activity-events)
-                            (list (e-session--normalize-activity-event
-                                   (list :turn-id (plist-get record :turn-id)
-                                         :event-type (plist-get record :event-type)
-                                         :payload (plist-get record :payload)
-                                         :created-at timestamp)))))
+         (e-session--prepend-replayed-item
+          session
+          :activity-events
+          (e-session--normalize-activity-event
+           (list :turn-id (plist-get record :turn-id)
+                 :event-type (plist-get record :event-type)
+                 :payload (plist-get record :payload)
+                 :created-at timestamp)))
          (e-session--touch store session timestamp)))
       ("branch-summary"
        (when session
-         (plist-put session
-                    :branch-summaries
-                    (append (plist-get session :branch-summaries)
-                            (list (list :branch-id
-                                        (plist-get record :branch-id)
-                                        :summary
-                                        (plist-get record :summary)
-                                        :metadata
-                                        (plist-get record :metadata)
-                                        :created-at timestamp))))
+         (e-session--prepend-replayed-item
+          session
+          :branch-summaries
+          (list :branch-id
+                (plist-get record :branch-id)
+                :summary
+                (plist-get record :summary)
+                :metadata
+                (plist-get record :metadata)
+                :created-at timestamp))
          (e-session--touch store session timestamp)))
       ("compaction"
        (when session
-         (plist-put session
-                    :compactions
-                    (append (plist-get session :compactions)
-                            (list (list :summary
-                                        (plist-get record :summary)
-                                        :branch-id
-                                        (plist-get record :branch-id)
-                                        :range
-                                        (plist-get record :range)
-                                        :metadata
-                                        (plist-get record :metadata)
-                                        :created-at timestamp))))
+         (e-session--prepend-replayed-item
+          session
+          :compactions
+          (list :summary
+                (plist-get record :summary)
+                :branch-id
+                (plist-get record :branch-id)
+                :range
+                (plist-get record :range)
+                :metadata
+                (plist-get record :metadata)
+                :created-at timestamp))
          (e-session--touch store session timestamp)))
       ("current-branch"
        (when session
@@ -286,9 +313,7 @@
        (when session
          (plist-put session :messages nil)
          (plist-put session :activity-events nil)
-         (e-session--touch store session timestamp))))
-    (when session
-      (e-session--refresh-derived-fields store session))))
+         (e-session--touch store session timestamp))))))
 
 (defun e-session-load (store)
   "Replay STORE's persistent sessions from disk."
@@ -309,8 +334,141 @@
                   (e-session--replay-record
                    store
                    (e-session--json-read-line line))))
-              (forward-line 1)))))))
+              (forward-line 1)))))
+      (maphash (lambda (_id session)
+                 (e-session--finalize-replayed-session store session))
+               (e-session-store-sessions store))))
   store)
+
+(defun e-session--index-entry-session (store entry)
+  "Return an unloaded session stub from index ENTRY in STORE."
+  (let ((id (plist-get entry :id)))
+    (when id
+      (list :id id
+            :metadata nil
+            :messages nil
+            :activity-events nil
+            :branch-summaries nil
+            :current-branch nil
+            :compactions nil
+            :turn-options nil
+            :created-at (plist-get entry :created-at)
+            :updated-at (plist-get entry :updated-at)
+            :updated-seq (or (plist-get entry :updated-seq) 0)
+            :name (plist-get entry :name)
+            :summary (plist-get entry :summary)
+            :message-count (or (plist-get entry :message-count) 0)
+            :last-message-at (plist-get entry :last-message-at)
+            :file (or (plist-get entry :file)
+                      (e-session--session-file store id))
+            :loaded nil))))
+
+(defun e-session--put-index-entry (store entry)
+  "Add index ENTRY to STORE as an unloaded session."
+  (when-let ((session (e-session--index-entry-session store entry)))
+    (puthash (plist-get session :id)
+             session
+             (e-session-store-sessions store))
+    (setf (e-session-store-sequence store)
+          (max (e-session-store-sequence store)
+               (or (plist-get session :updated-seq) 0)))
+    session))
+
+(defun e-session--json-read-file (file)
+  "Parse JSON FILE as a plist/list value."
+  (let ((coding-system-for-read 'utf-8))
+    (with-temp-buffer
+      (insert-file-contents file)
+      (json-parse-string (buffer-string)
+                         :object-type 'plist
+                         :array-type 'list
+                         :null-object nil
+                         :false-object :json-false))))
+
+(defun e-session--load-index (store)
+  "Load STORE session metadata from its persistent index file."
+  (when (and (e-session--persistent-p store)
+             (file-readable-p (e-session-store-index-file store)))
+    (let ((entries (condition-case nil
+                       (e-session--json-read-file
+                        (e-session-store-index-file store))
+                     (file-error nil)
+                     (json-parse-error nil))))
+      (when (and (consp entries)
+                 (listp (car entries))
+                 (plist-member (car entries) :id))
+        (clrhash (e-session-store-sessions store))
+        (setf (e-session-store-sequence store) 0)
+        (dolist (entry entries)
+          (e-session--put-index-entry store entry))
+        t))))
+
+(defun e-session--load-index-from-session-files (store)
+  "Populate STORE metadata from session records when no index exists."
+  (let ((sessions-directory (e-session-store-sessions-directory store)))
+    (when (file-directory-p sessions-directory)
+      (dolist (file (directory-files sessions-directory t "\\.jsonl\\'"))
+        (condition-case nil
+            (with-temp-buffer
+              (let ((coding-system-for-read 'utf-8))
+                (insert-file-contents file nil 0 65536))
+              (goto-char (point-min))
+              (let* ((line (buffer-substring-no-properties
+                            (line-beginning-position)
+                            (line-end-position)))
+                     (record (and (not (string-empty-p line))
+                                  (e-session--json-read-line line))))
+                (when (equal (plist-get record :type) "session")
+                  (e-session--put-index-entry
+                   store
+                   (list :id (plist-get record :session-id)
+                         :created-at (or (plist-get record :created-at)
+                                         (plist-get record :timestamp))
+                         :updated-at (or (plist-get record :updated-at)
+                                         (plist-get record :timestamp))
+                         :message-count 0
+                         :file file)))))
+          (file-error nil)
+          (json-parse-error nil))))))
+
+(defun e-session-persistent-index-store-create (&optional directory)
+  "Create a persistent STORE with session metadata loaded from the index.
+Transcript JSONL files are loaded on demand when a session's messages or mutable
+state are requested."
+  (let* ((directory (file-name-as-directory
+                     (expand-file-name (or directory e-session-directory))))
+         (sessions-directory (expand-file-name "sessions" directory))
+         (store (e-session-store-create
+                 :directory directory
+                 :sessions-directory sessions-directory
+                 :index-file (expand-file-name "index.json" directory)
+                 :persistent t)))
+    (unless (e-session--load-index store)
+      (e-session--load-index-from-session-files store))
+    store))
+
+(defun e-session-load-session (store session-id)
+  "Load SESSION-ID transcript from persistent STORE."
+  (unless (e-session--persistent-p store)
+    (signal 'e-session-missing (list session-id)))
+  (let ((file (e-session--session-file store session-id)))
+    (unless (file-readable-p file)
+      (signal 'e-session-missing (list session-id)))
+    (remhash session-id (e-session-store-sessions store))
+    (with-temp-buffer
+      (let ((coding-system-for-read 'utf-8))
+        (insert-file-contents file))
+      (goto-char (point-min))
+      (while (not (eobp))
+        (let ((line (buffer-substring-no-properties
+                     (line-beginning-position)
+                     (line-end-position))))
+          (unless (string-empty-p line)
+            (e-session--replay-record store (e-session--json-read-line line))))
+        (forward-line 1)))
+    (if-let ((session (gethash session-id (e-session-store-sessions store))))
+        (e-session--finalize-replayed-session store session)
+      (signal 'e-session-missing (list session-id)))))
 
 (defun e-session-persistent-store-create (&optional directory)
   "Create and load a persistent session store rooted at DIRECTORY."
@@ -341,7 +499,8 @@
                         :turn-options nil
                         :created-at timestamp
                         :updated-at timestamp
-                        :name (plist-get metadata :name))))
+                        :name (plist-get metadata :name)
+                        :loaded t)))
     (e-session--touch store session timestamp)
     (e-session--refresh-derived-fields store session)
     (puthash id session (e-session-store-sessions store))
@@ -358,8 +517,13 @@
 
 (defun e-session-get (store session-id)
   "Return SESSION-ID from STORE."
-  (or (gethash session-id (e-session-store-sessions store))
-      (signal 'e-session-missing (list session-id))))
+  (let ((session (gethash session-id (e-session-store-sessions store))))
+    (unless session
+      (signal 'e-session-missing (list session-id)))
+    (if (and (e-session--persistent-p store)
+             (not (plist-get session :loaded)))
+        (e-session-load-session store session-id)
+      session)))
 
 (defun e-session-messages (store session-id)
   "Return messages for SESSION-ID in STORE in insertion order."
@@ -536,13 +700,7 @@ BRANCH-ID, RANGE, and METADATA describe the compacted source when available."
 
 (defun e-session-display-title (store session-id)
   "Return display title for SESSION-ID in STORE."
-  (let ((session (e-session-get store session-id)))
-    (or (plist-get session :name)
-        (when-let ((summary (plist-get session :summary)))
-          (e-session--default-title summary))
-        (when-let ((created-at (plist-get session :created-at)))
-          (format "Untitled %s" created-at))
-        (format "Untitled %s" session-id))))
+  (e-session--display-title-for-session (e-session-get store session-id)))
 
 (defun e-session-list (store)
   "Return STORE sessions sorted by most recent message."

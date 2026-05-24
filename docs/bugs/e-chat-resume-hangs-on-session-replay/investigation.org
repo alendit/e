@@ -1,0 +1,57 @@
+#+title: Investigation
+#+startup: overview
+
+* Source inspected
+
+- =lisp/shells/chat/e-chat.el=: =e-chat-resume= constructs the default harness
+  before showing the resume picker. The hang can therefore happen before
+  completion UI or preview rendering starts.
+- =lisp/core/e-session.el=: =e-session-persistent-store-create= calls
+  =e-session-load=. During replay, each =message= record appends to the
+  session's message list and refreshes derived fields again.
+- =test/e-session-test.el=: existing persistence tests covered replay order but
+  did not assert replay work stayed bounded for long transcripts.
+
+* Live access
+
+Live =emacsclient= inspection was not attempted before the fix because the user
+reported the active Emacs was already hanging and likely unable to service
+=emacsclient= requests. The user-provided debugger stack was used as the live
+runtime evidence.
+
+* Conclusion
+
+The resume command is blocked while loading persisted JSONL sessions, not while
+rendering the resume picker. The replay path does per-record derived-field work
+and list append work, which becomes expensive for long sessions and especially
+noticeable when a persisted tool message contains a large nested result.
+
+The local cache also contained one session JSONL file over 6 GB, so even linear
+full-transcript replay was too expensive for the initial resume list. The resume
+list path needs metadata-only loading first, with transcript replay delayed
+until a selected session's messages are actually needed.
+
+* Next step
+
+Add a regression test for bounded replay refresh work, then change session
+loading to build ordered replay lists linearly and refresh derived session
+fields once per loaded session.
+
+* Fix evidence
+
+- Added =e-session-test-persistent-replay-refreshes-derived-fields-once-per-session=.
+  It failed before the fix because 40 replayed messages caused 40 derived-field
+  refreshes.
+- Changed =e-session-load= replay to prepend ordered list fields during JSONL
+  replay, reverse them once after all files load, and refresh derived fields once
+  per loaded session.
+- Added an index-backed persistent session store for default chat listing. It
+  reads =index.json= when the index is valid, falls back to scanning only the
+  first session record of each JSONL file for older malformed indexes, and loads
+  full transcripts on demand.
+- Changed resume preview to render metadata when the selected session's
+  transcript is still unloaded.
+- Verified =test/e-session-test.el= and the existing =e-chat-resume= tests in
+  =test/e-chat-test.el= after the change.
+- Verified the real cache path in batch mode and the live default chat harness:
+  both listed 28 sessions without parsing the large transcript file.

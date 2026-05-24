@@ -2926,6 +2926,42 @@
       (when (buffer-live-p origin)
         (kill-buffer origin)))))
 
+(ert-deftest e-chat-test-resume-preview-for-index-session-avoids-transcript-load ()
+  "Resume previews render metadata when a persistent transcript is not loaded."
+  (let* ((directory (make-temp-file "e-chat-" t))
+         (store (e-session-persistent-store-create directory))
+         (session-id (plist-get
+                      (e-session-create store
+                                        :id "indexed-preview"
+                                        :metadata '(:name "Indexed preview"))
+                      :id))
+         (backend (e-backend-fake-create :items nil)))
+    (unwind-protect
+        (progn
+          (e-session-append-message
+           store session-id
+           '(:id "msg-1" :role user :content "indexed preview hello"))
+          (let* ((indexed-store (e-session-persistent-index-store-create directory))
+                 (harness (e-chat-test--activate-chat-session
+                           (e-harness-create :backend backend
+                                             :sessions indexed-store)))
+                 (session (car (e-harness-session-list harness)))
+                 (original-insert (symbol-function 'insert-file-contents)))
+            (should-not (plist-get session :loaded))
+            (cl-letf (((symbol-function 'insert-file-contents)
+                       (lambda (filename &rest args)
+                         (when (string-suffix-p ".jsonl" filename)
+                           (error "preview loaded transcript"))
+                         (apply original-insert filename args))))
+              (let ((preview (e-chat--render-resume-preview harness session)))
+                (with-current-buffer preview
+                  (should (equal e-chat-session-id "indexed-preview"))
+                  (should (string-match-p "Indexed preview" (buffer-string)))
+                  (should (string-match-p "indexed preview hello"
+                                          (buffer-string))))))))
+      (e-chat-test--kill-chat-buffers)
+      (delete-directory directory t))))
+
 (ert-deftest e-chat-test-resume-reader-uses-consult-preview-when-available ()
   "Resume selection uses Consult preview state when Consult is available."
   (let* ((store (e-session-store-create))
