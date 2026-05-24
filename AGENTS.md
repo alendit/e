@@ -21,9 +21,10 @@
 ## How To
 
 - Dev work plans and related dev work notes belong under `docs/feats/`.
+- Tiny work, meaning small changes like trivial styling changes, belongs under `docs/feats/tiny/` and should be numbered there.
 - Research notes belong under `docs/research/`.
 - Bug reports belong under `docs/bugs/`. When a user creates a bug report, create a new directory under `docs/bugs/` containing `report.org` with a short description of what the user reported, then create `investigation.org` in the same directory with the results of investigating the report using both code and live access.
-- See `docs/references/dev_work.org` for the current dev work, research, and bug report conventions.
+- See `docs/references/dev_work.org` for the current dev work, tiny work, research, and bug report conventions.
 
 ## Architecture Guidance
 

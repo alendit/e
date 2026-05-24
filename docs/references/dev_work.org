@@ -14,6 +14,19 @@ docs/feats/04-message-turn-identity/plan.org
 
 Keep the plan in that directory. Add sketches or supporting notes there when they are specific to the dev work.
 
+** Tiny work
+Tiny work is for small changes like trivial styling changes.
+
+Put tiny work under =docs/feats/tiny/= and number each item there.
+
+Use one file or directory per tiny work item, with a numeric prefix and a short slug:
+
+#+begin_example
+docs/feats/tiny/001-adjust-button-spacing.org
+#+end_example
+
+Keep the note brief: describe the small change, why it is safe to treat as tiny, and any validation performed.
+
 ** Research notes
 Put research notes under =docs/research/=.
 

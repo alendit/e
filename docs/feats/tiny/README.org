@@ -1,0 +1,12 @@
+#+title: Tiny Work
+#+startup: overview
+
+Tiny work is for small changes like trivial styling changes.
+
+Create numbered items in this directory. Use one file or directory per tiny work item, with a numeric prefix and a short slug, for example:
+
+#+begin_example
+001-adjust-button-spacing.org
+#+end_example
+
+Keep each note brief: describe the small change, why it is safe to treat as tiny, and any validation performed.
