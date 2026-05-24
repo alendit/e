@@ -44,8 +44,11 @@
     (should (member :chat-default (e-harness-registry-list)))
     (should-not (e-harness-registry-get :chat-default))))
 
-(ert-deftest e-defaults-test-layer-specs-include-harness-base-and-os-base ()
-  "Built-in layer specs use the current harness and OS base layer ids."
+(ert-deftest e-defaults-test-layer-specs-include-dev-harness-base-and-os-base ()
+  "Built-in layer specs include dev, harness, and OS base layer ids."
+  (should (memq 'e-dev
+                (mapcar (lambda (spec) (plist-get spec :id))
+                        e-default-layer-specs)))
   (should (memq 'harness-base
                 (mapcar (lambda (spec) (plist-get spec :id))
                         e-default-layer-specs)))

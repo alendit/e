@@ -19,8 +19,13 @@
   '((:id e
      :name "e"
      :summary "Runtime self-management commands."
-     :feature e-layer-selection
-     :factory e-layer-selection-layer-create)
+     :feature e-layer
+     :factory e-core-layer-create)
+    (:id e-dev
+     :name "e Dev"
+     :summary "Development context inspection tools."
+     :feature e-dev-layer
+     :factory e-dev-layer-create)
     (:id agents-std-context
      :name "Agents Std Context"
      :summary "Standard AGENTS.md and filesystem skill context."

@@ -61,13 +61,6 @@
                   :disable #'e-layer-selection-disable
                   :toggle #'e-layer-selection-toggle)))
 
-(defun e-layer-selection-layer-create ()
-  "Create the e self-management layer."
-  (e-layer-create
-   :id 'e
-   :name "e"
-   :capabilities (list (e-layer-selection-capability-create))))
-
 (provide 'e-layer-selection)
 
 ;;; e-layer-selection.el ends here

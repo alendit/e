@@ -16,6 +16,7 @@
 (require 'e-backend)
 (require 'e-capabilities)
 (require 'e-harness)
+(require 'e-layer)
 (require 'e-layer-selection)
 (require 'e-layers)
 
@@ -28,14 +29,14 @@
 (ert-deftest e-layer-selection-test-capability-exposes-layer-actions ()
   "The e layer owns generic layer selection actions."
   (let ((capability (e-layer-selection-capability-create))
-        (layer (e-layer-selection-layer-create)))
+        (layer (e-core-layer-create)))
     (should (eq (e-capability-id capability) 'layer-selection))
     (should (functionp (e-capabilities-action capability :enable)))
     (should (functionp (e-capabilities-action capability :disable)))
     (should (functionp (e-capabilities-action capability :toggle)))
     (should (eq (e-layer-id layer) 'e))
     (should (equal (mapcar #'e-capability-id (e-layer-capabilities layer))
-                   '(layer-selection)))))
+                   '(layer-selection context-inspection)))))
 
 (ert-deftest e-layer-selection-test-toggles-known-layer-on-harness ()
   "Layer selection can enable and disable a registered layer by id."
