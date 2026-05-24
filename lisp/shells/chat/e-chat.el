@@ -2871,8 +2871,9 @@ non-nil, is used by focused block activation."
   (pop-to-buffer buffer)
   (e-chat--after-display-buffer buffer))
 
-(defun e-chat--clear ()
-  "Clear and initialize the current chat buffer."
+(defun e-chat--clear (&optional omit-composer)
+  "Clear and initialize the current chat buffer.
+When OMIT-COMPOSER is non-nil, leave the buffer as transcript-only."
   (let ((inhibit-read-only t))
     (erase-buffer)
     (setq e-chat--transcript-end-marker nil)
@@ -2915,7 +2916,8 @@ non-nil, is used by focused block activation."
            (format "%s\n%s\n\n" e-chat--title title)
          (concat e-chat--title "\n\n"))
        'e-chat-title-face))
-    (e-chat--insert-composer)))
+    (unless omit-composer
+      (e-chat--insert-composer))))
 
 (defun e-chat--format-token-count (tokens)
   "Return compact display text for TOKENS."
@@ -3360,7 +3362,7 @@ With prefix argument POP-TO-SIDE, use the pop display path."
         (setq-local e-chat-harness harness)
         (setq-local e-chat-session-id session-id)
         (setq-local cursor-type nil)
-        (e-chat--clear)
+        (e-chat--clear t)
         (if (plist-get session :loaded)
             (let ((messages (e-chat--tail-messages
                              (e-harness-messages harness session-id)
