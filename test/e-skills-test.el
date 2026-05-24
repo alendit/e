@@ -165,6 +165,56 @@
                    '("e://review/refs/checklist.md"
                      "e://review/skills/code-review")))))
 
+(ert-deftest e-skills-test-builder-uses-custom-heading ()
+  "Callers can override the generated skill preamble heading."
+  (let* ((heading "Load targeted guidance when useful:")
+         (capability
+          (e-capability-with-skills-create
+           :id 'review
+           :skill-heading heading
+           :skills
+           (list
+            (e-skill-spec-create
+             :name "code-review"
+             :description "Review code changes."
+             :content "Review content."))))
+         (instructions (e-capability-instructions capability)))
+    (should (string-match-p (regexp-quote heading) instructions))
+    (should (string-match-p
+             "code-review: Review code changes. Read e://review/skills/code-review"
+             instructions))
+    (should-not (string-match-p
+                 "Additional guidance is available on demand"
+                 instructions))))
+
+(ert-deftest e-skills-test-builder-preserves-non-resource-fields ()
+  "Skill capabilities keep ordinary capability contribution fields."
+  (let* ((tool-provider (lambda (_registry) :tool))
+         (resource-method-provider (lambda (_registry) :resource-method))
+         (context-provider (lambda (_context) nil))
+         (action (lambda () :action))
+         (actions (list :inspect action))
+         (capability
+          (e-capability-with-skills-create
+           :id 'assistant
+           :tools (list tool-provider)
+           :resource-methods (list resource-method-provider)
+           :context-providers (list context-provider)
+           :actions actions
+           :skills
+           (list
+            (e-skill-spec-create
+             :name "focused"
+             :description "Stay focused."
+             :content "Focus content.")))))
+    (should (equal (e-capability-tools capability)
+                   (list tool-provider)))
+    (should (equal (e-capability-resource-methods capability)
+                   (list resource-method-provider)))
+    (should (equal (e-capability-context-providers capability)
+                   (list context-provider)))
+    (should (eq (e-capabilities-action capability :inspect) action))))
+
 (ert-deftest e-skills-test-builder-does-not-add-empty-preamble ()
   "A capability without skills keeps caller instructions unchanged."
   (let ((capability

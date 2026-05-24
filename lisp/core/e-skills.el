@@ -59,7 +59,8 @@
 NAME and DESCRIPTION are compact model-facing metadata.  CONTENT is a static
 string convenience that is normalized into the same callable READER contract
 used for dynamic guidance bodies.  When PATH is omitted, the resource path is
-`skills/NAME'."
+`skills/NAME' and NAME must not contain slashes.  When PATH is explicit, NAME
+is display metadata and may contain slashes."
   (let* ((path (e-skills--normalize-path path))
          (name (e-skills--normalize-name name path))
          (description (e-skills--normalize-description description)))
