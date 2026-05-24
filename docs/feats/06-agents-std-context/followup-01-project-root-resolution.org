@@ -1,0 +1,101 @@
+#+title: Follow-up 01: Project Root Resolution for Agents Std Context
+#+startup: overview
+
+* Surfaced issue
+
+The default registered layer path creates =agents-std-context= with the process-local =default-directory= that happens to be current when the cached default chat harness is first instantiated. The layer closes over that root in its AGENTS context provider and skill resources. Later chats opened from another project can therefore keep seeing the first project's =AGENTS.md= files and =.agents/skills= resources until the default harness is recreated or reconciled.
+
+This is a high-impact issue for feature 06 because the feature's goal is to provide correct project orientation automatically.
+
+* Mitigation direction
+
+Make the root used by directory-sensitive layers explicit and session/use scoped instead of accidental harness-construction state.
+
+The preferred direction is:
+
+1. Add a narrow project-root accessor owned by harness/session policy, not by presentation rendering. Candidate shape: a function such as =e-harness-session-root= or =e-harness-project-root=.
+2. Record the desired project root when opening/creating a chat session.
+3. Let only directory-sensitive capabilities ask the accessor for the active root at use time.
+4. Avoid recreating layers just to change roots. Layers remain packaging presets; root-sensitive behavior lives in the capabilities that actually touch the filesystem.
+
+* Proposed implementation sketch
+
+** Step 1: Expose a narrow root accessor
+
+Add a small public accessor for the current session project root. Candidate name: =e-harness-project-root=.
+
+The accessor should accept enough turn context to be useful from capabilities:
+
+#+begin_src emacs-lisp
+(e-harness-project-root harness &optional session-id turn-id)
+#+end_src
+
+Initial resolution order:
+
+1. Session metadata =:project-root=.
+2. Session turn option =:project-root= if we decide turn options should be able to override it.
+3. Harness/default root fallback only when no session root exists.
+4. =default-directory= as the final compatibility fallback.
+
+Normalize non-nil values with =file-name-as-directory= and =expand-file-name=.
+
+Do not make every layer depend on root concepts. The accessor exists for capabilities that need a filesystem root; layers that ignore roots keep working unchanged.
+
+** Step 2: Store a session project root
+
+Add a session metadata field for the project root. Candidate name: =:project-root=.
+
+Sources, in order:
+
+1. Explicit argument from chat opening/creation commands when available.
+2. Buffer-local/default =default-directory= at the time the user creates the chat.
+3. Harness default root as a fallback only when no session root exists.
+
+Normalize the value with =file-name-as-directory= and =expand-file-name= before storing it.
+
+** Step 3: Make directory-sensitive capabilities consult the accessor
+
+Change existing directory-rooted capabilities to ask =e-harness-project-root= where the root matters instead of closing over an ambient =default-directory= from layer construction.
+
+Initial consumers:
+
+- =agents-std-context=: AGENTS.md context providers should resolve the root from the active =harness/session-id/turn-id= and discover files from that root for the current turn.
+- =agents-std-context= skill resources: project skill reads should resolve through the active root. If the existing static =e://= store cannot represent session-rooted project resources, move these project skill reads behind a context-aware read-only resource method.
+- =os-base=: file resources and shell tools should resolve their workspace root from the active session root. If needed, add the same narrow context-aware provider convention for tool providers that resource methods already have.
+
+Global resources can remain global. Root-insensitive layers and capabilities should not change.
+
+** Step 4: Presentation integration
+
+When =e-chat= creates a session, capture the selected buffer's =default-directory= as the session project root if the session does not already have one.
+
+When =e-chat= opens an existing session, it should preserve the stored root. Rendering should not perform discovery; presentation only supplies the initial root.
+
+* Tests
+
+Add focused tests that fail with the current behavior:
+
+- Creating a default chat harness/session in project A and then opening/creating a session in project B should produce AGENTS context from project B, not A.
+- The same scenario should expose project B skill resources under =e://agents-std-context/skills/project/...=.
+- Existing default chat layer order should remain stable across different session roots.
+- Existing active =chat-session= layer should be preserved.
+
+A useful test can create two temporary projects with different =AGENTS.md= and =.agents/skills= trees, reuse the same cached default harness, and assert each session's context/resources use that session's root without rebuilding the harness layers.
+
+* Validation
+
+- Run =eldev test test/e-agents-std-context-test.el test/e-defaults-test.el test/e-chat-test.el=.
+- Run full =eldev test= if the accessor touches core session or harness behavior.
+- After changing =lisp/*.el=, run live reload:
+
+#+begin_src shell
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Then inspect a live chat context from two different project roots when feasible.
+
+* Design notes
+
+- This reduces coupling by making root selection explicit instead of relying on ambient dynamic state.
+- Keep the final root decision close to harness/session policy, where user intent and session identity are known.
+- Do not put project-root lookup into presentation rendering or into layer factory plumbing; capabilities that need a root should consume the narrow harness accessor.
