@@ -57,18 +57,14 @@
 (ert-deftest e-dev-test-reload-refreshes-defaults ()
   "Reload reapplies changed default options."
   (setq e-openai-default-model "gpt-5.4")
-  (setq e-default-chat-layer-functions
-        '(e-base-layer-create e-emacs-base-layer-create))
+  (setq e-default-chat-layer-ids '(base emacs-base))
   (let ((e-startup-shell-hook
          (cons (lambda ()
                  (e-harness-registry-get-or-create :chat-default))
                e-startup-shell-hook)))
     (e-dev-reload default-directory))
   (should (equal e-openai-default-model "gpt-5.5"))
-  (should (equal e-default-chat-layer-functions
-                 '(e-layer-selection-layer-create
-                   e-base-layer-create
-                   e-emacs-base-layer-create)))
+  (should (equal e-default-chat-layer-ids '(e base emacs-base)))
   (should (equal (mapcar #'e-layer-id
                          (e-harness-active-layers
                           (e-harness-registry-get-or-create :chat-default)))

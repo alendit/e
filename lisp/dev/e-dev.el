@@ -53,7 +53,7 @@
 (defconst e-dev--reevaluated-defaults
   '(e-openai-default-model
     e-openai-default-reasoning-effort
-    e-default-chat-layer-functions)
+    e-default-chat-layer-ids)
   "Uncustomized options whose changed defaults should apply after reload.")
 
 (defun e-dev--clear-obsolete-functions ()

@@ -37,6 +37,9 @@
   (subscribers nil)
   active-turns)
 
+(defvar e-harness--layer-change-functions (make-hash-table :test 'eq :weakness 'key)
+  "Layer change callbacks keyed by harness.")
+
 (defvar e-harness--turn-counter 0
   "Monotonic turn id counter.")
 
@@ -69,10 +72,14 @@
   (format "msg-user-%d" e-harness--message-counter))
 
 (cl-defun e-harness-create
-    (&key backend context-strategy default-options sessions active-layers)
+    (&key backend context-strategy default-options sessions active-layers
+          layer-change-function)
   "Create a core harness.
-BACKEND, CONTEXT-STRATEGY, DEFAULT-OPTIONS, SESSIONS, and ACTIVE-LAYERS
-configure the provider-neutral runtime."
+BACKEND, CONTEXT-STRATEGY, DEFAULT-OPTIONS, SESSIONS, ACTIVE-LAYERS, and
+LAYER-CHANGE-FUNCTION configure the provider-neutral runtime.
+
+When LAYER-CHANGE-FUNCTION is non-nil, it is called with HARNESS after public
+layer activation or deactivation APIs change the active layer set."
   (let ((harness
          (e-harness--make :backend backend
                           :context-strategy (or context-strategy
@@ -81,6 +88,8 @@ configure the provider-neutral runtime."
                           :sessions (or sessions (e-session-store-create))
                           :active-layers nil
                           :active-turns (make-hash-table :test 'equal))))
+    (when layer-change-function
+      (e-harness-set-layer-change-function harness layer-change-function))
     (dolist (layer active-layers)
       (e-harness-activate-layer harness layer))
     harness))
@@ -175,6 +184,24 @@ configure the provider-neutral runtime."
   "Register resource operation tools from RESOURCES in REGISTRY."
   (e-harness--register-resource-operation-tools registry resources))
 
+(defun e-harness-layer-change-function (harness)
+  "Return HARNESS layer-change callback, or nil."
+  (gethash harness e-harness--layer-change-functions))
+
+(defun e-harness-set-layer-change-function (harness function)
+  "Set HARNESS layer-change callback to FUNCTION.
+When FUNCTION is nil, clear any existing callback."
+  (if function
+      (puthash harness function e-harness--layer-change-functions)
+    (remhash harness e-harness--layer-change-functions))
+  function)
+
+(defun e-harness--notify-layers-changed (harness)
+  "Notify HARNESS that its active layer set changed."
+  (when-let ((function (e-harness-layer-change-function harness)))
+    (funcall function harness))
+  harness)
+
 (defun e-harness-activate-capability (harness capability)
   "Activate CAPABILITY in HARNESS as an anonymous capability layer."
   (e-harness-activate-layer
@@ -189,6 +216,7 @@ configure the provider-neutral runtime."
   "Activate LAYER in HARNESS."
   (setf (e-harness-active-layers harness)
         (append (e-harness-active-layers harness) (list layer)))
+  (e-harness--notify-layers-changed harness)
   layer)
 
 (defun e-harness-active-layer (harness layer-id)
@@ -212,6 +240,8 @@ configure the provider-neutral runtime."
           (setq removed layer)
         (push layer layers)))
     (setf (e-harness-active-layers harness) (nreverse layers))
+    (when removed
+      (e-harness--notify-layers-changed harness))
     removed))
 
 (cl-defun e-harness-create-session (harness &key id metadata)

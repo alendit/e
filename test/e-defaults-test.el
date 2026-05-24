@@ -93,21 +93,67 @@
         (should (eq seen-sessions store))))))
 
 (ert-deftest e-defaults-test-chat-harness-activates-chat-session-base-and-emacs ()
-  "Default chat harness activation includes chat-session, e, base, and emacs."
+  "Default chat harness activation includes chat-session and configured layers."
   (cl-letf (((symbol-function 'e-openai-create-harness)
              (lambda (&rest _args)
                (e-harness-create
                 :backend (e-backend-fake-create :items nil)))))
-    (let ((harness (e-default-chat-harness-create)))
-      (should (equal (mapcar #'e-layer-id
-                             (e-harness-active-layers harness))
-                     '(chat-session e base emacs-base)))
-      (should (memq 'chat-session
-                    (mapcar #'e-capability-id
-                            (e-harness-active-capabilities harness))))
-      (should (memq 'layer-selection
-                    (mapcar #'e-capability-id
-                            (e-harness-active-capabilities harness)))))))
+    (let ((e-default-chat-layer-ids '(e base emacs-base)))
+      (let ((harness (e-default-chat-harness-create)))
+        (should (equal (mapcar #'e-layer-id
+                               (e-harness-active-layers harness))
+                       '(chat-session e base emacs-base)))
+        (should (memq 'chat-session
+                      (mapcar #'e-capability-id
+                              (e-harness-active-capabilities harness))))
+        (should (memq 'layer-selection
+                      (mapcar #'e-capability-id
+                              (e-harness-active-capabilities harness))))))))
+
+(ert-deftest e-defaults-test-chat-harness-uses-layer-ids-as-source-of-truth ()
+  "Default chat harness creation uses configured layer ids."
+  (cl-letf (((symbol-function 'e-openai-create-harness)
+             (lambda (&rest _args)
+               (e-harness-create
+                :backend (e-backend-fake-create :items nil)))))
+    (let ((e-default-chat-layer-ids '(e base web)))
+      (let ((harness (e-default-chat-harness-create)))
+        (should (equal (mapcar #'e-layer-id
+                               (e-harness-active-layers harness))
+                       '(chat-session e base web)))))))
+
+(ert-deftest e-defaults-test-default-chat-layer_changes-update-config ()
+  "Layer changes on the default chat harness update configured layer ids."
+  (cl-letf (((symbol-function 'e-openai-create-harness)
+             (lambda (&rest _args)
+               (e-harness-create
+                :backend (e-backend-fake-create :items nil)))))
+    (let ((e-default-chat-layer-ids '(e base)))
+      (let ((harness (e-default-chat-harness-create)))
+        (e-layer-selection-enable harness 'web)
+        (should (equal e-default-chat-layer-ids '(e base web)))
+        (e-layer-selection-disable harness 'base)
+        (should (equal e-default-chat-layer-ids '(e web)))))))
+
+(ert-deftest e-defaults-test-startup-syncs-existing-chat-default-instance ()
+  "Startup reconciles existing default chat harness instances from config."
+  (e-defaults-test--with-empty-harness-registry
+    (cl-letf (((symbol-function 'e-openai-create-harness)
+               (lambda (&rest _args)
+                 (e-harness-create
+                  :backend (e-backend-fake-create :items nil)))))
+      (let ((e-default-chat-layer-ids '(e base)))
+        (e-default-harnesses-register)
+        (let ((harness (e-harness-registry-get-or-create :chat-default)))
+          (should (equal (mapcar #'e-layer-id
+                                 (e-harness-active-layers harness))
+                         '(chat-session e base)))
+          (setq e-default-chat-layer-ids '(e web))
+          (e-default-harnesses-startup)
+          (should (eq (e-harness-registry-get :chat-default) harness))
+          (should (equal (mapcar #'e-layer-id
+                                 (e-harness-active-layers harness))
+                         '(chat-session e web))))))))
 
 (provide 'e-defaults-test)
 

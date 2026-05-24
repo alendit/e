@@ -14,7 +14,9 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'e-default-layers)
 (require 'e-harness-registry)
+(require 'e-layers)
 (require 'e-session)
 (require 'e-startup)
 
@@ -29,10 +31,15 @@
   :type '(repeat sexp)
   :group 'e-defaults)
 
-(defcustom e-default-chat-layer-functions
-  '(e-layer-selection-layer-create e-base-layer-create e-emacs-base-layer-create)
-  "Layer factory functions activated by default chat harnesses."
-  :type '(repeat function)
+(defcustom e-default-chat-layer-ids
+  '(e base emacs-base)
+  "Layer ids activated by default chat harnesses.
+
+This option is the source of truth for the stateless layer preset attached to
+the default chat harness.  Runtime layer enable/disable commands update this
+option when they operate on that harness, and existing default harness instances
+are reconciled from it during startup/reload."
+  :type '(repeat symbol)
   :group 'e-defaults)
 
 (defvar e-default--chat-sessions nil
@@ -49,10 +56,45 @@
             (e-session-persistent-store-create directory)))
     e-default--chat-sessions))
 
-(cl-defun e-default-chat-harness-create (&key provider sessions layer-functions)
+(defun e-default-chat--record-layer-ids (harness)
+  "Record HARNESS active registered layer ids as default chat config."
+  (setq e-default-chat-layer-ids
+        (delq nil
+              (mapcar (lambda (layer)
+                        (let ((id (e-layer-id layer)))
+                          (and (not (eq id 'chat-session))
+                               (e-layer-get id)
+                               id)))
+                      (e-harness-active-layers harness))))
+  e-default-chat-layer-ids)
+
+(defun e-default-chat--activate-configured-layers (harness &optional layer-ids)
+  "Activate configured stateless LAYER-IDS in HARNESS.
+When LAYER-IDS is nil, use `e-default-chat-layer-ids'."
+  (e-default-layers-register)
+  (dolist (layer-id (or layer-ids e-default-chat-layer-ids))
+    (e-harness-activate-layer harness (e-layer-create-registered layer-id)))
+  harness)
+
+(defun e-default-chat-sync-harness-layers (harness &optional layer-ids)
+  "Reconcile default chat HARNESS layers from `e-default-chat-layer-ids'.
+The internal `chat-session' layer is preserved.  Other active layers are
+recreated from registered stateless layer specs in the configured order."
+  (let ((chat-session (e-harness-active-layer harness 'chat-session))
+        (change-function (e-harness-layer-change-function harness)))
+    (unwind-protect
+        (progn
+          (e-harness-set-layer-change-function harness nil)
+          (setf (e-harness-active-layers harness)
+                (delq nil (list chat-session)))
+          (e-default-chat--activate-configured-layers harness layer-ids))
+      (e-harness-set-layer-change-function harness change-function)))
+  harness)
+
+(cl-defun e-default-chat-harness-create (&key provider sessions layer-ids)
   "Create the default chat harness.
 PROVIDER selects the OpenAI-compatible provider.  SESSIONS supplies an existing
-session store.  LAYER-FUNCTIONS overrides `e-default-chat-layer-functions'."
+session store.  LAYER-IDS overrides `e-default-chat-layer-ids'."
   (require 'e-base)
   (require 'e-chat-session)
   (require 'e-emacs-base)
@@ -60,6 +102,7 @@ session store.  LAYER-FUNCTIONS overrides `e-default-chat-layer-functions'."
   (require 'e-layer-selection)
   (require 'e-layers)
   (require 'e-openai)
+  (e-default-layers-register)
   (let ((harness (e-openai-create-harness
                   :provider (or provider e-openai-default-provider)
                   :sessions (or sessions (e-default-session-store)))))
@@ -69,8 +112,9 @@ session store.  LAYER-FUNCTIONS overrides `e-default-chat-layer-functions'."
       :id 'chat-session
       :name "Chat Session"
       :capabilities (list (e-chat-session-capability-create))))
-    (dolist (create-layer (or layer-functions e-default-chat-layer-functions))
-      (e-harness-activate-layer harness (funcall create-layer)))
+    (e-default-chat--activate-configured-layers harness layer-ids)
+    (e-harness-set-layer-change-function
+     harness #'e-default-chat--record-layer-ids)
     harness))
 
 (defun e-default-harnesses-register (&optional specs)
@@ -83,6 +127,15 @@ factories are recorded, but no harness is created."
      (plist-get spec :factory)))
   (or specs e-default-harness-specs))
 
+(defun e-default-harnesses-sync-instances (&optional specs)
+  "Reconcile cached default harness instances with current config.
+Only existing instances are touched; lazy factories are left lazy."
+  (dolist (spec (or specs e-default-harness-specs))
+    (when (eq (plist-get spec :id) :chat-default)
+      (when-let ((harness (e-harness-registry-get :chat-default)))
+        (e-default-chat-sync-harness-layers harness))))
+  nil)
+
 (defun e-default-harnesses-clear-instances (&optional specs)
   "Clear cached instances for default harness SPECS.
 Factories remain registered so the next lookup recreates fresh harnesses."
@@ -91,9 +144,9 @@ Factories remain registered so the next lookup recreates fresh harnesses."
   nil)
 
 (defun e-default-harnesses-startup ()
-  "Register default harness factories for package startup."
-  (e-default-harnesses-clear-instances)
-  (e-default-harnesses-register))
+  "Register default harness factories and reconcile live default instances."
+  (e-default-harnesses-register)
+  (e-default-harnesses-sync-instances))
 
 (add-hook 'e-startup-layer-hook #'e-default-harnesses-startup)
 
