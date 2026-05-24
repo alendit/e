@@ -352,7 +352,7 @@
                                         content)))
           (save-excursion
             (goto-char (point-min))
-            (search-forward "first line")
+            (search-forward (concat e-chat--user-glyph " first line"))
             (should (eq (get-text-property (point) 'font-lock-face)
                         'e-chat-user-face))
             (search-forward "hello back")
@@ -3169,6 +3169,39 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer))
       (delete-directory directory t))))
+
+(ert-deftest e-chat-test-derived-title-updates-attached-buffer-display ()
+  "Derived session titles refresh attached presentation surfaces."
+  (let* ((store (e-session-store-create))
+         (backend (e-backend-fake-create :items nil))
+         (harness (e-harness-create :backend backend :sessions store))
+         (buffer (e-chat-open :harness harness :session-id "derived-title"))
+         (prompt "Derived title update"))
+    (unwind-protect
+        (progn
+          (e-harness--append-user-message
+           harness
+           "derived-title"
+           "turn-1"
+           prompt)
+          (e-harness--emit-turn-event
+           harness
+           "derived-title"
+           "turn-1"
+           'turn-finished
+           nil)
+          (with-current-buffer buffer
+            (let ((title (e-session-display-title store "derived-title"))
+                  (text (buffer-substring-no-properties
+                         (point-min)
+                         (min (point-max) 160))))
+              (should (equal title prompt))
+              (should (string-match-p (regexp-quote title) (buffer-name)))
+              (should (string-match-p (regexp-quote title)
+                                      header-line-format))
+              (should (string-match-p (regexp-quote title) text)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
 
 (ert-deftest e-chat-test-model-and-effort-commands-update-session-options ()
   "Chat model and effort commands update harness-owned session options."

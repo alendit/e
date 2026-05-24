@@ -406,6 +406,12 @@ The mode line uses this presentation-owned table for context usage display."
 (defvar-local e-chat--mode-line-status nil
   "Current compact e chat status text shown in the mode line.")
 
+(defvar-local e-chat--status nil
+  "Current chat status text shown in the header line.")
+
+(defvar-local e-chat--rendered-session-title nil
+  "Session title currently rendered in the chat title block.")
+
 (defvar-local e-chat--progress-timer nil
   "Timer advancing the active assistant progress indicator.")
 
@@ -2871,6 +2877,22 @@ non-nil, is used by focused block activation."
   (pop-to-buffer buffer)
   (e-chat--after-display-buffer buffer))
 
+(defun e-chat--session-title ()
+  "Return the current attached session title, or nil."
+  (and e-chat-harness
+       e-chat-session-id
+       (ignore-errors
+         (e-harness-session-title
+          e-chat-harness
+          e-chat-session-id))))
+
+(defun e-chat--title-block-text ()
+  "Return the current chat title block text."
+  (let ((title (e-chat--session-title)))
+    (if title
+        (format "%s\n%s\n\n" e-chat--title title)
+      (concat e-chat--title "\n\n"))))
+
 (defun e-chat--clear (&optional omit-composer)
   "Clear and initialize the current chat buffer.
 When OMIT-COMPOSER is non-nil, leave the buffer as transcript-only."
@@ -2905,17 +2927,9 @@ When OMIT-COMPOSER is non-nil, leave the buffer as transcript-only."
     (setq e-chat--progress-end-marker nil)
     (setq e-chat--running-status-start-marker nil)
     (setq e-chat--running-status-end-marker nil)
-    (let ((title (and e-chat-harness
-                      e-chat-session-id
-                      (ignore-errors
-                        (e-harness-session-title
-                         e-chat-harness
-                         e-chat-session-id)))))
-      (e-chat--insert-protected
-       (if title
-           (format "%s\n%s\n\n" e-chat--title title)
-         (concat e-chat--title "\n\n"))
-       'e-chat-title-face))
+    (setq e-chat--rendered-session-title (e-chat--session-title))
+    (e-chat--insert-protected (e-chat--title-block-text)
+                              'e-chat-title-face)
     (unless omit-composer
       (e-chat--insert-composer))))
 
@@ -3034,6 +3048,7 @@ When OMIT-COMPOSER is non-nil, leave the buffer as transcript-only."
 
 (defun e-chat--set-status (status)
   "Set chat buffer STATUS."
+  (setq e-chat--status status)
   (setq header-line-format
         (if (and e-chat-harness e-chat-session-id)
             (let* ((title (ignore-errors
@@ -3053,6 +3068,34 @@ When OMIT-COMPOSER is non-nil, leave the buffer as transcript-only."
                       (or effort "effort unset")))
           (format "E Chat: %s" status)))
   (e-chat--refresh-mode-line-status))
+
+(defun e-chat--title-block-end ()
+  "Return the end position of the current title block."
+  (save-excursion
+    (goto-char (point-min))
+    (or (and (search-forward "\n\n" nil t)
+             (point))
+        (point-min))))
+
+(defun e-chat--refresh-title-block ()
+  "Refresh the top title block from attached session metadata."
+  (let ((inhibit-read-only t))
+    (save-excursion
+      (delete-region (point-min) (e-chat--title-block-end))
+      (goto-char (point-min))
+      (e-chat--insert-protected (e-chat--title-block-text)
+                                'e-chat-title-face))))
+
+(defun e-chat--refresh-session-display ()
+  "Refresh presentation surfaces derived from attached session metadata."
+  (when (and e-chat-harness e-chat-session-id)
+    (let ((title (e-chat--session-title)))
+      (unless (equal title e-chat--rendered-session-title)
+        (setq e-chat--rendered-session-title title)
+        (e-chat--rename-buffer-for-session)
+        (e-chat--refresh-title-block)
+        (when e-chat--status
+          (e-chat--set-status e-chat--status))))))
 
 (defun e-chat--context-buffer-text (context session-id)
   "Return display text for CONTEXT belonging to SESSION-ID."
@@ -3138,7 +3181,9 @@ When OMIT-COMPOSER is non-nil, leave the buffer as transcript-only."
              (e-chat--render-turn-transient (plist-get event :turn-id) record))
            (e-chat--finalize-turn-display (plist-get event :turn-id)))
          (e-chat--insert-entry (car entry) (cdr entry) nil
-                               (plist-get event :turn-id))))))
+                               (plist-get event :turn-id))
+         (when (eq (plist-get message :role) 'user)
+           (e-chat--refresh-session-display))))))
     ('provider-request-started
      (e-chat--set-status "waiting for provider"))
     ('provider-request-finished

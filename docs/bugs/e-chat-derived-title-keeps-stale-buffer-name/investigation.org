@@ -66,3 +66,18 @@ session metadata updates. A focused regression should open a new session, append
 the first user message through the harness, emit the normal event sequence, and
 assert that the session title, buffer name, header line, and rendered title block
 all agree on the derived display title.
+
+* Fix evidence
+
+- Added =e-chat-test-derived-title-updates-attached-buffer-display=.  It failed
+  before the fix because the attached buffer name stayed on =Untitled= after the
+  first user message derived a better session title.
+- Added a chat presentation refresh path that tracks the rendered session title,
+  renames the attached buffer, rewrites only the top title block, and refreshes
+  the current header status when a user message changes session metadata.
+- Updated the multiline submit test to target the rendered user block instead
+  of the same text inside the derived title block.
+- Verified =rtk eldev test -f test/e-chat-test.el=.
+- Reloaded the running Emacs with =e-dev-reload= and verified a temporary live
+  chat buffer updated its title, buffer name, header line, and rendered title
+  block to =Live derived title=.
