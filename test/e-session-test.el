@@ -164,6 +164,37 @@
                 (should-not loaded)))))
       (delete-directory directory t))))
 
+(ert-deftest e-session-test-index-store-loads-object-shaped-index ()
+  "Old object-shaped indexes still provide useful session metadata."
+  (let ((directory (make-temp-file "e-session-" t)))
+    (unwind-protect
+        (progn
+          (make-directory (expand-file-name "sessions" directory) t)
+          (with-temp-file (expand-file-name "index.json" directory)
+            (insert
+             "{"
+             "\"session-1\":{"
+             "\"created-at\":\"2026-05-24T17:20:37Z\","
+             "\"updated-at\":\"2026-05-24T17:21:00Z\","
+             "\"summary\":\"object index prompt\","
+             "\"title\":\"object index prompt\","
+             "\"message-count\":3,"
+             "\"last-message-at\":\"2026-05-24T17:21:00Z\""
+             "}"
+             "}\n"))
+          (let* ((store (e-session-persistent-index-store-create directory))
+                 (sessions (e-session-list store))
+                 (session (car sessions)))
+            (should (= (length sessions) 1))
+            (should (equal (plist-get session :id) "session-1"))
+            (should (equal (plist-get session :title)
+                           "object index prompt"))
+            (should (equal (plist-get session :summary)
+                           "object index prompt"))
+            (should (= (plist-get session :message-count) 3))
+            (should-not (plist-get session :loaded))))
+      (delete-directory directory t))))
+
 (ert-deftest e-session-test-persistent-replay-preserves-message-timestamp ()
   "Persistent replay restores each message's journal timestamp."
   (let* ((directory (make-temp-file "e-session-" t))

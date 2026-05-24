@@ -58,3 +58,18 @@ message, message count, and last message timestamp without replaying full
 transcripts. Cover the live malformed index shape with a regression test so
 =e-session-persistent-index-store-create= returns useful titles instead of
 =Untitled=.
+
+* Fix evidence
+
+- Added =e-session-test-index-store-loads-object-shaped-index=.  It failed
+  before the fix because an object-shaped =index.json= produced no indexed
+  sessions and fell through toward transcript fallback behavior.
+- Added index normalization that accepts both the current array shape and the
+  older object-map shape keyed by session id.  Object entries receive the key as
+  their fallback =:id=, and legacy =:title= becomes a =:summary= fallback when
+  no explicit name or summary exists.
+- Verified =rtk eldev test -f test/e-session-test.el=.
+- Verified resume-facing coverage with focused =e-chat= resume preview tests.
+- Reloaded the running Emacs with =e-dev-reload= and verified a temporary
+  object-shaped index loads =live object prompt= as title and summary without
+  marking the session loaded.

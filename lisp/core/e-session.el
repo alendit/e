@@ -385,18 +385,56 @@
                          :null-object nil
                          :false-object :json-false))))
 
+(defun e-session--index-key-id (key)
+  "Return a session id string for object-shaped index KEY."
+  (cond
+   ((keywordp key) (string-remove-prefix ":" (symbol-name key)))
+   ((symbolp key) (symbol-name key))
+   ((stringp key) key)))
+
+(defun e-session--normalize-index-entry (entry &optional fallback-id)
+  "Return normalized index ENTRY, using FALLBACK-ID when needed."
+  (when (listp entry)
+    (let ((entry (copy-sequence entry)))
+      (unless (plist-get entry :id)
+        (when fallback-id
+          (plist-put entry :id fallback-id)))
+      (when (and (not (plist-get entry :name))
+                 (not (plist-get entry :summary))
+                 (plist-get entry :title))
+        (plist-put entry :summary (plist-get entry :title)))
+      entry)))
+
+(defun e-session--index-entries (value)
+  "Return normalized session index entries from parsed JSON VALUE."
+  (cond
+   ((and (consp value)
+         (listp (car value))
+         (plist-member (car value) :id))
+    (delq nil (mapcar #'e-session--normalize-index-entry value)))
+   ((and (consp value)
+         (keywordp (car value)))
+    (let (entries)
+      (while value
+        (let* ((key (pop value))
+               (entry (pop value))
+               (id (e-session--index-key-id key)))
+          (when-let ((normalized
+                      (e-session--normalize-index-entry entry id)))
+            (push normalized entries))))
+      (nreverse entries)))))
+
 (defun e-session--load-index (store)
   "Load STORE session metadata from its persistent index file."
   (when (and (e-session--persistent-p store)
              (file-readable-p (e-session-store-index-file store)))
-    (let ((entries (condition-case nil
-                       (e-session--json-read-file
-                        (e-session-store-index-file store))
-                     (file-error nil)
-                     (json-parse-error nil))))
-      (when (and (consp entries)
-                 (listp (car entries))
-                 (plist-member (car entries) :id))
+    (let* ((value (condition-case nil
+                      (e-session--json-read-file
+                       (e-session-store-index-file store))
+                    (file-error nil)
+                    (json-parse-error nil)))
+           (entries (e-session--index-entries value)))
+      (when entries
         (clrhash (e-session-store-sessions store))
         (setf (e-session-store-sequence store) 0)
         (dolist (entry entries)
