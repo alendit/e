@@ -1,0 +1,58 @@
+#+title: Investigation
+#+startup: overview
+
+* Source inspected
+
+- =lisp/layers/base/e-base-tools.el=: =e-base-tools-register-bash= registers
+  the =bash= tool with this description:
+  =Execute a shell command in the current working directory and return captured stdout and stderr.=
+- The same registration exposes parameters as
+  =(:command (:type "string") :timeout (:type "number"))=, with only
+  =command= listed as required. The =timeout= parameter has no description,
+  unit, recommended range, or warning that it is a hard process-kill deadline.
+- =lisp/layers/base/e-base-tools.el=: =e-base-tools--run-shell-command-start=
+  treats =timeout= as seconds and installs a timer with =run-at-time=. When the
+  timer fires, it kills the process and returns
+  =Command timed out after <timeout> seconds=.
+- =lisp/core/e-tools.el=: =e-tools-start= forwards the registered tool
+  definition and does not add parameter-level guidance. The model therefore
+  relies on the sparse =bash= schema supplied by the base layer.
+- =test/e-base-tools-test.el=: existing timeout tests prove timeout mechanics
+  for small values such as =0.1=, but there is no test that the public tool
+  definition documents the timeout parameter clearly.
+
+* Live access
+
+- The live session =20260524T194824-45f2b4288a42= had an active =bash= tool
+  call for =rtk ~/.emacs.d/bin/doom sync= with =:timeout 600000=. The persisted
+  session tail shows the tool call and =tool-started= event, but no
+  =tool-finished= result afterward.
+- A previous bounded live probe returned the active buffer
+  =*e-chat:Install and configure htt...*= with header text
+  =Emacs was blocked for 10s; checking turn state= and active turn =turn-8=.
+- A follow-up bounded =emacsclient --timeout=2 --eval= query intended to read
+  the live registered =bash= tool definition timed out with
+  =Server not responding; timed out after 2 seconds=. That is consistent with
+  the active stuck turn and was not retried to avoid adding more work to the
+  running Emacs process.
+
+* Conclusion
+
+The =bash= timeout behavior itself is implemented, but the model-facing schema
+does not explain it. Because =timeout= is just a number, the model can treat it
+as a harmless generous budget and select values like =600000= seconds. In
+practice that keeps process-backed tool calls active for days unless the user
+or harness cancels them.
+
+This is separate from the stuck =doom sync= investigation: even if =doom sync=
+has its own failure mode, the tool contract should steer models toward bounded
+timeouts appropriate to the command and make clear that long-running commands
+need a different control pattern.
+
+* Next step
+
+Update the =bash= tool description or parameter schema to document =timeout= as
+seconds, explain that it kills the process when reached, and recommend modest
+values for routine commands. Add a regression test that =e-tools-definitions=
+for =bash= includes parameter-level guidance for =timeout= so this contract
+does not silently regress.

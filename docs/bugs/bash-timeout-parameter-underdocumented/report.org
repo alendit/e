@@ -1,0 +1,12 @@
+#+title: Bash timeout parameter is underdocumented
+#+startup: overview
+
+The user reported that a stalled =e= chat had launched =doom sync= through the
+=bash= tool with a =600000= second timeout. That points to a separate bug in
+the model-facing tool description: the =timeout= parameter is exposed without
+enough guidance about its unit, semantics, and appropriate values for routine
+commands.
+
+The confusing surface can lead the model to choose extremely long timeouts for
+commands that should either use a modest timeout or be handled with progress,
+polling, or an operator-visible cancellation path.
