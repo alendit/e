@@ -1,0 +1,15 @@
+#+title: Global Skills Duplicated As Project Skills
+#+startup: overview
+
+* Report
+
+The default context repeats the same skill descriptions twice: once as global
+skills and again as project skills.  For example, the same skill slug appears as
+both:
+
+- =e://agents-std-context/skills/global/graphify=
+- =e://agents-std-context/skills/project/graphify=
+
+The repeated descriptions make the initial context larger and confusing.  The
+same physical global skill directory should not be advertised again as a project
+skill directory.

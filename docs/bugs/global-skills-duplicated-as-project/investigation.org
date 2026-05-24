@@ -1,0 +1,109 @@
+#+title: Global Skills Duplicated As Project Skills Investigation
+#+startup: overview
+
+* Investigation
+
+** Source inspection
+
+Inspected =lisp/layers/agents/e-agents-std-context.el=.
+
+Global skills are discovered from =e-agents-std-context-global-skills-directory=,
+which defaults to:
+
+#+begin_src emacs-lisp
+(expand-file-name "skills" "~/.agents")
+#+end_src
+
+Project skills are discovered by =e-agents-std-context--project-skills-directories=.
+That helper walks every ancestor directory from filesystem root to the layer root
+and includes any =.agents/skills= directory it finds:
+
+#+begin_src emacs-lisp
+(defun e-agents-std-context--project-skills-directories (directory)
+  "Return project .agents/skills directories discovered from DIRECTORY upward."
+  (let (directories)
+    (dolist (dir (e-agents-std-context--ancestor-directories directory))
+      (let ((skills (expand-file-name ".agents/skills" dir)))
+        (when (file-directory-p skills)
+          (push skills directories))))
+    (nreverse directories)))
+#+end_src
+
+For a project below the user's home directory, the ancestor walk includes the
+home directory.  Therefore =~/.agents/skills= is discovered twice:
+
+1. as the configured global skills directory;
+2. as a project ancestor directory at =HOME/.agents/skills=.
+
+=e-agents-std-context-skill-specs= assigns different resource paths for those two
+scopes, so ordinary path-based deduplication does not remove them:
+
+- =skills/global/<slug>=
+- =skills/project/<slug>=
+
+The current duplicate-project-slug dedupe only handles duplicate resource paths,
+not duplicate source files across global/project scopes.
+
+** Live inspection
+
+Inspected the visible chat buffer in the running Emacs session:
+
+#+begin_example
+(buffer-name) => "*e-chat:Store the default context...*"
+default-directory => "/Users/dimitrivorona/projects/elisp/e/docs/feats/06-agents-std-context/"
+#+end_example
+
+The active =agents-std-context= skill resources included both global and project
+URIs for the same slugs:
+
+#+begin_example
+"e://agents-std-context/skills/global/ast-grep"
+"e://agents-std-context/skills/global/context7"
+"e://agents-std-context/skills/global/create-file-outline"
+"e://agents-std-context/skills/global/graphify"
+"e://agents-std-context/skills/global/home-assistant-manager"
+"e://agents-std-context/skills/project/ast-grep"
+"e://agents-std-context/skills/project/context7"
+"e://agents-std-context/skills/project/create-file-outline"
+"e://agents-std-context/skills/project/graphify"
+"e://agents-std-context/skills/project/home-assistant-manager"
+#+end_example
+
+The source metadata for both sets pointed at the same physical files under
+=~/.agents/skills=:
+
+#+begin_example
+"~/.agents/skills/graphify/SKILL.md"
+#+end_example
+
+Calling the private project-directory discovery helper live also showed the
+problem directly:
+
+#+begin_example
+(e-agents-std-context--project-skills-directories default-directory)
+=> ("/Users/dimitrivorona/.agents/skills")
+#+end_example
+
+No project-local =.agents/skills= directory exists under the =e= checkout, so the
+project-scoped skills in this context are the home/global skills reclassified as
+project skills.
+
+* Conclusion
+
+This is a real discovery bug.  The global skills directory should not also be
+classified as a project skills directory.
+
+Suggested fix:
+
+- Normalize =e-agents-std-context-global-skills-directory= and candidate project
+  =.agents/skills= paths with =file-truename= or equivalent directory
+  normalization.
+- Filter the global skills directory out of
+  =e-agents-std-context--project-skills-directories=.
+- Add a regression test where a temporary home has both a global
+  =.agents/skills/<slug>/SKILL.md= and a project below that home.  Assert that
+  the context advertises only =skills/global/<slug>= and does not advertise
+  =skills/project/<slug>= for the same physical file.
+
+A broader follow-up may also want a clearer project-root boundary so arbitrary
+ancestor directories above the project root are not treated as project context.

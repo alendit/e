@@ -1,0 +1,283 @@
+#+title: Context Ordering
+#+startup: overview
+
+* Goal
+
+Make the default model context order intentional, inspectable, and stable across
+layers and capabilities.
+
+Today the order of pre-prompt context is deterministic but mostly accidental:
+active layer order controls capability order; capability instructions are emitted
+before that capability's context providers; and each provider returns messages in
+its own local order.  That creates a usable context, but it does not express a
+clear policy such as project instructions before skill catalogs or live Emacs
+state after stable guidance.
+
+Add a narrow context contribution ordering mechanism so capability authors can
+state where their instructions and provider messages belong without centralizing
+all prompt assembly into one monolithic string builder.
+
+* Non-goals
+
+- Do not collapse all context into one hard-coded prompt template in the harness.
+  Capabilities should remain independently composable.
+- Do not redesign transcript compaction, message storage, or backend request
+  history in this feature.
+- Do not solve skill include/exclude configuration here; that belongs to feature
+  07.  This feature may document skill ordering hooks but should not implement a
+  broad filtering system.
+- Do not add provider-specific ordering logic.  Backend adapters may still map
+  system fragments to provider shapes, but the ordering policy should be
+  provider-neutral.
+- Do not make layer activation order meaningless.  It should remain the stable
+  tie-breaker for contributions with equal priority.
+
+* Decisions
+
+** Context fragments, not one global prompt string
+
+Keep the existing provider-neutral context model where capabilities contribute
+instructions and context-provider messages.  Introduce ordering metadata around
+those contributions rather than moving all content into a single central prompt
+builder.
+
+The harness should still be able to ask active capabilities for context and get a
+plain ordered list of backend-neutral messages.  The ordering mechanism should be
+an implementation detail of =e-capabilities-context-messages= and related helper
+functions.
+
+** Priority bands
+
+Use numeric priorities with stable activation-order tie-breaking.  Lower numbers
+appear earlier in the generated context.
+
+Initial priority bands:
+
+| Priority range | Intended content |
+|----------------+------------------|
+| =0-99= | Core assistant/runtime identity and non-negotiable harness policy |
+| =100-199= | Project/user policy such as =AGENTS.md= |
+| =200-299= | Capability instructions, tool/resource guidance, and compact skill catalogs |
+| =300-399= | Environment and live-state awareness such as visible buffers |
+| =400-499= | Diagnostics, debug metadata, or explicitly requested context inspection notes |
+
+Use these exact initial default priorities:
+
+| Contribution | Priority |
+|--------------+----------|
+| Capability instructions default | =200= |
+| =agents-std-context= AGENTS.md provider | =100= |
+| =agents-std-context= skill catalog/instructions | =220= |
+| OS base guidance | =230= |
+| e self-management/context-inspection guidance, if any | =240= |
+| Emacs awareness instructions | =300= |
+| Visible buffers provider | =320= |
+
+The key behavior change is that stable project policy appears before the skill
+catalog, and live volatile state appears after stable guidance.
+
+** Provider priority
+
+Extend =e-context-provider= with an optional =priority= slot, defaulting to
+=200= when unspecified.
+
+Example:
+
+#+begin_src emacs-lisp
+(e-context-provider-create
+ :name 'agents-std-context-agents
+ :priority 100
+ :build ...)
+#+end_src
+
+Provider build functions should continue returning ordinary message plists.  A
+provider-level priority applies to all messages returned by that provider in the
+first slice.  If per-message priority is ever needed, add it later as explicit
+message metadata.
+
+** Capability instruction priority
+
+Extend =e-capability= with an optional =instruction-priority= slot, defaulting to
+=200= when unspecified.
+
+Example:
+
+#+begin_src emacs-lisp
+(e-capability-create
+ :id 'emacs-awareness
+ :name "Emacs Awareness"
+ :instruction-priority 300
+ :instructions ...)
+#+end_src
+
+This keeps instruction ordering owned by the capability that contributes the
+text.  It avoids adding provider objects for simple static instructions.
+
+** Stable tie-breakers
+
+When two fragments have the same priority, preserve existing activation order and
+within-capability order.  The sorting key should be:
+
+1. priority ascending;
+2. capability contribution index from active layer/capability traversal;
+3. message index within the provider or instruction contribution.
+
+This preserves current behavior for callers that do not set priorities.
+
+** Backend adapter behavior
+
+The Codex/OpenAI adapter currently collapses all backend-neutral system messages
+into one top-level =:instructions= string and removes them from =:input=.  That
+can remain unchanged.  The only required adapter behavior is preserving the
+ordered system-message list when joining text.
+
+The context export tool should label pre-prompt items as context fragments or
+backend-neutral messages, not imply that Codex receives five separate system
+messages.  If feasible in this feature, include a small note in the export
+metadata such as:
+
+#+begin_example
+System fragments are collapsed into one Codex instructions string by the OpenAI adapter.
+#+end_example
+
+** Skill catalog ordering is related but separate
+
+Do not use context-fragment priority to sort individual skills.  Skill ordering
+should remain owned by skill/catalog code.
+
+Document the intended skill ordering policy for =agents-std-context= while this
+feature touches context ordering:
+
+1. Remove duplicate physical skill files across global/project scopes.
+2. Project-local skills should appear before global skills once project/root
+   semantics are fixed, because they are usually more specific.
+3. Nearest project skill wins for duplicate project slugs.
+4. Lexical order is only a tie-breaker within the same specificity/priority.
+5. Optional skill frontmatter priority can be considered later, but should not be
+   added until there is a real need.
+
+The duplicate global-as-project bug is tracked separately under
+=docs/bugs/global-skills-duplicated-as-project/= and should not be hidden by
+ordering changes.
+
+* Proposed implementation sketch
+
+** Step 1: Add priority slots
+
+Update core structs and constructors:
+
+- =e-context-provider= gains =priority=.
+- =e-capability= gains =instruction-priority=.
+
+Keep compatibility with stale compiled records where possible, following the
+existing accessor pattern in =e-capabilities.el=.
+
+Add helpers:
+
+#+begin_src emacs-lisp
+(e-context-provider-priority provider) ; default 200
+(e-capability-instruction-priority capability) ; default 200
+#+end_src
+
+If the generated struct accessor names collide with custom compatibility
+accessors, use private raw accessors and public tolerant wrappers.
+
+** Step 2: Sort context fragments in capability aggregation
+
+Refactor =e-capabilities-context-messages= internally:
+
+- collect fragments as records containing priority, traversal index, message
+  index, and message plist;
+- add one fragment for each capability instruction;
+- add fragments for provider-returned messages using provider priority;
+- stable-sort fragments by priority and indexes;
+- return only the message plists.
+
+Do not expose the fragment records as public API in the first slice unless tests
+need a small private helper.
+
+** Step 3: Assign priorities to built-in context contributions
+
+Set explicit priorities on built-in contributors:
+
+- =agents-std-context= AGENTS provider: =100=
+- =agents-std-context= instructions/skill catalog: =220=
+- base guidance: =230=
+- Emacs awareness instructions: =300=
+- visible buffers provider: =320=
+
+The default =200= should continue to work for third-party capabilities.
+
+** Step 4: Update context export wording
+
+Update =e-context-inspection= export text:
+
+- rename =Message count= to =Context fragment count= or =Backend-neutral message count=;
+- optionally include backend mapping note for Codex/OpenAI;
+- keep the exported content itself readable and not provider-specific beyond the
+  explanatory note.
+
+** Step 5: Document skill ordering separately
+
+Update feature 06 notes or add a short reference in this feature's review to
+explain that skill ordering has its own policy and that duplicate global/project
+skills are a bug, not a desired ordering case.
+
+* Tests
+
+Add focused tests for priority behavior:
+
+- default priorities preserve existing activation order for capabilities that do
+  not opt in;
+- lower-priority provider messages appear before higher-priority capability
+  instructions even when the provider's capability appears later in layer order;
+- equal priorities preserve layer/capability/provider message order;
+- built-in default chat context orders AGENTS.md before the skill catalog and
+  visible buffers after stable guidance.
+
+Likely files:
+
+- =test/e-context-test.el= for provider priority helpers;
+- =test/e-capabilities-test.el= for aggregation ordering;
+- =test/e-agents-std-context-test.el= for AGENTS provider priority;
+- =test/e-emacs-capabilities-test.el= for visible buffer provider priority;
+- =test/e-context-inspection-test.el= if export wording changes.
+
+* Validation
+
+Run focused tests:
+
+#+begin_src shell
+eldev test test/e-context-test.el test/e-capabilities-test.el test/e-agents-std-context-test.el test/e-emacs-capabilities-test.el test/e-context-inspection-test.el
+#+end_src
+
+Then run the default/context-sensitive tests:
+
+#+begin_src shell
+eldev test test/e-defaults-test.el test/e-chat-session-test.el test/e-harness-test.el
+#+end_src
+
+If =lisp/*.el= changes, reload the running Emacs:
+
+#+begin_src shell
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+After reload, inspect a live chat context and confirm:
+
+- AGENTS.md policy appears before the skill catalog;
+- skill descriptions are not duplicated once the duplicate-skill bug is fixed;
+- visible buffers appear after stable guidance;
+- the export tool wording no longer suggests Codex receives five separate
+  system messages.
+
+* Design notes
+
+- The ordering mechanism belongs in capability/context aggregation because that
+  is where independent capability contributions are merged.
+- Layer activation order remains meaningful as a tie-breaker and as the broad
+  default for capabilities that do not declare priorities.
+- Numeric priority is intentionally simple and mirrors existing hook id ordering
+  conventions without overbuilding a full prompt-planning DSL.
+- Avoid provider-specific policy in core.  Core orders backend-neutral messages;
+  adapters map those messages to provider request fields.
