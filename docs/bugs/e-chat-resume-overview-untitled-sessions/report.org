@@ -1,0 +1,10 @@
+#+title: e-chat resume overview shows untitled sessions
+#+startup: overview
+
+The user reported that session names in the =e-chat-resume= overview are always
+shown as =Untitled <timestamp>=. They suspect the same naming problem may affect
+other session-listing surfaces.
+
+The screenshot shows the resume picker listing many recent sessions as
+=Untitled 2026-05-24T...= even though those sessions should have useful prompt
+summaries or explicit names.

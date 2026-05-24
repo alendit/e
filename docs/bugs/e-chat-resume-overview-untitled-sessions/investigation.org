@@ -1,0 +1,60 @@
+#+title: Investigation
+#+startup: overview
+
+* Source inspected
+
+- =lisp/core/e-session.el=: =e-session--display-title-for-session= falls back
+  to =Untitled <created-at>= only when the session has neither an explicit
+  =:name= nor a derived =:summary=.
+- =lisp/core/e-session.el=: =e-session--session-index-entry= exposes =:title=
+  from =e-session--display-title-for-session=. Any caller using
+  =e-session-list= or =e-harness-session-list= will inherit the same title.
+- =lisp/core/e-session.el=: =e-session-persistent-index-store-create= first
+  tries to read =index.json= and falls back to scanning only the first
+  =session= record in each JSONL transcript when the index is absent or
+  malformed. That fallback has no message summary, message count, or last
+  message timestamp, so titles become =Untitled= for unrenamed sessions.
+- =lisp/shells/chat/e-chat.el=: =e-chat--session-choice-label= renders resume
+  candidates from the session plist's =:title=, so the resume overview directly
+  reflects the session-list metadata.
+- =test/e-session-test.el=: =e-session-test-index-store-lists-without-loading-transcripts=
+  expects the persistent index file to start with =[= and to preserve summary
+  metadata without loading transcript JSONL files.
+
+* Live access
+
+- Running =emacsclient --eval= against the default chat harness returned 28
+  sessions, but the first five entries were unloaded stubs with =:summary nil=,
+  =:message-count 0=, and titles like =Untitled 2026-05-24T17:20:37Z=.
+- The live cache path
+  =~/.emacs.d/.local/cache/e/sessions/index.json= contains useful =summary= and
+  =title= values for the same sessions, including
+  ="What's going on this the ..."= for =20260524T172037-c53439cae72c=.
+- The live =index.json= starts with ={= and repeated =id= object fields instead
+  of the array shape expected by the current source and tests.
+- The corresponding JSONL transcript for
+  =20260524T172037-c53439cae72c= contains a user =message= record with the same
+  prompt summary immediately after the initial =session= record, proving the
+  title data exists outside the broken resume listing.
+
+* Conclusion
+
+The resume overview is not missing naming data globally. It is using unloaded
+session metadata produced by the malformed-index fallback path. The live
+=index.json= still contains useful titles, but current index loading rejects its
+old object-style shape and falls back to first-record transcript stubs. Those
+stubs only know =session-id= and =created-at=, so the display title falls through
+to =Untitled <created-at>=.
+
+Because =e-chat-resume= and other session surfaces use the same
+=e-session-list= / =e-harness-session-list= metadata, this can affect any
+session overview backed by the persistent index store.
+
+* Next step
+
+Add a migration or repair path for malformed object-style =index.json= files, or
+replace the fallback with a bounded metadata scan that can derive the first user
+message, message count, and last message timestamp without replaying full
+transcripts. Cover the live malformed index shape with a regression test so
+=e-session-persistent-index-store-create= returns useful titles instead of
+=Untitled=.
