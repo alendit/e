@@ -24,6 +24,7 @@
 (define-error 'e-openai-auth-missing "OpenAI/Codex auth is missing")
 (define-error 'e-openai-auth-invalid "OpenAI/Codex auth is invalid")
 (define-error 'e-openai-provider-invalid "OpenAI provider profile is invalid")
+(define-error 'e-openai-request-timeout "OpenAI/Codex request timed out")
 
 (defconst e-openai-codex-default-base-url
   "https://chatgpt.com/backend-api"
@@ -54,6 +55,13 @@
 (defcustom e-openai-default-provider 'codex
   "Default provider profile used by generic OpenAI harness helpers."
   :type 'symbol
+  :group 'e-openai)
+
+(defcustom e-openai-request-timeout-seconds 180
+  "Seconds before OpenAI-like HTTP requests fail.
+Set this to nil to deliberately disable provider HTTP request timeouts."
+  :type '(choice (const :tag "No timeout" nil)
+                 (number :tag "Seconds"))
   :group 'e-openai)
 
 (defcustom e-openai-model-providers
@@ -381,6 +389,25 @@ profiles."
     (re-search-forward "\n\n" nil 'move)
     (buffer-substring-no-properties (point) (point-max))))
 
+(defun e-openai-codex--url-metadata (url)
+  "Return sanitized diagnostic metadata for URL."
+  (let* ((parsed (url-generic-parse-url url))
+         (path (or (url-filename parsed) "/")))
+    (when (string-match "\\`\\([^?#]*\\)" path)
+      (setq path (match-string 1 path)))
+    (when (string-empty-p path)
+      (setq path "/"))
+    (list :url-host (url-host parsed)
+          :url-path path)))
+
+(defun e-openai-codex--kill-request-buffer (buffer)
+  "Cancel any live request process attached to BUFFER and kill BUFFER."
+  (when (buffer-live-p buffer)
+    (when-let ((process (get-buffer-process buffer)))
+      (when (process-live-p process)
+        (kill-process process)))
+    (kill-buffer buffer)))
+
 (cl-defun e-openai-codex--http-request-start
     (&key url headers body on-complete on-error)
   "POST BODY to URL with HEADERS asynchronously.
@@ -389,11 +416,31 @@ condition list.  Return a cancellable `e-backend-request' handle."
   (let ((url-request-method "POST")
         (url-request-extra-headers (e-openai-codex--http-header-list headers))
         (url-request-data (encode-coding-string body 'utf-8))
-        request-buffer)
-    (setq request-buffer
-          (url-retrieve
-           url
-           (lambda (status)
+        (timeout e-openai-request-timeout-seconds)
+        request-buffer
+        timeout-timer
+        settled)
+    (cl-labels
+        ((cancel-timeout ()
+           (when (timerp timeout-timer)
+             (cancel-timer timeout-timer))
+           (setq timeout-timer nil))
+         (cleanup (buffer)
+           (cancel-timeout)
+           (e-openai-codex--kill-request-buffer buffer))
+         (settle-timeout ()
+           (unless settled
+             (setq settled t)
+             (cleanup request-buffer)
+             (when on-error
+               (funcall
+                on-error
+                (list 'e-openai-request-timeout
+                      (format "OpenAI request timed out after %s seconds"
+                              timeout))))))
+         (handle-callback (status)
+           (unless settled
+             (setq settled t)
              (let ((buffer (current-buffer)))
                (unwind-protect
                    (condition-case err
@@ -419,22 +466,33 @@ condition list.  Return a cancellable `e-backend-request' handle."
                      (error
                       (when on-error
                         (funcall on-error err))))
-                 (when (buffer-live-p buffer)
-                   (kill-buffer buffer)))))
-           nil
-           'silent
-           nil))
+                 (cleanup buffer))))))
+      (setq request-buffer
+            (url-retrieve
+             url
+             (lambda (status)
+               (handle-callback status))
+             nil
+             'silent
+             nil))
+      (when (and timeout (not settled))
+        (setq timeout-timer
+              (run-at-time timeout nil #'settle-timeout))))
     (e-backend-request-create
      :cancel (lambda ()
-               (when (buffer-live-p request-buffer)
-                 (when-let ((process (get-buffer-process request-buffer)))
-                   (when (process-live-p process)
-                     (kill-process process)))
-                 (kill-buffer request-buffer))
+               (unless settled
+                 (setq settled t))
+               (when (timerp timeout-timer)
+                 (cancel-timer timeout-timer))
+               (setq timeout-timer nil)
+               (e-openai-codex--kill-request-buffer request-buffer)
                t)
-     :metadata (list :transport 'url-retrieve
-                     :url url
-                     :cancellable t))))
+     :metadata (append
+                (list :transport 'url-retrieve
+                      :url url
+                      :timeout-seconds timeout
+                      :cancellable t)
+                (e-openai-codex--url-metadata url)))))
 
 (defun e-openai-codex--parse-json (value)
   "Parse VALUE as JSON into plist data."
@@ -707,10 +765,13 @@ default when turn options do not include `:model'."
           (e-backend-note-request-started
            (e-backend-request-create
             :metadata
-            (list :provider (plist-get context :provider)
-                  :url (plist-get context :url)
-                  :cancellable nil
-                  :transport 'sync-wrapper)))
+            (append
+             (list :provider (plist-get context :provider)
+                   :url (plist-get context :url)
+                   :cancellable nil
+                   :transport 'sync-wrapper)
+             (e-openai-codex--url-metadata
+              (plist-get context :url)))))
           (setq response
                 (funcall requester
                          :url (plist-get context :url)
@@ -740,10 +801,13 @@ default when turn options do not include `:model'."
                                    (cancel-timer timer))
                                  t)
                        :metadata
-                       (list :provider (plist-get context :provider)
-                             :url (plist-get context :url)
-                             :cancellable 'queued-only
-                             :transport 'injected-request-function)))
+                       (append
+                        (list :provider (plist-get context :provider)
+                              :url (plist-get context :url)
+                              :cancellable 'queued-only
+                              :transport 'injected-request-function)
+                        (e-openai-codex--url-metadata
+                         (plist-get context :url)))))
                 (when on-request-start
                   (funcall on-request-start request))
                 (setq timer

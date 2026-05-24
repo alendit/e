@@ -30,6 +30,15 @@
     (setq encoded (replace-regexp-in-string "=+$" "" encoded))
     (format "header.%s.signature" encoded)))
 
+(defun e-openai-test--wait-until (predicate &optional timeout)
+  "Wait until PREDICATE returns non-nil or TIMEOUT seconds elapse."
+  (let ((deadline (+ (float-time) (or timeout 1.0)))
+        value)
+    (while (and (not (setq value (funcall predicate)))
+                (< (float-time) deadline))
+      (accept-process-output nil 0.01))
+    value))
+
 (ert-deftest e-openai-test-auth-file-uses-codex-home ()
   "Codex auth file resolution honors CODEX_HOME."
   (let ((process-environment
@@ -552,6 +561,62 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
                        "data: {\"type\":\"response.completed\"}\n\n")))
       (should (= (string-bytes captured-request)
                  (length captured-request))))))
+
+(ert-deftest e-openai-test-default-http-request-times-out ()
+  "A default url-retrieve request that never calls back times out visibly."
+  (let ((e-openai-request-timeout-seconds 0.01)
+        (buffer nil)
+        (error-count 0)
+        (complete-count 0)
+        error)
+    (cl-letf (((symbol-function 'url-retrieve)
+               (lambda (_url _callback &rest _args)
+                 (setq buffer
+                       (generate-new-buffer " *e-openai-test-http*"))
+                 buffer)))
+      (e-openai-codex--http-request-start
+       :url "https://example.test/codex/responses"
+       :headers '(("Authorization" . "Bearer test"))
+       :body "{}"
+       :on-complete (lambda (_value)
+                      (setq complete-count (1+ complete-count)))
+       :on-error (lambda (err)
+                   (setq error-count (1+ error-count))
+                   (setq error err)))
+      (should (e-openai-test--wait-until (lambda () error) 0.2))
+      (should (eq (car error) 'e-openai-request-timeout))
+      (should (= error-count 1))
+      (should (= complete-count 0))
+      (should-not (buffer-live-p buffer)))))
+
+(ert-deftest e-openai-test-timeout-settles-once ()
+  "A late url callback after timeout does not settle the request again."
+  (let ((e-openai-request-timeout-seconds 0.01)
+        (callback nil)
+        (error-count 0)
+        (complete-count 0)
+        error)
+    (cl-letf (((symbol-function 'url-retrieve)
+               (lambda (_url cb &rest _args)
+                 (setq callback cb)
+                 (generate-new-buffer " *e-openai-test-http*"))))
+      (e-openai-codex--http-request-start
+       :url "https://example.test/codex/responses"
+       :headers '(("Authorization" . "Bearer test"))
+       :body "{}"
+       :on-complete (lambda (_value)
+                      (setq complete-count (1+ complete-count)))
+       :on-error (lambda (err)
+                   (setq error-count (1+ error-count))
+                   (setq error err)))
+      (should (e-openai-test--wait-until (lambda () error) 0.2))
+      (with-temp-buffer
+        (insert "HTTP/1.1 200 OK\n\n"
+                "data: {\"type\":\"response.completed\"}\n\n")
+        (funcall callback nil))
+      (should (eq (car error) 'e-openai-request-timeout))
+      (should (= error-count 1))
+      (should (= complete-count 0)))))
 
 (ert-deftest e-openai-test-backend-streams-through-injected-requester ()
   "The Codex backend streams parsed events from an injected HTTP requester."
