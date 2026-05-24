@@ -1080,6 +1080,68 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-abort-cancels-active-tool-request ()
+  "The chat abort command cancels an active tool request."
+  (let* ((e-chat-submit-backend-delay 0)
+         (tool-callbacks nil)
+         (tool-cancelled nil)
+         (backend
+          (e-backend-create
+           :name "chat-tool-abort"
+           :start
+           (cl-function
+            (lambda (&key messages options on-item on-done on-error
+                           on-request-start)
+              (ignore messages options on-error on-request-start)
+              (funcall on-item
+                       '(:type tool-call
+                         :id "call-1"
+                         :name "held-tool"
+                         :arguments (:text "hi")))
+              (funcall on-item '(:type done :reason tool-use))
+              (funcall on-done '(:status done))
+              nil))))
+         (tools (e-tools-registry-create))
+         (harness (e-harness-create :backend backend))
+         (buffer (e-chat-open :harness harness
+                              :session-id "chat-tool-abort")))
+    (e-tools-register
+     tools
+     :name "held-tool"
+     :description "Hold."
+     :start
+     (cl-function
+      (lambda (&key arguments on-done on-error on-request-start)
+        (ignore arguments on-error)
+        (setq tool-callbacks (list :on-done on-done))
+        (let ((request
+               (e-tools-request-create
+                :cancel (lambda ()
+                          (setq tool-cancelled t)
+                          t))))
+          (funcall on-request-start request)
+          request))))
+    (unwind-protect
+        (with-current-buffer buffer
+          (cl-letf (((symbol-function 'e-harness-tools)
+                     (lambda (_harness) tools)))
+            (e-chat-submit "run held tool"))
+          (should tool-callbacks)
+          (e-chat-abort)
+          (funcall (plist-get tool-callbacks :on-done) "late result")
+          (should (equal (plist-get
+                          (e-harness-wait harness e-chat-session-id 0.1)
+                          :status)
+                         'cancelled))
+          (should tool-cancelled)
+          (should (string-match-p "Turn cancelled" (buffer-string)))
+          (should (equal (mapcar (lambda (message)
+                                   (plist-get message :role))
+                                 (e-harness-messages harness e-chat-session-id))
+                         '(user tool-call tool))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-hides-transient-tool-entries ()
   "Tool progress stays out of the transcript after the turn settles."
   (let ((buffer (e-chat-test--buffer nil "chat-events")))
