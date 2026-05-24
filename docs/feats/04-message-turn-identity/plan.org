@@ -1,0 +1,321 @@
+#+title: Plan: Message and Turn Identity
+#+author: e planning
+#+date: 2026-05-24
+#+startup: overview
+
+* Goal
+Add durable identities to session history so every stored entry can be referenced reliably across reloads, compaction, retries, and future branching.
+
+This feature introduces two related concepts:
+
+- =entry id= :: stable identity for each durable session entry/message/event.
+- =turn id= :: stable grouping identity for entries produced as part of one user request / assistant run.
+
+The immediate motivation is context compaction, especially durable =first-kept-entry-id= boundaries. The near-term motivation is branching: parent pointers allow a linear session today to become a session tree later without changing the storage model again.
+
+* Non-goals
+- Implement full branch navigation UI.
+- Implement branch summarization.
+- Implement automatic compaction.
+- Rewrite context construction strategy beyond what is needed to preserve and expose ids.
+- Make ids meaningful to users; ids should be opaque implementation details except in debug/tree views.
+
+* Design summary
+Every durable session entry gets an opaque ULID =id= and an optional =parent-id= pointing to its logical predecessor.
+
+Normal linear history becomes a simple parent chain:
+
+#+begin_example
+A <- B <- C <- D
+#+end_example
+
+Future branching uses the same representation:
+
+#+begin_example
+A <- B <- C <- D
+     \
+      E <- F
+#+end_example
+
+Entries that belong to the same user request / assistant operation share a =turn-id=.
+
+Example turn:
+
+#+begin_example
+turn 01J...T
+  entry 01J...1 user message
+  entry 01J...2 assistant tool call
+  entry 01J...3 tool result
+  entry 01J...4 assistant response
+#+end_example
+
+* Identifier choice
+Use ULID strings for ids.
+
+Reasons:
+
+- globally unique enough for local session storage;
+- lexicographically sortable by creation time;
+- compact and readable compared with UUID strings;
+- opaque, so storage and UI do not depend on list indexes or buffer positions.
+
+Required ids:
+
+| Field | Meaning |
+|-------+---------|
+| =id= | unique durable id of this entry |
+| =parent-id= | previous logical entry on this branch; nil for root/session start |
+| =turn-id= | id shared by entries in one user request / assistant run |
+
+* Entry model
+A minimal durable entry should have:
+
+#+begin_src elisp
+(:id "01J..."
+ :parent-id "01J..."       ;; nil for root entry
+ :type message             ;; message | compaction | branch-summary | metadata | ...
+ :timestamp 1770000000.123
+ :payload ...)
+#+end_src
+
+Model-facing message entries should additionally carry:
+
+#+begin_src elisp
+(:turn-id "01J..."
+ :role user                ;; user | assistant | tool | system/context
+ :content "...")
+#+end_src
+
+Tool-related entries should preserve association data:
+
+#+begin_src elisp
+(:turn-id "01J..."
+ :tool-call-id "..."
+ :tool-name "read"
+ :args ...
+ :result ...
+ :status ok)              ;; ok | error | aborted
+#+end_src
+
+Future compaction entries should be able to reference a kept boundary by id:
+
+#+begin_src elisp
+(:id "01J..."
+ :parent-id "01J..."
+ :type compaction
+ :timestamp 1770000000.123
+ :summary "..."
+ :first-kept-entry-id "01J..."
+ :tokens-before 123456
+ :details ...)
+#+end_src
+
+* Parent semantics
+For now, append semantics are simple:
+
+1. Session has a current head id.
+2. New entry gets =parent-id= equal to the current head id.
+3. New entry becomes the current head.
+
+This is sufficient for linear sessions.
+
+Later, branching can be added by changing the current head to an older entry before appending. No schema change is required.
+
+* Turn semantics
+A turn begins when the user submits a request that starts an assistant operation.
+
+All durable entries produced by that operation receive the same =turn-id=, including:
+
+- user prompt entry;
+- assistant partial/final message entries;
+- tool call entries, if represented separately;
+- tool result entries;
+- errors or abort markers.
+
+Entries not associated with an assistant turn may omit =turn-id= or use their own entry id as a singleton turn id. Examples:
+
+- session metadata;
+- model-change events;
+- manual labels;
+- compaction records.
+
+* Why this is needed
+** Durable compaction boundaries
+Compaction needs to say:
+
+#+begin_quote
+This summary replaces everything before entry X; replay entry X and newer entries verbatim.
+#+end_quote
+
+That requires a stable =first-kept-entry-id=. List indexes and buffer positions are too fragile.
+
+** Repeated compaction
+A later compaction can find the previous compaction, preserve its summary, and choose a new kept boundary by id.
+
+** Branching
+A branch is just a new child of an existing entry. Parent ids allow:
+
+- fork from this message;
+- retry from this turn;
+- checkout a previous branch;
+- find common ancestors;
+- render a session tree;
+- summarize an abandoned branch.
+
+** Tool-call integrity
+Turn ids and tool-call ids let the context builder avoid invalid cuts, especially between a tool call and its result.
+
+** UI references
+Stable ids enable later UI affordances:
+
+- jump to message;
+- copy internal link to turn;
+- collapse/expand turn;
+- annotate/bookmark entry;
+- show debug/session tree;
+- fork/retry from a selected entry.
+
+* Implementation steps
+** 1. Add ULID generation
+Add a small internal ULID generator or dependency.
+
+Requirements:
+
+- returns uppercase Crockford Base32 ULID string;
+- timestamp prefix should be millisecond-based;
+- random suffix should be sufficiently random;
+- optionally monotonic within the same millisecond.
+
+Acceptance criteria:
+
+- ids are strings;
+- generated ids are unique across a stress test;
+- lexicographic order follows creation order for normal generation.
+
+** 2. Extend session entry representation
+Add =id=, =parent-id=, and optional =turn-id= fields to durable session entries.
+
+Acceptance criteria:
+
+- new sessions persist ids for all entries;
+- existing message serialization/deserialization keeps ids round-trippable;
+- ids are not regenerated when loading existing entries that already have ids.
+
+** 3. Track current head
+Persist or reconstruct a current session head.
+
+Initial approach:
+
+- for linear sessions, current head is the last appended entry;
+- after load, reconstruct current head as the newest entry with no known child, or simply the last entry until branching is implemented.
+
+Acceptance criteria:
+
+- appending a new entry sets =parent-id= to the previous head;
+- the new entry becomes the current head.
+
+** 4. Allocate turn ids
+When starting a user request / assistant operation, allocate one =turn-id= and use it for all entries in that operation.
+
+Acceptance criteria:
+
+- user prompt and assistant response for one operation share a turn id;
+- tool entries from that operation share the same turn id;
+- a second user request gets a different turn id.
+
+** 5. Backfill legacy sessions on load
+When loading entries without ids, assign ids in file order and parent them linearly.
+
+Policy:
+
+- do not mutate old files automatically unless a save/upgrade command is invoked;
+- in memory, every entry should still have ids;
+- on next append/save, either preserve backfilled ids or write a migrated representation consistently.
+
+Acceptance criteria:
+
+- old sessions remain loadable;
+- context replay works with backfilled ids;
+- no duplicate ids appear after migration.
+
+** 6. Expose helper queries
+Add session helpers that work by id:
+
+- get entry by id;
+- get current branch/path to head;
+- get entries in a turn;
+- get previous/next entry on current path;
+- find latest entry of a type on current path.
+
+Acceptance criteria:
+
+- helpers are independent of UI buffers;
+- tests cover linear paths and a simple synthetic branch.
+
+** 7. Prepare compaction integration points
+Do not implement compaction yet, but ensure the data model can support it.
+
+Add placeholders/types/helpers for:
+
+- compaction entry type;
+- =first-kept-entry-id= validation;
+- finding entries from a boundary id to current head;
+- avoiding cuts inside unsafe tool-call/tool-result groups.
+
+Acceptance criteria:
+
+- a synthetic compaction entry can be stored and loaded;
+- code can compute the kept suffix from =first-kept-entry-id= to head.
+
+* Testing plan
+- ULID format and uniqueness tests.
+- Session append creates ids and parent links.
+- Reload preserves ids.
+- Legacy entries are backfilled deterministically enough for one load.
+- Consecutive user turns receive distinct turn ids.
+- Entries inside one assistant operation share turn id.
+- Query by id returns the expected entry.
+- Current path reconstruction returns linear history in order.
+- Synthetic branch path reconstruction returns only ancestors of selected head.
+- Synthetic compaction boundary returns expected kept suffix.
+
+* Migration notes
+Existing sessions probably lack ids. Treat them as legacy linear sessions.
+
+On load:
+
+1. Walk entries in persisted order.
+2. If an entry has no id, assign a ULID.
+3. If an entry has no parent id, set parent id to previous entry's id.
+4. Infer turn ids conservatively if possible, or assign one turn id per obvious user-to-assistant group.
+
+Open migration choice:
+
+- Should loading legacy sessions immediately rewrite them with ids?
+- Or should migration happen only when the session is next saved/appended?
+
+Prefer avoiding automatic rewrites at first.
+
+* Risks
+- Retrofitting ids through existing code paths may expose hidden assumptions about list order.
+- Partial/streaming assistant messages may need careful handling: one durable final entry is simpler than many partial entries.
+- Tool call/result representation may currently be embedded in assistant messages; if so, turn ids still help, but cut validation may require later structural changes.
+- Branching needs a clear definition of current head once multiple leaves exist.
+
+* Open questions
+- Should =turn-id= be mandatory for all message entries, including standalone system/context messages?
+- Should compaction entries have their own turn id, no turn id, or reference the turn that requested manual compaction?
+- Should legacy migration infer realistic turn groups or use one turn id per message for safety?
+- Should ULID generation be monotonic within the same millisecond?
+- Where should current head be stored once true branching exists: session metadata entry, sidecar state, or derived from checkout state?
+
+* Minimal acceptance for this feature
+The feature is complete when:
+
+1. Every new durable session entry has an =id=.
+2. Every new durable session entry has a =parent-id=, except the root entry.
+3. Every assistant/user operation has a =turn-id= shared by its entries.
+4. Existing sessions can still be loaded and replayed.
+5. Session entries can be queried by id.
+6. The current linear path can be reconstructed from parent ids.
+7. The model is ready to store a future compaction entry with =first-kept-entry-id=.

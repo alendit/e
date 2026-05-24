@@ -17,6 +17,13 @@
 - For model/tool/backend changes, verify at least one live scenario in the running Emacs when feasible. Use temporary buffers for destructive tool checks, and avoid mutating user buffers unless the task explicitly calls for it.
 - Keep live reload and inspection commands narrow and explicit. Do not rely on Doom-specific APIs for package behavior; use Doom only as the user's current Emacs distribution context.
 
+
+## How To
+
+- Feature plans and related feature notes belong under `docs/feats/`.
+- Research notes belong under `docs/research/`.
+- See `docs/references/feature_work.org` for the current feature/research note conventions.
+
 ## Architecture Guidance
 
 Use this section to evaluate decomposition, dependency direction, side-effect placement, interface design, and testability.

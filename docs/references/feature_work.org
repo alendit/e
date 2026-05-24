@@ -1,0 +1,22 @@
+#+title: Feature Work Notes
+#+startup: overview
+
+* How To
+
+** Feature plans
+Put feature work under =docs/feats/=.
+
+Use one directory per feature, usually with a numeric prefix and short slug:
+
+#+begin_example
+docs/feats/04-message-turn-identity/plan.org
+#+end_example
+
+Keep the plan in that directory. Add sketches or supporting notes there when they are specific to the feature.
+
+** Research notes
+Put research notes under =docs/research/=.
+
+Use research for background investigation, comparisons, and open questions that are not yet committed to a concrete implementation plan.
+
+When research turns into planned work, create or move the plan into =docs/feats/<feature>/= and leave the research note in =docs/research/= if it remains useful as source material.
