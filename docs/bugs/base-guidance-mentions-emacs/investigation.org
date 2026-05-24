@@ -67,3 +67,12 @@ Suggested fix:
 After changing =lisp/layers/base/e-base.el=, reload the running Emacs with
 =e-dev-reload= and verify that a newly created base layer no longer contributes
 Emacs guidance.
+
+* Fix evidence
+
+- Added =e-base-test-guidance-stays-os-focused=.  It failed before the fix
+  because =base-guidance= still mentioned =Emacs buffer= in the OS base layer.
+- Changed =e-base-instructions= to mention only OS base file and shell tools.
+- Verified =rtk eldev test -f test/e-base-test.el=.
+- Reloaded the running Emacs with =e-dev-reload= and verified a newly created
+  base layer reports =:mentions-emacs-buffer nil=.

@@ -12,6 +12,7 @@
 ;;; Code:
 
 (require 'ert)
+(require 'seq)
 (require 'e)
 (require 'e-backend)
 (require 'e-base)
@@ -42,6 +43,16 @@
                      file-inspection
                      file-mutation
                      shell-process)))))
+
+(ert-deftest e-base-test-guidance-stays-os-focused ()
+  "The OS base layer does not contribute Emacs buffer guidance."
+  (let* ((layer (e-base-layer-create default-directory))
+         (guidance (seq-find (lambda (capability)
+                               (eq (e-capability-id capability) 'base-guidance))
+                             (e-layer-capabilities layer)))
+         (instructions (e-capability-instructions guidance)))
+    (should (string-match-p "file and shell tools" instructions))
+    (should-not (string-match-p "Emacs buffer" instructions))))
 
 (ert-deftest e-base-test-layer-captures-directory-for-relative-paths ()
   "The OS base layer resolves relative paths against the captured directory."

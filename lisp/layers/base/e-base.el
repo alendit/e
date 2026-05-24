@@ -15,7 +15,7 @@
 (require 'e-layers)
 
 (defconst e-base-instructions
-  "Use OS base file and shell tools for workspace files and shell commands. Use Emacs buffer tools for live buffer state."
+  "Use OS base file and shell tools for workspace files and shell commands."
   "Default instructions contributed by the OS base guidance capability.")
 
 (defun e-base-layer-create (&optional directory)
