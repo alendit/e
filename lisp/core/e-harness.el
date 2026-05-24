@@ -279,8 +279,9 @@ an already-removed record is a no-op."
           (funcall callback event))))))
 
 (defconst e-harness--durable-activity-event-types
-  '(turn-started reasoning-delta tool-started tool-finished turn-finished
-    token-usage turn-failed turn-cancelled backend-empty-output)
+  '(turn-started provider-request-started provider-request-finished
+    reasoning-delta tool-started tool-finished turn-finished token-usage
+    turn-failed turn-cancelled backend-empty-output)
   "Turn event types stored as durable session activity.")
 
 (defun e-harness--durable-activity-event-p (type)

@@ -299,6 +299,97 @@
                        :reasoning-output-tokens 139
                        :total-tokens 203017))))))
 
+(ert-deftest e-harness-test-provider-request-lifecycle-events-are-durable ()
+  "Provider request lifecycle events are retained in ordered session activity."
+  (let* ((backend
+          (e-backend-create
+           :name "durable-lifecycle"
+           :start
+           (cl-function
+            (lambda (&key messages options on-item on-done on-error
+                           on-request-start)
+              (ignore messages options on-error)
+              (funcall on-request-start
+                       (e-backend-request-create
+                        :metadata '(:provider codex
+                                    :transport url-retrieve
+                                    :url-host "example.test"
+                                    :url-path "/codex/responses"
+                                    :timeout-seconds 180)))
+              (funcall on-item '(:type assistant-message :content "answer"))
+              (funcall on-item '(:type done :reason stop))
+              (funcall on-done '(:status done))
+              nil))))
+         (harness (e-harness-create :backend backend)))
+    (e-harness-create-session harness :id "session-1")
+    (e-harness-prompt harness "session-1" "question")
+    (let* ((activity (e-harness-session-activity-events harness "session-1"))
+           (types (mapcar (lambda (event)
+                            (plist-get event :event-type))
+                          activity))
+           (started (seq-find
+                     (lambda (event)
+                       (eq (plist-get event :event-type)
+                           'provider-request-started))
+                     activity))
+           (finished (seq-find
+                      (lambda (event)
+                        (eq (plist-get event :event-type)
+                            'provider-request-finished))
+                      activity)))
+      (should (equal types
+                     '(turn-started
+                       provider-request-started
+                       provider-request-finished
+                       turn-finished)))
+      (should (equal (plist-get (plist-get started :payload) :provider)
+                     'codex))
+      (should (equal (plist-get (plist-get finished :payload) :status)
+                     'done))
+      (should (numberp (plist-get (plist-get finished :payload)
+                                  :elapsed-seconds))))))
+
+(ert-deftest e-harness-test-provider-timeout-settles-as-failed-turn ()
+  "Provider timeout errors settle as turn-failed, not turn-cancelled."
+  (let* ((backend
+          (e-backend-create
+           :name "timeout"
+           :start
+           (cl-function
+            (lambda (&key messages options on-item on-done on-error
+                           on-request-start)
+              (ignore messages options on-item on-done)
+              (funcall on-request-start
+                       (e-backend-request-create
+                        :metadata '(:provider codex
+                                    :transport url-retrieve
+                                    :url-host "example.test"
+                                    :url-path "/codex/responses"
+                                    :timeout-seconds 180)))
+              (run-at-time 0 nil
+                           (lambda ()
+                             (funcall on-error
+                                      '(e-openai-request-timeout
+                                        "provider timed out"))))
+              nil))))
+         (harness (e-harness-create :backend backend)))
+    (e-harness-create-session harness :id "session-1")
+    (e-harness-prompt-async harness "session-1" "question")
+    (let ((settled (e-harness-wait harness "session-1" 1.0)))
+      (should (equal (plist-get settled :status) 'error))
+      (should (string-match-p "provider timed out"
+                              (plist-get settled :error))))
+    (let* ((activity (e-harness-session-activity-events harness "session-1"))
+           (types (mapcar (lambda (event)
+                            (plist-get event :event-type))
+                          activity)))
+      (should (equal types
+                     '(turn-started
+                       provider-request-started
+                       provider-request-finished
+                       turn-failed)))
+      (should-not (member 'turn-cancelled types)))))
+
 (ert-deftest e-harness-test-abort-ignores-stale-provider-callbacks ()
   "Provider callbacks that arrive after abort do not mutate session state."
   (let* ((callbacks nil)
@@ -1076,7 +1167,11 @@
       (should (equal (mapcar (lambda (event)
                                (plist-get event :event-type))
                              events)
-                     '(turn-started reasoning-delta turn-finished))))))
+                     '(turn-started
+                       provider-request-started
+                       reasoning-delta
+                       provider-request-finished
+                       turn-finished))))))
 
 (provide 'e-harness-test)
 

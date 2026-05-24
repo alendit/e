@@ -12,6 +12,7 @@
 ;;; Code:
 
 (require 'ert)
+(require 'seq)
 (require 'e)
 (require 'e-backend)
 (require 'e-loop)
@@ -121,6 +122,69 @@
                     (mapcar (lambda (event) (plist-get event :type))
                             events)))))
 
+(ert-deftest e-loop-test-provider-request-lifecycle-surrounds-final-event ()
+  "Provider request lifecycle events bracket backend work before turn finish."
+  (let* ((backend
+          (e-backend-create
+           :name "lifecycle"
+           :start
+           (cl-function
+            (lambda (&key messages options on-item on-done on-error
+                           on-request-start)
+              (ignore messages options on-error)
+              (funcall on-request-start
+                       (e-backend-request-create
+                        :metadata '(:provider codex
+                                    :transport url-retrieve
+                                    :url-host "example.test"
+                                    :url-path "/codex/responses"
+                                    :timeout-seconds 180)))
+              (funcall on-item '(:type assistant-message :content "hello"))
+              (funcall on-item '(:type done :reason stop))
+              (funcall on-done '(:status done))
+              nil))))
+         (events nil))
+    (e-loop-run-turn
+     :session-id "session-1"
+     :turn-id "turn-1"
+     :messages '((:role user :content "hi"))
+     :backend backend
+     :tools (e-tools-registry-create)
+     :options nil
+     :on-event (lambda (type payload)
+                 (push (list :type type :payload payload) events))
+     :append-message #'ignore)
+    (let* ((ordered (nreverse events))
+           (types (mapcar (lambda (event) (plist-get event :type))
+                          ordered))
+           (started (seq-find
+                     (lambda (event)
+                       (eq (plist-get event :type)
+                           'provider-request-started))
+                     ordered))
+           (finished (seq-find
+                      (lambda (event)
+                        (eq (plist-get event :type)
+                            'provider-request-finished))
+                      ordered))
+           (started-payload (plist-get started :payload))
+           (finished-payload (plist-get finished :payload)))
+      (should (equal types
+                     '(turn-started
+                       provider-request-started
+                       provider-request-finished
+                       turn-finished)))
+      (should (equal (plist-get started-payload :provider) 'codex))
+      (should (equal (plist-get started-payload :transport) 'url-retrieve))
+      (should (equal (plist-get started-payload :url-host) "example.test"))
+      (should (equal (plist-get started-payload :url-path) "/codex/responses"))
+      (should (equal (plist-get started-payload :timeout-seconds) 180))
+      (should (eq (plist-get started-payload :status) 'started))
+      (should (eq (plist-get finished-payload :status) 'done))
+      (should (numberp (plist-get finished-payload :elapsed-seconds)))
+      (should-not (plist-member started-payload :url))
+      (should-not (plist-member finished-payload :url)))))
+
 (ert-deftest e-loop-test-emits-intermittent-reasoning-and-tool-call-events ()
   "Reasoning deltas and tool calls are surfaced before the final message."
   (let* ((calls 0)
@@ -167,9 +231,13 @@
                          (nreverse events))))
       (should (equal types
                      '(turn-started
+                       provider-request-started
                        reasoning-delta
                        tool-started
+                       provider-request-finished
                        tool-finished
+                       provider-request-started
+                       provider-request-finished
                        turn-finished))))))
 
 (ert-deftest e-loop-test-tool-finished-includes-call-and-result ()
@@ -361,7 +429,10 @@
                    '(assistant)))
     (should (equal (mapcar (lambda (event) (plist-get event :type))
                            (nreverse events))
-                   '(turn-started turn-finished)))))
+                   '(turn-started
+                     provider-request-started
+                     provider-request-finished
+                     turn-finished)))))
 
 (ert-deftest e-loop-test-start-turn-requeries-backend-after-async-tool-result ()
   "Async turn execution starts a follow-up backend request after synchronous tool results."

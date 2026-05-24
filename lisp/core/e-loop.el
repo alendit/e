@@ -38,6 +38,28 @@
   "Report internal turn descriptor TYPE and PAYLOAD through ON-EVENT."
   (funcall on-event type payload))
 
+(defun e-loop--request-lifecycle-payload (request status &optional started-at)
+  "Return sanitized lifecycle payload for REQUEST with STATUS.
+STARTED-AT is the `float-time' value captured when the provider request was
+published, used to calculate `:elapsed-seconds' for finished events."
+  (let* ((metadata (and (e-backend-request-p request)
+                        (e-backend-request-metadata request)))
+         (payload (list :provider (plist-get metadata :provider)
+                        :transport (plist-get metadata :transport)
+                        :url-host (plist-get metadata :url-host)
+                        :url-path (plist-get metadata :url-path)
+                        :timeout-seconds (plist-get metadata
+                                                     :timeout-seconds)
+                        :status status)))
+    (when started-at
+      (plist-put payload
+                 :elapsed-seconds
+                 (/ (float (round (* 1000 (max 0.0
+                                                (- (float-time)
+                                                   started-at)))))
+                    1000)))
+    payload))
+
 (cl-defun e-loop-start-turn
     (&key session-id turn-id messages backend tools options on-event
           append-message on-request-start on-done on-error cancelled-p)
@@ -89,11 +111,42 @@ turn settlement are callback-driven."
                   (response-assistant-content nil)
                   (response-assistant-message nil)
                   (token-usage nil)
-                  (done-reason nil))
+                  (done-reason nil)
+                  (provider-request nil)
+                  (provider-request-started-at nil)
+                  (provider-request-finished nil))
               (cl-labels
                   ((response-text ()
                      (or response-assistant-message
                          response-assistant-content))
+                   (publish-provider-request
+                    (request)
+                    (setq provider-request request)
+                    (setq provider-request-started-at (float-time))
+                    (setq provider-request-finished nil)
+                    (publish-request request)
+                    (e-loop--emit
+                     :on-event on-event
+                     :type 'provider-request-started
+                     :payload
+                     (e-loop--request-lifecycle-payload
+                      request 'started)))
+                   (finish-provider-request
+                    (status)
+                    (when (and provider-request
+                               (not provider-request-finished))
+                      (setq provider-request-finished t)
+                      (e-loop--emit
+                       :on-event on-event
+                       :type 'provider-request-finished
+                       :payload
+                       (e-loop--request-lifecycle-payload
+                        provider-request status
+                        provider-request-started-at))))
+                   (fail-provider
+                    (err)
+                    (finish-provider-request 'error)
+                    (fail err))
                    (maybe-start-followup
                     ()
                     (when (and provider-done
@@ -190,7 +243,7 @@ turn settlement are callback-driven."
                              :on-request-start
                              (lambda (request)
                                (setq reported-request request)
-                               (publish-request request))
+                               (publish-provider-request request))
                              :on-item
                              (lambda (item)
                                (unless (or settled (cancelled))
@@ -223,21 +276,23 @@ turn settlement are callback-driven."
                                         (setq done-reason
                                               (plist-get item :reason)))
                                        ('backend-error
-                                        (fail (list 'e-loop-backend-error
-                                                    (plist-get item :content)
-                                                    (plist-get item :payload))))
+                                        (fail-provider
+                                         (list 'e-loop-backend-error
+                                               (plist-get item :content)
+                                               (plist-get item :payload))))
                                        (_
                                         (e-loop--emit
                                          :on-event on-event
                                          :type 'backend-item-ignored
                                          :payload item)))
                                    (error
-                                    (fail err)))))
+                                    (fail-provider err)))))
                              :on-done
                              (lambda (_backend-result)
                                (unless (or settled (cancelled))
                                  (condition-case err
                                      (progn
+                                       (finish-provider-request 'done)
                                        (setq provider-done t)
                                        (if tool-called
                                            (maybe-start-followup)
@@ -260,13 +315,15 @@ turn settlement are callback-driven."
                                              (finish done-reason
                                                      (response-text))))))
                                    (error
-                                    (fail err)))))
-                             :on-error #'fail)))
-                       (when (and request (not (eq request reported-request)))
-                         (publish-request request))
+                                    (fail-provider err)))))
+                             :on-error #'fail-provider)))
+                       (when (and request
+                                  (not settled)
+                                  (not (eq request reported-request)))
+                         (publish-provider-request request))
                        request))
                  (error
-                  (fail err)
+                  (fail-provider err)
                   nil))))))))
       (e-loop--emit :on-event on-event
                     :type 'turn-started
