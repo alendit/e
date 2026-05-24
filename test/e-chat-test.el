@@ -3260,7 +3260,7 @@
                 'e-chat-open-latest-response))))
 
 (ert-deftest e-chat-test-context-mode-binds-default-reference-shortcuts ()
-  "The opt-in context keymap binds latest and picker insertion shortcuts."
+  "The global context keymap binds latest and picker insertion shortcuts."
   (should (eq (lookup-key e-chat-context-mode-map (kbd "s-i"))
               'e-chat-add-context-to-latest))
   (should (eq (lookup-key e-chat-context-mode-map (kbd "s-I"))
@@ -3345,8 +3345,23 @@
                           add-context-to-session))
       (should (memq command-id command-ids)))
     (should (eq (plist-get (car keymaps) :keymap) e-chat-mode-map))
-    (should (eq (plist-get (cadr keymaps) :keymap)
+    (let ((context-keymap (cl-find 'context keymaps
+                                   :key (lambda (entry)
+                                          (plist-get entry :id)))))
+      (should (eq (plist-get context-keymap :keymap) e-chat-context-mode-map))
+      (should (eq (plist-get context-keymap :scope) 'global))
+      (should (eq (plist-get context-keymap :mode) 'e-chat-context-mode)))
+    (should (eq (plist-get (cl-find 'response-navigation keymaps
+                                    :key (lambda (entry)
+                                           (plist-get entry :id)))
+                           :keymap)
                 e-chat-response-navigation-mode-map))))
+
+(ert-deftest e-chat-test-startup-enables-global-context-mode ()
+  "Chat shell startup enables the global context insertion keymap."
+  (let ((e-chat-context-mode nil))
+    (e-chat-startup)
+    (should e-chat-context-mode)))
 
 (ert-deftest e-chat-test-registers-chat-shell-on-load ()
   "Loading e-chat registers the chat shell manifest."

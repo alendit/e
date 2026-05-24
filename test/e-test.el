@@ -179,6 +179,7 @@
   (should (commandp 'e-chat-set-model))
   (should (commandp 'e-chat-set-effort))
   (should (commandp 'e-chat-show-context))
+  (should (commandp 'e-chat-context-mode))
   (should (commandp 'e-chat-submit))
   (should (commandp 'e-chat-abort))
   (should (commandp 'e-chat-reset))

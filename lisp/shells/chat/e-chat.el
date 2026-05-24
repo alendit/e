@@ -3724,6 +3724,10 @@ When DISPLAY is non-nil, show the target chat buffer."
    (list (list :id 'chat-mode
                :keymap e-chat-mode-map
                :scope 'mode)
+         (list :id 'context
+               :keymap e-chat-context-mode-map
+               :scope 'global
+               :mode 'e-chat-context-mode)
          (list :id 'response-navigation
                :keymap e-chat-response-navigation-mode-map
                :scope 'mode)
@@ -3738,6 +3742,7 @@ When DISPLAY is non-nil, show the target chat buffer."
   "Refresh and register the chat shell provider for package startup."
   (e-chat--configure-modal-editing-policy)
   (e-chat--refresh-keymaps)
+  (e-chat-context-mode 1)
   (e-shell-register (e-chat-shell))
   (e-chat-reload-buffers))
 
