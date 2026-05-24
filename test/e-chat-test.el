@@ -1328,8 +1328,8 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest e-chat-test-progress-rerender-keeps-pending-composer-glyph ()
-  "Progress redraws keep the protected bottom prompt glyph visible."
+(ert-deftest e-chat-test-progress-rerender-keeps-pending-glyph ()
+  "Progress redraws keep protected pending chrome visible."
   (let ((buffer (e-chat-test--buffer nil "chat-progress-pending-glyph")))
     (unwind-protect
         (with-current-buffer buffer
@@ -1342,11 +1342,34 @@
           (should (string-match-p
                    (concat (regexp-quote e-chat--composer-separator)
                            "\n"
-                           (regexp-quote e-chat--composer-glyph)
+                           (regexp-quote e-chat--pending-glyph)
                            "\\'")
                    (buffer-string)))
           (goto-char (point-max))
           (should (get-text-property (1- (point)) 'read-only))
+          (should (get-text-property (1- (point)) 'e-chat-pending))
+          (should-not (e-chat--composer-active-p)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-running-pending-chrome-rejects-typing ()
+  "Typing into pending running-turn chrome is rejected, not reset later."
+  (let ((buffer (e-chat-test--buffer nil "chat-progress-pending-input")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat--render-event
+           (e-events-make :type 'turn-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 10))
+          (goto-char (point-max))
+          (let ((this-command 'self-insert-command)
+                (last-command-event ?x))
+            (should-error (run-hooks 'pre-command-hook)
+                          :type 'user-error))
+          (should-not (string-suffix-p "x" (buffer-string)))
+          (e-chat--advance-progress-indicator)
+          (should-not (string-suffix-p "x" (buffer-string)))
           (should-not (e-chat--composer-active-p)))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))

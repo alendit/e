@@ -74,3 +74,18 @@ In either direction, add a regression test that simulates typing at the bottom
 prompt while a progress timer redraw happens, and assert that the chosen
 behavior is stable.
 
+* Fix evidence
+
+- Chose the conservative behavior: running turns do not expose an editable
+  follow-up composer until there is an owned follow-up queue.
+- Added =e-chat-test-running-pending-chrome-rejects-typing=.  It failed before
+  the fix because pending bottom chrome accepted no-op pre-command handling and
+  ordinary typing could be inserted outside an owned composer region.
+- Changed running-turn pending chrome to use a distinct pending glyph with
+  =e-chat-pending= metadata instead of the editable composer glyph.
+- Changed =e-chat--pre-command= to reject composer edit commands while pending
+  chrome is visible and no real composer is active.
+- Verified =rtk eldev test -f test/e-chat-test.el=.
+- Reloaded the running Emacs with =e-dev-reload= and verified a temporary live
+  running-turn buffer shows pending chrome, has no active composer, and reports
+  =Turn is running; composer is unavailable until it finishes= for typing.

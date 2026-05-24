@@ -433,6 +433,9 @@ The mode line uses this presentation-owned table for context usage display."
 (defconst e-chat--composer-glyph "❯ "
   "Glyph shown before editable e chat composer text.")
 
+(defconst e-chat--pending-glyph "…"
+  "Glyph shown while a running turn has no editable composer.")
+
 (defconst e-chat--composer-separator
   "────────────────────────────────────────────────────────────────"
   "Separator shown above the e chat composer.")
@@ -864,6 +867,14 @@ FACE is applied when non-nil.  PROPERTIES are added with text properties."
        (markerp e-chat--composer-start-marker)
        (marker-position e-chat--composer-start-marker)))
 
+(defun e-chat--pending-chrome-active-p ()
+  "Return non-nil when running-turn pending chrome is visible."
+  (and (not (e-chat--composer-active-p))
+       (markerp e-chat--transcript-end-marker)
+       (marker-position e-chat--transcript-end-marker)
+       (markerp e-chat--composer-spacer-marker)
+       (marker-position e-chat--composer-spacer-marker)))
+
 (defun e-chat--delete-composer ()
   "Delete the active composer from the current chat buffer.
 Return non-nil when a composer was removed."
@@ -980,9 +991,9 @@ Return non-nil when a composer was removed."
      (concat e-chat--composer-separator "\n")
      'e-chat-separator-face)
     (e-chat--insert-protected
-     e-chat--composer-glyph
-     'e-chat-composer-face
-     '(e-chat-composer t))
+     e-chat--pending-glyph
+     'e-chat-system-face
+     '(e-chat-pending t))
     (goto-char (point-max))))
 
 (defun e-chat--ensure-composer ()
@@ -1026,13 +1037,20 @@ Return non-nil when a composer was removed."
 
 (defun e-chat--pre-command ()
   "Redirect edit commands from readback into the composer."
-  (when (and (e-chat--composer-active-p)
-             (not e-chat-response-navigation-mode)
-             (not e-chat-block-view-mode)
-             (not e-chat-tool-list-mode)
-             (not (e-chat--point-in-composer-p))
-             (e-chat--composer-edit-command-p this-command))
-    (e-chat--show-composer)))
+  (cond
+   ((and (e-chat--composer-active-p)
+         (not e-chat-response-navigation-mode)
+         (not e-chat-block-view-mode)
+         (not e-chat-tool-list-mode)
+         (not (e-chat--point-in-composer-p))
+         (e-chat--composer-edit-command-p this-command))
+    (e-chat--show-composer))
+   ((and (e-chat--pending-chrome-active-p)
+         (not e-chat-response-navigation-mode)
+         (not e-chat-block-view-mode)
+         (not e-chat-tool-list-mode)
+         (e-chat--composer-edit-command-p this-command))
+    (user-error "Turn is running; composer is unavailable until it finishes"))))
 
 (defun e-chat--post-command ()
   "Maintain composer editing invariants after interactive commands."
