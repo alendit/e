@@ -1,0 +1,226 @@
+#+title: Plan: Turn Progress Round Trips
+#+author: e planning
+#+date: 2026-05-24
+#+startup: overview
+
+* Goal
+Make active turn progress explain what the agent is waiting on.
+
+The chat buffer should show each LLM round-trip and each resulting tool batch as
+separate progress lines.  While the runtime is waiting for the model, the active
+line says =Thinking...=.  When that model response finishes, the line is replaced
+with =Thought for <duration>=.  After the final assistant response, the transient
+progress block collapses to one navigable summary block.
+
+Example active turn:
+
+#+begin_example
+3 tool calls
+Thought for 1min 3sec
+optional reasoning progress message
+2 tool calls
+Thinking...
+#+end_example
+
+Example settled turn:
+
+#+begin_example
+Turn took 3min 25sec, 23 tool calls.
+#+end_example
+
+Opening that summary shows the expanded per-line history again:
+
+#+begin_example
+3 tool calls
+Thought for 1min 3sec
+optional reasoning progress message
+2 tool calls
+Thought for 0min 45sec
+#+end_example
+
+* Non-goals
+- Change provider request semantics or tool execution ordering.
+- Add model diagnostics for thought/reasoning blocks yet.
+- Persist full raw provider responses in the presentation layer.
+- Redesign the chat transcript, composer, or final assistant message rendering.
+- Expose internal turn ids in the normal UI.
+
+* Current behavior
+The current progress block compresses all intermittent tool activity into a
+small number of display chunks.  During an active provider request it shows the
+same assistant spinner regardless of whether the runtime is waiting on the LLM,
+waiting on a tool result, or preparing a follow-up request.
+
+That makes long turns hard to read.  A user can see that tools happened, but not
+where the turn spent time or whether the current wait is model-side or tool-side.
+
+* Target behavior
+Progress rendering should model a turn as alternating LLM round-trips and tool
+batches:
+
+1. An LLM round-trip starts when the backend request starts.
+2. While that request is open, render =Thinking...=.
+3. When that request finishes, replace the active line with =Thought for <duration>=.
+4. Reasoning deltas emitted during that request render as reasoning lines near
+   that round-trip.
+5. Tool calls emitted by that response render as one =N tool calls= batch line.
+6. Tool results complete the batch.
+7. If tools ran, the next backend request starts a new =Thinking...= line.
+8. If the final assistant response arrives, collapse the activity to a settled
+   summary block.
+
+Durations should use minutes and seconds:
+
+| Seconds | Display |
+|---------+---------|
+| 3       | =0min 3sec= |
+| 45      | =0min 45sec= |
+| 63      | =1min 3sec= |
+| 205     | =3min 25sec= |
+
+* Activity model
+Keep runtime ownership clear:
+
+- =e-loop= knows when backend requests start and finish.
+- =e-loop= knows when tool calls are emitted and tool results finish.
+- =e-harness= owns durable event emission and active turn state.
+- =e-chat= owns presentation grouping, labels, navigation blocks, and detail buffers.
+
+The presentation needs enough event data to infer these records:
+
+#+begin_src elisp
+(:kind thinking
+ :round 1
+ :started-at 1770000000.0
+ :ended-at 1770000063.0
+ :status done)
+
+(:kind reasoning
+ :round 1
+ :content "optional reasoning progress message")
+
+(:kind tool-batch
+ :round 1
+ :count 3
+ :items (... existing tool call/result detail items ...))
+
+(:kind summary
+ :started-at 1770000000.0
+ :ended-at 1770000205.0
+ :tool-count 23)
+#+end_src
+
+The exact internal plist shape can change during implementation, but these
+semantic records should be represented explicitly.  Do not infer round-trip
+boundaries later by parsing display strings.
+
+* Event boundary requirements
+The backend request boundary must be visible to the presentation layer.
+
+At minimum, the turn event stream needs events equivalent to:
+
+- =llm-started= when a provider request begins.
+- =llm-finished= when that provider request completes, before any final collapse.
+- =reasoning-delta= tied to the current LLM round-trip.
+- =tool-started= and =tool-finished= tied to the current tool batch.
+- =turn-finished= with final turn timing.
+- =turn-failed= or cancellation events should settle any open =Thinking...= line.
+
+If existing request-start callbacks can produce this without new public event
+names, keep the API smaller.  If not, add narrow public activity events rather
+than making =e-chat= inspect backend request handles directly.
+
+* Rendering rules
+During an active turn:
+
+- The transient activity block shows one line per progress record.
+- The open provider request renders as =Thinking...=.
+- A finished provider request renders as =Thought for <duration>=.
+- Reasoning text renders below the thought line for its round-trip.
+- Consecutive tools emitted by one model response render as one =N tool calls=
+  line.
+- The active progress indicator should not imply a tool is running when the
+  runtime is waiting on the LLM.
+
+After the final assistant response:
+
+- Replace the transient expanded activity with one summary block.
+- The summary text is =Turn took <duration>, <N> tool calls.=
+- Use singular text for one tool call: =Turn took 0min 12sec, 1 tool call.=
+- If no tools ran, omit the tool clause: =Turn took 0min 8sec.=
+
+* Navigation and actions
+The settled summary block participates in normal response/block navigation.
+
+Opening the summary block should show the expanded progress history:
+
+- Each expanded line is its own block.
+- Opening a tool batch block shows tool call details using the current tool-list
+  behavior.
+- Opening a thought block offers copying the block content.
+- Opening a reasoning block offers copying the block content.
+
+Future diagnostics can attach to thought and reasoning blocks later.  The first
+slice should keep those actions intentionally small.
+
+* Persistence and replay
+Durable activity replay should preserve the same visible shape after reopening a
+session:
+
+- settled turns show the summary block;
+- opening the summary reconstructs the expanded per-line history;
+- active turns reconstructed from durable events should not invent durations
+  that were never observed;
+- legacy turns without LLM boundary events may continue to use the old
+  intermittent activity details.
+
+If a session is loaded with older activity events, compatibility can be local to
+the presentation replay path.  Do not add broad fallback behavior to the runtime
+unless a current durable format requires it.
+
+* Implementation outline
+1. Add failing chat tests for active =Thinking...= lines, completed
+   =Thought for= lines, tool batch grouping by LLM round-trip, final summary
+   collapse, and expanded summary navigation.
+2. Add loop/harness tests that prove provider request start/finish boundaries
+   are emitted for initial and follow-up LLM requests.
+3. Represent round-trip activity in =e-chat= as structured records instead of
+   display strings.
+4. Update active transient rendering to draw one block per record.
+5. Update finalization to replace expanded activity with the summary block.
+6. Wire summary enter/details behavior to the expanded records.
+7. Preserve existing tool detail actions for tool batch blocks.
+8. Add copy-only actions for thought and reasoning blocks.
+9. Verify replay from durable activity events.
+10. Live-verify in a running Emacs session with a turn that performs tools and a
+    follow-up model request.
+
+* Acceptance criteria
+- While the backend request is open, the chat buffer displays =Thinking...=.
+- Once a backend response finishes, the same logical line displays
+  =Thought for <duration>=.
+- Multiple model/tool cycles render as alternating thought/reasoning/tool-batch
+  lines.
+- Tool calls are grouped per model response, not across the whole turn.
+- The final turn display collapses to =Turn took <duration>, <N> tool calls.=.
+- The summary block is navigable.
+- Opening the summary shows the expanded per-line history.
+- Expanded tool batch blocks open existing tool details.
+- Expanded thought and reasoning blocks can copy their content.
+- Existing final assistant message rendering and composer behavior remain stable.
+- Tests cover both live active progress and replayed settled turns.
+
+* Risks
+- Provider request boundaries may currently be internal callbacks rather than
+  durable events.  If so, the implementation must add a narrow event without
+  leaking backend handles into the chat shell.
+- Existing intermittent activity replay may not have enough information to
+  reconstruct old turns perfectly.  Keep legacy replay acceptable instead of
+  migrating old session files.
+- Redrawing active progress can disturb block navigation and block-view state.
+  Keep the previous preservation tests and add cases for summary/expanded
+  progress blocks.
+- Long turns can still hang if backend requests never finish.  This plan improves
+  visibility, but request timeout handling should remain a separate bugfix unless
+  explicitly pulled into the implementation slice.
+
