@@ -1,0 +1,281 @@
+#+title: Capability Config
+#+startup: overview
+
+* Goal
+
+Add a capability-scoped configuration model so capabilities can declare optional
+configuration options that alter their behavior without making layers stateful.
+
+The motivating examples are:
+
+- =agents-std-context= should allow optional =:include= and =:exclude= skill
+  lists.
+- =web= should eventually be able to choose a search backend instead of
+  hard-coding =bx= inside the tool handler.
+
+* Non-goals
+
+- Do not add a permission or trust policy system in this feature.
+- Do not add arbitrary project Lisp loading as the first per-project override
+  mechanism.
+- Do not make layers own runtime configuration. Layers may package configured
+  capability factories, but the options belong to capabilities.
+- Do not replace existing =defcustom= variables that are already adequate for
+  low-level backend knobs until a capability-level option actually needs to
+  compose them.
+
+* Decisions
+
+** Capability-level ownership
+
+Configuration options belong to capabilities, not layers.
+
+Layers are presets over capabilities. A layer may choose default values when it
+constructs a capability, but the option contract is scoped by the capability id
+and declared by the capability owner. This keeps packaging separate from
+behavior and matches the current rule that active harness behavior is derived
+from active capabilities.
+
+** Emacs/Doom-shaped configuration
+
+Model the external shape after normal Emacs and Doom configuration:
+
+#+begin_src emacs-lisp
+(setq e-capability-config
+      '((agents-std-context
+         :include ("openai-docs" "superpowers:systematic-debugging")
+         :exclude ("caveman:caveman"))))
+#+end_src
+
+The capability id scopes keyword options, so =:include= on
+=agents-std-context= does not collide with a future =:include= on another
+capability.
+
+The effective value should be resolved before constructing behavior-bearing
+closures. A configured capability should still behave like an immutable bundle
+after construction.
+
+** Override precedence
+
+Use this precedence, from lowest to highest:
+
+1. Capability-declared option defaults.
+2. User/global =e-capability-config= values.
+3. Project or directory-local =e-capability-config= values.
+4. Explicit construction-time overrides passed by a layer or harness factory.
+
+Unknown options for an active capability should be an error. Silent typo
+handling makes project configuration hard to debug. Unknown capability ids in
+the global config can be ignored until that capability is active.
+
+** Per-project overrides
+
+The first per-project mechanism should be Emacs directory-local variables. That
+is the standard Emacs project configuration mechanism and gives users an
+existing review/safety path instead of inventing a project config loader.
+
+Example project override:
+
+#+begin_src emacs-lisp
+((nil . ((e-capability-config . ((agents-std-context
+                                  :exclude ("caveman:caveman")))))))
+#+end_src
+
+A later Doom-like =.e/config.el= file can be considered after the project has a
+clear trust and review story for executing project-local Lisp.
+
+** UI surface
+
+The standard UI is Emacs Customize for global config because the first-class
+user setting is a =defcustom=. A minimal first slice should also provide
+interactive commands that route users to the relevant Custom buffer and describe
+effective config for the current project.
+
+Do not add a new shell in the first slice. A dedicated =config= shell only makes
+sense once there is a real buffer workflow for browsing active capabilities,
+editing project overrides, and showing effective values. Until then, normal
+Emacs commands plus Customize are enough.
+
+* Design
+
+** Core model
+
+Add a small core module:
+
+- =lisp/core/e-capability-config.el=
+
+It should define:
+
+- option specs with key, type, default value, documentation, optional normalizer,
+  and optional validator
+- =e-capability-config= as the global =defcustom=
+- a safe-local-variable predicate for project/directory-local overrides
+- functions to resolve a capability's effective config for a directory
+- functions to validate a config plist against declared option specs
+- helper commands for describing and customizing capability config
+
+The capability struct should gain optional metadata for declared config options
+and the effective config used to construct the capability. The effective config
+is for introspection and shell/UI display; behavior should prefer closures built
+with the resolved values instead of querying mutable globals at tool execution
+time.
+
+** Capability factories
+
+Capability constructors that depend on options should accept a resolved config
+or a directory from which config can be resolved.
+
+For example, =e-agents-std-context-capability-create= can resolve config for its
+root directory, filter skill specs, then create a normal capability with the
+filtered skills. The harness still sees only ordinary capability instructions,
+resources, tools, and context providers.
+
+Future web backend selection can follow the same shape: resolve =:search-backend=
+when creating the web capability, then register a search tool closure for that
+backend.
+
+** =agents-std-context= include/exclude semantics
+
+The first user should declare these options:
+
+- =:include= :: list of skill names or resource paths to include. Nil means all
+  discovered skills are eligible.
+- =:exclude= :: list of skill names or resource paths to exclude. Exclude wins
+  over include.
+
+Filtering happens after global/project skill discovery and dedupe, before
+=e-capability-with-skills-create= builds the capability.
+
+The first implementation should use exact matching against:
+
+- =e-skill-spec-name=
+- =e-skill-spec-path=
+
+Pattern matching can be added later when there is a concrete need. Exact
+matching is enough for the initial use and avoids surprising partial matches.
+
+* Implementation Plan
+
+** Step 1: Add core config module
+
+Files:
+
+- Create =lisp/core/e-capability-config.el=
+- Modify =e.el= load path/require list if needed
+- Modify =lisp/dev/e-dev.el= reload list
+- Add =test/e-capability-config-test.el=
+
+Acceptance:
+
+- =e-capability-config= is a =defcustom= with an alist/plist shape suitable for
+  Customize.
+- Directory-local values pass a narrow safe-local-variable predicate.
+- Resolver applies default, global, project, and explicit overrides in the
+  documented order.
+- Active unknown option keys signal a clear error naming the capability and key.
+
+** Step 2: Attach option metadata to capabilities
+
+Files:
+
+- Modify =lisp/core/e-capabilities.el=
+- Modify tests that construct bare =e-capability= values
+
+Acceptance:
+
+- =e-capability-create= accepts =:config-options= and =:config=.
+- Existing callers that do not use config keep constructing capabilities.
+- Accessors tolerate live-reload shape changes in the same style as the current
+  resource/resource-method compatibility accessors.
+- =e-capability= remains the harness-facing primitive.
+
+** Step 3: Make default layer construction config-aware
+
+Files:
+
+- Modify =lisp/layers/e-layers.el= if registered layer factories need a
+  directory/config argument.
+- Modify =lisp/defaults/e-default-layers.el= so default layer startup preserves
+  the current =require 'e= user path.
+- Modify =test/e-defaults-test.el=.
+
+Acceptance:
+
+- Default chat harness construction resolves capability config for the current
+  root/default directory.
+- No top-level user activation change is required.
+- Layers remain stateless packages over configured capabilities.
+
+** Step 4: Add =agents-std-context= skill filtering
+
+Files:
+
+- Modify =lisp/layers/agents/e-agents-std-context.el=
+- Modify =test/e-agents-std-context-test.el=
+
+Acceptance:
+
+- =:include= limits advertised and readable skill resources to exact matching
+  skill names or resource paths.
+- =:exclude= removes matching skills and wins over =:include=.
+- Filtering applies to both global and project skills after existing dedupe.
+- AGENTS.md discovery is unaffected by skill filtering.
+
+** Step 5: Add minimal UI commands
+
+Files:
+
+- Add commands in =lisp/core/e-capability-config.el= or a small shell-adjacent
+  module if command loading needs to stay out of core.
+- Add tests only for pure command helpers; do not test Emacs Customize itself.
+
+Acceptance:
+
+- =M-x e-capability-config-customize= opens Customize for
+  =e-capability-config=.
+- =M-x e-capability-config-describe= reports effective config for an active or
+  named capability in the current project directory.
+- The plan does not introduce a dedicated shell until there is a real shell
+  workflow to own.
+
+** Step 6: Document the contract
+
+Files:
+
+- Update =docs/architecture.md= if it describes capability construction or layer
+  ownership.
+- Update =docs/feats/07-capability-config/plan.org= during implementation if
+  the contract changes.
+
+Acceptance:
+
+- Docs state that config options are capability-owned.
+- Docs show global and directory-local examples.
+- Docs explain that layers can pass defaults but do not own option contracts.
+
+* Verification
+
+- Run focused ERT tests for =e-capability-config=.
+- Run =test/e-agents-std-context-test.el= for include/exclude behavior.
+- Run default startup tests that cover default layer activation.
+- After implementation changes to =lisp/*.el=, reload the running Emacs with
+  =e-dev-reload= and inspect at least one live configured =agents-std-context=
+  scenario.
+
+* Risks
+
+- If config is read dynamically during tool execution, behavior can drift within
+  a turn. Resolve config at capability construction time instead.
+- If project config executes arbitrary Lisp, this feature becomes a trust-policy
+  problem. Use directory-local variables first.
+- If the UI grows before the model is stable, it will harden the wrong shape.
+  Keep the first UI surface to Customize and description commands.
+
+* Later Work
+
+- Add web search backend selection with a capability option such as
+  =:search-backend= after the config core exists.
+- Consider pattern matching for =agents-std-context= skill include/exclude lists
+  after exact matching proves insufficient.
+- Add a dedicated config shell only when users need a persistent buffer for
+  browsing active capability options and writing project overrides.
