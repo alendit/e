@@ -470,6 +470,11 @@ state are requested."
         (e-session--finalize-replayed-session store session)
       (signal 'e-session-missing (list session-id)))))
 
+(defun e-session--peek-session (store session-id)
+  "Return SESSION-ID metadata from STORE without forcing transcript replay."
+  (or (gethash session-id (e-session-store-sessions store))
+      (signal 'e-session-missing (list session-id))))
+
 (defun e-session-persistent-store-create (&optional directory)
   "Create and load a persistent session store rooted at DIRECTORY."
   (let* ((directory (file-name-as-directory
@@ -517,9 +522,7 @@ state are requested."
 
 (defun e-session-get (store session-id)
   "Return SESSION-ID from STORE."
-  (let ((session (gethash session-id (e-session-store-sessions store))))
-    (unless session
-      (signal 'e-session-missing (list session-id)))
+  (let ((session (e-session--peek-session store session-id)))
     (if (and (e-session--persistent-p store)
              (not (plist-get session :loaded)))
         (e-session-load-session store session-id)
@@ -700,7 +703,8 @@ BRANCH-ID, RANGE, and METADATA describe the compacted source when available."
 
 (defun e-session-display-title (store session-id)
   "Return display title for SESSION-ID in STORE."
-  (e-session--display-title-for-session (e-session-get store session-id)))
+  (e-session--display-title-for-session
+   (e-session--peek-session store session-id)))
 
 (defun e-session-list (store)
   "Return STORE sessions sorted by most recent message."

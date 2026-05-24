@@ -139,6 +139,31 @@
                            '("msg-1" "msg-2")))))
       (delete-directory directory t))))
 
+(ert-deftest e-session-test-index-store-display-title-avoids-transcript-load ()
+  "Display titles for indexed sessions use metadata without transcript replay."
+  (let* ((directory (make-temp-file "e-session-" t))
+         (store (e-session-persistent-store-create directory))
+         (session-id (plist-get
+                      (e-session-create store
+                                        :id "session-1"
+                                        :metadata '(:name "Indexed title"))
+                      :id)))
+    (unwind-protect
+        (progn
+          (e-session-append-message
+           store session-id
+           '(:id "msg-1" :role user :content "indexed hello"))
+          (let ((loaded nil))
+            (cl-letf (((symbol-function 'e-session-load-session)
+                       (lambda (&rest _args)
+                         (setq loaded t)
+                         (error "display title loaded transcript"))))
+              (let ((indexed (e-session-persistent-index-store-create directory)))
+                (should (equal (e-session-display-title indexed session-id)
+                               "Indexed title"))
+                (should-not loaded)))))
+      (delete-directory directory t))))
+
 (ert-deftest e-session-test-persistent-replay-preserves-message-timestamp ()
   "Persistent replay restores each message's journal timestamp."
   (let* ((directory (make-temp-file "e-session-" t))

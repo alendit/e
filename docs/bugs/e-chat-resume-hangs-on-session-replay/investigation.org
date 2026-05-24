@@ -9,6 +9,9 @@
 - =lisp/core/e-session.el=: =e-session-persistent-store-create= calls
   =e-session-load=. During replay, each =message= record appends to the
   session's message list and refreshes derived fields again.
+- =lisp/core/e-session.el=: =e-session-display-title= used =e-session-get=,
+  so title lookup for an index-backed unloaded session forced full transcript
+  replay.
 - =test/e-session-test.el=: existing persistence tests covered replay order but
   did not assert replay work stayed bounded for long transcripts.
 
@@ -31,6 +34,11 @@ full-transcript replay was too expensive for the initial resume list. The resume
 list path needs metadata-only loading first, with transcript replay delayed
 until a selected session's messages are actually needed.
 
+A follow-up debugger stack showed resume preview rendering still called
+=e-chat--clear=, which asked the harness for the session title. That title path
+went through =e-session-get= and forced transcript replay for the highlighted
+unloaded session before the preview could render metadata.
+
 * Next step
 
 Add a regression test for bounded replay refresh work, then change session
@@ -51,6 +59,8 @@ fields once per loaded session.
   full transcripts on demand.
 - Changed resume preview to render metadata when the selected session's
   transcript is still unloaded.
+- Changed session display-title lookup to read already-indexed session metadata
+  without using the transcript-loading accessor.
 - Verified =test/e-session-test.el= and the existing =e-chat-resume= tests in
   =test/e-chat-test.el= after the change.
 - Verified the real cache path in batch mode and the live default chat harness:
