@@ -1,0 +1,11 @@
+#+title: Bug Reports
+#+startup: overview
+
+Bug report directories live here.
+
+When a user creates a bug report, create a new directory under this directory with a short slug for the report. In that directory:
+
+- Create =report.org= with a short description of what the user reported.
+- Create =investigation.org= with the results of investigating the report using both code and live access.
+
+The investigation should capture the code paths, tests, or docs inspected; the live Emacs state or behavior inspected; and any conclusion or next step.

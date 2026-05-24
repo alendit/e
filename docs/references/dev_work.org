@@ -1,0 +1,31 @@
+#+title: Dev Work Notes
+#+startup: overview
+
+* How To
+
+** Dev work plans
+Put dev work under =docs/feats/=.
+
+Use one directory per dev work item, usually with a numeric prefix and short slug:
+
+#+begin_example
+docs/feats/04-message-turn-identity/plan.org
+#+end_example
+
+Keep the plan in that directory. Add sketches or supporting notes there when they are specific to the dev work.
+
+** Research notes
+Put research notes under =docs/research/=.
+
+Use research for background investigation, comparisons, and open questions that are not yet committed to a concrete implementation plan.
+
+When research turns into planned work, create or move the plan into =docs/feats/<dev-work>/= and leave the research note in =docs/research/= if it remains useful as source material.
+
+** Bug reports
+Put bug reports under =docs/bugs/=.
+
+When a user creates a bug report, create a new directory under =docs/bugs/= with a short slug for the report.
+
+In that directory, create =report.org= with a short description of what the user reported.
+
+Then create =investigation.org= in the same directory with the results of investigating the report using both code and live access. Capture what was inspected in source or tests, what was inspected in the running Emacs, and any conclusion or next step.
