@@ -2955,10 +2955,17 @@
               (let ((preview (e-chat--render-resume-preview harness session)))
                 (should-not loaded)
                 (with-current-buffer preview
+                  (should buffer-read-only)
                   (should (equal e-chat-session-id "indexed-preview"))
                   (should (string-match-p "Indexed preview" (buffer-string)))
                   (should (string-match-p "indexed preview hello"
-                                          (buffer-string))))))))
+                                          (buffer-string)))))
+              (let ((preview (e-chat--render-resume-preview harness session)))
+                (should-not loaded)
+                (with-current-buffer preview
+                  (should buffer-read-only)
+                  (should (equal e-chat-session-id "indexed-preview"))
+                  (should (string-match-p "Indexed preview" (buffer-string))))))))
       (e-chat-test--kill-chat-buffers)
       (delete-directory directory t))))
 

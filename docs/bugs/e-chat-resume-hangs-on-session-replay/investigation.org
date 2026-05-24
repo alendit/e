@@ -39,6 +39,11 @@ A follow-up debugger stack showed resume preview rendering still called
 went through =e-session-get= and forced transcript replay for the highlighted
 unloaded session before the preview could render metadata.
 
+After that fix, Consult preview could still report =buffer-read-only= for the
+reused =*e-chat-resume-preview*= buffer. The preview renderer erased the buffer
+with =inhibit-read-only=, but inserted unloaded-session metadata after the
+temporary write allowance had ended.
+
 * Next step
 
 Add a regression test for bounded replay refresh work, then change session
@@ -61,6 +66,9 @@ fields once per loaded session.
   transcript is still unloaded.
 - Changed session display-title lookup to read already-indexed session metadata
   without using the transcript-loading accessor.
+- Changed resume preview reconstruction to keep =inhibit-read-only= active for
+  the whole buffer rebuild so a reused read-only preview buffer can be rendered
+  repeatedly by Consult.
 - Verified =test/e-session-test.el= and the existing =e-chat-resume= tests in
   =test/e-chat-test.el= after the change.
 - Verified the real cache path in batch mode and the live default chat harness:
