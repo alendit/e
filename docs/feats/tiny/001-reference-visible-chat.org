@@ -1,0 +1,23 @@
+#+title: Reference Visible Chat First
+#+startup: overview
+
+* Status
+Planned
+
+* Note
+Adjust =s-i= reference-context insertion so it copies the reference into the
+currently visible chat when there is one. Only when no chat is open and visible
+should it fall back to the last session.
+
+This is safe to treat as tiny because it should only change target selection for
+the existing inline-reference flow. It should not change reference formatting,
+session storage, backend behavior, or prompt submission.
+
+* Validation
+Not performed; this is a note-only slice.
+
+When implemented, validate:
+
+- visible chat gets the inserted reference
+- no visible chat falls back to the last session
+- focused =e-chat= tests and live reload/smoke cover the behavior
