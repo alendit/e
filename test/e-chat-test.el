@@ -1266,6 +1266,68 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-provider-wait-and-stream-statuses ()
+  "Provider lifecycle and stream events update the compact running status."
+  (let ((buffer (e-chat-test--buffer nil "chat-provider-status")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat--render-event
+           (e-events-make :type 'turn-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 10))
+          (e-chat--render-event
+           (e-events-make :type 'provider-request-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 10
+                          :payload '(:provider codex
+                                      :transport url-retrieve
+                                      :url-host "example.test"
+                                      :url-path "/codex/responses"
+                                      :timeout-seconds 180
+                                      :status started)))
+          (should (string-match-p "waiting for provider"
+                                  header-line-format))
+          (should (equal e-chat--progress-turn-id "turn-1"))
+          (e-chat--render-event
+           (e-events-make :type 'reasoning-delta
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :payload '(:type reasoning-delta
+                                      :content "thinking")))
+          (should (string-match-p "reasoning" header-line-format))
+          (e-chat--render-event
+           (e-events-make :type 'assistant-delta
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :payload '(:type assistant-delta
+                                      :content "answer")))
+          (should (string-match-p "streaming" header-line-format)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-late-progress-tick-shows-emacs-blocked-status ()
+  "A delayed progress timer tick only reports a local Emacs stall."
+  (let ((buffer (e-chat-test--buffer nil "chat-progress-stall"))
+        (e-chat-progress-interval 0.5))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat--render-event
+           (e-events-make :type 'turn-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 10))
+          (setq e-chat--progress-next-tick-time
+                (- (float-time) 7.0))
+          (e-chat--advance-progress-indicator)
+          (should (string-match-p
+                   "Emacs was blocked for [0-9]+s; checking turn state"
+                   header-line-format))
+          (should (equal e-chat--progress-turn-id "turn-1")))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-progress-rerender-keeps-pending-composer-glyph ()
   "Progress redraws keep the protected bottom prompt glyph visible."
   (let ((buffer (e-chat-test--buffer nil "chat-progress-pending-glyph")))

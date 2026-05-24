@@ -409,6 +409,9 @@ The mode line uses this presentation-owned table for context usage display."
 (defvar-local e-chat--progress-timer nil
   "Timer advancing the active assistant progress indicator.")
 
+(defvar-local e-chat--progress-next-tick-time nil
+  "Expected `float-time' of the next assistant progress timer tick.")
+
 (defconst e-chat--user-glyph ">"
   "Glyph shown before user-authored chat blocks.")
 
@@ -1643,6 +1646,13 @@ Count tool invocations after the reasoning chunk they followed."
       (push current items))
     (nreverse items)))
 
+(defun e-chat--settled-activity-p (record)
+  "Return non-nil when RECORD has activity worth keeping after final output."
+  (cl-some
+   (lambda (entry)
+     (not (equal (plist-get entry :title) "Tool call")))
+   (plist-get record :intermittent-entries)))
+
 (defun e-chat--transient-text (record)
   "Return visible transient text for RECORD."
   (when-let ((entries (plist-get record :intermittent-entries)))
@@ -1914,6 +1924,16 @@ When RECORD is nil, clear only buffer-local status markers."
 (defun e-chat--advance-progress-indicator ()
   "Advance and rerender the active assistant progress indicator."
   (when e-chat--progress-turn-id
+    (let* ((now (float-time))
+           (late-by (and e-chat--progress-next-tick-time
+                         (- now e-chat--progress-next-tick-time)))
+           (threshold (max 5.0 (* 3 e-chat-progress-interval))))
+      (when (and late-by (> late-by threshold))
+        (e-chat--set-status
+         (format "Emacs was blocked for %.0fs; checking turn state"
+                 late-by)))
+      (setq e-chat--progress-next-tick-time
+            (+ now e-chat-progress-interval)))
     (setq e-chat--progress-frame (1+ e-chat--progress-frame))
     (e-chat--render-progress-indicator e-chat--progress-turn-id)
     (e-chat--redisplay-running-activity)))
@@ -1923,6 +1943,8 @@ When RECORD is nil, clear only buffer-local status markers."
   (e-chat--cancel-progress-timer)
   (setq e-chat--progress-turn-id turn-id)
   (setq e-chat--progress-frame 0)
+  (setq e-chat--progress-next-tick-time
+        (+ (float-time) e-chat-progress-interval))
   (e-chat--render-progress-indicator turn-id)
   (let ((buffer (current-buffer)))
     (setq e-chat--progress-timer
@@ -1943,6 +1965,7 @@ When TURN-ID is non-nil, only stop a matching active indicator."
     (let ((old-turn-id e-chat--progress-turn-id))
       (setq e-chat--progress-turn-id nil)
       (setq e-chat--progress-frame 0)
+      (setq e-chat--progress-next-tick-time nil)
       (if-let ((record (and old-turn-id
                             (e-chat--existing-turn-record old-turn-id))))
           (e-chat--render-running-status old-turn-id record)
@@ -2108,7 +2131,9 @@ sessions without durable activity."
 (defun e-chat--finalize-turn-display (turn-id)
   "Mark TURN-ID as having rendered its final response."
   (when-let ((record (e-chat--turn-record turn-id)))
-    (e-chat--delete-turn-transient record)
+    (if (e-chat--settled-activity-p record)
+        (e-chat--render-turn-transient turn-id record)
+      (e-chat--delete-turn-transient record))
     (plist-put record :final-rendered t)
     (e-chat--clear-running-status-markers)))
 
@@ -3112,6 +3137,10 @@ non-nil, is used by focused block activation."
            (e-chat--finalize-turn-display (plist-get event :turn-id)))
          (e-chat--insert-entry (car entry) (cdr entry) nil
                                (plist-get event :turn-id))))))
+    ('provider-request-started
+     (e-chat--set-status "waiting for provider"))
+    ('provider-request-finished
+     nil)
     ('assistant-delta
      (e-chat--set-status "streaming"))
     ('reasoning-delta
