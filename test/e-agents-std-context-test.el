@@ -128,6 +128,26 @@
       (delete-directory home t)
       (delete-directory project t))))
 
+(ert-deftest e-agents-std-context-test-global-skills-are-not-project-ancestors ()
+  "The configured global skills directory is not also advertised as project."
+  (let* ((home (make-temp-file "e-agents-home-" t))
+         (project (expand-file-name "projects/app" home))
+         (global-skill
+          (expand-file-name ".agents/skills/research/SKILL.md" home)))
+    (unwind-protect
+        (progn
+          (make-directory project t)
+          (e-agents-std-context-test--write-file
+           global-skill
+           "---\nname: research\ndescription: Use current web and docs research.\n---\n\nGlobal research body.")
+          (let* ((e-agents-std-context-global-skills-directory
+                  (expand-file-name ".agents/skills" home))
+                 (paths (mapcar #'e-skill-spec-path
+                                (e-agents-std-context-skill-specs project))))
+            (should (member "skills/global/research" paths))
+            (should-not (member "skills/project/research" paths))))
+      (delete-directory home t))))
+
 (ert-deftest e-agents-std-context-test-nearest-project-skill-wins-same-slug ()
   "Nested project skill directories keep one stable project resource per slug."
   (let* ((home (make-temp-file "e-agents-home-" t))

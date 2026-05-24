@@ -203,10 +203,18 @@
 
 (defun e-agents-std-context--project-skills-directories (directory)
   "Return project .agents/skills directories discovered from DIRECTORY upward."
-  (let (directories)
+  (let ((global-skills-directory
+         (when (file-directory-p e-agents-std-context-global-skills-directory)
+           (file-truename
+            (file-name-as-directory e-agents-std-context-global-skills-directory))))
+        directories)
     (dolist (dir (e-agents-std-context--ancestor-directories directory))
       (let ((skills (expand-file-name ".agents/skills" dir)))
-        (when (file-directory-p skills)
+        (when (and (file-directory-p skills)
+                   (not (and global-skills-directory
+                             (string=
+                              (file-truename (file-name-as-directory skills))
+                              global-skills-directory))))
           (push skills directories))))
     (nreverse directories)))
 

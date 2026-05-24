@@ -107,3 +107,16 @@ Suggested fix:
 
 A broader follow-up may also want a clearer project-root boundary so arbitrary
 ancestor directories above the project root are not treated as project context.
+
+* Fix evidence
+
+- Added =e-agents-std-context-test-global-skills-are-not-project-ancestors=.
+  It failed before the fix because a project under the configured global skills
+  directory's parent advertised the same skill as both =skills/global/research=
+  and =skills/project/research=.
+- Changed project skill directory discovery to compare normalized truenames and
+  skip the configured global skills directory when it appears in the ancestor
+  walk.
+- Verified =rtk eldev test -f test/e-agents-std-context-test.el=.
+- Reloaded the running Emacs with =e-dev-reload= and verified this checkout has
+  no live =skills/project/context7= duplicate for the configured global skill.
