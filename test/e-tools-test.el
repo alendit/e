@@ -63,6 +63,13 @@
                        :parameters ,parameters
                        :strict :json-false))))))
 
+(ert-deftest e-tools-test-result-content-text-serializes-structured-content ()
+  "Tool result content text is the provider-visible representation."
+  (should (equal (e-tools-result-content-text "plain")
+                 "plain"))
+  (should (equal (e-tools-result-content-text '(:ok t :items [1 2]))
+                 "{\"items\":[1,2],\"ok\":true}")))
+
 (ert-deftest e-tools-test-missing-tool-returns-structured-error ()
   "Unknown tools return structured error results."
   (let ((registry (e-tools-registry-create)))
@@ -113,6 +120,62 @@
                        :status ok
                        :content "done"
                        :metadata nil))))))
+
+(ert-deftest e-tools-test-start-binds-current-context-for-tool-start ()
+  "Async tool implementations can inspect the current harness-owned context."
+  (let ((registry (e-tools-registry-create))
+        seen-context
+        result)
+    (e-tools-register registry
+                      :name "context"
+                      :description "Capture context."
+                      :start
+                      (cl-function
+                       (lambda (&key on-done &allow-other-keys)
+                         (setq seen-context (e-tools-current-context))
+                         (funcall on-done "done"))))
+    (e-tools-start
+     registry
+     '(:id "call-1" :name "context" :arguments nil)
+     :context '(:session-id "session-1" :turn-id "turn-1")
+     :on-done (lambda (value) (setq result value)))
+    (should (equal (plist-get seen-context :session-id) "session-1"))
+    (should (equal (plist-get seen-context :turn-id) "turn-1"))
+    (should (equal (plist-get (plist-get seen-context :tool-call) :id)
+                   "call-1"))
+    (should (equal result
+                   '(:tool-call-id "call-1"
+                     :name "context"
+                     :status ok
+                     :content "done"
+                     :metadata nil)))))
+
+(ert-deftest e-tools-test-start-passes-through-structured-tool-results ()
+  "Async tools can return an already-structured result with metadata."
+  (let ((registry (e-tools-registry-create))
+        result)
+    (e-tools-register registry
+                      :name "structured"
+                      :description "Return structured."
+                      :start
+                      (cl-function
+                       (lambda (&key on-done &allow-other-keys)
+                         (funcall on-done
+                                  '(:tool-call-id "call-1"
+                                    :name "structured"
+                                    :status ok
+                                    :content "preview"
+                                    :metadata (:truncated t))))))
+    (e-tools-start
+     registry
+     '(:id "call-1" :name "structured" :arguments nil)
+     :on-done (lambda (value) (setq result value)))
+    (should (equal result
+                   '(:tool-call-id "call-1"
+                     :name "structured"
+                     :status ok
+                     :content "preview"
+                     :metadata (:truncated t))))))
 
 (ert-deftest e-tools-test-execute-waits-for-async-only-tool ()
   "The sync execute wrapper waits for async-only tools."

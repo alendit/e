@@ -61,15 +61,16 @@ published, used to calculate `:elapsed-seconds' for finished events."
     payload))
 
 (cl-defun e-loop-start-turn
-    (&key session-id turn-id messages backend tools options on-event
+    (&key session-id turn-id messages backend tools tool-lifecycle options on-event
           append-message on-request-start on-done on-error cancelled-p)
   "Start one async agent turn for SESSION-ID and TURN-ID.
-MESSAGES, BACKEND, TOOLS, and OPTIONS describe the turn input.  ON-EVENT,
+MESSAGES, BACKEND, TOOLS, TOOL-LIFECYCLE, and OPTIONS describe the turn input.  ON-EVENT,
 APPEND-MESSAGE, ON-REQUEST-START, ON-DONE, ON-ERROR, and CANCELLED-P receive
 turn progress, output, provider request handles, settlement, failures, and
 cancellation state.  The provider request is started through `e-backend-start'.
-Tool execution is started through `e-tools-start'.  Provider I/O, tool I/O, and
-turn settlement are callback-driven."
+Tool execution is started through TOOL-LIFECYCLE when supplied, otherwise
+through `e-tools-start'.  Provider I/O, tool I/O, and turn settlement are
+callback-driven."
   (ignore session-id turn-id)
   (let ((turn-messages (copy-sequence messages))
         (settled nil)
@@ -191,39 +192,55 @@ turn settlement are callback-driven."
                                tool-queue
                                (not settled)
                                (not (cancelled)))
-                      (let* ((entry (pop tool-queue))
-                             (tool-call (plist-get entry :tool-call))
-                             (tool-call-message
-                              (list :id (e-loop--next-message-id)
-                                    :role 'tool-call
-                                    :content tool-call
-                                    :metadata nil)))
-                        (setq active-tool t)
-                        (setq turn-messages
-                              (append turn-messages
-                                      (list tool-call-message)))
-                        (funcall append-message tool-call-message)
-                        (e-loop--emit :on-event on-event
-                                      :type 'tool-started
-                                      :payload tool-call)
-                        (let ((request
-                               (condition-case err
-                                   (e-tools-start
-                                    tools
-                                    tool-call
-                                    :on-request-start
-                                    (lambda (request)
-                                      (setq active-tool request)
-                                      (publish-request request))
-                                    :on-done
-                                    (lambda (result)
-                                      (finish-tool tool-call result))
-                                    :on-error #'fail)
-                                 (error
-                                  (fail err)
-                                  nil))))
-                          (when request
-                            (setq active-tool request))))))
+                      (condition-case err
+                          (let* ((entry (pop tool-queue))
+                                 (tool-call
+                                  (if tool-lifecycle
+                                      (e-tool-lifecycle-prepare-call
+                                       tool-lifecycle
+                                       (plist-get entry :tool-call))
+                                    (plist-get entry :tool-call)))
+                                 (tool-call-message
+                                  (list :id (e-loop--next-message-id)
+                                        :role 'tool-call
+                                        :content tool-call
+                                        :metadata nil)))
+                            (setq active-tool t)
+                            (setq turn-messages
+                                  (append turn-messages
+                                          (list tool-call-message)))
+                            (funcall append-message tool-call-message)
+                            (e-loop--emit :on-event on-event
+                                          :type 'tool-started
+                                          :payload tool-call)
+                            (let ((request
+                                   (if tool-lifecycle
+                                       (e-tool-lifecycle-start-call
+                                        tool-lifecycle
+                                        tool-call
+                                        :on-request-start
+                                        (lambda (request)
+                                          (setq active-tool request)
+                                          (publish-request request))
+                                        :on-done
+                                        (lambda (result)
+                                          (finish-tool tool-call result))
+                                        :on-error #'fail)
+                                     (e-tools-start
+                                      tools
+                                      tool-call
+                                      :on-request-start
+                                      (lambda (request)
+                                        (setq active-tool request)
+                                        (publish-request request))
+                                      :on-done
+                                      (lambda (result)
+                                        (finish-tool tool-call result))
+                                      :on-error #'fail))))
+                              (when request
+                                (setq active-tool request))))
+                        (error
+                         (fail err)))))
                   (enqueue-tool-call
                    (item)
                     (setq tool-called t)
@@ -332,10 +349,10 @@ turn settlement are callback-driven."
       active-request)))
 
 (cl-defun e-loop-run-turn
-    (&key session-id turn-id messages backend tools options on-event
+    (&key session-id turn-id messages backend tools tool-lifecycle options on-event
           append-message on-request-start)
   "Run one agent turn for SESSION-ID and TURN-ID.
-MESSAGES, BACKEND, TOOLS, OPTIONS, ON-EVENT, and APPEND-MESSAGE define the
+MESSAGES, BACKEND, TOOLS, TOOL-LIFECYCLE, OPTIONS, ON-EVENT, and APPEND-MESSAGE define the
 turn context and output callbacks.  ON-REQUEST-START receives the backend
 request handle when an adapter exposes one.  This is a blocking convenience
 wrapper over `e-loop-start-turn'."
@@ -348,6 +365,7 @@ wrapper over `e-loop-start-turn'."
      :messages messages
      :backend backend
      :tools tools
+     :tool-lifecycle tool-lifecycle
      :options options
      :on-event on-event
      :append-message append-message

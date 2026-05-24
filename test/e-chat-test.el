@@ -1124,7 +1124,7 @@
     (unwind-protect
         (with-current-buffer buffer
           (cl-letf (((symbol-function 'e-harness-tools)
-                     (lambda (_harness) tools)))
+                     (lambda (_harness &optional _session-id _turn-id) tools)))
             (e-chat-submit "run held tool"))
           (should tool-callbacks)
           (e-chat-abort)

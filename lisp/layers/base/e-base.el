@@ -1,4 +1,4 @@
-;;; e-base.el --- Default base layer for e -*- lexical-binding: t; -*-
+;;; e-base.el --- OS base layer for e -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 Dimitri Vorona
 
@@ -7,7 +7,7 @@
 
 ;;; Commentary:
 
-;; Base layer for workspace file and shell tools.
+;; OS base layer for workspace file and shell tools.
 
 ;;; Code:
 
@@ -15,16 +15,16 @@
 (require 'e-layers)
 
 (defconst e-base-instructions
-  "Use base file and shell tools for workspace files and shell commands. Use Emacs buffer tools for live buffer state."
-  "Default instructions contributed by the base guidance capability.")
+  "Use OS base file and shell tools for workspace files and shell commands. Use Emacs buffer tools for live buffer state."
+  "Default instructions contributed by the OS base guidance capability.")
 
 (defun e-base-layer-create (&optional directory)
-  "Create the base layer rooted at DIRECTORY or `default-directory'."
+  "Create the OS base layer rooted at DIRECTORY or `default-directory'."
   (let ((root (file-name-as-directory
                (expand-file-name (or directory default-directory)))))
     (e-layer-create
-     :id 'base
-     :name "Base"
+     :id 'os-base
+     :name "OS Base"
      :capabilities (list (e-base-guidance-capability-create e-base-instructions)
                          (e-file-inspection-capability-create root)
                          (e-file-mutation-capability-create root)

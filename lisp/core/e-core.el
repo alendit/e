@@ -19,6 +19,7 @@
 (require 'e-resources)
 (require 'e-store)
 (require 'e-capabilities)
+(require 'e-hooks)
 (require 'e-skills)
 (require 'e-startup)
 (require 'e-session)
@@ -36,6 +37,7 @@
   (list :state e-core-scaffold-state
         :backends t
         :capabilities t
+        :hooks t
         :context t
         :events t
         :operations t

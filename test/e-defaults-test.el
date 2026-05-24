@@ -44,6 +44,18 @@
     (should (member :chat-default (e-harness-registry-list)))
     (should-not (e-harness-registry-get :chat-default))))
 
+(ert-deftest e-defaults-test-layer-specs-include-harness-base-and-os-base ()
+  "Built-in layer specs use the current harness and OS base layer ids."
+  (should (memq 'harness-base
+                (mapcar (lambda (spec) (plist-get spec :id))
+                        e-default-layer-specs)))
+  (should (memq 'os-base
+                (mapcar (lambda (spec) (plist-get spec :id))
+                        e-default-layer-specs)))
+  (should-not (memq 'base
+                    (mapcar (lambda (spec) (plist-get spec :id))
+                            e-default-layer-specs))))
+
 (ert-deftest e-defaults-test-chat-default-factory-is-lazy ()
   "Looking up chat-default delegates to `e-default-chat-harness-create'."
   (e-defaults-test--with-empty-harness-registry
@@ -99,12 +111,18 @@
              (lambda (&rest _args)
                (e-harness-create
                 :backend (e-backend-fake-create :items nil)))))
-    (let ((e-default-chat-layer-ids '(agents-std-context e base emacs-base)))
+    (let ((e-default-chat-layer-ids '(agents-std-context harness-base e os-base emacs-base)))
       (let ((harness (e-default-chat-harness-create)))
         (should (equal (mapcar #'e-layer-id
                                (e-harness-active-layers harness))
-                       '(chat-session agents-std-context e base emacs-base)))
+                       '(chat-session agents-std-context harness-base e os-base emacs-base)))
         (should (memq 'agents-std-context
+                      (mapcar #'e-capability-id
+                              (e-harness-active-capabilities harness))))
+        (should (memq 'session-tmp-resources
+                      (mapcar #'e-capability-id
+                              (e-harness-active-capabilities harness))))
+        (should (memq 'tool-output-truncation
                       (mapcar #'e-capability-id
                               (e-harness-active-capabilities harness))))
         (should (memq 'chat-session
@@ -120,11 +138,11 @@
              (lambda (&rest _args)
                (e-harness-create
                 :backend (e-backend-fake-create :items nil)))))
-    (let ((e-default-chat-layer-ids '(e base web)))
+    (let ((e-default-chat-layer-ids '(e os-base web)))
       (let ((harness (e-default-chat-harness-create)))
         (should (equal (mapcar #'e-layer-id
                                (e-harness-active-layers harness))
-                       '(chat-session e base web)))))))
+                       '(chat-session e os-base web)))))))
 
 (ert-deftest e-defaults-test-default-chat-layer_changes-update-config ()
   "Layer changes on the default chat harness update configured layer ids."
@@ -132,11 +150,11 @@
              (lambda (&rest _args)
                (e-harness-create
                 :backend (e-backend-fake-create :items nil)))))
-    (let ((e-default-chat-layer-ids '(e base)))
+    (let ((e-default-chat-layer-ids '(e os-base)))
       (let ((harness (e-default-chat-harness-create)))
         (e-layer-selection-enable harness 'web)
-        (should (equal e-default-chat-layer-ids '(e base web)))
-        (e-layer-selection-disable harness 'base)
+        (should (equal e-default-chat-layer-ids '(e os-base web)))
+        (e-layer-selection-disable harness 'os-base)
         (should (equal e-default-chat-layer-ids '(e web)))))))
 
 (ert-deftest e-defaults-test-startup-syncs-existing-chat-default-instance ()
@@ -146,12 +164,12 @@
                (lambda (&rest _args)
                  (e-harness-create
                   :backend (e-backend-fake-create :items nil)))))
-      (let ((e-default-chat-layer-ids '(e base)))
+      (let ((e-default-chat-layer-ids '(e os-base)))
         (e-default-harnesses-register)
         (let ((harness (e-harness-registry-get-or-create :chat-default)))
           (should (equal (mapcar #'e-layer-id
                                  (e-harness-active-layers harness))
-                         '(chat-session e base)))
+                         '(chat-session e os-base)))
           (setq e-default-chat-layer-ids '(e web))
           (e-default-harnesses-startup)
           (should (eq (e-harness-registry-get :chat-default) harness))

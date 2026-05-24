@@ -13,8 +13,10 @@
 
 (require 'ert)
 (require 'e)
+(require 'e-base)
 (require 'e-base-tools)
 (require 'e-harness)
+(require 'e-harness-base)
 (require 'e-resources)
 (require 'e-tools)
 
@@ -288,13 +290,56 @@ When READ-ONLY is non-nil, file resources only support reads."
                           registry
                           "bash"
                           '(:command "yes line | head -n 2105")))
-                 (content (plist-get result :content)))
+                 (content (plist-get result :content))
+                 (metadata (plist-get result :metadata)))
             (should (equal (plist-get result :status) 'ok))
             (should (string-match-p "Full output:" content))
-            (should (string-match-p "\\[Showing lines 106-2105 of 2105\\."
-                                    content))
-            (when (string-match "Full output: \\([^]\n]+\\)" content)
-              (should (file-readable-p (match-string 1 content))))))
+            (should (string-prefix-p "line\nline\n" content))
+            (should (plist-get metadata :truncated))
+            (should (equal (plist-get metadata :original-lines) 2105))
+            (should (file-readable-p
+                     (plist-get metadata :full-output-path)))))
+      (delete-directory directory t))))
+
+(ert-deftest e-base-tools-test-bash-streams-large-output-to-session-tmp ()
+  "The bash start path writes full large output directly to session tmp."
+  (let* ((directory (make-temp-file "e-base-bash-session-tmp-" t))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :active-layers
+                   (list (e-harness-base-layer-create)
+                         (e-base-layer-create directory))))
+         (result nil)
+         request)
+    (unwind-protect
+        (let ((e-tool-output-truncation-max-bytes 1000)
+              (e-tool-output-truncation-max-lines 2))
+          (setq request
+                (e-tool-lifecycle-start-call
+                 (e-harness-tool-lifecycle harness "session-1" "turn-1")
+                 '(:id "call-1"
+                   :name "bash"
+                   :arguments (:command "printf 'one\ntwo\nthree\nfour\n'"))
+                 :on-done (lambda (value) (setq result value))))
+          (should (e-tools-request-p request))
+          (should (plist-get (e-tools-request-metadata request) :output-file))
+          (should-not (plist-get (e-tools-request-metadata request) :buffer))
+          (should (e-base-tools-test--wait-until
+                   (lambda () result)
+                   1.0))
+          (let* ((metadata (plist-get result :metadata))
+                 (uri (plist-get metadata :tmp-uri)))
+            (should (equal (plist-get result :status) 'ok))
+            (should (plist-get metadata :truncated))
+            (should (equal uri "tmp://tool-results/turn-1/bash-call-1.txt"))
+            (should (string-prefix-p "one\ntwo\n" (plist-get result :content)))
+            (should (string-match-p (regexp-quote uri)
+                                    (plist-get result :content)))
+            (should (equal (e-resources-read
+                            (e-harness-resources harness "session-1" "turn-1")
+                            uri
+                            nil)
+                           "one\ntwo\nthree\nfour\n"))))
       (delete-directory directory t))))
 
 (ert-deftest e-base-tools-test-bash-starts-asynchronously ()

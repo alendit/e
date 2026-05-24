@@ -63,8 +63,13 @@
            :summary "Runtime self-management commands."
            :feature e-layer-selection
            :factory e-layer-selection-layer-create)
-          (:id base
-           :name "Base"
+          (:id harness-base
+           :name "Harness Base"
+           :summary "Harness-owned support resources and tool lifecycle guards."
+           :feature e-harness-base
+           :factory e-harness-base-layer-create)
+          (:id os-base
+           :name "OS Base"
            :summary "Workspace file and shell tools."
            :feature e-base
            :factory e-base-layer-create)
@@ -73,7 +78,7 @@
            :summary "Live Emacs buffer awareness and editing tools."
            :feature e-emacs-base
            :factory e-emacs-base-layer-create)))
-  (setq e-default-chat-layer-ids '(agents-std-context e base emacs-base))
+  (setq e-default-chat-layer-ids '(agents-std-context harness-base e os-base emacs-base))
   (let ((e-startup-shell-hook
          (cons (lambda ()
                  (e-harness-registry-get-or-create :chat-default))
@@ -82,11 +87,11 @@
   (should (equal e-openai-default-model "gpt-5.5"))
   (should (e-layer-get 'agents-std-context))
   (should (equal e-default-chat-layer-ids
-                 '(agents-std-context e base emacs-base)))
+                 '(agents-std-context harness-base e os-base emacs-base)))
   (should (equal (mapcar #'e-layer-id
                          (e-harness-active-layers
                           (e-harness-registry-get-or-create :chat-default)))
-                 '(chat-session agents-std-context e base emacs-base))))
+                 '(chat-session agents-std-context harness-base e os-base emacs-base))))
 
 (provide 'e-dev-test)
 

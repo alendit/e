@@ -16,6 +16,7 @@
 
 (require 'cl-lib)
 (require 'e-context)
+(require 'e-hooks)
 (require 'e-resources)
 (require 'e-store)
 
@@ -23,7 +24,7 @@
                (:constructor e-capability--create
                              (&key id name instructions tools
                                    resource-methods resources
-                                   context-providers actions)))
+                                   context-providers actions hooks)))
   id
   name
   instructions
@@ -31,7 +32,12 @@
   resource-methods
   resources
   context-providers
-  actions)
+  actions
+  hooks)
+
+(cl-defstruct (e-capability-resource-method-provider
+               (:constructor e-capability-resource-method-provider-create))
+  handler)
 
 (defun e-capability-create (&rest args)
   "Create an e capability from keyword ARGS."
@@ -85,10 +91,19 @@ or `resource-methods' slot existed."
         (aref capability 7)
       (aref capability 6))))
 
+(defun e-capability-hooks (capability)
+  "Return CAPABILITY lifecycle hooks.
+This accessor tolerates stale capability records compiled before the `hooks'
+slot existed."
+  (if (>= (length capability) 10)
+      (aref capability 9)
+    nil))
+
 (dolist (symbol '(e-capability-resource-methods
                   e-capability-resources
                   e-capability-context-providers
-                  e-capability-actions))
+                  e-capability-actions
+                  e-capability-hooks))
   (put symbol 'compiler-macro nil)
   (put symbol 'side-effect-free nil)
   (put symbol 'gv-expander nil))
@@ -98,10 +113,18 @@ or `resource-methods' slot existed."
   (dolist (register (e-capability-tools capability))
     (funcall register registry)))
 
-(defun e-capabilities-register-resource-methods (capability registry)
-  "Register CAPABILITY resource method providers in REGISTRY."
+(defun e-capabilities-register-resource-methods
+    (capability registry &rest context)
+  "Register CAPABILITY resource method providers in REGISTRY.
+CONTEXT is passed only to context-aware resource method providers."
   (dolist (register (e-capability-resource-methods capability))
-    (e-resources-register registry register)))
+    (cond
+     ((e-capability-resource-method-provider-p register)
+      (apply (e-capability-resource-method-provider-handler register)
+             registry
+             context))
+     (t
+      (e-resources-register registry register)))))
 
 (defun e-capabilities-register-resources (capability store)
   "Register CAPABILITY in-memory resource providers in STORE."
@@ -109,6 +132,10 @@ or `resource-methods' slot existed."
     (unless (functionp register)
       (signal 'wrong-type-argument (list 'functionp register)))
     (funcall register store capability)))
+
+(defun e-capabilities-register-hooks (capability registry)
+  "Register CAPABILITY lifecycle hooks in REGISTRY."
+  (e-hooks-register-list registry (e-capability-hooks capability)))
 
 (cl-defun e-capabilities--provider-messages
     (provider &key harness session-id turn-id)

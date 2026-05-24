@@ -15,6 +15,7 @@
 (require 'e-capabilities)
 (require 'e-context)
 (require 'e-events)
+(require 'e-hooks)
 (require 'e-layers)
 (require 'e-loop)
 (require 'e-operations)
@@ -103,12 +104,21 @@ layer activation or deactivation APIs change the active layer set."
                     (copy-sequence (or (e-layer-capabilities layer) nil)))))
     capabilities))
 
-(defun e-harness-tools (harness)
+(defun e-harness-tools (harness &optional session-id turn-id)
   "Return a fresh tool registry view over HARNESS active layers."
   (let ((registry (e-tools-registry-create)))
-    (e-harness--register-resource-operation-tools registry (e-harness-resources harness))
+    (e-harness--register-resource-operation-tools
+     registry
+     (e-harness-resources harness session-id turn-id))
     (dolist (capability (e-harness-active-capabilities harness))
       (e-capabilities-register-tools capability registry))
+    registry))
+
+(defun e-harness-hooks (harness)
+  "Return a fresh hook registry view over HARNESS active layers."
+  (let ((registry (e-hooks-registry-create)))
+    (dolist (capability (e-harness-active-capabilities harness))
+      (e-capabilities-register-hooks capability registry))
     registry))
 
 (defun e-harness-store (harness)
@@ -118,12 +128,17 @@ layer activation or deactivation APIs change the active layer set."
       (e-capabilities-register-resources capability store))
     store))
 
-(defun e-harness-resources (harness)
+(defun e-harness-resources (harness &optional session-id turn-id)
   "Return a fresh resource registry view over HARNESS active layers."
   (let ((registry (e-resources-registry-create))
         (store (e-harness-store harness)))
     (dolist (capability (e-harness-active-capabilities harness))
-      (e-capabilities-register-resource-methods capability registry))
+      (e-capabilities-register-resource-methods
+       capability
+       registry
+       :harness harness
+       :session-id session-id
+       :turn-id turn-id))
     (when (e-store-list store)
       (e-resources-register registry (e-store-resource-method store)))
     registry))
@@ -385,6 +400,53 @@ an already-removed record is a no-op."
   "Return backend-neutral turn options for HARNESS and SESSION-ID."
   (e-harness-turn-options harness session-id))
 
+(defun e-harness--tool-hook-context (harness session-id turn-id tools)
+  "Return the narrow hook context for a tool lifecycle in HARNESS."
+  (list :harness harness
+        :session-id session-id
+        :turn-id turn-id
+        :tools tools
+        :capabilities (e-harness-active-capabilities harness)))
+
+(defun e-harness-tool-lifecycle (harness session-id turn-id)
+  "Return a harness-owned tool lifecycle for SESSION-ID and TURN-ID."
+  (let ((tools (e-harness-tools harness session-id turn-id)))
+    (cl-labels
+        ((hooks ()
+           (e-harness-hooks harness))
+         (context ()
+           (e-harness--tool-hook-context harness session-id turn-id tools)))
+      (e-tool-lifecycle-create
+       :prepare (lambda (tool-call)
+                  (e-hooks-run-reduce
+                   (hooks)
+                   :pre-tool-call
+                   tool-call
+                   (context)))
+       :start
+       (cl-function
+        (lambda (tool-call &key on-request-start on-done on-error)
+          (e-tools-start
+           tools
+           tool-call
+           :context (context)
+           :on-request-start on-request-start
+           :on-done
+           (lambda (result)
+             (condition-case err
+                 (when on-done
+                   (funcall on-done
+                            (e-hooks-run-reduce
+                             (hooks)
+                             :post-tool-call
+                             result
+                             (context))))
+               (error
+                (if on-error
+                    (funcall on-error err)
+                  (signal (car err) (cdr err))))))
+           :on-error on-error)))))))
+
 (defun e-harness-context (harness session-id &optional turn-id)
   "Return backend-neutral context for SESSION-ID in HARNESS.
 TURN-ID is passed to active capability context providers when present."
@@ -506,6 +568,7 @@ provider or loop failure."
      :messages (plist-get context :messages)
      :backend (e-harness-backend harness)
      :tools (e-harness-tools harness)
+     :tool-lifecycle (e-harness-tool-lifecycle harness session-id turn-id)
      :options (plist-get context :options)
      :on-event (lambda (type payload)
                  (e-harness--emit-turn-event
@@ -526,6 +589,7 @@ provider or loop failure."
      :messages (plist-get context :messages)
      :backend (e-harness-backend harness)
      :tools (e-harness-tools harness)
+     :tool-lifecycle (e-harness-tool-lifecycle harness session-id turn-id)
      :options (plist-get context :options)
      :on-event (or on-event
                    (lambda (type payload)

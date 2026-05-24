@@ -26,8 +26,13 @@
      :summary "Standard AGENTS.md and filesystem skill context."
      :feature e-agents-std-context
      :factory e-agents-std-context-layer-create)
-    (:id base
-     :name "Base"
+    (:id harness-base
+     :name "Harness Base"
+     :summary "Harness-owned support resources and tool lifecycle guards."
+     :feature e-harness-base
+     :factory e-harness-base-layer-create)
+    (:id os-base
+     :name "OS Base"
      :summary "Workspace file and shell tools."
      :feature e-base
      :factory e-base-layer-create)

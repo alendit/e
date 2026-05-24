@@ -29,6 +29,7 @@
           :resource-methods (list #'ignore)
           :resources (list #'ignore)
           :context-providers nil
+          :hooks (list #'ignore)
           :actions '(:read-buffer ignore))))
     (should (eq (e-capability-id capability) 'buffer-read))
     (should (equal (e-capability-name capability) "Buffer Read"))
@@ -36,6 +37,7 @@
     (should (= (length (e-capability-tools capability)) 1))
     (should (= (length (e-capability-resource-methods capability)) 1))
     (should (= (length (e-capability-resources capability)) 1))
+    (should (= (length (e-capability-hooks capability)) 1))
     (should (plist-member (e-capability-actions capability) :read-buffer))))
 
 (ert-deftest e-capabilities-test-register-tools ()
@@ -89,7 +91,7 @@
                    "Capability reference content."))))
 
 (ert-deftest e-capabilities-test-derived-accessors-tolerate-stale-records ()
-  "Capability accessors tolerate stale records compiled before resources existed."
+  "Capability accessors tolerate stale records compiled before hooks existed."
   (let ((legacy (vector 'cl-struct-e-capability
                         'legacy
                         "Legacy"
@@ -99,8 +101,26 @@
                         nil
                         '(:legacy ignore))))
     (should-not (e-capability-resources legacy))
+    (should-not (e-capability-hooks legacy))
     (should (equal (e-capability-actions legacy)
                    '(:legacy ignore)))))
+
+(ert-deftest e-capabilities-test-register-hooks ()
+  "Capability hook providers register against the given registry."
+  (should (require 'e-hooks nil t))
+  (let ((registry (e-hooks-registry-create)))
+    (e-capabilities-register-hooks
+     (e-capability-create
+      :id 'hooks
+      :hooks
+      (list (e-hook-create
+             :id "50-capability-hook"
+             :point :post-tool-call
+             :handler (lambda (value _context)
+                        (concat value "-hooked")))))
+     registry)
+    (should (equal (e-hooks-run-reduce registry :post-tool-call "value" nil)
+                   "value-hooked"))))
 
 (ert-deftest e-capabilities-test-context-messages ()
   "Context messages include instructions before provider messages."

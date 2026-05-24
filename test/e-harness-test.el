@@ -471,7 +471,7 @@
                            (funcall on-request-start request)
                            request))))
     (cl-letf (((symbol-function 'e-harness-tools)
-               (lambda (_harness) tools)))
+               (lambda (_harness &optional _session-id _turn-id) tools)))
       (e-harness-subscribe harness (lambda (event) (push event events)))
       (e-harness-create-session harness :id "session-1")
       (e-harness-prompt-async harness "session-1" "question")
@@ -667,6 +667,114 @@
                        :arguments nil))
                     :content)
                    "derived"))))
+
+(ert-deftest e-harness-test-hooks-are-derived-from-active-layers ()
+  "Harness hook registries are derived from active capability layers."
+  (should (require 'e-hooks nil t))
+  (let* ((capability
+          (e-capability-create
+           :id 'hook-capability
+           :hooks
+           (list (e-hook-create
+                  :id "50-hook"
+                  :point :post-tool-call
+                  :handler (lambda (value _context)
+                             (concat value "-hooked"))))))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :active-layers
+                   (list (e-layer-create
+                          :id 'hook-layer
+                          :name "Hook Layer"
+                          :capabilities (list capability))))))
+    (should (equal (e-hooks-run-reduce
+                    (e-harness-hooks harness)
+                    :post-tool-call
+                    "value"
+                    nil)
+                   "value-hooked"))))
+
+(ert-deftest e-harness-test-tool-lifecycle-runs-pre-and-post-hooks ()
+  "Harness tool lifecycle applies active pre and post tool hooks."
+  (should (require 'e-hooks nil t))
+  (let* ((calls 0)
+         (backend
+          (e-backend-create
+           :name "fake-harness-hooks"
+           :stream
+           (cl-function
+            (lambda (&key messages options on-item)
+              (ignore messages options)
+              (setq calls (1+ calls))
+              (if (= calls 1)
+                  (progn
+                    (funcall on-item
+                             '(:type tool-call
+                               :id "call-1"
+                               :name "echo"
+                               :arguments (:text "raw")))
+                    (funcall on-item '(:type done :reason tool-use)))
+                (funcall on-item
+                         '(:type assistant-message :content "done"))
+                (funcall on-item '(:type done :reason stop)))))))
+         (tools-capability
+          (e-capability-create
+           :id 'echo-tool
+           :tools
+           (list (lambda (registry)
+                   (e-tools-register
+                    registry
+                    :name "echo"
+                    :description "Echo text."
+                    :handler (lambda (arguments)
+                               (plist-get arguments :text)))))))
+         (harness nil)
+         (hooks-capability
+          (e-capability-create
+           :id 'tool-hooks
+           :hooks
+           (list
+            (e-hook-create
+             :id "10-prepare"
+             :point :pre-tool-call
+             :handler (lambda (tool-call context)
+                        (should (eq (plist-get context :harness) harness))
+                        (plist-put (copy-sequence tool-call)
+                                   :arguments '(:text "prepared"))))
+            (e-hook-create
+             :id "50-shape-result"
+             :point :post-tool-call
+             :handler (lambda (result context)
+                        (should (equal (plist-get context :session-id)
+                                       "session-1"))
+                        (plist-put (copy-sequence result)
+                                   :content
+                                   (concat (plist-get result :content)
+                                           "-post"))))))))
+    (setq harness
+          (e-harness-create
+           :backend backend
+           :active-layers
+           (list (e-layer-create
+                  :id 'tool-layer
+                  :name "Tool Layer"
+                  :capabilities (list tools-capability
+                                      hooks-capability)))))
+    (e-harness-create-session harness :id "session-1")
+    (e-harness-prompt harness "session-1" "use tool")
+    (let* ((messages (e-harness-messages harness "session-1"))
+           (tool-call (cl-find 'tool-call messages
+                               :key (lambda (message)
+                                      (plist-get message :role))))
+           (tool-result (cl-find 'tool messages
+                                 :key (lambda (message)
+                                        (plist-get message :role)))))
+      (should (equal (plist-get (plist-get (plist-get tool-call :content)
+                                           :arguments)
+                                :text)
+                     "prepared"))
+      (should (equal (plist-get (plist-get tool-result :content) :content)
+                     "prepared-post")))))
 
 (ert-deftest e-harness-test-resources-are-derived-from-active-layers ()
   "The harness resource surface is rebuilt from active layers on demand."

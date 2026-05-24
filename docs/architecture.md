@@ -110,9 +110,10 @@ Current repository mapping:
 - `docs/mvp.md`: completed MVP implementation plan for chat, layers, visible-buffer context, and Emacs tools.
 - `docs/feat-canvas.md`: deferred design note for canvas-state context management.
 - `e.el`: package entry point, public smoke commands, package metadata, and autoloads.
-- `lisp/core/`: core harness/runtime contracts, including module aggregation, events, sessions, context strategy, backend contract, capability contract, tool registry, turn loop, and harness service.
+- `lisp/core/`: core harness/runtime contracts, including module aggregation, events, sessions, context strategy, backend contract, capability contract, hook registry, tool registry, turn loop, and harness service.
 - `lisp/layers/e-layers.el`: harness-owned layer descriptor contract.
-- `lisp/layers/base/`: the `base` layer preset, its file/process capabilities, and the concrete file/shell tool modules those capabilities use.
+- `lisp/layers/harness/`: the `harness-base` layer preset, session-scoped `tmp://` resources, and tool-output context protection hooks.
+- `lisp/layers/base/`: the `os-base` layer preset, its file/process capabilities, and the concrete file/shell tool modules those capabilities use.
 - `lisp/layers/emacs/`: the `emacs-base` layer preset, its Emacs awareness/buffer/elisp capabilities, and the concrete Emacs buffer/elisp tool modules those capabilities use.
 - `lisp/layers/chat/`: the `chat-session` capability actions hosted by chat presentation shells.
 - `lisp/layers/evidence/`: the read-only session evidence retrieval capability and tools.
@@ -151,9 +152,9 @@ The harness is the source of truth for runtime ordering and durable records, not
 
 ### Capabilities And Layers
 
-Capabilities are the behavior units. A capability can contribute instructions, prompt fragments, context providers, model-facing tool registration, in-memory `e://` resources, resource methods, shell-facing actions, schemas, and side-effect policy for one named behavior. These contributions are registered into explicit harness registries; the harness should not treat a capability as an opaque object that handles every concern through one callback.
+Capabilities are the behavior units. A capability can contribute instructions, prompt fragments, context providers, model-facing tool registration, in-memory `e://` resources, resource methods, lifecycle hooks, shell-facing actions, schemas, and side-effect policy for one named behavior. These contributions are registered into explicit harness registries; the harness should not treat a capability as an opaque object that handles every concern through one callback.
 
-Layers are packaging units. A layer names a coherent capability set and optional defaults so users, shells, or profiles can activate useful behavior without manually selecting every capability. A layer may remain a convenience preset such as `base` or `emacs`, but the behavior contract should still live in capabilities such as `file-inspection`, `buffer-read`, or `elisp-eval`.
+Layers are packaging units. A layer names a coherent capability set and optional defaults so users, shells, or profiles can activate useful behavior without manually selecting every capability. A layer may remain a convenience preset such as `os-base` or `emacs-base`, but the behavior contract should still live in capabilities such as `file-inspection`, `buffer-read`, or `elisp-eval`.
 
 The near-term rule is that capabilities and layers are stateless with respect to durable state. They may keep ephemeral caches or helper functions, but any state that must survive, be observed by multiple shells, or be used by both the operator and the agent should live as harness/session records or as external Emacs/file state referenced by harness records.
 
@@ -163,6 +164,7 @@ Capability contribution types should stay separate even when they ship together:
 - tool providers: register model-facing tools with explicit argument/result shapes
 - in-memory resources: register read-only capability-scoped entries under `e://<capability>/<path>`; skill builder resources conventionally live under `skills/<skill-name>` and references under `refs/<reference-name>.md`
 - resource methods: implement operation contracts such as `read`, `write`, and `edit` for URI schemes such as `file://` and `buffer://`
+- lifecycle hooks: named functions at hook points such as `:pre-tool-call` and `:post-tool-call`; hooks at a point run by lexicographical hook id order
 - prompt fragments: add model guidance that belongs with a capability
 - shell actions: expose operator-facing operations that shells can host
 - permission and audit policy: describe expected approval and evidence records for side-effecting operations
@@ -176,6 +178,7 @@ flowchart TD
     Capability --> ContextProvider["Context providers"]
     Capability --> ToolProvider["Tool providers"]
     Capability --> ResourceMethod["Resource methods"]
+    Capability --> HookProvider["Lifecycle hooks"]
     Capability --> PromptFragment["Prompt fragments"]
     Capability --> ShellAction["Shell actions"]
     Capability --> Policy["Permission and audit policy"]
@@ -183,6 +186,7 @@ flowchart TD
     ContextProvider --> ContextRegistry["Context provider registry"]
     ToolProvider --> ToolRegistry["Tool registry"]
     ResourceMethod --> ResourceRegistry["Resource registry"]
+    HookProvider --> HookRegistry["Hook registry"]
     PromptFragment --> PromptRegistry["Prompt/context prefix assembly"]
     ShellAction --> ShellHost["Presentation shell host"]
     Policy --> ToolExecution["Tool execution boundary"]
@@ -192,6 +196,7 @@ flowchart TD
     ContextRegistry --> ContextStrategy["Context strategy"]
     PromptRegistry --> ContextStrategy
     ToolRegistry --> AgentLoop["Agent loop"]
+    HookRegistry --> AgentLoop
     OperationContract["Operation contracts"] --> OperationTools["Resource operation tools"]
     ResourceRegistry --> OperationTools
     OperationTools --> ToolRegistry
@@ -199,7 +204,9 @@ flowchart TD
     CapabilityActivation --> Harness
 ```
 
-The `base` layer is a workspace-oriented preset over smaller capabilities: `base-guidance`, `file-inspection`, `file-mutation`, and `shell-process`. Those capabilities differ in side effects and dependencies, so they should not be treated as one behavior boundary merely because one layer activates them together.
+The `harness-base` layer is a harness-support preset, not an OS or editor tool layer. It contributes session-scoped temporary resources and a post-tool-call truncation hook. `tmp://` resources are ephemeral to a harness session; model-facing `read` can load the full content while ordinary transcript/tool-result context only receives the bounded preview. The default output guard exposes at most 50 kB or 2000 logical lines and records truncation metadata with the full-output URI.
+
+The `os-base` layer is a workspace-oriented preset over smaller capabilities: `base-guidance`, `file-inspection`, `file-mutation`, and `shell-process`. Those capabilities differ in side effects and dependencies, so they should not be treated as one behavior boundary merely because one layer activates them together. The `bash` tool uses a file-backed streaming collector for stdout/stderr so large or failing commands do not first accumulate as an unbounded Emacs buffer/string; with `harness-base` active, the full stream is spooled to `tmp://`.
 
 The `emacs-base` layer is also a preset rather than an atomic behavior unit. Its implementation composes smaller capabilities:
 
@@ -213,7 +220,10 @@ After such a split, `emacs` can remain as a convenient layer over a conservative
 
 ```mermaid
 flowchart LR
-    BaseLayer["base layer"] --> FileInspect["file-inspection capability"]
+    HarnessLayer["harness-base layer"] --> TmpResources["session-tmp-resources capability"]
+    HarnessLayer --> OutputTruncation["tool-output-truncation capability"]
+
+    BaseLayer["os-base layer"] --> FileInspect["file-inspection capability"]
     BaseLayer --> FileMutation["file-mutation capability"]
     BaseLayer --> ProcessShell["shell-process capability"]
 
@@ -293,7 +303,7 @@ The current presentation shell is `e-chat`: a basic session-specific chat buffer
 
 In the target shape, `e-chat` should become a host for a `chat-session` capability rather than a privileged harness client. It will still render buffers, manage keymaps, collect composer text, and display events, but the semantic actions should be exposed by that capability: submit message, abort turn, reset session, select model, inspect context, and manage attachments. That likely means the chat shell will require at least the `chat-session` capability, and can optionally host capabilities such as `selection-context` when those capabilities are active through a layer or direct activation.
 
-Live harness selection goes through `e-harness-registry`, a core service for named harness instances and lazy harness factories. The registry only maps ids to concrete harnesses or factories; it does not do property matching, choose global defaults, or interpret capability configuration. Startup configuration in `lisp/defaults/e-default-harnesses.el` currently registers one lazy spec, `:chat-default`, whose factory creates the OpenAI-backed chat harness, attaches the persistent session store, and activates `chat-session`, `base`, and `emacs-base`. Capability activation and configuration are per harness. Sessions store durable conversation state plus narrow session overrides or later requirements; sessions do not own capability activation.
+Live harness selection goes through `e-harness-registry`, a core service for named harness instances and lazy harness factories. The registry only maps ids to concrete harnesses or factories; it does not do property matching, choose global defaults, or interpret capability configuration. Startup configuration in `lisp/defaults/e-default-harnesses.el` currently registers one lazy spec, `:chat-default`, whose factory creates the OpenAI-backed chat harness, attaches the persistent session store, and activates `chat-session`, `agents-std-context`, `harness-base`, `e`, `os-base`, and `emacs-base`. Capability activation and configuration are per harness. Sessions store durable conversation state plus narrow session overrides or later requirements; sessions do not own capability activation.
 
 Shell instances remain implementation details. `e-chat` currently represents live chat state with buffer-local variables, markers, timers, overlays, and harness subscriptions; that runtime shape is not part of the generic shell interface until multiple shells prove a shared instance protocol is real.
 
@@ -354,6 +364,8 @@ sequenceDiagram
 
 Configuration flow should follow the same boundary. Presentation submits an interaction to a capability action. The capability action records generic runtime state through the harness or delegates concrete side effects to tools/adapters. Provider-specific configuration is stored behind backend adapter configuration, not in generic harness state.
 
+Tool calls flow through a harness-owned lifecycle adapter. Pre-tool hooks run before a tool call is appended or executed, and post-tool hooks run before the result is appended, emitted, persisted, or sent back to the backend. Unexpected hook errors fail the turn instead of silently removing protection. Structured tool-result content is serialized through one shared provider-visible text path before truncation decisions are made.
+
 Canvas-state flow is a specialized context-management flow. The context strategy reads the current canvas revision and selected evidence, the loop receives backend-neutral context, and accepted canvas edits are validated and persisted as new revisions. The raw log remains append-only evidence.
 
 ## Public Surfaces
@@ -372,12 +384,17 @@ The current public package surface is:
 - `e-harness-registry-register-factory`, `e-harness-registry-register`, `e-harness-registry-get`, `e-harness-registry-get-or-create`, `e-harness-registry-list`, and `e-harness-registry-clear-instance`: named live harness lookup and lazy factory registration.
 - `e-default-harnesses-register`, `e-default-chat-harness-create`, and `e-default-session-store`: default startup harness spec registration and default chat harness assembly for the `:chat-default` path.
 - `e-operation-create`, `e-operation-read`, `e-operation-write`, `e-operation-edit`, `e-resources-registry-create`, `e-resource-method-create`, `e-resources-register`, `e-resources-call`, `e-resources-read`, `e-resources-write`, `e-resources-edit`, `e-resources-operations`, and `e-resources-methods-for-operation`: core URI resource operation registry and method surface.
+- `e-hook-create`, `e-hooks-registry-create`, `e-hooks-register`, `e-hooks-for-point`, and `e-hooks-run-reduce`: capability hook registration and ordered hook execution.
+- `e-tools-current-context`, `e-tools-result-create`, and `e-tools-result-p`: tool implementation helpers for context-aware starts and structured results with metadata.
 - `e-store-create`, `e-store-register`, `e-store-uri`, `e-store-read`, `e-store-list`, and `e-store-resource-method`: capability-scoped read-only in-memory resources exposed through `e://`.
+- `e-session-tmp-write` and `e-session-tmp-file-path`: session-scoped temporary output helpers used by context-protection tools and `tmp://` resource methods.
 - `e-skill-spec-create`, `e-capability-with-skills-create`, and `e-skills-uri-for-name`: construction-time skill specs that build ordinary capabilities with compact instruction references and conventional `e://<capability>/skills/<skill-name>` resources; the harness does not consume a skill catalog.
 - `e-openai-create-harness`: create a harness configured for `e-openai-default-provider` or an explicit OpenAI-like provider profile.
 - `e-openai-backend-create`: create the concrete OpenAI-like Responses backend adapter.
 - `e-openai-codex-create-harness`: compatibility wrapper for ChatGPT-backed Codex access.
 - `e-openai-codex-backend-create`: compatibility wrapper for the concrete OpenAI/Codex backend adapter.
+- `e-harness-base-layer-create`: create the harness support layer for `tmp://` resources and tool-output truncation.
+- `e-base-layer-create`: create the OS file/shell layer.
 - `e-emacs-base-layer-create`: create the default Emacs layer.
 - `e-emacs-tools-register-buffer-read-resource`, `e-emacs-tools-register-buffer-resource`, and `e-emacs-tools-register-elisp-eval`: register focused concrete Emacs resource and tool groups used by capabilities.
 - `e-shell-create`, `e-shell-command-create`, `e-shell-register`, `e-shell-get`, `e-shell-list`, and `e-shell-command-by-id`: generic shell manifest and discovery API.

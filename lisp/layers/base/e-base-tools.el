@@ -14,6 +14,7 @@
 (require 'cl-lib)
 (require 'seq)
 (require 'subr-x)
+(require 'e-capabilities)
 (require 'e-operations)
 (require 'e-resources)
 (require 'e-tools)
@@ -451,15 +452,246 @@ TOTAL-LINES is the full file line count.  START-LINE is 1-based."
   (list (or e-base-tools-shell-file-name shell-file-name "/bin/sh")
         (or e-base-tools-shell-command-switch shell-command-switch "-c")))
 
+(cl-defstruct (e-base-tools--bash-collector
+               (:constructor e-base-tools--bash-collector-create))
+  output-file
+  output-uri
+  preview
+  (preview-bytes 0)
+  (preview-newlines 0)
+  (preview-accepting t)
+  truncated
+  (total-bytes 0)
+  (total-newlines 0)
+  last-newline)
+
+(defun e-base-tools--bash-max-bytes ()
+  "Return the active bash output byte preview limit."
+  (if (boundp 'e-tool-output-truncation-max-bytes)
+      e-tool-output-truncation-max-bytes
+    e-base-tools--max-bytes))
+
+(defun e-base-tools--bash-max-lines ()
+  "Return the active bash output line preview limit."
+  (if (boundp 'e-tool-output-truncation-max-lines)
+      e-tool-output-truncation-max-lines
+    e-base-tools--max-lines))
+
+(defun e-base-tools--logical-line-count (text)
+  "Return the number of logical lines in TEXT."
+  (cond
+   ((string-empty-p text)
+    0)
+   ((string-suffix-p "\n" text)
+    (cl-count ?\n text))
+   (t
+    (1+ (cl-count ?\n text)))))
+
+(defun e-base-tools--safe-fragment (value fallback)
+  "Return VALUE as a safe path fragment, or FALLBACK."
+  (let* ((text (if (and (stringp value)
+                        (not (string-empty-p value)))
+                   value
+                 fallback))
+         (safe (replace-regexp-in-string "[^A-Za-z0-9._-]" "-" text)))
+    (if (string-empty-p safe) fallback safe)))
+
+(defun e-base-tools--bash-relative-name (context)
+  "Return the session tmp relative output name for CONTEXT."
+  (let ((turn-id (e-base-tools--safe-fragment
+                  (plist-get context :turn-id)
+                  "turn"))
+        (call-id (e-base-tools--safe-fragment
+                  (plist-get (plist-get context :tool-call) :id)
+                  "call")))
+    (format "tool-results/%s/bash-%s.txt" turn-id call-id)))
+
+(defun e-base-tools--context-capability-active-p (context capability-id)
+  "Return non-nil when CONTEXT includes CAPABILITY-ID."
+  (cl-some (lambda (capability)
+             (eq (e-capability-id capability) capability-id))
+           (plist-get context :capabilities)))
+
+(defun e-base-tools--bash-output-target (context)
+  "Return plist describing where bash output should be streamed for CONTEXT."
+  (let ((relative-name (e-base-tools--bash-relative-name context)))
+    (if (and (plist-get context :harness)
+             (plist-get context :session-id)
+             (e-base-tools--context-capability-active-p
+              context
+              'session-tmp-resources)
+             (require 'e-session-tmp-resources nil t)
+             (fboundp 'e-session-tmp-file-path))
+        (let ((path (e-session-tmp-file-path
+                     (plist-get context :harness)
+                     (plist-get context :session-id)
+                     relative-name)))
+          (list :output-file path
+                :output-uri (format "tmp://%s" relative-name)))
+      (list :output-file (make-temp-file "e-base-bash-" nil ".log")))))
+
+(defun e-base-tools--bash-collector-start (context)
+  "Return a streaming bash output collector for CONTEXT."
+  (let* ((target (e-base-tools--bash-output-target context))
+         (output-file (plist-get target :output-file)))
+    (write-region "" nil output-file nil 'silent)
+    (e-base-tools--bash-collector-create
+     :output-file output-file
+     :output-uri (plist-get target :output-uri)
+     :preview "")))
+
+(defun e-base-tools--bash-collector-count-chunk (collector chunk)
+  "Update COLLECTOR total counters for CHUNK."
+  (setf (e-base-tools--bash-collector-total-bytes collector)
+        (+ (e-base-tools--bash-collector-total-bytes collector)
+           (string-bytes chunk)))
+  (setf (e-base-tools--bash-collector-total-newlines collector)
+        (+ (e-base-tools--bash-collector-total-newlines collector)
+           (cl-count ?\n chunk)))
+  (when (> (length chunk) 0)
+    (setf (e-base-tools--bash-collector-last-newline collector)
+          (eq (aref chunk (1- (length chunk))) ?\n))))
+
+(defun e-base-tools--bash-collector-add-preview (collector chunk)
+  "Add as much of CHUNK as allowed to COLLECTOR preview."
+  (let ((max-bytes (max 0 (e-base-tools--bash-max-bytes)))
+        (max-lines (max 0 (e-base-tools--bash-max-lines)))
+        (index 0)
+        (length (length chunk)))
+    (when (or (zerop max-bytes) (zerop max-lines))
+      (when (> length 0)
+        (setf (e-base-tools--bash-collector-truncated collector) t)
+        (setf (e-base-tools--bash-collector-preview-accepting collector) nil))
+      (setq index length))
+    (while (< index length)
+      (if (not (e-base-tools--bash-collector-preview-accepting collector))
+          (progn
+            (setf (e-base-tools--bash-collector-truncated collector) t)
+            (setq index length))
+        (let* ((char (substring chunk index (1+ index)))
+               (char-bytes (string-bytes char)))
+          (if (> (+ (e-base-tools--bash-collector-preview-bytes collector)
+                    char-bytes)
+                 max-bytes)
+              (progn
+                (setf (e-base-tools--bash-collector-truncated collector) t)
+                (setf (e-base-tools--bash-collector-preview-accepting collector)
+                      nil)
+                (setq index length))
+            (setf (e-base-tools--bash-collector-preview collector)
+                  (concat (e-base-tools--bash-collector-preview collector)
+                          char))
+            (setf (e-base-tools--bash-collector-preview-bytes collector)
+                  (+ (e-base-tools--bash-collector-preview-bytes collector)
+                     char-bytes))
+            (when (equal char "\n")
+              (setf (e-base-tools--bash-collector-preview-newlines collector)
+                    (1+ (e-base-tools--bash-collector-preview-newlines collector)))
+              (when (>= (e-base-tools--bash-collector-preview-newlines collector)
+                        max-lines)
+                (setf (e-base-tools--bash-collector-preview-accepting collector)
+                      nil)))
+            (setq index (1+ index))
+            (when (and (< index length)
+                       (not (e-base-tools--bash-collector-preview-accepting
+                             collector)))
+              (setf (e-base-tools--bash-collector-truncated collector) t)
+              (setq index length))))))))
+
+(defun e-base-tools--bash-collector-append (collector chunk)
+  "Append CHUNK to COLLECTOR's output file and bounded preview."
+  (when (> (length chunk) 0)
+    (write-region chunk nil
+                  (e-base-tools--bash-collector-output-file collector)
+                  'append
+                  'silent)
+    (e-base-tools--bash-collector-count-chunk collector chunk)
+    (e-base-tools--bash-collector-add-preview collector chunk)))
+
+(defun e-base-tools--bash-collector-original-lines (collector)
+  "Return total logical line count for COLLECTOR."
+  (if (zerop (e-base-tools--bash-collector-total-bytes collector))
+      0
+    (+ (e-base-tools--bash-collector-total-newlines collector)
+       (if (e-base-tools--bash-collector-last-newline collector) 0 1))))
+
+(defun e-base-tools--bash-collector-location (collector)
+  "Return model-facing location for COLLECTOR full output."
+  (or (e-base-tools--bash-collector-output-uri collector)
+      (e-base-tools--bash-collector-output-file collector)))
+
+(defun e-base-tools--bash-truncation-notice
+    (shown-bytes shown-lines original-bytes original-lines location)
+  "Return a model-facing truncation notice for bash output."
+  (format "[Tool output truncated: showing first %d bytes / %d lines of %d bytes / %d lines. Full output: %s]"
+          shown-bytes
+          shown-lines
+          original-bytes
+          original-lines
+          location))
+
+(defun e-base-tools--bash-collector-metadata (collector)
+  "Return truncation metadata for COLLECTOR."
+  (let ((metadata (list :truncated t
+                        :original-bytes
+                        (e-base-tools--bash-collector-total-bytes collector)
+                        :original-lines
+                        (e-base-tools--bash-collector-original-lines collector)
+                        :shown-bytes
+                        (e-base-tools--bash-collector-preview-bytes collector)
+                        :shown-lines
+                        (e-base-tools--logical-line-count
+                         (e-base-tools--bash-collector-preview collector)))))
+    (if (e-base-tools--bash-collector-output-uri collector)
+        (plist-put metadata
+                   :tmp-uri
+                   (e-base-tools--bash-collector-output-uri collector))
+      (plist-put metadata
+                 :full-output-path
+                 (e-base-tools--bash-collector-output-file collector)))))
+
+(defun e-base-tools--bash-collector-content (collector &optional suffix)
+  "Return bounded model-facing content from COLLECTOR with optional SUFFIX."
+  (let ((preview (e-base-tools--bash-collector-preview collector)))
+    (if (not (e-base-tools--bash-collector-truncated collector))
+        (if suffix
+            (string-trim-right (format "%s\n\n%s" preview suffix))
+          preview)
+      (let* ((metadata (e-base-tools--bash-collector-metadata collector))
+             (notice (e-base-tools--bash-truncation-notice
+                      (plist-get metadata :shown-bytes)
+                      (plist-get metadata :shown-lines)
+                      (plist-get metadata :original-bytes)
+                      (plist-get metadata :original-lines)
+                      (e-base-tools--bash-collector-location collector)))
+             (content (if (string-empty-p preview)
+                          notice
+                        (concat preview "\n\n" notice))))
+        (if suffix
+            (string-trim-right (format "%s\n\n%s" content suffix))
+          content)))))
+
+(defun e-base-tools--bash-finish-value
+    (collector call status &optional suffix)
+  "Return final bash result value from COLLECTOR for CALL and STATUS."
+  (let ((content (e-base-tools--bash-collector-content collector suffix))
+        (metadata (when (e-base-tools--bash-collector-truncated collector)
+                    (e-base-tools--bash-collector-metadata collector))))
+    (if call
+        (e-tools-result-create call status content metadata)
+      content)))
+
 (cl-defun e-base-tools--run-shell-command-start
     (command directory timeout &key on-done on-error on-request-start)
   "Start shell COMMAND in DIRECTORY with optional TIMEOUT seconds.
 ON-DONE receives captured output.  ON-ERROR receives an Emacs condition list.
 ON-REQUEST-START receives the cancellable process request."
-  (let* ((buffer (generate-new-buffer " *e-base-bash*"))
-         (default-directory directory)
+  (let* ((default-directory directory)
          (command-prefix (e-base-tools--shell-command))
          (shell-command (format "{\n%s\n} 2>&1" command))
+         (tool-context (e-tools-current-context))
+         (call (plist-get tool-context :tool-call))
+         (collector (e-base-tools--bash-collector-start tool-context))
          (settled nil)
          process
          timeout-timer
@@ -468,36 +700,23 @@ ON-REQUEST-START receives the cancellable process request."
         ((cleanup
           ()
           (when (timerp timeout-timer)
-            (cancel-timer timeout-timer))
-          (when (buffer-live-p buffer)
-            (kill-buffer buffer)))
-         (output
-          ()
-          (if (buffer-live-p buffer)
-              (with-current-buffer buffer
-                (buffer-string))
-            ""))
-         (finish-ok
-          ()
+            (cancel-timer timeout-timer)))
+         (finish
+          (status &optional suffix)
           (unless settled
             (setq settled t)
-            (let ((content (output)))
+            (let ((value (e-base-tools--bash-finish-value
+                          collector
+                          call
+                          status
+                          suffix)))
               (cleanup)
-              (when on-done
-                (funcall on-done content)))))
-         (finish-error
-          (message)
-          (unless settled
-            (setq settled t)
-            (let ((content (output)))
-              (cleanup)
-              (when on-error
-                (funcall on-error
-                         (list 'e-base-tools-bash-invalid
-                               (string-trim-right
-                                (format "%s\n\n%s"
-                                        content
-                                        message))))))))
+              (if (or (eq status 'ok) call)
+                  (when on-done
+                    (funcall on-done value))
+                (when on-error
+                  (funcall on-error
+                           (list 'e-base-tools-bash-invalid value)))))))
          (cancel
           ()
           (unless settled
@@ -505,26 +724,27 @@ ON-REQUEST-START receives the cancellable process request."
             (when (timerp timeout-timer)
               (cancel-timer timeout-timer))
             (when (and process (process-live-p process))
-              (kill-process process))
-            (when (buffer-live-p buffer)
-              (kill-buffer buffer)))
+              (kill-process process)))
           t))
       (setq process
             (make-process
              :name "e-base-bash"
-             :buffer buffer
              :command (append command-prefix (list shell-command))
              :connection-type 'pipe
              :coding 'utf-8-unix
              :noquery t
+             :filter
+             (lambda (_proc chunk)
+               (e-base-tools--bash-collector-append collector chunk))
              :sentinel
              (lambda (proc _event)
                (when (and (not settled)
                           (memq (process-status proc) '(exit signal)))
                  (let ((exit-code (process-exit-status proc)))
                    (if (zerop exit-code)
-                       (finish-ok)
-                     (finish-error
+                       (finish 'ok)
+                     (finish
+                      'error
                       (format "Command exited with code %d"
                               exit-code))))))))
       (set-process-query-on-exit-flag process nil)
@@ -533,7 +753,10 @@ ON-REQUEST-START receives the cancellable process request."
              :cancel #'cancel
              :metadata (list :transport 'process
                              :process process
-                             :buffer buffer
+                             :output-file
+                             (e-base-tools--bash-collector-output-file collector)
+                             :output-uri
+                             (e-base-tools--bash-collector-output-uri collector)
                              :cancellable t)))
       (when on-request-start
         (funcall on-request-start request))
@@ -545,7 +768,8 @@ ON-REQUEST-START receives the cancellable process request."
                  (unless settled
                    (when (process-live-p process)
                      (kill-process process))
-                   (finish-error
+                   (finish
+                    'error
                     (format "Command timed out after %s seconds"
                             timeout)))))))
       request)))
@@ -597,7 +821,8 @@ ON-REQUEST-START receives the cancellable process request."
                  :required ["command"])
    :start
    (cl-function
-    (lambda (&key arguments on-done on-error on-request-start)
+    (lambda (&key arguments on-done on-error on-request-start
+                  &allow-other-keys)
       (let ((command (e-base-tools--argument-string arguments :command))
             (timeout (e-base-tools--optional-positive-number arguments :timeout)))
         (e-base-tools--run-shell-command-start
@@ -605,9 +830,7 @@ ON-REQUEST-START receives the cancellable process request."
          directory
          timeout
          :on-request-start on-request-start
-         :on-done (lambda (output)
-                    (funcall on-done
-                             (e-base-tools--truncate-bash-output output)))
+         :on-done on-done
          :on-error on-error))))))
 
 (provide 'e-base-tools)

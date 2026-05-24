@@ -20,6 +20,7 @@
 (require 'url)
 (require 'e-backend)
 (require 'e-harness)
+(require 'e-tools)
 
 (define-error 'e-openai-auth-missing "OpenAI/Codex auth is missing")
 (define-error 'e-openai-auth-invalid "OpenAI/Codex auth is invalid")
@@ -252,7 +253,8 @@ When CODEX-HOME is nil, use the CODEX_HOME environment variable or
        (let ((result content))
          (list :type "function_call_output"
                :call_id (plist-get result :tool-call-id)
-               :output (format "%s" (plist-get result :content)))))
+               :output (e-tools-result-content-text
+                        (plist-get result :content)))))
       (_
        (list :type "message"
              :role (symbol-name role)

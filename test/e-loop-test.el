@@ -287,6 +287,127 @@
       (should (equal (plist-get (plist-get payload :result) :content)
                      "hi")))))
 
+(ert-deftest e-loop-test-tool-lifecycle-prepares-call-before-append ()
+  "The tool lifecycle can transform a call before the loop appends it."
+  (let* ((calls 0)
+         (backend (e-backend-create
+                   :name "fake-tool-lifecycle-pre"
+                   :stream (cl-function
+                            (lambda (&key messages options on-item)
+                              (ignore messages options)
+                              (setq calls (1+ calls))
+                              (if (= calls 1)
+                                  (progn
+                                    (funcall on-item
+                                             '(:type tool-call
+                                               :id "call-1"
+                                               :name "echo"
+                                               :arguments (:text "raw")))
+                                    (funcall on-item
+                                             '(:type done :reason tool-use)))
+                                (funcall on-item
+                                         '(:type assistant-message
+                                           :content "done"))
+                                (funcall on-item
+                                         '(:type done :reason stop)))))))
+         (messages nil)
+         (tool-lifecycle
+          (e-tool-lifecycle-create
+           :prepare (lambda (tool-call)
+                      (plist-put (copy-sequence tool-call)
+                                 :arguments '(:text "prepared")))
+           :start (cl-function
+                   (lambda (tool-call &key on-done &allow-other-keys)
+                     (funcall on-done
+                              (list :tool-call-id (plist-get tool-call :id)
+                                    :name (plist-get tool-call :name)
+                                    :status 'ok
+                                    :content (plist-get
+                                              (plist-get tool-call :arguments)
+                                              :text)))
+                     nil)))))
+    (e-loop-run-turn
+     :session-id "session-1"
+     :turn-id "turn-1"
+     :messages '((:role user :content "hi"))
+     :backend backend
+     :tool-lifecycle tool-lifecycle
+     :options nil
+     :on-event #'ignore
+     :append-message (lambda (message)
+                       (push message messages)))
+    (let* ((appended (nreverse messages))
+           (tool-call (cl-find 'tool-call appended
+                               :key (lambda (message)
+                                      (plist-get message :role))))
+           (tool-result (cl-find 'tool appended
+                                 :key (lambda (message)
+                                        (plist-get message :role)))))
+      (should (equal (plist-get (plist-get (plist-get tool-call :content)
+                                           :arguments)
+                                :text)
+                     "prepared"))
+      (should (equal (plist-get (plist-get tool-result :content) :content)
+                     "prepared")))))
+
+(ert-deftest e-loop-test-tool-lifecycle-result-is-appended-and-emitted ()
+  "The loop appends and emits the lifecycle-shaped tool result."
+  (let* ((calls 0)
+         (backend (e-backend-create
+                   :name "fake-tool-lifecycle-post"
+                   :stream (cl-function
+                            (lambda (&key messages options on-item)
+                              (ignore messages options)
+                              (setq calls (1+ calls))
+                              (if (= calls 1)
+                                  (progn
+                                    (funcall on-item
+                                             '(:type tool-call
+                                               :id "call-1"
+                                               :name "echo"
+                                               :arguments nil))
+                                    (funcall on-item
+                                             '(:type done :reason tool-use)))
+                                (funcall on-item
+                                         '(:type assistant-message
+                                           :content "done"))
+                                (funcall on-item
+                                         '(:type done :reason stop)))))))
+         (events nil)
+         (messages nil)
+         (tool-lifecycle
+         (e-tool-lifecycle-create
+           :start (cl-function
+                   (lambda (tool-call &key on-done &allow-other-keys)
+                     (funcall on-done
+                              (list :tool-call-id (plist-get tool-call :id)
+                                    :name (plist-get tool-call :name)
+                                    :status 'ok
+                                    :content "post-processed"))
+                     nil)))))
+    (e-loop-run-turn
+     :session-id "session-1"
+     :turn-id "turn-1"
+     :messages '((:role user :content "hi"))
+     :backend backend
+     :tool-lifecycle tool-lifecycle
+     :options nil
+     :on-event (lambda (type payload)
+                 (push (list :type type :payload payload) events))
+     :append-message (lambda (message)
+                       (push message messages)))
+    (let* ((tool-message (cl-find 'tool messages
+                                  :key (lambda (message)
+                                         (plist-get message :role))))
+           (tool-event (cl-find 'tool-finished events
+                                :key (lambda (event)
+                                       (plist-get event :type))))
+           (event-result (plist-get (plist-get tool-event :payload) :result)))
+      (should (equal (plist-get (plist-get tool-message :content) :content)
+                     "post-processed"))
+      (should (equal (plist-get event-result :content)
+                     "post-processed")))))
+
 (ert-deftest e-loop-test-requeries-backend-after-tool-result ()
   "Tool results are fed back into the backend until an assistant message settles."
   (let* ((calls 0)

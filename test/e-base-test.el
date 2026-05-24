@@ -19,11 +19,13 @@
 (require 'e-harness)
 (require 'e-tools)
 
-(ert-deftest e-base-test-layer-registers-base-tools ()
-  "The base layer registers the base tool surface."
+(ert-deftest e-base-test-layer-registers-os-base-tools ()
+  "The OS base layer registers the workspace tool surface."
   (let* ((harness (e-harness-create
                    :backend (e-backend-fake-create :items nil)))
          (layer (e-base-layer-create default-directory)))
+    (should (eq (e-layer-id layer) 'os-base))
+    (should (equal (e-layer-name layer) "OS Base"))
     (e-harness-activate-layer harness layer)
     (should (equal (mapcar (lambda (definition)
                              (plist-get definition :name))
@@ -31,8 +33,9 @@
                    '("read" "write" "edit" "bash")))))
 
 (ert-deftest e-base-test-layer-activates-file-capabilities ()
-  "The base layer is a preset over file and process capabilities."
+  "The OS base layer is a preset over file and process capabilities."
   (let ((layer (e-base-layer-create default-directory)))
+    (should (eq (e-layer-id layer) 'os-base))
     (should (equal (mapcar #'e-capability-id
                            (e-layer-capabilities layer))
                    '(base-guidance
@@ -41,7 +44,7 @@
                      shell-process)))))
 
 (ert-deftest e-base-test-layer-captures-directory-for-relative-paths ()
-  "The base layer resolves relative paths against the captured directory."
+  "The OS base layer resolves relative paths against the captured directory."
   (let* ((directory (make-temp-file "e-base-layer-" t))
          (file (expand-file-name "sample.txt" directory))
          (harness (e-harness-create

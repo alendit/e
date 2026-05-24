@@ -32,7 +32,7 @@
   :group 'e-defaults)
 
 (defcustom e-default-chat-layer-ids
-  '(agents-std-context e base emacs-base)
+  '(agents-std-context harness-base e os-base emacs-base)
   "Layer ids activated by default chat harnesses.
 
 This option is the source of truth for the stateless layer preset attached to
@@ -98,6 +98,7 @@ session store.  LAYER-IDS overrides `e-default-chat-layer-ids'."
   (require 'e-base)
   (require 'e-chat-session)
   (require 'e-emacs-base)
+  (require 'e-harness-base)
   (require 'e-harness)
   (require 'e-layer-selection)
   (require 'e-layers)

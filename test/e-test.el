@@ -40,6 +40,7 @@
 (defconst e-test--core-features
   '(e-backend
     e-capabilities
+    e-hooks
     e-context
     e-events
     e-store
@@ -59,6 +60,9 @@
     e-default-layers
     e-default-harnesses
     e-layer-selection
+    e-harness-base
+    e-session-tmp-resources
+    e-tool-output-truncation
     e-layers-shell
     e-openai
     e-emacs-tools
@@ -99,6 +103,7 @@
             (should (eq (plist-get status :state) 'ready))
             (dolist (key '(:backends
                            :capabilities
+                           :hooks
                            :context
                            :events
                            :store
@@ -129,6 +134,7 @@
                        "lisp/layers"
                        "lisp/layers/agents"
                        "lisp/layers/base"
+                       "lisp/layers/harness"
                        "lisp/layers/emacs"
                        "lisp/layers/evidence"
                        "lisp/layers/web"

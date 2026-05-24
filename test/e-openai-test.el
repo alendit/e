@@ -177,7 +177,7 @@
                :arguments "{\"uri\":\"buffer://README.md\"}")
               (:type "function_call_output"
                :call_id "call-1"
-               :output "(:ok t)")]
+               :output "{\"ok\":true}")]
       :tool_choice "auto"
       :parallel_tool_calls t
       :reasoning (:effort "high")))))
