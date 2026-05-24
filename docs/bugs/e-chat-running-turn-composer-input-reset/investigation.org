@@ -1,0 +1,76 @@
+#+title: Investigation
+#+startup: overview
+
+* Source inspected
+
+- =lisp/shells/chat/e-chat.el=: =e-chat-submit= deletes the real composer,
+  sets status to queued, and inserts =e-chat--insert-pending-separator=.
+- =lisp/shells/chat/e-chat.el=: =e-chat--insert-pending-separator= inserts
+  bottom prompt chrome and the composer glyph, but intentionally does not set
+  =e-chat--composer-start-marker=. Its docstring says it inserts prompt chrome
+  without an editable composer.
+- =lisp/shells/chat/e-chat.el=: =e-chat--composer-active-p= requires both
+  =e-chat--transcript-end-marker= and =e-chat--composer-start-marker=. Pending
+  prompt chrome therefore looks like a composer but is not an active composer.
+- =lisp/shells/chat/e-chat.el=: =e-chat--start-progress-indicator= starts a
+  repeating timer. Each tick calls =e-chat--advance-progress-indicator=, which
+  calls =e-chat--render-progress-indicator= and then
+  =e-chat--render-running-status=.
+- =lisp/shells/chat/e-chat.el=: =e-chat--render-running-status= deletes the
+  running status and any bottom prompt/composer region, redraws the transient
+  activity/progress block, and when progress is active reinserts only
+  =e-chat--insert-pending-separator=.
+- =test/e-chat-test.el=: =e-chat-test-progress-rerender-keeps-pending-composer-glyph=
+  explicitly asserts that progress redraw keeps a protected bottom composer
+  glyph visible while =e-chat--composer-active-p= is false.
+
+* Live access
+
+Live =emacsclient= inspection found an active =*e-chat:spec tool protection*=
+buffer matching the screenshot context.
+
+- Buffer state: =:progress-turn-id "turn-14"=, =:timer-live t=,
+  =:progress-frame 113=.
+- Composer state: =:composer-active nil=, =:composer-start nil=, and calling
+  =e-chat--composer-text= signaled =No active e chat composer=.
+- Marker state: =:transcript-end 12400=, =:running-start 12381=,
+  =:running-end 12400=.
+- The buffer tail still showed the bottom prompt glyph after the running status
+  area, so the UI presented a prompt-shaped target even though no active
+  composer existed.
+
+I did not mutate the user's live buffer. The live check was read-only
+inspection of buffer-local state and the visible tail text.
+
+* Conclusion
+
+The likely root cause is a mismatch between visual affordance and state
+ownership during running turns. Running progress redraw intentionally removes
+the real composer and replaces it with pending prompt chrome. That chrome uses
+the same composer glyph, but it has no =e-chat--composer-start-marker= and is
+therefore not treated as an editable composer by the composer helpers.
+
+Because the progress timer redraws the running status every
+=e-chat-progress-interval=, any text that appears after the prompt-shaped
+pending chrome is outside the tracked composer region. The next progress or
+activity redraw can delete and recreate the bottom region, which presents as
+composer input being constantly reset.
+
+This also explains why the bug is visible only while a turn is running: after
+the turn finishes, =e-chat--ensure-composer= creates a real composer again.
+
+* Next step
+
+Decide whether running turns should support a real editable follow-up composer
+or should show non-editable pending chrome that cannot be mistaken for input.
+
+If follow-up composition during active turns is desired, the fix should give
+the running-turn bottom area a real composer owner and preserve its text across
+progress/activity redraws. If active-turn editing should be disabled, the fix
+should make the pending chrome visibly non-editable and prevent ordinary text
+insertion after the glyph.
+
+In either direction, add a regression test that simulates typing at the bottom
+prompt while a progress timer redraw happens, and assert that the chosen
+behavior is stable.
+

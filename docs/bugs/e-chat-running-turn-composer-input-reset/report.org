@@ -1,0 +1,14 @@
+#+title: Running Turn Composer Input Reset
+#+startup: overview
+
+* Report
+
+When an =e-chat= turn is running, typing into the visible bottom composer area
+does not preserve the input. The visible prompt appears to accept focus while
+the assistant progress/activity area is updating, but the typed text is
+repeatedly cleared during the running turn.
+
+The user-provided screenshot showed this while the =*e-chat:spec tool
+protection*= buffer had an active turn with tool activity and the cursor at the
+bottom prompt.
+
