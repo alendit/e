@@ -18,6 +18,7 @@
 (require 'e-default-harnesses)
 (require 'e-harness)
 (require 'e-harness-registry)
+(require 'e-agents-std-context)
 (require 'e-layer-selection)
 (require 'e-layers)
 (require 'e-openai)
@@ -98,11 +99,14 @@
              (lambda (&rest _args)
                (e-harness-create
                 :backend (e-backend-fake-create :items nil)))))
-    (let ((e-default-chat-layer-ids '(e base emacs-base)))
+    (let ((e-default-chat-layer-ids '(agents-std-context e base emacs-base)))
       (let ((harness (e-default-chat-harness-create)))
         (should (equal (mapcar #'e-layer-id
                                (e-harness-active-layers harness))
-                       '(chat-session e base emacs-base)))
+                       '(chat-session agents-std-context e base emacs-base)))
+        (should (memq 'agents-std-context
+                      (mapcar #'e-capability-id
+                              (e-harness-active-capabilities harness))))
         (should (memq 'chat-session
                       (mapcar #'e-capability-id
                               (e-harness-active-capabilities harness))))

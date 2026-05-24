@@ -57,18 +57,36 @@
 (ert-deftest e-dev-test-reload-refreshes-defaults ()
   "Reload reapplies changed default options."
   (setq e-openai-default-model "gpt-5.4")
-  (setq e-default-chat-layer-ids '(base emacs-base))
+  (setq e-default-layer-specs
+        '((:id e
+           :name "e"
+           :summary "Runtime self-management commands."
+           :feature e-layer-selection
+           :factory e-layer-selection-layer-create)
+          (:id base
+           :name "Base"
+           :summary "Workspace file and shell tools."
+           :feature e-base
+           :factory e-base-layer-create)
+          (:id emacs-base
+           :name "Emacs Base"
+           :summary "Live Emacs buffer awareness and editing tools."
+           :feature e-emacs-base
+           :factory e-emacs-base-layer-create)))
+  (setq e-default-chat-layer-ids '(agents-std-context e base emacs-base))
   (let ((e-startup-shell-hook
          (cons (lambda ()
                  (e-harness-registry-get-or-create :chat-default))
                e-startup-shell-hook)))
     (e-dev-reload default-directory))
   (should (equal e-openai-default-model "gpt-5.5"))
-  (should (equal e-default-chat-layer-ids '(e base emacs-base)))
+  (should (e-layer-get 'agents-std-context))
+  (should (equal e-default-chat-layer-ids
+                 '(agents-std-context e base emacs-base)))
   (should (equal (mapcar #'e-layer-id
                          (e-harness-active-layers
                           (e-harness-registry-get-or-create :chat-default)))
-                 '(chat-session e base emacs-base))))
+                 '(chat-session agents-std-context e base emacs-base))))
 
 (provide 'e-dev-test)
 

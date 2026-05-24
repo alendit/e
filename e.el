@@ -27,6 +27,7 @@
   (defconst e--source-subdirectories
     '("lisp/core"
       "lisp/layers"
+      "lisp/layers/agents"
       "lisp/layers/base"
       "lisp/layers/emacs"
       "lisp/layers/evidence"
@@ -56,6 +57,7 @@
   (dolist (subdirectory (reverse
                          '("lisp/core"
                            "lisp/layers"
+                           "lisp/layers/agents"
                            "lisp/layers/base"
                            "lisp/layers/emacs"
                            "lisp/layers/evidence"

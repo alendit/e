@@ -21,6 +21,11 @@
      :summary "Runtime self-management commands."
      :feature e-layer-selection
      :factory e-layer-selection-layer-create)
+    (:id agents-std-context
+     :name "Agents Std Context"
+     :summary "Standard AGENTS.md and filesystem skill context."
+     :feature e-agents-std-context
+     :factory e-agents-std-context-layer-create)
     (:id base
      :name "Base"
      :summary "Workspace file and shell tools."

@@ -1,0 +1,27 @@
+#+title: Agents Std Context
+#+startup: overview
+
+* Goal
+
+Create an =agents-std-context= layer that contributes standard agent
+orientation without requiring the model to ask for it first.
+
+* Design
+
+- The layer is stateless. It contributes one capability with a context provider
+  for discovered =AGENTS.md= files and discovered skill resources.
+- =AGENTS.md= discovery includes global agent instructions and project
+  instructions found by walking up from the layer root.
+- Skill discovery reads global =~/.agents/skills/*/SKILL.md= and project
+  =.agents/skills/*/SKILL.md= directories, advertises compact references in the
+  capability instructions, and exposes full bodies as ordinary read-only
+  =e://= resources.
+- Default chat harnesses activate this layer through the built-in layer
+  registry so AGENTS context participates in normal turn context construction.
+
+* Verification
+
+- Add focused ERT coverage for AGENTS context discovery.
+- Add focused ERT coverage for global and project skill discovery/resources.
+- Update default layer startup tests so the layer is loaded and active by
+  default.
