@@ -1,0 +1,104 @@
+#+title: Write Creates Parent Paths Review
+#+startup: overview
+
+* Summary
+
+The implementation adheres very closely to the plan for =02-write-path-parents=.
+The feature is ready to mark =Done=: the model-facing =write= operation now
+states the create-parent/create-target/overwrite invariant, active writable
+resource methods conform to it, =edit= remains strict, and focused tests pass.
+
+No unresolved review notes remain.
+
+* Plan Adherence
+
+** Generic write operation
+
+- =lisp/core/e-operations.el= updates =e-operation-write= to describe the shared
+  invariant:
+  - write complete content to a URI-addressed resource;
+  - for every listed writable scheme, create missing parent paths and the target
+    resource;
+  - overwrite existing content.
+- The parameter shape remains unchanged: =:uri= and =:content=.
+
+** File resources
+
+- =lisp/layers/base/e-base-tools.el= resolves =file://= paths through the
+  workspace-root guard before writing.
+- File writes create missing parents with =make-directory= and write complete
+  replacement content with =write-region=.
+- Root escape protection remains in place.
+- Invalid intermediate filesystem paths surface errors rather than silently
+  succeeding.
+
+** Buffer resources
+
+- =lisp/layers/emacs/e-emacs-tools.el= uses =get-buffer-create= for
+  =buffer://= writes, so missing live buffers are created.
+- Existing buffer contents are erased and replaced with the supplied complete
+  content.
+- The operation reports =:saved nil= and does not persist file-backed buffers;
+  persistence remains the separate =save_buffer= action.
+
+** Scheme descriptions
+
+- File write description remains concise: workspace text files.
+- Buffer write description is concise and accurate: writes mutate live buffers
+  but do not save file-backed buffers.
+- The descriptions no longer imply that writes only work for existing targets.
+
+** Edit remains strict
+
+- File edit still operates on existing readable files and does not create parent
+  directories or missing targets.
+- Buffer edit still requires an existing live buffer and does not create missing
+  buffers.
+
+** Read-only e:// resources
+
+- =e://= resources remain read-only through the store resource method and do not
+  advertise =write= or =edit=.
+
+* Acceptance Criteria
+
+| Criterion | Status |
+|-----------+--------|
+| Model-facing =write= description states create-parent/create-target/overwrite invariant | Met |
+| Every active writable URI scheme conforms to the invariant or does not advertise =write= | Met |
+| =file://= writes create missing parent directories and target files inside the configured root | Met |
+| =buffer://= write behavior is consistent with the invariant | Met |
+| =edit= behavior remains unchanged and does not create missing resources | Met |
+| Tests cover operation-level wording and per-scheme behavior | Met |
+
+* Evidence Inspected
+
+- =lisp/core/e-operations.el=: write operation contract text and unchanged
+  parameters.
+- =lisp/layers/base/e-base-tools.el=: file path resolution, parent creation,
+  complete write behavior, and edit path behavior.
+- =lisp/layers/emacs/e-emacs-tools.el=: buffer write creation behavior and
+  strict buffer edit behavior.
+- =test/e-harness-test.el=: generated write tool description includes the shared
+  invariant.
+- =test/e-base-tools-test.el=: file write creation/overwrite, outside-root
+  rejection, invalid intermediate path handling, and strict file edit behavior.
+- =test/e-emacs-tools-test.el=: buffer write overwrite/create behavior and strict
+  buffer edit behavior.
+- =test/e-store-test.el=: =e://= resources remain read-only.
+- =docs/architecture.md= and =docs/mvp.md=: user-facing/resource documentation
+  reflects the new invariant.
+
+* Validation
+
+Focused test run:
+
+#+begin_src sh
+rtk eldev test test/e-operations-test.el test/e-harness-test.el test/e-base-tools-test.el test/e-emacs-tools-test.el test/e-store-test.el
+#+end_src
+
+Result: 70 tests passed, 0 unexpected.
+
+* Review Notes
+
+None.
