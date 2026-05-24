@@ -1,0 +1,503 @@
+#+title: Context Protection from Tool Calls
+#+startup: overview
+
+* Goal
+
+Prevent runaway or unexpectedly verbose tools from injecting unbounded content
+into the durable session transcript and the next model context.
+
+The first concrete protection is a =tool-output-truncation= capability:
+
+- limit tool result content to 5 kB and 200 lines;
+- when a result exceeds either limit, write the full output into a file under a
+  session-specific temporary directory;
+- replace the model/session-facing tool output with a bounded preview plus a
+  =tmp://= resource URI that can be read explicitly if the full output is needed.
+
+The feature should be implemented through a general capability hook mechanism,
+starting with =:pre-tool-call= and =:post-tool-call= hooks.  The hook mechanism is
+the reusable extension point; truncation is the first policy built on it.
+
+* Non-goals
+
+- Do not add a general permission, approval, or trust-policy system.
+- Do not change provider request formats beyond the already-supported
+  provider-neutral tool result content.
+- Do not redesign context compaction or transcript storage.
+- Do not make every tool implement its own truncation contract.
+- Do not rely on provider token limits as the protection mechanism; the harness
+  must bound content before it is appended to the session.
+
+* Decisions
+
+** Hook ownership
+
+Hooks are capability contributions owned by core capability/harness mechanics.
+
+A capability should be able to contribute named hooks just as it contributes
+instructions, tools, resources, resource methods, and context providers.  The
+harness/loop owns when hook points run because the harness/loop owns tool-call
+lifecycle and session persistence.
+
+Proposed capability shape:
+
+#+begin_src emacs-lisp
+(e-capability-create
+ :id 'tool-output-truncation
+ :name "Tool Output Truncation"
+ :hooks (list (e-hook-create
+               :id "50-tool-output-truncation"
+               :point :post-tool-call
+               :handler #'...)))
+#+end_src
+
+Use string hook ids.  Run hooks for a point in lexicographical =string< order by
+id.  Naming conventions such as ="10-..."=, ="50-..."=, and ="90-..."= express
+priority for now.  Duplicate ids at the same point should be an error when the
+hook registry is built because otherwise ordering and observability become
+ambiguous.
+
+** Initial hook points
+
+Start with two hook points:
+
+- =:pre-tool-call= :: runs after the model requested a tool and before the tool
+  starts.  It receives the tool call and turn context.  The first slice can make
+  this an observation/normalization point and preserve the original call unless
+  a concrete mutating use appears during implementation.
+- =:post-tool-call= :: runs after the tool produced a structured result and
+  before the result is appended to the session, emitted as =tool-finished=, or
+  included in a follow-up model request.  It receives the tool call, structured
+  result, and turn context, and returns the structured result to continue with.
+
+The truncation capability uses only =:post-tool-call=.
+
+** Hook execution model
+
+Keep the first hook implementation synchronous and deterministic.
+
+Tool handlers can already be asynchronous, but the hook chain should be a simple
+ordered transformation around the tool lifecycle:
+
+#+begin_example
+model tool-call item
+  -> pre-tool-call hooks
+  -> e-tools-start / tool handler
+  -> post-tool-call hooks
+  -> append tool result message
+  -> emit tool-finished
+  -> continue loop
+#+end_example
+
+If a hook signals an unexpected error, fail the turn visibly.  Do not swallow the
+error or silently append the unprotected output.  Expected policy decisions can
+later return structured tool errors, but this feature's truncation hook should
+not normally fail except on unexpected filesystem problems.
+
+** Context passed to hooks
+
+Hooks need enough information to make session-scoped decisions without depending
+on presentation shells.
+
+Pass a narrow plist context:
+
+| Key | Meaning |
+|-----+---------|
+| =:harness= | active harness, when available |
+| =:session-id= | current session id |
+| =:turn-id= | current turn id |
+| =:tools= | active tool registry, if useful for introspection |
+| =:capabilities= | active capabilities, if useful for diagnostics |
+
+Avoid passing presentation buffers or shell state.  Hooks are harness/core
+extension points, not UI callbacks.
+
+** Tmp resource ownership
+
+The =tmp://= resource should be a capability, tentatively named
+=session-tmp-resources=.
+
+It owns:
+
+- creating and remembering a session-specific temporary directory;
+- mapping safe relative =tmp://= addresses to files in that directory;
+- read-only resource access for those files;
+- small helper functions used by other capabilities to persist temporary
+  artifacts and obtain a =tmp://= URI.
+
+The first implementation should register only a read method.  The model should
+not get a generic =write= tool for =tmp://= unless a later feature needs it.
+Internal Lisp helpers may write files there.
+
+The =tool-output-truncation= capability depends on the tmp-resource capability
+because truncation needs somewhere session-scoped to store full output.
+
+** Session-specific temporary directory
+
+Use one directory per session, not per process or per turn.  Turn-specific files
+can be placed inside it with unique names.
+
+Open question for implementation: whether the directory is keyed only by
+=session-id= or also by a harness/runtime id.  Keying by =session-id= keeps URIs
+stable within the session but risks collisions if separate harnesses reuse a
+session id.  A safe first slice can include both a process/harness prefix and
+=session-id= in the on-disk directory while exposing only session-local relative
+=tmp://= names to the model.
+
+Directory cleanup can be deferred.  Use Emacs temporary-file APIs and document
+that files are ephemeral runtime artifacts, not durable session storage.
+
+** Tool result content shape
+
+The truncation hook must handle the result shape produced by =e-tools--result=:
+
+#+begin_src emacs-lisp
+(:tool-call-id "..." :name "bash" :status ok :content CONTENT :metadata METADATA)
+#+end_src
+
+Only =:content= is size-limited.  Preserve status, ids, names, and existing
+metadata.  Add truncation metadata rather than replacing existing metadata:
+
+#+begin_src emacs-lisp
+:metadata (:truncated t
+           :tmp-uri "tmp://tool-results/turn-7/bash-call-abc.txt"
+           :original-bytes 123456
+           :original-lines 9000
+           :shown-bytes 5000
+           :shown-lines 200
+           ...existing...)
+#+end_src
+
+If =:content= is a string, preview it directly.  If =:content= is structured
+plist/list/vector data, serialize it with =prin1-to-string= or =json-encode= only
+inside the truncation policy, then preview the serialized representation.  The
+exact serialization choice can be decided during implementation, but it must be
+stable enough for tests.
+
+The replacement content should be clear to the model:
+
+#+begin_example
+<preview text>
+
+[Tool output truncated: showing first 5000 bytes / 200 lines of 123456 bytes / 9000 lines. Full output: tmp://tool-results/turn-7/bash-call-abc.txt]
+#+end_example
+
+Prefer head truncation for generic tool outputs so the model sees command setup,
+headers, or error preamble.  If a later tool wants tail-biased previews, add a
+capability config option or tool-specific hook after there is a real need.
+
+* Layer placement open question
+
+The new capabilities are cross-cutting context safety features, not workspace
+file tools, web tools, or UI presentation behavior.  They need harness lifecycle
+and resource registry integration but should not make core policy depend on a
+specific default layer.
+
+Candidate placements:
+
+1. **Default/base layer**
+   - Pros: automatically protects the current default chat harness if =base= is
+     active; simple to ship.
+   - Cons: semantically wrong because context protection should protect all tool
+     outputs, including Emacs/web/custom tools, and should still exist in a
+     harness without filesystem/shell tools.
+
+2. **New context-protection layer**
+   - Pros: explicit, composable, can contain =session-tmp-resources= and
+     =tool-output-truncation= as normal capabilities; default harness can enable
+     it by default without coupling it to =base=.
+   - Cons: adds another built-in layer and layer id; users can disable it unless
+     later policy marks it mandatory.
+
+3. **Core mandatory harness feature**
+   - Pros: strongest safety guarantee; no layer ordering/configuration issue.
+   - Cons: violates the desired model that policy is contributed by
+     capabilities; harder to experiment with other hook policies.
+
+Recommended first slice: create a small built-in =context-protection= layer and
+activate it by default before tool-providing layers.  The hook infrastructure
+belongs in core, while the tmp resource and truncation policy live in the new
+layer/capability module.  This keeps the policy removable and testable while
+protecting default users out of the box.
+
+* Design
+
+** Core hook model
+
+Add a core module, for example =lisp/core/e-hooks.el=, with:
+
+- an =e-hook= struct: =id=, =point=, =handler=, optional =description=,
+  optional =metadata=;
+- an =e-hooks-registry= struct indexed by hook point;
+- registration and ordering helpers;
+- runners for reduce-style hooks, especially post-tool-call result transforms.
+
+Extend =e-capability= with a =hooks= slot and add
+=e-capabilities-register-hooks=.
+
+The harness should expose a derived =e-harness-hooks= registry built from active
+capabilities.  As with tools/resources, a fresh registry view is acceptable.
+
+** Loop integration
+
+=e-loop= currently receives only a tool registry.  To run session-aware hooks it
+needs either a hook registry plus context, or a higher-level tool lifecycle
+adapter supplied by the harness.
+
+Prefer passing a hook registry and context into =e-loop-start-turn=:
+
+#+begin_src emacs-lisp
+(e-loop-start-turn
+ :session-id session-id
+ :turn-id turn-id
+ :tools (e-harness-tools harness)
+ :hooks (e-harness-hooks harness)
+ :hook-context (list :harness harness
+                     :session-id session-id
+                     :turn-id turn-id
+                     :capabilities (e-harness-active-capabilities harness))
+ ...)
+#+end_src
+
+Then run:
+
+- pre hooks immediately before appending/emitting the tool-call start;
+- post hooks inside =finish-tool= before constructing/appending the tool result
+  message and emitting =tool-finished=.
+
+Implementation detail to decide: whether =:pre-tool-call= can transform the call
+before the =tool-call= message is appended.  For the first slice, define it as a
+transform of the call and append the transformed call.  If no hooks are
+registered, preserve current behavior exactly.
+
+** Session tmp resource capability
+
+Add a layer module such as:
+
+- =lisp/layers/context-protection/e-session-tmp-resources.el=
+- or a shorter =lisp/layers/context/e-session-tmp-resources.el=
+
+Functions to provide:
+
+- =(e-session-tmp-capability-create)= returns a capability with a =tmp://= read
+  resource method.
+- =(e-session-tmp-write harness session-id relative-name content)= writes
+  content into the session tmp directory and returns a =tmp://= URI.
+- =(e-session-tmp-read uri range ...)= reads text files, honoring the same range
+  semantics as the file read resource where practical.
+
+Security/path rules:
+
+- reject absolute paths, =..= components, empty names, and names containing NUL;
+- root all reads to the session-specific directory;
+- expose only text reads in the first slice;
+- generate filenames internally for truncation instead of trusting tool names as
+  raw paths.
+
+Because resource methods currently receive only a parsed URI and operation
+arguments, the read handler needs access to the active session directory.  The
+first implementation can close over a harness/session tmp manager object or use
+weak hash tables keyed by harness/session id.  Avoid global single-directory
+state that mixes sessions.
+
+** Tool output truncation capability
+
+Add a policy module such as:
+
+- =lisp/layers/context-protection/e-tool-output-truncation.el=
+
+Defaults:
+
+- =e-tool-output-truncation-max-bytes= = 5000;
+- =e-tool-output-truncation-max-lines= = 200.
+
+The hook handler should:
+
+1. Extract =:content= from the structured result.
+2. Convert content to a deterministic text representation for measuring and
+   previewing.
+3. Count UTF-8 bytes and lines.
+4. If within both limits, return the result unchanged.
+5. If over either limit, write the full representation through the session tmp
+   helper.
+6. Replace =:content= with a bounded preview plus =tmp://= notice.
+7. Merge truncation fields into =:metadata=.
+
+Keep the operation pure except for the single tmp-file write.
+
+** Default activation
+
+Add a built-in layer spec:
+
+#+begin_src emacs-lisp
+(:id context-protection
+ :name "Context Protection"
+ :summary "Bounds tool-call output and exposes overflow via session tmp resources."
+ :feature e-context-protection
+ :factory e-context-protection-layer-create)
+#+end_src
+
+Add it to =e-default-chat-layer-ids= before =base=, =emacs-base=, and =web=.
+Ordering of layers should not decide hook order; hook ids decide hook order.
+The early default position is only for readability and because it is a general
+runtime guard.
+
+* Implementation Plan
+
+** Step 1: Add core hook primitives
+
+Files:
+
+- Create =lisp/core/e-hooks.el=.
+- Modify =lisp/core/e-capabilities.el=.
+- Modify =lisp/dev/e-dev.el= reload/export lists.
+- Add =test/e-hooks-test.el= or extend capability tests.
+
+Acceptance:
+
+- =e-hook-create= validates string ids, keyword hook points, and function
+  handlers.
+- Hooks register into a registry and run in lexicographical id order.
+- Duplicate ids for the same hook point signal a clear error.
+- =e-capability-create= accepts =:hooks= without breaking existing callers or
+  stale live-reloaded capability records.
+
+** Step 2: Thread hooks through harness and loop
+
+Files:
+
+- Modify =lisp/core/e-harness.el=.
+- Modify =lisp/core/e-loop.el=.
+- Add/extend loop and harness tests.
+
+Acceptance:
+
+- =e-harness-hooks= returns hooks from active capabilities.
+- =e-loop-start-turn= accepts optional =:hooks= and =:hook-context=.
+- =:pre-tool-call= hooks run before tool execution and can return the tool call
+  to use.
+- =:post-tool-call= hooks run before the tool result is appended or emitted.
+- Without active hooks, existing tool-call tests and event ordering keep passing.
+- Hook errors fail the turn visibly instead of silently bypassing protection.
+
+** Step 3: Add session tmp resource capability
+
+Files:
+
+- Create =lisp/layers/context-protection/e-session-tmp-resources.el=.
+- Add focused tests, e.g. =test/e-session-tmp-resources-test.el=.
+
+Acceptance:
+
+- A capability registers a read-only =tmp://= resource method.
+- Session tmp files are stored under a session-specific temporary directory.
+- Internal helper writes content and returns a =tmp://= URI.
+- Reading that URI through the harness resource registry returns the content.
+- Path traversal and absolute paths are rejected.
+- Ranged reads work or explicitly document the narrower first-slice range
+  behavior.
+
+** Step 4: Add tool output truncation capability
+
+Files:
+
+- Create =lisp/layers/context-protection/e-tool-output-truncation.el=.
+- Add =test/e-tool-output-truncation-test.el=.
+
+Acceptance:
+
+- Outputs at or below 5 kB and 200 lines are unchanged.
+- Outputs over 5 kB are truncated and persisted to =tmp://=.
+- Outputs over 200 lines are truncated and persisted to =tmp://=.
+- Metadata records original size, preview size, truncation status, and tmp URI.
+- The full output can be recovered by reading the tmp URI.
+- Structured content is handled deterministically and does not bypass limits.
+
+** Step 5: Add context-protection layer and default activation
+
+Files:
+
+- Create =lisp/layers/context-protection/e-context-protection.el=.
+- Modify =lisp/defaults/e-default-layers.el=.
+- Modify =lisp/defaults/e-default-harnesses.el= default layer ids.
+- Modify package load/reload files as needed.
+- Add/extend default startup tests.
+
+Acceptance:
+
+- =(require 'e-context-protection)= works.
+- =(e-context-protection-layer-create)= returns a layer with tmp-resource and
+  truncation capabilities.
+- Default chat harnesses include the layer by default.
+- Disabling the layer removes the hook and =tmp://= resource from that harness.
+
+** Step 6: Replace ad hoc shell truncation or align it with the hook
+
+Files:
+
+- Review =lisp/layers/base/e-base-tools.el=.
+- Update tests in =test/e-base-tools-test.el= if behavior changes.
+
+Acceptance:
+
+- The bash tool no longer needs to implement independent 50 kB/2000-line
+  context protection for normal tool results, or its existing timeout/artifact
+  behavior is documented as separate from context protection.
+- There is no double-truncation in the default path.
+- Full bash output references use =tmp://= for context-protected overflow rather
+  than anonymous process temp files when the context-protection layer is active.
+
+** Step 7: Document behavior and boundaries
+
+Files:
+
+- Update README or architecture docs if they describe capabilities/layers.
+- Keep this plan updated if the layer placement decision changes.
+
+Acceptance:
+
+- Docs state that capability hooks are ordered by lexicographical hook id.
+- Docs describe =tmp://= as ephemeral session-scoped storage.
+- Docs describe default output limits and how to read the full output.
+
+* Verification
+
+- Run focused ERT tests for =e-hooks=, loop hook execution, session tmp
+  resources, and tool output truncation.
+- Run existing base tool tests to catch behavior drift around bash and resource
+  reads.
+- Run default startup tests to ensure the new layer is active by default.
+- After implementation changes to =lisp/*.el=, reload the running Emacs with
+  =e-dev-reload=.
+- Live-verify in a temporary chat/session with a tool that emits more than 5 kB
+  and/or more than 200 lines:
+  - the session stores only the bounded preview;
+  - the tool-finished event contains truncation metadata;
+  - =read= can load the =tmp://= URI;
+  - the follow-up model request sees the bounded preview, not full output.
+
+* Risks
+
+- If truncation happens after appending the tool result, the runaway output still
+  pollutes durable session/context.  The post hook must run before append.
+- If =tmp://= lookup is not session-scoped, one session may read another
+  session's overflow artifacts.  Keep path resolution rooted in the active
+  session tmp directory.
+- If hook errors are swallowed, protection may silently fail open.  Unexpected
+  hook errors should fail the turn.
+- If hook ids are not unique, ordering and diagnostics become confusing.  Reject
+  duplicates per point.
+- If structured tool results are measured only by top-level object size or left
+  unbounded, large nested data can still flood context.  Serialize before
+  measuring.
+
+* Later Work
+
+- Add capability config options for truncation limits and preview mode after the
+  capability config feature lands.
+- Add other hook points, such as =:pre-backend-request=, =:post-backend-response=,
+  or =:pre-context-build=, only when there is a concrete policy that needs them.
+- Add cleanup/retention controls for session tmp directories.
+- Add a UI affordance for opening =tmp://= resources from tool detail blocks.
+- Consider mandatory core safety floors even when the context-protection layer is
+  disabled.

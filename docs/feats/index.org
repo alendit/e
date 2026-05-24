@@ -18,3 +18,4 @@ Status values for coding agents:
 | 05 | Planned | 05-turn-progress-round-trips/ | Turn Progress Round Trips |
 | 06 | In-review | 06-agents-std-context/ | Agents Std Context |
 | 07 | Planned | 07-capability-config/ | Capability Config |
+| 08 | Planned | 08-context-protection-tool-calls/ | Context Protection from Tool Calls |
