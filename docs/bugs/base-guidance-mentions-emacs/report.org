@@ -1,0 +1,14 @@
+#+title: Base Guidance Mentions Emacs
+#+startup: overview
+
+* Report
+
+The =base= layer guidance currently tells the agent to use Emacs buffer tools:
+
+#+begin_quote
+Use base file and shell tools for workspace files and shell commands. Use Emacs
+buffer tools for live buffer state.
+#+end_quote
+
+That Emacs-specific instruction should belong to the Emacs layer, not the base
+layer.  The base layer should only describe workspace file and shell behavior.

@@ -1,0 +1,69 @@
+#+title: Base Guidance Mentions Emacs Investigation
+#+startup: overview
+
+* Investigation
+
+** Source inspection
+
+Inspected =lisp/layers/base/e-base.el=.  The =base= layer is created by
+=e-base-layer-create= with these capabilities:
+
+- =base-guidance=
+- =file-inspection=
+- =file-mutation=
+- =shell-process=
+
+The guidance text is defined by =e-base-instructions=:
+
+#+begin_src emacs-lisp
+"Use base file and shell tools for workspace files and shell commands. Use Emacs buffer tools for live buffer state."
+#+end_src
+
+The second sentence is Emacs-layer guidance mixed into the base layer.
+
+Inspected =lisp/layers/emacs/e-emacs-capabilities.el=.  The Emacs layer already
+has =e-emacs-base-instructions= on the =emacs-awareness= capability:
+
+#+begin_src emacs-lisp
+"You are running inside Emacs. Use buffer tools for buffer inspection and live buffer edits. Buffer edits do not save files; call save_buffer when persistence is required."
+#+end_src
+
+So the Emacs-specific guidance is already owned by the Emacs capability and does
+not need to be duplicated in =base=.
+
+** Live inspection
+
+Inspected the loaded runtime through =emacsclient --eval= by requiring
+=e-base=, creating a base layer for the project root, and printing the layer
+capabilities and instructions.
+
+Observed result:
+
+#+begin_example
+:base-instructions "Use base file and shell tools for workspace files and shell commands. Use Emacs buffer tools for live buffer state."
+:capabilities ((:id base-guidance :name "Base Guidance" :instructions "Use base file and shell tools for workspace files and shell commands. Use Emacs buffer tools for live buffer state.")
+               (:id file-inspection :name "File Inspection" :instructions nil)
+               (:id file-mutation :name "File Mutation" :instructions nil)
+               (:id shell-process :name "Shell Process" :instructions nil))
+#+end_example
+
+This confirms the reported Emacs guidance is currently contributed by =base= in
+the running Emacs session.
+
+* Conclusion
+
+This is a real ownership bug.  The base guidance should be changed to remove the
+Emacs-specific sentence.  The Emacs layer already owns buffer-tool guidance via
+=emacs-awareness=.
+
+Suggested fix:
+
+#+begin_src emacs-lisp
+(defconst e-base-instructions
+  "Use base file and shell tools for workspace files and shell commands."
+  ...)
+#+end_src
+
+After changing =lisp/layers/base/e-base.el=, reload the running Emacs with
+=e-dev-reload= and verify that a newly created base layer no longer contributes
+Emacs guidance.
