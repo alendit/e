@@ -19,6 +19,7 @@
 (require 'e-harness-base)
 (require 'e-resources)
 (require 'e-tools)
+(require 'seq)
 
 (defun e-base-tools-test--resource-tools (directory &optional read-only)
   "Return resource-backed tools rooted at DIRECTORY.
@@ -300,6 +301,23 @@ When READ-ONLY is non-nil, file resources only support reads."
             (should (file-readable-p
                      (plist-get metadata :full-output-path)))))
       (delete-directory directory t))))
+
+(ert-deftest e-base-tools-test-bash-timeout-schema-documents-deadline ()
+  "The bash timeout parameter documents units and process-kill behavior."
+  (let ((registry (e-tools-registry-create)))
+    (e-base-tools-register-bash registry default-directory)
+    (let* ((definition (seq-find
+                        (lambda (tool)
+                          (equal (plist-get tool :name) "bash"))
+                        (e-tools-definitions registry)))
+           (properties (plist-get (plist-get definition :parameters)
+                                  :properties))
+           (timeout (plist-get properties :timeout))
+           (description (plist-get timeout :description)))
+      (should (stringp description))
+      (should (string-match-p "seconds" description))
+      (should (string-match-p "kills the process" description))
+      (should (string-match-p "modest" description)))))
 
 (ert-deftest e-base-tools-test-bash-streams-large-output-to-session-tmp ()
   "The bash start path writes full large output directly to session tmp."

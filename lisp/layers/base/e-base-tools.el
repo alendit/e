@@ -817,7 +817,8 @@ ON-REQUEST-START receives the cancellable process request."
    :description "Execute a shell command in the current working directory and return captured stdout and stderr."
    :parameters '(:type "object"
                  :properties (:command (:type "string")
-                              :timeout (:type "number"))
+                              :timeout (:type "number"
+                                        :description "Hard timeout in seconds. When reached, e kills the process and returns a tool error. Use modest values for routine commands; long-running commands need an explicit control pattern."))
                  :required ["command"])
    :start
    (cl-function

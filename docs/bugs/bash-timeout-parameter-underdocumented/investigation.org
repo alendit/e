@@ -56,3 +56,14 @@ seconds, explain that it kills the process when reached, and recommend modest
 values for routine commands. Add a regression test that =e-tools-definitions=
 for =bash= includes parameter-level guidance for =timeout= so this contract
 does not silently regress.
+
+* Fix evidence
+
+- Added =e-base-tools-test-bash-timeout-schema-documents-deadline=.  It failed
+  before the fix because the model-facing =timeout= schema had no description.
+- Added parameter-level =timeout= guidance for =bash=: seconds, hard process
+  kill behavior, modest routine values, and a separate control pattern for
+  long-running commands.
+- Verified =rtk eldev test -f test/e-base-tools-test.el=.
+- Reloaded the running Emacs with =e-dev-reload= and verified the live
+  registered =bash= tool exposes the updated =timeout= description.
