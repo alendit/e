@@ -1266,6 +1266,29 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-progress-rerender-keeps-pending-composer-glyph ()
+  "Progress redraws keep the protected bottom prompt glyph visible."
+  (let ((buffer (e-chat-test--buffer nil "chat-progress-pending-glyph")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat--render-event
+           (e-events-make :type 'turn-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 10))
+          (e-chat--advance-progress-indicator)
+          (should (string-match-p
+                   (concat (regexp-quote e-chat--composer-separator)
+                           "\n"
+                           (regexp-quote e-chat--composer-glyph)
+                           "\\'")
+                   (buffer-string)))
+          (goto-char (point-max))
+          (should (get-text-property (1- (point)) 'read-only))
+          (should-not (e-chat--composer-active-p)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-running-activity-forces-redisplay ()
   "Running turn activity forces Emacs to repaint before the final response."
   (let ((buffer (e-chat-test--buffer nil "chat-activity-redisplay"))

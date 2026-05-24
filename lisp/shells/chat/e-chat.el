@@ -952,7 +952,7 @@ Return non-nil when a composer was removed."
     (e-chat--show-composer)))
 
 (defun e-chat--insert-pending-separator ()
-  "Insert protected bottom separator chrome without an editable composer."
+  "Insert protected bottom prompt chrome without an editable composer."
   (e-chat--delete-composer)
   (let ((inhibit-read-only t))
     (goto-char (point-max))
@@ -970,6 +970,10 @@ Return non-nil when a composer was removed."
     (e-chat--insert-protected
      (concat e-chat--composer-separator "\n")
      'e-chat-separator-face)
+    (e-chat--insert-protected
+     e-chat--composer-glyph
+     'e-chat-composer-face
+     '(e-chat-composer t))
     (goto-char (point-max))))
 
 (defun e-chat--ensure-composer ()
