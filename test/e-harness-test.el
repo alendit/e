@@ -74,6 +74,24 @@
       (should (plist-member event :payload))
       (should (plist-get event :created-at)))))
 
+(ert-deftest e-harness-test-unsubscribe-removes-subscription-idempotently ()
+  "Unsubscribing removes a subscription record and can be repeated."
+  (let* ((harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)))
+         (events nil)
+         (subscription (e-harness-subscribe
+                        harness
+                        (lambda (event) (push event events))
+                        :session-id "session-1")))
+    (e-harness--emit-turn-event harness "session-1" "turn-1" 'turn-started nil)
+    (should (= (length events) 1))
+    (e-harness-unsubscribe harness subscription)
+    (e-harness--emit-turn-event harness "session-1" "turn-2" 'turn-started nil)
+    (should (= (length events) 1))
+    (should-not (member subscription (e-harness-subscribers harness)))
+    (e-harness-unsubscribe harness subscription)
+    (should (= (length events) 1))))
+
 (ert-deftest e-harness-test-abort-idle-session-is-explicit-error ()
   "Aborting without an active turn surfaces a lifecycle error."
   (let ((harness (e-harness-create

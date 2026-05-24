@@ -122,6 +122,14 @@
       (setq count (1+ count)))
     count))
 
+(defun e-chat-test--session-subscriber-count (harness session-id)
+  "Return HARNESS subscriber count for SESSION-ID."
+  (length
+   (cl-remove-if-not
+    (lambda (subscriber)
+      (equal (plist-get subscriber :session-id) session-id))
+    (e-harness-subscribers harness))))
+
 (ert-deftest e-chat-test-open-creates-protected-transcript-and-composer ()
   "Opening chat creates protected transcript text and editable composer text."
   (let ((buffer (e-chat-test--buffer nil "chat-open")))
@@ -1761,6 +1769,33 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-reattach-does-not-duplicate-rendered-events ()
+  "Reattaching a chat buffer leaves one live subscription for the session."
+  (let* ((harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)))
+         (buffer (e-chat-open :harness harness :session-id "chat-reattach")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat--attach-buffer buffer harness "chat-reattach")
+          (should (= (e-chat-test--session-subscriber-count
+                      harness "chat-reattach")
+                     1))
+          (e-chat--render-event
+           (e-events-make :type 'message-added
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 10
+                          :payload (list :message
+                                         (list :role 'user
+                                               :content "dup prompt"))))
+          (should (= (e-chat-test--count-occurrences
+                      "dup prompt"
+                      (buffer-string))
+                     1))
+          (should (= (length e-chat--block-order) 1)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-response-navigation-details-open-read-only-buffer ()
   "Details command opens turn metadata and tool details outside the chat buffer."
   (let ((buffer (e-chat-test--buffer nil "chat-nav-details")))
@@ -2046,6 +2081,95 @@
                                   (buffer-substring-no-properties
                                    (overlay-start e-chat--tool-list-overlay)
                                    (overlay-end e-chat--tool-list-overlay)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-finalizing-tool-activity-removes-dead-blocks ()
+  "Completed tool activity does not leave zero-width blocks in navigation."
+  (let ((buffer (e-chat-test--buffer nil "chat-finalize-tool-activity")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat--render-event
+           (e-events-make :type 'turn-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 10))
+          (e-chat--render-event
+           (e-events-make :type 'message-added
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 10
+                          :payload (list :message
+                                         (list :role 'user
+                                               :content "inspect prompt"))))
+          (e-chat--render-event
+           (e-events-make :type 'tool-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 11
+                          :payload (list :type 'tool-call
+                                         :id "call-1"
+                                         :name "read")))
+          (e-chat--render-event
+           (e-events-make :type 'message-added
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 12
+                          :payload (list :message
+                                         (list :role 'assistant
+                                               :content "final answer"))))
+          (should (cl-every #'e-chat--live-block-record e-chat--block-order))
+          (should-not (cl-some
+                       (lambda (block-id)
+                         (eq (plist-get (gethash block-id e-chat--block-registry)
+                                        :kind)
+                             'activity))
+                       e-chat--block-order)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-response-navigation-skips-dead-activity-to-user-block ()
+  "Block navigation from a final response can reach and enter the user prompt."
+  (let ((buffer (e-chat-test--buffer nil "chat-nav-skip-dead-activity")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat--render-event
+           (e-events-make :type 'turn-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 10))
+          (e-chat--render-event
+           (e-events-make :type 'message-added
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 10
+                          :payload (list :message
+                                         (list :role 'user
+                                               :content "copy this prompt"))))
+          (e-chat--render-event
+           (e-events-make :type 'tool-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 11
+                          :payload (list :type 'tool-call
+                                         :id "call-1"
+                                         :name "read")))
+          (e-chat--render-event
+           (e-events-make :type 'message-added
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 12
+                          :payload (list :message
+                                         (list :role 'assistant
+                                               :content "final answer"))))
+          (e-chat-test--focus-block-containing "final answer")
+          (call-interactively
+           (lookup-key e-chat-response-navigation-mode-map (kbd "k")))
+          (should (eq (plist-get (e-chat-test--focused-block) :kind) 'user))
+          (call-interactively #'e-chat-response-navigation-activate)
+          (should e-chat-block-view-mode)
+          (should (equal (e-chat--block-action-text (e-chat--block-view-block))
+                         "copy this prompt")))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 

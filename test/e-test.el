@@ -292,6 +292,7 @@
   (should (fboundp 'e-harness-create))
   (should (fboundp 'e-harness-create-session))
   (should (fboundp 'e-harness-subscribe))
+  (should (fboundp 'e-harness-unsubscribe))
   (should (fboundp 'e-harness-activate-layer))
   (should (fboundp 'e-harness-activate-capability))
   (should (fboundp 'e-harness-prompt))

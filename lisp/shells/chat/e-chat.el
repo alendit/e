@@ -373,6 +373,9 @@ The mode line uses this presentation-owned table for context usage display."
 (defvar-local e-chat--tool-list-index 0
   "Selected tool item index in the focused activity tool list.")
 
+(defvar-local e-chat--event-subscription nil
+  "Harness event subscription owned by this chat buffer.")
+
 (defvar-local e-chat--tool-list-overlay nil
   "Overlay highlighting the selected activity tool list item.")
 
@@ -625,6 +628,7 @@ The mode line uses this presentation-owned table for context usage display."
 
 (define-derived-mode e-chat-mode text-mode "e-chat"
   "Major mode for e chat buffers."
+  (add-hook 'kill-buffer-hook #'e-chat--unsubscribe nil t)
   (add-hook 'kill-buffer-hook #'e-chat--stop-progress-indicator nil t)
   (add-hook 'evil-local-mode-hook #'e-chat--enforce-modal-editing-policy nil t)
   (add-hook 'after-change-functions
@@ -767,14 +771,22 @@ The mode line uses this presentation-owned table for context usage display."
 
 (defun e-chat--subscribe (harness buffer session-id)
   "Subscribe BUFFER to HARNESS chat events for SESSION-ID."
-  (e-harness-subscribe
-   harness
-   (lambda (event)
-     (when (buffer-live-p buffer)
-       (with-current-buffer buffer
-         (when (eq e-chat-harness harness)
-           (e-chat--render-event event)))))
-   :session-id session-id))
+  (setq e-chat--event-subscription
+        (e-harness-subscribe
+         harness
+         (lambda (event)
+           (when (buffer-live-p buffer)
+             (with-current-buffer buffer
+               (when (eq e-chat-harness harness)
+                 (e-chat--render-event event)))))
+         :session-id session-id)))
+
+(defun e-chat--unsubscribe ()
+  "Remove this buffer's harness event subscription."
+  (when (and e-chat-harness
+             e-chat--event-subscription)
+    (e-harness-unsubscribe e-chat-harness e-chat--event-subscription))
+  (setq e-chat--event-subscription nil))
 
 (defun e-chat--mark-protected (start end)
   "Mark text between START and END as protected presentation text."
@@ -1316,6 +1328,25 @@ KILLP is passed through to `delete-char' for normal text."
           (setq e-chat--block-order (append e-chat--block-order (list block-id)))
           record))))
 
+(defun e-chat--remove-block-record (block-id)
+  "Remove BLOCK-ID from rendered block metadata."
+  (when block-id
+    (when (hash-table-p e-chat--block-registry)
+      (remhash block-id e-chat--block-registry))
+    (setq e-chat--block-order (delete block-id e-chat--block-order))
+    (when (equal e-chat--focused-block-id block-id)
+      (setq e-chat--focused-block-id nil)
+      (setq e-chat--focused-turn-id nil)
+      (when (overlayp e-chat--focused-turn-overlay)
+        (delete-overlay e-chat--focused-turn-overlay)))
+    (when (equal e-chat--block-view-block-id block-id)
+      (setq e-chat--block-view-block-id nil))
+    (when (equal e-chat--tool-list-block-id block-id)
+      (setq e-chat--tool-list-block-id nil)
+      (setq e-chat--tool-list-index 0)
+      (when (overlayp e-chat--tool-list-overlay)
+        (delete-overlay e-chat--tool-list-overlay)))))
+
 (defun e-chat--set-turn-time (turn-id field value)
   "Set TURN-ID timing FIELD to VALUE when both are available."
   (when (and turn-id value)
@@ -1355,7 +1386,7 @@ DETAILS-TEXT describe block actions."
 
 (defun e-chat--last-rendered-block-id ()
   "Return the most recent rendered block id before the composer."
-  (car (last e-chat--block-order)))
+  (cl-find-if #'e-chat--live-block-record (reverse e-chat--block-order)))
 
 (defun e-chat--focus-block (block-id)
   "Focus BLOCK-ID in response navigation mode."
@@ -1383,9 +1414,12 @@ DETAILS-TEXT describe block actions."
   "Move focused block by STEP in rendered block order."
   (unless e-chat--focused-block-id
     (user-error "No focused e chat block"))
-  (let ((remaining e-chat--block-order)
+  (let ((live-block-order (cl-remove-if-not #'e-chat--live-block-record
+                                            e-chat--block-order))
+        remaining
         (index 0)
         found)
+    (setq remaining live-block-order)
     (while (and remaining (not found))
       (if (equal (car remaining) e-chat--focused-block-id)
           (setq found index)
@@ -1393,9 +1427,9 @@ DETAILS-TEXT describe block actions."
               remaining (cdr remaining))))
     (unless found
       (user-error "Focused e chat block is no longer rendered"))
-    (let ((next-index (max 0 (min (1- (length e-chat--block-order))
+    (let ((next-index (max 0 (min (1- (length live-block-order))
                                   (+ found step)))))
-      (e-chat--focus-block (nth next-index e-chat--block-order)))))
+      (e-chat--focus-block (nth next-index live-block-order)))))
 
 (defun e-chat--focused-block ()
   "Return the focused block record."
@@ -1701,7 +1735,11 @@ When RECORD is nil, clear only buffer-local status markers."
 
 (defun e-chat--delete-turn-transient (record)
   "Delete the currently visible transient block for RECORD."
-  (e-chat--delete-running-status record))
+  (e-chat--delete-running-status record)
+  (when-let ((activity-block-id (and record
+                                     (plist-get record :activity-block-id))))
+    (e-chat--remove-block-record activity-block-id)
+    (plist-put record :activity-block-id nil)))
 
 (defun e-chat--live-block-record (block-id)
   "Return live block record for BLOCK-ID, or nil."
@@ -2066,6 +2104,7 @@ sessions without durable activity."
 (defun e-chat--finalize-turn-display (turn-id)
   "Mark TURN-ID as having rendered its final response."
   (when-let ((record (e-chat--turn-record turn-id)))
+    (e-chat--delete-turn-transient record)
     (plist-put record :final-rendered t)
     (e-chat--clear-running-status-markers)))
 
@@ -3203,6 +3242,7 @@ reload.  User-facing commands should call `e-chat-new' or `e-chat-resume'."
   "Attach BUFFER to HARNESS and SESSION-ID."
   (e-chat--ensure-session harness session-id)
   (with-current-buffer buffer
+    (e-chat--unsubscribe)
     (e-chat-mode)
     (e-chat--disable-modal-editing)
     (e-chat--disable-completion)

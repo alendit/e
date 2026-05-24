@@ -227,6 +227,14 @@ When SESSION-ID is non-nil, SUBSCRIBER only receives events for that session."
     (push record (e-harness-subscribers harness))
     record))
 
+(defun e-harness-unsubscribe (harness subscription)
+  "Remove SUBSCRIPTION from HARNESS subscribers.
+SUBSCRIPTION should be a record returned by `e-harness-subscribe'.  Removing
+an already-removed record is a no-op."
+  (setf (e-harness-subscribers harness)
+        (delq subscription (e-harness-subscribers harness)))
+  nil)
+
 (defun e-harness--emit (harness event)
   "Emit EVENT to HARNESS subscribers."
   (let ((event-session-id (plist-get event :session-id)))
