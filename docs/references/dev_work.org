@@ -18,7 +18,8 @@ Keep the plan in that directory. Add sketches or supporting notes there when the
 
 Update =docs/feats/index.org= whenever creating a dev work item or changing its state. Use exactly these statuses:
 
-- =Planned= :: plan exists; implementation has not started.
+- =Planned= :: plan exists; implementation has not started and the operator has not marked it ready to execute.
+- =Ready= :: the operator reviewed the plan and marked it ready for an agent to execute.
 - =In-progress= :: implementation has started; review is not ready yet.
 - =In-review= :: =review.org= exists in the dev work directory and still has notes to resolve.
 - =Done= :: review finished and has no unresolved notes.
@@ -26,9 +27,10 @@ Update =docs/feats/index.org= whenever creating a dev work item or changing its 
 Status transitions for agents:
 
 1. When you create a new dev work plan, add it to the index as =Planned=.
-2. When you begin implementation, change it to =In-progress=.
-3. When implementation is ready for review, create =review.org= in the same dev work directory. If the review has unresolved notes, change the index to =In-review=.
-4. When review produces no notes, or when all review notes are resolved, leave =review.org= as history and change the index to =Done=.
+2. When the operator reviews the plan and says it is ready to execute, change it to =Ready=.
+3. When an agent begins implementation, change it from =Ready= to =In-progress=.
+4. When implementation is ready for review, create =review.org= in the same dev work directory. If the review has unresolved notes, change the index to =In-review=.
+5. When review produces no notes, or when all review notes are resolved, leave =review.org= as history and change the index to =Done=.
 
 Do not move dev work directories between status-specific folders; keep paths stable and let the index carry status.
 

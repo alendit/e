@@ -3,7 +3,8 @@
 
 Status values for coding agents:
 
-- Planned :: plan exists; implementation has not started.
+- Planned :: plan exists; implementation has not started and the operator has not marked it ready to execute.
+- Ready :: the operator reviewed the plan and marked it ready for an agent to execute.
 - In-progress :: implementation has started; review is not ready yet.
 - In-review :: =review.org= exists in the dev work directory and still has notes to resolve.
 - Done :: review finished and has no unresolved notes.
