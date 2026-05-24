@@ -1,0 +1,10 @@
+#+title: e-chat derived session title leaves stale buffer name
+#+startup: overview
+
+The user reported that after an =e-chat= session is renamed, the visible buffer
+name remains the old =Untitled <timestamp>= name.
+
+The screenshot shows a live chat whose header line uses the derived prompt title
+=Review the implementation...= while the frame title and mode line still show
+=*e-chat:Untitled 2026-05-24T20:26:39Z*=. The title rendered at the top of the
+chat buffer also remains =Untitled 2026-05-24T20:26:39Z=.

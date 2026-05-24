@@ -1,0 +1,68 @@
+#+title: Investigation
+#+startup: overview
+
+* Source inspected
+
+- =lisp/core/e-session.el=: =e-session-append-message= refreshes derived
+  session fields after every appended message. For an unrenamed session, the
+  first user message becomes =:summary=, and =e-session-display-title= then
+  prefers that summary over the =Untitled <created-at>= fallback.
+- =lisp/shells/chat/e-chat.el=: =e-chat--session-buffer-name= derives the buffer
+  name from =e-harness-session-title=, and =e-chat--rename-buffer-for-session=
+  can rename an attached chat buffer from current session metadata.
+- =lisp/shells/chat/e-chat.el=: =e-chat-open= and =e-chat--attach-buffer= call
+  =e-chat--rename-buffer-for-session= when the buffer is first attached.
+- =lisp/shells/chat/e-chat.el=: =e-chat-rename= calls
+  =e-chat-session-rename=, then explicitly renames, clears, rerenders, and
+  refreshes status for the current buffer.
+- =lisp/shells/chat/e-chat.el=: =e-chat--render-event= does not call
+  =e-chat--rename-buffer-for-session=, clear/rerender the title block, or
+  otherwise refresh buffer identity when a =message-added= event changes the
+  derived session title.
+- =test/e-chat-test.el=: =e-chat-test-rename-updates-session-and-buffer-display=
+  covers the explicit =e-chat-rename= command path, but does not cover the
+  derived-title path after the first user message.
+
+* Live access
+
+- A running =emacsclient --eval= probe created a temporary in-memory chat
+  session and opened it through =e-chat-open=.
+- Before any prompt, the session title, buffer name, header line, and rendered
+  title block all used =Untitled 2026-05-24T20:36:46Z=.
+- The probe then appended the first user message through the harness and emitted
+  =turn-finished= so the chat buffer refreshed its status.
+- After that event, =e-session-display-title= returned
+  =Probe session title shoul...= and the header line showed
+  =E Chat: done - Probe session title shoul... - model unset/effort unset=.
+- The buffer name still remained
+  =*e-chat:Untitled 2026-05-24T20:36:46Z*=.
+- The top rendered title block still remained
+  =E Agent Session= followed by =Untitled 2026-05-24T20:36:46Z=.
+
+* Verification notes
+
+- Attempted focused verification with
+  =rtk eldev test -f test/e-chat-test.el e-chat-test-rename-updates-session-and-buffer-display=.
+- The command did not reach the rename test because loading =test/e-chat-test.el=
+  failed with =Invalid read syntax: ")", 349, 23=. That appears to be an
+  existing test-file parse blocker, not a result of this docs-only bug report.
+
+* Conclusion
+
+The bug is not in the explicit =e-chat-rename= command path. That command already
+updates the session metadata, buffer name, rendered title block, and header line.
+
+The stale visible name comes from the derived-title path. New sessions are opened
+with an =Untitled <timestamp>= title. After the first user message, the session
+store derives a better display title from the prompt summary, and later status
+refreshes consume that new title for the header line. The attached chat buffer
+does not refresh its buffer name or top rendered title block when that derived
+title changes, so those surfaces stay on the initial =Untitled= value.
+
+* Next step
+
+Add a presentation-side refresh path for session-title changes caused by durable
+session metadata updates. A focused regression should open a new session, append
+the first user message through the harness, emit the normal event sequence, and
+assert that the session title, buffer name, header line, and rendered title block
+all agree on the derived display title.
