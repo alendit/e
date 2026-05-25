@@ -69,8 +69,17 @@ If another spec with the same id already exists, replace it."
                   (string< (symbol-name (e-layer-spec-id left))
                            (symbol-name (e-layer-spec-id right)))))))
 
-(defun e-layer-create-registered (id)
-  "Create the known layer registered for ID."
+(defun e-layer--factory-accepts-directory-p (factory)
+  "Return non-nil when FACTORY accepts a directory argument."
+  (condition-case nil
+      (let ((max-arity (cdr (func-arity factory))))
+        (or (eq max-arity 'many)
+            (> max-arity 0)))
+    (error nil)))
+
+(defun e-layer-create-registered (id &optional directory)
+  "Create the known layer registered for ID.
+Pass DIRECTORY to factories that accept a root argument."
   (let ((spec (e-layer-get id)))
     (unless spec
       (signal 'e-layer-registry-missing (list id)))
@@ -79,7 +88,10 @@ If another spec with the same id already exists, replace it."
     (unless (functionp (e-layer-spec-factory spec))
       (signal 'wrong-type-argument
               (list 'functionp (e-layer-spec-factory spec))))
-    (let ((layer (funcall (e-layer-spec-factory spec))))
+    (let* ((factory (e-layer-spec-factory spec))
+           (layer (if (e-layer--factory-accepts-directory-p factory)
+                      (funcall factory directory)
+                    (funcall factory))))
       (unless (e-layer-p layer)
         (signal 'wrong-type-argument (list 'e-layer-p layer)))
       (unless (eq (e-layer-id layer) id)

@@ -90,6 +90,7 @@
                   "lisp/core/e-resources.el"
                   "lisp/core/e-store.el"
                   "lisp/core/e-hooks.el"
+                  "lisp/core/e-capability-config.el"
                   "lisp/core/e-capabilities.el"
                   "lisp/core/e-skills.el"
                   "lisp/core/e-startup.el"

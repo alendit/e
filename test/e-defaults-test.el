@@ -147,6 +147,55 @@
                                (e-harness-active-layers harness))
                        '(chat-session e os-base web)))))))
 
+(ert-deftest e-defaults-test-chat-harness-passes-directory-to-configured-layers ()
+  "Default chat layer construction uses the requested project directory."
+  (let ((project (make-temp-file "e-defaults-project-" t)))
+    (unwind-protect
+        (progn
+          (make-directory (expand-file-name ".agents/skills/keep" project) t)
+          (write-region
+           "---\nname: Keep\ndescription: Keep skill.\n---\n\nKeep body."
+           nil
+           (expand-file-name ".agents/skills/keep/SKILL.md" project)
+           nil
+           'silent)
+          (make-directory (expand-file-name ".agents/skills/drop" project) t)
+          (write-region
+           "---\nname: Drop\ndescription: Drop skill.\n---\n\nDrop body."
+           nil
+           (expand-file-name ".agents/skills/drop/SKILL.md" project)
+           nil
+           'silent)
+          (write-region
+           "((nil . ((e-capability-config . ((agents-std-context :include (\"Keep\")))))))"
+           nil
+           (expand-file-name ".dir-locals.el" project)
+           nil
+           'silent)
+          (cl-letf (((symbol-function 'e-openai-create-harness)
+                     (lambda (&rest _args)
+                       (e-harness-create
+                        :backend (e-backend-fake-create :items nil)))))
+            (let ((e-default-chat-layer-ids '(agents-std-context))
+                  (e-agents-std-context-global-agents-files nil)
+                  (e-agents-std-context-global-skills-directory
+                   (expand-file-name ".agents/skills/global" project)))
+              (let* ((harness
+                      (e-default-chat-harness-create :directory project))
+                     (_session
+                      (e-harness-create-session harness :id "session-1"))
+                     (content
+                      (mapconcat
+                       (lambda (message)
+                         (plist-get message :content))
+                       (plist-get
+                        (e-harness-context harness "session-1")
+                        :messages)
+                       "\n\n")))
+                (should (string-match-p "Keep skill" content))
+                (should-not (string-match-p "Drop skill" content))))))
+      (delete-directory project t))))
+
 (ert-deftest e-defaults-test-default-chat-layer_changes-update-config ()
   "Layer changes on the default chat harness update configured layer ids."
   (cl-letf (((symbol-function 'e-openai-create-harness)

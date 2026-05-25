@@ -30,6 +30,8 @@
           :resources (list #'ignore)
           :context-providers nil
           :hooks (list #'ignore)
+          :config-options '(:option-specs)
+          :config '(:option "value")
           :actions '(:read-buffer ignore))))
     (should (eq (e-capability-id capability) 'buffer-read))
     (should (equal (e-capability-name capability) "Buffer Read"))
@@ -38,6 +40,8 @@
     (should (= (length (e-capability-resource-methods capability)) 1))
     (should (= (length (e-capability-resources capability)) 1))
     (should (= (length (e-capability-hooks capability)) 1))
+    (should (equal (e-capability-config-options capability) '(:option-specs)))
+    (should (equal (e-capability-config capability) '(:option "value")))
     (should (plist-member (e-capability-actions capability) :read-buffer))))
 
 (ert-deftest e-capabilities-test-register-tools ()
@@ -102,6 +106,8 @@
                         '(:legacy ignore))))
     (should-not (e-capability-resources legacy))
     (should-not (e-capability-hooks legacy))
+    (should-not (e-capability-config-options legacy))
+    (should-not (e-capability-config legacy))
     (should (equal (e-capability-actions legacy)
                    '(:legacy ignore)))))
 

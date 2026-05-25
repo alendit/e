@@ -202,6 +202,8 @@
            :context-providers (list context-provider)
            :instruction-priority 220
            :actions actions
+           :config-options '(:declared)
+           :config '(:configured t)
            :skills
            (list
             (e-skill-spec-create
@@ -215,6 +217,8 @@
     (should (equal (e-capability-context-providers capability)
                    (list context-provider)))
     (should (= (e-capability-instruction-priority capability) 220))
+    (should (equal (e-capability-config-options capability) '(:declared)))
+    (should (equal (e-capability-config capability) '(:configured t)))
     (should (eq (e-capabilities-action capability :inspect) action))))
 
 (ert-deftest e-skills-test-builder-does-not-add-empty-preamble ()

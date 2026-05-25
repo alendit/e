@@ -25,7 +25,7 @@
                              (&key id name instructions tools
                                    resource-methods resources
                                    context-providers actions hooks
-                                   instruction-priority)))
+                                   instruction-priority config-options config)))
   id
   name
   instructions
@@ -35,7 +35,9 @@
   context-providers
   actions
   hooks
-  (instruction-priority 200))
+  (instruction-priority 200)
+  config-options
+  config)
 
 (cl-defstruct (e-capability-resource-method-provider
                (:constructor e-capability-resource-method-provider-create))
@@ -109,12 +111,30 @@ This accessor tolerates stale capability records compiled before the
       (or (aref capability 10) 200)
     200))
 
+(defun e-capability-config-options (capability)
+  "Return CAPABILITY declared config option specs.
+This accessor tolerates stale capability records compiled before the
+`config-options' slot existed."
+  (if (>= (length capability) 12)
+      (aref capability 11)
+    nil))
+
+(defun e-capability-config (capability)
+  "Return CAPABILITY effective config metadata.
+This accessor tolerates stale capability records compiled before the `config'
+slot existed."
+  (if (>= (length capability) 13)
+      (aref capability 12)
+    nil))
+
 (dolist (symbol '(e-capability-resource-methods
                   e-capability-resources
                   e-capability-context-providers
                   e-capability-actions
                   e-capability-hooks
-                  e-capability-instruction-priority))
+                  e-capability-instruction-priority
+                  e-capability-config-options
+                  e-capability-config))
   (put symbol 'compiler-macro nil)
   (put symbol 'side-effect-free nil)
   (put symbol 'gv-expander nil))

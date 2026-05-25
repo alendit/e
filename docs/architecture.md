@@ -152,9 +152,11 @@ The harness is the source of truth for runtime ordering and durable records, not
 
 ### Capabilities And Layers
 
-Capabilities are the behavior units. A capability can contribute instructions, prompt fragments, context providers, model-facing tool registration, in-memory `e://` resources, resource methods, lifecycle hooks, shell-facing actions, schemas, and side-effect policy for one named behavior. These contributions are registered into explicit harness registries; the harness should not treat a capability as an opaque object that handles every concern through one callback.
+Capabilities are the behavior units. A capability can contribute instructions, prompt fragments, context providers, model-facing tool registration, in-memory `e://` resources, resource methods, lifecycle hooks, shell-facing actions, schemas, side-effect policy, and capability-scoped configuration metadata for one named behavior. These contributions are registered into explicit harness registries; the harness should not treat a capability as an opaque object that handles every concern through one callback.
 
 Layers are packaging units. A layer names a coherent capability set and optional defaults so users, shells, or profiles can activate useful behavior without manually selecting every capability. A layer may remain a convenience preset such as `os-base` or `emacs-base`, but the behavior contract should still live in capabilities such as `file-inspection`, `buffer-read`, or `elisp-eval`.
+
+Capability configuration is scoped by capability id through `e-capability-config`. Option declarations belong to the capability owner, while global and directory-local values are resolved when a configured capability is constructed. Layers may pass a project directory or package defaults into a capability factory, but layers stay stateless presets rather than runtime configuration owners. Unknown option keys for an active capability are errors so project-local typos surface where the capability has enough context to validate them.
 
 The near-term rule is that capabilities and layers are stateless with respect to durable state. They may keep ephemeral caches or helper functions, but any state that must survive, be observed by multiple shells, or be used by both the operator and the agent should live as harness/session records or as external Emacs/file state referenced by harness records.
 
@@ -388,6 +390,7 @@ The current public package surface is:
 - `e-tools-current-context`, `e-tools-result-create`, and `e-tools-result-p`: tool implementation helpers for context-aware starts and structured results with metadata.
 - `e-store-create`, `e-store-register`, `e-store-uri`, `e-store-read`, `e-store-list`, and `e-store-resource-method`: capability-scoped read-only in-memory resources exposed through `e://`.
 - `e-session-tmp-write` and `e-session-tmp-file-path`: session-scoped temporary output helpers used by context-protection tools and `tmp://` resource methods.
+- `e-capability-config`, `e-capability-config-option-create`, `e-capability-config-resolve`, `e-capability-config-customize`, and `e-capability-config-describe`: capability-owned option declarations plus global and directory-local configuration resolution.
 - `e-skill-spec-create`, `e-capability-with-skills-create`, and `e-skills-uri-for-name`: construction-time skill specs that build ordinary capabilities with compact instruction references and conventional `e://<capability>/skills/<skill-name>` resources; the harness does not consume a skill catalog.
 - `e-openai-create-harness`: create a harness configured for `e-openai-default-provider` or an explicit OpenAI-like provider profile.
 - `e-openai-backend-create`: create the concrete OpenAI-like Responses backend adapter.

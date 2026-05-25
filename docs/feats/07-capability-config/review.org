@@ -1,0 +1,46 @@
+#+title: Capability Config Review
+#+date: 2026-05-25
+
+* Status
+
+In-review.
+
+* Plan Coverage
+
+- Core config module exists in =lisp/core/e-capability-config.el= with a global
+  =e-capability-config= defcustom, safe directory-local predicate, option specs,
+  precedence resolution, validation errors for active unknown keys, and the
+  =e-capability-config-customize= / =e-capability-config-describe= commands.
+- Capabilities now carry optional =:config-options= and =:config= metadata while
+  stale record accessors remain tolerant.
+- Default layer construction can pass a directory to config-aware layer
+  factories, and default chat harness creation accepts a =:directory= root for
+  configured layers.
+- =agents-std-context= declares =:include= and =:exclude= options. Matching is
+  exact against skill name or resource path, exclude wins, and filtering applies
+  to advertised skill catalog entries and readable =e://= skill resources.
+- AGENTS.md discovery remains separate from skill filtering.
+- =docs/architecture.md= documents that configuration is capability-owned and
+  layers remain stateless presets.
+
+* Deviations And Risks
+
+- Project skill filtering resolves config for the active session context root at
+  provider/resource time, because existing =agents-std-context= behavior lets a
+  session project root override the layer construction root. The constructed
+  capability still stores the effective config for its construction root. This
+  preserves current session-root behavior while keeping config validation at the
+  capability boundary.
+- Include/exclude matching is intentionally exact only. Pattern matching remains
+  later work, matching the plan.
+
+* Verification
+
+- =eldev test test/e-capability-config-test.el test/e-capabilities-test.el test/e-skills-test.el test/e-agents-std-context-test.el test/e-defaults-test.el test/e-chat-session-test.el test/e-harness-test.el=
+  passed: 97 tests, 97 expected, 0 unexpected.
+- Running Emacs was reloaded with =e-dev-reload= for
+  =/Users/dimitrivorona/projects/elisp/e=.
+- Live configured =agents-std-context= probe returned
+  =(:agents t :keep t :drop t :keep-resource t :drop-resource-missing t)=,
+  proving AGENTS remained visible, included skills were advertised/readable, and
+  excluded skills were hidden/unreadable in the running Emacs.

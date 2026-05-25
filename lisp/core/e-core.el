@@ -18,6 +18,7 @@
 (require 'e-operations)
 (require 'e-resources)
 (require 'e-store)
+(require 'e-capability-config)
 (require 'e-capabilities)
 (require 'e-hooks)
 (require 'e-skills)

@@ -535,6 +535,91 @@
       (delete-directory project-a t)
       (delete-directory project-b t))))
 
+(ert-deftest e-agents-std-context-test-config-filters-advertised-and-readable-skills ()
+  "Include and exclude config filters skill catalog and resources."
+  (let* ((home (make-temp-file "e-agents-home-" t))
+         (project (make-temp-file "e-agents-project-" t))
+         (global-skill
+          (expand-file-name ".agents/skills/research/SKILL.md" home))
+         (keep-skill
+          (expand-file-name ".agents/skills/keep/SKILL.md" project))
+         (drop-skill
+          (expand-file-name ".agents/skills/drop/SKILL.md" project))
+         (agents-file (expand-file-name "AGENTS.md" project)))
+    (unwind-protect
+        (progn
+          (e-agents-std-context-test--write-file
+           agents-file
+           "# Project\n\nProject instruction remains visible.")
+          (e-agents-std-context-test--write-file
+           global-skill
+           "---\nname: research\ndescription: Global research.\n---\n\nGlobal body.")
+          (e-agents-std-context-test--write-file
+           keep-skill
+           "---\nname: Keep\ndescription: Keep this skill.\n---\n\nKeep body.")
+          (e-agents-std-context-test--write-file
+           drop-skill
+           "---\nname: Drop\ndescription: Drop this skill.\n---\n\nDrop body.")
+          (let* ((e-agents-std-context-global-agents-files nil)
+                 (e-agents-std-context-global-skills-directory
+                  (expand-file-name ".agents/skills" home))
+                 (e-capability-config
+                  '((agents-std-context
+                     :include ("skills/global/research" "Keep" "Drop")
+                     :exclude ("Drop"))))
+                 (harness
+                  (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :active-layers
+                   (list (e-agents-std-context-layer-create project))))
+                 (_session (e-harness-create-session harness :id "session-1"))
+                 (content
+                  (e-agents-std-context-test--context-content
+                   harness
+                   "session-1"))
+                 (store (e-harness-store harness)))
+            (should (string-match-p "Project instruction remains visible"
+                                    content))
+            (should (string-match-p
+                     "research: Global research. Read e://agents-std-context/skills/global/research"
+                     content))
+            (should (string-match-p
+                     "Keep: Keep this skill. Read e://agents-std-context/skills/project/keep"
+                     content))
+            (should-not (string-match-p "Drop this skill" content))
+            (should (string-match-p
+                     "Global body"
+                     (e-store-read
+                      store
+                      "e://agents-std-context/skills/global/research"
+                      nil)))
+            (should (string-match-p
+                     "Keep body"
+                     (e-store-read
+                      store
+                      "e://agents-std-context/skills/project/keep"
+                      nil)))
+            (should-error
+             (e-store-read
+              store
+              "e://agents-std-context/skills/project/drop"
+              nil))))
+      (delete-directory home t)
+      (delete-directory project t))))
+
+(ert-deftest e-agents-std-context-test-capability-exposes-effective-config ()
+  "The capability carries option metadata and resolved config."
+  (let ((e-capability-config
+         '((agents-std-context :include ("skills/global/research")))))
+    (let ((capability
+           (e-agents-std-context-capability-create default-directory)))
+      (should
+       (eq (e-capability-config-options capability)
+           e-agents-std-context-config-options))
+      (should
+       (equal (e-capability-config capability)
+              '(:include ("skills/global/research") :exclude nil))))))
+
 (provide 'e-agents-std-context-test)
 
 ;;; e-agents-std-context-test.el ends here
