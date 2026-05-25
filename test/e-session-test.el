@@ -35,6 +35,31 @@
                            (e-session-messages store "session-1"))
                    '("msg-1" "msg-2")))))
 
+(ert-deftest e-session-test-message-appends-maintain-derived-fields-incrementally ()
+  "Message appends update metadata without full derived-field refreshes."
+  (let ((store (e-session-store-create))
+        (refresh-count 0)
+        (original-refresh (symbol-function 'e-session--refresh-derived-fields)))
+    (cl-letf (((symbol-function 'e-session--refresh-derived-fields)
+               (lambda (refresh-store refresh-session)
+                 (setq refresh-count (1+ refresh-count))
+                 (funcall original-refresh refresh-store refresh-session))))
+      (e-session-create store :id "session-1")
+      (setq refresh-count 0)
+      (e-session-append-message
+       store "session-1"
+       '(:id "msg-1" :role user :content "first"))
+      (e-session-append-message
+       store "session-1"
+       '(:id "msg-2" :role assistant :content "second"))
+      (let ((session (e-session-get store "session-1")))
+        (should (= refresh-count 0))
+        (should (= (plist-get session :message-count) 2))
+        (should (equal (plist-get session :summary) "first"))
+        (should (equal (plist-get session :last-message-at)
+                       (plist-get (cadr (plist-get session :messages))
+                                  :created-at)))))))
+
 (ert-deftest e-session-test-append-message-stamps-created-at ()
   "Appended messages carry their creation timestamp."
   (let ((store (e-session-store-create)))
@@ -396,6 +421,18 @@
                            '(:from "turn-1")))))
       (delete-directory directory t))))
 
+(ert-deftest e-session-test-branch-summaries-preserve-append-order ()
+  "Branch summaries stay in insertion order across multiple appends."
+  (let ((store (e-session-store-create)))
+    (e-session-create store :id "session-1")
+    (e-session-append-branch-summary store "session-1" "branch-a" "First")
+    (e-session-append-branch-summary store "session-1" "branch-b" "Second")
+    (should (equal (mapcar (lambda (summary)
+                             (plist-get summary :branch-id))
+                           (plist-get (e-session-get store "session-1")
+                                      :branch-summaries))
+                   '("branch-a" "branch-b")))))
+
 (ert-deftest e-session-test-compaction-persists-through-replay ()
   "Compaction records append and replay into session state."
   (let* ((directory (make-temp-file "e-session-" t))
@@ -421,6 +458,17 @@
             (should (= (plist-get compaction :tokens-before) 123))
             (should (= (plist-get compaction :tokens-kept) 45))))
       (delete-directory directory t))))
+
+(ert-deftest e-session-test-compactions-preserve-append-order ()
+  "Compactions stay in insertion order across multiple appends."
+  (let ((store (e-session-store-create)))
+    (e-session-create store :id "session-1")
+    (e-session-append-compaction store "session-1" "First")
+    (e-session-append-compaction store "session-1" "Second")
+    (should (equal (mapcar (lambda (compaction)
+                             (plist-get compaction :summary))
+                           (e-session-compactions store "session-1"))
+                   '("First" "Second")))))
 
 (ert-deftest e-session-test-entry-query-helpers-cover-paths-turns-and-boundaries ()
   "Entry query helpers return ids, current paths, turn groups, and suffixes."
@@ -650,6 +698,52 @@
           (e-session-clear-messages store session-id)
           (let ((loaded (e-session-persistent-store-create directory)))
             (should (equal (e-session-activity-events loaded session-id) nil)))
+      (delete-directory directory t))))
+
+(ert-deftest e-session-test-activity-events-preserve-append-order ()
+  "Activity events stay in insertion order across multiple appends."
+  (let ((store (e-session-store-create)))
+    (e-session-create store :id "session-1")
+    (e-session-append-activity-event
+     store "session-1" "turn-1" 'reasoning-delta '(:content "one"))
+    (e-session-append-activity-event
+     store "session-1" "turn-1" 'tool-started '(:name "read"))
+    (should (equal (mapcar (lambda (event)
+                             (plist-get event :event-type))
+                           (e-session-activity-events store "session-1"))
+                   '(reasoning-delta tool-started)))))
+
+(ert-deftest e-session-test-append-after-replay-and-clear-keeps-clean-order ()
+  "Replay finalization and clear reset internal append state."
+  (let* ((directory (make-temp-file "e-session-" t))
+         (store (e-session-persistent-store-create directory))
+         (session-id (plist-get (e-session-create store :id "session-1") :id)))
+    (unwind-protect
+        (progn
+          (e-session-append-message
+           store session-id '(:id "msg-1" :role user :content "old"))
+          (e-session-append-activity-event
+           store session-id "turn-1" 'reasoning-delta '(:content "old"))
+          (let ((loaded (e-session-persistent-store-create directory)))
+            (e-session-append-message
+             loaded session-id '(:id "msg-2" :role assistant :content "replayed"))
+            (should (equal (mapcar (lambda (message)
+                                     (plist-get message :id))
+                                   (e-session-messages loaded session-id))
+                           '("msg-1" "msg-2")))
+            (e-session-clear-messages loaded session-id)
+            (e-session-append-message
+             loaded session-id '(:id "msg-3" :role user :content "new"))
+            (e-session-append-activity-event
+             loaded session-id "turn-2" 'tool-started '(:name "after-clear"))
+            (should (equal (mapcar (lambda (message)
+                                     (plist-get message :id))
+                                   (e-session-messages loaded session-id))
+                           '("msg-3")))
+            (should (equal (mapcar (lambda (event)
+                                     (plist-get event :event-type))
+                                   (e-session-activity-events loaded session-id))
+                           '(tool-started)))))
       (delete-directory directory t))))
 
 (ert-deftest e-session-test-list-sessions-sorted-with-display-metadata ()
