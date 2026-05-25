@@ -161,7 +161,7 @@ The mode line uses this presentation-owned table for context usage display."
 
 (defface e-chat-response-separator-face
   '((t :inherit shadow
-       :foreground "#5f6b78"
+       :foreground "#7f8a99"
        :background "#202833"
        :box nil
        :extend t))
@@ -189,7 +189,7 @@ The mode line uses this presentation-owned table for context usage display."
                       :box nil
                       :extend t)
   (set-face-attribute 'e-chat-response-separator-face nil
-                      :foreground "#5f6b78"
+                      :foreground "#7f8a99"
                       :background "#202833"
                       :box nil
                       :extend t)
@@ -306,7 +306,7 @@ The mode line uses this presentation-owned table for context usage display."
 
 (defconst e-chat--response-separator-face-spec
   '((t :inherit shadow
-       :foreground "#5f6b78"
+       :foreground "#7f8a99"
        :background "#202833"
        :box nil
        :extend t))
@@ -467,7 +467,7 @@ The mode line uses this presentation-owned table for context usage display."
   "Separator shown between rendered e chat turns.")
 
 (defconst e-chat--response-separator
-  "┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄"
+  e-chat--composer-separator
   "Separator shown between prompt and agent-side blocks in a turn.")
 
 (defconst e-chat--activity-separator
@@ -922,7 +922,7 @@ FACE is applied when non-nil.  PROPERTIES are added with text properties."
       (unless (plist-get record :response-separator-rendered)
         (e-chat--insert-horizontal-separator
          e-chat--response-separator
-         'e-chat-response-separator-face)
+         'e-chat-separator-face)
         (plist-put record :response-separator-rendered t)))))
 
 (defun e-chat--insert-durable-entry-separators (turn-id side)
@@ -2349,7 +2349,9 @@ When RECORD is nil, clear only buffer-local status markers."
                             (e-chat--activity-summary-text record)))
          (transient-text (and record (e-chat--transient-text record)))
          (text (if final-rendered
-                   (or summary-text transient-text)
+                   (or (and summary-text
+                            (concat summary-text "\n\n"))
+                       transient-text)
                  transient-text))
          (block-kind (if summary-text 'activity-summary 'activity))
          (details-text (and summary-text

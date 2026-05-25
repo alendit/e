@@ -122,6 +122,21 @@
       (setq count (1+ count)))
     count))
 
+(defun e-chat-test--count-font-lock-face-runs (face &optional start end)
+  "Return the number of contiguous `font-lock-face' runs using FACE."
+  (let ((count 0)
+        (limit (or end (point-max)))
+        (pos (or start (point-min)))
+        next)
+    (while (< pos limit)
+      (setq next (or (next-single-property-change pos 'font-lock-face
+                                                  nil limit)
+                     limit))
+      (when (eq (get-text-property pos 'font-lock-face) face)
+        (setq count (1+ count)))
+      (setq pos next))
+    count))
+
 (defun e-chat-test--session-subscriber-count (harness session-id)
   "Return HARNESS subscriber count for SESSION-ID."
   (length
@@ -192,9 +207,13 @@
             (should (= (e-chat-test--count-occurrences
                         e-chat--turn-separator content)
                        1))
-            (should (= (e-chat-test--count-occurrences
-                        e-chat--response-separator content)
+            (should (= (e-chat-test--count-font-lock-face-runs
+                        'e-chat-separator-face
+                        (point-min)
+                        (marker-position e-chat--composer-spacer-marker))
                        2))
+            (should (equal e-chat--response-separator
+                           e-chat--composer-separator))
             (should (string-match-p
                      (concat "one\\(.\\|\n\\)*"
                              (regexp-quote e-chat--turn-separator)
@@ -214,7 +233,7 @@
           (search-forward e-chat--response-separator)
           (should (eq (get-text-property (line-beginning-position)
                                          'font-lock-face)
-                      'e-chat-response-separator-face))
+                      'e-chat-separator-face))
           (should (get-text-property (line-beginning-position) 'read-only))
           (should-not (get-text-property (line-beginning-position)
                                          'e-chat-block-id)))
@@ -253,9 +272,12 @@
                           :payload '(:message (:role assistant
                                                 :content "done"))))
           (should (boundp 'e-chat--response-separator))
-          (should (= (e-chat-test--count-occurrences
-                      e-chat--response-separator
-                      (buffer-string))
+          (should (= (e-chat-test--count-font-lock-face-runs
+                      'e-chat-separator-face
+                      (point-min)
+                      (or (and (markerp e-chat--composer-spacer-marker)
+                               (marker-position e-chat--composer-spacer-marker))
+                          (point-max)))
                      1))
           (should-not (string-match-p "2 tool calls" (buffer-string))))
       (when (buffer-live-p buffer)
@@ -319,7 +341,7 @@
         (should-not (face-attribute 'e-chat-turn-separator-face :box))
         (should (equal (face-attribute 'e-chat-response-separator-face
                                        :foreground)
-                       "#5f6b78"))
+                       "#7f8a99"))
         (should (equal (face-attribute 'e-chat-response-separator-face
                                        :background)
                        "#202833"))
@@ -1516,7 +1538,7 @@
   "Activity round dividers are quieter than the prompt/agent separator."
   (should (boundp 'e-chat--activity-separator))
   (should (equal e-chat--response-separator
-                 (make-string 64 ?┄)))
+                 e-chat--composer-separator))
   (should (equal e-chat--activity-separator
                  (make-string 64 ?┈)))
   (should-not (equal e-chat--activity-separator
@@ -1717,6 +1739,11 @@
           (let ((content (buffer-string)))
             (should (string-match-p
                      "Turn took 3min 25sec, 2 tool calls\\." content))
+            (should (string-match-p
+                     (concat "Turn took 3min 25sec, 2 tool calls\\.\n\n"
+                             (regexp-quote e-chat--assistant-glyph)
+                             " Final answer\\.")
+                     content))
             (should-not (string-match-p "Thought for 1min 3sec" content)))
           (e-chat-test--focus-block-containing "Turn took 3min 25sec")
           (should (eq (plist-get (e-chat-test--focused-block) :kind)
