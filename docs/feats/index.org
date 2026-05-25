@@ -20,3 +20,4 @@ Status values for coding agents:
 | 07 | Ready | 07-capability-config/ | Capability Config |
 | 08 | Done | 08-context-protection-tool-calls/ | Context Protection from Tool Calls |
 | 09 | In-review | 09-context-ordering/ | Context Ordering |
+| 11 | Planned | 11-context-compaction/ | Context Compaction |

@@ -1,0 +1,524 @@
+#+title: Plan: Context Compaction
+#+author: e planning
+#+date: 2026-05-25
+#+startup: overview
+
+* Goal
+Add append-only context compaction for long =e= sessions.
+
+The first version should let a user manually compact the current session so future
+turns send a structured summary plus a recent verbatim suffix instead of the full
+transcript.
+
+This feature depends on feature 04, =Message and Turn Identity=. Compaction
+boundaries must be stored by durable entry id, not by list index, buffer
+position, or message count.
+
+The durable session history remains intact. Compaction changes context
+construction, not historical storage.
+
+After compaction, context construction should send:
+
+#+begin_example
+system/default context
+compaction summary message
+kept recent transcript entries from first-kept-entry-id to current head
+new entries after the compaction record
+#+end_example
+
+* Non-goals
+- Implement feature 04 identities; this plan assumes that work exists.
+- Implement full branching UI or branch summarization.
+- Implement automatic threshold-based compaction.
+- Implement context-overflow recovery and automatic retry.
+- Implement custom extension hooks for compaction.
+- Replace the whole context system with a speculative strategy framework.
+- Destructively delete, rewrite, or redact historical session entries.
+- Perfect token accounting across all providers.
+
+* Dependencies
+This feature should start after feature 04 supplies at least:
+
+- durable =id= for session entries;
+- =parent-id= and current path reconstruction;
+- =turn-id= for user/assistant/tool entries belonging to one operation;
+- query entry by id;
+- query latest entry of a type on the current path;
+- query suffix from a boundary id to current head;
+- enough turn/tool grouping information to avoid unsafe cut points.
+
+Feature 10, =Session Append Performance=, is not strictly required but is a good
+predecessor if compaction adds more durable entry types or long-session tests.
+
+* Design summary
+Compaction is a session/context policy, not transcript mutation.
+
+The session store owns durable compaction records. The context layer owns how a
+session path is converted into backend messages. The harness or chat shell owns
+user-facing initiation, progress reporting, and summary generation orchestration.
+
+High-level components:
+
+| Component | Responsibility |
+|-----------+----------------|
+| =e-session= | Store/load compaction records and expose identity-based queries. |
+| =e-context= | Build compacted backend context from latest compaction plus kept suffix. |
+| Harness service | Prepare compaction, call summarizer backend, append record, refresh live context. |
+| Chat shell | Provide manual command/action and render progress/errors. |
+
+Keep side effects at the edges:
+
+- session writes happen through =e-session=;
+- backend calls happen through harness/backend APIs;
+- chat UI only starts the operation and displays status.
+
+* Durable compaction record
+Feature 04 already sketches a compaction entry. This feature should make it real.
+
+Required fields:
+
+| Field | Meaning |
+|-------+---------|
+| =id= | durable compaction entry id |
+| =parent-id= | previous head at time compaction was appended |
+| =type= | =compaction= |
+| =summary= | structured model-generated summary |
+| =first-kept-entry-id= | oldest current-path entry replayed verbatim after summary |
+| =tokens-before= | estimated or measured context size before compaction |
+| =created-at= | creation timestamp |
+| =metadata= | reason, instructions, model, file metadata, estimates |
+
+Suggested record shape:
+
+#+begin_src elisp
+(:id "01J..."
+ :parent-id "01J..."
+ :type compaction
+ :summary "..."
+ :first-kept-entry-id "01J..."
+ :tokens-before 123456
+ :created-at "2026-05-25T08:00:00Z"
+ :metadata (:reason manual
+            :instructions "focus on ..."
+            :summary-model "gpt-..."
+            :previous-compaction-id "01J..."
+            :read-files ("lisp/core/e-context.el")
+            :modified-files ("lisp/core/e-context.el")
+            :messages-summarized 42
+            :turns-summarized 12
+            :estimated-tokens-kept 18000))
+#+end_src
+
+Do not expose these ids as ordinary user-facing content. They are storage and
+debug metadata.
+
+* Context reconstruction
+Add a compacted context strategy or extend the transcript strategy with a clearly
+owned compaction branch.
+
+For the current path:
+
+1. Find the latest =compaction= entry on the current path.
+2. If none exists, use the normal transcript strategy.
+3. If one exists, validate =first-kept-entry-id= is on the current path.
+4. Emit a synthetic summary message derived from the compaction record.
+5. Emit model-facing entries from =first-kept-entry-id= to the current head,
+   excluding storage-only entries and the compaction record itself unless needed.
+
+The summary message should be explicit and stable, for example:
+
+#+begin_src elisp
+(:role system
+ :content "Previous session context was compacted. Summary:\n\n...")
+#+end_src
+
+or another provider-neutral role/content shape accepted by existing backends.
+Storage-only fields such as =:id=, =:parent-id=, =:turn-id=, and
+=:first-kept-entry-id= must not leak into backend messages.
+
+* Manual compaction flow
+The first shipped trigger should be manual only.
+
+Suggested command names:
+
+- =e-chat-compact-session=
+- optional prompt argument for custom instructions
+
+Flow:
+
+1. User invokes manual compaction from a chat session.
+2. If a turn is running, either reject with a clear message or ask the user to
+   abort first. Do not compact concurrently with an active turn in the first
+   version.
+3. Build a compaction preparation from the current path.
+4. Choose a kept boundary.
+5. Serialize older entries into a summarization transcript.
+6. Call the configured summarizer backend.
+7. Append a durable compaction record.
+8. Rebuild live harness context from the compacted context strategy.
+9. Render a compact success/progress block in chat.
+
+Manual compaction errors should be expected, visible errors:
+
+- no active session;
+- session has too little context to compact;
+- no safe cut point;
+- summarizer request failed;
+- compaction boundary no longer valid because the session changed.
+
+* Boundary selection
+Use a simple first version: keep approximately a configurable number of recent
+estimated tokens, preserving turn/tool integrity.
+
+Suggested defcustoms:
+
+#+begin_src elisp
+(defcustom e-context-compaction-keep-recent-tokens 20000
+  "Approximate recent transcript tokens to keep verbatim after compaction."
+  :type 'integer)
+
+(defcustom e-context-compaction-tool-result-summary-limit 2000
+  "Maximum characters from one tool result in summarization input."
+  :type 'integer)
+#+end_src
+
+Boundary selection should:
+
+- walk current-path entries from newest to oldest;
+- accumulate rough token estimates;
+- select the oldest safe entry that keeps around
+  =e-context-compaction-keep-recent-tokens=;
+- prefer turn boundaries where possible;
+- never separate a tool result from the corresponding tool call;
+- never choose a boundary before an entry that cannot be rendered to backend
+  context safely.
+
+If the current turn alone exceeds the keep budget, the first implementation may
+refuse compaction with “current turn is too large to compact safely”. Split-turn
+compaction can be a follow-up.
+
+* Summarization input
+Do not feed old messages to the summarizer as a live chat to continue. Convert
+entries into a plain transcript.
+
+Example serialization:
+
+#+begin_example
+[User]: What the user asked
+[Assistant]: Response text
+[Assistant tool calls]: read(uri="file://...")
+[Tool result]: First 2000 chars of result...
+[Error]: Tool failed: ...
+#+end_example
+
+Rules:
+
+- include enough role/type labels to make provenance clear;
+- truncate large tool results in summarization input;
+- include previous compaction summary when updating a rolling summary;
+- include optional user instructions as summarizer focus, not as transcript
+  content;
+- avoid including storage-only ids unless needed for internal diagnostics.
+
+* Summary format
+Use a structured summary format close to =docs/research/context_compaction.org=:
+
+#+begin_src markdown
+## Goal
+[What the user is trying to accomplish]
+
+## Constraints & Preferences
+- [User requirements, style preferences, safety constraints]
+
+## Progress
+### Done
+- [x] [Completed work]
+
+### In Progress
+- [ ] [Current work]
+
+### Blocked
+- [Issues, if any]
+
+## Key Decisions
+- **[Decision]**: [Rationale]
+
+## Next Steps
+1. [Most likely next action]
+
+## Critical Context
+- [Facts needed to continue]
+
+<read-files>
+path/to/file
+</read-files>
+
+<modified-files>
+path/to/file
+</modified-files>
+#+end_src
+
+For repeated compaction, pass the previous summary and ask the summarizer to
+update it while preserving still-relevant information. Do not stack multiple
+summary messages in context; use the latest compaction on the current path.
+
+* File operation metadata
+The first version can derive file metadata opportunistically from existing tool
+call/result payloads.
+
+Track at least:
+
+- files read through =read= resources when the URI maps to a project file;
+- files written through =write=;
+- files edited through =edit=.
+
+Store these in compaction metadata and include them in summary tags. If metadata
+cannot be derived reliably, compaction should still work with empty file lists.
+
+* Backend and model choice
+Use the active backend/model by default for the first version.
+
+Add a narrow configuration point only if needed:
+
+#+begin_src elisp
+(defcustom e-context-compaction-summary-model nil
+  "Optional model override for context compaction summaries."
+  :type '(choice (const :tag "Use active model" nil) string))
+#+end_src
+
+Do not introduce a broad summarizer abstraction until there are at least two real
+summary-generation implementations or a concrete provider-specific need.
+
+* UI and activity events
+The chat shell should expose a manual compaction command and report lifecycle
+status.
+
+Suggested activity events:
+
+- =compaction-started=;
+- =compaction-prepared=;
+- =compaction-summary-started=;
+- =compaction-finished=;
+- =compaction-failed=.
+
+The UI should show a compact block with:
+
+- reason: manual;
+- summary model, if known;
+- summarized turns/messages;
+- kept boundary timestamp or brief label;
+- token estimates before/kept, when known.
+
+Avoid dumping the entire generated summary into a noisy activity block if the
+summary is already stored and used by context. Provide a way to inspect it later
+through session/debug tooling.
+
+* Implementation steps
+** 1. Add compaction storage shape
+Extend or replace the existing simple compaction persistence to include feature
+04 identity fields and =first-kept-entry-id=.
+
+Acceptance criteria:
+
+- compaction records round-trip through JSONL;
+- compaction records appear on the current path like other durable entries;
+- legacy simple compaction records, if any, still load or are ignored safely.
+
+** 2. Add compaction query helpers
+Add helpers for:
+
+- latest compaction on current path;
+- validate boundary id is on current path;
+- entries from boundary id to current head;
+- entries before boundary id to summarize;
+- count summarized/kept entries.
+
+Acceptance criteria:
+
+- helpers are core/session-level, independent of chat buffers;
+- tests cover no compaction, one compaction, repeated compaction, and synthetic
+  branch paths when feature 04 supports them.
+
+** 3. Add compacted context reconstruction
+Teach the context layer to build backend messages from latest compaction plus
+kept suffix.
+
+Acceptance criteria:
+
+- no compaction produces the same messages as transcript context;
+- with compaction, backend messages include one summary message plus kept suffix;
+- messages before =first-kept-entry-id= are not sent verbatim;
+- storage-only identity metadata is stripped before backend submission.
+
+** 4. Add preparation and boundary selection
+Create a pure preparation function that inspects the current path and returns:
+
+#+begin_src elisp
+(:previous-compaction ...
+ :first-kept-entry-id "01J..."
+ :messages-to-summarize (...)
+ :kept-entries (...)
+ :tokens-before 12345
+ :tokens-kept 6789
+ :file-ops ...)
+#+end_src
+
+Acceptance criteria:
+
+- preparation has no backend calls and no session writes;
+- it rejects sessions with no safe cut point;
+- it avoids unsafe tool-call/tool-result cuts;
+- tests cover normal and too-small sessions.
+
+** 5. Add transcript serialization for summarization
+Serialize entries to a plain text summarization input with role/type labels and
+truncated tool outputs.
+
+Acceptance criteria:
+
+- user, assistant, tool-call, tool-result, and error entries are distinguishable;
+- tool result truncation is tested;
+- serialized text does not include large unbounded payloads.
+
+** 6. Add summary generation service
+Add a small harness-owned operation that calls the active backend with a
+summarizer system prompt and serialized transcript.
+
+Acceptance criteria:
+
+- summary prompt requests only the structured summary;
+- optional manual instructions are included;
+- previous summary is included for repeated compaction;
+- backend failures surface as visible compaction errors.
+
+** 7. Add manual chat command
+Expose manual compaction from chat.
+
+Acceptance criteria:
+
+- command works for the active chat session;
+- optional instructions can be supplied interactively or via prefix/minibuffer;
+- command refuses to run concurrently with an active assistant turn;
+- success appends a compaction record and refreshes live context.
+
+** 8. Add activity/rendering support
+Record and render compact lifecycle events.
+
+Acceptance criteria:
+
+- start/success/failure are visible in chat;
+- durable activity events replay sensibly;
+- failures do not leave partially appended compaction records.
+
+** 9. Add tests and live validation
+Add tests for storage, pure preparation, context reconstruction, serialization,
+and command orchestration with a fake backend.
+
+Acceptance criteria:
+
+- context behavior is proven without a real LLM call;
+- fake backend test proves manual compaction appends a record;
+- live Emacs is reloaded after Lisp changes and a temporary chat/session scenario
+  is inspected when feasible.
+
+* Testing plan
+Run targeted tests at minimum:
+
+#+begin_example
+eldev test test/e-session-test.el test/e-context-test.el test/e-harness-test.el test/e-chat-test.el
+#+end_example
+
+Add or extend tests for:
+
+- compaction record persistence/replay;
+- latest compaction lookup;
+- boundary suffix reconstruction;
+- compacted context emits summary plus kept suffix;
+- ids and turn ids are stripped from backend messages;
+- no-compaction context remains unchanged;
+- preparation rejects unsafe or too-small sessions;
+- summarization serialization truncates tool outputs;
+- repeated compaction uses previous summary;
+- manual command with fake backend appends compaction and reports lifecycle.
+
+For behavior changes in loaded Lisp, reload the running Emacs with:
+
+#+begin_example
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_example
+
+Then inspect a live temporary session where possible.
+
+* Migration and compatibility
+Existing sessions may contain either no compaction records or older simple
+compaction records with only =summary=, =branch-id=, =range=, and =metadata=.
+
+Policy:
+
+- do not rewrite old session files automatically;
+- old simple records may be exposed for inspection but should not drive compacted
+  context unless they have a valid =first-kept-entry-id=;
+- sessions without compaction records continue using transcript context;
+- feature 04 legacy id backfill should provide in-memory ids for old entries so a
+  newly appended compaction can reference a valid boundary going forward.
+
+* Risks
+- If ids leak into backend messages, compaction will increase token use and may
+  confuse the model. Strip storage metadata in one owned normalization path.
+- If boundary selection cuts inside a tool interaction, future turns may see
+  invalid context. Prefer conservative rejection over unsafe compaction.
+- If compaction runs during an active turn, the summary may describe a moving
+  target. The first version should reject concurrent compaction.
+- Summary quality depends on the active model. A bad summary can lose important
+  context even though storage remains intact.
+- Repeated compaction can accidentally drop older decisions if the update prompt
+  is weak. Tests can verify plumbing, but prompt quality needs manual review.
+- Branching later may require careful definition of “latest compaction on current
+  path”; avoid global latest-by-time lookups.
+
+* Follow-up work
+- Auto-compaction based on context usage thresholds.
+- Context-overflow recovery with one retry.
+- Split-turn compaction for huge turns.
+- Branch summarization during future tree navigation.
+- Custom compaction strategy hooks.
+- Dedicated summary model/provider configuration if active-model summaries are
+  too expensive or too weak.
+- UI for inspecting compaction summaries and boundaries.
+- Commands to discard a compaction record from the current path by branching or
+  checkout semantics, once branching exists.
+
+* Open questions
+These are not blocking for the first manual feature, but should be revisited
+before or during implementation:
+
+- Should the synthetic summary message use =system= role, =user= role, or a new
+  internal/context role normalized per backend?
+- Should manual compaction abort a running turn automatically, or simply refuse
+  until the turn is idle?
+- How large should =e-context-compaction-keep-recent-tokens= default to for the
+  initial supported models?
+- Should the summary model be configurable in this feature or deferred until
+  there is real need?
+- How should old simple compaction records be displayed once identity-based
+  compaction exists?
+- Which file/resource URI schemes should contribute to =read-files= and
+  =modified-files= metadata?
+
+* Minimal acceptance for this feature
+The feature is complete when:
+
+1. Manual compaction can append an identity-bearing compaction record with a
+   valid =first-kept-entry-id=.
+2. Context construction uses the latest valid compaction on the current path to
+   send summary plus kept suffix.
+3. Historical transcript entries remain persisted and are not destructively
+   removed.
+4. Repeated manual compaction updates from the previous summary instead of
+   stacking multiple summaries in backend context.
+5. Boundary selection is conservative and does not knowingly split tool-call /
+   tool-result groups.
+6. Large tool outputs are truncated in summarization input.
+7. Expected compaction failures are visible and do not corrupt session state.
+8. Storage, preparation, context reconstruction, serialization, and manual
+   orchestration are covered by tests.
