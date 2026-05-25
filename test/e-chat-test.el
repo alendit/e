@@ -1344,6 +1344,156 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-format-duration-uses-minutes-and-seconds ()
+  "Turn progress durations use minute/second labels."
+  (should (equal (e-chat--format-duration 0 3) "0min 3sec"))
+  (should (equal (e-chat--format-duration 0 45) "0min 45sec"))
+  (should (equal (e-chat--format-duration 0 63) "1min 3sec"))
+  (should (equal (e-chat--format-duration 0 205) "3min 25sec")))
+
+(ert-deftest e-chat-test-provider-round-trip-renders-thinking-and-thought ()
+  "Provider request boundaries render active and completed thinking lines."
+  (let ((buffer (e-chat-test--buffer nil "chat-provider-round-trip")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat--render-event
+           (e-events-make :type 'turn-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 0))
+          (e-chat--render-event
+           (e-events-make :type 'provider-request-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 0
+                          :payload '(:status started)))
+          (should (string-match-p "Thinking\\.\\.\\." (buffer-string)))
+          (e-chat--render-event
+           (e-events-make :type 'provider-request-finished
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 63
+                          :payload '(:status done)))
+          (let ((content (buffer-string)))
+            (should (string-match-p "Thought for 1min 3sec" content))
+            (should-not (string-match-p "Thinking\\.\\.\\." content))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-final-turn-collapses-progress-to-summary ()
+  "Settled activity collapses to a navigable turn summary."
+  (let ((buffer (e-chat-test--buffer nil "chat-progress-summary")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat--render-event
+           (e-events-make :type 'turn-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 0))
+          (e-chat--render-event
+           (e-events-make :type 'provider-request-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 0
+                          :payload '(:status started)))
+          (e-chat--render-event
+           (e-events-make :type 'provider-request-finished
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 63
+                          :payload '(:status done)))
+          (dotimes (index 2)
+            (e-chat--render-event
+             (e-events-make :type 'tool-started
+                            :session-id e-chat-session-id
+                            :turn-id "turn-1"
+                            :created-at 64
+                            :payload (list :type 'tool-call
+                                           :id (format "call-%d" index)
+                                           :name "read"))))
+          (e-chat--render-event
+           (e-events-make :type 'provider-request-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 160
+                          :payload '(:status started)))
+          (e-chat--render-event
+           (e-events-make :type 'provider-request-finished
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 205
+                          :payload '(:status done)))
+          (e-chat--render-event
+           (e-events-make :type 'message-added
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 205
+                          :payload '(:message (:role assistant
+                                                :content "Final answer."))))
+          (let ((content (buffer-string)))
+            (should (string-match-p
+                     "Turn took 3min 25sec, 2 tool calls\\." content))
+            (should-not (string-match-p "Thought for 1min 3sec" content)))
+          (e-chat-test--focus-block-containing "Turn took 3min 25sec")
+          (should (eq (plist-get (e-chat-test--focused-block) :kind)
+                      'activity-summary))
+          (call-interactively #'e-chat-response-navigation-activate)
+          (let ((content (buffer-string)))
+            (should (string-match-p "Thought for 1min 3sec" content))
+            (should (string-match-p "2 tool calls" content))
+            (should (string-match-p "Thought for 0min 45sec" content))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-replayed-provider-activity-restores-summary ()
+  "Replayed provider boundary events restore settled summary plus expansion."
+  (let* ((store (e-session-store-create))
+         (backend (e-backend-fake-create :items nil))
+         (harness (e-harness-create :backend backend :sessions store))
+         (buffer nil))
+    (unwind-protect
+        (progn
+          (e-harness-create-session harness :id "chat-provider-replay")
+          (e-session-append-message
+           store "chat-provider-replay"
+           '(:role user :content "inspect" :turn-id "turn-1"))
+          (e-session-append-activity-event
+           store "chat-provider-replay" "turn-1" 'turn-started nil)
+          (e-session-append-activity-event
+           store "chat-provider-replay" "turn-1" 'provider-request-started
+           '(:status started))
+          (e-session-append-activity-event
+           store "chat-provider-replay" "turn-1" 'provider-request-finished
+           '(:status done))
+          (e-session-append-activity-event
+           store "chat-provider-replay" "turn-1" 'tool-started
+           '(:type tool-call :id "call-1" :name "buffer-read"))
+          (e-session-append-activity-event
+           store "chat-provider-replay" "turn-1" 'tool-finished
+           '(:tool-call (:type tool-call :id "call-1" :name "buffer-read")
+             :result (:status ok :content "scratch contents")))
+          (e-session-append-activity-event
+           store "chat-provider-replay" "turn-1" 'turn-finished nil)
+          (e-session-append-message
+           store "chat-provider-replay"
+           '(:role assistant :content "Final answer." :turn-id "turn-1"))
+          (setq buffer (e-chat-open :harness harness
+                                    :session-id "chat-provider-replay"))
+          (with-current-buffer buffer
+            (let ((content (buffer-string)))
+              (should (string-match-p
+                       "Turn took [0-9]+min [0-9]+sec, 1 tool call\\."
+                       content))
+              (should-not (string-match-p "Thought for" content)))
+            (e-chat-test--focus-block-containing "Turn took")
+            (call-interactively #'e-chat-response-navigation-activate)
+            (let ((content (buffer-string)))
+              (should (string-match-p "Thought for [0-9]+min [0-9]+sec"
+                                      content))
+              (should (string-match-p "1 tool call" content)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-late-progress-tick-shows-emacs-blocked-status ()
   "A delayed progress timer tick only reports a local Emacs stall."
   (let ((buffer (e-chat-test--buffer nil "chat-progress-stall"))
@@ -2450,7 +2600,7 @@
                 (should (string-match-p
                          "  Ended: 1970-01-01T00:00:22Z"
                          (buffer-string)))
-                (should (string-match-p "  Duration: 2.00s"
+                (should (string-match-p "  Duration: 0min 2sec"
                                         (buffer-string)))))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer))

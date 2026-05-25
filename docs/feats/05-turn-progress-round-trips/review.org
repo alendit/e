@@ -1,0 +1,64 @@
+#+title: Turn Progress Round Trips Review
+#+startup: overview
+
+* Scope Reviewed
+
+Reviewed the implementation against =plan.org= for feature 05, focusing on live
+chat progress rendering, provider request boundary replay, final summary
+collapse, and compatibility for legacy activity that does not include provider
+boundary events.
+
+The reviewed changes cover:
+
+- minute/second duration formatting for turn and thought durations;
+- structured provider round-trip activity records in the chat presentation;
+- live =Thinking...= lines while provider requests are open;
+- completed =Thought for <duration>= lines when provider requests finish;
+- settled summary blocks for turns with provider boundary activity;
+- inline expansion text for settled summaries;
+- durable replay of provider boundary events into settled summaries;
+- preservation of the old activity display path for legacy turns without LLM
+  boundary events.
+
+* Plan Acceptance Review
+
+** Accepted
+
+- Active provider requests render =Thinking...=.
+- Finished provider requests render =Thought for <duration>=.
+- Durations use the planned =Nmin Nsec= format.
+- Turns with provider boundary events collapse to =Turn took <duration>, <N>
+  tool calls.= after the final assistant response.
+- Singular tool text is handled for one tool call.
+- Summary blocks are navigable and expand to the stored per-line progress
+  history.
+- Existing final assistant rendering, composer redraw behavior, block navigation,
+  and legacy tool activity tests remain stable.
+- Durable replay reconstructs a settled summary when provider boundary events
+  are present.
+- Legacy activity without provider boundaries keeps the previous expanded
+  activity presentation instead of inventing missing LLM timing.
+
+** Remaining Notes
+
+- Expanded summary details are rendered as inline text under the summary block.
+  Existing legacy activity blocks still open the current tool-list view.  A later
+  polish pass could make each expanded summary line its own navigable child
+  block, but the summary expansion preserves the planned visible history.
+
+* Verification Evidence
+
+- =eldev test test/e-chat-test.el=: 127 tests passed, 1 existing skipped
+  Markdown rendering test.
+- =eldev test test/e-loop-test.el test/e-harness-test.el test/e-chat-session-test.el=:
+  64 tests passed.
+- Live reload succeeded with:
+  =emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"=
+- Live synthetic chat probe after reload returned:
+  =(:thinking t :thought t :summary t :expanded t)=.
+
+* Review Result
+
+The feature matches the plan's runtime and replay behavior and is ready for
+in-review follow-up.  The only remaining note is optional UI polish for making
+expanded summary lines separately navigable child blocks.

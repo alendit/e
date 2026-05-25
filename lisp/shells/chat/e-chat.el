@@ -1591,7 +1591,10 @@ DETAILS-TEXT describe block actions."
   (let ((started-seconds (e-chat--time-seconds started-at))
         (ended-seconds (e-chat--time-seconds ended-at)))
     (if (and started-seconds ended-seconds)
-        (format "%.2fs" (- ended-seconds started-seconds))
+        (let* ((seconds (max 0 (truncate (- ended-seconds started-seconds))))
+               (minutes (/ seconds 60))
+               (remaining (% seconds 60)))
+          (format "%dmin %dsec" minutes remaining))
       "unknown")))
 
 (defun e-chat--indent-detail-text (text)
@@ -1630,6 +1633,10 @@ Count tool invocations after the reasoning chunk they followed."
         (let ((title (plist-get entry :title))
               (content (plist-get entry :content)))
           (pcase title
+            ((or "Thinking" "Thought")
+             (finish-current)
+             (when (and content (not (string-empty-p content)))
+               (push content chunks)))
             ("Tool call"
              (setq tool-count (1+ tool-count)))
             ("Tool")
@@ -1639,6 +1646,35 @@ Count tool invocations after the reasoning chunk they followed."
                (setq current (list content)))))))
       (finish-current)
       (nreverse chunks))))
+
+(defun e-chat--activity-tool-count (record)
+  "Return number of tool calls recorded for RECORD."
+  (cl-count-if
+   (lambda (entry)
+     (equal (plist-get entry :title) "Tool call"))
+   (plist-get record :intermittent-entries)))
+
+(defun e-chat--activity-summary-text (record)
+  "Return settled turn summary text for RECORD."
+  (when (and (plist-get record :started-at)
+             (plist-get record :ended-at)
+             (plist-get record :has-provider-activity))
+    (let* ((duration (e-chat--format-duration
+                      (plist-get record :started-at)
+                      (plist-get record :ended-at)))
+           (tool-count (e-chat--activity-tool-count record))
+           (tool-text (cond
+                       ((= tool-count 0) "")
+                       ((= tool-count 1) ", 1 tool call")
+                       (t (format ", %d tool calls" tool-count)))))
+      (format "Turn took %s%s." duration tool-text))))
+
+(defun e-chat--activity-expanded-text (record)
+  "Return expanded per-line activity history for RECORD."
+  (when-let ((chunks (e-chat--activity-visible-chunks
+                      (plist-get record :intermittent-entries))))
+    (when chunks
+      (concat (mapconcat #'identity chunks "\n") "\n\n"))))
 
 (defun e-chat--intermittent-details-text (record)
   "Return expanded intermittent details text for RECORD."
@@ -1650,6 +1686,17 @@ Count tool invocations after the reasoning chunk they followed."
       entries
       "\n\n")
      "\n\n")))
+
+(defun e-chat--activity-summary-details-text (turn-id record)
+  "Return inline details text for TURN-ID's settled activity summary."
+  (concat
+   (or (e-chat--activity-expanded-text record) "")
+   (format "Turn: %s\nStarted: %s\nEnded: %s\nDuration: %s\n"
+           turn-id
+           (e-chat--format-time-value (plist-get record :started-at))
+           (e-chat--format-time-value (plist-get record :ended-at))
+           (e-chat--format-duration (plist-get record :started-at)
+                                    (plist-get record :ended-at)))))
 
 (defun e-chat--failure-details-text (record)
   "Return expanded failure details text for RECORD."
@@ -1689,10 +1736,11 @@ Count tool invocations after the reasoning chunk they followed."
 
 (defun e-chat--settled-activity-p (record)
   "Return non-nil when RECORD has activity worth keeping after final output."
-  (cl-some
-   (lambda (entry)
-     (not (equal (plist-get entry :title) "Tool call")))
-   (plist-get record :intermittent-entries)))
+  (or (e-chat--activity-summary-text record)
+      (cl-some
+       (lambda (entry)
+         (not (equal (plist-get entry :title) "Tool call")))
+       (plist-get record :intermittent-entries))))
 
 (defun e-chat--transient-text (record)
   "Return visible transient text for RECORD."
@@ -1700,6 +1748,54 @@ Count tool invocations after the reasoning chunk they followed."
     (let ((chunks (e-chat--activity-visible-chunks entries)))
       (when chunks
         (concat (mapconcat #'identity chunks "\n\n") "\n\n")))))
+
+(defun e-chat--append-activity-entry (record entry)
+  "Append structured activity ENTRY to RECORD."
+  (plist-put record
+             :intermittent-entries
+             (append (plist-get record :intermittent-entries)
+                     (list entry))))
+
+(defun e-chat--current-activity-round (record)
+  "Return RECORD's current LLM round number."
+  (or (plist-get record :activity-round) 0))
+
+(defun e-chat--record-provider-started (turn-id created-at)
+  "Record provider request start for TURN-ID at CREATED-AT."
+  (let* ((record (e-chat--turn-record turn-id))
+         (round (1+ (e-chat--current-activity-round record))))
+    (plist-put record :has-provider-activity t)
+    (plist-put record :activity-round round)
+    (e-chat--append-activity-entry
+     record
+     (list :title "Thinking"
+           :kind 'thinking
+           :round round
+           :status 'active
+           :started-at created-at
+           :content "Thinking..."
+           :source 'activity))
+    record))
+
+(defun e-chat--record-provider-finished (turn-id created-at)
+  "Record provider request finish for TURN-ID at CREATED-AT."
+  (when-let ((record (e-chat--existing-turn-record turn-id)))
+    (let ((entry
+           (cl-find-if
+            (lambda (candidate)
+              (and (eq (plist-get candidate :kind) 'thinking)
+                   (eq (plist-get candidate :status) 'active)))
+            (reverse (plist-get record :intermittent-entries)))))
+      (when entry
+        (plist-put entry :title "Thought")
+        (plist-put entry :status 'done)
+        (plist-put entry :ended-at created-at)
+        (plist-put entry :content
+                   (format "Thought for %s"
+                           (e-chat--format-duration
+                            (plist-get entry :started-at)
+                            created-at)))))
+    record))
 
 (defun e-chat--intermittent-entry-exists-p (record title content &optional source)
   "Return non-nil when RECORD already has TITLE and CONTENT.
@@ -1867,9 +1963,18 @@ When RECORD is nil, clear only buffer-local status markers."
   "Render TURN-ID's active progress and RECORD transient summary together."
   (let* ((has-progress (and e-chat--progress-turn-id
                             (equal turn-id e-chat--progress-turn-id)))
-         (text (and record
-                    (not (plist-get record :final-rendered))
-                    (e-chat--transient-text record)))
+         (final-rendered (and record (plist-get record :final-rendered)))
+         (summary-text (and final-rendered
+                            record
+                            (e-chat--activity-summary-text record)))
+         (transient-text (and record (e-chat--transient-text record)))
+         (text (if final-rendered
+                   (or summary-text transient-text)
+                 transient-text))
+         (block-kind (if summary-text 'activity-summary 'activity))
+         (details-text (and summary-text
+                            (e-chat--activity-summary-details-text
+                             turn-id record)))
          (navigation-state
           (e-chat--capture-running-status-navigation-state))
          (composer-state (e-chat--capture-composer-state)))
@@ -1908,12 +2013,13 @@ When RECORD is nil, clear only buffer-local status markers."
                      turn-id
                      transient-start
                      (point)
-                     'activity
+                     block-kind
                      (string-trim-right text)
                      transient-start
                      (point)
                      (e-chat--activity-tool-items
-                      (plist-get record :intermittent-entries))))))
+                      (plist-get record :intermittent-entries))
+                     details-text))))
               (when has-progress
                 (let ((progress-start (point)))
                   (e-chat--insert-protected
@@ -2103,6 +2209,14 @@ sessions without durable activity."
        (e-chat--set-turn-time turn-id
                               :started-at
                               (plist-get activity-event :created-at)))
+      ('provider-request-started
+       (e-chat--record-provider-started
+        turn-id
+        (plist-get activity-event :created-at)))
+      ('provider-request-finished
+       (e-chat--record-provider-finished
+        turn-id
+        (plist-get activity-event :created-at)))
       ('turn-finished
        (e-chat--set-turn-time turn-id
                               :ended-at
@@ -2171,10 +2285,10 @@ sessions without durable activity."
 (defun e-chat--finalize-turn-display (turn-id)
   "Mark TURN-ID as having rendered its final response."
   (when-let ((record (e-chat--turn-record turn-id)))
+    (plist-put record :final-rendered t)
     (if (e-chat--settled-activity-p record)
         (e-chat--render-turn-transient turn-id record)
       (e-chat--delete-turn-transient record))
-    (plist-put record :final-rendered t)
     (e-chat--clear-running-status-markers)))
 
 (defun e-chat--delete-block-details (block)
@@ -2533,6 +2647,10 @@ non-nil, is used by focused block activation."
     (pcase (plist-get block :kind)
       ('activity
        (e-chat--open-tool-list block))
+      ('activity-summary
+       (if-let ((details-text (plist-get block :details-text)))
+           (e-chat--toggle-block-details-text block details-text)
+         (e-chat--enter-block-view block)))
       ('system
        (if-let ((details-text (plist-get block :details-text)))
            (e-chat--toggle-block-details-text block details-text)
@@ -3217,9 +3335,21 @@ When OMIT-COMPOSER is non-nil, leave the buffer as transcript-only."
          (when (eq (plist-get message :role) 'user)
            (e-chat--refresh-session-display))))))
     ('provider-request-started
-     (e-chat--set-status "waiting for provider"))
+     (e-chat--set-status "waiting for provider")
+     (e-chat--record-provider-started
+      (plist-get event :turn-id)
+      (plist-get event :created-at))
+     (e-chat--redisplay-running-activity)
+     (when-let ((record (e-chat--existing-turn-record
+                         (plist-get event :turn-id))))
+       (e-chat--render-turn-transient (plist-get event :turn-id) record)))
     ('provider-request-finished
-     nil)
+     (e-chat--record-provider-finished
+      (plist-get event :turn-id)
+      (plist-get event :created-at))
+     (when-let ((record (e-chat--existing-turn-record
+                         (plist-get event :turn-id))))
+       (e-chat--render-turn-transient (plist-get event :turn-id) record)))
     ('assistant-delta
      (e-chat--set-status "streaming"))
     ('reasoning-delta
