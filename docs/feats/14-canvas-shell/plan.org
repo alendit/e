@@ -1,0 +1,127 @@
+#+title: Canvas Shell
+#+startup: overview
+
+* Status
+
+Done.
+
+* Goal
+
+Add a Canvas shell for sessions that need one or more live buffers or files in model context alongside the normal chat transcript.
+
+Canvas context is current-state context: each turn sees the latest contents of the canvas and any manually attached files/buffers. These contents are not appended to, duplicated in, or accumulated through the chat transcript.
+
+The shell must also provide a command that opens a new session for the currently open buffer and uses that buffer as the primary canvas.
+
+* User-facing behavior
+
+- =e-canvas-open-for-current-buffer= creates a new chat session for the current buffer and marks that buffer as the session's primary canvas.
+- =e-canvas-new-buffer= creates a new non-file-backed buffer and opens a new chat session using it as the primary canvas.
+- =e-canvas-new-file= creates or visits a file and opens a new chat session using the file-backed buffer as the primary canvas.
+- =e-canvas-attach-current-buffer= attaches the current buffer to an existing session's live context.
+- =e-canvas-attach-file= attaches a file to an existing session's live context.
+- Prefix use for attach commands marks the selected attachment as the primary canvas, replacing any previous primary canvas.
+- Canvas sessions are still regular chat sessions, so the existing chat UI, model/effort controls, transcript rendering, compaction, reset, and resume behavior remain available.
+
+* Implementation
+
+** Session metadata
+
+Canvas state is stored as session metadata under =:context-attachments= by the =chat-session= capability.
+
+Each attachment is a plist with fields such as:
+
+- =:id= :: stable attachment id derived from URI when not provided.
+- =:uri= :: canonical resource identity, such as =buffer://NAME= or =file:///path/to/file=.
+- =:label= :: compact user/model-facing label.
+- =:buffer-name= :: live Emacs buffer name when available.
+- =:file= :: expanded local file path when the attachment is file-backed.
+- =:canvas= :: non-nil for the primary canvas attachment.
+
+The transcript remains unchanged. Attachment metadata is persisted through existing session metadata records, while attachment contents are read fresh during context construction.
+
+** Chat-session capability
+
+=lisp/layers/chat/e-chat-session.el= now owns the semantic attachment operations:
+
+- =e-chat-session-attachments= returns the current attachment metadata.
+- =e-chat-session-attach-context= adds or replaces an attachment.
+- =e-chat-session-detach-context= removes an attachment by id or URI.
+- =e-chat-session-context-attachments-provider= contributes live attachment contents to model context.
+
+The context provider emits a system message containing all live attachments. It explicitly describes them as current-state context rebuilt every turn, not transcript history.
+
+For content lookup:
+
+1. A live Emacs buffer wins when =:buffer-name= or =buffer://= points to one.
+2. For file URIs, an already visiting buffer wins over disk so unsaved edits are represented.
+3. If no live buffer exists, readable file contents are loaded from disk.
+4. Missing/unreadable attachments produce an explicit unavailable marker instead of silently disappearing.
+
+** Canvas shell
+
+=lisp/shells/e-canvas.el= is a presentation shell. It owns commands, buffer creation, file visiting, session picking, and shell manifest registration.
+
+The shell uses the existing default chat harness and creates ordinary chat sessions, then attaches the selected buffer/file as live context through =e-chat-session-attach-context=.
+
+The shell manifest is registered as =canvas= through =e-shell-register= and exposes these command ids:
+
+- =open-for-current-buffer=
+- =new-buffer=
+- =new-file=
+- =attach-current-buffer=
+- =attach-file=
+
+** Package startup and reload
+
+=e.el= now requires =e-canvas= so the shell provider is available at package startup.
+
+=e-dev-reload= loads =lisp/shells/e-canvas.el= during development reload.
+
+Default chat harness sync recreates the internal =chat-session= layer when live-reloading. This is necessary because the new attachment context provider is part of the =chat-session= capability; preserving an old in-memory layer would otherwise keep stale capability records without the provider.
+
+* Context behavior
+
+Canvas/attachment content appears before normal transcript messages because it is provided as capability context. The transcript stack strategy remains responsible for chat messages and compaction, while the attachment provider contributes prefix system context.
+
+This preserves the requested invariant:
+
+- normal chat history accumulates as before;
+- canvas/file contents are always current-state snapshots;
+- previous canvas snapshots are not retained merely because a turn occurred.
+
+* Tests
+
+Added and updated tests cover:
+
+- attachment metadata operations and capability actions;
+- current-state rebuilding from live buffers;
+- preferring unsaved live buffer content over disk for file attachments;
+- creating a canvas session from the current buffer;
+- creating a file-backed canvas session;
+- manually attaching the current buffer to a selected session;
+- canvas shell manifest registration;
+- package startup/autoload exposure;
+- default harness reload refreshing the internal =chat-session= capability.
+
+Primary test files:
+
+- =test/e-chat-session-test.el=
+- =test/e-canvas-test.el=
+- =test/e-test.el=
+- =test/e-defaults-test.el=
+
+* Validation performed
+
+- =eldev test -f test/e-defaults-test.el -f test/e-chat-session-test.el -f test/e-canvas-test.el= passed.
+- =eldev test= passed with 478 expected results and one skipped markdown-mode-dependent test.
+- Reloaded the running Emacs with =e-dev-reload=.
+- Live smoke-checked a temporary buffer-backed canvas session in the running Emacs and confirmed the session context included the live canvas buffer contents.
+
+* Design notes
+
+- The harness and transcript strategy stay generic. Canvas behavior is added through capability context and a presentation shell.
+- The canvas shell performs presentation-side side effects: creating buffers, visiting files, switching/displaying buffers, and prompting for sessions.
+- The chat-session capability owns semantic session attachment metadata and context rendering.
+- Attachment contents are intentionally not persisted in session records; only their references are persisted.
+- Existing sessions without =:context-attachments= continue to behave unchanged.

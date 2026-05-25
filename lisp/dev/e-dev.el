@@ -126,6 +126,7 @@
                   "lisp/shells/e-shells.el"
                   "lisp/shells/e-layers-shell.el"
                   "lisp/shells/chat/e-chat.el"
+                  "lisp/shells/e-canvas.el"
                   "lisp/dev/e-dev.el")))
     (dolist (file files)
       (load (expand-file-name file root) nil 'nomessage))

@@ -80,7 +80,8 @@
   (require 'e-default-harnesses)
   (require 'e-shells)
   (require 'e-layers-shell)
-  (require 'e-chat))
+  (require 'e-chat)
+  (require 'e-canvas))
 (e-startup-run)
 
 (defgroup e nil

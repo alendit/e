@@ -1,0 +1,13 @@
+#+title: Canvas Shell Review
+#+startup: overview
+
+* Result
+
+Done. No unresolved review notes.
+
+* Validation
+
+- =eldev test -f test/e-defaults-test.el -f test/e-chat-session-test.el -f test/e-canvas-test.el= passed.
+- =eldev test= passed: 478 expected, 1 skipped markdown-mode-dependent test.
+- Reloaded the running Emacs with =e-dev-reload=.
+- Live smoke check created a temporary buffer-backed canvas session and confirmed the session context included the live canvas contents.

@@ -85,8 +85,76 @@
   (let ((capability (e-chat-session-capability-create)))
     (should (eq (e-capability-id capability) 'chat-session))
     (dolist (action '(:submit :abort :reset :rename :set-model :set-effort
-                      :context))
+                      :attach-context :detach-context :context))
       (should (functionp (e-capabilities-action capability action))))))
+
+(ert-deftest e-chat-session-test-attachments-are-current-state-context ()
+  "Canvas attachments are rebuilt from current live buffer state per context."
+  (let ((harness (e-harness-create :backend (e-backend-fake-create :items nil))))
+    (e-harness-activate-capability harness (e-chat-session-capability-create))
+    (e-harness-create-session harness :id "session-1")
+    (with-temp-buffer
+      (rename-buffer "e-chat-session-canvas" t)
+      (insert "first canvas state")
+      (e-chat-session-attach-context
+       harness
+       "session-1"
+       (list :uri (concat "buffer://" (buffer-name))
+             :label "canvas"
+             :buffer-name (buffer-name))
+       :canvas t)
+      (let ((content (plist-get (car (plist-get
+                                      (e-chat-session-context
+                                       harness
+                                       "session-1")
+                                      :messages))
+                                :content)))
+        (should (string-match-p "<canvas" content))
+        (should (string-match-p "first canvas state" content)))
+      (erase-buffer)
+      (insert "second canvas state")
+      (let ((content (plist-get (car (plist-get
+                                      (e-chat-session-context
+                                       harness
+                                       "session-1")
+                                      :messages))
+                                :content)))
+        (should-not (string-match-p "first canvas state" content))
+        (should (string-match-p "second canvas state" content))))))
+
+(ert-deftest e-chat-session-test-file-attachment-prefers-live-buffer ()
+  "File attachments read unsaved live buffers before disk contents."
+  (let ((file (make-temp-file "e-chat-session-canvas-" nil ".txt"))
+        (harness (e-harness-create :backend (e-backend-fake-create :items nil))))
+    (unwind-protect
+        (progn
+          (write-region "disk state" nil file nil 'silent)
+          (e-harness-activate-capability harness (e-chat-session-capability-create))
+          (e-harness-create-session harness :id "session-1")
+          (let ((buffer (find-file-noselect file)))
+            (unwind-protect
+                (with-current-buffer buffer
+                  (erase-buffer)
+                  (insert "unsaved live state")
+                  (e-chat-session-attach-context
+                   harness
+                   "session-1"
+                   (list :uri (concat "file://" file)
+                         :label "canvas.txt"
+                         :buffer-name (buffer-name))
+                   :canvas t)
+                  (let ((content (plist-get
+                                  (car (plist-get
+                                        (e-chat-session-context
+                                         harness
+                                         "session-1")
+                                        :messages))
+                                  :content)))
+                    (should (string-match-p "unsaved live state" content))
+                    (should-not (string-match-p "disk state" content))))
+              (when (buffer-live-p buffer)
+                (kill-buffer buffer)))))
+      (delete-file file))))
 
 (provide 'e-chat-session-test)
 

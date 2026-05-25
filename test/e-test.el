@@ -26,6 +26,11 @@
     e-chat-submit
     e-chat-abort
     e-chat-reset
+    e-canvas-open-for-current-buffer
+    e-canvas-new-buffer
+    e-canvas-new-file
+    e-canvas-attach-current-buffer
+    e-canvas-attach-file
     e-layers-toggle
     e-layers-enable
     e-layers-disable
@@ -34,6 +39,7 @@
 
 (defconst e-test--autoload-functions
   '(e-chat-shell
+    e-canvas-shell
     e-layers-shell)
   "Non-command functions expected to exist from package autoloads.")
 
@@ -57,6 +63,7 @@
 
 (defconst e-test--non-core-features
   '(e-chat
+    e-canvas
     e-default-layers
     e-default-harnesses
     e-layer-selection
@@ -190,6 +197,11 @@
   (should (commandp 'e-chat-submit))
   (should (commandp 'e-chat-abort))
   (should (commandp 'e-chat-reset))
+  (should (commandp 'e-canvas-open-for-current-buffer))
+  (should (commandp 'e-canvas-new-buffer))
+  (should (commandp 'e-canvas-new-file))
+  (should (commandp 'e-canvas-attach-current-buffer))
+  (should (commandp 'e-canvas-attach-file))
   (should (commandp 'e-layers-toggle))
   (should (commandp 'e-layers-enable))
   (should (commandp 'e-layers-disable))
@@ -201,11 +213,14 @@
     (unwind-protect
         (progn
           (setq features (cl-set-difference features
-                                            '(e e-chat e-layers-shell)))
+                                            '(e e-chat e-canvas
+                                              e-layers-shell)))
           (load (expand-file-name "e.el" default-directory) nil 'nomessage)
           (should (featurep 'e-chat))
+          (should (featurep 'e-canvas))
           (should (featurep 'e-layers-shell))
           (should (eq (e-shell-id (e-shell-get 'chat)) 'chat))
+          (should (eq (e-shell-id (e-shell-get 'canvas)) 'canvas))
           (should (eq (e-shell-id (e-shell-get 'layers)) 'layers)))
       (setq features original-features)
       (load (expand-file-name "e.el" default-directory) nil 'nomessage))))
@@ -280,9 +295,13 @@
       (load (expand-file-name "lisp/shells/chat/e-chat.el" default-directory)
             nil
             'nomessage)
+      (load (expand-file-name "lisp/shells/e-canvas.el" default-directory)
+            nil
+            'nomessage)
       (load (expand-file-name "lisp/dev/e-dev.el" default-directory)
             nil
-            'nomessage))))
+            'nomessage)
+      (e-chat--refresh-keymaps))))
 
 (ert-deftest e-test-exposes-shell-manifest-api ()
   "The package exposes generic shell manifest constructors and registry."
