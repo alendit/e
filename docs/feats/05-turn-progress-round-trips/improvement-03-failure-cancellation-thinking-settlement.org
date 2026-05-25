@@ -1,0 +1,114 @@
+#+title: Improvement 03: Failure and Cancellation Thinking Settlement
+#+startup: overview
+
+* Status
+
+Planned follow-up from =review.org=.
+
+* Problem
+
+The feature plan says failure or cancellation events should settle any open
+=Thinking...= line.  The current UI renders an explicit failure/cancellation
+state, but it does not rewrite the active provider-round entry into a terminal
+activity record such as =Thought failed after <duration>= or =Thinking cancelled
+after <duration>=.
+
+This is visible mostly in details/replay semantics: the failed turn has terminal
+UI, but the in-progress provider wait is not represented as a completed activity
+record.
+
+* Goal
+
+When a turn fails or is cancelled while a provider request is open, convert the
+active thinking entry/round into a terminal non-active record with duration and
+status.
+
+Possible visible strings:
+
+- =Thought failed after 0min 12sec=
+- =Thought cancelled after 0min 12sec=
+
+The exact wording can be adjusted, but it must not leave a stale
+=Thinking...= record in settled details or replay.
+
+* Non-goals
+
+- Changing provider timeout policy.
+- Changing the high-level failure block text such as =Turn failed: ...=.
+- Adding raw provider diagnostics to thought blocks.
+- Retrying failed provider requests.
+
+* Implementation Notes
+
+** Current source anchors
+
+- =lisp/shells/chat/e-chat.el=
+  - =e-chat--record-provider-started=
+  - =e-chat--record-provider-finished=
+  - =e-chat--record-turn-failure=
+  - =e-chat--render-turn-failure=
+  - =e-chat--render-event= cases for =turn-failed= and =turn-cancelled=
+  - =e-chat--record-activity-event=
+- =lisp/core/e-loop.el=
+  - provider error path emits =provider-request-finished= with =:status error=
+- =lisp/core/e-harness.el=
+  - abort/cancel event emission and durable event list
+
+** Suggested approach
+
+Add a helper in =e-chat=:
+
+#+begin_src elisp
+(defun e-chat--settle-open-thinking (turn-id ended-at status)
+  ...)
+#+end_src
+
+Behavior:
+
+1. Find the latest active thinking/round entry for =turn-id=.
+2. Mark it inactive with =:status= =failed= or =cancelled=.
+3. Record =:ended-at=.
+4. Replace content with a duration-bearing terminal string.
+5. Re-render transient/details if appropriate.
+
+For provider errors, =e-loop= already calls =finish-provider-request 'error=, so
+=e-chat--record-provider-finished= receives a normal provider-finished event.  It
+may be enough to teach =e-chat--record-provider-finished= to use payload
+=:status= when formatting terminal text:
+
+- =done= -> =Thought for <duration>=
+- =error= -> =Thought failed after <duration>=
+- =cancelled= -> =Thought cancelled after <duration>=
+
+For harness abort/cancel paths, verify whether a =provider-request-finished=
+event is emitted before =turn-cancelled=.  If not, call the settlement helper
+from the =turn-cancelled= render path using the cancellation event timestamp.
+
+** Replay
+
+Replay should produce the same terminal thought string from durable events.  If a
+historical failed turn has =provider-request-started= and =turn-failed= but no
+=provider-request-finished=, replay should settle the open thinking entry at the
+failure timestamp.
+
+Do not add compatibility for old sessions without provider boundaries.
+
+* Tests To Add Or Update
+
+- Provider error with an open provider request renders failure UI and does not
+  leave =Thinking...= in expanded details.
+- Provider error records a terminal failed thought line with duration.
+- Turn cancellation with an open provider request records a terminal cancelled
+  thought line with duration.
+- Replay from =provider-request-started= + =turn-failed= settles the thinking
+  line at failure time.
+- Replay from =provider-request-started= + =provider-request-finished :status
+  error= + =turn-failed= uses the provider-finished timestamp/status.
+- Existing failure details remain available and read-only.
+
+* Acceptance Criteria
+
+- Open thinking entries never remain active after failure or cancellation.
+- Failed/cancelled provider waits have duration-bearing terminal activity text.
+- Failure/cancellation summary/details remain deterministic under durable replay.
+- Existing failure block UI and provider error details remain intact.

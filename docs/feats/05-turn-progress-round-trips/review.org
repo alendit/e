@@ -3,56 +3,183 @@
 
 * Scope Reviewed
 
-Reviewed the implementation against =plan.org= for feature 05, focusing on live
-chat progress rendering, provider request boundary replay, and final summary
-collapse.
+Reviewed the current implementation against =plan.org= for feature 05 after the
+legacy-activity cleanup.  The review covered the runtime event boundaries,
+durable activity storage, chat presentation grouping, final collapse behavior,
+replay, navigation behavior, and tests.
 
-The reviewed changes cover:
+Files inspected:
 
-- minute/second duration formatting for turn and thought durations;
-- structured provider round-trip activity records in the chat presentation;
-- live =Thinking...= lines while provider requests are open;
-- completed =Thought for <duration>= lines when provider requests finish;
-- settled summary blocks for turns with provider boundary activity;
-- inline expansion text for settled summaries;
-- durable replay of provider boundary events into settled summaries;
+- =lisp/core/e-loop.el=
+- =lisp/core/e-harness.el=
+- =lisp/shells/chat/e-chat.el=
+- =test/e-loop-test.el=
+- =test/e-harness-test.el=
+- =test/e-chat-test.el=
+- =docs/feats/05-turn-progress-round-trips/plan.org=
+
+* Implementation Summary
+
+The current implementation uses provider lifecycle events as the stable boundary
+between LLM round-trips:
+
+- =e-loop= emits =provider-request-started= when the backend request handle is
+  published, and =provider-request-finished= exactly once when the provider
+  request completes or errors.
+- =e-harness= includes provider lifecycle events, reasoning deltas, tool starts,
+  tool finishes, turn settlement, token usage, and failure/cancellation events in
+  durable session activity.
+- =e-chat= records provider starts as structured =Thinking= entries and converts
+  the matching active entry to =Thought for <duration>= when the provider request
+  finishes.
+- =e-chat= groups tool-start entries into visible =N tool call(s)= chunks and
+  keeps tool-finished entries available for tool-list/output details.
+- Final assistant rendering marks the turn final, then either renders a settled
+  =Turn took <duration>[, <N> tool call(s)].= summary when provider boundary data
+  exists or removes no-provider-boundary transient activity.
+- Replayed sessions reconstruct summaries only from durable activity events with
+  provider boundaries.  Transcript =tool-call= / =tool= messages are ignored by
+  presentation replay rather than used as a legacy fallback.
 
 * Plan Acceptance Review
 
 ** Accepted
 
-- Active provider requests render =Thinking...=.
+- Active provider requests render =Thinking...= in the chat buffer.
 - Finished provider requests render =Thought for <duration>=.
-- Durations use the planned =Nmin Nsec= format.
-- Turns with provider boundary events collapse to =Turn took <duration>, <N>
-  tool calls.= after the final assistant response.
-- Singular tool text is handled for one tool call.
-- Summary blocks are navigable and expand to the stored per-line progress
-  history.
-- Existing final assistant rendering, composer redraw behavior, and block
-  navigation tests remain stable.
-- Durable replay reconstructs a settled summary when provider boundary events
-  are present.
+- Duration formatting uses the planned =Nmin Nsec= shape, including minute
+  rollover cases such as =1min 3sec= and =3min 25sec=.
+- Multiple provider/tool cycles can render the planned history shape: completed
+  thought, tool-count chunk, next thought.
+- Tool count text uses singular/plural correctly, including =1 tool call=.
+- Final provider-boundary turns collapse to a navigable summary block after the
+  final assistant message.
+- Summary blocks expand inline to show the stored per-line progress history.
+- Durable replay reconstructs settled summaries from provider boundary activity
+  events.
+- Provider request lifecycle events are durable and ordered around backend work
+  in =e-loop= / =e-harness= tests.
+- Legacy fallback support for old activity shapes has been removed per the
+  updated plan: transcript tool messages are not replayed into presentation
+  activity, and no-provider-boundary activity is deleted after final output.
+- Existing final assistant rendering, composer behavior, response navigation, and
+  progress redraw preservation tests remain stable.
 
-** Remaining Notes
+** Partially Accepted / Deferred
 
-- Expanded summary details are rendered as inline text under the summary block.
-  A later polish pass could make each expanded summary line its own navigable
-  child block, but the summary expansion preserves the planned visible history.
+- The plan says the transient activity block shows one line per progress record.
+  The implementation groups display into chunks: thoughts are distinct lines, but
+  tool calls are aggregated as =N tool call(s)= after the preceding reasoning or
+  thought chunk.  This matches the visible examples and acceptance intent, but it
+  is not a one-block-per-record internal presentation.
+- The plan says each expanded summary line should be its own block, and that
+  expanded tool-batch/thought/reasoning blocks should have individual actions.
+  The implementation currently expands the summary as inline detail text under
+  the summary block.  The expanded history is visible and copyable as part of the
+  summary block/details text, but individual expanded lines are not separate
+  navigable child blocks and tool batches inside the expanded summary do not open
+  the tool-list independently.
+
+** Not Accepted / Known Gaps
+
+- There is no dedicated copy-only action for an expanded thought line or
+  reasoning line because expanded lines are not separate blocks.  Copying the
+  summary/details can still copy the text, but not as the line-specific action
+  described in the plan.
+- Tool batch grouping is based on the sequence of intermittent entries rather
+  than an explicit round id attached to tool-batch records.  Provider starts do
+  maintain =:activity-round= and thinking entries carry =:round=, but reasoning
+  and tool entries added through =e-chat--add-intermittent-entry= do not carry a
+  durable round field in the presentation record.  This works for the current
+  visible grouping, but it falls short of the plan's stronger guidance to model
+  semantic records explicitly and avoid relying on display-entry sequencing.
+- Turn failure/cancellation events settle the turn visibly, but the reviewed
+  implementation does not convert an open =Thinking...= entry into a completed or
+  failed thought line before failure/cancellation rendering.  This is acceptable
+  for current failure UI, but it is not a full implementation of the plan note
+  that failure/cancellation should settle any open thinking line.
+
+* Detailed Findings
+
+** Runtime and durable event boundaries
+
+=e-loop= owns provider boundary detection and emits lifecycle events without
+exposing backend handles to =e-chat=.  The request lifecycle tests confirm both a
+single final-response request and a tool-follow-up cycle emit ordered events:
+
+#+begin_example
+turn-started
+provider-request-started
+reasoning-delta
+tool-started
+provider-request-finished
+tool-finished
+provider-request-started
+provider-request-finished
+turn-finished
+#+end_example
+
+=e-harness= persists these event types in session activity, which gives replay
+sufficient timing data for settled summaries.
+
+** Chat presentation
+
+=e-chat= keeps presentation policy local to the chat shell.  It records provider
+start/finish entries, tool call/output entries, and summary metadata in the turn
+record.  The visible final summary is gated on =:has-provider-activity= plus turn
+start/end times, so old/no-boundary activity does not invent timing.
+
+The summary text uses the turn duration from the first known turn start to the
+final assistant/turn finish time.  Tool count comes from recorded =Tool call=
+entries.  Expanded summary text is derived from visible chunks and then appends
+turn timing metadata.
+
+** Replay behavior
+
+Replay now prefers only durable activity events.  Tool transcript records are
+recognized as model-context messages and skipped by presentation rendering.  This
+matches the updated plan decision that older session records can be dropped and
+should not receive legacy display support.
+
+** Navigation behavior
+
+The summary itself participates in normal response navigation and inline details
+can be toggled by activating it.  Running activity blocks remain navigable while
+progress is active, and progress redraw preserves response navigation, block
+view, context-reference composer state, and running tool-list state.
+
+The remaining navigation mismatch is specific to expanded summary children: the
+current implementation has one summary block plus inline details, not separate
+child blocks per expanded line.
 
 * Verification Evidence
 
-- =eldev test test/e-chat-test.el=: 127 tests passed, 1 existing skipped
-  Markdown rendering test.
-- =eldev test test/e-loop-test.el test/e-harness-test.el test/e-chat-session-test.el=:
-  64 tests passed.
+- =eldev test test/e-chat-test.el test/e-loop-test.el test/e-harness-test.el test/e-chat-session-test.el=:
+  187 tests run; 186 passed; 1 existing Markdown rendering test skipped.
 - Live reload succeeded with:
   =emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"=
-- Live synthetic chat probe after reload returned:
-  =(:thinking t :thought t :summary t :expanded t)=.
+- Live synthetic feature-05 probe after reload returned:
+  =(:thinking 47 :summary 47 :expanded-thought-1 81 :expanded-tool 69 :expanded-thought-2 115)=
+  The numeric values are match positions, confirming all probed strings were
+  present.
 
 * Review Result
 
-The feature matches the plan's runtime and replay behavior and is ready for
-in-review follow-up.  The only remaining note is optional UI polish for making
-expanded summary lines separately navigable child blocks.
+The feature is substantially implemented and matches the core runtime,
+persistence, replay, active progress, final summary, and no-legacy-support goals.
+It is ready for use with the known UI/modeling gaps above tracked as follow-up
+polish rather than blockers, unless the plan's child-block/action requirements
+are considered mandatory for this slice.
+
+Recommended follow-ups:
+
+1. Represent reasoning/tool batch entries with explicit round metadata instead
+   of relying on intermittent-entry order.
+2. Render expanded summary history as child blocks if separate navigation/actions
+   remain desired.
+3. Add line-specific copy/open behavior for expanded thought and reasoning
+   blocks after child blocks exist.
+4. Decide whether failure/cancellation should rewrite open thinking entries into
+   explicit failed/cancelled thought records or leave current failure UI as the
+   terminal state.
+        - Decision: it should.

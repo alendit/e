@@ -1,0 +1,158 @@
+#+title: Improvement 01: Explicit Round Records
+#+startup: overview
+
+* Status
+
+Planned follow-up from =review.org=.
+
+* Problem
+
+Feature 05 currently gets the visible LLM/tool round-trip shape mostly from the
+sequence of =:intermittent-entries= in =e-chat=.  Provider-start entries carry a
+round number, but reasoning and tool entries added through
+=e-chat--add-intermittent-entry= do not consistently carry explicit round
+metadata.  Tool batch grouping therefore depends on entry order and display title
+strings such as ="Tool call"=.
+
+This works for the current UI, but it falls short of the plan's guidance:
+
+- semantic records should be represented explicitly;
+- provider round-trip boundaries should not be inferred by parsing display
+  strings or incidental entry ordering;
+- future expanded child blocks need a stable model for thoughts, reasoning, and
+  tool batches.
+
+* Goal
+
+Represent turn progress in =e-chat= as explicit provider-round records with
+owned child records for thought, reasoning, and tool batches.
+
+The implementation should make the following concepts directly available without
+parsing labels:
+
+#+begin_src elisp
+(:kind round
+ :round 1
+ :started-at 1770000000.0
+ :ended-at 1770000063.0
+ :status done
+ :reasoning ((:kind reasoning :content "..."))
+ :tool-batches ((:kind tool-batch :count 2 :items (...))))
+#+end_src
+
+The exact plist shape can differ, but it should include stable semantic fields
+for:
+
+- round id / ordinal;
+- provider request start/end/status;
+- reasoning content belonging to that round;
+- tool calls/results belonging to that round;
+- summary start/end/tool-count derived from records, not labels.
+
+* Non-goals
+
+- Changing =e-loop= or provider event names.
+- Changing durable session event format unless a narrow metadata addition is
+  required.
+- Rendering expanded summary child blocks; that is covered by
+  =improvement-02-expanded-summary-child-blocks.org=.
+- Adding new provider diagnostics.
+
+* Implementation Notes
+
+** Current source anchors
+
+- =lisp/shells/chat/e-chat.el=
+  - =e-chat--record-provider-started=
+  - =e-chat--record-provider-finished=
+  - =e-chat--add-intermittent-entry=
+  - =e-chat--activity-visible-chunks=
+  - =e-chat--activity-tool-items=
+  - =e-chat--activity-summary-text=
+  - =e-chat--record-activity-event=
+- =test/e-chat-test.el=
+  - =e-chat-test-provider-round-trip-renders-thinking-and-thought=
+  - =e-chat-test-final-turn-collapses-progress-to-summary=
+  - =e-chat-test-replayed-provider-activity-restores-summary=
+
+** Suggested shape
+
+Add a presentation-owned record collection to each turn record, for example:
+
+#+begin_src elisp
+(plist-put record :activity-records
+           (list (list :kind 'round
+                       :round 1
+                       :started-at created-at
+                       :ended-at nil
+                       :status 'active
+                       :entries nil)))
+#+end_src
+
+Useful helper functions:
+
+- =e-chat--activity-records=
+- =e-chat--active-round-record=
+- =e-chat--ensure-round-record=
+- =e-chat--append-round-reasoning=
+- =e-chat--append-round-tool-call=
+- =e-chat--complete-round-tool-result=
+- =e-chat--activity-record-tool-count=
+- =e-chat--activity-record-visible-lines=
+- =e-chat--activity-record-tool-items=
+
+Keep the old =:intermittent-entries= only if needed as a temporary adapter while
+migrating tests.  Prefer removing it after all render/detail paths read from the
+new semantic records.
+
+** Event mapping
+
+- =provider-request-started= creates a new round record with =:status active=.
+- =provider-request-finished= marks the active round =:status done=, records
+  =:ended-at=, and stores any status/elapsed payload that is presentation-useful.
+- =reasoning-delta= appends/merges reasoning content into the active round.
+- =tool-started= appends a tool item to the active round's current tool batch.
+  If the provider round has ended, this still belongs to the most recently
+  finished round until the next provider request starts.
+- =tool-finished= completes the matching tool item by id when possible, otherwise
+  attaches output to the most recent incomplete tool item.
+- =turn-finished= / final assistant message derives summary timing from turn
+  metadata and tool count from the records.
+
+** Rendering adapter
+
+Replace =e-chat--activity-visible-chunks= with a function that accepts activity
+records and returns display lines.  It should preserve current visible behavior:
+
+#+begin_example
+Thought for 1min 3sec
+1 tool call
+Thought for 0min 45sec
+#+end_example
+
+Avoid title-string switches for semantic behavior.  Title strings should be a
+rendering output, not a state discriminator.
+
+* Tests To Add Or Update
+
+- A unit-style chat test that inspects the turn record after a two-round cycle
+  and verifies:
+  - two round records exist;
+  - each round has the expected start/end/status;
+  - tool calls are attached to the first round;
+  - no grouping decision depends on label strings.
+- Update summary/tool-count tests to derive from activity records.
+- Update replay tests to verify durable provider/tool events rebuild the same
+  record shape.
+- Keep existing visible-output tests for =Thinking...=, =Thought for=, summary
+  text, and summary expansion.
+
+* Acceptance Criteria
+
+- Chat presentation state contains explicit semantic round records for provider
+  activity.
+- Reasoning and tool entries carry explicit round ownership.
+- Visible behavior remains unchanged for current feature 05 tests.
+- Durable replay rebuilds the same semantic record shape before rendering.
+- No core grouping logic relies on display titles such as ="Tool call"= or
+  ="Thought"=.

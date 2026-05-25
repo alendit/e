@@ -1,0 +1,139 @@
+#+title: Improvement 02: Expanded Summary Child Blocks
+#+startup: overview
+
+* Status
+
+Planned follow-up from =review.org=.
+
+* Problem
+
+Activating a settled activity summary currently inserts inline details under the
+summary block.  This makes the expanded history visible, but the expanded lines
+are not independent response-navigation blocks.
+
+The original feature plan called for:
+
+- each expanded summary line to be its own block;
+- opening a tool-batch block to use the existing tool-list behavior;
+- thought and reasoning blocks to be separately copyable.
+
+The current inline details are acceptable as first-slice polish, but they do not
+satisfy those navigation/action requirements.
+
+* Goal
+
+When a settled activity summary is activated, render its expanded history as
+child blocks owned by the summary block.
+
+Each expanded line should participate in response navigation with an appropriate
+kind:
+
+- =activity-thought= for completed provider round-trip lines;
+- =activity-reasoning= for reasoning text;
+- =activity-tool-batch= for grouped tool calls;
+- optionally =activity-metadata= for turn timing metadata, if metadata remains
+  inline and navigable.
+
+Tool-batch child blocks should open the existing tool-list behavior.  Thought and
+reasoning child blocks should support copy/open using their block content.
+
+* Non-goals
+
+- Changing the visible collapsed summary text.
+- Redesigning response navigation globally.
+- Adding provider diagnostics beyond the current text lines.
+- Implementing explicit round records; prefer doing
+  =improvement-01-explicit-round-records.org= first, then using those records as
+  the child-block source.
+
+* Implementation Notes
+
+** Current source anchors
+
+- =lisp/shells/chat/e-chat.el=
+  - =e-chat-response-navigation-activate=
+  - =e-chat--activity-summary-details-text=
+  - =e-chat--toggle-block-details-text=
+  - =e-chat--insert-block-details-text=
+  - =e-chat--update-block-bounds=
+  - =e-chat--open-tool-list=
+  - =e-chat--delete-block-details=
+  - =e-chat--block-order=
+  - =e-chat--block-registry=
+
+** Suggested design
+
+Extend block records for expandable parents with child metadata:
+
+#+begin_src elisp
+(:kind activity-summary
+ :children ("block-7" "block-8" "block-9")
+ :expanded t)
+#+end_src
+
+Add helpers such as:
+
+- =e-chat--activity-summary-child-records=
+- =e-chat--insert-activity-summary-children=
+- =e-chat--delete-activity-summary-children=
+- =e-chat--activity-summary-expanded-p=
+- =e-chat--toggle-activity-summary-children=
+
+A child record should include the normal block fields plus:
+
+#+begin_src elisp
+(:parent-block-id "block-6"
+ :kind activity-tool-batch
+ :turn-id "turn-1"
+ :action-text "2 tool calls"
+ :tool-items (...))
+#+end_src
+
+Insertion should happen immediately after the summary block, before the composer,
+and should preserve:
+
+- composer contents and point when expanded/collapsed;
+- response-navigation focus where feasible;
+- block order consistency;
+- no dead block records after collapse.
+
+** Activation behavior
+
+Update =e-chat-response-navigation-activate=:
+
+- =activity-summary= toggles child blocks instead of inserting plain detail text.
+- =activity-tool-batch= calls =e-chat--open-tool-list=.
+- =activity-thought= and =activity-reasoning= enter block view or copy/open like
+  plain text blocks.
+
+Keep =d= / details behavior useful.  It can continue opening the full turn detail
+buffer or show metadata for the focused child.
+
+** Styling
+
+Use =e-chat-system-face= initially for child activity blocks to minimize styling
+scope.  If visual hierarchy is unclear, add a small indent prefix or a dedicated
+face in a later tiny polish pass.
+
+* Tests To Add Or Update
+
+- Expanding a summary creates child blocks in =e-chat--block-order= after the
+  summary block.
+- Response navigation can move from summary to each child and back to surrounding
+  transcript blocks.
+- Activating a tool-batch child opens tool-list mode with the expected items.
+- Activating/copying a thought child copies only that thought line.
+- Activating/copying a reasoning child copies only that reasoning text.
+- Collapsing a summary removes all child block records and leaves no dead block
+  ids in =e-chat--block-order=.
+- Expanding/collapsing preserves an editable composer draft.
+- Replay summary expansion produces the same child block structure.
+
+* Acceptance Criteria
+
+- Expanded summary history is rendered as navigable child blocks, not only inline
+  text.
+- Tool-batch child blocks open the existing tool-list and output flow.
+- Thought and reasoning child blocks can be copied/opened independently.
+- Collapse removes child blocks cleanly.
+- Current summary text and final assistant rendering remain unchanged.
