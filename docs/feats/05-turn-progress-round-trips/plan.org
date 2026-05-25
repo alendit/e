@@ -215,8 +215,7 @@ unless a current durable format requires it.
   durable events.  If so, the implementation must add a narrow event without
   leaking backend handles into the chat shell.
 - Existing intermittent activity replay may not have enough information to
-  reconstruct old turns perfectly.  Keep legacy replay acceptable instead of
-  migrating old session files.
+  reconstruct old turns perfectly. That's fine, we don't need to support older sessions
 - Redrawing active progress can disturb block navigation and block-view state.
   Keep the previous preservation tests and add cases for summary/expanded
   progress blocks.

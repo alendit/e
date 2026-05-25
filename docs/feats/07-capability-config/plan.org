@@ -265,7 +265,7 @@ Acceptance:
 * Risks
 
 - If config is read dynamically during tool execution, behavior can drift within
-  a turn. Resolve config at capability construction time instead.
+  a turn. That's fine.
 - If project config executes arbitrary Lisp, this feature becomes a trust-policy
   problem. Use directory-local variables first.
 - If the UI grows before the model is stable, it will harden the wrong shape.
