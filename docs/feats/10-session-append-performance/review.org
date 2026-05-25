@@ -1,0 +1,49 @@
+#+title: Session Append Performance Review
+#+date: 2026-05-26
+
+* Status
+
+In-review.
+
+The implementation is present in the current tree and matches the ready plan.
+This feature remains =In-review= until the operator accepts the review round.
+
+* Implementation Summary
+
+- =e-session.el= maintains tail cells for append-only session lists:
+  =:messages=, =:activity-events=, =:branch-summaries=, and =:compactions=.
+- =e-session--append-list-item= mutates the previous tail cell in the normal
+  initialized case and repairs a missing tail once for legacy or manually
+  constructed state.
+- Session creation, replay finalization, and list replacement initialize or
+  reset the cached tail fields.
+- Message-derived metadata is maintained incrementally on append instead of
+  calling the full derived-field refresh for every message.
+- Public accessors still return copies for append-only list fields.
+
+* Verification
+
+Ran:
+
+#+begin_src sh
+rtk eldev test -f test/e-session-test.el
+#+end_src
+
+Result:
+
+- 36 tests
+- 36 expected
+- 0 unexpected
+
+Relevant coverage includes:
+
+- append order for messages, activity events, branch summaries, and compactions;
+- persistent replay followed by append;
+- clear/reset followed by append;
+- incremental message-derived metadata without per-append full refresh.
+
+* Review Notes
+
+No blocking implementation issue was found in the verified path. No live Emacs
+reload was needed for this slice because no Lisp files changed during this
+handoff; the implementation was already present in the working tree.
