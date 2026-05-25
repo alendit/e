@@ -3,7 +3,26 @@
 
 * Status
 
-Planned follow-up from =review.org=.
+Done.
+
+Implemented as the third review follow-up for feature 05.  Provider errors,
+turn failures, and turn cancellations now settle open provider thinking records
+into terminal duration-bearing thought lines instead of leaving stale
+=Thinking...= records in presentation state or replay.
+
+Verification:
+
+#+begin_src shell
+eldev test -f test/e-chat-test.el e-chat-test-provider-error-settles-thinking-line e-chat-test-turn-cancelled-settles-thinking-line e-chat-test-replayed-failed-provider-start-settles-thinking
+#+end_src
+
+Result: 3 tests run; 3 results as expected; 0 unexpected.
+
+#+begin_src shell
+eldev test -f test/e-chat-test.el
+#+end_src
+
+Result: 125 tests run; 124 results as expected; 0 unexpected; 1 skipped.
 
 * Problem
 

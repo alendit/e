@@ -196,3 +196,8 @@ Recommended follow-ups:
    explicit failed/cancelled thought records or leave current failure UI as the
    terminal state.
         - Decision: it should.
+        - Resolution: implemented by
+          =improvement-03-failure-cancellation-thinking-settlement.org=.
+          Provider errors, turn failures, and cancellations now settle open
+          thinking into duration-bearing failed/cancelled thought lines under
+          live rendering and durable replay.

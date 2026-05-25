@@ -1744,6 +1744,28 @@ When APPEND is non-nil, merge CONTENT into the previous reasoning child."
          (mapcar #'e-chat--round-tool-count
                  (e-chat--activity-records record))))
 
+(defun e-chat--normalize-round-status (status)
+  "Return presentation round status for provider STATUS."
+  (pcase status
+    ((or 'error "error" 'failed "failed") 'failed)
+    ((or 'cancelled "cancelled") 'cancelled)
+    ((or 'active "active" 'started "started") 'active)
+    (_ 'done)))
+
+(defun e-chat--thought-content (status started-at ended-at)
+  "Return thought line text for STATUS from STARTED-AT to ENDED-AT."
+  (pcase (e-chat--normalize-round-status status)
+    ('active "Thinking...")
+    ('failed
+     (format "Thought failed after %s"
+             (e-chat--format-duration started-at ended-at)))
+    ('cancelled
+     (format "Thought cancelled after %s"
+             (e-chat--format-duration started-at ended-at)))
+    (_
+     (format "Thought for %s"
+             (e-chat--format-duration started-at ended-at)))))
+
 (defun e-chat--semantic-tool-items (items)
   "Return display tool-list items for semantic tool ITEMS."
   (mapcar
@@ -1754,14 +1776,10 @@ When APPEND is non-nil, merge CONTENT into the previous reasoning child."
 
 (defun e-chat--round-thought-text (round)
   "Return visible thought text for semantic ROUND."
-  (pcase (plist-get round :status)
-    ('active "Thinking...")
-    ('done
-     (format "Thought for %s"
-             (e-chat--format-duration
-              (plist-get round :started-at)
-              (plist-get round :ended-at))))
-    (_ nil)))
+  (e-chat--thought-content
+   (plist-get round :status)
+   (plist-get round :started-at)
+   (plist-get round :ended-at)))
 
 (defun e-chat--activity-record-visible-lines (record)
   "Return visible progress lines from semantic activity in RECORD."
@@ -2001,7 +2019,7 @@ Count tool invocations after the reasoning chunk they followed."
 STATUS defaults to `done'."
   (when-let ((record (e-chat--existing-turn-record turn-id)))
     (let ((round (e-chat--active-round-record record))
-          (status (or status 'done)))
+          (status (e-chat--normalize-round-status (or status 'done))))
       (when round
         (plist-put round :status status)
         (plist-put round :ended-at created-at)))
@@ -2013,13 +2031,45 @@ STATUS defaults to `done'."
             (reverse (plist-get record :intermittent-entries)))))
       (when entry
         (plist-put entry :title "Thought")
-        (plist-put entry :status (or status 'done))
+        (plist-put entry :status
+                   (e-chat--normalize-round-status (or status 'done)))
         (plist-put entry :ended-at created-at)
         (plist-put entry :content
-                   (format "Thought for %s"
-                           (e-chat--format-duration
-                            (plist-get entry :started-at)
-                            created-at)))))
+                   (e-chat--thought-content
+                    (plist-get entry :status)
+                    (plist-get entry :started-at)
+                    created-at))))
+    record))
+
+(defun e-chat--latest-open-round-record (record)
+  "Return RECORD's latest non-terminal provider round."
+  (cl-find-if
+   (lambda (round)
+     (memq (plist-get round :status) '(active error)))
+   (reverse (e-chat--activity-records record))))
+
+(defun e-chat--settle-open-thinking (turn-id ended-at status)
+  "Settle TURN-ID's open thinking round at ENDED-AT with STATUS."
+  (when-let ((record (e-chat--existing-turn-record turn-id)))
+    (let ((status (e-chat--normalize-round-status status)))
+      (when-let ((round (e-chat--latest-open-round-record record)))
+        (plist-put round :status status)
+        (plist-put round :ended-at ended-at))
+      (when-let ((entry
+                  (cl-find-if
+                   (lambda (candidate)
+                     (and (eq (plist-get candidate :kind) 'thinking)
+                          (memq (plist-get candidate :status)
+                                '(active error))))
+                   (reverse (plist-get record :intermittent-entries)))))
+        (plist-put entry :title "Thought")
+        (plist-put entry :status status)
+        (plist-put entry :ended-at ended-at)
+        (plist-put entry :content
+                   (e-chat--thought-content
+                    status
+                    (plist-get entry :started-at)
+                    ended-at))))
     record))
 
 (defun e-chat--record-reasoning-delta (record content &optional append source)
@@ -2443,9 +2493,18 @@ SOURCE identifies where the entry came from for duplicate suppression."
         (plist-get activity-event :payload)
         'activity))
       ('turn-failed
+       (e-chat--settle-open-thinking
+        turn-id
+        (plist-get activity-event :created-at)
+        'failed)
        (e-chat--record-turn-failure
         turn-id
-        (plist-get activity-event :payload))))))
+        (plist-get activity-event :payload)))
+      ('turn-cancelled
+       (e-chat--settle-open-thinking
+        turn-id
+        (plist-get activity-event :created-at)
+        'cancelled)))))
 
 (defun e-chat--render-turn-activity-events (turn-id activity-events)
   "Render durable ACTIVITY-EVENTS for TURN-ID once."
@@ -2469,6 +2528,7 @@ SOURCE identifies where the entry came from for duplicate suppression."
     (turn-id created-at payload &optional ensure-composer)
   "Render failed TURN-ID with CREATED-AT and failure PAYLOAD."
   (e-chat--set-turn-time turn-id :ended-at created-at)
+  (e-chat--settle-open-thinking turn-id created-at 'failed)
   (e-chat--stop-progress-indicator turn-id)
   (let* ((record (e-chat--record-turn-failure turn-id payload))
          (error-message (or (plist-get payload :error) "Turn failed")))
@@ -3640,6 +3700,10 @@ When OMIT-COMPOSER is non-nil, leave the buffer as transcript-only."
      (e-chat--set-turn-time (plist-get event :turn-id)
                              :ended-at
                              (plist-get event :created-at))
+     (e-chat--settle-open-thinking
+      (plist-get event :turn-id)
+      (plist-get event :created-at)
+      'cancelled)
      (e-chat--stop-progress-indicator (plist-get event :turn-id))
      (e-chat--set-status "cancelled")
      (e-chat--insert-entry "System" "Turn cancelled" t

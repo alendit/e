@@ -1380,6 +1380,79 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-provider-error-settles-thinking-line ()
+  "Provider errors turn open thinking into a failed thought line."
+  (let ((buffer (e-chat-test--buffer nil "chat-provider-error-thinking")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat--render-event
+           (e-events-make :type 'turn-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 0))
+          (e-chat--render-event
+           (e-events-make :type 'provider-request-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 0
+                          :payload '(:status started)))
+          (e-chat--render-event
+           (e-events-make :type 'provider-request-finished
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 12
+                          :payload '(:status error)))
+          (e-chat--render-event
+           (e-events-make :type 'turn-failed
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 12
+                          :payload '(:error "provider failed")))
+          (let* ((record (e-chat--existing-turn-record "turn-1"))
+                 (round (car (plist-get record :activity-records))))
+            (should (equal (plist-get round :status) 'failed))
+            (should (string-match-p
+                     "Thought failed after 0min 12sec"
+                     (e-chat--activity-expanded-text record))))
+          (let ((content (buffer-string)))
+            (should (string-match-p "Turn failed: provider failed" content))
+            (should-not (string-match-p "Thinking\\.\\.\\." content))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-turn-cancelled-settles-thinking-line ()
+  "Turn cancellation turns open thinking into a cancelled thought line."
+  (let ((buffer (e-chat-test--buffer nil "chat-cancelled-thinking")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat--render-event
+           (e-events-make :type 'turn-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 0))
+          (e-chat--render-event
+           (e-events-make :type 'provider-request-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 0
+                          :payload '(:status started)))
+          (e-chat--render-event
+           (e-events-make :type 'turn-cancelled
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 12))
+          (let* ((record (e-chat--existing-turn-record "turn-1"))
+                 (round (car (plist-get record :activity-records))))
+            (should (equal (plist-get round :status) 'cancelled))
+            (should (string-match-p
+                     "Thought cancelled after 0min 12sec"
+                     (e-chat--activity-expanded-text record))))
+          (let ((content (buffer-string)))
+            (should (string-match-p "Turn cancelled" content))
+            (should-not (string-match-p "Thinking\\.\\.\\." content))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-final-turn-collapses-progress-to-summary ()
   "Settled activity collapses to a navigable turn summary."
   (let ((buffer (e-chat-test--buffer nil "chat-progress-summary")))
@@ -2540,6 +2613,43 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer))
       (e-chat-test--kill-buffer-name e-chat-details-buffer-name))))
+
+(ert-deftest e-chat-test-replayed-failed-provider-start-settles-thinking ()
+  "Replay settles provider-started plus turn-failed into a failed thought."
+  (let* ((store (e-session-store-create))
+         (backend (e-backend-fake-create :items nil))
+         (harness (e-harness-create :backend backend :sessions store))
+         (buffer nil))
+    (unwind-protect
+        (progn
+          (e-harness-create-session harness :id "chat-failed-thinking-replay")
+          (e-session-append-message
+           store "chat-failed-thinking-replay"
+           '(:role user :content "fail" :turn-id "turn-1"))
+          (e-session-append-activity-event
+           store "chat-failed-thinking-replay" "turn-1" 'turn-started nil)
+          (e-session-append-activity-event
+           store "chat-failed-thinking-replay" "turn-1"
+           'provider-request-started
+           '(:status started))
+          (e-session-append-activity-event
+           store "chat-failed-thinking-replay" "turn-1" 'turn-failed
+           '(:error "provider failed"))
+          (setq buffer (e-chat-open
+                        :harness harness
+                        :session-id "chat-failed-thinking-replay"))
+          (with-current-buffer buffer
+            (let* ((record (e-chat--existing-turn-record "turn-1"))
+                   (round (car (plist-get record :activity-records))))
+              (should (equal (plist-get round :status) 'failed))
+              (should (string-match-p
+                       "Thought failed after [0-9]+min [0-9]+sec"
+                       (e-chat--activity-expanded-text record))))
+            (let ((content (buffer-string)))
+              (should (string-match-p "Turn failed: provider failed" content))
+              (should-not (string-match-p "Thinking\\.\\.\\." content)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
 
 (ert-deftest e-chat-test-composer-uses-bottom-spacer-when-buffer-is-visible ()
   "Displayed chat buffers keep the composer visually near the window bottom."
