@@ -585,6 +585,7 @@ The mode line uses this presentation-owned table for context usage display."
     (define-key map (kbd "C-c C-k") #'e-chat-abort)
     (define-key map (kbd "C-c C-r") #'e-chat-reset)
     (define-key map (kbd "C-c C-x") #'e-chat-show-context)
+    (define-key map (kbd "C-c C-m") #'e-chat-compact-session)
     map))
 
 (defvar e-chat-mode-map (e-chat--make-mode-map)
@@ -3311,6 +3312,41 @@ When OMIT-COMPOSER is non-nil, leave the buffer as transcript-only."
      (e-chat--set-status "cancelled")
      (e-chat--insert-entry "System" "Turn cancelled" t
                            (plist-get event :turn-id)))
+    ('compaction-started
+     (e-chat--set-status "compacting")
+     (e-chat--insert-entry "System" "Context compaction started" t
+                           (plist-get event :turn-id)))
+    ('compaction-prepared
+     (let ((payload (plist-get event :payload)))
+       (e-chat--set-status "compaction prepared")
+       (e-chat--insert-entry
+        "System"
+        (format "Compaction prepared; keeping from %s"
+                (or (plist-get payload :first-kept-entry-id) "boundary"))
+        t
+        (plist-get event :turn-id))))
+    ('compaction-summary-started
+     (e-chat--set-status "summarizing context"))
+    ('compaction-finished
+     (let ((payload (plist-get event :payload)))
+       (e-chat--set-status "compacted")
+       (e-chat--insert-entry
+        "System"
+        (format "Context compacted into %s"
+                (or (plist-get payload :compaction-id) "summary"))
+        t
+        (plist-get event :turn-id))
+       (e-chat--ensure-composer)
+       (e-chat--refresh-composer-position)))
+    ('compaction-failed
+     (e-chat--set-status "compaction failed")
+     (e-chat--insert-entry
+      "System"
+      (format "Context compaction failed: %s"
+              (or (plist-get (plist-get event :payload) :message)
+                  "unknown error"))
+      t
+      (plist-get event :turn-id)))
     ('message-added
      (let* ((message (plist-get (plist-get event :payload) :message))
             (entry (e-chat--message-entry message)))
@@ -3802,6 +3838,17 @@ When DISPLAY is non-nil, show the target chat buffer."
    e-chat-session-id))
 
 ;;;###autoload
+(defun e-chat-compact-session (&optional instructions)
+  "Compact the current chat session transcript."
+  (interactive)
+  (unless (and e-chat-harness e-chat-session-id)
+    (user-error "This buffer is not attached to an e chat session"))
+  (e-chat-session-compact
+   e-chat-harness
+   e-chat-session-id
+   :instructions instructions))
+
+;;;###autoload
 (defun e-chat-submit (&optional prompt)
   "Submit PROMPT or the current editable prompt text."
   (interactive)
@@ -3892,6 +3939,12 @@ When DISPLAY is non-nil, show the target chat buffer."
      :summary "Show the current chat session context."
      :interactive 'e-chat-show-context
      :function 'e-chat-show-context
+     :scope 'session)
+    (e-shell-command-create
+     :id 'compact-session
+     :summary "Compact the current chat session context."
+     :interactive 'e-chat-compact-session
+     :function 'e-chat-compact-session
      :scope 'session)
     (e-shell-command-create
      :id 'submit

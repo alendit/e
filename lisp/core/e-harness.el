@@ -13,6 +13,7 @@
 
 (require 'cl-lib)
 (require 'e-capabilities)
+(require 'e-compaction)
 (require 'e-context)
 (require 'e-events)
 (require 'e-hooks)
@@ -200,11 +201,22 @@ SESSION-ID and TURN-ID are passed to context-aware resource providers."
        (lambda (arguments)
          (funcall dispatch
                   (lambda (uri &rest operation-arguments)
-                    (apply #'e-resources-call
-                           resources
-                           operation
-                           uri
-                           operation-arguments))
+                    (let* ((content (apply #'e-resources-call
+                                           resources
+                                           operation
+                                           uri
+                                           operation-arguments))
+                           (call (plist-get (e-tools-current-context)
+                                            :tool-call))
+                           (metadata
+                            (e-tools-resource-usage-metadata
+                             (e-operation-tool-name operation)
+                             (list (list :uri uri
+                                         :operation
+                                         (e-operation-id-of operation))))))
+                      (if call
+                          (e-tools-result-create call 'ok content metadata)
+                        content)))
                   arguments))))))
 
 (defun e-harness--register-resource-operation-tools (registry resources)
@@ -329,7 +341,9 @@ an already-removed record is a no-op."
 (defconst e-harness--durable-activity-event-types
   '(turn-started provider-request-started provider-request-finished
     reasoning-delta tool-started tool-finished turn-finished token-usage
-    turn-failed turn-cancelled backend-empty-output)
+    turn-failed turn-cancelled backend-empty-output
+    compaction-started compaction-prepared compaction-summary-started
+    compaction-finished compaction-failed)
   "Turn event types stored as durable session activity.")
 
 (defun e-harness--durable-activity-event-p (type)
@@ -506,6 +520,85 @@ TURN-ID is passed to active capability context providers when present."
   "Return non-nil when active turn ENTRY is still running."
   (and (listp entry)
        (eq (plist-get entry :status) 'running)))
+
+(cl-defun e-harness-compact-session
+    (harness session-id &key instructions keep-recent-tokens)
+  "Manually compact SESSION-ID in HARNESS and append a durable record."
+  (when (e-harness--active-turn-running-p
+         (gethash session-id (e-harness-active-turns harness)))
+    (signal 'e-harness-active-turn-exists (list session-id)))
+  (let ((turn-id (e-harness--next-turn-id))
+        preparation
+        summary-parts
+        summary-message
+        request)
+    (condition-case err
+        (progn
+          (e-harness--emit-turn-event
+           harness session-id turn-id 'compaction-started
+           (list :instructions instructions))
+          (setq preparation
+                (e-compaction-prepare
+                 (e-harness-sessions harness)
+                 session-id
+                 :instructions instructions
+                 :keep-recent-tokens keep-recent-tokens))
+          (e-harness--emit-turn-event
+           harness session-id turn-id 'compaction-prepared
+           (list :first-kept-entry-id
+                 (plist-get preparation :first-kept-entry-id)
+                 :tokens-before (plist-get preparation :tokens-before)
+                 :tokens-kept (plist-get preparation :tokens-kept)))
+          (e-harness--emit-turn-event
+           harness session-id turn-id 'compaction-summary-started
+           (list :backend t))
+          (e-backend-stream
+           (e-harness-backend harness)
+           :messages (e-compaction-summary-messages preparation)
+           :options (e-harness-turn-options harness session-id)
+           :on-request-start (lambda (value)
+                               (setq request value))
+           :on-item
+           (lambda (item)
+             (pcase (plist-get item :type)
+               ('assistant-message
+                (setq summary-message (plist-get item :content)))
+               ('assistant-delta
+                (push (or (plist-get item :content) "") summary-parts)))))
+          (let* ((summary (string-trim
+                           (or summary-message
+                               (string-join (nreverse summary-parts) ""))))
+                 (metadata (plist-get preparation :metadata)))
+            (when (string-empty-p summary)
+              (signal 'e-compaction-error
+                      (list "Compaction backend returned an empty summary")))
+            (let ((record
+                   (e-session-append-compaction
+                    (e-harness-sessions harness)
+                    session-id
+                    summary
+                    :first-kept-entry-id
+                    (plist-get preparation :first-kept-entry-id)
+                    :tokens-before (plist-get preparation :tokens-before)
+                    :tokens-kept (plist-get preparation :tokens-kept)
+                    :metadata metadata)))
+              (e-harness--emit-turn-event
+               harness session-id turn-id 'compaction-finished
+               (list :compaction-id (plist-get record :id)
+                     :first-kept-entry-id
+                     (plist-get record :first-kept-entry-id)
+                     :tokens-before (plist-get record :tokens-before)
+                     :tokens-kept (plist-get record :tokens-kept)))
+              record)))
+      (error
+       (let ((message (e-harness--backend-error-message err))
+             (details (e-harness--backend-error-details err)))
+         (when (and request (e-backend-request-p request))
+           (ignore-errors (e-backend-cancel-request request)))
+         (e-harness--emit-turn-event
+          harness session-id turn-id 'compaction-failed
+          (list :message message :details details))
+         (signal (car err) (cdr err)))))))
 
 (defun e-harness--cancel-active-request (entry)
   "Cancel ENTRY's active backend or tool request when one exists."

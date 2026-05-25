@@ -13,6 +13,7 @@
 ;;; Code:
 
 (require 'e-backend)
+(require 'e-compaction)
 (require 'e-context)
 (require 'e-events)
 (require 'e-operations)
@@ -37,6 +38,7 @@
   "Return a plist describing the current core state."
   (list :state e-core-scaffold-state
         :backends t
+        :compaction t
         :capabilities t
         :hooks t
         :context t

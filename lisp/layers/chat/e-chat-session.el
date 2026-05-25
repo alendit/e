@@ -57,6 +57,10 @@ PROJECT-ROOT."
   "Reset SESSION-ID through HARNESS."
   (e-harness-reset harness session-id))
 
+(cl-defun e-chat-session-compact (harness session-id &key instructions)
+  "Compact SESSION-ID through HARNESS."
+  (e-harness-compact-session harness session-id :instructions instructions))
+
 (defun e-chat-session-rename (harness session-id name)
   "Rename SESSION-ID to NAME through HARNESS session storage."
   (e-session-rename (e-harness-sessions harness) session-id name))
@@ -81,6 +85,7 @@ PROJECT-ROOT."
    :actions (list :submit #'e-chat-session-submit
                   :abort #'e-chat-session-abort
                   :reset #'e-chat-session-reset
+                  :compact #'e-chat-session-compact
                   :rename #'e-chat-session-rename
                   :set-model #'e-chat-session-set-model
                   :set-effort #'e-chat-session-set-effort

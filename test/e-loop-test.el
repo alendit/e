@@ -408,6 +408,67 @@
       (should (equal (plist-get event-result :content)
                      "post-processed")))))
 
+(ert-deftest e-loop-test-tool-result-metadata-is-appended-on-message ()
+  "Tool result metadata is durable on the appended tool message."
+  (let* ((calls 0)
+         (backend (e-backend-create
+                   :name "fake-tool-result-metadata"
+                   :stream (cl-function
+                            (lambda (&key messages options on-item)
+                              (ignore messages options)
+                              (setq calls (1+ calls))
+                              (if (= calls 1)
+                                  (progn
+                                    (funcall on-item
+                                             '(:type tool-call
+                                               :id "call-1"
+                                               :name "echo"
+                                               :arguments nil))
+                                    (funcall on-item
+                                             '(:type done :reason tool-use)))
+                                (funcall on-item
+                                         '(:type assistant-message
+                                           :content "done"))
+                                (funcall on-item
+                                         '(:type done :reason stop)))))))
+         (messages nil)
+         (tool-lifecycle
+          (e-tool-lifecycle-create
+           :start (cl-function
+                   (lambda (tool-call &key on-done &allow-other-keys)
+                     (funcall on-done
+                              (list :tool-call-id (plist-get tool-call :id)
+                                    :name (plist-get tool-call :name)
+                                    :status 'ok
+                                    :content "result"
+                                    :metadata '(:tool-usage
+                                                ((:kind resource-usage
+                                                  :tool "echo"
+                                                  :resources
+                                                  ((:uri "file://a"
+                                                    :operation read)))))))
+                     nil)))))
+    (e-loop-run-turn
+     :session-id "session-1"
+     :turn-id "turn-1"
+     :messages '((:role user :content "hi"))
+     :backend backend
+     :tool-lifecycle tool-lifecycle
+     :options nil
+     :on-event #'ignore
+     :append-message (lambda (message)
+                       (push message messages)))
+    (let ((tool-message (cl-find 'tool messages
+                                 :key (lambda (message)
+                                        (plist-get message :role)))))
+      (should
+       (equal (plist-get tool-message :metadata)
+              '(:tool-usage
+                ((:kind resource-usage
+                  :tool "echo"
+                  :resources ((:uri "file://a"
+                               :operation read))))))))))
+
 (ert-deftest e-loop-test-requeries-backend-after-tool-result ()
   "Tool results are fed back into the backend until an assistant message settles."
   (let* ((calls 0)

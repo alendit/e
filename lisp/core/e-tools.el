@@ -187,6 +187,63 @@ implementation."
         :content content
         :metadata metadata))
 
+(defun e-tools--resource-usage-operation (operation)
+  "Return normalized resource usage OPERATION."
+  (cond
+   ((symbolp operation) operation)
+   ((and (stringp operation) (not (string-empty-p operation)))
+    (intern operation))
+   (t nil)))
+
+(defun e-tools--resource-usage-resource (resource)
+  "Return normalized resource usage RESOURCE plist, or nil."
+  (let ((uri (plist-get resource :uri))
+        (operation (e-tools--resource-usage-operation
+                    (plist-get resource :operation))))
+    (when (and (stringp uri) operation)
+      (list :uri uri :operation operation))))
+
+(defun e-tools-resource-usage-metadata (tool resources &optional summary)
+  "Return metadata recording TOOL resource usage over RESOURCES.
+SUMMARY is optional and should stay compact and high value."
+  (let ((resources (delq nil
+                         (mapcar #'e-tools--resource-usage-resource
+                                 resources))))
+    (when resources
+      (let ((record (list :kind 'resource-usage
+                          :tool tool
+                          :resources resources)))
+        (when (and (stringp summary)
+                   (not (string-empty-p summary)))
+          (plist-put record :summary summary))
+        (list :tool-usage (list record))))))
+
+(defun e-tools-resource-usage-metadata-from-arguments (tool arguments)
+  "Return resource usage metadata for TOOL from optional ARGUMENTS."
+  (let ((usage (or (plist-get arguments :resource_usage)
+                   (plist-get arguments :resourceUsage))))
+    (when (listp usage)
+      (e-tools-resource-usage-metadata
+       tool
+       (plist-get usage :resources)
+       (plist-get usage :summary)))))
+
+(defun e-tools-merge-metadata (&rest metadata-list)
+  "Merge METADATA-LIST plists, appending any `:tool-usage' records."
+  (let (merged)
+    (dolist (metadata metadata-list)
+      (when (listp metadata)
+        (while metadata
+          (let ((key (pop metadata))
+                (value (pop metadata)))
+            (if (eq key :tool-usage)
+                (setq merged
+                      (plist-put merged
+                                 key
+                                 (append (plist-get merged key) value)))
+              (setq merged (plist-put merged key value)))))))
+    merged))
+
 (defun e-tools-result-p (value)
   "Return non-nil when VALUE is a structured tool result."
   (and (listp value)
@@ -254,8 +311,20 @@ CONTEXT is dynamically visible to tool start functions through
               (when on-done
                 (funcall on-done
                          (if (e-tools--result-for-call-p content call)
-                             content
-                           (e-tools--result call 'ok content nil)))))
+                             (let ((argument-metadata
+                                    (e-tools-resource-usage-metadata-from-arguments
+                                     name (plist-get call :arguments))))
+                               (if argument-metadata
+                                   (plist-put
+                                    content :metadata
+                                    (e-tools-merge-metadata
+                                     (plist-get content :metadata)
+                                     argument-metadata))
+                                 content))
+                           (e-tools--result
+                            call 'ok content
+                            (e-tools-resource-usage-metadata-from-arguments
+                             name (plist-get call :arguments)))))))
              (finish-error
               (err)
               (when on-done

@@ -312,6 +312,34 @@ When RECORD is non-nil, identity fields may be replayed from the JSONL record."
   (let ((path (e-session-current-path store session-id)))
     (member (e-session-entry-by-id store session-id first-entry-id) path)))
 
+(defun e-session-entries-before (store session-id entry-id)
+  "Return current-path entries before ENTRY-ID."
+  (let ((entries nil)
+        (done nil))
+    (dolist (entry (e-session-current-path store session-id))
+      (unless done
+        (if (equal (plist-get entry :id) entry-id)
+            (setq done t)
+          (push entry entries))))
+    (nreverse entries)))
+
+(defun e-session-compaction-boundary-valid-p (store session-id compaction)
+  "Return non-nil when COMPACTION points at an entry on the current path."
+  (let ((boundary (plist-get compaction :first-kept-entry-id)))
+    (and (stringp boundary)
+         (e-session-entry-by-id store session-id boundary)
+         (seq-some (lambda (entry)
+                     (equal (plist-get entry :id) boundary))
+                   (e-session-current-path store session-id)))))
+
+(defun e-session-latest-valid-compaction (store session-id)
+  "Return the latest compaction record with a valid current-path boundary."
+  (seq-find
+   (lambda (entry)
+     (and (eq (plist-get entry :type) 'compaction)
+          (e-session-compaction-boundary-valid-p store session-id entry)))
+   (reverse (e-session-compactions store session-id))))
+
 (defun e-session--finalize-replayed-session (store session)
   "Restore replayed SESSION field ordering and derived metadata."
   (dolist (field e-session--replay-list-fields)
@@ -500,6 +528,10 @@ When RECORD is non-nil, identity fields may be replayed from the JSONL record."
                  (plist-get record :range)
                  :first-kept-entry-id
                  (plist-get record :first-kept-entry-id)
+                 :tokens-before
+                 (plist-get record :tokens-before)
+                 :tokens-kept
+                 (plist-get record :tokens-kept)
                  :metadata
                  (plist-get record :metadata)
                  :created-at timestamp)
@@ -789,6 +821,10 @@ state are requested."
   "Return durable activity events for SESSION-ID in STORE in insertion order."
   (copy-sequence (plist-get (e-session-get store session-id) :activity-events)))
 
+(defun e-session-compactions (store session-id)
+  "Return compaction records for SESSION-ID in STORE in insertion order."
+  (copy-sequence (plist-get (e-session-get store session-id) :compactions)))
+
 (defun e-session-turn-options (store session-id)
   "Return session-scoped turn options for SESSION-ID in STORE."
   (copy-sequence (plist-get (e-session-get store session-id) :turn-options)))
@@ -910,7 +946,8 @@ state are requested."
     record))
 
 (cl-defun e-session-append-compaction
-    (store session-id summary &key branch-id range first-kept-entry-id metadata)
+    (store session-id summary &key branch-id range first-kept-entry-id
+           tokens-before tokens-kept metadata)
   "Append compaction SUMMARY for SESSION-ID in STORE.
 BRANCH-ID, RANGE, FIRST-KEPT-ENTRY-ID, and METADATA describe the compacted
 source when available."
@@ -923,6 +960,8 @@ source when available."
                         :branch-id branch-id
                         :range range
                         :first-kept-entry-id first-kept-entry-id
+                        :tokens-before tokens-before
+                        :tokens-kept tokens-kept
                         :metadata metadata
                         :created-at timestamp)
                   timestamp)))
@@ -943,6 +982,8 @@ source when available."
            :branch-id branch-id
            :range range
            :first-kept-entry-id first-kept-entry-id
+           :tokens-before tokens-before
+           :tokens-kept tokens-kept
            :metadata metadata))
     (e-session--write-index store)
     record))

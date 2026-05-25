@@ -824,7 +824,23 @@ ON-REQUEST-START receives the cancellable process request."
    :parameters '(:type "object"
                  :properties (:command (:type "string")
                               :timeout (:type "number"
-                                        :description "Hard timeout in seconds. When reached, e kills the process and returns a tool error. Use modest values for routine commands; long-running commands need an explicit control pattern."))
+                                        :description "Hard timeout in seconds. When reached, e kills the process and returns a tool error. Use modest values for routine commands; long-running commands need an explicit control pattern.")
+                              :resource_usage
+                              (:type "object"
+                               :description "Optional high-value resource usage for future context. Use only when the command reads, writes, or edits resources that matter for future work."
+                               :properties (:resources
+                                            (:type "array"
+                                             :items
+                                             (:type "object"
+                                              :properties
+                                              (:uri (:type "string")
+                                               :operation
+                                               (:type "string"
+                                                :enum ["read" "write" "edit"]))
+                                              :required ["uri" "operation"]))
+                                            :summary
+                                            (:type "string"
+                                             :description "Compact summary of why these resources matter."))))
                  :required ["command"])
    :start
    (cl-function

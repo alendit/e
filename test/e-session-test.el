@@ -394,7 +394,9 @@
           (e-session-append-compaction
            store session-id "Compacted early transcript."
            :branch-id "branch-a"
-           :range '(:from "msg-1" :to "msg-9"))
+           :range '(:from "msg-1" :to "msg-9")
+           :tokens-before 123
+           :tokens-kept 45)
           (let* ((loaded (e-session-persistent-store-create directory))
                  (compaction (car (plist-get
                                    (e-session-get loaded session-id)
@@ -403,7 +405,9 @@
                            "Compacted early transcript."))
             (should (equal (plist-get compaction :branch-id) "branch-a"))
             (should (equal (plist-get compaction :range)
-                           '(:from "msg-1" :to "msg-9")))))
+                           '(:from "msg-1" :to "msg-9")))
+            (should (= (plist-get compaction :tokens-before) 123))
+            (should (= (plist-get compaction :tokens-kept) 45))))
       (delete-directory directory t))))
 
 (ert-deftest e-session-test-entry-query-helpers-cover-paths-turns-and-boundaries ()
@@ -449,6 +453,30 @@
                      (list (plist-get second :id)
                            (plist-get third :id)
                            (plist-get compaction :id)))))))
+
+(ert-deftest e-session-test-latest-valid-compaction-requires-current-boundary ()
+  "Latest valid compaction ignores records with missing kept-entry boundaries."
+  (let ((store (e-session-store-create)))
+    (e-session-create store :id "session-1")
+    (let* ((first (e-session-append-message
+                   store "session-1" '(:role user :content "one")))
+           (second (e-session-append-message
+                    store "session-1" '(:role user :content "two"))))
+      (e-session-append-compaction
+       store "session-1" "invalid"
+       :first-kept-entry-id "missing")
+      (let ((valid
+             (e-session-append-compaction
+              store "session-1" "valid"
+              :first-kept-entry-id (plist-get second :id))))
+        (should (equal (plist-get (e-session-latest-valid-compaction
+                                   store "session-1")
+                                  :id)
+                       (plist-get valid :id)))
+        (should (equal (mapcar (lambda (entry) (plist-get entry :id))
+                               (e-session-entries-before
+                                store "session-1" (plist-get second :id)))
+                       (list (plist-get first :id))))))))
 
 (ert-deftest e-session-test-current-branch-persists-through-replay ()
   "Current branch cursor records append and replay into session state."

@@ -84,6 +84,7 @@
                 (expand-file-name (or directory e-dev-source-directory))))
          (files '("lisp/core/e-events.el"
                   "lisp/core/e-session.el"
+                  "lisp/core/e-compaction.el"
                   "lisp/core/e-context.el"
                   "lisp/core/e-tools.el"
                   "lisp/core/e-operations.el"

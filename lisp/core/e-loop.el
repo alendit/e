@@ -165,7 +165,7 @@ callback-driven."
                       (let ((message
                              (list :role 'tool
                                    :content result
-                                   :metadata nil)))
+                                   :metadata (plist-get result :metadata))))
                         (setq turn-messages
                               (append turn-messages (list message)))
                         (funcall append-message message)

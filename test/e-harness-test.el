@@ -1335,6 +1335,97 @@
                        provider-request-finished
                        turn-finished))))))
 
+(ert-deftest e-harness-test-compact-session-appends-summary-and-uses-context-suffix ()
+  "Manual compaction writes a durable record and context uses summary plus suffix."
+  (let* ((backend (e-backend-create
+                   :name 'summary
+                   :stream
+                   (cl-function
+                    (lambda (&key messages options on-item)
+                      (ignore messages options)
+                      (funcall on-item
+                               '(:type assistant-message
+                                 :content "Old exchange summary."))))))
+         (harness (e-harness-create :backend backend)))
+    (e-harness-create-session harness :id "session-1")
+    (let ((store (e-harness-sessions harness)))
+      (e-session-append-message store "session-1"
+                                '(:role user :content "old question"))
+      (e-session-append-message store "session-1"
+                                '(:role assistant :content "old answer"))
+      (let ((boundary
+             (e-session-append-message
+              store "session-1" '(:role user :content "new question"))))
+        (e-session-append-message store "session-1"
+                                  '(:role assistant :content "new answer"))
+        (let ((record (e-harness-compact-session
+                       harness "session-1" :keep-recent-tokens 1)))
+          (should (equal (plist-get record :summary)
+                         "Old exchange summary."))
+          (should (equal (plist-get record :first-kept-entry-id)
+                         (plist-get boundary :id)))
+          (should (= (length (e-session-messages store "session-1")) 4))
+          (should
+           (equal (plist-get (e-harness-context harness "session-1")
+                             :messages)
+                  '((:role system :content "Old exchange summary.")
+                    (:role user :content "new question")
+                    (:role assistant :content "new answer")))))))))
+
+(ert-deftest e-harness-test-repeated-compaction-summarizes-from-previous-summary ()
+  "Repeated compaction summarizes previous summary plus newly compacted suffix."
+  (let ((calls nil)
+        (summaries '("First summary." "Second summary.")))
+    (let* ((backend (e-backend-create
+                     :name 'summary
+                     :stream
+                     (cl-function
+                      (lambda (&key messages options on-item)
+                        (ignore options)
+                        (push messages calls)
+                        (funcall on-item
+                                 (list :type 'assistant-message
+                                       :content (pop summaries)))))))
+           (harness (e-harness-create :backend backend))
+           (store (e-harness-sessions harness)))
+      (e-harness-create-session harness :id "session-1")
+      (e-session-append-message store "session-1" '(:role user :content "old"))
+      (e-session-append-message store "session-1" '(:role assistant :content "old answer"))
+      (e-session-append-message store "session-1" '(:role user :content "middle"))
+      (e-session-append-message store "session-1" '(:role assistant :content "middle answer"))
+      (e-harness-compact-session harness "session-1" :keep-recent-tokens 1)
+      (e-session-append-message store "session-1" '(:role user :content "latest"))
+      (e-session-append-message store "session-1" '(:role assistant :content "latest answer"))
+      (e-harness-compact-session harness "session-1" :keep-recent-tokens 1)
+      (let ((second-prompt (plist-get (cadr (car calls)) :content)))
+        (should (string-match-p "Previous summary:\nFirst summary\\." second-prompt))
+        (should (string-match-p "middle answer" second-prompt))
+        (should-not (string-match-p "old answer" second-prompt)))
+      (should (equal (plist-get (e-session-latest-valid-compaction
+                                 store "session-1")
+                                :summary)
+                     "Second summary.")))))
+
+(ert-deftest e-harness-test-compact-session-failure-does-not_append-record ()
+  "Backend compaction failures leave session compactions unchanged."
+  (let* ((backend (e-backend-create
+                   :name 'failing-summary
+                   :stream
+                   (cl-function
+                    (lambda (&key messages options on-item)
+                      (ignore messages options on-item)
+                      (signal 'user-error '("backend failed"))))))
+         (harness (e-harness-create :backend backend))
+         (store (e-harness-sessions harness)))
+    (e-harness-create-session harness :id "session-1")
+    (e-session-append-message store "session-1" '(:role user :content "old"))
+    (e-session-append-message store "session-1" '(:role assistant :content "old answer"))
+    (e-session-append-message store "session-1" '(:role user :content "new"))
+    (should-error
+     (e-harness-compact-session harness "session-1" :keep-recent-tokens 1)
+     :type 'user-error)
+    (should-not (e-session-compactions store "session-1"))))
+
 (provide 'e-harness-test)
 
 ;;; e-harness-test.el ends here

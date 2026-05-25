@@ -1,0 +1,68 @@
+#+title: Context Compaction Review
+#+status: PASS
+
+* Result
+
+PASS. The implementation satisfies the minimal acceptance criteria in
+plan.org for manual context compaction, durable compaction records, context
+reconstruction, repeated compaction, conservative boundary selection,
+summarization input shaping, tool/resource metadata, visible failures, and
+test coverage.
+
+* Requirements Checked
+
+- Manual compaction appends an identity-bearing durable compaction record with
+  =first-kept-entry-id=, =tokens-before=, =tokens-kept=, metadata, and replay
+  support in =e-session-append-compaction= and JSONL replay.
+- Context reconstruction uses the latest valid compaction as one backend
+  system summary followed by the kept suffix in =e-context--compacted-messages=.
+- Historical transcript messages remain persisted; compaction adds a record
+  without deleting old messages.
+- Repeated compaction includes the previous summary and only newly compacted
+  suffix content in =e-compaction-prepare= and =e-compaction-summary-messages=.
+- Boundary selection starts the kept suffix at a user message and avoids
+  starting inside tool-call/tool-result pairs.
+- Tool result text is truncated in summarization input, while affected resource
+  metadata is deduplicated into compaction metadata.
+- Resource-backed tools record URI/operation metadata, optional free-tool
+  metadata can be supplied, and tool result metadata is persisted on tool
+  messages.
+- Manual orchestration in =e-harness-compact-session= rejects active turns,
+  emits lifecycle events, calls the backend for the summary, and records
+  failure events without appending a compaction on expected failures.
+- Chat exposes =e-chat-compact-session= and renders compaction lifecycle
+  activity.
+
+* Evidence
+
+- =lisp/core/e-compaction.el= owns compaction preparation, boundary selection,
+  summary prompt construction, tool-output truncation, previous-summary reuse,
+  and affected-resource extraction.
+- =lisp/core/e-session.el= persists compaction fields and exposes current-path
+  helpers plus =e-session-latest-valid-compaction=.
+- =lisp/core/e-context.el= strips storage-only metadata and sends one system
+  summary plus kept suffix when a valid compaction exists.
+- =lisp/core/e-harness.el= implements manual compaction and durable
+  =compaction-*= activity events.
+- =lisp/core/e-tools.el=, =lisp/core/e-loop.el=, and
+  =lisp/layers/base/e-base-tools.el= carry resource usage metadata from tools
+  into persisted tool messages.
+- Tests cover compaction preparation, session replay/query helpers, context
+  reconstruction, harness success/failure/repeated compaction, chat command
+  rendering, tool metadata persistence, and resource/free-tool metadata.
+- Verification run: =eldev test= passed with 451 expected passes and one
+  existing skipped markdown rendering test.
+- Live reload succeeded through =e-dev-reload=, and a temporary live harness
+  compaction returned =(:summary "Live summary." :messages ((:role system
+  :content "Live summary.") (:role user :content "new")) :history-count 3)=,
+  proving summary-plus-suffix context while retaining full history.
+
+* Residual Risks
+
+- Token counting uses a conservative character-based estimate rather than
+  provider tokenizer counts.
+- The manual chat command does not prompt interactively for custom compaction
+  instructions yet; callers can pass instructions programmatically.
+- Optional free-tool resource metadata depends on the model/tool caller
+  supplying the hint, so resource-backed tools remain the reliable source for
+  automatic affected-resource capture.

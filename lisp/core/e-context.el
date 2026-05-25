@@ -13,7 +13,9 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'e-compaction)
 (require 'e-session)
+(require 'seq)
 
 (cl-defstruct (e-context
                (:constructor e-context-create)
@@ -77,14 +79,39 @@ backend-neutral messages that should appear before the session transcript."
   "Return MESSAGE without presentation/storage-only metadata."
   (let ((copy (copy-sequence message)))
     (cl-remf copy :created-at)
+    (cl-remf copy :id)
     (cl-remf copy :turn-id)
     (cl-remf copy :type)
     (cl-remf copy :parent-id)
+    (when (eq (plist-get copy :role) 'compaction-summary)
+      (plist-put copy :role 'system))
     copy))
 
 (defun e-context--backend-messages (messages)
   "Return MESSAGES normalized for backend context."
   (mapcar #'e-context--backend-message messages))
+
+(defun e-context--message-entry-message (entry)
+  "Return backend-neutral message from session ENTRY."
+  (copy-sequence entry))
+
+(defun e-context--compacted-messages (sessions session-id)
+  "Return backend messages for SESSION-ID honoring latest compaction."
+  (if-let ((compaction (e-session-latest-valid-compaction sessions session-id)))
+      (let* ((summary (list :role 'compaction-summary
+                            :content (plist-get compaction :summary)
+                            :id (plist-get compaction :id)
+                            :type 'compaction))
+             (suffix
+              (seq-filter
+               (lambda (entry) (eq (plist-get entry :type) 'message))
+               (e-session-entries-from
+                sessions session-id
+                (plist-get compaction :first-kept-entry-id)))))
+        (e-context--backend-messages
+         (cons summary (mapcar #'e-context--message-entry-message suffix))))
+    (e-context--backend-messages
+     (e-session-messages sessions session-id))))
 
 (cl-defun e-context-transcript-stack-create ()
   "Create the classic transcript-stack context strategy."
@@ -93,8 +120,7 @@ backend-neutral messages that should appear before the session transcript."
    :build (cl-function
            (lambda (&key sessions session-id options)
              (list :strategy 'transcript-stack
-                   :messages (e-context--backend-messages
-                              (e-session-messages sessions session-id))
+                   :messages (e-context--compacted-messages sessions session-id)
                    :options options)))))
 
 (provide 'e-context)

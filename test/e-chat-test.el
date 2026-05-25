@@ -3776,6 +3776,41 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-compact-session-command-renders_activity ()
+  "Manual compaction command renders visible progress and writes a summary."
+  (let* ((backend (e-backend-create
+                   :name 'summary
+                   :stream
+                   (cl-function
+                    (lambda (&key messages options on-item)
+                      (ignore messages options)
+                      (funcall on-item
+                               '(:type assistant-message
+                                 :content "Compacted summary."))))))
+         (harness (e-harness-create :backend backend))
+         (buffer (e-chat-open :harness harness :session-id "chat-compact")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (let ((store (e-harness-sessions e-chat-harness)))
+            (e-session-append-message store e-chat-session-id
+                                      '(:role user :content "old"))
+            (e-session-append-message store e-chat-session-id
+                                      '(:role assistant :content "old answer"))
+            (e-session-append-message store e-chat-session-id
+                                      '(:role user :content "new"))
+            (e-chat-compact-session)
+            (should (equal (plist-get
+                            (car (e-session-compactions
+                                  store e-chat-session-id))
+                            :summary)
+                           "Compacted summary."))
+            (should (string-match-p "Context compaction started"
+                                    (buffer-string)))
+            (should (string-match-p "Context compacted into"
+                                    (buffer-string)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (provide 'e-chat-test)
 
 ;;; e-chat-test.el ends here

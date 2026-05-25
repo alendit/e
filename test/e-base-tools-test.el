@@ -72,6 +72,25 @@ When READ-ONLY is non-nil, file resources only support reads."
                   "two\n\n[2 more lines in file. Use offset=3 to continue.]")))
       (delete-directory directory t))))
 
+(ert-deftest e-base-tools-test-read-file-reports-resource-usage-metadata ()
+  "Resource-backed read results report the URI and operation they used."
+  (let* ((directory (make-temp-file "e-base-read-usage-" t))
+         (file (expand-file-name "sample.txt" directory))
+         (registry (e-base-tools-test--resource-tools directory)))
+    (unwind-protect
+        (progn
+          (write-region "one\n" nil file nil 'silent)
+          (let* ((result (e-base-tools-test--execute
+                          registry "read" '(:uri "file://sample.txt")))
+                 (metadata (plist-get result :metadata)))
+            (should
+             (equal (plist-get metadata :tool-usage)
+                    '((:kind resource-usage
+                       :tool "read"
+                       :resources ((:uri "file://sample.txt"
+                                    :operation read))))))))
+      (delete-directory directory t))))
+
 (ert-deftest e-base-tools-test-read-file-errors-for-missing-and-binary ()
   "The read tool fails clearly for missing and binary files."
   (let* ((directory (make-temp-file "e-base-read-errors-" t))
@@ -293,6 +312,32 @@ When READ-ONLY is non-nil, file resources only support reads."
             (should (string-match-p "fail" (plist-get result :content)))
             (should (string-match-p "Command exited with code 7"
                                     (plist-get result :content)))))
+      (delete-directory directory t))))
+
+(ert-deftest e-base-tools-test-bash-accepts-optional-resource-usage-metadata ()
+  "Free tools can report high-value affected resources when supplied."
+  (let* ((directory (make-temp-file "e-base-bash-usage-" t))
+         (registry (e-tools-registry-create)))
+    (unwind-protect
+        (progn
+          (e-base-tools-register-bash registry directory)
+          (let* ((result (e-base-tools-test--execute
+                          registry
+                          "bash"
+                          '(:command "printf ok"
+                            :resource_usage
+                            (:resources ((:uri "file://notes.org"
+                                          :operation read))
+                             :summary "checked notes"))))
+                 (metadata (plist-get result :metadata)))
+            (should (equal (plist-get result :status) 'ok))
+            (should
+             (equal (plist-get metadata :tool-usage)
+                    '((:kind resource-usage
+                       :tool "bash"
+                       :resources ((:uri "file://notes.org"
+                                    :operation read))
+                       :summary "checked notes"))))))
       (delete-directory directory t))))
 
 (ert-deftest e-base-tools-test-bash-times-out-and-truncates-output ()
