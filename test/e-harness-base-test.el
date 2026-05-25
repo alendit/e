@@ -34,8 +34,31 @@
     (should (equal (e-layer-name layer) "Harness Base"))
     (should (equal (mapcar #'e-capability-id
                            (e-layer-capabilities layer))
-                   '(session-tmp-resources
+                   '(harness-base-context
+                     session-tmp-resources
                      tool-output-truncation)))))
+
+(ert-deftest e-harness-base-test-context-asks-for-reasoning-messages ()
+  "The harness-base layer asks models to surface reasoning messages."
+  (should (require 'e-harness-base nil t))
+  (let* ((harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)))
+         (layer (e-harness-base-layer-create)))
+    (e-harness-activate-layer harness layer)
+    (e-harness-create-session harness :id "session-1")
+    (let* ((context (e-harness-context harness "session-1" "turn-1"))
+           (messages (plist-get context :messages))
+           (system-texts (mapcar (lambda (message)
+                                   (plist-get message :content))
+                                 messages)))
+      (should (cl-some
+               (lambda (text)
+                 (and (stringp text)
+                      (string-match-p
+                       "reasoning explicitly and concretely"
+                       text)
+                      (string-match-p "reasoning messages" text)))
+               system-texts)))))
 
 (ert-deftest e-harness-base-test-activation-adds-tmp-resource-and-hook ()
   "Activating harness-base exposes tmp:// and the post-tool hook."

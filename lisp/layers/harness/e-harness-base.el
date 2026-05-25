@@ -12,16 +12,29 @@
 
 ;;; Code:
 
+(require 'e-capabilities)
 (require 'e-layers)
 (require 'e-session-tmp-resources)
 (require 'e-tool-output-truncation)
+
+(defconst e-harness-base-instructions
+  "Communicate reasoning explicitly and concretely: emit concise reasoning messages as you work so decisions and tradeoffs are visible."
+  "Base model-facing instructions contributed by the harness-base layer.")
+
+(defun e-harness-base-context-capability-create ()
+  "Create the harness-base context guidance capability."
+  (e-capability-create
+   :id 'harness-base-context
+   :name "Harness Base Context"
+   :instructions e-harness-base-instructions))
 
 (defun e-harness-base-layer-create ()
   "Create the harness-base support layer."
   (e-layer-create
    :id 'harness-base
    :name "Harness Base"
-   :capabilities (list (e-session-tmp-capability-create)
+   :capabilities (list (e-harness-base-context-capability-create)
+                       (e-session-tmp-capability-create)
                        (e-tool-output-truncation-capability-create))))
 
 (provide 'e-harness-base)
