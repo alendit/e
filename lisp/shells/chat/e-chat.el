@@ -1335,6 +1335,7 @@ KILLP is passed through to `delete-char' for normal text."
           (let ((record (list :id turn-id
                               :started-at nil
                               :ended-at nil
+                              :activity-records nil
                               :intermittent-entries nil
                               :failure-error nil
                               :failure-details nil
@@ -1612,6 +1613,163 @@ DETAILS-TEXT describe block actions."
   "Return collapsed display text for COUNT tool invocations."
   (format "%d tool call%s" count (if (= count 1) "" "s")))
 
+(defun e-chat--activity-records (record)
+  "Return semantic activity records for RECORD."
+  (plist-get record :activity-records))
+
+(defun e-chat--append-activity-record (record activity-record)
+  "Append semantic ACTIVITY-RECORD to RECORD."
+  (plist-put record
+             :activity-records
+             (append (e-chat--activity-records record)
+                     (list activity-record)))
+  activity-record)
+
+(defun e-chat--last-round-record (record)
+  "Return RECORD's latest provider round record."
+  (car (last (e-chat--activity-records record))))
+
+(defun e-chat--active-round-record (record)
+  "Return RECORD's active provider round record."
+  (cl-find-if
+   (lambda (activity-record)
+     (and (eq (plist-get activity-record :kind) 'round)
+          (eq (plist-get activity-record :status) 'active)))
+   (reverse (e-chat--activity-records record))))
+
+(defun e-chat--round-record-for-child (record)
+  "Return semantic round record that should own the next child event."
+  (or (e-chat--active-round-record record)
+      (e-chat--last-round-record record)))
+
+(defun e-chat--append-round-reasoning (record content &optional append)
+  "Append reasoning CONTENT to RECORD's current round.
+When APPEND is non-nil, merge CONTENT into the previous reasoning child."
+  (when-let ((round (and content
+                         (not (string-empty-p content))
+                         (e-chat--round-record-for-child record))))
+    (let* ((reasoning (plist-get round :reasoning))
+           (last-reasoning (car (last reasoning))))
+      (if (and append last-reasoning)
+          (plist-put last-reasoning
+                     :content
+                     (concat (plist-get last-reasoning :content) content))
+        (plist-put round
+                   :reasoning
+                   (append reasoning
+                           (list (list :kind 'reasoning
+                                       :round (plist-get round :round)
+                                       :content content))))))))
+
+(defun e-chat--current-round-tool-batch (round)
+  "Return ROUND's current tool batch, creating it when needed."
+  (or (car (last (plist-get round :tool-batches)))
+      (let ((batch (list :kind 'tool-batch
+                         :round (plist-get round :round)
+                         :items nil)))
+        (plist-put round
+                   :tool-batches
+                   (append (plist-get round :tool-batches)
+                           (list batch)))
+        batch)))
+
+(defun e-chat--append-round-tool-call (record payload)
+  "Append tool call PAYLOAD to RECORD's current round."
+  (when-let ((round (e-chat--round-record-for-child record)))
+    (let* ((batch (e-chat--current-round-tool-batch round))
+           (items (plist-get batch :items))
+           (tool-id (or (plist-get payload :id)
+                        (plist-get payload :call-id))))
+      (plist-put batch
+                 :items
+                 (append items
+                         (list (list :kind 'tool
+                                     :round (plist-get round :round)
+                                     :id tool-id
+                                     :call (e-chat--format-tool-call payload)
+                                     :call-payload payload
+                                     :output nil)))))))
+
+(defun e-chat--tool-finished-id (payload)
+  "Return the tool id associated with tool-finished PAYLOAD."
+  (let ((tool-call (plist-get payload :tool-call)))
+    (or (plist-get payload :id)
+        (plist-get payload :call-id)
+        (plist-get tool-call :id)
+        (plist-get tool-call :call-id))))
+
+(defun e-chat--round-tool-items (round)
+  "Return all tool items recorded for ROUND."
+  (apply #'append
+         (mapcar (lambda (batch)
+                   (plist-get batch :items))
+                 (plist-get round :tool-batches))))
+
+(defun e-chat--find-round-tool-item (record tool-id)
+  "Return semantic tool item matching TOOL-ID in RECORD."
+  (when tool-id
+    (cl-loop for round in (reverse (e-chat--activity-records record))
+             thereis
+             (cl-find-if
+              (lambda (item)
+                (equal (plist-get item :id) tool-id))
+              (e-chat--round-tool-items round)))))
+
+(defun e-chat--latest-incomplete-tool-item (record)
+  "Return RECORD's latest tool item without output."
+  (cl-loop for round in (reverse (e-chat--activity-records record))
+           thereis
+           (cl-find-if
+            (lambda (item)
+              (not (plist-get item :output)))
+            (reverse (e-chat--round-tool-items round)))))
+
+(defun e-chat--complete-round-tool-result (record payload)
+  "Attach tool result PAYLOAD to the matching semantic tool item in RECORD."
+  (let* ((tool-id (e-chat--tool-finished-id payload))
+         (item (or (e-chat--find-round-tool-item record tool-id)
+                   (e-chat--latest-incomplete-tool-item record))))
+    (when item
+      (plist-put item
+                 :output
+                 (format "%S" (plist-get payload :result))))))
+
+(defun e-chat--round-tool-count (round)
+  "Return number of tool calls recorded for ROUND."
+  (length (e-chat--round-tool-items round)))
+
+(defun e-chat--activity-record-tool-count (record)
+  "Return number of tool calls recorded in semantic RECORD activity."
+  (apply #'+
+         (mapcar #'e-chat--round-tool-count
+                 (e-chat--activity-records record))))
+
+(defun e-chat--round-thought-text (round)
+  "Return visible thought text for semantic ROUND."
+  (pcase (plist-get round :status)
+    ('active "Thinking...")
+    ('done
+     (format "Thought for %s"
+             (e-chat--format-duration
+              (plist-get round :started-at)
+              (plist-get round :ended-at))))
+    (_ nil)))
+
+(defun e-chat--activity-record-visible-lines (record)
+  "Return visible progress lines from semantic activity in RECORD."
+  (let (lines)
+    (dolist (round (e-chat--activity-records record))
+      (when-let ((thought (e-chat--round-thought-text round)))
+        (push thought lines))
+      (dolist (reasoning (plist-get round :reasoning))
+        (when-let ((content (plist-get reasoning :content)))
+          (unless (string-empty-p content)
+            (push content lines))))
+      (let ((tool-count (e-chat--round-tool-count round)))
+        (when (> tool-count 0)
+          (push (e-chat--activity-tool-count-text tool-count) lines))))
+    (nreverse lines)))
+
 (defun e-chat--activity-visible-chunks (entries)
   "Return visible collapsed activity chunks for intermittent ENTRIES.
 Count tool invocations after the reasoning chunk they followed."
@@ -1650,10 +1808,12 @@ Count tool invocations after the reasoning chunk they followed."
 
 (defun e-chat--activity-tool-count (record)
   "Return number of tool calls recorded for RECORD."
-  (cl-count-if
-   (lambda (entry)
-     (equal (plist-get entry :title) "Tool call"))
-   (plist-get record :intermittent-entries)))
+  (if (e-chat--activity-records record)
+      (e-chat--activity-record-tool-count record)
+    (cl-count-if
+     (lambda (entry)
+       (equal (plist-get entry :title) "Tool call"))
+     (plist-get record :intermittent-entries))))
 
 (defun e-chat--activity-summary-text (record)
   "Return settled turn summary text for RECORD."
@@ -1672,10 +1832,14 @@ Count tool invocations after the reasoning chunk they followed."
 
 (defun e-chat--activity-expanded-text (record)
   "Return expanded per-line activity history for RECORD."
-  (when-let ((chunks (e-chat--activity-visible-chunks
-                      (plist-get record :intermittent-entries))))
-    (when chunks
-      (concat (mapconcat #'identity chunks "\n") "\n\n"))))
+  (if (e-chat--activity-records record)
+      (when-let ((lines (e-chat--activity-record-visible-lines record)))
+        (when lines
+          (concat (mapconcat #'identity lines "\n") "\n\n")))
+    (when-let ((chunks (e-chat--activity-visible-chunks
+                        (plist-get record :intermittent-entries))))
+      (when chunks
+        (concat (mapconcat #'identity chunks "\n") "\n\n")))))
 
 (defun e-chat--intermittent-details-text (record)
   "Return expanded intermittent details text for RECORD."
@@ -1712,28 +1876,36 @@ Count tool invocations after the reasoning chunk they followed."
          (format "Provider details\n%s" (pp-to-string details)))
         "\n\n")))))
 
-(defun e-chat--activity-tool-items (entries)
-  "Return tool call/output items derived from intermittent ENTRIES."
-  (let ((items nil)
-        current)
-    (dolist (entry entries)
-      (pcase (plist-get entry :title)
-        ("Tool call"
-         (when current
-           (push current items))
-         (setq current (list :call (plist-get entry :content)
-                             :output nil)))
-        ("Tool"
-         (if current
-             (progn
-               (plist-put current :output (plist-get entry :content))
-               (push current items)
-               (setq current nil))
-           (push (list :call "Tool" :output (plist-get entry :content))
-                 items)))))
-    (when current
-      (push current items))
-    (nreverse items)))
+(defun e-chat--activity-tool-items (record)
+  "Return tool call/output items derived from RECORD."
+  (if (e-chat--activity-records record)
+      (mapcar
+       (lambda (item)
+         (list :call (plist-get item :call)
+               :output (plist-get item :output)))
+       (apply #'append
+              (mapcar #'e-chat--round-tool-items
+                      (e-chat--activity-records record))))
+    (let ((items nil)
+          current)
+      (dolist (entry (plist-get record :intermittent-entries))
+        (pcase (plist-get entry :title)
+          ("Tool call"
+           (when current
+             (push current items))
+           (setq current (list :call (plist-get entry :content)
+                               :output nil)))
+          ("Tool"
+           (if current
+               (progn
+                 (plist-put current :output (plist-get entry :content))
+                 (push current items)
+                 (setq current nil))
+             (push (list :call "Tool" :output (plist-get entry :content))
+                   items)))))
+      (when current
+        (push current items))
+      (nreverse items))))
 
 (defun e-chat--settled-activity-p (record)
   "Return non-nil when RECORD has current activity to keep after final output."
@@ -1741,10 +1913,14 @@ Count tool invocations after the reasoning chunk they followed."
 
 (defun e-chat--transient-text (record)
   "Return visible transient text for RECORD."
-  (when-let ((entries (plist-get record :intermittent-entries)))
-    (let ((chunks (e-chat--activity-visible-chunks entries)))
-      (when chunks
-        (concat (mapconcat #'identity chunks "\n\n") "\n\n")))))
+  (if (e-chat--activity-records record)
+      (when-let ((lines (e-chat--activity-record-visible-lines record)))
+        (when lines
+          (concat (mapconcat #'identity lines "\n\n") "\n\n")))
+    (when-let ((entries (plist-get record :intermittent-entries)))
+      (let ((chunks (e-chat--activity-visible-chunks entries)))
+        (when chunks
+          (concat (mapconcat #'identity chunks "\n\n") "\n\n"))))))
 
 (defun e-chat--append-activity-entry (record entry)
   "Append structured activity ENTRY to RECORD."
@@ -1763,6 +1939,15 @@ Count tool invocations after the reasoning chunk they followed."
          (round (1+ (e-chat--current-activity-round record))))
     (plist-put record :has-provider-activity t)
     (plist-put record :activity-round round)
+    (e-chat--append-activity-record
+     record
+     (list :kind 'round
+           :round round
+           :started-at created-at
+           :ended-at nil
+           :status 'active
+           :reasoning nil
+           :tool-batches nil))
     (e-chat--append-activity-entry
      record
      (list :title "Thinking"
@@ -1774,9 +1959,15 @@ Count tool invocations after the reasoning chunk they followed."
            :source 'activity))
     record))
 
-(defun e-chat--record-provider-finished (turn-id created-at)
-  "Record provider request finish for TURN-ID at CREATED-AT."
+(defun e-chat--record-provider-finished (turn-id created-at &optional status)
+  "Record provider request finish for TURN-ID at CREATED-AT.
+STATUS defaults to `done'."
   (when-let ((record (e-chat--existing-turn-record turn-id)))
+    (let ((round (e-chat--active-round-record record))
+          (status (or status 'done)))
+      (when round
+        (plist-put round :status status)
+        (plist-put round :ended-at created-at)))
     (let ((entry
            (cl-find-if
             (lambda (candidate)
@@ -1785,7 +1976,7 @@ Count tool invocations after the reasoning chunk they followed."
             (reverse (plist-get record :intermittent-entries)))))
       (when entry
         (plist-put entry :title "Thought")
-        (plist-put entry :status 'done)
+        (plist-put entry :status (or status 'done))
         (plist-put entry :ended-at created-at)
         (plist-put entry :content
                    (format "Thought for %s"
@@ -1793,6 +1984,31 @@ Count tool invocations after the reasoning chunk they followed."
                             (plist-get entry :started-at)
                             created-at)))))
     record))
+
+(defun e-chat--record-reasoning-delta (record content &optional append source)
+  "Record reasoning CONTENT in RECORD and its semantic activity records."
+  (e-chat--append-round-reasoning record content append)
+  (e-chat--add-intermittent-entry record "Reasoning" content append source))
+
+(defun e-chat--record-tool-started (record payload &optional source)
+  "Record tool-started PAYLOAD in RECORD."
+  (e-chat--append-round-tool-call record payload)
+  (e-chat--add-intermittent-entry
+   record
+   "Tool call"
+   (e-chat--format-tool-call payload)
+   nil
+   source))
+
+(defun e-chat--record-tool-finished (record payload &optional source)
+  "Record tool-finished PAYLOAD in RECORD."
+  (e-chat--complete-round-tool-result record payload)
+  (e-chat--add-intermittent-entry
+   record
+   "Tool"
+   (format "%S" (plist-get payload :result))
+   nil
+   source))
 
 (defun e-chat--intermittent-entry-exists-p (record title content &optional source)
   "Return non-nil when RECORD already has TITLE and CONTENT.
@@ -2014,8 +2230,7 @@ When RECORD is nil, clear only buffer-local status markers."
                      (string-trim-right text)
                      transient-start
                      (point)
-                     (e-chat--activity-tool-items
-                      (plist-get record :intermittent-entries))
+                     (e-chat--activity-tool-items record)
                      details-text))))
               (when has-progress
                 (let ((progress-start (point)))
@@ -2168,32 +2383,27 @@ SOURCE identifies where the entry came from for duplicate suppression."
       ('provider-request-finished
        (e-chat--record-provider-finished
         turn-id
-        (plist-get activity-event :created-at)))
+        (plist-get activity-event :created-at)
+        (plist-get (plist-get activity-event :payload) :status)))
       ('turn-finished
        (e-chat--set-turn-time turn-id
                               :ended-at
                               (plist-get activity-event :created-at)))
       ('reasoning-delta
-       (e-chat--add-intermittent-entry
+       (e-chat--record-reasoning-delta
         record
-        "Reasoning"
         (plist-get (plist-get activity-event :payload) :content)
         t
         'activity))
       ('tool-started
-       (e-chat--add-intermittent-entry
+       (e-chat--record-tool-started
         record
-        "Tool call"
-        (e-chat--format-tool-call (plist-get activity-event :payload))
-        nil
+        (plist-get activity-event :payload)
         'activity))
       ('tool-finished
-       (e-chat--add-intermittent-entry
+       (e-chat--record-tool-finished
         record
-        "Tool"
-        (format "%S" (plist-get (plist-get activity-event :payload)
-                                :result))
-        nil
+        (plist-get activity-event :payload)
         'activity))
       ('turn-failed
        (e-chat--record-turn-failure
@@ -3357,7 +3567,8 @@ When OMIT-COMPOSER is non-nil, leave the buffer as transcript-only."
     ('provider-request-finished
      (e-chat--record-provider-finished
       (plist-get event :turn-id)
-      (plist-get event :created-at))
+      (plist-get event :created-at)
+      (plist-get (plist-get event :payload) :status))
      (when-let ((record (e-chat--existing-turn-record
                          (plist-get event :turn-id))))
        (e-chat--render-turn-transient (plist-get event :turn-id) record)))
@@ -3365,31 +3576,32 @@ When OMIT-COMPOSER is non-nil, leave the buffer as transcript-only."
      (e-chat--set-status "streaming"))
     ('reasoning-delta
      (e-chat--set-status "reasoning")
-     (e-chat--append-intermittent-entry
-      (plist-get event :turn-id)
-      "Reasoning"
-      (plist-get (plist-get event :payload) :content)
-      t
-      'activity)
+     (when-let ((record (e-chat--existing-turn-record
+                         (plist-get event :turn-id))))
+       (e-chat--record-reasoning-delta
+        record
+        (plist-get (plist-get event :payload) :content)
+        t
+        'activity)
+       (e-chat--render-turn-transient (plist-get event :turn-id) record))
      (e-chat--redisplay-running-activity))
     ('tool-started
      (e-chat--set-status "tool")
-     (e-chat--append-intermittent-entry
-      (plist-get event :turn-id)
-      "Tool call"
-      (e-chat--format-tool-call (plist-get event :payload))
-      nil
-      'activity)
+     (when-let ((record (e-chat--existing-turn-record
+                         (plist-get event :turn-id))))
+       (e-chat--record-tool-started
+        record
+        (plist-get event :payload)
+        'activity)
+       (e-chat--render-turn-transient (plist-get event :turn-id) record))
      (e-chat--redisplay-running-activity))
     ('tool-finished
      (e-chat--set-status "tool done")
      (when-let ((record (e-chat--existing-turn-record
                          (plist-get event :turn-id))))
-       (e-chat--add-intermittent-entry
+       (e-chat--record-tool-finished
         record
-        "Tool"
-        (format "%S" (plist-get (plist-get event :payload) :result))
-        nil
+        (plist-get event :payload)
         'activity)
        (e-chat--render-turn-transient (plist-get event :turn-id) record)
        (e-chat--redisplay-running-activity)))

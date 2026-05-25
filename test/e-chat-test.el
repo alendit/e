@@ -1445,6 +1445,97 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-progress-activity-records-track-round-ownership ()
+  "Provider, reasoning, and tool events build semantic round records."
+  (let ((buffer (e-chat-test--buffer nil "chat-progress-records")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat--render-event
+           (e-events-make :type 'turn-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 0))
+          (e-chat--render-event
+           (e-events-make :type 'provider-request-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 0
+                          :payload '(:status started)))
+          (e-chat--render-event
+           (e-events-make :type 'reasoning-delta
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 1
+                          :payload '(:content "planning")))
+          (e-chat--render-event
+           (e-events-make :type 'provider-request-finished
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 63
+                          :payload '(:status done)))
+          (e-chat--render-event
+           (e-events-make :type 'tool-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 64
+                          :payload '(:id "call-1"
+                                      :name "read"
+                                      :arguments (:path "file"))))
+          (e-chat--render-event
+           (e-events-make :type 'tool-finished
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 65
+                          :payload '(:tool-call (:id "call-1"
+                                                :name "read")
+                                      :result (:status ok
+                                               :content "contents"))))
+          (e-chat--render-event
+           (e-events-make :type 'provider-request-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 160
+                          :payload '(:status started)))
+          (e-chat--render-event
+           (e-events-make :type 'provider-request-finished
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 205
+                          :payload '(:status done)))
+          (let* ((record (e-chat--existing-turn-record "turn-1"))
+                 (rounds (plist-get record :activity-records))
+                 (first-round (car rounds))
+                 (second-round (cadr rounds))
+                 (first-tool-batch
+                  (car (plist-get first-round :tool-batches)))
+                 (first-tool
+                  (car (plist-get first-tool-batch :items))))
+            (should (= (length rounds) 2))
+            (should (equal (plist-get first-round :kind) 'round))
+            (should (equal (plist-get first-round :round) 1))
+            (should (equal (plist-get first-round :status) 'done))
+            (should (equal (plist-get first-round :started-at) 0))
+            (should (equal (plist-get first-round :ended-at) 63))
+            (should (equal (plist-get (car (plist-get first-round :reasoning))
+                                      :content)
+                           "planning"))
+            (should (equal (plist-get first-tool :id) "call-1"))
+            (should (string-match-p "read" (plist-get first-tool :call)))
+            (should (string-match-p "contents" (plist-get first-tool :output)))
+            (should (equal (plist-get second-round :round) 2))
+            (should (null (plist-get second-round :tool-batches)))
+            (plist-put record :intermittent-entries nil)
+            (plist-put record :ended-at 205)
+            (plist-put record :final-rendered t)
+            (should (equal (e-chat--activity-summary-text record)
+                           "Turn took 3min 25sec, 1 tool call."))
+            (should (string-match-p
+                     "Thought for 1min 3sec"
+                     (e-chat--activity-expanded-text record)))
+            (should (= (length (e-chat--activity-tool-items record)) 1))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-replayed-provider-activity-restores-summary ()
   "Replayed provider boundary events restore settled summary plus expansion."
   (let* ((store (e-session-store-create))
@@ -1490,7 +1581,13 @@
             (let ((content (buffer-string)))
               (should (string-match-p "Thought for [0-9]+min [0-9]+sec"
                                       content))
-              (should (string-match-p "1 tool call" content)))))
+              (should (string-match-p "1 tool call" content)))
+            (let* ((record (e-chat--existing-turn-record "turn-1"))
+                   (rounds (plist-get record :activity-records))
+                   (tool-batch (car (plist-get (car rounds) :tool-batches))))
+              (should (= (length rounds) 1))
+              (should (equal (plist-get (car rounds) :status) 'done))
+              (should (= (length (plist-get tool-batch :items)) 1)))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 

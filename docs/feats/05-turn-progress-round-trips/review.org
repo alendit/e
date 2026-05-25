@@ -175,6 +175,11 @@ Recommended follow-ups:
 
 1. Represent reasoning/tool batch entries with explicit round metadata instead
    of relying on intermittent-entry order.
+   - Resolution: implemented by
+     =improvement-01-explicit-round-records.org=.  =e-chat= now maintains
+     semantic =:activity-records= round records with reasoning and tool-batch
+     children, and summary/tool detail derivation reads those records when
+     present.
 2. Render expanded summary history as child blocks if separate navigation/actions
    remain desired.
 3. Add line-specific copy/open behavior for expanded thought and reasoning

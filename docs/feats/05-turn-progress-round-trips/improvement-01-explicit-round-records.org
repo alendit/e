@@ -3,7 +3,25 @@
 
 * Status
 
-Planned follow-up from =review.org=.
+Done.
+
+Implemented as the first review follow-up for feature 05.  The chat
+presentation now maintains semantic =:activity-records= on turn records and
+uses those records for progress summary, expansion, and tool detail derivation.
+
+Verification:
+
+#+begin_src shell
+eldev test -f test/e-chat-test.el e-chat-test-progress-activity-records-track-round-ownership e-chat-test-replayed-provider-activity-restores-summary e-chat-test-final-turn-collapses-progress-to-summary e-chat-test-provider-round-trip-renders-thinking-and-thought
+#+end_src
+
+Result: 4 tests run; 4 results as expected; 0 unexpected.
+
+#+begin_src shell
+eldev test -f test/e-chat-test.el
+#+end_src
+
+Result: 121 tests run; 120 results as expected; 0 unexpected; 1 skipped.
 
 * Problem
 
