@@ -74,18 +74,27 @@ In either direction, add a regression test that simulates typing at the bottom
 prompt while a progress timer redraw happens, and assert that the chosen
 behavior is stable.
 
+* Correction
+
+The conservative behavior was the wrong product choice.  Running turns should
+keep a real editable follow-up composer, and redraws must preserve its draft
+text and inline context-reference properties.
+
 * Fix evidence
 
-- Chose the conservative behavior: running turns do not expose an editable
-  follow-up composer until there is an owned follow-up queue.
-- Added =e-chat-test-running-pending-chrome-rejects-typing=.  It failed before
-  the fix because pending bottom chrome accepted no-op pre-command handling and
-  ordinary typing could be inserted outside an owned composer region.
-- Changed running-turn pending chrome to use a distinct pending glyph with
-  =e-chat-pending= metadata instead of the editable composer glyph.
-- Changed =e-chat--pre-command= to reject composer edit commands while pending
-  chrome is visible and no real composer is active.
-- Verified =rtk eldev test -f test/e-chat-test.el=.
-- Reloaded the running Emacs with =e-dev-reload= and verified a temporary live
-  running-turn buffer shows pending chrome, has no active composer, and reports
-  =Turn is running; composer is unavailable until it finishes= for typing.
+- Added =e-chat-test-progress-rerender-keeps-editable-composer-draft=.  It
+  failed before the correction because =turn-started= replaced the active
+  composer with pending chrome.
+- Added =e-chat-test-progress-rerender-preserves-context-reference=.  It failed
+  before the correction because progress redraw removed the composer owner,
+  which would also drop inline reference properties if the draft was recreated
+  from plain text.
+- Added =e-chat-test-submit-keeps-follow-up-composer-editable=.  It failed
+  before the correction because =e-chat-submit= deleted the composer and
+  inserted pending chrome.
+- Changed running status redraws to capture the composer content with text
+  properties and restore an editable composer after repainting activity or
+  progress status.
+- Removed the pending bottom chrome path from the running-turn composer flow.
+- Verified the focused regression tests:
+  =rtk eldev test -f test/e-chat-test.el e-chat-test-progress-rerender-keeps-editable-composer-draft e-chat-test-progress-rerender-preserves-context-reference e-chat-test-submit-keeps-follow-up-composer-editable=.

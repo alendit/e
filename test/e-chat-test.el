@@ -389,7 +389,7 @@
         (kill-buffer second-buffer)))))
 
 (ert-deftest e-chat-test-submit-immediately-clears-composer-and-keeps-separator ()
-  "Submitting shows the user turn and keeps bottom separator chrome visible."
+  "Submitting shows the user turn and keeps an empty follow-up composer."
   (let ((buffer (e-chat-test--buffer
                  '((:type assistant-message :content "later")
                    (:type done :reason stop))
@@ -410,7 +410,8 @@
                          content)))
           (should (string-match-p (regexp-quote e-chat--composer-separator)
                                   (buffer-string)))
-          (should-not (e-chat--composer-active-p)))
+          (should (e-chat--composer-active-p))
+          (should (equal (e-chat--composer-text) "")))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -436,7 +437,8 @@
                    (buffer-string)))
           (should (string-match-p (regexp-quote e-chat--composer-separator)
                                   (buffer-string)))
-          (should-not (e-chat--composer-active-p)))
+          (should (e-chat--composer-active-p))
+          (should (equal (e-chat--composer-text) "")))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -1328,9 +1330,9 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest e-chat-test-progress-rerender-keeps-pending-glyph ()
-  "Progress redraws keep protected pending chrome visible."
-  (let ((buffer (e-chat-test--buffer nil "chat-progress-pending-glyph")))
+(ert-deftest e-chat-test-progress-rerender-keeps-editable-composer-draft ()
+  "Progress redraws keep the follow-up composer editable with draft text."
+  (let ((buffer (e-chat-test--buffer nil "chat-progress-editable-composer")))
     (unwind-protect
         (with-current-buffer buffer
           (e-chat--render-event
@@ -1338,23 +1340,18 @@
                           :session-id e-chat-session-id
                           :turn-id "turn-1"
                           :created-at 10))
-          (e-chat--advance-progress-indicator)
-          (should (string-match-p
-                   (concat (regexp-quote e-chat--composer-separator)
-                           "\n"
-                           (regexp-quote e-chat--pending-glyph)
-                           "\\'")
-                   (buffer-string)))
+          (should (e-chat--composer-active-p))
           (goto-char (point-max))
-          (should (get-text-property (1- (point)) 'read-only))
-          (should (get-text-property (1- (point)) 'e-chat-pending))
-          (should-not (e-chat--composer-active-p)))
+          (insert "follow-up draft")
+          (e-chat--advance-progress-indicator)
+          (should (e-chat--composer-active-p))
+          (should (equal (e-chat--composer-text) "follow-up draft")))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest e-chat-test-running-pending-chrome-rejects-typing ()
-  "Typing into pending running-turn chrome is rejected, not reset later."
-  (let ((buffer (e-chat-test--buffer nil "chat-progress-pending-input")))
+(ert-deftest e-chat-test-progress-rerender-preserves-context-reference ()
+  "Progress redraws keep inline context reference properties in the composer."
+  (let ((buffer (e-chat-test--buffer nil "chat-progress-context-reference")))
     (unwind-protect
         (with-current-buffer buffer
           (e-chat--render-event
@@ -1363,14 +1360,47 @@
                           :turn-id "turn-1"
                           :created-at 10))
           (goto-char (point-max))
-          (let ((this-command 'self-insert-command)
-                (last-command-event ?x))
-            (should-error (run-hooks 'pre-command-hook)
-                          :type 'user-error))
-          (should-not (string-suffix-p "x" (buffer-string)))
+          (insert "Review ")
+          (let ((reference
+                 (e-chat--insert-context-reference
+                  '(:id "ref-1"
+                    :uri "buffer://source"
+                    :label "source:2"
+                    :text "two"
+                    :start-line 2
+                    :end-line 2
+                    :point-line 2))))
+            (insert " before replying.")
+            (e-chat--advance-progress-indicator)
+            (should (e-chat--composer-active-p))
+            (let ((document (e-chat--composer-document)))
+              (should (equal (plist-get document :text)
+                             "Review <reference id=\"ref-1\" label=\"source:2\"> before replying."))
+              (should (equal (plist-get document :references)
+                             (list reference))))
+            (goto-char e-chat--composer-start-marker)
+            (search-forward "@[source:2]")
+            (should (equal (get-text-property (match-beginning 0)
+                                              'e-chat-context-reference)
+                           reference))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-submit-keeps-follow-up-composer-editable ()
+  "Submitting a prompt leaves an empty editable follow-up composer."
+  (let ((buffer (e-chat-test--buffer nil "chat-submit-follow-up-composer")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (goto-char (point-max))
+          (insert "Initial prompt")
+          (e-chat-submit)
+          (should (e-chat--composer-active-p))
+          (should (equal (e-chat--composer-text) ""))
+          (goto-char (point-max))
+          (insert "follow-up draft")
+          (should (equal (e-chat--composer-text) "follow-up draft"))
           (e-chat--advance-progress-indicator)
-          (should-not (string-suffix-p "x" (buffer-string)))
-          (should-not (e-chat--composer-active-p)))
+          (should (equal (e-chat--composer-text) "follow-up draft")))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -2160,7 +2190,7 @@
                       'activity))
           (call-interactively #'e-chat-response-navigation-activate)
           (should e-chat-tool-list-mode)
-          (should-not (e-chat--composer-active-p)))
+          (should (e-chat--composer-active-p)))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 

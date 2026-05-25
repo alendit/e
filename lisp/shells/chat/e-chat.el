@@ -433,9 +433,6 @@ The mode line uses this presentation-owned table for context usage display."
 (defconst e-chat--composer-glyph "❯ "
   "Glyph shown before editable e chat composer text.")
 
-(defconst e-chat--pending-glyph "…"
-  "Glyph shown while a running turn has no editable composer.")
-
 (defconst e-chat--composer-separator
   "────────────────────────────────────────────────────────────────"
   "Separator shown above the e chat composer.")
@@ -878,13 +875,25 @@ FACE is applied when non-nil.  PROPERTIES are added with text properties."
        (markerp e-chat--composer-start-marker)
        (marker-position e-chat--composer-start-marker)))
 
-(defun e-chat--pending-chrome-active-p ()
-  "Return non-nil when running-turn pending chrome is visible."
-  (and (not (e-chat--composer-active-p))
-       (markerp e-chat--transcript-end-marker)
-       (marker-position e-chat--transcript-end-marker)
-       (markerp e-chat--composer-spacer-marker)
-       (marker-position e-chat--composer-spacer-marker)))
+(defun e-chat--capture-composer-state ()
+  "Return the active composer content and point position with properties."
+  (when (e-chat--composer-active-p)
+    (let ((start (marker-position e-chat--composer-start-marker))
+          (end (point-max)))
+      (list :text (buffer-substring e-chat--composer-start-marker end)
+            :point-offset
+            (when (and (>= (point) start)
+                       (<= (point) end))
+              (- (point) start))))))
+
+(defun e-chat--restore-composer-state (state)
+  "Restore an editable composer from STATE.
+When STATE is nil, insert an empty composer."
+  (e-chat--insert-composer (plist-get state :text))
+  (when-let ((offset (plist-get state :point-offset)))
+    (goto-char (min (point-max)
+                    (+ (marker-position e-chat--composer-start-marker)
+                       offset)))))
 
 (defun e-chat--delete-composer ()
   "Delete the active composer from the current chat buffer.
@@ -982,31 +991,6 @@ Return non-nil when a composer was removed."
     (setq e-chat--composer-scroll-needed nil)
     (e-chat--show-composer)))
 
-(defun e-chat--insert-pending-separator ()
-  "Insert protected bottom prompt chrome without an editable composer."
-  (e-chat--delete-composer)
-  (let ((inhibit-read-only t))
-    (goto-char (point-max))
-    (unless (or (bobp) (bolp))
-      (insert "\n"))
-    (setq e-chat--composer-spacer-marker (point-marker))
-    (set-marker-insertion-type e-chat--composer-spacer-marker nil)
-    (let ((spacer-lines (e-chat--composer-spacer-lines)))
-      (when (> spacer-lines 0)
-        (e-chat--insert-protected
-         (make-string spacer-lines ?\n)
-         'e-chat-separator-face)))
-    (setq e-chat--transcript-end-marker (point-marker))
-    (set-marker-insertion-type e-chat--transcript-end-marker nil)
-    (e-chat--insert-protected
-     (concat e-chat--composer-separator "\n")
-     'e-chat-separator-face)
-    (e-chat--insert-protected
-     e-chat--pending-glyph
-     'e-chat-system-face
-     '(e-chat-pending t))
-    (goto-char (point-max))))
-
 (defun e-chat--ensure-composer ()
   "Ensure the current chat buffer has an active composer."
   (unless (e-chat--composer-active-p)
@@ -1055,13 +1039,7 @@ Return non-nil when a composer was removed."
          (not e-chat-tool-list-mode)
          (not (e-chat--point-in-composer-p))
          (e-chat--composer-edit-command-p this-command))
-    (e-chat--show-composer))
-   ((and (e-chat--pending-chrome-active-p)
-         (not e-chat-response-navigation-mode)
-         (not e-chat-block-view-mode)
-         (not e-chat-tool-list-mode)
-         (e-chat--composer-edit-command-p this-command))
-    (user-error "Turn is running; composer is unavailable until it finishes"))))
+    (e-chat--show-composer))))
 
 (defun e-chat--post-command ()
   "Maintain composer editing invariants after interactive commands."
@@ -1865,7 +1843,8 @@ When RECORD is nil, clear only buffer-local status markers."
                     (not (plist-get record :final-rendered))
                     (e-chat--transient-text record)))
          (navigation-state
-          (e-chat--capture-running-status-navigation-state)))
+          (e-chat--capture-running-status-navigation-state))
+         (composer-state (e-chat--capture-composer-state)))
     (e-chat--delete-running-status record)
     (e-chat--delete-composer)
     (if (or has-progress text)
@@ -1921,10 +1900,8 @@ When RECORD is nil, clear only buffer-local status markers."
                     (copy-marker status-start nil))
               (setq e-chat--running-status-end-marker
                     (copy-marker (point) nil))))
-          (if has-progress
-              (e-chat--insert-pending-separator)
-            (e-chat--insert-composer)))
-      (e-chat--insert-composer))
+          (e-chat--restore-composer-state composer-state))
+      (e-chat--restore-composer-state composer-state))
     (e-chat--restore-running-status-navigation-state navigation-state)))
 
 (defun e-chat--render-turn-transient (turn-id record)
@@ -2724,7 +2701,7 @@ non-nil, is used by focused block activation."
     (e-chat--delete-tool-list block)
     (let* ((end-marker (plist-get block :end-marker))
            (end (and (markerp end-marker) (marker-position end-marker)))
-           (had-active-composer (e-chat--composer-active-p))
+           (composer-state (e-chat--capture-composer-state))
            (had-bottom-chrome (e-chat--delete-composer)))
       (unless end
         (user-error "Focused activity block has no insertion point"))
@@ -2748,9 +2725,7 @@ non-nil, is used by focused block activation."
           (plist-put block :tool-list-end-marker (copy-marker (point) nil))))
       (when had-bottom-chrome
         (goto-char (point-max))
-        (if had-active-composer
-            (e-chat--insert-composer)
-          (e-chat--insert-pending-separator))))
+        (e-chat--restore-composer-state composer-state)))
     (let ((block-id (plist-get block :id)))
       (e-chat-response-navigation-mode -1)
       (setq e-chat--focused-block-id block-id)
@@ -3680,7 +3655,7 @@ When DISPLAY is non-nil, show the target chat buffer."
                            :references references))
   (e-chat--delete-composer)
   (e-chat--set-status "queued")
-  (e-chat--insert-pending-separator)
+  (e-chat--insert-composer)
   (redisplay t))
 
 ;;;###autoload
