@@ -2406,6 +2406,10 @@ When RECORD is nil, clear only buffer-local status markers."
          (navigation-state
           (e-chat--capture-running-status-navigation-state))
          (composer-state (e-chat--capture-composer-state)))
+    (when (and turn-id
+               (not final-rendered)
+               (e-chat--active-activity-p record))
+      (e-chat--ensure-progress-timer turn-id))
     (e-chat--delete-running-status record)
     (e-chat--delete-composer)
     (if (or has-progress text)
@@ -2478,11 +2482,39 @@ When RECORD is nil, clear only buffer-local status markers."
         (mod e-chat--progress-frame
              (length e-chat--progress-glyphs))))
 
+(defun e-chat--active-activity-p (record)
+  "Return non-nil when RECORD has an active provider activity round."
+  (and record (e-chat--active-round-record record)))
+
 (defun e-chat--cancel-progress-timer ()
   "Cancel the active assistant progress timer."
   (when (timerp e-chat--progress-timer)
     (cancel-timer e-chat--progress-timer))
   (setq e-chat--progress-timer nil))
+
+(defun e-chat--progress-timer-active-p (turn-id)
+  "Return non-nil when TURN-ID has a live progress timer."
+  (and (equal e-chat--progress-turn-id turn-id)
+       (timerp e-chat--progress-timer)))
+
+(defun e-chat--ensure-progress-timer (turn-id)
+  "Ensure TURN-ID has a live progress timer without rendering immediately."
+  (unless (e-chat--progress-timer-active-p turn-id)
+    (let ((same-turn (equal e-chat--progress-turn-id turn-id)))
+      (e-chat--cancel-progress-timer)
+      (setq e-chat--progress-turn-id turn-id)
+      (unless same-turn
+        (setq e-chat--progress-frame 0))
+      (setq e-chat--progress-next-tick-time
+            (+ (float-time) e-chat-progress-interval))
+      (let ((buffer (current-buffer)))
+        (setq e-chat--progress-timer
+              (run-at-time e-chat-progress-interval
+                           e-chat-progress-interval
+                           (lambda ()
+                             (when (buffer-live-p buffer)
+                               (with-current-buffer buffer
+                                 (e-chat--advance-progress-indicator))))))))))
 
 (defun e-chat--delete-progress-indicator ()
   "Delete the active assistant progress indicator."
@@ -2516,20 +2548,9 @@ When RECORD is nil, clear only buffer-local status markers."
 
 (defun e-chat--start-progress-indicator (turn-id)
   "Start the active assistant progress indicator for TURN-ID."
-  (e-chat--cancel-progress-timer)
-  (setq e-chat--progress-turn-id turn-id)
   (setq e-chat--progress-frame 0)
-  (setq e-chat--progress-next-tick-time
-        (+ (float-time) e-chat-progress-interval))
-  (e-chat--render-progress-indicator turn-id)
-  (let ((buffer (current-buffer)))
-    (setq e-chat--progress-timer
-          (run-at-time e-chat-progress-interval
-                       e-chat-progress-interval
-                       (lambda ()
-                         (when (buffer-live-p buffer)
-                           (with-current-buffer buffer
-                             (e-chat--advance-progress-indicator))))))))
+  (e-chat--ensure-progress-timer turn-id)
+  (e-chat--render-progress-indicator turn-id))
 
 (defun e-chat--stop-progress-indicator (&optional turn-id)
   "Stop and delete the active assistant progress indicator.

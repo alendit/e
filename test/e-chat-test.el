@@ -1460,6 +1460,46 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-active-activity-restores-missing-progress-timer ()
+  "Rendering active activity restarts a missing progress timer."
+  (let ((buffer (e-chat-test--buffer nil "chat-active-thinking-timer-restore")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (cl-letf (((symbol-function 'float-time)
+                     (lambda (&optional _time) 8.0)))
+            (e-chat--render-event
+             (e-events-make :type 'turn-started
+                            :session-id e-chat-session-id
+                            :turn-id "turn-1"
+                            :created-at 0))
+            (e-chat--render-event
+             (e-events-make :type 'provider-request-started
+                            :session-id e-chat-session-id
+                            :turn-id "turn-1"
+                            :created-at 0
+                            :payload '(:status started))))
+          (e-chat--cancel-progress-timer)
+          (setq e-chat--progress-turn-id nil)
+          (setq e-chat--progress-frame 0)
+          (setq e-chat--progress-next-tick-time nil)
+          (let ((record (e-chat--existing-turn-record "turn-1")))
+            (should (e-chat--active-activity-p record))
+            (cl-letf (((symbol-function 'float-time)
+                       (lambda (&optional _time) 15.0)))
+              (e-chat--render-turn-transient "turn-1" record))
+            (should (equal e-chat--progress-turn-id "turn-1"))
+            (should (timerp e-chat--progress-timer))
+            (cl-letf (((symbol-function 'float-time)
+                       (lambda (&optional _time) 16.0)))
+              (e-chat--advance-progress-indicator))
+            (let ((content (buffer-string)))
+              (should (string-match-p "⠙ Thinking for 0min 16sec" content))
+              (should (= (e-chat-test--count-occurrences
+                          "Thinking for" content)
+                         1)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-tool-count-renders-on-thinking-row ()
   "A round's tool count renders on the same line as its thought row."
   (let ((buffer (e-chat-test--buffer nil "chat-tool-count-thinking-row")))
