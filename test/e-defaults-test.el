@@ -229,6 +229,57 @@
                                  (e-harness-active-layers harness))
                          '(chat-session e web))))))))
 
+(ert-deftest e-defaults-test-startup-refreshes-default-context-strategy ()
+  "Startup refreshes cached default transcript-stack strategies after reload."
+  (e-defaults-test--with-empty-harness-registry
+    (let* ((store (e-session-store-create))
+           (stale-strategy
+            (e-context-create
+             :name 'transcript-stack
+             :build (cl-function
+                     (lambda (&key sessions session-id options)
+                       (list :strategy 'transcript-stack
+                             :messages (e-session-messages sessions session-id)
+                             :options options)))))
+           (harness (e-harness-create
+                     :sessions store
+                     :context-strategy stale-strategy)))
+      (e-session-create store :id "session-1")
+      (e-session-append-message
+       store "session-1" '(:id "old" :role user :content "old transcript"))
+      (e-session-append-message
+       store "session-1" '(:id "kept" :role user :content "kept suffix"))
+      (e-session-append-compaction
+       store "session-1" "summary"
+       :first-kept-entry-id "kept")
+      (e-harness-registry-register :chat-default harness)
+      (let ((e-default-chat-layer-ids nil))
+        (e-default-harnesses-startup))
+      (should (eq (e-harness-registry-get :chat-default) harness))
+      (should-not (eq (e-harness-context-strategy harness) stale-strategy))
+      (let ((context (e-harness-context harness "session-1")))
+        (should (equal (mapcar (lambda (message)
+                                 (plist-get message :content))
+                               (plist-get context :messages))
+                       '("summary" "kept suffix")))))))
+
+(ert-deftest e-defaults-test-startup-preserves-custom-context-strategy ()
+  "Startup does not replace custom cached context strategies."
+  (e-defaults-test--with-empty-harness-registry
+    (let* ((custom-strategy
+            (e-context-create
+             :name 'custom-context
+             :build (cl-function
+                     (lambda (&key sessions session-id options)
+                       (ignore sessions session-id options)
+                       '(:strategy custom-context
+                         :messages ((:role user :content "custom")))))))
+           (harness (e-harness-create :context-strategy custom-strategy)))
+      (e-harness-registry-register :chat-default harness)
+      (let ((e-default-chat-layer-ids nil))
+        (e-default-harnesses-startup))
+      (should (eq (e-harness-context-strategy harness) custom-strategy)))))
+
 (provide 'e-defaults-test)
 
 ;;; e-defaults-test.el ends here

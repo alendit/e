@@ -1,0 +1,162 @@
+#+title: Investigation: Compaction Ignored by Stale Context Strategy After Reload
+#+startup: overview
+
+* Live Session Investigated
+
+Buffer: =*e-chat:05 review*=
+Session id: =20260525T094705-fd3f62222d64=
+
+Inspection was performed in the running Emacs with =emacsclient --eval= / live
+Elisp against the active chat buffer.
+
+* Findings
+
+** Valid compaction exists
+
+The active session has one compaction record and it is valid on the current path:
+
+#+begin_example
+:compaction-count 1
+:latest-valid-compaction
+  (:id "01KSFA84E1RVMSF0H9TBM78AWH"
+   :first-kept-entry-id "01KSFA017Q7T0CHM5EH83YAJNT"
+   :tokens-before 47536
+   :tokens-kept 408
+   :created-at "2026-05-25T10:17:51Z")
+#+end_example
+
+The compaction lifecycle events show successful preparation and finish:
+
+#+begin_example
+compaction-started          2026-05-25T10:17:44Z
+compaction-prepared         first-kept-entry-id 01KSFA017Q7T0CHM5EH83YAJNT
+compaction-summary-started  2026-05-25T10:17:44Z
+compaction-finished         compaction-id 01KSFA84E1RVMSF0H9TBM78AWH
+#+end_example
+
+** Follow-up provider requests happened after compaction
+
+There are token usage events after the compaction finished.  The latest inspected
+ones include high input token counts:
+
+#+begin_example
+2026-05-25T10:23:45Z input-tokens 182489
+2026-05-25T10:24:21Z input-tokens 182610
+2026-05-25T10:24:36Z input-tokens 184356
+2026-05-25T10:39:52Z input-tokens 184724
+2026-05-25T10:40:12Z input-tokens 185320
+#+end_example
+
+This confirms the issue persisted across post-compaction provider round trips.
+
+** Live harness context does not include compaction summary
+
+=e-harness-context= for the live harness/session had:
+
+#+begin_example
+:context-message-count 248+
+:context-estimate ~204k-213k
+:first-message-role system
+:has-compaction-summary-role nil
+:summary-present-index nil
+#+end_example
+
+The first messages are the normal preprompt/system context, not the compaction
+summary.  The context roles contained many raw =tool-call= and =tool= entries
+from before the compaction boundary.  Large post-inspection entries included
+multiple huge tool outputs from exact edit/read/diff calls, explaining the high
+estimate when the full transcript is used.
+
+** Fresh strategy for same session uses compaction correctly
+
+Comparing the live harness's stored context strategy to a fresh
+=e-context-transcript-stack-create= strategy for the same store/session showed:
+
+#+begin_example
+:stored-strategy-summary-index nil
+:fresh-strategy-summary-index 0
+:default-count 280
+:fresh-count 79
+:default-estimate 213507
+:fresh-estimate 29493
+:fresh-first-roles (system user tool-call tool tool-call)
+#+end_example
+
+The fresh strategy places the compaction summary at index 0 and reduces the local
+estimate from roughly 213k to roughly 29k.
+
+This strongly indicates the live harness is holding an old function closure for
+=transcript-stack= that still calls the pre-compaction implementation:
+
+#+begin_example
+(e-context--backend-messages (e-session-messages sessions session-id))
+#+end_example
+
+rather than the current implementation that calls =e-context--compacted-messages=.
+
+* Likely Cause
+
+=e-dev-reload= reloads source files, but existing harness instances retain their
+already-created =e-context= struct and its =:build= function closure.  Reloading
+=e-context.el= updates the function definitions, but it does not replace the
+context strategy object stored inside already-live harnesses.
+
+Because the live harness was created before the compaction-aware transcript-stack
+change, it continued to build full transcript context even after compaction.
+
+* Relationship To Other Bug
+
+This is distinct from, but related to,
+=docs/bugs/compaction-context-usage-stays-high/=.  That report covers the broader
+UX symptom and stale display/token-usage concern.  This report captures a
+specific live root cause: stale context strategy objects in existing harnesses
+after reload.
+
+* Suggested Next Steps
+
+- Add a reload/update path that refreshes default context strategy objects on
+  existing harnesses when the package is reloaded.
+- Consider adding =e-harness-refresh-context-strategy= or including context
+  strategy replacement in the existing live reload/buffer refresh path.
+- Add a regression test that simulates an old transcript-stack strategy closure,
+  reload/refreshes the harness, appends a compaction, and verifies
+  =e-harness-context= uses summary + suffix.
+- Decide whether active harnesses with explicitly custom context strategies
+  should be preserved or refreshed only if they match the default strategy name.
+
+* Fix Applied
+
+Implemented in the follow-up bug-fix slice:
+
+- Added =e-context-name= and =e-context-transcript-stack-p= so callers can
+  identify default transcript-stack strategies by semantic name.
+- Added =e-harness-refresh-default-context-strategy=, which replaces cached
+  default =transcript-stack= strategy objects with a fresh strategy while
+  preserving custom context strategies.
+- Updated =e-default-chat-sync-harness-layers= so default harness startup/reload
+  reconciliation refreshes cached default context strategies as well as layer
+  configuration.
+- Added regression coverage proving startup replaces a stale default
+  transcript-stack closure and that the refreshed harness context uses compaction
+  summary + suffix.
+- Added companion coverage proving custom context strategies are preserved.
+
+Verification:
+
+#+begin_src shell
+eldev test -f test/e-defaults-test.el -f test/e-chat-test.el e-defaults-test-startup-refreshes-default-context-strategy e-defaults-test-startup-preserves-custom-context-strategy e-chat-test-token-usage-before-compaction-uses-context-estimate e-chat-test-mode-line-status-prefers-provider-token-usage
+#+end_src
+
+Result: 4 tests run; 4 results as expected; 0 unexpected.
+
+#+begin_src shell
+eldev test -f test/e-chat-test.el
+#+end_src
+
+Result: 120 tests run; 119 results as expected; 0 unexpected; 1 skipped.
+
+#+begin_src shell
+eldev test -f test/e-defaults-test.el -f test/e-dev-test.el -f test/e-chat-test.el -f test/e-harness-test.el -f test/e-context-test.el
+#+end_src
+
+Result: 185 tests run; 184 results as expected; 0 unexpected; 1 skipped.

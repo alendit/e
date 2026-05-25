@@ -1,0 +1,35 @@
+#+title: Bug Report: Compaction Ignored by Stale Context Strategy After Reload
+#+startup: overview
+
+* Report
+
+After context compaction was triggered in the active =*e-chat:05 review*= session,
+the displayed context usage remained high.  The user then sent a follow-up
+message and received a response, but the context usage still remained high.
+
+A live inspection of the affected session shows the session has a valid durable
+compaction record, but the harness attached to the live chat buffer is still
+using an old =transcript-stack= context strategy closure that ignores compaction
+records.  A freshly-created =e-context-transcript-stack-create= strategy for the
+same session does use the compaction summary and produces a much smaller context
+estimate.
+
+Expected behavior:
+
+- Existing harnesses/chat buffers should use the current context construction
+  logic after live reloads.
+- After compaction, follow-up provider requests should use summary + kept suffix,
+  not the full raw transcript.
+
+Observed behavior in the affected live session:
+
+- Valid compaction exists.
+- Live harness context still contains the full transcript and no compaction
+  summary.
+- Fresh transcript-stack strategy for the same session uses compaction and has a
+  much lower local estimate.
+
+* Scope
+
+Do not fix in this bug report.  This report captures the live finding and likely
+cause.

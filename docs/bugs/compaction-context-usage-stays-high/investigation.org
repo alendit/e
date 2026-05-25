@@ -1,0 +1,169 @@
+#+title: Investigation: Compaction Context Usage Stays High
+#+startup: overview
+
+* Summary
+
+Initial source inspection shows two plausible issues:
+
+1. The chat mode-line usage display prefers the latest durable provider
+   =token-usage= event over the local compacted-context estimate.
+2. Since the user reports that usage stayed high even after a post-compaction
+   request/response, either the provider reported a high =input-tokens= value for
+   that post-compaction request, or the follow-up request did not actually use a
+   valid compaction boundary when building context.
+
+No fix was made as part of this report.
+
+* Source Inspection
+
+** Mode-line usage source
+
+In =lisp/shells/chat/e-chat.el=, =e-chat--mode-line-status-text= computes usage
+roughly as:
+
+#+begin_src elisp
+(let* ((context (e-harness-context e-chat-harness e-chat-session-id))
+       ...
+       (usage-tokens
+        (e-chat--token-usage-input-tokens
+         (e-chat--latest-token-usage)))
+       (estimated-tokens
+        (and context
+             (ignore-errors
+               (e-chat--context-token-estimate context))))
+       (used-tokens (or usage-tokens estimated-tokens)))
+  ...)
+#+end_src
+
+=e-chat--latest-token-usage= scans durable activity events and returns the most
+recent =token-usage= payload.  Therefore any provider-reported input token count
+wins over the local estimate.
+
+This explains the immediate post-compaction behavior if no subsequent provider
+request has emitted a new =token-usage=: the mode line can keep showing the last
+pre-compaction provider input token count.
+
+It does not fully explain the user's follow-up report by itself, because a
+subsequent response should usually append a newer =token-usage= event if the
+backend reports usage.
+
+** Compacted context construction
+
+In =lisp/core/e-context.el=, =e-context--compacted-messages= uses
+=e-session-latest-valid-compaction= when available.  It sends one
+=compaction-summary= message plus the current-path suffix from the compaction's
+=:first-kept-entry-id=:
+
+#+begin_src elisp
+(if-let ((compaction (e-session-latest-valid-compaction sessions session-id)))
+    (let* ((summary ...)
+           (suffix (seq-filter ...
+                    (e-session-entries-from
+                     sessions session-id
+                     (plist-get compaction :first-kept-entry-id)))))
+      (e-context--backend-messages
+       (cons summary (mapcar #'e-context--message-entry-message suffix))))
+  ...)
+#+end_src
+
+If a valid compaction exists, future context should be compacted.  The raw
+session transcript remains append-only, but backend context should be summary +
+kept suffix.
+
+** Compaction preparation and boundary validity
+
+In =lisp/core/e-compaction.el=, =e-compaction-prepare= selects a safe user-message
+boundary while keeping approximately =e-compaction-keep-recent-tokens= tokens
+(default roughly 20k).  It then records =:first-kept-entry-id= in the compaction
+record.
+
+In =lisp/core/e-session.el=, =e-session-latest-valid-compaction= only returns a
+compaction if its =:first-kept-entry-id= remains on the current path.
+
+Potential failure modes:
+
+- The compaction record exists but is not considered valid for the current path.
+- The selected kept suffix is still large enough that usage remains high.
+- A subsequent provider request does not use the transcript-stack context that
+  honors compactions.
+- The backend token usage includes content not counted by the local context
+  estimate, such as a large tool/schema/system prefix, and remains high even
+  after transcript compaction.
+- The mode line may still be showing an older =token-usage= if no new usage event
+  was emitted for the post-compaction response.
+
+* Live Inspection
+
+Not yet performed for the user's specific session in this investigation.  Useful
+live checks in the affected chat buffer/session would be:
+
+1. Latest compaction record:
+
+#+begin_src elisp
+(e-session-latest-valid-compaction
+ (e-harness-sessions e-chat-harness)
+ e-chat-session-id)
+#+end_src
+
+2. Current compacted context message count and approximate local estimate:
+
+#+begin_src elisp
+(let ((context (e-harness-context e-chat-harness e-chat-session-id)))
+  (list :message-count (length (plist-get context :messages))
+        :estimate (e-chat--context-token-estimate context)
+        :first-message-role (plist-get (car (plist-get context :messages)) :role)))
+#+end_src
+
+3. Latest token usage events after compaction:
+
+#+begin_src elisp
+(seq-filter
+ (lambda (event) (eq (plist-get event :event-type) 'token-usage))
+ (e-harness-session-activity-events e-chat-harness e-chat-session-id))
+#+end_src
+
+4. Compaction lifecycle events and timestamps relative to token usage events.
+
+* Current Conclusion
+
+This is a real UX/behavior bug.  The immediate stale-display case is explained by
+mode-line preference for provider token usage over compacted-context estimates.
+The persistence after a subsequent response suggests a second condition must be
+checked: either the follow-up request still had high provider input tokens, or
+compaction was not actually applied to the context used by that request.
+
+* Fix Applied
+
+Implemented in the follow-up bug-fix slice:
+
+- =e-chat--mode-line-status-text= now compares the latest provider
+  =token-usage= event timestamp with the latest valid compaction timestamp.
+- If the usage event predates the latest valid compaction, the mode line ignores
+  that stale provider usage and falls back to the current compacted-context
+  estimate.
+- Provider usage still wins when there is no newer compaction, preserving the
+  existing behavior for normal completed provider round trips.
+- The related stale-context-strategy bug is fixed separately in
+  =docs/bugs/compaction-context-strategy-stale-after-reload/= so follow-up
+  requests made by reloaded default harnesses use compaction-aware context
+  construction.
+
+Verification:
+
+#+begin_src shell
+eldev test -f test/e-defaults-test.el -f test/e-chat-test.el e-defaults-test-startup-refreshes-default-context-strategy e-defaults-test-startup-preserves-custom-context-strategy e-chat-test-token-usage-before-compaction-uses-context-estimate e-chat-test-mode-line-status-prefers-provider-token-usage
+#+end_src
+
+Result: 4 tests run; 4 results as expected; 0 unexpected.
+
+#+begin_src shell
+eldev test -f test/e-chat-test.el
+#+end_src
+
+Result: 120 tests run; 119 results as expected; 0 unexpected; 1 skipped.
+
+#+begin_src shell
+eldev test -f test/e-defaults-test.el -f test/e-dev-test.el -f test/e-chat-test.el -f test/e-harness-test.el -f test/e-context-test.el
+#+end_src
+
+Result: 185 tests run; 184 results as expected; 0 unexpected; 1 skipped.

@@ -62,6 +62,13 @@
   "Return a new durable turn id."
   (e-session-generate-ulid))
 
+(defun e-harness-refresh-default-context-strategy (harness)
+  "Refresh HARNESS default context strategy, preserving custom strategies."
+  (when (e-context-transcript-stack-p (e-harness-context-strategy harness))
+    (setf (e-harness-context-strategy harness)
+          (e-context-transcript-stack-create)))
+  harness)
+
 (defun e-harness--normalize-project-root (root)
   "Return normalized project ROOT, or nil."
   (when (and (stringp root)

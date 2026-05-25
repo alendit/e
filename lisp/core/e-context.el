@@ -30,6 +30,14 @@
   (priority 200)
   build)
 
+(defun e-context-name (strategy)
+  "Return STRATEGY name."
+  (e-context--name strategy))
+
+(defun e-context-transcript-stack-p (strategy)
+  "Return non-nil when STRATEGY is the default transcript-stack strategy."
+  (eq (e-context-name strategy) 'transcript-stack))
+
 (defun e-context-provider-priority (provider)
   "Return PROVIDER priority, defaulting stale providers to 200."
   (if (>= (length provider) 4)

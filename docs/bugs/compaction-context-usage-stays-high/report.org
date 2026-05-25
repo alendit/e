@@ -1,0 +1,31 @@
+#+title: Bug Report: Compaction Context Usage Stays High
+#+startup: overview
+
+* Report
+
+After triggering context compaction for an e chat session, the displayed session
+context usage did not reset or drop.
+
+The user then sent another message and received a response in the same session,
+but the context usage still remained high.  This means the issue is not only a
+stale mode-line value immediately after compaction; the high usage persisted
+after a subsequent provider round trip.
+
+Expected behavior:
+
+- Once compaction succeeds, the chat/session context usage display should reflect
+  the compacted next-request context, or otherwise clearly indicate that it is
+  showing a previous provider measurement.
+- After a subsequent provider request following compaction, the displayed usage
+  should reflect the compacted context actually sent to the provider.
+
+Observed behavior:
+
+- Context usage stayed high after compaction.
+- Context usage still stayed high after sending a follow-up message and getting
+  a response.
+
+* Scope
+
+Do not fix in this bug report.  Investigate and capture likely causes and next
+steps only.

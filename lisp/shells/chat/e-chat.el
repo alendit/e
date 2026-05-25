@@ -3105,17 +3105,37 @@ When OMIT-COMPOSER is non-nil, leave the buffer as transcript-only."
     (when (and (integerp tokens) (>= tokens 0))
       tokens)))
 
-(defun e-chat--latest-token-usage ()
-  "Return latest durable provider token usage for this chat buffer."
+(defun e-chat--latest-token-usage-event ()
+  "Return latest durable provider token usage event for this chat buffer."
   (when (and e-chat-harness e-chat-session-id)
-    (let (usage)
+    (let (usage-event)
       (dolist (event (ignore-errors
                        (e-harness-session-activity-events
                         e-chat-harness
                         e-chat-session-id))
-                     usage)
+                     usage-event)
         (when (eq (plist-get event :event-type) 'token-usage)
-          (setq usage (plist-get event :payload)))))))
+          (setq usage-event event))))))
+
+(defun e-chat--latest-token-usage ()
+  "Return latest durable provider token usage for this chat buffer."
+  (plist-get (e-chat--latest-token-usage-event) :payload))
+
+(defun e-chat--latest-valid-compaction ()
+  "Return latest valid compaction for this chat buffer."
+  (when (and e-chat-harness e-chat-session-id)
+    (ignore-errors
+      (e-session-latest-valid-compaction
+       (e-harness-sessions e-chat-harness)
+       e-chat-session-id))))
+
+(defun e-chat--token-usage-before-compaction-p (usage-event compaction)
+  "Return non-nil when USAGE-EVENT predates COMPACTION."
+  (let ((usage-time (plist-get usage-event :created-at))
+        (compaction-time (plist-get compaction :created-at)))
+    (and (stringp usage-time)
+         (stringp compaction-time)
+         (string< usage-time compaction-time))))
 
 (defun e-chat--mode-line-status-text ()
   "Return the current mode-line text for this e chat buffer."
@@ -3129,9 +3149,14 @@ When OMIT-COMPOSER is non-nil, leave the buffer as transcript-only."
                              e-chat-session-id))))
              (model (plist-get options :model))
              (effort (plist-get options :reasoning-effort))
+             (usage-event (e-chat--latest-token-usage-event))
+             (latest-compaction (e-chat--latest-valid-compaction))
              (usage-tokens
-              (e-chat--token-usage-input-tokens
-               (e-chat--latest-token-usage)))
+              (unless (e-chat--token-usage-before-compaction-p
+                       usage-event
+                       latest-compaction)
+                (e-chat--token-usage-input-tokens
+                 (plist-get usage-event :payload))))
              (estimated-tokens
               (and context
                    (ignore-errors

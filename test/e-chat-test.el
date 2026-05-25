@@ -1573,7 +1573,11 @@
 
 (ert-deftest e-chat-test-submit-keeps-follow-up-composer-editable ()
   "Submitting a prompt leaves an empty editable follow-up composer."
-  (let ((buffer (e-chat-test--buffer nil "chat-submit-follow-up-composer")))
+  (let* ((backend (e-backend-fake-create :items nil :delay 1.0))
+         (harness (e-harness-create :backend backend))
+         (buffer (e-chat-open
+                  :harness harness
+                  :session-id "chat-submit-follow-up-composer")))
     (unwind-protect
         (with-current-buffer buffer
           (goto-char (point-max))
@@ -2983,6 +2987,60 @@
                          "e-chat gpt-5.5/high 78% (203k/258k tok)")))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-token-usage-before-compaction-uses-context-estimate ()
+  "After compaction, stale provider usage does not hide compacted context size."
+  (let* ((timestamps '("2026-05-25T10:00:00Z"
+                       "2026-05-25T10:00:01Z"
+                       "2026-05-25T10:00:02Z"
+                       "2026-05-25T10:00:03Z"
+                       "2026-05-25T10:00:04Z"))
+         (store (e-session-store-create))
+         (backend (e-backend-fake-create :items nil))
+         (harness (e-harness-create
+                   :backend backend
+                   :sessions store
+                   :default-options
+                   '(:model "gpt-5.5" :reasoning-effort "high")))
+         (e-chat-context-token-estimate-bytes-per-token 1.0))
+    (with-temp-buffer
+      (e-chat-mode)
+      (setq-local e-current-harness harness)
+      (setq-local e-chat-harness harness)
+      (setq-local e-chat-session-id "chat-compacted-usage")
+      (cl-letf (((symbol-function 'e-session--timestamp)
+                 (lambda (&optional _time)
+                   (prog1 (car timestamps)
+                     (setq timestamps (cdr timestamps))))))
+        (e-session-create store :id e-chat-session-id)
+        (e-session-append-message
+         store
+         e-chat-session-id
+         (list :id "old"
+               :role 'user
+               :content (make-string 1000 ?x)))
+        (e-session-append-message
+         store
+         e-chat-session-id
+         '(:id "kept" :role user :content "kept suffix"))
+        (e-session-append-activity-event
+         store
+         e-chat-session-id
+         "turn-1"
+         'token-usage
+         '(:input-tokens 202598
+           :cached-input-tokens 7552
+           :output-tokens 419
+           :reasoning-output-tokens 139
+           :total-tokens 203017))
+        (e-session-append-compaction
+         store
+         e-chat-session-id
+         "summary"
+         :first-kept-entry-id "kept"))
+      (e-chat--set-status "idle")
+      (should (string-match-p "~[0-9]+%" mode-name))
+      (should-not (string-match-p "203k/258k tok" mode-name)))))
 
 (ert-deftest e-chat-test-token-usage-events-update-mode-line-without-transcript ()
   "Token usage events update status without rendering system transcript blocks."

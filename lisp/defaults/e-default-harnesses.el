@@ -85,6 +85,7 @@ DIRECTORY is passed to config-aware layer factories."
 The internal `chat-session' layer is preserved.  Other active layers are
 recreated from registered stateless layer specs in the configured order.
 DIRECTORY is passed to config-aware layer factories."
+  (e-harness-refresh-default-context-strategy harness)
   (let ((chat-session (e-harness-active-layer harness 'chat-session))
         (change-function (e-harness-layer-change-function harness)))
     (unwind-protect
