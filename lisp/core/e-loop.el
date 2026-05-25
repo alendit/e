@@ -19,18 +19,9 @@
 (define-error 'e-loop-backend-error "Backend returned an error")
 (define-error 'e-loop-empty-output "Backend returned no assistant output")
 
-(defvar e-loop--message-counter 0
-  "Monotonic message id counter for loop-created messages.")
-
-(defun e-loop--next-message-id ()
-  "Return a new in-process message id."
-  (setq e-loop--message-counter (1+ e-loop--message-counter))
-  (format "msg-%d" e-loop--message-counter))
-
 (defun e-loop--assistant-message (content &optional metadata)
   "Return an assistant message with CONTENT and optional METADATA."
-  (list :id (e-loop--next-message-id)
-        :role 'assistant
+  (list :role 'assistant
         :content content
         :metadata metadata))
 
@@ -172,8 +163,7 @@ callback-driven."
                     (unless (or settled (cancelled))
                       (setq active-tool nil)
                       (let ((message
-                             (list :id (e-loop--next-message-id)
-                                   :role 'tool
+                             (list :role 'tool
                                    :content result
                                    :metadata nil)))
                         (setq turn-messages
@@ -201,8 +191,7 @@ callback-driven."
                                        (plist-get entry :tool-call))
                                     (plist-get entry :tool-call)))
                                  (tool-call-message
-                                  (list :id (e-loop--next-message-id)
-                                        :role 'tool-call
+                                  (list :role 'tool-call
                                         :content tool-call
                                         :metadata nil)))
                             (setq active-tool t)

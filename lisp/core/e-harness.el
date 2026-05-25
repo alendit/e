@@ -42,12 +42,6 @@
 (defvar e-harness--layer-change-functions (make-hash-table :test 'eq :weakness 'key)
   "Layer change callbacks keyed by harness.")
 
-(defvar e-harness--turn-counter 0
-  "Monotonic turn id counter.")
-
-(defvar e-harness--message-counter 0
-  "Monotonic harness message id counter.")
-
 (defvar-local e-current-harness nil
   "Harness currently owned by the active presentation buffer, when any.")
 
@@ -64,14 +58,8 @@
 (e-harness--clear-derived-accessor-metadata)
 
 (defun e-harness--next-turn-id ()
-  "Return a new in-process turn id."
-  (setq e-harness--turn-counter (1+ e-harness--turn-counter))
-  (format "turn-%d" e-harness--turn-counter))
-
-(defun e-harness--next-message-id ()
-  "Return a new in-process harness message id."
-  (setq e-harness--message-counter (1+ e-harness--message-counter))
-  (format "msg-user-%d" e-harness--message-counter))
+  "Return a new durable turn id."
+  (e-session-generate-ulid))
 
 (defun e-harness--normalize-project-root (root)
   "Return normalized project ROOT, or nil."
@@ -540,8 +528,7 @@ TURN-ID is passed to active capability context providers when present."
   "Append a cancellation tool result when ENTRY has an open tool call."
   (when-let ((tool-call (plist-get entry :open-tool-call)))
     (let* ((result (e-harness--cancelled-tool-result tool-call))
-           (message (list :id (e-harness--next-message-id)
-                          :role 'tool
+           (message (list :role 'tool
                           :content result
                           :metadata nil)))
       (e-harness--append-message harness session-id turn-id message)
@@ -599,8 +586,7 @@ provider or loop failure."
    harness
    session-id
    turn-id
-   (list :id (e-harness--next-message-id)
-         :role 'user
+   (list :role 'user
          :content prompt
          :metadata metadata)))
 

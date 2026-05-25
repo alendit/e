@@ -47,6 +47,39 @@
                                 :created-at)
                      "2026-05-21T10:00:00Z")))))
 
+(ert-deftest e-session-test-ulid-generation-is-ordered-and-opaque ()
+  "Generated durable entry ids are ULID strings ordered by creation."
+  (let ((ids nil))
+    (cl-letf (((symbol-function 'float-time)
+               (let ((times '(1770000000.001 1770000000.001 1770000000.002)))
+                 (lambda (&optional _time)
+                   (prog1 (car times)
+                     (setq times (or (cdr times) times)))))))
+      (setq ids (list (e-session-generate-ulid)
+                      (e-session-generate-ulid)
+                      (e-session-generate-ulid))))
+    (dolist (id ids)
+      (should (string-match-p "\\`[0-9A-HJKMNP-TV-Z]\\{26\\}\\'" id)))
+    (should (equal ids (sort (copy-sequence ids) #'string<)))))
+
+(ert-deftest e-session-test-append-message-assigns-entry-ids-and-parent-links ()
+  "Appending messages assigns durable ids and links to the previous head."
+  (let ((store (e-session-store-create)))
+    (e-session-create store :id "session-1")
+    (let* ((first (e-session-append-message
+                   store "session-1" '(:role user :content "hello")))
+           (second (e-session-append-message
+                    store "session-1" '(:role assistant :content "hi")))
+           (path (e-session-current-path store "session-1")))
+      (should (string-match-p "\\`[0-9A-HJKMNP-TV-Z]\\{26\\}\\'"
+                              (plist-get first :id)))
+      (should-not (plist-get first :parent-id))
+      (should (equal (plist-get second :parent-id)
+                     (plist-get first :id)))
+      (should (equal (mapcar (lambda (entry) (plist-get entry :id)) path)
+                     (list (plist-get first :id)
+                           (plist-get second :id)))))))
+
 (ert-deftest e-session-test-missing-session-surfaces-error ()
   "Appending to a missing session surfaces a domain error."
   (let ((store (e-session-store-create)))
@@ -71,8 +104,51 @@
            store session-id '(:id "msg-2" :role assistant :content "hi"))
           (let ((loaded (e-session-persistent-store-create directory)))
             (should (equal (mapcar (lambda (message) (plist-get message :id))
-                                   (e-session-messages loaded session-id))
+                           (e-session-messages loaded session-id))
                            '("msg-1" "msg-2")))))
+      (delete-directory directory t))))
+
+(ert-deftest e-session-test-persistent-replay-preserves-entry-ids ()
+  "Persistent replay keeps durable ids and parent links instead of regenerating."
+  (let* ((directory (make-temp-file "e-session-" t))
+         (store (e-session-persistent-store-create directory))
+         (session-id (plist-get (e-session-create store :id "session-1") :id)))
+    (unwind-protect
+        (let* ((first (e-session-append-message
+                       store session-id '(:role user :content "hello")))
+               (second (e-session-append-message
+                        store session-id '(:role assistant :content "hi")))
+               (loaded (e-session-persistent-store-create directory))
+               (messages (e-session-messages loaded session-id)))
+          (should (equal (mapcar (lambda (message) (plist-get message :id))
+                                 messages)
+                         (list (plist-get first :id)
+                               (plist-get second :id))))
+          (should (equal (plist-get (cadr messages) :parent-id)
+                         (plist-get first :id))))
+      (delete-directory directory t))))
+
+(ert-deftest e-session-test-legacy-replay-backfills-entry-ids ()
+  "Legacy records without entry ids load with stable in-memory parent links."
+  (let* ((directory (make-temp-file "e-session-" t))
+         (sessions-dir (expand-file-name "sessions" directory))
+         (session-file (expand-file-name "legacy.jsonl" sessions-dir)))
+    (unwind-protect
+        (progn
+          (make-directory sessions-dir t)
+          (with-temp-file session-file
+            (insert
+             "{\"type\":\"session\",\"session-id\":\"legacy\",\"timestamp\":\"2026-05-21T10:00:00Z\"}\n"
+             "{\"type\":\"message\",\"session-id\":\"legacy\",\"timestamp\":\"2026-05-21T10:00:01Z\",\"message\":{\"role\":\"user\",\"content\":\"hello\"}}\n"
+             "{\"type\":\"message\",\"session-id\":\"legacy\",\"timestamp\":\"2026-05-21T10:00:02Z\",\"message\":{\"role\":\"assistant\",\"content\":\"hi\"}}\n"))
+          (let* ((loaded (e-session-persistent-store-create directory))
+                 (messages (e-session-messages loaded "legacy")))
+            (should (= (length messages) 2))
+            (dolist (message messages)
+              (should (plist-get message :id)))
+            (should-not (plist-get (car messages) :parent-id))
+            (should (equal (plist-get (cadr messages) :parent-id)
+                           (plist-get (car messages) :id)))))
       (delete-directory directory t))))
 
 (ert-deftest e-session-test-persistent-replay-refreshes-derived-fields-once-per-session ()
@@ -329,6 +405,50 @@
             (should (equal (plist-get compaction :range)
                            '(:from "msg-1" :to "msg-9")))))
       (delete-directory directory t))))
+
+(ert-deftest e-session-test-entry-query-helpers-cover-paths-turns-and-boundaries ()
+  "Entry query helpers return ids, current paths, turn groups, and suffixes."
+  (let ((store (e-session-store-create)))
+    (e-session-create store :id "session-1")
+    (let* ((first (e-session-append-message
+                   store "session-1"
+                   '(:turn-id "turn-a" :role user :content "one")))
+           (second (e-session-append-message
+                    store "session-1"
+                    '(:turn-id "turn-a" :role assistant :content "two")))
+           (third (e-session-append-message
+                   store "session-1"
+                   '(:turn-id "turn-b" :role user :content "three")))
+           (compaction (e-session-append-compaction
+                        store "session-1" "kept suffix"
+                        :first-kept-entry-id (plist-get second :id))))
+      (should (equal (plist-get (e-session-entry-by-id
+                                 store "session-1" (plist-get second :id))
+                                :content)
+                     "two"))
+      (should (equal (mapcar (lambda (entry) (plist-get entry :id))
+                             (e-session-entries-in-turn
+                              store "session-1" "turn-a"))
+                     (list (plist-get first :id)
+                           (plist-get second :id))))
+      (should (equal (plist-get (e-session-entry-previous
+                                 store "session-1" (plist-get third :id))
+                                :id)
+                     (plist-get second :id)))
+      (should (equal (plist-get (e-session-entry-next
+                                 store "session-1" (plist-get second :id))
+                                :id)
+                     (plist-get third :id)))
+      (should (equal (plist-get (e-session-latest-entry-of-type
+                                 store "session-1" 'message)
+                                :id)
+                     (plist-get third :id)))
+      (should (equal (mapcar (lambda (entry) (plist-get entry :id))
+                             (e-session-entries-from
+                              store "session-1" (plist-get second :id)))
+                     (list (plist-get second :id)
+                           (plist-get third :id)
+                           (plist-get compaction :id)))))))
 
 (ert-deftest e-session-test-current-branch-persists-through-replay ()
   "Current branch cursor records append and replay into session state."

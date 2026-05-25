@@ -36,6 +36,8 @@
     (e-harness-create-session harness :id "session-1")
     (e-harness-prompt harness "session-1" "question")
     (let ((messages (e-harness-messages harness "session-1")))
+      (should (string-match-p "\\`[0-9A-HJKMNP-TV-Z]\\{26\\}\\'"
+                              (plist-get (car messages) :turn-id)))
       (should (equal (mapcar (lambda (message) (plist-get message :role)) messages)
                      '(user assistant)))
       (should (equal (plist-get (cadr messages) :content) "answer")))

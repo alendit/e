@@ -1,0 +1,68 @@
+#+title: Review: Message and Turn Identity
+#+startup: overview
+
+* Scope
+
+Validated the current implementation against =plan.org= for feature 04.
+
+Inspected:
+
+- =lisp/core/e-session.el=
+- =lisp/core/e-harness.el=
+- =lisp/core/e-loop.el=
+- =test/e-session-test.el=
+- =test/e-harness-test.el=
+- =test/e-loop-test.el=
+
+* Verification
+
+Commands run:
+
+#+begin_src shell
+eldev test test/e-session-test.el test/e-harness-test.el test/e-loop-test.el
+#+end_src
+
+Result: 86 tests passed, 0 unexpected.
+
+Live reload:
+
+#+begin_src shell
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Result: returned the repo path.
+
+Live probe after reload:
+
+#+begin_src elisp
+(let* ((store (e-session-store-create))
+       (session (e-session-create store :id "codex-live-04"))
+       (first (e-session-append-message
+               store "codex-live-04" '(:role user :content "live")))
+       (second (e-session-append-message
+                store "codex-live-04"
+                '(:turn-id "turn-live" :role assistant :content "ok"))))
+  (list (and (stringp (plist-get first :id))
+             (= (length (plist-get first :id)) 26))
+        (equal (plist-get second :parent-id) (plist-get first :id))
+        (length (e-session-current-path store "codex-live-04"))))
+#+end_src
+
+Result: =(t t 2)=.
+
+* Acceptance Review
+
+| Plan criterion | Review |
+|----------------+--------|
+| Every new durable session entry has an =id=. | Satisfied. Session append paths assign ids for messages, activity events, branch summaries, and compactions. Runtime-generated message ids now come from the session layer. |
+| Every new durable session entry has a =parent-id= except the root entry. | Satisfied. Append/replay paths advance =:current-head-id= and assign the previous head as parent. |
+| Every assistant/user operation has a shared =turn-id=. | Satisfied for harness turns. =e-harness--next-turn-id= now allocates a durable ULID and the harness tags user, assistant, tool-call, tool-result, and activity entries for the turn. |
+| Existing sessions can still be loaded and replayed. | Satisfied by persistent replay and legacy backfill tests. |
+| Session entries can be queried by id. | Satisfied by =e-session-entry-by-id= and focused tests. |
+| The current linear path can be reconstructed from parent ids. | Satisfied by =e-session-current-path= and focused tests. |
+| The model is ready to store a future compaction entry with =first-kept-entry-id=. | Satisfied. =e-session-append-compaction= accepts and persists =:first-kept-entry-id=, and =e-session-entries-from= computes the kept suffix. |
+
+* Notes To Resolve
+
+- Run a broader chat/context replay pass before marking this feature =Done=, because the core session and loop tests pass but the changed durable message ids affect transcript consumers outside the focused feature surface.
+

@@ -13,6 +13,7 @@
 
 (require 'cl-lib)
 (require 'json)
+(require 'seq)
 (require 'subr-x)
 
 (define-error 'e-session-missing "Session does not exist")
@@ -40,6 +41,15 @@
   '(:messages :activity-events :branch-summaries :compactions)
   "Session fields accumulated in reverse order while replaying JSONL.")
 
+(defconst e-session--ulid-alphabet "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+  "Crockford Base32 alphabet used for ULID strings.")
+
+(defvar e-session--last-ulid-milliseconds nil
+  "Last millisecond timestamp used by `e-session-generate-ulid'.")
+
+(defvar e-session--last-ulid-random nil
+  "Last 80-bit random suffix used by `e-session-generate-ulid'.")
+
 (defun e-session--timestamp (&optional time)
   "Return TIME as a compact UTC timestamp."
   (format-time-string "%Y-%m-%dT%H:%M:%SZ" time t))
@@ -54,6 +64,64 @@
                                   (system-name))))
          (suffix (substring (secure-hash 'sha1 seed) 0 12)))
     (format "%s-%s" (e-session--id-timestamp) suffix)))
+
+(defun e-session--ulid-encode (number length)
+  "Encode NUMBER as a Crockford Base32 string with LENGTH characters."
+  (let ((chars (make-string length ?0))
+        (index (1- length)))
+    (while (>= index 0)
+      (aset chars index (aref e-session--ulid-alphabet (logand number 31)))
+      (setq number (ash number -5))
+      (setq index (1- index)))
+    chars))
+
+(defun e-session--current-milliseconds ()
+  "Return current Unix time in milliseconds."
+  (floor (* 1000 (float-time))))
+
+(defun e-session--random-80-bit ()
+  "Return a sufficiently random 80-bit integer."
+  (let* ((seed (format "%S" (list (current-time) (random t) (emacs-pid)
+                                  (system-name) (garbage-collect))))
+         (hex (substring (secure-hash 'sha1 seed) 0 20)))
+    (string-to-number hex 16)))
+
+(defun e-session--ulid-from-parts (milliseconds random)
+  "Return a ULID from MILLISECONDS and 80-bit RANDOM suffix."
+  (concat (e-session--ulid-encode milliseconds 10)
+          (e-session--ulid-encode random 16)))
+
+(defun e-session-generate-ulid ()
+  "Generate an opaque monotonic ULID string for durable session entries."
+  (let* ((milliseconds (e-session--current-milliseconds))
+         (random (if (equal milliseconds e-session--last-ulid-milliseconds)
+                     (1+ (or e-session--last-ulid-random 0))
+                   (e-session--random-80-bit)))
+         (random-limit (expt 2 80)))
+    (when (>= random random-limit)
+      (setq milliseconds (1+ milliseconds))
+      (setq random 0))
+    (setq e-session--last-ulid-milliseconds milliseconds
+          e-session--last-ulid-random random)
+    (e-session--ulid-from-parts milliseconds random)))
+
+(defun e-session--timestamp-milliseconds (timestamp)
+  "Return TIMESTAMP parsed as Unix milliseconds, or current milliseconds."
+  (condition-case nil
+      (if (stringp timestamp)
+          (floor (* 1000 (float-time (date-to-time timestamp))))
+        (e-session--current-milliseconds))
+    (error (e-session--current-milliseconds))))
+
+(defun e-session--legacy-entry-id (session type ordinal timestamp)
+  "Return a stable backfilled id for legacy SESSION entry TYPE at ORDINAL."
+  (let* ((session-id (plist-get session :id))
+         (seed (format "%s:%s:%s:%s" session-id type ordinal timestamp))
+         (random (string-to-number (substring (secure-hash 'sha1 seed) 0 20)
+                                   16)))
+    (e-session--ulid-from-parts
+     (e-session--timestamp-milliseconds timestamp)
+     random)))
 
 (defun e-session--next-sequence (store)
   "Return STORE's next mutation sequence."
@@ -129,10 +197,126 @@
   "Prepend replayed ITEM to SESSION FIELD."
   (plist-put session field (cons item (plist-get session field))))
 
+(defun e-session--next-entry-ordinal (session)
+  "Return SESSION's next replay entry ordinal."
+  (let ((ordinal (1+ (or (plist-get session :entry-count) 0))))
+    (plist-put session :entry-count ordinal)
+    ordinal))
+
+(defun e-session--entry-id-from-record (record entry)
+  "Return durable id from RECORD or ENTRY."
+  (or (plist-get entry :id)
+      (plist-get record :id)))
+
+(defun e-session--entry-parent-id-from-record (record entry)
+  "Return parent id from RECORD or ENTRY."
+  (if (plist-member entry :parent-id)
+      (plist-get entry :parent-id)
+    (plist-get record :parent-id)))
+
+(defun e-session--entry-with-identity (session type entry timestamp &optional record)
+  "Return ENTRY with durable identity fields for SESSION and TYPE.
+TIMESTAMP is used for creation metadata and legacy deterministic backfill.
+When RECORD is non-nil, identity fields may be replayed from the JSONL record."
+  (let ((entry (copy-sequence entry)))
+    (unless (plist-member entry :type)
+      (plist-put entry :type type))
+    (unless (plist-get entry :id)
+      (plist-put
+       entry :id
+       (or (e-session--entry-id-from-record record entry)
+           (if record
+               (e-session--legacy-entry-id
+                session type (e-session--next-entry-ordinal session) timestamp)
+             (e-session-generate-ulid)))))
+    (unless (plist-member entry :parent-id)
+      (when-let ((parent-id
+                  (or (e-session--entry-parent-id-from-record record entry)
+                      (plist-get session :current-head-id))))
+        (plist-put entry :parent-id parent-id)))
+    (unless (plist-member entry :created-at)
+      (plist-put entry :created-at timestamp))
+    entry))
+
+(defun e-session--normalize-entry-from-record
+    (session type entry timestamp &optional record)
+  "Return normalized durable ENTRY for replay or append."
+  (e-session--advance-head
+   session
+   (e-session--entry-with-identity session type entry timestamp record)))
+
+(defun e-session--advance-head (session entry)
+  "Advance SESSION current head to ENTRY."
+  (plist-put session :current-head-id (plist-get entry :id))
+  entry)
+
+(defun e-session--entries (store session-id)
+  "Return all durable entries for SESSION-ID in insertion order."
+  (let ((session (e-session-get store session-id)))
+    (append (plist-get session :messages)
+            (plist-get session :activity-events)
+            (plist-get session :branch-summaries)
+            (plist-get session :compactions))))
+
+(defun e-session-entry-by-id (store session-id entry-id)
+  "Return durable entry ENTRY-ID from SESSION-ID."
+  (seq-find (lambda (entry)
+              (equal (plist-get entry :id) entry-id))
+            (e-session--entries store session-id)))
+
+(defun e-session--entry-children (store session-id parent-id)
+  "Return entries whose parent is PARENT-ID in SESSION-ID."
+  (seq-filter (lambda (entry)
+                (equal (plist-get entry :parent-id) parent-id))
+              (e-session--entries store session-id)))
+
+(defun e-session-current-path (store session-id &optional head-id)
+  "Return SESSION-ID current parent path ending at HEAD-ID or current head."
+  (let* ((session (e-session-get store session-id))
+         (head-id (or head-id (plist-get session :current-head-id)))
+         path)
+    (while head-id
+      (let ((entry (e-session-entry-by-id store session-id head-id)))
+        (unless entry
+          (setq head-id nil))
+        (when entry
+          (push entry path)
+          (setq head-id (plist-get entry :parent-id)))))
+    path))
+
+(defun e-session-entries-in-turn (store session-id turn-id)
+  "Return entries in SESSION-ID that belong to TURN-ID."
+  (seq-filter (lambda (entry)
+                (equal (plist-get entry :turn-id) turn-id))
+              (e-session-current-path store session-id)))
+
+(defun e-session-entry-previous (store session-id entry-id)
+  "Return the previous entry before ENTRY-ID on SESSION-ID current path."
+  (when-let ((entry (e-session-entry-by-id store session-id entry-id)))
+    (when-let ((parent-id (plist-get entry :parent-id)))
+      (e-session-entry-by-id store session-id parent-id))))
+
+(defun e-session-entry-next (store session-id entry-id)
+  "Return the next entry after ENTRY-ID on SESSION-ID current path."
+  (let ((path (e-session-current-path store session-id)))
+    (cadr (member (e-session-entry-by-id store session-id entry-id) path))))
+
+(defun e-session-latest-entry-of-type (store session-id type)
+  "Return latest entry of TYPE on SESSION-ID current path."
+  (seq-find (lambda (entry)
+              (eq (plist-get entry :type) type))
+            (reverse (e-session-current-path store session-id))))
+
+(defun e-session-entries-from (store session-id first-entry-id)
+  "Return current-path entries from FIRST-ENTRY-ID to the current head."
+  (let ((path (e-session-current-path store session-id)))
+    (member (e-session-entry-by-id store session-id first-entry-id) path)))
+
 (defun e-session--finalize-replayed-session (store session)
   "Restore replayed SESSION field ordering and derived metadata."
   (dolist (field e-session--replay-list-fields)
     (plist-put session field (nreverse (plist-get session field))))
+  (cl-remf session :entry-count)
   (plist-put session :loaded t)
   (e-session--refresh-derived-fields store session))
 
@@ -251,48 +435,76 @@
          (e-session--prepend-replayed-item
           session
           :messages
-          (e-session--message-with-created-at
-           (plist-get record :message)
-           timestamp))
+          (e-session--normalize-entry-from-record
+           session
+           'message
+           (e-session--message-with-created-at
+            (plist-get record :message)
+            timestamp)
+           timestamp
+           record))
          (e-session--touch store session timestamp)))
       ("activity-event"
        (when session
          (e-session--prepend-replayed-item
           session
           :activity-events
-          (e-session--normalize-activity-event
-           (list :turn-id (plist-get record :turn-id)
-                 :event-type (plist-get record :event-type)
-                 :payload (plist-get record :payload)
-                 :created-at timestamp)))
+          (e-session--normalize-entry-from-record
+           session
+           'activity-event
+           (e-session--normalize-activity-event
+            (list :id (plist-get record :id)
+                  :parent-id (plist-get record :parent-id)
+                  :turn-id (plist-get record :turn-id)
+                  :event-type (plist-get record :event-type)
+                  :payload (plist-get record :payload)
+                  :created-at timestamp))
+           timestamp
+           record))
          (e-session--touch store session timestamp)))
       ("branch-summary"
        (when session
          (e-session--prepend-replayed-item
           session
           :branch-summaries
-          (list :branch-id
-                (plist-get record :branch-id)
-                :summary
-                (plist-get record :summary)
-                :metadata
-                (plist-get record :metadata)
-                :created-at timestamp))
+          (e-session--normalize-entry-from-record
+           session
+           'branch-summary
+           (list :id (plist-get record :id)
+                 :parent-id (plist-get record :parent-id)
+                 :branch-id
+                 (plist-get record :branch-id)
+                 :summary
+                 (plist-get record :summary)
+                 :metadata
+                 (plist-get record :metadata)
+                 :created-at timestamp)
+           timestamp
+           record))
          (e-session--touch store session timestamp)))
       ("compaction"
        (when session
          (e-session--prepend-replayed-item
           session
           :compactions
-          (list :summary
-                (plist-get record :summary)
-                :branch-id
-                (plist-get record :branch-id)
-                :range
-                (plist-get record :range)
-                :metadata
-                (plist-get record :metadata)
-                :created-at timestamp))
+          (e-session--normalize-entry-from-record
+           session
+           'compaction
+           (list :id (plist-get record :id)
+                 :parent-id (plist-get record :parent-id)
+                 :summary
+                 (plist-get record :summary)
+                 :branch-id
+                 (plist-get record :branch-id)
+                 :range
+                 (plist-get record :range)
+                 :first-kept-entry-id
+                 (plist-get record :first-kept-entry-id)
+                 :metadata
+                 (plist-get record :metadata)
+                 :created-at timestamp)
+           timestamp
+           record))
          (e-session--touch store session timestamp)))
       ("current-branch"
        (when session
@@ -315,6 +527,7 @@
        (when session
          (plist-put session :messages nil)
          (plist-put session :activity-events nil)
+         (plist-put session :current-head-id nil)
          (e-session--touch store session timestamp))))))
 
 (defun e-session-load (store)
@@ -616,7 +829,11 @@ state are requested."
   (let* ((session (e-session-get store session-id))
          (messages (plist-get session :messages))
          (timestamp (e-session--timestamp))
-         (message (e-session--message-with-created-at message timestamp)))
+         (message (e-session--normalize-entry-from-record
+                   session
+                   'message
+                   (e-session--message-with-created-at message timestamp)
+                   timestamp)))
     (plist-put session :messages (append messages (list message)))
     (e-session--touch store session timestamp)
     (e-session--refresh-derived-fields store session)
@@ -625,6 +842,8 @@ state are requested."
      (list :type "message"
            :session-id session-id
            :timestamp timestamp
+           :id (plist-get message :id)
+           :parent-id (plist-get message :parent-id)
            :message message))
     (e-session--write-index store)
     message))
@@ -635,16 +854,22 @@ state are requested."
   (let* ((session (e-session-get store session-id))
          (events (plist-get session :activity-events))
          (timestamp (e-session--timestamp))
-         (event (list :turn-id turn-id
-                      :event-type event-type
-                      :payload payload
-                      :created-at timestamp)))
+         (event (e-session--normalize-entry-from-record
+                 session
+                 'activity-event
+                 (list :turn-id turn-id
+                       :event-type event-type
+                       :payload payload
+                       :created-at timestamp)
+                 timestamp)))
     (plist-put session :activity-events (append events (list event)))
     (e-session--touch store session timestamp)
     (e-session--append-record
      store session-id
      (list :type "activity-event"
            :session-id session-id
+           :id (plist-get event :id)
+           :parent-id (plist-get event :parent-id)
            :turn-id turn-id
            :timestamp timestamp
            :event-type event-type
@@ -657,10 +882,14 @@ state are requested."
   "Append BRANCH-ID SUMMARY metadata to SESSION-ID in STORE."
   (let* ((session (e-session-get store session-id))
          (timestamp (e-session--timestamp))
-         (record (list :branch-id branch-id
-                       :summary summary
-                       :metadata metadata
-                       :created-at timestamp)))
+         (record (e-session--normalize-entry-from-record
+                  session
+                  'branch-summary
+                  (list :branch-id branch-id
+                        :summary summary
+                        :metadata metadata
+                        :created-at timestamp)
+                  timestamp)))
     (plist-put session
                :branch-summaries
                (append (plist-get session :branch-summaries)
@@ -671,6 +900,8 @@ state are requested."
      store session-id
      (list :type "branch-summary"
            :session-id session-id
+           :id (plist-get record :id)
+           :parent-id (plist-get record :parent-id)
            :timestamp timestamp
            :branch-id branch-id
            :summary summary
@@ -679,16 +910,22 @@ state are requested."
     record))
 
 (cl-defun e-session-append-compaction
-    (store session-id summary &key branch-id range metadata)
+    (store session-id summary &key branch-id range first-kept-entry-id metadata)
   "Append compaction SUMMARY for SESSION-ID in STORE.
-BRANCH-ID, RANGE, and METADATA describe the compacted source when available."
+BRANCH-ID, RANGE, FIRST-KEPT-ENTRY-ID, and METADATA describe the compacted
+source when available."
   (let* ((session (e-session-get store session-id))
          (timestamp (e-session--timestamp))
-         (record (list :summary summary
-                       :branch-id branch-id
-                       :range range
-                       :metadata metadata
-                       :created-at timestamp)))
+         (record (e-session--normalize-entry-from-record
+                  session
+                  'compaction
+                  (list :summary summary
+                        :branch-id branch-id
+                        :range range
+                        :first-kept-entry-id first-kept-entry-id
+                        :metadata metadata
+                        :created-at timestamp)
+                  timestamp)))
     (plist-put session
                :compactions
                (append (plist-get session :compactions)
@@ -699,10 +936,13 @@ BRANCH-ID, RANGE, and METADATA describe the compacted source when available."
      store session-id
      (list :type "compaction"
            :session-id session-id
+           :id (plist-get record :id)
+           :parent-id (plist-get record :parent-id)
            :timestamp timestamp
            :summary summary
            :branch-id branch-id
            :range range
+           :first-kept-entry-id first-kept-entry-id
            :metadata metadata))
     (e-session--write-index store)
     record))
