@@ -154,16 +154,29 @@ Add a regression test that clears a session, appends a new message, and asserts:
 - =e-session-current-path= contains only the new root message;
 - persistent replay preserves that root shape.
 
-** Caveat: identity scope excludes state records
+** Recommendation: audit non-entry JSONL records as event-log scope, not identity exceptions
 
-The implementation clearly treats messages, activity events, branch summaries, and compactions as durable entries. Other append-only JSONL records are durable state mutations rather than entries:
+The implementation clearly treats messages, activity events, branch summaries, and compactions as durable entries. Other append-only JSONL records are written into the same session log but are not first-class identifiable entries:
 
 - =session=
 - =session-info=
 - =current-branch=
 - =messages-cleared=
 
-Those records do not receive =id= or =parent-id=. This may be fine, but the feature plan uses broad language such as "every durable session entry" and includes =metadata= in the entry type sketch. Before marking the feature =Done=, document whether these state records are intentionally outside the entry identity model or extend the model to cover them.
+The sharper design rule should be: if a record is durable inside the session transcript/event log, it should represent a meaningful historical session event; if it is merely cursor, UI, view, cache, or derived-index state, it should not live in that log.
+
+Implications for the current records:
+
+| Record | Review recommendation |
+|--------+-----------------------|
+| =session= | Treat as the historical root event, or explicitly keep it as file header metadata outside the event chain. If it stays in the event log, giving it an =id= would make the root invariant cleaner. |
+| =messages-cleared= | Treat as a historical transcript mutation. It should not be an anonymous side effect; it should either become a first-class event with an =id= and intentional parent semantics, or the next message should become a true new root after the clear. |
+| =session-info= | Split by meaning. User-visible/context-affecting changes such as explicit name, model, reasoning effort, or project-root changes are historical session events and should be identifiable if stored in the log. Pure cache/index/derived display metadata should move out of the transcript log. |
+| =current-branch= | If this is a checkout cursor or current UI/view state, it should not be in the session transcript log. Store it in sidecar state instead. If it is intended as a historical branch operation, rename/model it as such and give it entry identity. |
+
+For future tree navigation, session comparison, replay diagnostics, time travel, and branch-aware context construction, the clean target is a unified durable event log containing only historical events. Every event in that log should be addressable by id. Ephemeral cursor/UI/cache state should be stored separately rather than exempted from identity.
+
+This makes the reset bug more significant: =messages-cleared= is a historical transcript mutation, so treating it as anonymous mutable state creates ambiguity around whether later entries should parent to the old head, parent to the clear event, or start a new root.
 
 ** Test gap: synthetic branch path is not directly covered
 
@@ -183,5 +196,5 @@ The query helpers support reconstructing a path from an explicit optional =head-
 Before feature 04 is marked =Done=:
 
 - Fix live =e-session-clear-messages= / reset head handling so the first post-reset entry is a true root with no dangling =parent-id=.
-- Decide and document whether non-entry JSONL state records are intentionally outside the identity model.
+- Audit non-entry JSONL records: historical session events should become identifiable event-log entries; cursor/UI/cache/derived state should move out of the transcript log rather than be exempted from identity.
 - Consider adding the synthetic branch path regression test described in the feature testing plan.
