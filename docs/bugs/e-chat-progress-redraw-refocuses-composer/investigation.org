@@ -61,3 +61,23 @@ Fix the running-status/progress redraw path so restoring composer content does
 not imply focusing the composer. Add a regression test that puts point/window
 focus in scrollback, triggers a progress redraw, and asserts that point/window
 focus remain in scrollback while the composer draft is still preserved.
+
+* Fix
+
+Implemented. Composer capture now records the current point and visible window
+position alongside composer text. Composer restoration still focuses the composer
+when point originally belonged to the composer, but when point was in scrollback
+it recreates the composer without focus side effects and restores the prior
+buffer/window position.
+
+Regression coverage:
+
+- =e-chat-test-progress-rerender-preserves-scrollback-focus= renders a completed
+  turn plus a running turn, leaves a follow-up composer draft, moves point/window
+  focus to scrollback, advances progress, and verifies that scrollback focus and
+  the draft both survive the redraw.
+
+Validation:
+
+- =rtk eldev test -f test/e-chat-test.el e-chat-test-progress-rerender-preserves-scrollback-focus e-chat-test-add-context-picker-preserves-session-list-order=
+- =rtk eldev test -f test/e-chat-test.el=

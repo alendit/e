@@ -2098,6 +2098,39 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-progress-rerender-preserves-scrollback-focus ()
+  "Progress redraws preserve point and window focus when reading scrollback."
+  (let ((buffer (e-chat-test--buffer nil "chat-progress-scroll-focus"))
+        (window nil))
+    (unwind-protect
+        (progn
+          (setq window (display-buffer buffer))
+          (with-current-buffer buffer
+            (e-chat-test--render-turn "turn-1" 10 11 "first" "one")
+            (e-chat--render-event
+             (e-events-make :type 'turn-started
+                            :session-id e-chat-session-id
+                            :turn-id "turn-2"
+                            :created-at 20))
+            (goto-char (point-max))
+            (insert "follow-up draft")
+            (goto-char (point-min))
+            (set-window-point window (point))
+            (set-window-start window (point))
+            (let ((before-point (point))
+                  (before-window-point (window-point window))
+                  (before-window-start (window-start window)))
+              (e-chat--advance-progress-indicator)
+              (should (= (point) before-point))
+              (should (= (window-point window) before-window-point))
+              (should (= (window-start window) before-window-start))
+              (should (e-chat--composer-active-p))
+              (should (equal (e-chat--composer-text) "follow-up draft")))))
+      (when (window-live-p window)
+        (delete-window window))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-progress-rerender-strips-composer-presentation-properties ()
   "Progress redraws do not leak transcript presentation into composer text."
   (let ((buffer (e-chat-test--buffer nil "chat-progress-composer-properties")))
@@ -3495,7 +3528,7 @@
             (e-session-create store :id "existing-session")
             (cl-letf (((symbol-function 'completing-read)
                        (lambda (_prompt collection &rest _args)
-                         (car collection))))
+                         (car (all-completions "" collection)))))
               (with-temp-buffer
                 (insert "one\ntwo\nthree\n")
                 (goto-char (point-min))
@@ -3527,7 +3560,7 @@
                               :metadata '(:name "target-session"))
             (cl-letf (((symbol-function 'completing-read)
                        (lambda (_prompt collection &rest _args)
-                         (cadr collection))))
+                         (cadr (all-completions "" collection)))))
               (with-temp-buffer
                 (insert "one\ntwo\nthree\n")
                 (goto-char (point-min))
@@ -3544,6 +3577,59 @@
                              (point-max))))))))))
       (e-chat-test--kill-chat-buffers))))
 
+(ert-deftest e-chat-test-add-context-picker-preserves-session-list-order ()
+  "Picker context insertion keeps store recency order under sorting frontends."
+  (let* ((store (e-session-store-create))
+         (backend (e-backend-fake-create :items nil))
+         (harness (e-chat-test--activate-chat-session
+                   (e-harness-create :backend backend :sessions store)))
+         (timestamps '("2026-05-22T10:00:00Z"
+                       "2026-05-22T10:00:01Z"
+                       "2026-05-22T10:00:02Z"
+                       "2026-05-22T10:00:03Z")))
+    (unwind-protect
+        (e-chat-test--with-empty-harness-registry
+          (let ((e-chat-default-harness-id :chat-test))
+            (e-harness-registry-register :chat-test harness)
+            (cl-letf (((symbol-function 'e-session--timestamp)
+                       (lambda (&optional _time)
+                         (prog1 (car timestamps)
+                           (setq timestamps (cdr timestamps))))))
+              (e-session-create store :id "older-session"
+                                :metadata '(:name "Alpha old"))
+              (e-session-append-message
+               store "older-session"
+               '(:id "older-message" :role user :content "older prompt"))
+              (e-session-create store :id "newer-session"
+                                :metadata '(:name "Zulu newest"))
+              (e-session-append-message
+               store "newer-session"
+               '(:id "newer-message" :role user :content "newer prompt")))
+            (cl-letf (((symbol-function 'completing-read)
+                       (lambda (_prompt collection &rest _args)
+                         (let* ((metadata (completion-metadata
+                                           "" collection nil))
+                                (display-sort
+                                 (completion-metadata-get
+                                  metadata 'display-sort-function))
+                                (candidates (all-completions "" collection))
+                                (visible (if display-sort
+                                             (funcall display-sort candidates)
+                                           (sort (copy-sequence candidates)
+                                                 #'string<))))
+                           (cl-find-if
+                            (lambda (candidate)
+                              (not (equal candidate
+                                          e-chat--new-context-session-label)))
+                            visible)))))
+              (with-temp-buffer
+                (insert "one\ntwo\nthree\n")
+                (goto-char (point-min))
+                (let ((chat-buffer (e-chat-add-context-to-session)))
+                  (with-current-buffer chat-buffer
+                    (should (equal e-chat-session-id "newer-session"))))))))
+      (e-chat-test--kill-chat-buffers))))
+
 (ert-deftest e-chat-test-add-context-to-session-deactivates-source-region ()
   "Picker context insertion clears the selected region in the source buffer."
   (let* ((store (e-session-store-create))
@@ -3558,7 +3644,7 @@
                               :metadata '(:name "target-session"))
             (cl-letf (((symbol-function 'completing-read)
                        (lambda (_prompt collection &rest _args)
-                         (cadr collection))))
+                         (cadr (all-completions "" collection)))))
               (with-temp-buffer
                 (insert "alpha beta gamma")
                 (goto-char (point-min))

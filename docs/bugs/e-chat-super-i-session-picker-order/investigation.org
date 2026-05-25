@@ -66,3 +66,25 @@ metadata shape that preserves caller order, analogous to the resume picker's
 Consult =:sort nil= path. Add regression coverage that simulates a sorting
 completion frontend and proves the picker still maps the visible candidate order
 to the intended session ids.
+
+** Fix
+
+Implemented. =e-chat--context-session-picker= now passes labels through an
+ordered completion table with completion metadata that sets
+=display-sort-function= and =cycle-sort-function= to =identity=. The picker keeps
+the separate new-session action first, while existing sessions retain
+=e-harness-session-list= recency order even when the active completion frontend
+would otherwise sort candidates.
+
+Regression coverage:
+
+- =e-chat-test-add-context-picker-preserves-session-list-order= simulates a
+  sorting completion frontend and verifies that the first existing candidate
+  remains the newer session from the store order.
+- Existing =s-I= creation, existing-session selection, and source-region cleanup
+  tests were updated to read candidates through the completion-table API.
+
+Validation:
+
+- =rtk eldev test -f test/e-chat-test.el e-chat-test-add-context-picker-can-create-new-session e-chat-test-add-context-picker-can-select-existing-session e-chat-test-add-context-to-session-deactivates-source-region e-chat-test-add-context-picker-preserves-session-list-order e-chat-test-progress-rerender-preserves-scrollback-focus=
+- =rtk eldev test -f test/e-chat-test.el=
