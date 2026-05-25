@@ -1,0 +1,13 @@
+#+title: Report: e-chat s-I session picker ignores last-message order
+#+startup: overview
+
+* Report
+
+The user reported that the session list shown by =s-I=
+(=e-chat-add-context-to-session=) is not sorted by the order of each session's
+last message.
+
+Expected behavior: the =s-I= picker should present existing chat sessions in
+descending last-message order, matching the session store's recency order. The
+"new session" entry may remain a separate first action, but existing sessions
+should not be alphabetically or history sorted by the completion frontend.

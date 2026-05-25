@@ -1,0 +1,68 @@
+#+title: Investigation: e-chat s-I session picker ignores last-message order
+#+startup: overview
+
+* Investigation
+
+** Source inspection
+
+- =e-chat--context-session-picker= builds its candidates from
+  =e-harness-session-list=, prepends =e-chat--new-context-session-label=, and
+  passes the resulting plain string list to =completing-read=.
+- =e-session-list= already sorts sessions by =:last-message-at= descending,
+  falling back to =:created-at= and then =:updated-seq= when needed.
+- =e-session-test-list-sessions-sorted-by-last-message= covers the core session
+  list behavior and verifies that metadata touches do not outrank newer
+  messages.
+- =e-chat--read-session-choice=, used by =e-chat-resume=, has a Consult path
+  that passes =:sort nil= and a category. The =s-I= context picker does not have
+  an equivalent sorting guard, category, or metadata wrapper.
+- Existing =s-I= tests cover creating a new target and selecting an existing
+  target, but they stub =completing-read= and do not verify that the visible
+  completion candidate order is preserved under the user's completion frontend.
+
+** Live inspection
+
+Inspected the running Emacs without changing chat buffers or source behavior.
+The default harness returned sessions in last-message order. The top live
+records included:
+
+#+begin_src emacs-lisp
+((:label "E Agent Session Untitled ... [20260525T203739-810d952835c5]"
+  :last-message-at "2026-05-25T21:39:15Z")
+ (:label "Add new feature: Canvas s... [20260525T212101-2700400bc34e]"
+  :last-message-at "2026-05-25T21:37:48Z")
+ (:label "hitting s-i when a sessio... [20260525T213210-ba56f1939935]"
+  :last-message-at "2026-05-25T21:34:53Z"))
+#+end_src
+
+The live completion configuration has a global Vertico sorter:
+
+#+begin_src emacs-lisp
+(:vertico-sort-function vertico-sort-history-length-alpha)
+#+end_src
+
+Applying that sorter to the same labels changed the top candidates:
+
+#+begin_src emacs-lisp
+("E Agent Session Untitled ... [20260525T203739-810d952835c5]"
+ "Untitled 2026-05-25T21:18:05Z [target-session]"
+ "05 review [20260525T094705-fd3f62222d64]"
+ "Revew the implementation ... [20260525T075801-1d9cb428e048]"
+ "review feat 06 [20260524T202639-151af699622d]")
+#+end_src
+
+This confirms that the order can be lost after =e-chat= has already built the
+correctly ordered candidate list.
+
+** Conclusion
+
+This is a real picker presentation bug. The core session store already has the
+desired last-message ordering, but =e-chat--context-session-picker= exposes its
+candidates through an unannotated =completing-read= list, allowing the active
+completion UI to apply history/length/alphabetical sorting.
+
+The likely fix is to make the =s-I= context picker use a completion API or
+metadata shape that preserves caller order, analogous to the resume picker's
+Consult =:sort nil= path. Add regression coverage that simulates a sorting
+completion frontend and proves the picker still maps the visible candidate order
+to the intended session ids.

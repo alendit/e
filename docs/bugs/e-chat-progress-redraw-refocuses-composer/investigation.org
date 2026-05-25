@@ -1,0 +1,63 @@
+#+title: e-chat Progress Redraw Refocuses Composer Investigation
+#+startup: overview
+
+* Source inspected
+
+- =lisp/shells/chat/e-chat.el=: =e-chat--post-command= only scrolls back to the
+  composer when =e-chat--composer-scroll-needed= is set and point is already in
+  the composer. The previous scrollback guard still exists for normal navigation.
+- =lisp/shells/chat/e-chat.el=: =e-chat--render-running-status= captures
+  composer state, deletes the running status, deletes the composer, redraws the
+  progress/activity region, and then calls =e-chat--restore-composer-state=.
+- =lisp/shells/chat/e-chat.el=: =e-chat--restore-composer-state= calls
+  =e-chat--insert-composer= even when the captured state has no =:point-offset=.
+  =e-chat--insert-composer= ends by calling =e-chat--show-composer=.
+- =lisp/shells/chat/e-chat.el=: =e-chat--show-composer= unconditionally moves
+  point to =point-max=, sets the visible window point there, and recenters.
+- =test/e-chat-test.el=: existing scrollback tests cover ordinary
+  =post-command-hook= behavior, and existing progress tests cover composer draft
+  preservation during redraw. They do not cover the case where point/window focus
+  is deliberately in scrollback while a progress redraw runs.
+
+* Live access
+
+Used a temporary live buffer, =*e-chat-scroll-focus-probe*=, in the running
+Emacs. The probe loaded =e= and =e-chat=, created an =e-chat-mode= buffer,
+inserted transcript text plus a composer draft, moved point and window start to
+the top of the transcript, then called =e-chat--render-running-status= for an
+active progress turn.
+
+Observed result:
+
+#+begin_src elisp
+(:before-point 1
+ :before-window-point 1
+ :after-point 164
+ :after-window-point 164
+ :composer-start 159
+ :point-in-composer t
+ :composer-text "draft")
+#+end_src
+
+This confirms that one progress redraw is enough to move both buffer point and
+visible window point from scrollback to the composer.
+
+* Conclusion
+
+The bug is not caused by the normal post-command scrollback path. The progress
+redraw path reuses composer restoration, and composer restoration always
+performs the same focus side effect as an explicit composer focus action.
+
+When the user is reading scrollback, =e-chat--capture-composer-state= preserves
+the composer draft but has no =:point-offset= because point is outside the
+composer. Restoring that state still recreates the composer through
+=e-chat--insert-composer=, whose unconditional =e-chat--show-composer= moves
+point and window focus to the bottom. Since the progress timer calls this path
+repeatedly, every progress tick steals focus back to the composer.
+
+* Next step
+
+Fix the running-status/progress redraw path so restoring composer content does
+not imply focusing the composer. Add a regression test that puts point/window
+focus in scrollback, triggers a progress redraw, and asserts that point/window
+focus remain in scrollback while the composer draft is still preserved.

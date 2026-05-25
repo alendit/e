@@ -1,0 +1,12 @@
+#+title: e-chat Progress Redraw Refocuses Composer
+#+startup: overview
+
+* Report
+
+During a running =e-chat= turn, scrolling up to read earlier transcript text does
+not stay put. Each progress/activity redraw focuses the composer again, so the
+visible window snaps back to the bottom on every progress update.
+
+This is a regression of the intended scrollback behavior: progress updates
+should be able to repaint the running turn without taking point or window focus
+away from user-controlled readback.
