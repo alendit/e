@@ -1,0 +1,116 @@
+#+title: Investigation: e-chat s-i ignores visible session buffer
+#+startup: overview
+
+* Investigation
+
+** Source inspection
+
+- =e-chat-context-mode-map= binds =s-i= to =e-chat-add-context-to-latest= and
+  =s-I= to =e-chat-add-context-to-session=.
+- =e-chat-add-context-to-latest= currently computes its target with:
+
+  #+begin_src emacs-lisp
+  (let* ((reference (e-chat--capture-context-reference-for-command))
+         (harness (e-chat--default-harness))
+         (session-id (e-chat--latest-session-id harness)))
+    ...)
+  #+end_src
+
+- =e-chat--latest-session-id= selects the first session returned by
+  =e-harness-session-list=, creating a session only when none exists. It does
+  not inspect visible windows or existing visible =e-chat-mode= buffers.
+- =e-chat--find-session-buffer= can find a live buffer for a session id, but it
+  is only used after a target session id has already been chosen. It does not
+  participate in choosing a visible target.
+- Existing tests assert that =e-chat-add-context-to-latest= targets the most
+  recent session. There is currently no regression test for the planned
+  visible-chat-first behavior.
+- The planned behavior is already documented as tiny work in
+  =docs/feats/tiny/001-reference-visible-chat.org=: add =s-i= context to the
+  currently visible chat when one exists, and fall back to the last session only
+  when no chat is visible. That tiny note is still marked =Planned=.
+
+** Live inspection
+
+Inspected the running Emacs session without mutating buffers. A visible
+=e-chat-mode= buffer was present:
+
+#+begin_src emacs-lisp
+(:visible ((:buffer "*e-chat:E Agent Session\nUntitled ...*"
+            :session-id "20260525T203739-810d952835c5")))
+#+end_src
+
+In the same live Emacs, the command path's default latest-session target was a
+different session:
+
+#+begin_src emacs-lisp
+(:latest-session-id "20260525T213210-ba56f1939935"
+ :same-as-first-visible nil)
+#+end_src
+
+Also inspected the live key binding:
+
+#+begin_src emacs-lisp
+(:binding e-chat-add-context-to-latest
+ :command-doc "Add the current point or active region to the latest e chat session.")
+#+end_src
+
+This confirms the reported behavior in the current running session: pressing
+=s-i= would run a command that targets the latest session, and the latest
+session can differ from the visible chat session.
+
+** Conclusion
+
+This is a real bug / unimplemented planned behavior. The current implementation
+matches its command name and existing test (=latest=), but not the desired user
+workflow documented in the tiny work note.
+
+The likely fix is to introduce a target-selection helper for =s-i= that:
+
+1. detects a visible =e-chat-mode= window for the default harness, preferring a
+   deterministic window such as the selected visible chat window first and then
+   other visible chat windows;
+2. returns that buffer's =e-chat-session-id= when present;
+3. falls back to =e-chat--latest-session-id= only when no suitable chat buffer is
+   visible;
+4. updates the command name/doc/tests as appropriate so the behavior is no
+   longer described only as =latest=.
+
+** Suggested regression coverage
+
+- With a visible chat buffer for an older session and a more recent non-visible
+  session, =s-i= / =e-chat-add-context-to-latest= should insert the reference
+  into the visible session's composer.
+- With no visible chat buffer, the command should keep the current fallback and
+  target the latest session.
+- If multiple chat buffers are visible, the target choice should be explicit and
+  tested.
+- Existing source-region deactivation behavior should remain covered.
+
+** Fix
+
+=e-chat-add-context-to-latest= now chooses its default target through
+=e-chat--default-context-session-id=. That helper checks visible =e-chat-mode=
+windows attached to the default harness first, preferring selected-window order,
+and falls back to =e-chat--latest-session-id= only when no matching chat buffer
+is visible.
+
+The command docstring and shell manifest summary now describe the visible-or-latest
+behavior instead of saying it always targets the latest chat.
+
+** Verification
+
+- Added =e-chat-test-add-context-to-latest-targets-visible-session= for the
+  visible-session-first behavior.
+- Renamed and kept the existing recency behavior as
+  =e-chat-test-add-context-to-latest-falls-back-to-most-recent-session=.
+- Ran the focused selector:
+  =rtk eldev test -f test/e-chat-test.el e-chat-test-add-context-to-latest-targets-visible-session e-chat-test-add-context-to-latest-falls-back-to-most-recent-session e-chat-test-add-context-to-latest-deactivates-source-region=.
+  Result: 3 expected passes, 0 unexpected.
+- Ran =rtk eldev test -f test/e-chat-test.el=: 136 expected passes, 1
+  skipped, 0 unexpected.
+- Reloaded the running Emacs with =e-dev-reload=.
+- Live smoke with an isolated fake harness displayed =visible-session= first,
+  created a newer hidden =latest-session= second, then invoked
+  =e-chat-add-context-to-latest= from a temp source buffer. The probe returned
+  =(:target-session "visible-session" :same-buffer t ...)=.

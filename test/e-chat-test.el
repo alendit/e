@@ -3295,7 +3295,42 @@
           (should (functionp selected-state))
           (should (eq selected-sort nil)))))))
 
-(ert-deftest e-chat-test-add-context-to-latest-targets-most-recent-session ()
+(ert-deftest e-chat-test-add-context-to-latest-targets-visible-session ()
+  "Latest context insertion targets a visible chat before recency."
+  (let* ((store (e-session-store-create))
+         (backend (e-backend-fake-create :items nil))
+         (harness (e-chat-test--activate-chat-session
+                   (e-harness-create :backend backend :sessions store)))
+         window)
+    (unwind-protect
+        (e-chat-test--with-empty-harness-registry
+          (let ((e-chat-default-harness-id :chat-test))
+            (e-harness-registry-register :chat-test harness)
+            (e-session-create store :id "visible-session"
+                              :metadata '(:name "visible-session"))
+            (setq window
+                  (display-buffer
+                   (e-chat-open :harness harness :session-id "visible-session")))
+            (e-session-create store :id "latest-session"
+                              :metadata '(:name "latest-session"))
+            (with-temp-buffer
+              (insert "alpha\nbeta\ngamma\n")
+              (goto-char (point-min))
+              (forward-line 1)
+              (let ((chat-buffer (e-chat-add-context-to-latest)))
+                (should (eq chat-buffer (window-buffer window)))
+                (with-current-buffer chat-buffer
+                  (should (equal e-chat-session-id "visible-session"))
+                  (should (string-match-p
+                           "@\\[.*:1-3\\]"
+                           (buffer-substring-no-properties
+                            e-chat--composer-start-marker
+                            (point-max)))))))))
+      (when (and window (window-live-p window))
+        (delete-window window))
+      (e-chat-test--kill-chat-buffers))))
+
+(ert-deftest e-chat-test-add-context-to-latest-falls-back-to-most-recent-session ()
   "Latest context insertion opens the most recently updated chat session."
   (let* ((store (e-session-store-create))
          (backend (e-backend-fake-create :items nil))

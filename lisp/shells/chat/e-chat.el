@@ -4232,6 +4232,30 @@ With prefix argument POP-TO-SIDE, use the pop display path."
   (or (e-chat--find-session-buffer session-id)
       (e-chat-open :harness harness :session-id session-id)))
 
+(defun e-chat--visible-session-buffer (harness)
+  "Return a visible chat buffer for HARNESS, preferring selected window order."
+  (let* ((selected (selected-window))
+         (windows (window-list nil 'no-minibuf))
+         (windows (if (memq selected windows)
+                      (cons selected (delq selected windows))
+                    windows)))
+    (catch 'buffer
+      (dolist (window windows)
+        (let ((buffer (window-buffer window)))
+          (when (buffer-live-p buffer)
+            (with-current-buffer buffer
+              (when (and (derived-mode-p 'e-chat-mode)
+                         (eq e-chat-harness harness)
+                         e-chat-session-id)
+                (throw 'buffer buffer)))))))))
+
+(defun e-chat--default-context-session-id (harness)
+  "Return visible chat session id in HARNESS, falling back to latest."
+  (or (when-let ((buffer (e-chat--visible-session-buffer harness)))
+        (with-current-buffer buffer
+          e-chat-session-id))
+      (e-chat--latest-session-id harness)))
+
 (defun e-chat--add-context-reference-to-session
     (reference harness session-id &optional display)
   "Insert REFERENCE into HARNESS SESSION-ID composer.
@@ -4265,11 +4289,11 @@ When DISPLAY is non-nil, show the target chat buffer."
 
 ;;;###autoload
 (defun e-chat-add-context-to-latest ()
-  "Add the current point or active region to the latest e chat session."
+  "Add current point or region to a visible, or latest, e chat session."
   (interactive)
   (let* ((reference (e-chat--capture-context-reference-for-command))
          (harness (e-chat--default-harness))
-         (session-id (e-chat--latest-session-id harness)))
+         (session-id (e-chat--default-context-session-id harness)))
     (e-chat--add-context-reference-to-session
      reference
      harness
@@ -4431,7 +4455,7 @@ When DISPLAY is non-nil, show the target chat buffer."
      :scope 'global)
     (e-shell-command-create
      :id 'add-context-to-latest
-     :summary "Add current buffer context to the latest chat session."
+     :summary "Add current buffer context to a visible or latest chat session."
      :interactive 'e-chat-add-context-to-latest
      :function 'e-chat-add-context-to-latest
      :scope 'global)

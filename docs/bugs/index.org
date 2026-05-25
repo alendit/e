@@ -8,6 +8,7 @@ State values for coding agents:
 
 | State  | Path | Title |
 |--------+------+-------|
+| Closed | e-chat-super-i-visible-session-target/ | e-chat s-i ignores visible session buffer |
 | Closed | base-guidance-mentions-emacs/ | Base Guidance Mentions Emacs |
 | Closed | bash-timeout-parameter-underdocumented/ | Bash timeout parameter is underdocumented |
 | Closed | compaction-context-strategy-stale-after-reload/ | Compaction Ignored by Stale Context Strategy After Reload |

@@ -1,0 +1,13 @@
+#+title: Report: e-chat s-i ignores visible session buffer
+#+startup: overview
+
+* Report
+
+The user reported that hitting =s-i= while an =e-chat= session buffer is visible
+does not necessarily send the captured context reference to that visible
+session, even though there was a planned feature for that behavior.
+
+Expected behavior: =s-i= should add the current point or active region as an
+inline context reference to the visible chat session when a chat buffer is
+visible. Only when no chat buffer is visible should it fall back to the latest
+session.
