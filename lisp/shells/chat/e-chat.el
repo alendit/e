@@ -497,9 +497,29 @@ The mode line uses this presentation-owned table for context usage display."
   '(read-only t
     e-chat-protected t
     front-sticky (read-only e-chat-protected field)
-    rear-nonsticky (read-only e-chat-protected field)
+    rear-nonsticky (read-only e-chat-protected field
+                    face font-lock-face invisible display
+                    e-chat-block-id e-chat-turn-id e-chat-separator
+                    e-chat-composer e-chat-context-reference
+                    e-chat-transient-turn-id e-chat-progress-turn-id
+                    e-chat-markdown-syntax mouse-face help-echo)
     field e-chat-transcript)
   "Text properties applied to protected e chat presentation text.")
+
+(defconst e-chat--composer-stripped-properties
+  '(read-only e-chat-protected field
+    face font-lock-face invisible display
+    e-chat-block-id e-chat-turn-id e-chat-separator e-chat-composer
+    e-chat-transient-turn-id e-chat-progress-turn-id
+    e-chat-markdown-syntax mouse-face help-echo)
+  "Presentation properties stripped from ordinary composer text.")
+
+(defconst e-chat--composer-reference-stripped-properties
+  '(e-chat-protected field
+    face invisible e-chat-block-id e-chat-turn-id e-chat-separator
+    e-chat-composer e-chat-transient-turn-id e-chat-progress-turn-id
+    e-chat-markdown-syntax)
+  "Presentation properties stripped from inline composer references.")
 
 (defconst e-chat--composer-edit-commands
   '(self-insert-command
@@ -944,11 +964,12 @@ FACE is applied when non-nil.  PROPERTIES are added with text properties."
        (marker-position e-chat--composer-start-marker)))
 
 (defun e-chat--capture-composer-state ()
-  "Return the active composer content and point position with properties."
+  "Return the active composer content and point position."
   (when (e-chat--composer-active-p)
     (let ((start (marker-position e-chat--composer-start-marker))
           (end (point-max)))
-      (list :text (buffer-substring e-chat--composer-start-marker end)
+      (list :text (e-chat--sanitize-composer-text
+                   (buffer-substring e-chat--composer-start-marker end))
             :point-offset
             (when (and (>= (point) start)
                        (<= (point) end))
@@ -982,6 +1003,25 @@ Return non-nil when a composer was removed."
           (set-marker e-chat--composer-spacer-marker nil))
         (setq e-chat--composer-scroll-needed nil)
         t))))
+
+(defun e-chat--sanitize-composer-text (text)
+  "Return TEXT without leaked transcript presentation properties."
+  (let ((copy (copy-sequence text))
+        (position 0)
+        next)
+    (while (< position (length copy))
+      (setq next (or (next-single-property-change
+                      position 'e-chat-context-reference copy)
+                     (length copy)))
+      (remove-list-of-text-properties
+       position
+       next
+       (if (get-text-property position 'e-chat-context-reference copy)
+           e-chat--composer-reference-stripped-properties
+         e-chat--composer-stripped-properties)
+       copy)
+      (setq position next))
+    copy))
 
 (defun e-chat--visible-height ()
   "Return the visible body height for the current chat buffer."
@@ -1039,7 +1079,7 @@ Return non-nil when a composer was removed."
     (setq e-chat--composer-start-marker (point-marker))
     (set-marker-insertion-type e-chat--composer-start-marker nil)
     (when text
-      (insert text))
+      (insert (e-chat--sanitize-composer-text text)))
     (let* ((transcript-lines
             (save-excursion
               (goto-char e-chat--composer-spacer-marker)

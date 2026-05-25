@@ -2058,6 +2058,37 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-progress-rerender-strips-composer-presentation-properties ()
+  "Progress redraws do not leak transcript presentation into composer text."
+  (let ((buffer (e-chat-test--buffer nil "chat-progress-composer-properties")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat--render-event
+           (e-events-make :type 'turn-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 10))
+          (should (e-chat--composer-active-p))
+          (goto-char (point-max))
+          (let ((start (point)))
+            (insert "follow-up draft")
+            (add-text-properties
+             start
+             (point)
+             '(font-lock-face e-chat-user-face
+               e-chat-block-id "leaked-block"
+               e-chat-turn-id "leaked-turn"))
+            (e-chat--advance-progress-indicator)
+            (goto-char e-chat--composer-start-marker)
+            (search-forward "follow-up draft")
+            (let ((position (match-beginning 0)))
+              (should-not (get-text-property position 'font-lock-face))
+              (should-not (get-text-property position 'e-chat-block-id))
+              (should-not (get-text-property position 'e-chat-turn-id)))
+            (should (equal (e-chat--composer-text) "follow-up draft"))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-progress-rerender-preserves-context-reference ()
   "Progress redraws keep inline context reference properties in the composer."
   (let ((buffer (e-chat-test--buffer nil "chat-progress-context-reference")))
