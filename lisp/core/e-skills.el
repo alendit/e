@@ -140,7 +140,7 @@ is display metadata and may contain slashes."
 
 (cl-defun e-capability-with-skills-create
     (&key id name instructions skills tools resource-methods resources
-          context-providers actions skill-heading)
+          context-providers actions instruction-priority skill-heading)
   "Create an ordinary capability with discoverable skill resources.
 SKILLS are construction-time `e-skill-spec' values.  The returned object is an
 `e-capability' whose instructions contain compact skill references and whose
@@ -161,6 +161,7 @@ resources register each full skill body under e://."
      :resource-methods resource-methods
      :resources all-resources
      :context-providers context-providers
+     :instruction-priority instruction-priority
      :actions actions)))
 
 (provide 'e-skills)

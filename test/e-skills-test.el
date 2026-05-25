@@ -200,6 +200,7 @@
            :tools (list tool-provider)
            :resource-methods (list resource-method-provider)
            :context-providers (list context-provider)
+           :instruction-priority 220
            :actions actions
            :skills
            (list
@@ -213,6 +214,7 @@
                    (list resource-method-provider)))
     (should (equal (e-capability-context-providers capability)
                    (list context-provider)))
+    (should (= (e-capability-instruction-priority capability) 220))
     (should (eq (e-capabilities-action capability :inspect) action))))
 
 (ert-deftest e-skills-test-builder-does-not-add-empty-preamble ()

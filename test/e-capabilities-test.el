@@ -144,6 +144,55 @@
                    '((:role system :content "Capability instructions.")
                      (:role system :content "provider:turn-1"))))))
 
+(ert-deftest e-capabilities-test-context-priority-orders_fragments ()
+  "Context aggregation orders provider and instruction fragments by priority."
+  (let* ((early-provider
+          (e-context-provider-create
+           :name 'early
+           :priority 100
+           :build (lambda (&rest _)
+                    '((:role system :content "early provider")))))
+         (late-provider
+          (e-context-provider-create
+           :name 'late
+           :priority 300
+           :build (lambda (&rest _)
+                    '((:role system :content "late provider")))))
+         (first
+          (e-capability-create
+           :id 'first
+           :instructions "first instructions"
+           :context-providers (list late-provider)))
+         (second
+          (e-capability-create
+           :id 'second
+           :instructions "second instructions"
+           :context-providers (list early-provider)))
+         (messages (e-capabilities-context-messages (list first second))))
+    (should (equal (mapcar (lambda (message) (plist-get message :content))
+                           messages)
+                   '("early provider"
+                     "first instructions"
+                     "second instructions"
+                     "late provider")))))
+
+(ert-deftest e-capabilities-test-context-priority_preserves_tie_order ()
+  "Equal priorities preserve capability traversal and provider message order."
+  (let* ((provider
+          (e-context-provider-create
+           :name 'default
+           :build (lambda (&rest _)
+                    '((:role system :content "provider one")
+                      (:role system :content "provider two")))))
+         (first (e-capability-create :id 'first
+                                     :instructions "first instructions"))
+         (second (e-capability-create :id 'second
+                                      :context-providers (list provider)))
+         (messages (e-capabilities-context-messages (list first second))))
+    (should (equal (mapcar (lambda (message) (plist-get message :content))
+                           messages)
+                   '("first instructions" "provider one" "provider two")))))
+
 (ert-deftest e-capabilities-test-action ()
   "Capability actions are looked up by keyword."
   (let* ((action #'ignore)

@@ -25,15 +25,32 @@
                (:constructor e-context-provider-create)
                (:conc-name e-context-provider--))
   name
+  (priority 200)
   build)
+
+(defun e-context-provider-priority (provider)
+  "Return PROVIDER priority, defaulting stale providers to 200."
+  (if (>= (length provider) 4)
+      (e-context-provider--priority provider)
+    200))
+
+(put 'e-context-provider-priority 'compiler-macro nil)
+
+(defun e-context-provider--build-function (provider)
+  "Return PROVIDER build function, tolerating stale provider records."
+  (if (>= (length provider) 4)
+      (e-context-provider--build provider)
+    (aref provider 2)))
+
+(put 'e-context-provider--build-function 'compiler-macro nil)
 
 (cl-defun e-context-provider-build (provider &key harness session-id turn-id)
   "Build read-only context messages with PROVIDER.
 HARNESS, SESSION-ID, and TURN-ID identify the current turn."
-  (unless (functionp (e-context-provider--build provider))
+  (unless (functionp (e-context-provider--build-function provider))
     (signal 'wrong-type-argument
-            (list 'functionp (e-context-provider--build provider))))
-  (funcall (e-context-provider--build provider)
+            (list 'functionp (e-context-provider--build-function provider))))
+  (funcall (e-context-provider--build-function provider)
            :harness harness
            :session-id session-id
            :turn-id turn-id))
@@ -61,6 +78,8 @@ backend-neutral messages that should appear before the session transcript."
   (let ((copy (copy-sequence message)))
     (cl-remf copy :created-at)
     (cl-remf copy :turn-id)
+    (cl-remf copy :type)
+    (cl-remf copy :parent-id)
     copy))
 
 (defun e-context--backend-messages (messages)

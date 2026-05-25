@@ -120,7 +120,9 @@
       (insert (format "Default directory: `%s`\n\n" default-directory))
       (insert (format "Layer count: %d\n\n"
                       (length (e-harness-active-layers harness))))
-      (insert (format "Message count: %d\n\n" (length messages)))
+      (insert (format "Backend-neutral context fragment count: %d\n\n"
+                      (length messages)))
+      (insert "System fragments may be mapped or collapsed by backend adapters before provider submission.\n\n")
       (when include-metadata
         (insert "## Export metadata\n\n")
         (insert (format "- Mode: `%s`\n" mode))
@@ -132,7 +134,7 @@
                                  collect key))))
       (cl-loop for message in messages
                for index from 1
-               do (insert (format "## Message %d (%s)\n\n"
+               do (insert (format "## Context fragment %d (%s)\n\n"
                                   index
                                   (plist-get message :role)))
                   (insert (e-context-inspection--safe-content

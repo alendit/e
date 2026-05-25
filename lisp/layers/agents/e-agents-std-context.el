@@ -116,6 +116,7 @@
   (let ((root (e-agents-std-context--directory directory)))
     (e-context-provider-create
      :name 'agents-std-context-agents
+     :priority 100
      :build (cl-function
              (lambda (&key harness session-id turn-id)
                (e-agents-std-context--agents-messages
@@ -365,6 +366,7 @@ slugs across those scopes intentionally remain distinct resources."
   (let ((root (e-agents-std-context--directory directory)))
     (e-context-provider-create
      :name 'agents-std-context-project-skills
+     :priority 220
      :build (cl-function
              (lambda (&key harness session-id turn-id)
                (e-agents-std-context--skills-catalog-message
@@ -407,6 +409,7 @@ slugs across those scopes intentionally remain distinct resources."
     (e-capability-with-skills-create
      :id 'agents-std-context
      :name "Agents Std Context"
+     :instruction-priority 220
      :instructions e-agents-std-context-instructions
      :skills (e-agents-std-context--global-skill-specs)
      :resources (list

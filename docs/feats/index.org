@@ -19,4 +19,4 @@ Status values for coding agents:
 | 06 | Done | 06-agents-std-context/ | Agents Std Context |
 | 07 | Ready | 07-capability-config/ | Capability Config |
 | 08 | Done | 08-context-protection-tool-calls/ | Context Protection from Tool Calls |
-| 09 | Ready | 09-context-ordering/ | Context Ordering |
+| 09 | In-review | 09-context-ordering/ | Context Ordering |

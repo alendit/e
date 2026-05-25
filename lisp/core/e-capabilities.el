@@ -24,7 +24,8 @@
                (:constructor e-capability--create
                              (&key id name instructions tools
                                    resource-methods resources
-                                   context-providers actions hooks)))
+                                   context-providers actions hooks
+                                   instruction-priority)))
   id
   name
   instructions
@@ -33,7 +34,8 @@
   resources
   context-providers
   actions
-  hooks)
+  hooks
+  (instruction-priority 200))
 
 (cl-defstruct (e-capability-resource-method-provider
                (:constructor e-capability-resource-method-provider-create))
@@ -99,11 +101,20 @@ slot existed."
       (aref capability 9)
     nil))
 
+(defun e-capability-instruction-priority (capability)
+  "Return CAPABILITY instruction priority.
+This accessor tolerates stale capability records compiled before the
+`instruction-priority' slot existed."
+  (if (>= (length capability) 11)
+      (or (aref capability 10) 200)
+    200))
+
 (dolist (symbol '(e-capability-resource-methods
                   e-capability-resources
                   e-capability-context-providers
                   e-capability-actions
-                  e-capability-hooks))
+                  e-capability-hooks
+                  e-capability-instruction-priority))
   (put symbol 'compiler-macro nil)
   (put symbol 'side-effect-free nil)
   (put symbol 'gv-expander nil))
@@ -181,27 +192,60 @@ HARNESS, SESSION-ID, and TURN-ID identify the active turn."
    (t
     (signal 'wrong-type-argument (list 'functionp provider)))))
 
+(defun e-capabilities--provider-priority (provider)
+  "Return PROVIDER context priority."
+  (if (e-context-provider-p provider)
+      (e-context-provider-priority provider)
+    200))
+
 (cl-defun e-capabilities-context-messages
     (capabilities &key harness session-id turn-id)
   "Return backend-neutral context messages contributed by CAPABILITIES.
 HARNESS, SESSION-ID, and TURN-ID are passed to context providers."
-  (let ((messages nil))
+  (let ((fragments nil)
+        (capability-index 0))
     (dolist (capability capabilities)
       (when (e-capability-instructions capability)
-        (push (list :role 'system
-                    :content (e-capability-instructions capability))
-              messages))
-      (dolist (provider (e-capability-context-providers capability))
-        (setq messages
-              (append
-               (reverse
-                (e-capabilities--provider-messages
-                 provider
-                 :harness harness
-                 :session-id session-id
-                 :turn-id turn-id))
-               messages))))
-    (nreverse messages)))
+        (push (list :priority (e-capability-instruction-priority capability)
+                    :capability-index capability-index
+                    :message-index 0
+                    :message (list :role 'system
+                                   :content
+                                   (e-capability-instructions capability)))
+              fragments))
+      (let ((provider-index 0))
+        (dolist (provider (e-capability-context-providers capability))
+          (let ((message-index 0))
+            (dolist (message (e-capabilities--provider-messages
+                              provider
+                              :harness harness
+                              :session-id session-id
+                              :turn-id turn-id))
+              (push (list :priority (e-capabilities--provider-priority provider)
+                          :capability-index capability-index
+                          :provider-index provider-index
+                          :message-index message-index
+                          :message message)
+                    fragments)
+              (setq message-index (1+ message-index))))
+          (setq provider-index (1+ provider-index))))
+      (setq capability-index (1+ capability-index)))
+    (mapcar
+     (lambda (fragment) (plist-get fragment :message))
+     (sort fragments
+           (lambda (left right)
+             (let ((left-key (list (plist-get left :priority)
+                                   (plist-get left :capability-index)
+                                   (or (plist-get left :provider-index) -1)
+                                   (plist-get left :message-index)))
+                   (right-key (list (plist-get right :priority)
+                                    (plist-get right :capability-index)
+                                    (or (plist-get right :provider-index) -1)
+                                    (plist-get right :message-index))))
+               (cl-loop for left-item in left-key
+                        for right-item in right-key
+                        thereis (< left-item right-item)
+                        until (/= left-item right-item))))))))
 
 (defun e-capabilities-action (capability action)
   "Return CAPABILITY function for ACTION."

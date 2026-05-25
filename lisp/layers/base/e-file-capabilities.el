@@ -31,11 +31,13 @@
                     (e-harness-project-root harness session-id turn-id))))
     (e-file-capabilities--directory (or root fallback))))
 
-(defun e-base-guidance-capability-create (instructions)
+(cl-defun e-base-guidance-capability-create
+    (instructions &key instruction-priority)
   "Create a base guidance capability carrying INSTRUCTIONS."
   (e-capability-create
    :id 'base-guidance
    :name "Base Guidance"
+   :instruction-priority instruction-priority
    :instructions instructions))
 
 (defun e-file-inspection-capability-create (&optional directory)

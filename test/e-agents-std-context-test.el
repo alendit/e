@@ -33,6 +33,14 @@
    (plist-get (e-harness-context harness session-id) :messages)
    "\n\n"))
 
+(ert-deftest e-agents-std-context-test-built-in-priorities ()
+  "Standard agent context uses explicit context fragment priorities."
+  (let* ((capability (e-agents-std-context-capability-create default-directory))
+         (providers (e-capability-context-providers capability)))
+    (should (= (e-capability-instruction-priority capability) 220))
+    (should (= (e-context-provider-priority (car providers)) 100))
+    (should (= (e-context-provider-priority (cadr providers)) 220))))
+
 (ert-deftest e-agents-std-context-test-adds-agents-files-to-turn-context ()
   "The layer adds global and project AGENTS.md content to every turn context."
   (let* ((home (make-temp-file "e-agents-home-" t))

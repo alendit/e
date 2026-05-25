@@ -26,6 +26,7 @@
   (e-capability-create
    :id 'harness-base-context
    :name "Harness Base Context"
+   :instruction-priority 240
    :instructions e-harness-base-instructions))
 
 (defun e-harness-base-layer-create ()

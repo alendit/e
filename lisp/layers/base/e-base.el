@@ -25,7 +25,9 @@
     (e-layer-create
      :id 'os-base
      :name "OS Base"
-     :capabilities (list (e-base-guidance-capability-create e-base-instructions)
+     :capabilities (list (e-base-guidance-capability-create
+                          e-base-instructions
+                          :instruction-priority 230)
                          (e-file-inspection-capability-create root)
                          (e-file-mutation-capability-create root)
                          (e-shell-process-capability-create root)))))

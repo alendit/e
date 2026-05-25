@@ -44,6 +44,7 @@
   "Return the visible-buffer context provider for Emacs awareness."
   (e-context-provider-create
    :name 'visible-buffers
+   :priority 320
    :build (cl-function
            (lambda (&key harness session-id turn-id)
              (ignore harness session-id turn-id)
@@ -56,6 +57,7 @@
   (e-capability-create
    :id 'emacs-awareness
    :name "Emacs Awareness"
+   :instruction-priority 300
    :instructions e-emacs-base-instructions
    :context-providers (list (e-emacs-visible-buffers-context-provider))))
 

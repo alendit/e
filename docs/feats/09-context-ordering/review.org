@@ -1,0 +1,67 @@
+#+title: Context Ordering Review
+#+startup: overview
+
+* Scope Reviewed
+
+Reviewed the implementation against =plan.org= for feature 09, focusing on
+provider-neutral context ordering, built-in priority assignments, export wording,
+and preservation of layer/capability order as the tie-breaker.
+
+The reviewed changes cover:
+
+- =e-context-provider= priority metadata with stale-record tolerant accessors.
+- =e-capability= instruction priority metadata with stale-record tolerant
+  accessors.
+- priority sorting inside =e-capabilities-context-messages=.
+- built-in priorities for AGENTS.md, skill catalog/instructions, base guidance,
+  harness guidance, Emacs awareness, and visible buffers.
+- context export wording that describes backend-neutral context fragments rather
+  than provider-submitted message counts.
+- skill ordering kept separate from context-fragment priority.
+
+* Plan Acceptance Review
+
+** Accepted
+
+- Context stays provider-neutral.  The implementation still returns ordered
+  message plists from capability aggregation, and backend adapters remain
+  responsible for provider-specific mapping.
+- Lower numeric priorities appear earlier in generated context.
+- Capabilities without explicit priorities keep the default =200= behavior.
+- Equal priorities preserve capability traversal and provider message order.
+- AGENTS.md context is assigned priority =100=.
+- =agents-std-context= instructions and skill catalog are assigned priority
+  =220=.
+- OS base guidance is assigned priority =230=.
+- Harness self-management guidance is assigned priority =240=.
+- Emacs awareness instructions are assigned priority =300=.
+- Visible buffers are assigned priority =320=.
+- Context export text now uses "Backend-neutral context fragment count" and adds
+  an adapter-mapping note.
+- Skill ordering is not handled by context priority.  It remains owned by the
+  skill/catalog code; duplicate global/project skill behavior remains a separate
+  bug scope.
+
+** Remaining Notes
+
+- The live check used a synthetic project with AGENTS.md and one project skill.
+  Before marking this feature =Done=, inspect one ordinary chat buffer context as
+  a final UX check if the active user's chat setup differs from the synthetic
+  harness.
+
+* Verification Evidence
+
+- =eldev test test/e-capabilities-test.el test/e-context-test.el test/e-skills-test.el test/e-agents-std-context-test.el test/e-emacs-capabilities-test.el test/e-emacs-base-test.el test/e-context-inspection-test.el=:
+  46 tests passed.
+- =eldev test test/e-defaults-test.el test/e-chat-session-test.el test/e-harness-test.el=:
+  58 tests passed.
+- Live reload succeeded with:
+  =emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"=
+- Live synthetic context inspection after reload returned AGENTS.md at index =0=,
+  project skill catalog at index =2=, visible buffers at index =5=, and =6=
+  total context fragments.
+
+* Review Result
+
+The feature matches the plan and is ready for in-review follow-up.  The only
+remaining note is a final ordinary chat-context UX inspection before =Done=.

@@ -42,6 +42,10 @@
                     :turn-id "turn-1")))
     (should (equal (plist-get (car messages) :content)
                    e-emacs-base-instructions))
+    (should (= (e-capability-instruction-priority capability) 300))
+    (should (= (e-context-provider-priority
+                (car (e-capability-context-providers capability)))
+               320))
     (should (string-match-p "Visible Emacs buffers:"
                             (plist-get (cadr messages) :content)))))
 
