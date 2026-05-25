@@ -1361,13 +1361,16 @@
                           :session-id e-chat-session-id
                           :turn-id "turn-1"
                           :created-at 0))
-          (e-chat--render-event
-           (e-events-make :type 'provider-request-started
-                          :session-id e-chat-session-id
-                          :turn-id "turn-1"
-                          :created-at 0
-                          :payload '(:status started)))
-          (should (string-match-p "Thinking\\.\\.\\." (buffer-string)))
+          (cl-letf (((symbol-function 'float-time)
+                     (lambda (&optional _time) 8.0)))
+            (e-chat--render-event
+             (e-events-make :type 'provider-request-started
+                            :session-id e-chat-session-id
+                            :turn-id "turn-1"
+                            :created-at 0
+                            :payload '(:status started))))
+          (should (string-match-p "◐ Thinking for 0min 8sec"
+                                  (buffer-string)))
           (e-chat--render-event
            (e-events-make :type 'provider-request-finished
                           :session-id e-chat-session-id
@@ -1377,6 +1380,214 @@
           (let ((content (buffer-string)))
             (should (string-match-p "Thought for 1min 3sec" content))
             (should-not (string-match-p "Thinking\\.\\.\\." content))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-active-thinking-row-shows-spinner-and-duration ()
+  "Active provider requests show a moving thinking row with current duration."
+  (let ((buffer (e-chat-test--buffer nil "chat-active-thinking-duration")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (cl-letf (((symbol-function 'float-time)
+                     (lambda (&optional _time) 8.0)))
+            (e-chat--render-event
+             (e-events-make :type 'turn-started
+                            :session-id e-chat-session-id
+                            :turn-id "turn-1"
+                            :created-at 0))
+            (e-chat--render-event
+             (e-events-make :type 'provider-request-started
+                            :session-id e-chat-session-id
+                            :turn-id "turn-1"
+                            :created-at 0
+                            :payload '(:status started))))
+          (let ((content (buffer-string)))
+            (should (string-match-p
+                     "◐ Thinking for 0min 8sec" content))
+            (should-not (string-match-p "Thinking\\.\\.\\." content))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-progress-rerender-updates-active-thinking-row ()
+  "Progress redraw updates the active thinking row without duplicating it."
+  (let ((buffer (e-chat-test--buffer nil "chat-active-thinking-rerender")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (cl-letf (((symbol-function 'float-time)
+                     (lambda (&optional _time) 8.0)))
+            (e-chat--render-event
+             (e-events-make :type 'turn-started
+                            :session-id e-chat-session-id
+                            :turn-id "turn-1"
+                            :created-at 0))
+            (e-chat--render-event
+             (e-events-make :type 'provider-request-started
+                            :session-id e-chat-session-id
+                            :turn-id "turn-1"
+                            :created-at 0
+                            :payload '(:status started))))
+          (cl-letf (((symbol-function 'float-time)
+                     (lambda (&optional _time) 15.0)))
+            (e-chat--advance-progress-indicator))
+          (let ((content (buffer-string)))
+            (should (string-match-p
+                     "◓ Thinking for 0min 15sec" content))
+            (should (= (e-chat-test--count-occurrences
+                        "Thinking for" content)
+                       1))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-tool-count-renders-on-thinking-row ()
+  "A round's tool count renders on the same line as its thought row."
+  (let ((buffer (e-chat-test--buffer nil "chat-tool-count-thinking-row")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat--render-event
+           (e-events-make :type 'turn-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 0))
+          (e-chat--render-event
+           (e-events-make :type 'provider-request-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 0
+                          :payload '(:status started)))
+          (e-chat--render-event
+           (e-events-make :type 'provider-request-finished
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 10
+                          :payload '(:status done)))
+          (e-chat--render-event
+           (e-events-make :type 'tool-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 11
+                          :payload '(:id "call-1" :name "read")))
+          (let ((content (buffer-string)))
+            (should (string-match-p
+                     "Thought for 0min 10sec +1 tool call" content))
+            (should-not (string-match-p
+                         "Thought for 0min 10sec\n\n1 tool call"
+                         content))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-activity-rounds-have-subtle-separators ()
+  "Multiple intermittent rounds are separated inside the activity block."
+  (let ((buffer (e-chat-test--buffer nil "chat-activity-round-separators")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat--render-event
+           (e-events-make :type 'turn-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 0))
+          (e-chat--render-event
+           (e-events-make :type 'provider-request-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 0
+                          :payload '(:status started)))
+          (e-chat--render-event
+           (e-events-make :type 'provider-request-finished
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 10
+                          :payload '(:status done)))
+          (e-chat--render-event
+           (e-events-make :type 'provider-request-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 20
+                          :payload '(:status started)))
+          (let ((content (buffer-string)))
+            (should (string-match-p
+                     (concat "Thought for 0min 10sec\n"
+                             (make-string 64 ?┈)
+                             "\n◐ Thinking for")
+                     content))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-activity-separator-is-quieter-than-response-separator ()
+  "Activity round dividers are quieter than the prompt/agent separator."
+  (should (boundp 'e-chat--activity-separator))
+  (should (equal e-chat--response-separator
+                 (make-string 64 ?┄)))
+  (should (equal e-chat--activity-separator
+                 (make-string 64 ?┈)))
+  (should-not (equal e-chat--activity-separator
+                     e-chat--response-separator)))
+
+(ert-deftest e-chat-test-activity-separator-uses-dim-activity-face ()
+  "Activity round dividers use a dim face inside the activity block."
+  (let ((buffer (e-chat-test--buffer nil "chat-activity-separator-face")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat--render-event
+           (e-events-make :type 'turn-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 0))
+          (e-chat--render-event
+           (e-events-make :type 'provider-request-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 0
+                          :payload '(:status started)))
+          (e-chat--render-event
+           (e-events-make :type 'provider-request-finished
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 10
+                          :payload '(:status done)))
+          (e-chat--render-event
+           (e-events-make :type 'provider-request-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 20
+                          :payload '(:status started)))
+          (goto-char (point-min))
+          (search-forward e-chat--activity-separator)
+          (should (eq (get-text-property (match-beginning 0) 'font-lock-face)
+                      'e-chat-activity-separator-face)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-reasoning-has-space-after-thought-row ()
+  "Reasoning text has a small visual gap after the thought row."
+  (let ((buffer (e-chat-test--buffer nil "chat-reasoning-spacer")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (cl-letf (((symbol-function 'float-time)
+                     (lambda (&optional _time) 8.0)))
+            (e-chat--render-event
+             (e-events-make :type 'turn-started
+                            :session-id e-chat-session-id
+                            :turn-id "turn-1"
+                            :created-at 0))
+            (e-chat--render-event
+             (e-events-make :type 'provider-request-started
+                            :session-id e-chat-session-id
+                            :turn-id "turn-1"
+                            :created-at 0
+                            :payload '(:status started)))
+            (e-chat--render-event
+             (e-events-make :type 'reasoning-delta
+                            :session-id e-chat-session-id
+                            :turn-id "turn-1"
+                            :created-at 1
+                            :payload '(:content "planning"))))
+          (let ((content (buffer-string)))
+            (should (string-match-p
+                     "◐ Thinking for 0min 8sec\n\nplanning"
+                     content))
+            (should-not (string-match-p
+                         "◐ Thinking for 0min 8sec\nplanning"
+                         content))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 

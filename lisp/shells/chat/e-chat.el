@@ -168,6 +168,15 @@ The mode line uses this presentation-owned table for context usage display."
   "Face used for separators between user prompt and agent-side blocks."
   :group 'e-chat)
 
+(defface e-chat-activity-separator-face
+  '((t :inherit shadow
+       :foreground "#46505c"
+       :background "#312b3c"
+       :box nil
+       :extend t))
+  "Face used for separators between intermittent activity rounds."
+  :group 'e-chat)
+
 (defun e-chat--apply-owned-face-defaults ()
   "Apply face defaults that should update during live reload."
   (set-face-attribute 'e-chat-separator-face nil
@@ -182,6 +191,11 @@ The mode line uses this presentation-owned table for context usage display."
   (set-face-attribute 'e-chat-response-separator-face nil
                       :foreground "#5f6b78"
                       :background "#202833"
+                      :box nil
+                      :extend t)
+  (set-face-attribute 'e-chat-activity-separator-face nil
+                      :foreground "#46505c"
+                      :background "#312b3c"
                       :box nil
                       :extend t))
 
@@ -298,6 +312,14 @@ The mode line uses this presentation-owned table for context usage display."
        :extend t))
   "Default face spec for separators between prompt and response blocks.")
 
+(defconst e-chat--activity-separator-face-spec
+  '((t :inherit shadow
+       :foreground "#46505c"
+       :background "#312b3c"
+       :box nil
+       :extend t))
+  "Default face spec for separators between intermittent activity rounds.")
+
 (defun e-chat--refresh-face-specs ()
   "Refresh chat face defaults after live reload."
   (face-spec-set 'e-chat-user-face e-chat--user-face-spec)
@@ -310,7 +332,9 @@ The mode line uses this presentation-owned table for context usage display."
   (face-spec-set 'e-chat-turn-separator-face
                  e-chat--turn-separator-face-spec)
   (face-spec-set 'e-chat-response-separator-face
-                 e-chat--response-separator-face-spec))
+                 e-chat--response-separator-face-spec)
+  (face-spec-set 'e-chat-activity-separator-face
+                 e-chat--activity-separator-face-spec))
 
 (e-chat--refresh-face-specs)
 
@@ -445,6 +469,10 @@ The mode line uses this presentation-owned table for context usage display."
 (defconst e-chat--response-separator
   "┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄"
   "Separator shown between prompt and agent-side blocks in a turn.")
+
+(defconst e-chat--activity-separator
+  "┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈"
+  "Subtle separator shown between intermittent activity rounds.")
 
 (defconst e-chat--title "E Agent Session"
   "Title shown at the top of e chat buffers.")
@@ -852,6 +880,17 @@ FACE is applied when non-nil.  PROPERTIES are added with text properties."
       (add-text-properties start (point) `(font-lock-face ,face)))
     (when properties
       (add-text-properties start (point) properties))))
+
+(defun e-chat--apply-activity-separator-face (start end)
+  "Apply the quiet activity separator face between START and END."
+  (when (< start end)
+    (save-excursion
+      (goto-char start)
+      (while (search-forward e-chat--activity-separator end t)
+        (add-text-properties
+         (match-beginning 0)
+         (match-end 0)
+         '(font-lock-face e-chat-activity-separator-face))))))
 
 (defun e-chat--entry-side (title)
   "Return the prompt/agent side represented by entry TITLE."
@@ -1599,6 +1638,10 @@ DETAILS-TEXT describe block actions."
           (format "%dmin %dsec" minutes remaining))
       "unknown")))
 
+(defun e-chat--current-time-seconds ()
+  "Return the current time as float seconds."
+  (float-time))
+
 (defun e-chat--indent-detail-text (text)
   "Return TEXT with each line indented for expanded turn details."
   (concat "  " (replace-regexp-in-string "\n" "\n  " (string-trim-right text))))
@@ -1752,10 +1795,16 @@ When APPEND is non-nil, merge CONTENT into the previous reasoning child."
     ((or 'active "active" 'started "started") 'active)
     (_ 'done)))
 
-(defun e-chat--thought-content (status started-at ended-at)
-  "Return thought line text for STATUS from STARTED-AT to ENDED-AT."
+(defun e-chat--thought-content (status started-at ended-at &optional active-at)
+  "Return thought line text for STATUS from STARTED-AT to ENDED-AT.
+ACTIVE-AT is used for active thinking duration."
   (pcase (e-chat--normalize-round-status status)
-    ('active "Thinking...")
+    ('active
+     (format "%s Thinking for %s"
+             (e-chat--progress-dots)
+             (e-chat--format-duration
+              started-at
+              (or active-at (e-chat--current-time-seconds)))))
     ('failed
      (format "Thought failed after %s"
              (e-chat--format-duration started-at ended-at)))
@@ -1779,22 +1828,47 @@ When APPEND is non-nil, merge CONTENT into the previous reasoning child."
   (e-chat--thought-content
    (plist-get round :status)
    (plist-get round :started-at)
-   (plist-get round :ended-at)))
+   (plist-get round :ended-at)
+   (when (eq (e-chat--normalize-round-status
+              (plist-get round :status))
+             'active)
+     (e-chat--current-time-seconds))))
 
-(defun e-chat--activity-record-visible-lines (record)
-  "Return visible progress lines from semantic activity in RECORD."
-  (let (lines)
-    (dolist (round (e-chat--activity-records record))
-      (when-let ((thought (e-chat--round-thought-text round)))
-        (push thought lines))
-      (dolist (reasoning (plist-get round :reasoning))
-        (when-let ((content (plist-get reasoning :content)))
-          (unless (string-empty-p content)
-            (push content lines))))
-      (let ((tool-count (e-chat--round-tool-count round)))
-        (when (> tool-count 0)
-          (push (e-chat--activity-tool-count-text tool-count) lines))))
-    (nreverse lines)))
+(defun e-chat--activity-round-row-text (left &optional right)
+  "Return activity round row with LEFT and optional right-side RIGHT text."
+  (if (and right (not (string-empty-p right)))
+      (concat left
+              (propertize
+               " "
+               'display
+               `(space :align-to (- right ,(string-width right))))
+              right)
+    left))
+
+(defun e-chat--activity-round-visible-text (round)
+  "Return visible text for semantic activity ROUND."
+  (let* ((thought (e-chat--round-thought-text round))
+         (tool-count (e-chat--round-tool-count round))
+         (tool-text (and (> tool-count 0)
+                         (e-chat--activity-tool-count-text tool-count)))
+         (lines (and thought
+                     (list (e-chat--activity-round-row-text
+                            thought tool-text))))
+         (reasoning-lines nil))
+    (dolist (reasoning (plist-get round :reasoning))
+      (when-let ((content (plist-get reasoning :content)))
+        (unless (string-empty-p content)
+          (setq reasoning-lines (append reasoning-lines (list content))))))
+    (when reasoning-lines
+      (setq lines (append lines (list "") reasoning-lines)))
+    (when lines
+      (string-join lines "\n"))))
+
+(defun e-chat--activity-record-visible-chunks (record)
+  "Return visible activity chunks for semantic activity RECORD."
+  (delq nil
+        (mapcar #'e-chat--activity-round-visible-text
+                (e-chat--activity-records record))))
 
 (defun e-chat--activity-visible-chunks (entries)
   "Return visible collapsed activity chunks for intermittent ENTRIES.
@@ -1859,9 +1933,12 @@ Count tool invocations after the reasoning chunk they followed."
 (defun e-chat--activity-expanded-text (record)
   "Return expanded per-line activity history for RECORD."
   (if (e-chat--activity-records record)
-      (when-let ((lines (e-chat--activity-record-visible-lines record)))
-        (when lines
-          (concat (mapconcat #'identity lines "\n") "\n\n")))
+      (when-let ((chunks (e-chat--activity-record-visible-chunks record)))
+        (when chunks
+          (concat (string-join
+                   chunks
+                   (concat "\n" e-chat--activity-separator "\n"))
+                  "\n\n")))
     (when-let ((chunks (e-chat--activity-visible-chunks
                         (plist-get record :intermittent-entries))))
       (when chunks
@@ -1969,9 +2046,12 @@ Count tool invocations after the reasoning chunk they followed."
 (defun e-chat--transient-text (record)
   "Return visible transient text for RECORD."
   (if (e-chat--activity-records record)
-      (when-let ((lines (e-chat--activity-record-visible-lines record)))
-        (when lines
-          (concat (mapconcat #'identity lines "\n\n") "\n\n")))
+      (when-let ((chunks (e-chat--activity-record-visible-chunks record)))
+        (when chunks
+          (concat (string-join
+                   chunks
+                   (concat "\n" e-chat--activity-separator "\n"))
+                  "\n\n")))
     (when-let ((entries (plist-get record :intermittent-entries)))
       (let ((chunks (e-chat--activity-visible-chunks entries)))
         (when chunks
@@ -2301,6 +2381,9 @@ When RECORD is nil, clear only buffer-local status markers."
                    `(e-chat-transient-turn-id ,turn-id
                      e-chat-turn-id ,turn-id
                      e-chat-block-id ,activity-block-id))
+                  (e-chat--apply-activity-separator-face
+                   transient-start
+                   (point))
                   (plist-put record
                              :transient-start-marker
                              (copy-marker transient-start nil))
@@ -2319,7 +2402,7 @@ When RECORD is nil, clear only buffer-local status markers."
                      (point)
                      (e-chat--activity-tool-items record)
                      details-text))))
-              (when has-progress
+              (when (and has-progress (not text))
                 (let ((progress-start (point)))
                   (e-chat--insert-protected
                    (e-chat--entry-text "Assistant" (e-chat--progress-dots))
