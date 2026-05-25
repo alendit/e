@@ -1,0 +1,19 @@
+#+title: Session Append Record Spams Echo Area
+#+startup: overview
+
+* Report
+
+While one or more =e-chat= turns are running, the echo area repeatedly shows
+messages like:
+
+#+begin_example
+Added to /Users/dimitrivorona/.emacs.d/.local/cache/e/sessions/sessions/20260525T200436-b2acedb53028.json
+#+end_example
+
+The message appears in the global footer / echo area, interrupts typing, and
+does not carry useful user-facing state. If the persistence write needs to be
+observable, it should be logged somewhere invisible by default rather than
+shown globally.
+
+The user-provided screenshot showed the echo-area message while an =e-chat=
+review buffer was active and waiting for provider output.

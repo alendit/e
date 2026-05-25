@@ -1,0 +1,69 @@
+#+title: Investigation
+#+startup: overview
+
+* Source inspected
+
+- =lisp/core/e-session.el=: =e-session--append-record= persists every session
+  journal record by creating a temp buffer and calling =append-to-file= for the
+  target session JSONL file.
+- =lisp/core/e-session.el=: session files live under the store's
+  =sessions-directory=, which matches the screenshot path under
+  =~/.emacs.d/.local/cache/e/sessions/sessions/=.
+- =lisp/shells/chat/e-chat.el=: =e-chat--set-status= owns the intended chat
+  header line and compact mode-line state. The reported =Added to ...= text is
+  not part of =e-chat--set-status= or the compact status formatter.
+- =lisp/shells/chat/e-chat.el=: context insertion uses
+  =e-chat--add-context-reference-to-session= and related commands. Current
+  source does not contain the literal =Added to= text, so the repeated message
+  is not an explicit chat-shell status string.
+- =test/e-session-test.el=: persistence tests cover generated session ids and
+  replay behavior, but there is no test guarding that persistent append writes
+  stay quiet in the echo area.
+
+* Live access
+
+Read-only =emacsclient --eval= inspection found active =e-chat= buffers
+matching the screenshot context:
+
+- =*e-chat:Review feature 09 based o...*= with session
+  =20260525T200436-b2acedb53028=, waiting for provider.
+- =*e-chat:Review feature 11 based o...*= with session
+  =20260525T200510-3e24caac2e05=, waiting for provider.
+- =*e-chat:Review feature 07 based o...*= with session
+  =20260525T200322-eec4bc3a9028=, waiting for provider.
+
+The live =*Messages*= buffer contained a long run of repeated entries of the
+same shape as the screenshot, including repeated paths for the active review
+sessions under:
+
+#+begin_example
+/Users/dimitrivorona/.emacs.d/.local/cache/e/sessions/sessions/
+#+end_example
+
+A separate live check with a temporary file confirmed that appending to a file
+can add an =Added to ...= entry to =*Messages*= / the echo-area message stream.
+That behavior lines up with =e-session--append-record= using =append-to-file=
+for every persistent journal append.
+
+* Conclusion
+
+The likely root cause is that persistent session journaling is using an Emacs
+file append API that reports successful writes through the global message
+stream. During active turns, every persisted message or activity event can
+therefore produce an =Added to ...= echo-area update, which competes with the
+chat footer and interrupts typing.
+
+This is a persistence-layer side effect leaking into the presentation shell.
+The append should remain durable, but successful persistence writes should not
+emit global interactive status.
+
+* Next step
+
+Fix =e-session--append-record= so normal session JSONL appends are silent from
+the user's echo area. If write visibility is still useful for debugging, route
+it to an internal diagnostics buffer or structured event that is invisible by
+default.
+
+Add a regression test around persistent append behavior that proves appending a
+session record does not add user-visible echo-area messages while preserving
+the existing replay guarantees.
