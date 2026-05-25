@@ -207,6 +207,28 @@ When READ-ONLY is non-nil, file resources only support reads."
                            "ALPHA\r\nbeta\r\nGAMMA\r\n"))))
       (delete-directory directory t))))
 
+(ert-deftest e-base-tools-test-edit-file-decodes-utf-8-text ()
+  "The edit tool decodes UTF-8 text before applying replacements."
+  (let* ((directory (make-temp-file "e-base-edit-utf8-" t))
+         (file (expand-file-name "sample.txt" directory))
+         (registry (e-base-tools-test--resource-tools directory)))
+    (unwind-protect
+        (progn
+          (let ((coding-system-for-write 'utf-8))
+            (write-region "before “smart” after\n" nil file nil 'silent))
+          (let ((result (e-base-tools-test--execute
+                         registry
+                         "edit"
+                         '(:uri "file://sample.txt"
+                           :edits ((:oldText "after" :newText "done"))))))
+            (should (equal (plist-get result :status) 'ok))
+            (should (equal (with-temp-buffer
+                             (let ((coding-system-for-read 'utf-8))
+                               (insert-file-contents file))
+                             (buffer-string))
+                           "before “smart” done\n"))))
+      (delete-directory directory t))))
+
 (ert-deftest e-base-tools-test-edit-file-rejects-invalid-replacements ()
   "The edit tool rejects missing, duplicate, empty, overlapping, and no-op edits."
   (let* ((directory (make-temp-file "e-base-edit-errors-" t))

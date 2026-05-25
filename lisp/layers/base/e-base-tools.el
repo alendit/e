@@ -79,6 +79,10 @@ When nil, `shell-command-switch' is used."
     (insert-file-contents-literally path)
     (buffer-string)))
 
+(defun e-base-tools--decode-text (content)
+  "Decode literal file CONTENT as UTF-8 text."
+  (decode-coding-string content 'utf-8-unix t))
+
 (defun e-base-tools--binary-string-p (content)
   "Return non-nil when CONTENT appears binary."
   (or (string-search "\0" content)
@@ -181,7 +185,7 @@ TOTAL-LINES is the full file line count.  START-LINE is 1-based."
     (when (e-base-tools--binary-string-p content)
       (signal 'e-base-tools-read-invalid
               (list "The read tool is text-only in v1; binary and image files are not supported.")))
-    content))
+    (e-base-tools--decode-text content)))
 
 (defun e-base-tools--read-text (path offset limit)
   "Read text PATH with 1-based OFFSET and optional LIMIT."
@@ -262,7 +266,8 @@ TOTAL-LINES is the full file line count.  START-LINE is 1-based."
   (let* ((path (plist-get uri :address))
          (absolute-path (e-base-tools--resource-path uri directory)))
     (make-directory (file-name-directory absolute-path) t)
-    (write-region content nil absolute-path nil 'silent)
+    (let ((coding-system-for-write 'utf-8-unix))
+      (write-region content nil absolute-path nil 'silent))
     (format "Successfully wrote %d bytes to %s"
             (string-bytes content)
             path)))
@@ -278,7 +283,8 @@ TOTAL-LINES is the full file line count.  START-LINE is 1-based."
          (new-content (e-base-tools--apply-edits content normalized-edits path))
          (final-content
           (e-base-tools--restore-line-endings new-content line-ending)))
-    (write-region final-content nil absolute-path nil 'silent)
+    (let ((coding-system-for-write 'utf-8-unix))
+      (write-region final-content nil absolute-path nil 'silent))
     (list :message (format "Successfully replaced %d block(s) in %s."
                            (length normalized-edits)
                            path)
