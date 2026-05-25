@@ -1,0 +1,453 @@
+#+title: Literate PRs with Org/Babel
+#+subtitle: Org file as commit/PR narrative, generator, and review dossier
+#+author:
+#+date: 2026-05-25
+#+startup: overview
+#+options: toc:2
+
+* Core idea
+
+The desired workflow is a /literate PR/ or /literate patch/:
+
+- A single Org file describes the motivation, design intent, commit structure, and review notes.
+- Org/Babel source blocks generate files, patch fragments, or validation output.
+- Git remains responsible for producing and validating the final diff.
+- Optional Emacs tools provide better review UI: side-by-side diffs, syntax-highlighted comparisons, Magit/Forge links, and PR review integration.
+
+The key distinction:
+
+#+begin_example
+Org/Babel tangles files.
+Git applies and computes patches.
+#+end_example
+
+So the robust model is:
+
+#+begin_example
+Org narrative + Babel generation → generated worktree/files → git diff / git apply / review tools
+#+end_example
+
+not:
+
+#+begin_example
+manually maintained unified diff hunks as the primary source of truth
+#+end_example
+
+Manual diff hunks are possible, but brittle.
+
+* Three possible models
+
+** 1. Static diff snippets
+
+Org can display patch text using =diff= source blocks:
+
+#+begin_src org
+,#+begin_src diff
+diff --git a/foo.ts b/foo.ts
+index 1111111..2222222 100644
+--- a/foo.ts
++++ b/foo.ts
+@@ -1,3 +1,3 @@
+-console.log("old")
++console.log("new")
+,#+end_src
+#+end_src
+
+This is useful for documentation and review notes.
+
+It is not a full execution model. A =diff= block is normally not evaluated by Babel unless you implement an =org-babel-execute:diff= handler yourself.
+
+** 2. Org tangles into a patch file
+
+You can tangle one or more =diff= blocks into a =.patch= file:
+
+#+begin_src org
+,#+property: header-args:diff :tangle pr.patch :comments no
+
+,* Commit 1: Add retry policy
+
+,#+begin_src diff
+diff --git a/src/client/retry.ts b/src/client/retry.ts
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/src/client/retry.ts
+@@ -0,0 +1,6 @@
++export interface RetryPolicy {
++  maxAttempts: number;
++  baseDelayMs: number;
++  maxDelayMs: number;
++}
++
+,#+end_src
+#+end_src
+
+Then:
+
+#+begin_src sh
+emacs --batch pr.org -f org-babel-tangle
+git apply --check pr.patch
+git apply pr.patch
+#+end_src
+
+This directly satisfies: /Org file tangles into actual diff/.
+
+Main downside: hunk headers and context must be maintained manually.
+
+** 3. Recommended: Org tangles final files, Git computes the diff
+
+For non-trivial changes, make the Org file describe and generate the intended final state. Then let Git compute the patch.
+
+Typical flow:
+
+#+begin_example
+1. Create a temporary git worktree from the base commit.
+2. Tangle Org/Babel blocks into that worktree.
+3. Run tests/linters.
+4. Run git diff to generate the actual patch.
+5. Review with Magit/Ediff/vdiff/delta/etc.
+#+end_example
+
+Example Org block:
+
+#+begin_src org
+,#+property: header-args :mkdirp yes :comments no
+
+,* Generated file: src/client/retry.ts
+
+,#+begin_src typescript :tangle /tmp/pr-worktree/src/client/retry.ts
+export interface RetryPolicy {
+  maxAttempts: number;
+  baseDelayMs: number;
+  maxDelayMs: number;
+}
+,#+end_src
+
+,* Generated diff
+
+,#+begin_src sh :results output replace :wrap src diff
+git -C /tmp/pr-worktree diff -- src/client/retry.ts || true
+,#+end_src
+#+end_src
+
+This gives correct line numbers, context, file modes, and rename handling because Git computes the diff from actual files.
+
+* Recommended file structure
+
+A practical single-file convention:
+
+#+begin_src org
+,#+title: PR: Add explicit retry policy
+,#+property: header-args :mkdirp yes :comments no
+
+,* PR metadata
+:PROPERTIES:
+:base: main
+:branch: literate/retry-policy
+:worktree: /tmp/pr-worktree
+:END:
+
+,* Summary
+
+Short explanation of the change.
+
+,* Motivation
+
+Why this change exists.
+
+,* Design notes
+
+Important decisions, constraints, tradeoffs, and rejected alternatives.
+
+,* Commit 1: Introduce retry policy
+
+,** Rationale
+
+Why this commit is separate.
+
+,** Generated code
+
+,#+begin_src typescript :tangle /tmp/pr-worktree/src/client/retry.ts
+export interface RetryPolicy {
+  maxAttempts: number;
+  baseDelayMs: number;
+  maxDelayMs: number;
+}
+,#+end_src
+
+,** Validation
+
+,#+begin_src sh :results output replace
+git -C /tmp/pr-worktree diff --check
+npm test
+,#+end_src
+
+,** Diff
+
+,#+begin_src sh :results output replace :wrap src diff
+git -C /tmp/pr-worktree diff -- src/client/retry.ts || true
+,#+end_src
+
+,* Review links
+
+- Magit status:
+- Commit/range links:
+- Related issue/PR links:
+
+,* Final patch
+
+,#+begin_src sh :results output replace :wrap src diff
+git -C /tmp/pr-worktree diff || true
+,#+end_src
+#+end_src
+
+* Ecosystem survey
+
+There does not appear to be a mature, canonical package that implements the complete workflow:
+
+#+begin_example
+Org file as PR spec → generated worktree/patch → syntax-aware side-by-side PR review inside Org
+#+end_example
+
+Instead, the Emacs ecosystem provides composable parts.
+
+** Org/Babel generation
+
+Relevant tools:
+
+- Org/Babel :: native literate programming and tangling.
+- noweb references :: compose source blocks from named fragments.
+- org-auto-tangle :: automatically tangles Org files on save via =#+auto_tangle: t=.
+- org-noweb :: command-line oriented tangling/weaving for automated workflows.
+
+Use these for:
+
+- generating final files,
+- generating patch fragments,
+- generating validation output,
+- producing inline =#+RESULTS:= diff blocks.
+
+** Org links into Git state
+
+Relevant tools:
+
+- orgit :: Org links to Magit buffers such as status, log, and revision views.
+- orgit-forge :: Org links to Forge issue/topic buffers.
+- orgit-file :: revision-aware Org links to files at specific commits/branches/tags.
+- org-transclusion :: transclude snippets or ranges from real files into Org.
+
+Use these for:
+
+- durable code references,
+- linking narrative sections to commits/files/PR topics,
+- avoiding permanent copy-paste of source snippets.
+
+** PR review tools
+
+Relevant tools:
+
+- Magit :: core Git porcelain inside Emacs.
+- Forge :: GitHub/GitLab/etc. forge integration for issues and pull requests.
+- code-review :: PR review workflow for VC providers.
+- github-review / emacs-pr-review :: other Emacs-side PR review options.
+
+Use these for:
+
+- actual PR review,
+- comments,
+- status,
+- patch navigation,
+- integration with GitHub/GitLab-style workflows.
+
+** Diff display options
+
+*** Ediff
+
+Best when comparing real files/buffers.
+
+Advantages:
+
+- side-by-side comparison,
+- works with actual buffers,
+- preserves original major modes,
+- therefore keeps language syntax highlighting,
+- integrates with Magit.
+
+Good fit for:
+
+#+begin_example
+base worktree file ↔ generated worktree file
+#+end_example
+
+*** vdiff
+
+A modern side-by-side buffer diff package.
+
+Advantages:
+
+- compares two or three buffers,
+- synchronized scrolling,
+- edit/send/receive hunk operations,
+- folding unchanged sections.
+
+Good fit for:
+
+#+begin_example
+live side-by-side review of generated files
+#+end_example
+
+*** diffview-mode
+
+Renders unified diff text as a side-by-side view.
+
+Good fit for:
+
+#+begin_example
+generated pr.patch → side-by-side rendered patch
+#+end_example
+
+Limitation:
+
+- it still works from patch text, not from two original-language buffers.
+
+*** delta / magit-delta
+
+Syntax-highlighting pager for Git diffs with side-by-side output.
+
+Good fit for:
+
+- terminal diffs,
+- enhanced Magit diff display.
+
+Caveat:
+
+- Magit operations such as staging hunks depend on patch structure.
+- Some delta settings, especially line numbers, can interfere with Magit hunk operations.
+
+*** difftastic
+
+Syntax-aware structural diff tool.
+
+Good fit for:
+
+- language-aware CLI comparison,
+- generated worktree workflows,
+- spotting structural changes better than line-based diff.
+
+Limitation:
+
+- not a native Org/Babel PR UI.
+
+* Suggested architecture
+
+Use Org as the source of truth for intent and generation, not as the final diff engine.
+
+#+begin_example
+pr.org
+├── Summary / motivation / review notes
+├── Commit sections
+├── Source blocks that generate files
+├── Shell blocks that validate the generated worktree
+├── Generated diff blocks for inline reading
+└── Org links to Magit/Forge/files/commits
+#+end_example
+
+Then use external or Emacs-native viewers depending on what is being reviewed:
+
+#+begin_example
+Generated worktree vs base worktree → Ediff or vdiff
+Generated patch text               → diffview-mode or delta
+Actual PR comments/review           → Magit + Forge + code-review
+Durable code links                  → orgit, orgit-file, orgit-forge
+Structural language-aware diff      → difftastic
+#+end_example
+
+* Minimal implementation sketch
+
+** Directory layout
+
+#+begin_example
+repo/
+├── pr.org
+├── src/
+└── ...
+#+end_example
+
+Temporary/generated area:
+
+#+begin_example
+/tmp/pr-worktree/
+#+end_example
+
+** Bootstrap worktree
+
+#+begin_src sh
+git worktree add /tmp/pr-worktree main
+#+end_src
+
+** Tangle Org file
+
+#+begin_src sh
+emacs --batch pr.org -f org-babel-tangle
+#+end_src
+
+** Validate
+
+#+begin_src sh
+git -C /tmp/pr-worktree diff --check
+git -C /tmp/pr-worktree status --short
+#+end_src
+
+** Generate final patch
+
+#+begin_src sh
+git -C /tmp/pr-worktree diff > pr.patch
+#+end_src
+
+** Apply elsewhere
+
+#+begin_src sh
+git apply --check pr.patch
+git apply pr.patch
+#+end_src
+
+* Practical recommendation
+
+For small patches:
+
+#+begin_example
+Org file with tangled diff blocks → pr.patch → git apply
+#+end_example
+
+For real PRs:
+
+#+begin_example
+Org file with prose + source blocks → generated worktree → Git computes diff → review with Ediff/vdiff/Magit/Forge
+#+end_example
+
+The second model is more maintainable because the Org file describes intent and final content, while Git remains responsible for patch correctness.
+
+* Open niche
+
+A polished tool could exist here, but the available packages are currently building blocks rather than a complete product.
+
+A useful package would provide:
+
+- an Org minor mode for "literate PR" files,
+- worktree management from Org metadata,
+- automatic tangling to the worktree,
+- inline generated diff refresh,
+- commands to open Ediff/vdiff for the current block/file,
+- Magit/Forge links generated from headings,
+- patch export,
+- CI/test block execution,
+- maybe syntax-aware diff via difftastic,
+- durable review comments anchored to Org headings and source ranges.
+
+In other words:
+
+#+begin_example
+Org/Babel + Magit + Forge + vdiff/Ediff + generated worktree glue
+#+end_example
+
+That glue layer appears to be the missing piece.
