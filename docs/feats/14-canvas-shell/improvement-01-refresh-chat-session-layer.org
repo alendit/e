@@ -3,7 +3,17 @@
 
 * Status
 
-Planned.
+Implemented.
+
+Feature 14 remains =In-review= until the operator accepts this follow-up slice.
+
+Validation:
+
+- =rtk eldev test -f test/e-defaults-test.el -f test/e-chat-session-test.el -f test/e-canvas-test.el=
+- The changed default harness file was loaded into the running Emacs.
+- A live stale-layer probe confirmed startup sync kept the same default harness
+  instance, kept =chat-session= first, and replaced the stale layer with one that
+  exposes =chat-session-attachments=.
 
 * Problem
 

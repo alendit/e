@@ -20,13 +20,24 @@ The implementation matches the intended ownership split:
 - =e-chat-session= owns semantic attachment metadata and model-facing live context rendering.
 - The harness/transcript stack remains generic: attachment contents enter via capability prefix context and are not appended to transcript messages.
 
-* Unresolved notes
+* Review notes
 
-** TODO Default harness sync does not recreate a stale =chat-session= layer
+** Resolved: Default harness sync recreates stale =chat-session= layer
+
+Resolved by =improvement-01-refresh-chat-session-layer.org=. Default chat sync
+now recreates the internal =chat-session= layer from the current
+=e-chat-session-capability-create= definition while preserving the same harness
+instance and configured stateless layer sync semantics.
+
+Validation:
+
+- =rtk eldev test -f test/e-defaults-test.el -f test/e-chat-session-test.el -f test/e-canvas-test.el=
+- Live stale-layer probe returned =(:same-harness t :layers (chat-session) :providers (chat-session-attachments))=.
 
 =docs/feats/14-canvas-shell/plan.org= says default chat harness sync recreates the internal =chat-session= layer during live reload so existing default harness instances gain the new =chat-session-attachments= context provider.
 
-Current source does not do that. =e-default-chat-sync-harness-layers= preserves the existing =chat-session= layer:
+The reviewed source did not do that. =e-default-chat-sync-harness-layers=
+preserved the existing =chat-session= layer:
 
 #+begin_src emacs-lisp
 (let ((chat-session (e-harness-active-layer harness 'chat-session))
@@ -37,9 +48,11 @@ Current source does not do that. =e-default-chat-sync-harness-layers= preserves 
   ...)
 #+end_src
 
-If that preserved layer came from an older loaded definition, it can still have no =chat-session-attachments= provider after startup/reload.
+If that preserved layer came from an older loaded definition, it could still have
+no =chat-session-attachments= provider after startup/reload.
 
-Live check performed in the running Emacs with an intentionally stale =chat-session= layer confirmed the problem:
+The original live check performed in the running Emacs with an intentionally
+stale =chat-session= layer confirmed the problem:
 
 #+begin_src emacs-lisp
 (:layers (chat-session)
@@ -47,9 +60,15 @@ Live check performed in the running Emacs with an intentionally stale =chat-sess
  :has-chat-session-attachments nil)
 #+end_src
 
-Suggested fix: during =e-default-chat-sync-harness-layers=, recreate the internal =chat-session= layer from =(e-chat-session-capability-create)= instead of preserving the old layer object. Keep the change scoped to the internal =chat-session= layer so configured stateless layers continue to sync as before.
+Implemented fix: during =e-default-chat-sync-harness-layers=, recreate the
+internal =chat-session= layer from =(e-chat-session-capability-create)= instead
+of preserving the old layer object. The change is scoped to the internal
+=chat-session= layer so configured stateless layers continue to sync as before.
 
-Add/adjust a test that constructs a default chat harness with a stale =chat-session= layer lacking context providers, runs =e-default-harnesses-startup= or =e-default-chat-sync-harness-layers=, and asserts that =chat-session-attachments= is present afterward.
+Added =e-defaults-test-startup-refreshes-stale-chat-session-layer= to construct a
+default chat harness with a stale =chat-session= layer lacking context providers,
+run =e-default-harnesses-startup=, and assert that =chat-session-attachments= is
+present afterward.
 
 * Verified behavior
 

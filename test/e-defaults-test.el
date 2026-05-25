@@ -15,6 +15,8 @@
 (require 'ert)
 (require 'e)
 (require 'e-backend)
+(require 'e-capabilities)
+(require 'e-context)
 (require 'e-default-harnesses)
 (require 'e-harness)
 (require 'e-harness-registry)
@@ -231,6 +233,37 @@
           (should (equal (mapcar #'e-layer-id
                                  (e-harness-active-layers harness))
                          '(chat-session e web))))))))
+
+(ert-deftest e-defaults-test-startup-refreshes-stale-chat-session-layer ()
+  "Startup sync replaces stale internal chat-session layers in place."
+  (e-defaults-test--with-empty-harness-registry
+    (let* ((harness
+            (e-harness-create
+             :backend (e-backend-fake-create :items nil)))
+           (stale-layer
+            (e-layer-create
+             :id 'chat-session
+             :name "Chat Session"
+             :capabilities
+             (list (e-capability-create
+                    :id 'chat-session
+                    :name "Chat Session")))))
+      (e-harness-activate-layer harness stale-layer)
+      (e-harness-registry-register :chat-default harness)
+      (let ((e-default-chat-layer-ids nil))
+        (e-default-harnesses-startup))
+      (should (eq (e-harness-registry-get :chat-default) harness))
+      (should (equal (mapcar #'e-layer-id
+                             (e-harness-active-layers harness))
+                     '(chat-session)))
+      (let* ((capability
+              (cl-find 'chat-session
+                       (e-harness-active-capabilities harness)
+                       :key #'e-capability-id))
+             (provider-names
+              (mapcar #'e-context-provider--name
+                      (e-capability-context-providers capability))))
+        (should (memq 'chat-session-attachments provider-names))))))
 
 (ert-deftest e-defaults-test-startup-refreshes-default-context-strategy ()
   "Startup refreshes cached default transcript-stack strategies after reload."

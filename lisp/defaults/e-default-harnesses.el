@@ -79,20 +79,27 @@ DIRECTORY is passed to config-aware layer factories."
      harness (e-layer-create-registered layer-id directory)))
   harness)
 
+(defun e-default-chat--chat-session-layer ()
+  "Return a fresh internal chat-session layer for default chat harnesses."
+  (require 'e-chat-session)
+  (e-layer-create
+   :id 'chat-session
+   :name "Chat Session"
+   :capabilities (list (e-chat-session-capability-create))))
+
 (defun e-default-chat-sync-harness-layers
     (harness &optional layer-ids directory)
   "Reconcile default chat HARNESS layers from `e-default-chat-layer-ids'.
-The internal `chat-session' layer is preserved.  Other active layers are
+The internal `chat-session' layer is recreated.  Other active layers are
 recreated from registered stateless layer specs in the configured order.
 DIRECTORY is passed to config-aware layer factories."
   (e-harness-refresh-default-context-strategy harness)
-  (let ((chat-session (e-harness-active-layer harness 'chat-session))
-        (change-function (e-harness-layer-change-function harness)))
+  (let ((change-function (e-harness-layer-change-function harness)))
     (unwind-protect
         (progn
           (e-harness-set-layer-change-function harness nil)
           (setf (e-harness-active-layers harness)
-                (delq nil (list chat-session)))
+                (list (e-default-chat--chat-session-layer)))
           (e-default-chat--activate-configured-layers
            harness layer-ids directory))
       (e-harness-set-layer-change-function harness change-function)))
@@ -105,7 +112,6 @@ PROVIDER selects the OpenAI-compatible provider.  SESSIONS supplies an existing
 session store.  LAYER-IDS overrides `e-default-chat-layer-ids'.  DIRECTORY
 sets the root used by config-aware default layers."
   (require 'e-base)
-  (require 'e-chat-session)
   (require 'e-emacs-base)
   (require 'e-harness-base)
   (require 'e-harness)
@@ -119,10 +125,7 @@ sets the root used by config-aware default layers."
         (root (or directory default-directory)))
     (e-harness-activate-layer
      harness
-     (e-layer-create
-      :id 'chat-session
-      :name "Chat Session"
-      :capabilities (list (e-chat-session-capability-create))))
+     (e-default-chat--chat-session-layer))
     (e-default-chat--activate-configured-layers harness layer-ids root)
     (e-harness-set-layer-change-function
      harness #'e-default-chat--record-layer-ids)
