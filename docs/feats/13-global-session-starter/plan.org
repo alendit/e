@@ -1,0 +1,491 @@
+#+title: Plan: Global Session Starter
+#+author: e planning
+#+date: 2026-05-25
+#+startup: overview
+
+* Goal
+Add a global session starter shell that can be invoked from any buffer to ask a
+quick, contextual question at point.
+
+The shell should open a small popup near the cursor, start an ad hoc e chat
+session seeded with the current buffer, cursor position, and a compact slice of
+targeted source/content context, then return exactly one assistant answer in the
+popup. After the answer arrives, the popup should offer direct commands and
+keyword shortcuts to either continue the interaction in a normal chat window or
+open the answer in a separate editable/readable buffer.
+
+The feature should make quick contextual questions feel lightweight without
+bypassing the chat shell's session, rendering, context-reference, and continuation
+semantics.
+
+* Non-goals
+- Replace the normal chat shell or session overview shell.
+- Insert the assistant answer into the source buffer by default.
+- Implement edit/apply-patch workflows for the source buffer.
+- Build a full transient/chat UI inside the popup.
+- Add multi-turn interaction inside the popup beyond the single initial answer.
+- Add provider-specific request behavior.
+- Depend on Doom/Evil/posframe-specific APIs.
+- Make the shell usable without the chat shell; this shell depends on chat.
+
+* Current behavior
+The chat shell already provides most of the building blocks:
+
+- =e-chat-new= creates and opens a persisted chat session.
+- =e-chat-open= can create or attach a chat buffer for a harness session.
+- =e-chat-submit= submits the current composer content through
+  =e-chat-session-submit=.
+- =e-chat-session-submit= delegates to =e-harness-prompt-async=.
+- =e-harness-prompt-async= appends the user message, runs an async turn, and
+  emits durable events.
+- =e-chat--capture-context-reference= captures the current buffer/region or a
+  small line window around point as a model-facing reference.
+- =e-chat--composer-submission= serializes inline references into a prompt with a
+  =References:= section.
+- =e-chat-open-latest-response= and related helpers can open/copy chat response
+  blocks from a chat buffer.
+
+There is no global one-shot popup shell. The existing commands that add context
+to chat sessions send the user into a chat buffer rather than returning one
+answer near point.
+
+* User-facing behavior
+** Starter command
+Add an interactive global command, tentatively =e-chat-start-here= or
+=e-session-start-here=.
+
+When invoked from any buffer:
+
+1. Capture the source location:
+   - buffer URI, using =file://= for file-backed buffers and =buffer://= for live
+     buffers;
+   - buffer name and file name when available;
+   - point position and line number;
+   - active region if present, otherwise a bounded line window around point;
+   - optional project root when detectable.
+2. Open a small popup near point.
+3. Let the user enter a one-shot prompt, for example:
+   - =Ask e about this: = in the minibuffer with popup preview; or
+   - an editable field inside the popup if that can be implemented cleanly.
+4. Create an ad hoc chat session in the default chat harness.
+5. Submit a prompt that includes the user's question plus the captured source
+   context.
+6. Render progress and then the final assistant answer in the popup.
+7. After the answer settles, expose obvious commands/keyword shortcuts:
+   - continue in a normal chat window;
+   - open the answer in a new buffer;
+   - copy the answer;
+   - dismiss the popup.
+
+The preferred first implementation can use the minibuffer for text entry and a
+near-point popup for progress/result display. If an editable popup prompt is
+simple and robust, it may be used, but it should not delay the core one-answer
+workflow.
+
+** Popup result behavior
+The popup should be small, local, and disposable.
+
+Recommended contents while running:
+
+#+begin_example
+Ask e here
+
+Question: <user question>
+Context: file.el:120-128
+
+⠋ Thinking...
+#+end_example
+
+Recommended contents after success:
+
+#+begin_example
+Ask e here
+
+<assistant answer>
+
+[c] continue in chat   [o] open buffer   [y] copy   [q] close
+#+end_example
+
+Recommended contents after failure:
+
+#+begin_example
+Ask e here
+
+Request failed: <compact error message>
+
+[r] retry   [c] continue in chat   [q] close
+#+end_example
+
+The popup must not modify the source buffer unless a later explicit command is
+added and invoked.
+
+** Continuation command
+After a successful or failed one-shot turn, =c= or an equivalent command should
+open a normal chat buffer attached to the ad hoc session.
+
+Continuation behavior:
+
+- Reuse the exact session that powered the popup answer.
+- Preserve the original user prompt, captured context, assistant answer, and any
+  failure/activity records already stored in the session.
+- Open the session through the chat shell so the user lands in the standard chat
+  composer.
+- Prefer =e-chat-open= for attaching/displaying the buffer rather than duplicating
+  chat buffer lifecycle code.
+
+** Open-answer command
+After a successful answer, =o= or an equivalent command should open the assistant
+answer in a separate buffer.
+
+Recommended behavior:
+
+- Buffer name includes the source label or a short session id, for example
+  =*e-answer:file.el:120*=.
+- Use a readable/editable major mode where practical, initially =markdown-mode=
+  when available and =text-mode= otherwise.
+- Include minimal provenance at the top or in buffer-local variables:
+  - source label/URI;
+  - session id;
+  - user question.
+- Do not create a second model turn.
+
+** Keyword shortcuts
+Inside the popup buffer, bind single-key shortcuts after the popup is active:
+
+- =c= :: continue the ad hoc session in a chat window.
+- =o= :: open the latest assistant answer in a new buffer.
+- =y= :: copy the latest assistant answer.
+- =r= :: retry the one-shot prompt when the turn failed or was cancelled.
+- =q= :: close/dismiss the popup.
+- =RET= :: when an action button is selected, activate it.
+
+Avoid mandatory global bindings by default. The starter command should be exposed
+through shell discovery and may later be added to an opt-in global prefix map.
+
+* Accepted decisions
+** Presentation shell ownership
+Implement the feature as a new presentation shell that depends on the chat shell.
+
+The shell owns the global command, popup buffer/window, keymap, result rendering,
+answer buffer command, and continuation affordances. The chat shell continues to
+own chat buffer lifecycle, composer behavior, transcript rendering, and session
+continuation.
+
+Implementation requirements:
+
+- Add a separate module, for example =lisp/shells/chat/e-chat-starter.el= or
+  =lisp/shells/e-session-starter.el=.
+- Register a shell manifest, for example =chat-starter= or =global-session-starter=.
+- Declare the dependency on chat in shell metadata, because =e-shell= currently
+  has no formal dependency slot.
+- Do not put popup/window behavior in =e-harness.el= or =e-session.el=.
+
+** Reuse chat session semantics
+The one-shot interaction should use a real chat harness session, not a separate
+transient backend request format.
+
+Reasons:
+
+- continuation becomes a normal =e-chat-open= operation;
+- existing event, activity, transcript, and tool semantics remain intact;
+- persisted history can explain where the answer came from;
+- future overview/switcher features can see the ad hoc session.
+
+Implementation requirements:
+
+- Create a chat session with metadata marking it as starter-created, for example
+  =:origin :global-session-starter= and source context metadata.
+- Submit through =e-chat-session-submit= or a narrow chat-owned helper.
+- Subscribe to harness events for that session to update popup progress/result.
+- Once the popup is dismissed, unsubscribe from harness events.
+
+** Context capture policy
+Capture enough context to answer a local question, but keep the automatic payload
+small and predictable.
+
+Initial policy:
+
+- If a region is active, capture exactly the region plus source metadata.
+- Otherwise capture a configurable number of lines around point.
+- Default line window can reuse the existing chat context-reference behavior or
+  be controlled by a new defcustom such as
+  =e-chat-starter-context-line-radius=.
+- Include point line and source label explicitly in the model-facing prompt.
+- Do not capture whole buffers automatically.
+
+Implementation requirements:
+
+- Reuse or extract =e-chat--capture-context-reference= where practical.
+- If extraction is needed, move source-reference capture into a small shared
+  chat presentation helper rather than duplicating URI/label/range logic.
+- Clear the active region after capture only if the command's UX requires it;
+  avoid surprising source-buffer state changes.
+
+** One-answer popup lifecycle
+The popup is a presentation of the first turn, not the session's main UI.
+
+Lifecycle states:
+
+1. =draft= :: source context captured; user prompt not submitted yet.
+2. =running= :: session exists and one turn is active.
+3. =answered= :: latest assistant answer is available.
+4. =failed= :: turn failed or was cancelled.
+5. =continued= :: normal chat window was opened; popup may remain or close.
+6. =dismissed= :: popup closed and subscriptions cleaned up.
+
+Implementation requirements:
+
+- Store popup state in buffer-local variables.
+- Track harness, session id, source reference, prompt text, latest answer, active
+  turn id, and subscription handle.
+- Display compact progress from events such as =turn-started=,
+  =provider-request-started=, =reasoning-delta=, =message-added=,
+  =turn-finished=, =turn-failed=, and =turn-cancelled=.
+- Treat the final assistant =message-added= content as the answer to open/copy.
+
+** Popup display policy
+Prefer standard Emacs display primitives and keep the first implementation
+portable.
+
+Recommended approach:
+
+- Use a dedicated special-mode buffer, for example =*e-start-here*=.
+- Display it near point when feasible using standard APIs. Candidate approaches:
+  - =display-buffer-in-side-window= as a robust fallback;
+  - =display-buffer-at-bottom= as another portable fallback;
+  - a child-frame implementation only behind an optional adapter/defcustom.
+- If true at-cursor child-frame display is added, keep it as presentation-only
+  code and provide a fallback for terminal Emacs and batch tests.
+
+Implementation requirements:
+
+- Defcustoms for popup width, height, and display strategy.
+- A clear fallback when at-cursor display is unavailable.
+- Tests should validate rendering and actions without depending on child frames.
+
+** Dependency on chat shell
+The new shell depends on chat shell behavior and should say so explicitly.
+
+Implementation requirements:
+
+- Require the chat shell module or the narrow chat APIs it exports.
+- Register starter commands after chat startup, or ensure startup order makes the
+  chat shell available.
+- Use =e-chat-open= for continuation.
+- Prefer adding small public chat helpers over calling many private
+  =e-chat--*= internals from a separate module.
+
+Potential public helper candidates:
+
+#+begin_src elisp
+(cl-defun e-chat-create-session (&key metadata name) ...)
+(defun e-chat-capture-source-reference (&optional buffer position region) ...)
+(cl-defun e-chat-submit-session (harness session-id prompt &key references delay) ...)
+(defun e-chat-open-session (harness session-id &optional display-action) ...)
+#+end_src
+
+Add only helpers that are immediately needed by the starter shell. Avoid a broad
+abstraction layer around chat.
+
+* Design summary
+Add a global session starter presentation shell around four pieces:
+
+1. A source-context capture helper that returns a reference plist.
+2. A starter popup mode that renders prompt, progress, answer, errors, and
+   action hints.
+3. A one-shot session controller that creates a chat session, submits the prompt,
+   subscribes to events, and records the latest answer.
+4. Action commands that continue in chat, open the answer buffer, copy the
+   answer, retry, or dismiss.
+
+Suggested internal API:
+
+#+begin_src elisp
+(defun e-chat-starter--capture-source () ...)
+(defun e-chat-starter--format-prompt (question reference) ...)
+(defun e-chat-starter--create-session (reference question) ...)
+(defun e-chat-starter--submit (state) ...)
+(defun e-chat-starter--subscribe (state) ...)
+(defun e-chat-starter--handle-event (state event) ...)
+(defun e-chat-starter--render (state) ...)
+(defun e-chat-starter-continue () ...)
+(defun e-chat-starter-open-answer () ...)
+(defun e-chat-starter-copy-answer () ...)
+(defun e-chat-starter-retry () ...)
+(defun e-chat-starter-dismiss () ...)
+(defun e-chat-start-here () ...)
+#+end_src
+
+Suggested state shape:
+
+#+begin_src elisp
+(cl-defstruct e-chat-starter-state
+  harness
+  session-id
+  source-reference
+  question
+  status
+  turn-id
+  latest-answer
+  error-message
+  subscription
+  source-window
+  source-buffer)
+#+end_src
+
+* Implementation steps
+** 1. Extract narrow chat helpers
+Extract or expose only the chat behaviors the starter needs.
+
+Acceptance criteria:
+
+- Starter code can capture source context without copying URI/label/range logic.
+- Starter code can create a chat session with metadata.
+- Starter code can submit a prompt with reference metadata.
+- Starter code can open/continue the same session in a normal chat buffer.
+- Existing chat commands continue to work.
+
+** 2. Add starter popup mode and renderer
+Create the popup buffer mode, keymap, and rendering helpers.
+
+Acceptance criteria:
+
+- Popup renders draft/running/answered/failed states.
+- Popup is read-only except for any intentional prompt-entry area.
+- =c=, =o=, =y=, =r=, =q=, and =RET= have mode-local bindings.
+- Rendering tests can run without real window placement.
+
+** 3. Implement source capture and prompt construction
+Build the model-facing prompt from the user's question and source reference.
+
+Acceptance criteria:
+
+- Active region capture includes the exact region text and line bounds.
+- No-region capture includes a bounded line window around point.
+- Prompt includes reference placeholder and a =References:= section compatible
+  with chat's existing context-reference style.
+- Whole-buffer capture is not performed by default.
+
+** 4. Implement one-shot session controller
+Create the ad hoc session, submit the prompt, and update popup state from events.
+
+Acceptance criteria:
+
+- A starter invocation creates one session and one initial turn.
+- Progress appears while the turn is running.
+- The latest assistant message becomes the popup answer.
+- Failures render a clear error and keep enough state to continue or retry.
+- Event subscriptions are removed when the popup is dismissed/killed.
+
+** 5. Implement continuation and answer actions
+Add the post-answer commands.
+
+Acceptance criteria:
+
+- =c= opens the same session in a normal chat window and focuses the composer.
+- =o= opens the latest assistant answer in a separate buffer without a new model
+  turn.
+- =y= copies the latest answer to the kill ring.
+- =r= retries the one-shot prompt after failure/cancellation according to a clear
+  policy.
+- =q= closes the popup and cleans up subscriptions.
+
+** 6. Register shell manifest and startup
+Expose the starter through shell discovery and package startup.
+
+Acceptance criteria:
+
+- A shell manifest exists for the starter or the chat shell manifest lists the
+  starter command with dependency metadata.
+- Startup/reload registers the command.
+- Live reload refreshes keymaps and does not break existing chat buffers.
+
+** 7. Add tests
+Add focused tests around pure behavior first, then minimal integration coverage.
+
+Suggested tests:
+
+- source reference capture for region and no-region cases;
+- prompt construction includes context and references;
+- popup renderer displays running, answered, and failed states;
+- action keymap binds =c=, =o=, =y=, =r=, and =q=;
+- one-shot controller records latest assistant answer from =message-added=;
+- failure event records a compact error message;
+- continuation calls the chat open path with the same session id;
+- open-answer creates a buffer containing the answer and provenance;
+- dismiss unsubscribes from harness events;
+- starter shell manifest declares its chat dependency metadata.
+
+* Testing plan
+Run focused tests first:
+
+#+begin_example
+eldev test test/e-chat-test.el test/e-chat-session-test.el
+#+end_example
+
+If a new test file is added, include it explicitly, for example:
+
+#+begin_example
+eldev test test/e-chat-starter-test.el test/e-chat-test.el
+#+end_example
+
+Before claiming implementation ready, reload changed Emacs Lisp into the running
+Emacs and inspect at least one live scenario:
+
+1. open a source buffer;
+2. invoke =e-chat-start-here= at point;
+3. ask a short question;
+4. verify progress and the final answer render in the popup;
+5. press =o= and verify an answer buffer opens;
+6. press =c= and verify the same session opens in a normal chat composer;
+7. close the popup and verify subscriptions are cleaned up.
+
+* Risks
+- True at-cursor popup display can be fragile across terminal Emacs, GUI Emacs,
+  child frames, and different window managers. Keep display strategy pluggable
+  and provide a standard window fallback.
+- Calling private chat helpers from a separate starter module can create tight
+  coupling. Prefer narrow public chat helpers only where reuse is real.
+- Automatic context capture can become too large or surprising. Keep the default
+  bounded and visible in the popup.
+- The popup might outlive the source buffer or chat session. Store copied source
+  metadata and handle dead buffers clearly.
+- Retrying can create duplicate turns. Define whether retry uses the same
+  session with another user message or creates a fresh starter session, and test
+  the chosen policy.
+- The first assistant message might be a tool-related or empty assistant message
+  in some backend flows. The controller should capture the latest non-empty
+  assistant content where possible and surface empty-output failures clearly.
+
+* Compatibility
+- Existing chat commands and session persistence must remain compatible.
+- The starter may create persisted ad hoc chat sessions. If they need to be
+  hidden from future overviews by default, store explicit origin metadata so the
+  overview can filter later; do not special-case this in core without a real
+  requirement.
+- Do not require Consult, Evil, Doom, or posframe.
+- If new public chat helpers are added, keep old private helpers available until
+  all current callers are migrated.
+
+* Follow-up candidates
+- Optional child-frame/posframe adapter for richer at-cursor display.
+- Apply answer as a patch or insert answer into the source buffer.
+- Let the popup collect a follow-up question before continuing in full chat.
+- Project-specific prompt templates for explain/refactor/debug/test actions.
+- Save starter answers as notes linked to source locations.
+- Integration with the session overview sidebar to label or filter starter
+  sessions.
+
+* Minimal acceptance for this feature
+The feature is complete when:
+
+1. A global command can be invoked from a normal buffer at point.
+2. The command captures current source context with bounded text around point or
+   the active region.
+3. A popup appears and shows progress for one model turn.
+4. The popup renders the final assistant answer inline.
+5. =c= continues the exact same session in a normal chat window.
+6. =o= opens the answer in a separate buffer.
+7. =y= copies the answer and =q= dismisses the popup.
+8. The shell manifest exposes the starter and records its dependency on chat.
+9. Existing chat shell behavior remains compatible.
