@@ -3,11 +3,117 @@
 
 * Result
 
-Done. No unresolved review notes.
+In-review. The feature is largely implemented and the main canvas/session flows work, but one reload compatibility issue remains unresolved.
 
-* Validation
+* Summary
 
-- =eldev test -f test/e-defaults-test.el -f test/e-chat-session-test.el -f test/e-canvas-test.el= passed.
-- =eldev test= passed: 478 expected, 1 skipped markdown-mode-dependent test.
-- Reloaded the running Emacs with =e-dev-reload=.
-- Live smoke check created a temporary buffer-backed canvas session and confirmed the session context included the live canvas contents.
+Feature 14 adds a canvas presentation shell on top of ordinary chat sessions. Current repo state includes:
+
+- =lisp/shells/e-canvas.el= with the canvas commands and shell manifest.
+- =lisp/layers/chat/e-chat-session.el= attachment metadata operations and a live attachment context provider.
+- Startup/reload wiring in =e.el= and =lisp/dev/e-dev.el=.
+- Tests in =test/e-canvas-test.el= plus chat-session/defaults/package-surface coverage.
+
+The implementation matches the intended ownership split:
+
+- =e-canvas= owns presentation-side side effects: choosing buffers/files, creating/visiting buffers, opening chat buffers, prompting for target sessions, and shell registration.
+- =e-chat-session= owns semantic attachment metadata and model-facing live context rendering.
+- The harness/transcript stack remains generic: attachment contents enter via capability prefix context and are not appended to transcript messages.
+
+* Unresolved notes
+
+** TODO Default harness sync does not recreate a stale =chat-session= layer
+
+=docs/feats/14-canvas-shell/plan.org= says default chat harness sync recreates the internal =chat-session= layer during live reload so existing default harness instances gain the new =chat-session-attachments= context provider.
+
+Current source does not do that. =e-default-chat-sync-harness-layers= preserves the existing =chat-session= layer:
+
+#+begin_src emacs-lisp
+(let ((chat-session (e-harness-active-layer harness 'chat-session))
+      (change-function (e-harness-layer-change-function harness)))
+  ...
+  (setf (e-harness-active-layers harness)
+        (delq nil (list chat-session)))
+  ...)
+#+end_src
+
+If that preserved layer came from an older loaded definition, it can still have no =chat-session-attachments= provider after startup/reload.
+
+Live check performed in the running Emacs with an intentionally stale =chat-session= layer confirmed the problem:
+
+#+begin_src emacs-lisp
+(:layers (chat-session)
+ :providers nil
+ :has-chat-session-attachments nil)
+#+end_src
+
+Suggested fix: during =e-default-chat-sync-harness-layers=, recreate the internal =chat-session= layer from =(e-chat-session-capability-create)= instead of preserving the old layer object. Keep the change scoped to the internal =chat-session= layer so configured stateless layers continue to sync as before.
+
+Add/adjust a test that constructs a default chat harness with a stale =chat-session= layer lacking context providers, runs =e-default-harnesses-startup= or =e-default-chat-sync-harness-layers=, and asserts that =chat-session-attachments= is present afterward.
+
+* Verified behavior
+
+** Canvas shell behavior
+
+- =e-canvas-open-for-current-buffer= creates a new ordinary chat session and attaches the source buffer as =:canvas t=.
+- =e-canvas-new-file= visits/creates the file buffer, creates a chat session, and attaches the file-backed buffer as the primary canvas.
+- =e-canvas-attach-current-buffer= attaches the current buffer to an existing selected session as non-canvas context by default.
+- Prefix plumbing is present for attach commands and passes =:canvas= through to =e-chat-session-attach-context=.
+- The canvas shell manifest is registered as =canvas= and advertises the expected command ids.
+
+** Live attachment context
+
+- Attachment metadata is stored under session metadata =:context-attachments=.
+- Attachment ids are stable when not supplied, derived from the URI hash.
+- Marking an attachment as canvas removes/replaces the previous canvas attachment.
+- Live buffer contents are used for =buffer://= attachments.
+- File attachments prefer an already-visiting buffer, so unsaved edits are represented before disk contents.
+- Missing/unreadable resources produce explicit unavailable markers instead of silently disappearing.
+- Attachment context is emitted as a system prefix message before transcript context and is rebuilt for each context construction.
+
+** Transcript invariant
+
+The implementation keeps canvas contents out of durable chat transcript messages. The attachment provider contributes current-state prefix context only, so previous canvas snapshots are not retained merely because a turn occurred.
+
+* Validation performed during review
+
+- =eldev test -f test/e-defaults-test.el -f test/e-chat-session-test.el -f test/e-canvas-test.el= passed: 24/24 expected.
+- =eldev test= passed: 480 expected, 1 skipped markdown-mode-dependent test, 0 unexpected.
+- Reloaded the running Emacs with:
+  #+begin_example
+  emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+  #+end_example
+- Inspected the live default harness after reload and confirmed the currently loaded instance has =chat-session-attachments= in its providers.
+- Live smoke-checked =e-canvas-open-for-current-buffer= with a temporary buffer and confirmed:
+  - the created chat buffer attached to a new session;
+  - the attachment URI was =buffer://...=;
+  - the attachment was marked =:canvas t=;
+  - the session context included the live buffer content.
+- Live negative check constructed a stale =chat-session= layer with no context providers, ran startup sync, and confirmed the stale layer was preserved without =chat-session-attachments=. This is the unresolved note above.
+
+* Design review notes
+
+1. If this work package stopped here, would the project be better off than if it had not been built?
+   - Mostly yes: the core canvas workflow exists and is tested, but the stale-layer reload gap should be fixed before marking Done.
+2. What final direction does this move toward?
+   - A presentation shell model where live session context can be attached to ordinary chat sessions without changing transcript semantics.
+3. Which decisions are likely to change, uncertain, or stable, and are uncertain ones local and reversible instead of hidden behind speculative abstraction?
+   - Stable: attachment metadata belongs in session metadata; contents are read fresh at context build time. Likely to change: richer attachment types and UI affordances. These are mostly local to =e-canvas= and =e-chat-session=.
+4. What component owns this behavior, and why?
+   - =e-canvas= owns user commands and presentation side effects. =e-chat-session= owns semantic attachment operations and context rendering.
+5. Does this change increase or reduce coupling?
+   - Coupling is acceptable but =e-canvas= uses internal =e-chat--*= helpers for default harness/session opening. That follows existing presentation-shell patterns, though a future public chat shell service could narrow this dependency.
+6. Did any dependency start pointing the wrong way?
+   - No core/harness dependency points to the canvas shell. Canvas depends on chat presentation and chat-session capability, which is the expected presentation direction.
+7. Could any side effect be moved outward into an adapter or shell?
+   - File visiting, buffer creation, display, and completion prompting are already in the shell. Context content reads are side effects owned by the context provider because live context construction requires current state.
+8. Are the abstractions and interfaces semantically real?
+   - The attachment operations are real consumer-shaped semantics. Shell manifest registration remains generic.
+9. What compatibility expectations apply?
+   - Existing sessions without =:context-attachments= should behave unchanged. Existing live default harnesses should gain the new context provider after reload; this expectation is currently not met for stale =chat-session= layers.
+10. What legacy code can we remove now?
+    - None identified from this feature alone.
+11. Where are expected errors handled, and where do unexpected errors surface?
+    - Missing target session selection and absent default harness are user errors. Missing/unreadable attachment contents become explicit model-facing unavailable markers. Other storage/context errors surface normally.
+12. What tests prove the core behavior independently of the full system?
+    - =e-chat-session-test= proves attachment metadata/current-state context behavior without the canvas UI. =e-canvas-test= proves shell command integration. Add the stale =chat-session= sync regression test before closing review.

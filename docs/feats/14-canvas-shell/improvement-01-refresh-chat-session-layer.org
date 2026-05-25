@@ -1,0 +1,247 @@
+#+title: Improvement 01: Refresh Chat Session Layer On Reload
+#+startup: overview
+
+* Status
+
+Planned.
+
+* Problem
+
+Feature 14 added live canvas/file attachments through the =chat-session=
+capability. The attachment context provider, =chat-session-attachments=, is part
+of the capability object returned by =e-chat-session-capability-create=.
+
+Default chat harness startup/reload currently reconciles configured stateless
+layers but preserves the existing internal =chat-session= layer object:
+
+#+begin_src emacs-lisp
+(let ((chat-session (e-harness-active-layer harness 'chat-session))
+      (change-function (e-harness-layer-change-function harness)))
+  ...
+  (setf (e-harness-active-layers harness)
+        (delq nil (list chat-session)))
+  ...)
+#+end_src
+
+That preservation is unsafe after live reload. If a running default chat harness
+was created before the canvas attachment provider existed, preserving the stale
+layer means the harness still has a =chat-session= capability with no
+=chat-session-attachments= context provider. New canvas metadata can be attached
+to sessions, but the model may not receive the live attachment content.
+
+The feature 14 review confirmed this with a live stale-layer check:
+
+#+begin_src emacs-lisp
+(:layers (chat-session)
+ :providers nil
+ :has-chat-session-attachments nil)
+#+end_src
+
+* Goal
+
+Make default chat harness sync recreate the internal =chat-session= layer from
+the current =e-chat-session-capability-create= definition during startup/reload.
+
+After this improvement, existing default chat harness instances should gain the
+current =chat-session= capability behavior, including the
+=chat-session-attachments= context provider, without requiring users to recreate
+their chat harness manually.
+
+* Non-goals
+
+- Do not rebuild or reinterpret persisted session data.
+- Do not change the attachment metadata shape or context rendering semantics.
+- Do not change configured stateless layer ordering or =e-default-chat-layer-ids=
+  behavior.
+- Do not make all harness layers dynamically reloadable in this improvement.
+- Do not add a generic layer migration framework until another concrete case
+  needs it.
+
+* Design Direction
+
+** Recreate only the internal =chat-session= layer
+
+The default chat harness treats =chat-session= as an internal required layer,
+separate from user-configured stateless layers in =e-default-chat-layer-ids=.
+Sync should continue to rebuild configured layers from registered layer specs,
+but the internal =chat-session= layer should also be reconstructed from the
+current capability constructor.
+
+Suggested helper shape:
+
+#+begin_src emacs-lisp
+(defun e-default-chat--chat-session-layer ()
+  "Return a fresh internal chat-session layer for default chat harnesses."
+  (e-layer-create
+   :id 'chat-session
+   :name "Chat Session"
+   :capabilities (list (e-chat-session-capability-create))))
+#+end_src
+
+Then both =e-default-chat-harness-create= and
+=e-default-chat-sync-harness-layers= can use that helper.
+
+** Preserve sync semantics for configured layers
+
+=e-default-chat-sync-harness-layers= should still:
+
+- refresh the default context strategy when appropriate;
+- suppress layer-change callbacks while rebuilding layers;
+- restore the original layer-change callback afterward;
+- activate configured stateless layers in =e-default-chat-layer-ids= order;
+- avoid writing =e-default-chat-layer-ids= merely because startup/reload sync ran.
+
+The only behavioral change should be that =chat-session= is fresh after sync
+instead of reused from old in-memory layer state.
+
+** Compatibility expectation
+
+Existing sessions without =:context-attachments= continue to behave unchanged.
+Existing sessions with attachment metadata should start contributing live
+attachment context as soon as the default harness is synced with the fresh
+capability.
+
+* Implementation Steps
+
+** 1. Add a helper for the internal chat-session layer
+
+File:
+
+- =lisp/defaults/e-default-harnesses.el=
+
+Work:
+
+- Require or rely on the existing =e-chat-session= require in
+  =e-default-chat-harness-create= as needed.
+- Add a small helper that returns a fresh =chat-session= layer using
+  =e-chat-session-capability-create=.
+- Use that helper in =e-default-chat-harness-create= instead of duplicating layer
+  construction inline.
+
+** 2. Recreate chat-session during default harness sync
+
+File:
+
+- =lisp/defaults/e-default-harnesses.el=
+
+Work:
+
+- Change =e-default-chat-sync-harness-layers= so it installs a fresh internal
+  =chat-session= layer rather than preserving =(e-harness-active-layer harness
+  'chat-session)=.
+- Keep the change-function suppression/restoration behavior intact.
+- Keep configured layer activation unchanged.
+
+** 3. Add a stale-layer regression test
+
+File:
+
+- =test/e-defaults-test.el=
+
+Work:
+
+Add a test that:
+
+1. constructs a harness;
+2. activates a deliberately stale =chat-session= layer whose capability has no
+   context providers;
+3. registers it as =:chat-default= in an isolated harness registry;
+4. runs =e-default-harnesses-startup= or =e-default-chat-sync-harness-layers=;
+5. asserts that the active context providers include
+   =chat-session-attachments= afterward.
+
+The test should also assert that the same harness object remains registered, so
+startup sync updates the live instance rather than replacing it wholesale.
+
+* Tests To Add Or Update
+
+- =e-defaults-test-startup-refreshes-stale-chat-session-layer=, or similarly
+  named, covering the stale capability provider case.
+- Optionally update existing default-harness creation tests to use the new helper
+  indirectly by asserting =chat-session= still appears first and still exposes
+  the expected capability id.
+
+* Verification Plan
+
+Run focused tests:
+
+#+begin_src sh
+eldev test -f test/e-defaults-test.el -f test/e-chat-session-test.el -f test/e-canvas-test.el
+#+end_src
+
+Run the full suite:
+
+#+begin_src sh
+eldev test
+#+end_src
+
+After Lisp changes, reload the running Emacs:
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Live validation:
+
+- construct a temporary default harness with a stale =chat-session= layer lacking
+  context providers;
+- register it as =:chat-default= in an isolated or temporary registry context;
+- run startup/sync;
+- inspect active provider names;
+- confirm =chat-session-attachments= is present.
+
+* Acceptance Criteria
+
+- Existing default chat harness instances receive a fresh internal
+  =chat-session= layer after startup/reload sync.
+- A stale =chat-session= layer with no context providers is replaced by one that
+  includes =chat-session-attachments=.
+- Configured stateless layers still sync from =e-default-chat-layer-ids= in the
+  same order as before.
+- The default harness registry keeps the same live harness instance during sync.
+- Focused and full test suites pass.
+- Running Emacs is reloaded and the stale-layer live scenario is verified.
+- =docs/feats/14-canvas-shell/review.org= is updated to mark the review note
+  resolved, and =docs/feats/index.org= can move feature 14 to =Done= when no
+  other review notes remain.
+
+* Design Self-Check
+
+1. If this work package stopped here, would the project be better off than if it
+   had not been built?
+   - Yes. It removes a reload-time stale capability hazard that can silently omit
+     canvas contents from model context.
+2. What final direction does this move toward?
+   - Reliable live development and reload behavior for Emacs-hosted agents.
+3. Which decisions are likely to change, uncertain, or stable?
+   - Stable: default chat requires an internal =chat-session= capability.
+     Uncertain: whether future layer migrations need a generic framework. This
+     improvement keeps that uncertainty local by fixing only the concrete stale
+     internal layer.
+4. What component owns this behavior, and why?
+   - =e-default-harnesses= owns default chat harness construction and startup
+     sync, so it owns refreshing the internal default-chat layer bundle.
+5. Does this change increase or reduce coupling?
+   - It slightly centralizes existing coupling to =e-chat-session= in one helper
+     and reduces coupling to stale in-memory layer objects.
+6. Did any dependency start pointing the wrong way?
+   - No. Defaults already depend on the chat-session layer; core harness code
+     remains generic.
+7. Could any side effect be moved outward into an adapter or shell?
+   - No additional presentation or provider side effects are introduced. The
+     sync side effect belongs to default harness startup.
+8. Are the abstractions semantically real?
+   - A helper for the internal chat-session layer is real because construction
+     and sync both need the same required layer definition.
+9. What compatibility expectations apply?
+   - Existing sessions and user-configured layer ids must remain compatible.
+     Only stale in-memory internal layer definitions are refreshed.
+10. What legacy code can we remove now?
+    - The inline duplicated construction of the default chat-session layer can be
+      replaced by the helper.
+11. Where are expected errors handled, and where do unexpected errors surface?
+    - This improvement should not add new expected user errors. Unexpected layer
+      construction errors should surface during startup/sync as they do today.
+12. What tests prove the core behavior independently of the full system?
+    - A focused defaults test with a fake/stale harness proves sync behavior
+      without real provider calls or the canvas UI.
