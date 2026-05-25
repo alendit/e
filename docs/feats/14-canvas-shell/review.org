@@ -3,7 +3,8 @@
 
 * Result
 
-In-review. The feature is largely implemented and the main canvas/session flows work, but one reload compatibility issue remains unresolved.
+In-review. The feature and its reload compatibility follow-up are implemented.
+It remains =In-review= until the operator accepts the review round.
 
 * Summary
 
@@ -108,12 +109,15 @@ The implementation keeps canvas contents out of durable chat transcript messages
   - the attachment URI was =buffer://...=;
   - the attachment was marked =:canvas t=;
   - the session context included the live buffer content.
-- Live negative check constructed a stale =chat-session= layer with no context providers, ran startup sync, and confirmed the stale layer was preserved without =chat-session-attachments=. This is the unresolved note above.
+- Live stale-layer check constructed a =chat-session= layer with no context
+  providers, ran startup sync, and confirmed the same default harness gained a
+  fresh =chat-session= layer with =chat-session-attachments=.
 
 * Design review notes
 
 1. If this work package stopped here, would the project be better off than if it had not been built?
-   - Mostly yes: the core canvas workflow exists and is tested, but the stale-layer reload gap should be fixed before marking Done.
+   - Yes: the core canvas workflow exists, is tested, and the stale-layer reload
+     gap has been fixed. The feature remains in review for operator acceptance.
 2. What final direction does this move toward?
    - A presentation shell model where live session context can be attached to ordinary chat sessions without changing transcript semantics.
 3. Which decisions are likely to change, uncertain, or stable, and are uncertain ones local and reversible instead of hidden behind speculative abstraction?
@@ -129,10 +133,15 @@ The implementation keeps canvas contents out of durable chat transcript messages
 8. Are the abstractions and interfaces semantically real?
    - The attachment operations are real consumer-shaped semantics. Shell manifest registration remains generic.
 9. What compatibility expectations apply?
-   - Existing sessions without =:context-attachments= should behave unchanged. Existing live default harnesses should gain the new context provider after reload; this expectation is currently not met for stale =chat-session= layers.
+   - Existing sessions without =:context-attachments= should behave unchanged.
+     Existing live default harnesses now gain the new context provider after
+     startup sync/reload.
 10. What legacy code can we remove now?
     - None identified from this feature alone.
 11. Where are expected errors handled, and where do unexpected errors surface?
     - Missing target session selection and absent default harness are user errors. Missing/unreadable attachment contents become explicit model-facing unavailable markers. Other storage/context errors surface normally.
 12. What tests prove the core behavior independently of the full system?
-    - =e-chat-session-test= proves attachment metadata/current-state context behavior without the canvas UI. =e-canvas-test= proves shell command integration. Add the stale =chat-session= sync regression test before closing review.
+    - =e-chat-session-test= proves attachment metadata/current-state context
+      behavior without the canvas UI. =e-canvas-test= proves shell command
+      integration. =e-defaults-test-startup-refreshes-stale-chat-session-layer=
+      proves stale =chat-session= sync compatibility.
