@@ -1,0 +1,487 @@
+#+title: Plan: Session Overview Shell
+#+author: e planning
+#+date: 2026-05-25
+#+startup: overview
+
+* Goal
+Add a session overview shell for persisted chat sessions with two user-facing
+surfaces:
+
+1. A switcher command, similar in spirit to =C-x b=, that lists past e chat
+   sessions and opens the selected session's composer.
+2. A sidebar that keeps sessions visible in most-recent-message order, shows a
+   visual unread indicator for sessions with unread assistant responses, and
+   supports fast keyboard navigation.
+
+The feature should make moving between active and historical e sessions feel as
+cheap as switching buffers, while preserving the current separation between the
+core harness/session runtime and presentation shells.
+
+* Non-goals
+- Replace =e-chat-resume= in this feature unless compatibility can be preserved.
+- Change backend/provider behavior.
+- Change model-facing context construction.
+- Add multi-account or multi-harness session aggregation beyond the configured
+  default chat harness.
+- Add search across transcript contents.
+- Add session deletion, archiving, pinning, tagging, or grouping.
+- Add branch/time-travel browsing.
+- Store unread state in model-facing transcript messages.
+- Make the sidebar a general Emacs buffer list replacement.
+
+* Current behavior
+The chat presentation already has a persisted-session resume command:
+
+- =e-chat-resume= obtains sessions through =e-harness-session-list=.
+- =e-session-list= returns index metadata sorted by most recent message timestamp,
+  falling back to creation time and update sequence.
+- Resume labels use =e-chat--session-choice-label=.
+- When Consult is available, =e-chat--read-session-choice= uses =consult--read=
+  and =e-chat--resume-preview-state= to preview candidates.
+- =e-chat-open= and =e-chat--attach-buffer= attach or create the chat buffer for a
+  session and focus the composer when displayed.
+
+There is no persistent overview/sidebar buffer and no unread tracking. Live chat
+buffers subscribe to events for their attached session only. There is no global
+presentation subscriber that can update a session list as any session changes.
+
+* User-facing behavior
+** Switcher command
+Add an interactive command, tentatively =e-chat-switch-session=, with behavior
+similar to =C-x b= for e chat sessions:
+
+- List past sessions from the default chat harness.
+- Sort candidates by latest message, newest first.
+- Keep candidates compact: show the session title as the primary text and an
+  unread indicator when relevant. Extra metadata such as short id, last message
+  time, or message count may be available as lightweight annotation/help, but is
+  not required in the main candidate text.
+- Offer a preview of the selected session, reusing the existing resume preview
+  renderer where practical.
+- Selecting a session handles both live and historical sessions:
+  - if an e chat buffer is already attached to that session, reuse it without
+    discarding its current composer/draft state and jump to its composer;
+  - if no buffer is currently attached, create/attach a chat buffer from the
+    persisted session and jump to its composer.
+- If no sessions exist, create/open a new session or signal a clear user error;
+  pick one policy during implementation and document it in the command docstring.
+
+Compatibility requirement: keep =e-chat-resume= working. It may delegate to the
+new switcher internals, but existing users should not lose the command.
+
+** Sidebar command
+Add an interactive command, tentatively =e-chat-sidebar-toggle=, that opens or
+closes a side window showing the session overview.
+
+Sidebar behavior:
+
+- Display sessions in order of latest message, newest first.
+- Highlight the current session when the selected window is an e chat buffer.
+- Show a visual unread indicator for sessions with unread assistant responses,
+  for example a bullet or bold face.
+- Refresh when sessions are created, renamed, reset, or receive new messages.
+- Keep the sidebar read-only and presentation-owned.
+- Opening a session from the sidebar should display the chat buffer and focus the
+  composer, reusing an already-open session buffer when one exists and creating a
+  new attached buffer for persisted sessions that are not currently open.
+
+Keyboard behavior inside the sidebar:
+
+- =j= moves to the next session row.
+- =k= moves to the previous session row.
+- =RET= opens the selected session and jumps to the session composer.
+- Point movement previews the selected session in a preview window or the main
+  window without permanently stealing the composer focus.
+- =q= closes the sidebar.
+- =g= refreshes the sidebar.
+
+Global/sidebar-related commands:
+
+- =e-chat-sidebar-focus= jumps focus to the sidebar, opening it if necessary.
+- =e-chat-sidebar-next-session= moves to the next session when the sidebar is
+  visible and opens/previews that session according to the navigation policy.
+- =e-chat-sidebar-previous-session= moves to the previous session when the sidebar
+  is visible and opens/previews that session according to the navigation policy.
+
+The previous/next commands should fail with a clear user error when the sidebar
+is not visible, unless the final implementation intentionally chooses to open it
+on demand. Prefer explicit behavior in the docstrings and tests.
+
+** Shortcuts
+Use a conservative shortcut policy: sidebar-local navigation should be available
+by default inside the sidebar, while global shortcuts should be opt-in through a
+minor mode or prefix map rather than always stealing keys.
+
+Sidebar-local bindings:
+
+- =j= :: next session row.
+- =k= :: previous session row.
+- =RET= :: open selected session and focus its composer.
+- =g= :: refresh the sidebar.
+- =q= :: close the sidebar.
+
+Opt-in global overview bindings, tentatively through an
+=e-chat-overview-mode= prefix map:
+
+- =C-c e b= :: switch session, similar to =C-x b=.
+- =C-c e s= :: toggle the session sidebar.
+- =C-c e o= :: focus the sidebar, opening it if necessary.
+- =C-c e n= :: move to the next session when the sidebar is visible.
+- =C-c e p= :: move to the previous session when the sidebar is visible.
+
+Avoid mandatory global bindings by default. If chat-buffer-local convenience
+bindings are added later, prefer non-conflicting keys and avoid =M-s= because it
+is commonly used as an Emacs search prefix.
+
+* Accepted decisions
+** Overview shell ownership
+Implement the session overview as a presentation shell, not as core harness
+logic.
+
+The harness/session layer already owns durable sessions, messages, activity, and
+session metadata. The overview owns buffers, side windows, row rendering,
+keymaps, previews, commands, unread markers, and display policy. Core APIs may
+receive narrow additions only if the overview needs stable semantic data that is
+not currently available from =e-harness-session-list= or events.
+
+Implementation requirements:
+
+- Add a new shell module, for example =lisp/shells/chat/e-chat-overview.el=, or a
+  clearly separated section in =e-chat.el= if a separate file creates too much
+  indirection.
+- Register overview commands in the chat shell manifest or in a separate
+  =chat-overview= shell manifest.
+- Keep display-buffer/sidebar details out of =e-harness.el= and =e-session.el=.
+
+** Session list data contract
+Use =e-harness-session-list= as the primary session list source.
+
+It already returns session index metadata without forcing full transcript replay
+for index-backed stores. The overview should not load every transcript just to
+render the sidebar.
+
+Implementation requirements:
+
+- Sidebar rows should render from index metadata whenever possible.
+- Previews may load the selected session transcript, just as resume preview does
+  today.
+- Avoid adding transcript-wide scans to the steady-state sidebar refresh path.
+- If a new metadata field is needed, add it to the session index entry with a
+  focused test.
+
+** Unread tracking as presentation state
+Treat unread status as presentation/user state owned by the overview shell.
+
+A session is unread when it has an assistant response newer than the last
+assistant response the user has seen/acknowledged for that session. The transcript
+is the source of response identity and time; the overview stores only read
+markers.
+
+Initial marker shape:
+
+- Keyed by harness id and session id.
+- Stores the latest seen assistant message id, and optionally its timestamp as a
+  debugging/display fallback.
+- Kept outside model-facing transcript records.
+
+Persistence requirement:
+
+- Persist read markers across Emacs restarts in a presentation-owned state file,
+  for example under =e-session-directory= as =chat-overview-state.json=.
+- Do not write read markers into JSONL transcript records.
+- Unexpected state-file parse errors should surface clearly or reset with an
+  explicit warning; do not silently corrupt session data.
+
+Read-marker update policy:
+
+- Mark a session read when its chat buffer is opened or focused through the
+  switcher/sidebar and the composer is reached, whether that path reused an
+  existing live buffer or created a buffer for a persisted session.
+- Mark the current session read when an assistant response is rendered in a
+  visible selected chat buffer.
+- Do not mark a background session read merely because the sidebar previewed it,
+  unless implementation deliberately defines preview as read. Prefer preview does
+  not mark read.
+- User-authored messages do not create unread state.
+
+Unread computation should be conservative: if the overview cannot determine the
+latest assistant message id from index metadata, it may load only the selected or
+changed session, not all sessions on every refresh.
+
+** Event-driven refresh
+Use harness events to refresh overview state incrementally, with a fallback full
+refresh command.
+
+Relevant events include:
+
+- =message-added= for new user/assistant messages;
+- =session-reset=;
+- =session-options-changed= if displayed later;
+- rename/session-info changes if an event is added or emitted by the presentation
+  action path.
+
+Implementation requirements:
+
+- Subscribe the sidebar globally to the default harness while it is visible.
+- Refresh rows after relevant events.
+- If no event exists for rename because rename currently writes directly through
+  =e-chat-session-rename=, either refresh the sidebar after the rename command or
+  add a narrow harness/presentation event in a separate step.
+- Unsubscribe when the sidebar buffer/window is killed.
+
+** Preview behavior
+Reuse existing session preview rendering where practical.
+
+The overview should not duplicate transcript rendering policy. Existing helper
+=e-chat--render-resume-preview= already renders a small transcript preview into a
+reusable preview buffer. It may need to be generalized so both resume and sidebar
+can call it.
+
+Implementation requirements:
+
+- Keep preview buffers read-only and non-composer.
+- Do not create or mutate chat buffers merely to preview a candidate.
+- Do not mark sessions read from preview unless explicitly chosen and tested.
+
+** Sidebar display policy
+Use a side window with stable buffer identity.
+
+Proposed defaults:
+
+- Buffer name: =*e-chat-sessions*=.
+- Side: left or right, controlled by a defcustom, default right.
+- Width: controlled by a defcustom, for example 32 columns.
+- Window parameter marks the window as the e chat session sidebar.
+
+Implementation requirements:
+
+- Provide defcustoms for side and width.
+- Do not hard-code Doom-specific APIs.
+- Use standard =display-buffer-in-side-window= or equivalent Emacs APIs.
+- Tests should exercise buffer rendering independent of real window layout when
+  possible, and one integration test can cover side-window selection if stable in
+  batch.
+
+* Design summary
+Add a small presentation-owned overview layer around three pieces:
+
+1. A session source that reads sorted session metadata from the default harness.
+2. A read-state service that persists latest seen assistant response markers and
+   answers whether a session is unread.
+3. Two presentation surfaces: a minibuffer/completion switcher and a sidebar
+   buffer mode.
+
+Suggested internal API:
+
+#+begin_src elisp
+(defun e-chat-overview--harness () ...)
+(defun e-chat-overview--sessions (&optional harness) ...)
+(defun e-chat-overview--session-latest-assistant (harness session-id) ...)
+(defun e-chat-overview--session-unread-p (harness-id session) ...)
+(defun e-chat-overview--mark-session-read (harness-id harness session-id) ...)
+(defun e-chat-overview--live-session-buffer (session-id) ...)
+(defun e-chat-overview--session-buffer (harness session-id) ...)
+(defun e-chat-overview--open-session (harness session-id &optional mark-read) ...)
+#+end_src
+
+Suggested mode and commands:
+
+#+begin_src elisp
+(define-derived-mode e-chat-sidebar-mode special-mode "e-chat-sessions" ...)
+(defun e-chat-switch-session () ...)
+(defun e-chat-sidebar-toggle () ...)
+(defun e-chat-sidebar-focus () ...)
+(defun e-chat-sidebar-next-session () ...)
+(defun e-chat-sidebar-previous-session () ...)
+(defun e-chat-sidebar-open-session () ...)
+(defun e-chat-sidebar-refresh () ...)
+#+end_src
+
+Sidebar rows should carry the session id as a text property so movement and RET
+can act without reparsing text:
+
+#+begin_src elisp
+(insert (propertize row-text 'e-chat-session-id session-id))
+#+end_src
+
+* Implementation steps
+** 1. Extract/reuse session chooser primitives
+Refactor the existing resume command internals so the new switcher and the old
+resume command share candidate labels, preview state, and opening behavior.
+
+Acceptance criteria:
+
+- =e-chat-resume= still behaves as before.
+- New =e-chat-switch-session= lists the same sessions in latest-message order.
+- Selecting a candidate reuses an existing live session buffer when present,
+  otherwise attaches a buffer to the persisted session.
+- Selecting a candidate opens/focuses the session composer without losing an
+  existing draft in a live session buffer.
+- Candidate display can include unread state without breaking existing labels.
+
+** 2. Add overview read-state storage
+Implement a small presentation-owned read-state module or section.
+
+Acceptance criteria:
+
+- Read markers can be loaded and saved from a JSON file under the session root.
+- Marking a session read records the latest assistant message id for that
+  session.
+- Unread is false for sessions with no assistant messages.
+- A newer assistant message makes the session unread.
+- User messages alone do not make a session unread.
+- State is keyed so different harness ids do not collide.
+
+** 3. Add sidebar mode and renderer
+Create the sidebar buffer mode and pure row rendering helpers.
+
+Acceptance criteria:
+
+- Sidebar rows are sorted by latest message using =e-harness-session-list=.
+- Rows include title, compact timestamp/message count, and unread indicator.
+- Current session is visually distinguished when known.
+- Rows carry =e-chat-session-id= text properties.
+- =j=, =k=, =RET=, =q=, and =g= are bound in the sidebar keymap.
+
+** 4. Add side-window commands
+Implement sidebar open/toggle/focus and visible-sidebar detection.
+
+Acceptance criteria:
+
+- =e-chat-sidebar-toggle= opens the sidebar when hidden and closes it when shown.
+- =e-chat-sidebar-focus= selects the sidebar window, opening it if needed.
+- Commands use standard Emacs window APIs and respect side/width defcustoms.
+- Killing the sidebar unsubscribes any sidebar-owned harness subscription.
+
+** 5. Add sidebar navigation and preview
+Implement next/previous commands and candidate preview behavior.
+
+Acceptance criteria:
+
+- Inside the sidebar, =j= and =k= move between rows and update the preview.
+- =RET= opens the row's session and focuses the chat composer, reusing a live
+  attached buffer when present and creating/attaching one when absent.
+- Global =e-chat-sidebar-next-session= and =e-chat-sidebar-previous-session=
+  work when the sidebar is visible.
+- Previewing does not mark sessions read unless that policy is explicitly chosen.
+
+** 6. Wire event-driven refresh and read updates
+Subscribe the sidebar to harness events while visible and update unread/read
+state from chat display/open paths.
+
+Acceptance criteria:
+
+- New assistant responses in background sessions show the unread indicator.
+- Opening a session through switcher/sidebar clears its unread indicator.
+- A visible selected chat buffer marks newly rendered assistant responses read.
+- Session reset clears unread state for that session.
+- Rename and title changes refresh the sidebar after the rename command path.
+
+** 7. Register commands in shell manifest and startup
+Expose the overview commands through the shell manifest and autoloads.
+
+Acceptance criteria:
+
+- Shell discovery lists switcher/sidebar commands.
+- Startup/reload refreshes keymaps and live sidebar buffers if present.
+- Existing chat commands continue to work.
+
+** 8. Add tests
+Add tests for semantic read-state behavior, switcher/open helpers, sidebar
+rendering, and event refresh.
+
+Suggested tests:
+
+- session list rows render in latest-message order;
+- unread indicator appears only after assistant messages newer than read marker;
+- opening a session marks it read;
+- preview does not mark read;
+- reset clears unread state;
+- sidebar row text properties map to the right session ids;
+- =j=/=k= movement selects expected rows;
+- =RET= calls the session open path and focuses composer in an integration test;
+- opening a row for an already-live session reuses that buffer and preserves its
+  draft;
+- opening a row for a persisted session with no live buffer creates/attaches a
+  chat buffer;
+- =e-chat-resume= still delegates/works after chooser refactor.
+
+* Testing plan
+Run focused tests first:
+
+#+begin_example
+eldev test test/e-chat-test.el test/e-chat-session-test.el
+#+end_example
+
+If a new test file is added, include it explicitly, for example:
+
+#+begin_example
+eldev test test/e-chat-overview-test.el test/e-chat-test.el
+#+end_example
+
+Before claiming implementation ready, reload changed Emacs Lisp into the running
+Emacs and inspect at least one live scenario:
+
+1. open two sessions;
+2. show the sidebar;
+3. create an assistant response in a background session or simulate the event;
+4. verify the unread indicator;
+5. open the session from the sidebar and verify the composer is focused and the
+   unread indicator clears.
+
+* Risks
+- Loading every transcript to compute unread indicators could make the sidebar
+  slow. Prefer event-driven marker updates and load only changed/selected
+  sessions.
+- Read-state persistence can drift from deleted or reset sessions. Cleanup should
+  be best-effort and isolated to presentation state.
+- Existing =e-chat-resume= helpers are private and live in =e-chat.el=; moving
+  them can create churn. Prefer a narrow extraction only when reuse demands it.
+- Side-window focus behavior can be fragile in batch tests. Keep row rendering
+  and command behavior testable without windows, then add minimal integration
+  coverage.
+- Preview must not steal the user's draft/composer state. Use preview buffers,
+  not attached chat buffers, for candidate previews. This is especially important
+  when the selected session already has a live chat buffer with an unsent draft.
+- Rename currently mutates session state directly through =e-chat-session-rename=
+  rather than a harness event. Sidebar refresh may need explicit presentation
+  hooks until a broader session-info event exists.
+
+* Compatibility
+- Keep =e-chat-resume= available and behavior-compatible.
+- Existing persisted session JSONL readability is not a hard compatibility
+  requirement for this feature. Prefer preserving it when it stays simple, but if
+  a cleaner overview/session design requires breaking old persisted session
+  files, allow the break and document it clearly. In that case, fail with an
+  obvious message rather than silently misreading old sessions.
+- Store overview read state in a new presentation-owned file; absence of that
+  file means all existing sessions start as read or unread according to the
+  chosen migration policy. Prefer existing sessions start read to avoid noisy
+  indicators after upgrade when old sessions remain readable.
+- Do not require Consult. Use existing completing-read fallback for the switcher.
+- Do not require Evil/Doom for =j=/=k= sidebar navigation.
+
+* Follow-up candidates
+- Full-text session search.
+- Session pinning or favorites.
+- Project/group filters.
+- Session delete/archive commands.
+- Cross-harness overview.
+- Badges for active/running turns, failed turns, or compacted sessions.
+- Richer preview layout with latest user prompt and assistant response snippets.
+
+* Minimal acceptance for this feature
+The feature is complete when:
+
+1. A switcher command lists past sessions and opens the selected session's
+   composer.
+2. A sidebar displays sessions in latest-message order.
+3. Sessions with unread assistant responses show a visual indicator.
+4. Sidebar =j=/=k= navigation previews the selected session.
+5. =RET= from the sidebar opens the selected session and focuses the composer,
+   reusing live buffers and creating buffers for persisted sessions without a
+   current buffer.
+6. Previous/next session commands work when the sidebar is visible.
+7. Read/unread state persists across Emacs restarts without modifying transcript
+   JSONL records.
+8. Existing =e-chat-resume= behavior remains compatible.
