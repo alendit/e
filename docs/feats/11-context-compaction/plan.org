@@ -86,7 +86,7 @@ Required fields:
 | =first-kept-entry-id= | oldest current-path entry replayed verbatim after summary |
 | =tokens-before= | estimated or measured context size before compaction |
 | =created-at= | creation timestamp |
-| =metadata= | reason, instructions, model, file metadata, estimates |
+| =metadata= | reason, instructions, active model, resource usage metadata, estimates |
 
 Suggested record shape:
 
@@ -102,8 +102,21 @@ Suggested record shape:
             :instructions "focus on ..."
             :summary-model "gpt-..."
             :previous-compaction-id "01J..."
-            :read-files ("lisp/core/e-context.el")
-            :modified-files ("lisp/core/e-context.el")
+            :affected-resources
+            ((:uri "file://lisp/core/e-context.el"
+              :operation read
+              :tools ("read"))
+             (:uri "tmp://test-output/turn-01.txt"
+              :operation read
+              :tools ("bash")))
+            :tool-usage-summaries
+            ((:tool "bash"
+              :kind resource-usage
+              :resources ((:uri "tmp://test-output/turn-01.txt"
+                           :operation read))
+              :summary "kept full test output in tmp resource"))
+            :read-files ("lisp/core/e-context.el") ; derived compatibility view
+            :modified-files nil                 ; derived compatibility view
             :messages-summarized 42
             :turns-summarized 12
             :estimated-tokens-kept 18000))
@@ -125,16 +138,31 @@ For the current path:
 5. Emit model-facing entries from =first-kept-entry-id= to the current head,
    excluding storage-only entries and the compaction record itself unless needed.
 
-The summary message should be explicit and stable, for example:
+Follow Pi's shape for the compacted context item: emit one explicit
+provider-neutral compaction summary message before the kept suffix. In =e= terms,
+the context layer should emit an internal message with =:role compaction-summary=
+and content derived from the durable summary:
+
+#+begin_src elisp
+(:role compaction-summary
+ :content "Previous session context was compacted. Summary:\n\n...")
+#+end_src
+
+Backend normalization lowers this internal role to the provider-facing shape. The
+initial backend form can be a =system= message because it is not a user request
+and should not be treated as dialogue to answer:
 
 #+begin_src elisp
 (:role system
  :content "Previous session context was compacted. Summary:\n\n...")
 #+end_src
 
-or another provider-neutral role/content shape accepted by existing backends.
-Storage-only fields such as =:id=, =:parent-id=, =:turn-id=, and
-=:first-kept-entry-id= must not leak into backend messages.
+Keep this choice owned by the context/backend normalization layer so provider
+adapters can map it differently later if needed. The =compaction-summary= role is
+not durable session data; it is an internal context item used between session
+reconstruction and backend normalization. Storage-only fields such as =:id=,
+=:parent-id=, =:turn-id=, and =:first-kept-entry-id= must not leak into backend
+messages.
 
 * Manual compaction flow
 The first shipped trigger should be manual only.
@@ -147,9 +175,8 @@ Suggested command names:
 Flow:
 
 1. User invokes manual compaction from a chat session.
-2. If a turn is running, either reject with a clear message or ask the user to
-   abort first. Do not compact concurrently with an active turn in the first
-   version.
+2. If a turn is running, refuse with a clear message. Do not auto-abort the turn
+   and do not compact concurrently with an active turn in the first version.
 3. Build a compaction preparation from the current path.
 4. Choose a kept boundary.
 5. Serialize older entries into a summarization transcript.
@@ -192,6 +219,13 @@ Boundary selection should:
 - never separate a tool result from the corresponding tool call;
 - never choose a boundary before an entry that cannot be rendered to backend
   context safely.
+
+For a first target model with roughly 256k tokens of context, keep a conservative
+recent suffix of about 20k tokens. This matches Pi's documented default and keeps
+around 8% of the window verbatim while leaving room for default/system context,
+tools, generated summary, and the next answer. Codex exposes manual thread
+compaction but the public docs do not document a keep-recent token constant, so
+use Pi's value rather than inventing a Codex-derived number.
 
 If the current turn alone exceeds the keep budget, the first implementation may
 refuse compaction with “current turn is too large to compact safely”. Split-turn
@@ -249,45 +283,128 @@ Use a structured summary format close to =docs/research/context_compaction.org=:
 ## Critical Context
 - [Facts needed to continue]
 
+<affected-resources>
+Read:
+- file://path/to/file
+- tmp://artifact
+
+Write:
+- file://path/to/changed-file
+</affected-resources>
+
 <read-files>
 path/to/file
 </read-files>
 
 <modified-files>
-path/to/file
+path/to/changed-file
 </modified-files>
 #+end_src
+
+The =affected-resources= block is the primary resource-oriented view. Keep
+=read-files= and =modified-files= as derived compatibility tags only when file
+URIs are available.
 
 For repeated compaction, pass the previous summary and ask the summarizer to
 update it while preserving still-relevant information. Do not stack multiple
 summary messages in context; use the latest compaction on the current path.
 
-* File operation metadata
-The first version can derive file metadata opportunistically from existing tool
-call/result payloads.
+* Tool usage and affected-resource metadata
+The first version should not hard-code compaction metadata as only
+=read-files=/=modified-files=. =e= tools operate on resources, buffers, tmp
+artifacts, Emacs state, shell commands, and external CLIs.
 
-Track at least:
+Use one generic, resource-centric usage metadata contract for both resource
+methods and free tools. Compaction consumes this metadata to build the durable
+resource list and to give the summarizer compact, high-value tool context. This
+is part of the tool result/turn metadata contract, not a compaction-specific
+lifecycle hook.
 
-- files read through =read= resources when the URI maps to a project file;
-- files written through =write=;
-- files edited through =edit=.
+Store usage records on durable tool-result/session-entry metadata under the
+=:tool-usage= key. The value should be a list of usage records, even when a tool
+reports only one record. This keeps the carrier generic while allowing later
+non-resource usage kinds without changing the surrounding entry shape.
 
-Store these in compaction metadata and include them in summary tags. If metadata
-cannot be derived reliably, compaction should still work with empty file lists.
+Resource methods report usage implicitly. For example, =read=, =write=, and
+=edit= know the target URI and operation, so callers do not need to opt in for
+those records. Free tools may accept optional usage metadata supplied by the LLM
+when the call touches resources that should survive compaction. The guidance for
+free tools should be short and resource-centric: if this call affects resources
+that matter for future work, provide the resource URIs and operations; otherwise
+omit the metadata. Do not add noisy usage records for every shell command.
 
-* Backend and model choice
-Use the active backend/model by default for the first version.
-
-Add a narrow configuration point only if needed:
+Canonical metadata shape:
 
 #+begin_src elisp
-(defcustom e-context-compaction-summary-model nil
-  "Optional model override for context compaction summaries."
-  :type '(choice (const :tag "Use active model" nil) string))
+(:metadata
+ (:tool-usage
+  ((:kind resource-usage
+    :tool "bash"
+    :resources ((:uri "file://lisp/core/e-context.el"
+                 :operation read)
+                (:uri "tmp://test-output/turn-01.txt"
+                 :operation write))
+    :summary "ran targeted context tests and stored full output in tmp resource"))))
 #+end_src
 
-Do not introduce a broad summarizer abstraction until there are at least two real
-summary-generation implementations or a concrete provider-specific need.
+Resource method calls can produce the same shape without an explicit LLM
+argument:
+
+#+begin_src elisp
+(:metadata
+ (:tool-usage
+  ((:kind resource-usage
+    :tool "read"
+    :resources ((:uri "file://lisp/core/e-context.el"
+                 :operation read))))))
+#+end_src
+
+Compaction preparation should normalize these tool usage records into durable
+metadata:
+
+#+begin_src elisp
+(:affected-resources
+ ((:uri "file://lisp/core/e-context.el"
+   :operation read
+   :tools ("read" "bash"))
+  (:uri "tmp://test-output/turn-01.txt"
+   :operation write
+   :tools ("bash")))
+ :tool-usage-summaries
+ ((:tool "bash"
+   :kind resource-usage
+   :resources ((:uri "file://lisp/core/e-context.el" :operation read)
+               (:uri "tmp://test-output/turn-01.txt" :operation write))
+   :summary "ran targeted context tests and stored full output in tmp resource")))
+#+end_src
+
+Rules:
+
+- store usage on tool result/session-entry metadata as =:tool-usage=, whose
+  value is a list of records;
+- require =:kind= and keep it visible so later usage metadata can distinguish
+  resource usage from other kinds without changing the carrier contract;
+- use =resource-usage= as the first supported kind;
+- keep resource entries URI-based and operation-oriented;
+- deduplicate resources by URI and operation when building
+  =:affected-resources=;
+- keep optional summaries bounded and high-value; they are not a place to store
+  raw command output or duplicate the transcript;
+- do not try to infer every file a free tool may have touched;
+- when a tool stores truncated output in a =tmp://= resource, include that URI as
+  an affected resource;
+- derive legacy-friendly =read-files= and =modified-files= for generated
+  markdown only when file URIs are available, but keep the durable metadata
+  resource-oriented.
+
+* Backend and model choice
+Use the active default backend/model for the first version. Do not add a summary
+model setting in this feature.
+
+A later feature can add a dedicated summary model/provider if active-model
+summaries are too expensive or too weak. Do not introduce a broad summarizer
+abstraction until there are at least two real summary-generation implementations
+or a concrete provider-specific need.
 
 * UI and activity events
 The chat shell should expose a manual compaction command and report lifecycle
@@ -304,7 +421,7 @@ Suggested activity events:
 The UI should show a compact block with:
 
 - reason: manual;
-- summary model, if known;
+- summary model, if known from the active backend;
 - summarized turns/messages;
 - kept boundary timestamp or brief label;
 - token estimates before/kept, when known.
@@ -346,7 +463,10 @@ kept suffix.
 Acceptance criteria:
 
 - no compaction produces the same messages as transcript context;
-- with compaction, backend messages include one summary message plus kept suffix;
+- with compaction, reconstructed context includes one internal
+  =compaction-summary= message plus kept suffix;
+- backend normalization lowers =compaction-summary= to the provider-facing
+  summary representation, initially a =system= message;
 - messages before =first-kept-entry-id= are not sent verbatim;
 - storage-only identity metadata is stripped before backend submission.
 
@@ -360,7 +480,8 @@ Create a pure preparation function that inspects the current path and returns:
  :kept-entries (...)
  :tokens-before 12345
  :tokens-kept 6789
- :file-ops ...)
+ :affected-resources (...)
+ :tool-usage-summaries (...))
 #+end_src
 
 Acceptance criteria:
@@ -370,17 +491,36 @@ Acceptance criteria:
 - it avoids unsafe tool-call/tool-result cuts;
 - tests cover normal and too-small sessions.
 
-** 5. Add transcript serialization for summarization
-Serialize entries to a plain text summarization input with role/type labels and
-truncated tool outputs.
+** 5. Add generic tool usage metadata
+Add a generic resource-centric usage metadata carrier to tool result/session
+entry metadata. Resource methods should populate it implicitly from their URI and
+operation. Free tools should expose an optional argument for high-value resource
+usage only and translate that argument into the same =:metadata (:tool-usage
+...)= carrier.
+
+Acceptance criteria:
+
+- resource methods emit =resource-usage= metadata with URI and operation under
+  =:metadata (:tool-usage ...)=;
+- free tools can accept optional resource usage metadata without requiring it for
+  every call;
+- compaction preparation deduplicates resource usage by URI and operation;
+- summaries are bounded and raw payloads are not duplicated in metadata;
+- tests cover implicit resource-method metadata and optional free-tool metadata.
+
+** 6. Add transcript serialization for summarization
+Serialize entries to a plain text summarization input with role/type labels,
+truncated tool outputs, and compact method-centric resource summaries.
 
 Acceptance criteria:
 
 - user, assistant, tool-call, tool-result, and error entries are distinguishable;
 - tool result truncation is tested;
-- serialized text does not include large unbounded payloads.
+- serialized text does not include large unbounded payloads;
+- resource usage is summarized by operation, for example =Read:= and =Write:=
+  lists with deduplicated URIs.
 
-** 6. Add summary generation service
+** 7. Add summary generation service
 Add a small harness-owned operation that calls the active backend with a
 summarizer system prompt and serialized transcript.
 
@@ -391,7 +531,7 @@ Acceptance criteria:
 - previous summary is included for repeated compaction;
 - backend failures surface as visible compaction errors.
 
-** 7. Add manual chat command
+** 8. Add manual chat command
 Expose manual compaction from chat.
 
 Acceptance criteria:
@@ -401,7 +541,7 @@ Acceptance criteria:
 - command refuses to run concurrently with an active assistant turn;
 - success appends a compaction record and refreshes live context.
 
-** 8. Add activity/rendering support
+** 9. Add activity/rendering support
 Record and render compact lifecycle events.
 
 Acceptance criteria:
@@ -410,7 +550,7 @@ Acceptance criteria:
 - durable activity events replay sensibly;
 - failures do not leave partially appended compaction records.
 
-** 9. Add tests and live validation
+** 10. Add tests and live validation
 Add tests for storage, pure preparation, context reconstruction, serialization,
 and command orchestration with a fake backend.
 
@@ -484,26 +624,56 @@ Policy:
 - Custom compaction strategy hooks.
 - Dedicated summary model/provider configuration if active-model summaries are
   too expensive or too weak.
+- Additional usage metadata kinds if concrete non-resource use cases emerge.
 - UI for inspecting compaction summaries and boundaries.
 - Commands to discard a compaction record from the current path by branching or
   checkout semantics, once branching exists.
 
-* Open questions
-These are not blocking for the first manual feature, but should be revisited
-before or during implementation:
+* Resolved planning decisions
+- Summary message role :: Follow Pi's shape conceptually: a distinct compaction
+  summary item before the kept suffix. Represent it in =e= as an internal
+  =compaction-summary= role emitted by context reconstruction, and initially
+  normalize it to a backend =system= message.
+- Running turns :: Manual compaction refuses to run while a turn is active. It
+  does not auto-abort.
+- Kept context size :: Default =e-context-compaction-keep-recent-tokens= to
+  about 20k tokens for the first version. This follows Pi's documented default;
+  Codex public docs expose compaction endpoints but do not document a keep-recent
+  constant.
+- Summary model :: Use the active default model/backend. Dedicated summary-model
+  configuration is deferred.
+- Legacy simple compaction display :: Defer. Old simple records should not drive
+  compacted context unless they have a valid boundary.
+- Metadata model :: Prefer durable resource-centric =affected-resources= and
+  =tool-usage-summaries= over file-only metadata. Tool result/session-entry
+  metadata carries a =:tool-usage= list of usage records. Resource methods emit
+  usage metadata implicitly; free tools can optionally report high-value affected
+  resources. Derive =read-files= and =modified-files= from resource metadata only
+  as a markdown compatibility view.
+- Affected-resource reporting :: Add a generic tool usage metadata carrier now,
+  not a compaction-specific lifecycle hook. The first supported kind is
+  =resource-usage=. Compaction consumes these records, deduplicates resources by
+  URI and operation, and emits method-centric summaries such as =Read:= and
+  =Write:= lists.
 
-- Should the synthetic summary message use =system= role, =user= role, or a new
-  internal/context role normalized per backend?
-- Should manual compaction abort a running turn automatically, or simply refuse
-  until the turn is idle?
-- How large should =e-context-compaction-keep-recent-tokens= default to for the
-  initial supported models?
-- Should the summary model be configurable in this feature or deferred until
-  there is real need?
-- How should old simple compaction records be displayed once identity-based
-  compaction exists?
-- Which file/resource URI schemes should contribute to =read-files= and
-  =modified-files= metadata?
+* Open questions
+No open questions remain for the first manual compaction feature. The former open
+questions were resolved as concrete plan commitments:
+
+- Internal summary role :: Use =compaction-summary= as the internal context role.
+  Backend normalization lowers it to the provider-facing summary representation,
+  initially =system=.
+- Running turns :: Manual compaction refuses while a turn is active; it does not
+  auto-abort.
+- Kept context size :: Default =e-context-compaction-keep-recent-tokens= to about
+  20k tokens.
+- Summary model :: Use the active default backend/model; defer dedicated summary
+  model configuration.
+- Legacy simple records :: Old records may be inspectable, but do not drive
+  compacted context unless they have a valid =first-kept-entry-id=.
+- Affected-resource reporting :: Add generic resource-centric tool usage metadata
+  now. Store usage records under =:metadata (:tool-usage ...)= on tool
+  result/session entries; do not add a compaction-specific lifecycle hook.
 
 * Minimal acceptance for this feature
 The feature is complete when:
@@ -519,6 +689,9 @@ The feature is complete when:
 5. Boundary selection is conservative and does not knowingly split tool-call /
    tool-result groups.
 6. Large tool outputs are truncated in summarization input.
-7. Expected compaction failures are visible and do not corrupt session state.
-8. Storage, preparation, context reconstruction, serialization, and manual
-   orchestration are covered by tests.
+7. Resource usage metadata is captured for resource methods, can be provided by
+   free tools for high-value affected resources, and is deduplicated for
+   compaction summaries.
+8. Expected compaction failures are visible and do not corrupt session state.
+9. Storage, preparation, context reconstruction, tool usage metadata,
+   serialization, and manual orchestration are covered by tests.
