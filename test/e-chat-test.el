@@ -1445,6 +1445,113 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-activity-summary-expands-to-child-blocks ()
+  "Settled activity summary expansion creates navigable child blocks."
+  (let ((buffer (e-chat-test--buffer nil "chat-progress-summary-children")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat--render-event
+           (e-events-make :type 'turn-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 0))
+          (e-chat--render-event
+           (e-events-make :type 'provider-request-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 0))
+          (e-chat--render-event
+           (e-events-make :type 'reasoning-delta
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 1
+                          :payload '(:content "planning")))
+          (e-chat--render-event
+           (e-events-make :type 'provider-request-finished
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 63
+                          :payload '(:status done)))
+          (e-chat--render-event
+           (e-events-make :type 'tool-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 64
+                          :payload '(:id "call-1" :name "read")))
+          (e-chat--render-event
+           (e-events-make :type 'tool-finished
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 65
+                          :payload '(:tool-call (:id "call-1" :name "read")
+                                      :result (:status ok
+                                               :content "contents"))))
+          (e-chat--render-event
+           (e-events-make :type 'provider-request-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 160))
+          (e-chat--render-event
+           (e-events-make :type 'provider-request-finished
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 205
+                          :payload '(:status done)))
+          (e-chat--render-event
+           (e-events-make :type 'message-added
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 205
+                          :payload '(:message (:role assistant
+                                                :content "Final answer."))))
+          (goto-char (point-max))
+          (insert "follow-up draft")
+          (e-chat-test--focus-block-containing "Turn took 3min 25sec")
+          (let* ((summary (e-chat-test--focused-block))
+                 (summary-id (plist-get summary :id)))
+            (call-interactively #'e-chat-response-navigation-activate)
+            (let* ((children (plist-get summary :children))
+                   (child-kinds
+                    (mapcar
+                     (lambda (block-id)
+                       (plist-get (gethash block-id e-chat--block-registry)
+                                  :kind))
+                     children))
+                   (summary-index (cl-position summary-id e-chat--block-order
+                                               :test #'equal)))
+              (should (equal child-kinds
+                             '(activity-thought activity-reasoning
+                               activity-tool-batch activity-thought)))
+              (should (equal (cl-subseq e-chat--block-order
+                                        (1+ summary-index)
+                                        (+ 1 summary-index
+                                           (length children)))
+                             children))
+              (should (string-match-p "follow-up draft"
+                                      (buffer-string)))
+              (e-chat--focus-block (car children))
+              (should (equal (call-interactively
+                              #'e-chat-response-navigation-copy)
+                             "Thought for 1min 3sec"))
+              (e-chat--focus-block (cadr children))
+              (should (equal (call-interactively
+                              #'e-chat-response-navigation-copy)
+                             "planning"))
+              (e-chat--focus-block (nth 2 children))
+              (call-interactively #'e-chat-response-navigation-activate)
+              (should e-chat-tool-list-mode)
+              (should (= (length (plist-get (e-chat--tool-list-block)
+                                            :tool-items))
+                         1))
+              (e-chat-tool-list-back)
+              (e-chat--focus-block summary-id)
+              (call-interactively #'e-chat-response-navigation-activate)
+              (dolist (child children)
+                (should-not (gethash child e-chat--block-registry))
+                (should-not (member child e-chat--block-order))))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-progress-activity-records-track-round-ownership ()
   "Provider, reasoning, and tool events build semantic round records."
   (let ((buffer (e-chat-test--buffer nil "chat-progress-records")))
@@ -1584,10 +1691,19 @@
               (should (string-match-p "1 tool call" content)))
             (let* ((record (e-chat--existing-turn-record "turn-1"))
                    (rounds (plist-get record :activity-records))
-                   (tool-batch (car (plist-get (car rounds) :tool-batches))))
+                   (tool-batch (car (plist-get (car rounds) :tool-batches)))
+                   (summary (e-chat-test--focused-block))
+                   (child-kinds
+                    (mapcar
+                     (lambda (block-id)
+                       (plist-get (gethash block-id e-chat--block-registry)
+                                  :kind))
+                     (plist-get summary :children))))
               (should (= (length rounds) 1))
               (should (equal (plist-get (car rounds) :status) 'done))
-              (should (= (length (plist-get tool-batch :items)) 1)))))
+              (should (= (length (plist-get tool-batch :items)) 1))
+              (should (equal child-kinds
+                             '(activity-thought activity-tool-batch))))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 

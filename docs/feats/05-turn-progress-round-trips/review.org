@@ -182,8 +182,16 @@ Recommended follow-ups:
      present.
 2. Render expanded summary history as child blocks if separate navigation/actions
    remain desired.
+   - Resolution: implemented by
+     =improvement-02-expanded-summary-child-blocks.org=.  Summary activation now
+     toggles child blocks for thought, reasoning, and tool batches.  Tool-batch
+     children open the existing tool-list flow, thought/reasoning children can be
+     copied independently, and collapse removes the child records.
 3. Add line-specific copy/open behavior for expanded thought and reasoning
    blocks after child blocks exist.
+   - Resolution: covered with improvement 02's child blocks.  The standard
+     response-navigation copy/open commands operate on the individual
+     thought/reasoning child block content.
 4. Decide whether failure/cancellation should rewrite open thinking entries into
    explicit failed/cancelled thought records or leave current failure UI as the
    terminal state.

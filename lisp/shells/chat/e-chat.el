@@ -1744,6 +1744,14 @@ When APPEND is non-nil, merge CONTENT into the previous reasoning child."
          (mapcar #'e-chat--round-tool-count
                  (e-chat--activity-records record))))
 
+(defun e-chat--semantic-tool-items (items)
+  "Return display tool-list items for semantic tool ITEMS."
+  (mapcar
+   (lambda (item)
+     (list :call (plist-get item :call)
+           :output (plist-get item :output)))
+   items))
+
 (defun e-chat--round-thought-text (round)
   "Return visible thought text for semantic ROUND."
   (pcase (plist-get round :status)
@@ -1862,6 +1870,35 @@ Count tool invocations after the reasoning chunk they followed."
            (e-chat--format-time-value (plist-get record :ended-at))
            (e-chat--format-duration (plist-get record :started-at)
                                     (plist-get record :ended-at)))))
+
+(defun e-chat--activity-summary-child-records (record)
+  "Return navigable child block descriptors for RECORD's activity summary."
+  (let (children)
+    (dolist (round (e-chat--activity-records record))
+      (when-let ((thought (e-chat--round-thought-text round)))
+        (unless (equal thought "Thinking...")
+          (push (list :kind 'activity-thought
+                      :text thought
+                      :action-text thought)
+                children)))
+      (dolist (reasoning (plist-get round :reasoning))
+        (when-let ((content (plist-get reasoning :content)))
+          (unless (string-empty-p content)
+            (push (list :kind 'activity-reasoning
+                        :text content
+                        :action-text content)
+                  children))))
+      (dolist (batch (plist-get round :tool-batches))
+        (let* ((items (plist-get batch :items))
+               (count (length items)))
+          (when (> count 0)
+            (let ((text (e-chat--activity-tool-count-text count)))
+              (push (list :kind 'activity-tool-batch
+                          :text text
+                          :action-text text
+                          :tool-items (e-chat--semantic-tool-items items))
+                    children))))))
+    (nreverse children)))
 
 (defun e-chat--failure-details-text (record)
   "Return expanded failure details text for RECORD."
@@ -2466,6 +2503,115 @@ SOURCE identifies where the entry came from for duplicate suppression."
     (plist-put block :details-start-marker nil)
     (plist-put block :details-end-marker nil)))
 
+(defun e-chat--block-order-insert-after (parent-id child-ids)
+  "Place CHILD-IDS immediately after PARENT-ID in `e-chat--block-order'."
+  (let ((remaining e-chat--block-order)
+        before
+        after
+        found)
+    (dolist (block-id remaining)
+      (unless (member block-id child-ids)
+        (if found
+            (push block-id after)
+          (push block-id before))
+        (when (equal block-id parent-id)
+          (setq found t))))
+    (setq e-chat--block-order
+          (append (nreverse before) child-ids (nreverse after)))))
+
+(defun e-chat--activity-summary-expanded-p (block)
+  "Return non-nil when activity summary BLOCK has rendered children."
+  (not (null (plist-get block :children))))
+
+(defun e-chat--delete-activity-summary-children (block)
+  "Delete child blocks rendered for activity summary BLOCK."
+  (let ((children (plist-get block :children)))
+    (when children
+      (let* ((first-block (gethash (car children) e-chat--block-registry))
+             (last-block (gethash (car (last children)) e-chat--block-registry))
+             (start-marker (and first-block
+                                (plist-get first-block :start-marker)))
+             (end-marker (and last-block
+                              (plist-get last-block :end-marker)))
+             (start (and (markerp start-marker)
+                         (marker-position start-marker)))
+             (end (and (markerp end-marker)
+                       (marker-position end-marker))))
+        (when (and start end (< start end))
+          (let ((inhibit-read-only t))
+            (delete-region start end))))
+      (dolist (child-id children)
+        (e-chat--remove-block-record child-id))
+      (plist-put block :children nil)
+      (plist-put block :expanded nil))))
+
+(defun e-chat--insert-activity-summary-child (parent turn-id child)
+  "Insert CHILD for activity summary PARENT and return its block id."
+  (let* ((block-id (e-chat--next-block-id))
+         (text (plist-get child :text))
+         (line (format "  %s\n" text))
+         (start (point))
+         (content-start (+ start 2))
+         (content-end (+ content-start (length text))))
+    (e-chat--insert-protected
+     line
+     'e-chat-system-face
+     `(e-chat-turn-id ,turn-id
+       e-chat-block-id ,block-id
+       e-chat-parent-block-id ,(plist-get parent :id)))
+    (e-chat--update-block-bounds
+     block-id
+     turn-id
+     start
+     (point)
+     (plist-get child :kind)
+     (plist-get child :action-text)
+     content-start
+     content-end
+     (plist-get child :tool-items)
+     nil)
+    (let ((block (e-chat--block-record block-id turn-id)))
+      (plist-put block :parent-block-id (plist-get parent :id)))
+    block-id))
+
+(defun e-chat--insert-activity-summary-children (block)
+  "Insert navigable child blocks for activity summary BLOCK."
+  (e-chat--delete-activity-summary-children block)
+  (let* ((turn-id (plist-get block :turn-id))
+         (turn-record (and turn-id
+                           (gethash turn-id e-chat--turn-registry)))
+         (children (and turn-record
+                        (e-chat--activity-summary-child-records turn-record)))
+         (end-marker (plist-get block :end-marker))
+         (end (and (markerp end-marker)
+                   (marker-position end-marker)))
+         (composer-state (e-chat--capture-composer-state))
+         (had-composer (e-chat--delete-composer))
+         child-ids)
+    (unless end
+      (user-error "Focused activity summary has no insertion point"))
+    (when children
+      (let ((inhibit-read-only t))
+        (goto-char end)
+        (unless (bolp)
+          (insert "\n"))
+        (dolist (child children)
+          (push (e-chat--insert-activity-summary-child block turn-id child)
+                child-ids)))
+      (setq child-ids (nreverse child-ids))
+      (plist-put block :children child-ids)
+      (plist-put block :expanded t)
+      (e-chat--block-order-insert-after (plist-get block :id) child-ids))
+    (when had-composer
+      (goto-char (point-max))
+      (e-chat--restore-composer-state composer-state))))
+
+(defun e-chat--toggle-activity-summary-children (block)
+  "Toggle navigable activity summary children for BLOCK."
+  (if (e-chat--activity-summary-expanded-p block)
+      (e-chat--delete-activity-summary-children block)
+    (e-chat--insert-activity-summary-children block)))
+
 (defun e-chat--block-details-visible-p (block)
   "Return non-nil when BLOCK has visible expanded detail text."
   (not (null (e-chat--block-details-bounds block))))
@@ -2810,9 +2956,9 @@ non-nil, is used by focused block activation."
       ('activity
        (e-chat--open-tool-list block))
       ('activity-summary
-       (if-let ((details-text (plist-get block :details-text)))
-           (e-chat--toggle-block-details-text block details-text)
-         (e-chat--enter-block-view block)))
+       (e-chat--toggle-activity-summary-children block))
+      ('activity-tool-batch
+       (e-chat--open-tool-list block))
       ('system
        (if-let ((details-text (plist-get block :details-text)))
            (e-chat--toggle-block-details-text block details-text)

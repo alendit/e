@@ -3,7 +3,27 @@
 
 * Status
 
-Planned follow-up from =review.org=.
+Done.
+
+Implemented as the second review follow-up for feature 05.  Activating a
+settled activity summary now renders navigable child blocks for thought,
+reasoning, and tool-batch lines.  Tool-batch children open the existing tool
+list, thought/reasoning children copy/open via their own block content, and
+collapse removes child block records cleanly.
+
+Verification:
+
+#+begin_src shell
+eldev test -f test/e-chat-test.el e-chat-test-activity-summary-expands-to-child-blocks e-chat-test-replayed-provider-activity-restores-summary e-chat-test-final-turn-collapses-progress-to-summary
+#+end_src
+
+Result: 3 tests run; 3 results as expected; 0 unexpected.
+
+#+begin_src shell
+eldev test -f test/e-chat-test.el
+#+end_src
+
+Result: 122 tests run; 121 results as expected; 0 unexpected; 1 skipped.
 
 * Problem
 
