@@ -3,26 +3,33 @@
 
 * Scope
 
-Validated the current implementation against =plan.org= for feature 04.
+Validated the current repo implementation against =plan.org= for feature 04.
 
-Inspected:
+Inspected directly or by outline/search:
 
 - =lisp/core/e-session.el=
 - =lisp/core/e-harness.el=
 - =lisp/core/e-loop.el=
+- =lisp/core/e-context.el=
+- =lisp/core/e-compaction.el=
+- =lisp/core/e-tools.el=
+- =lisp/shells/chat/e-chat.el= turn/replay touch points
 - =test/e-session-test.el=
 - =test/e-harness-test.el=
 - =test/e-loop-test.el=
+- =test/e-context-test.el=
+- =test/e-compaction-test.el=
+- broader chat/session tests through the full test suite
 
 * Verification
 
-Commands run:
+Commands run for this review pass:
 
 #+begin_src shell
-eldev test test/e-session-test.el test/e-harness-test.el test/e-loop-test.el
+eldev test
 #+end_src
 
-Result: 86 tests passed, 0 unexpected.
+Result: 452 tests run; 451 results as expected; 0 unexpected; 1 skipped (=e-chat-test-assistant-markdown-renders-with-text-properties=).
 
 Live reload:
 
@@ -30,39 +37,151 @@ Live reload:
 emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
 #+end_src
 
-Result: returned the repo path.
+Result: returned ="/Users/dimitrivorona/projects/elisp/e/"=.
 
-Live probe after reload:
+Live harness turn probe after reload:
 
 #+begin_src elisp
-(let* ((store (e-session-store-create))
-       (session (e-session-create store :id "codex-live-04"))
-       (first (e-session-append-message
-               store "codex-live-04" '(:role user :content "live")))
-       (second (e-session-append-message
-                store "codex-live-04"
-                '(:turn-id "turn-live" :role assistant :content "ok"))))
-  (list (and (stringp (plist-get first :id))
-             (= (length (plist-get first :id)) 26))
-        (equal (plist-get second :parent-id) (plist-get first :id))
-        (length (e-session-current-path store "codex-live-04"))))
+(progn
+  (require 'e)
+  (require 'e-session)
+  (require 'e-harness)
+  (let* ((store (e-session-store-create))
+         (harness (e-harness-create
+                   :sessions store
+                   :backend (e-backend-fake-create
+                             :items '((:type reasoning-delta :content "thinking")
+                                      (:type assistant-message :content "ok")
+                                      (:type done :reason stop))))))
+    (e-harness-create-session harness :id "codex-review-04b")
+    (let ((turn-id (e-harness-prompt-async harness "codex-review-04b" "live review probe")))
+      (e-harness-wait harness "codex-review-04b" 1.0)
+      (let* ((messages (e-session-messages store "codex-review-04b"))
+             (events (e-session-activity-events store "codex-review-04b"))
+             (path (e-session-current-path store "codex-review-04b")))
+        (list :turn-id-ulid (and (stringp turn-id)
+                                 (not (null (string-match-p "\\`[0-9A-HJKMNP-TV-Z]\\{26\\}\\'" turn-id))))
+              :message-count (length messages)
+              :event-types (mapcar (lambda (e) (plist-get e :event-type)) events)
+              :all-turns-match (cl-every (lambda (entry)
+                                           (equal (plist-get entry :turn-id) turn-id))
+                                         (append messages events))
+              :path-types (mapcar (lambda (e) (plist-get e :type)) path)
+              :parents-ok (cl-loop for prev = nil then entry
+                                   for entry in path
+                                   always (if prev
+                                              (equal (plist-get entry :parent-id)
+                                                     (plist-get prev :id))
+                                            (not (plist-get entry :parent-id))))))))
 #+end_src
 
-Result: =(t t 2)=.
+Result:
+
+#+begin_src elisp
+(:turn-id-ulid t
+ :message-count 2
+ :event-types (turn-started provider-request-started reasoning-delta provider-request-finished turn-finished)
+ :all-turns-match t
+ :path-types (message activity-event activity-event activity-event activity-event message activity-event)
+ :parents-ok t)
+#+end_src
+
+Live reset/head probe after reload:
+
+#+begin_src elisp
+(progn
+  (require 'e-session)
+  (let ((store (e-session-store-create)))
+    (e-session-create store :id "reset-probe")
+    (let ((first (e-session-append-message store "reset-probe" '(:role user :content "before"))))
+      (e-session-clear-messages store "reset-probe")
+      (let ((after (e-session-append-message store "reset-probe" '(:role user :content "after"))))
+        (list :after-parent (plist-get after :parent-id)
+              :old-id (plist-get first :id)
+              :path-ids (mapcar (lambda (e) (plist-get e :id))
+                                 (e-session-current-path store "reset-probe")))))))
+#+end_src
+
+Result:
+
+#+begin_src elisp
+(:after-parent "01KSF8BSVX4S2MBT3AJ6N3MNNQ"
+ :old-id "01KSF8BSVX4S2MBT3AJ6N3MNNQ"
+ :path-ids ("01KSF8BSY09GF9ZWQ191Y3RZ3M"))
+#+end_src
+
+This exposes a dangling parent after a live clear/reset; see [[*Findings]].
 
 * Acceptance Review
 
 | Plan criterion | Review |
 |----------------+--------|
-| Every new durable session entry has an =id=. | Satisfied. Session append paths assign ids for messages, activity events, branch summaries, and compactions. Runtime-generated message ids now come from the session layer. |
-| Every new durable session entry has a =parent-id= except the root entry. | Satisfied. Append/replay paths advance =:current-head-id= and assign the previous head as parent. |
-| Every assistant/user operation has a shared =turn-id=. | Satisfied for harness turns. =e-harness--next-turn-id= now allocates a durable ULID and the harness tags user, assistant, tool-call, tool-result, and activity entries for the turn. |
-| Existing sessions can still be loaded and replayed. | Satisfied by persistent replay and legacy backfill tests. |
-| Session entries can be queried by id. | Satisfied by =e-session-entry-by-id= and focused tests. |
-| The current linear path can be reconstructed from parent ids. | Satisfied by =e-session-current-path= and focused tests. |
-| The model is ready to store a future compaction entry with =first-kept-entry-id=. | Satisfied. =e-session-append-compaction= accepts and persists =:first-kept-entry-id=, and =e-session-entries-from= computes the kept suffix. |
+| Every new durable session entry has an =id=. | Satisfied for the implemented entry collections: messages, activity events, branch summaries, and compactions. Caveat: JSONL state records such as =session=, =session-info=, =current-branch=, and =messages-cleared= remain outside the identity model. If the feature intends every durable JSONL record to be addressable as an entry, this is incomplete. |
+| Every new durable session entry has a =parent-id= except the root entry. | Partially satisfied. Normal append/replay paths assign parents from =:current-head-id= and advance the head. However, live =e-session-clear-messages= does not clear =:current-head-id=, so the first message appended after a reset gets a =parent-id= pointing at a cleared, no-longer-queryable entry. |
+| Every assistant/user operation has a shared =turn-id=. | Satisfied for harness-owned turns. =e-harness--next-turn-id= allocates a ULID, and the harness tags the user message, assistant/tool messages, durable activity events, tool lifecycle context, resources, and context providers with the same turn id. Low-level =e-loop= intentionally delegates message tagging to its append callback. |
+| Existing sessions can still be loaded and replayed. | Satisfied. Persistent replay preserves ids and parents when present. Legacy records without ids are backfilled in memory with deterministic ids and linear parent links. Full chat/session replay tests pass. |
+| Session entries can be queried by id. | Satisfied for modeled durable entries through =e-session-entry-by-id=. State records outside the entry collections are not queryable by id. |
+| The current linear path can be reconstructed from parent ids. | Satisfied for normal append and replay paths, including mixed message/activity paths. Partially affected by the live reset defect: =e-session-current-path= truncates at the dangling parent, so the visible path is usable but the stored new root still has a non-nil invalid =parent-id=. |
+| The model is ready to store a future compaction entry with =first-kept-entry-id=. | Satisfied, and now beyond placeholder-only readiness. =e-session-append-compaction= persists =:first-kept-entry-id=, =e-session-latest-valid-compaction= validates current-path boundaries, =e-session-entries-from= computes the kept suffix, and =e-context= uses the summary plus suffix when building backend messages. |
+
+* Findings
+
+** Open: live clear/reset leaves a dangling parent head
+
+=e-session-clear-messages= clears =:messages= and =:activity-events= in live state but does not clear =:current-head-id=. The replay handler for =messages-cleared= does clear =:current-head-id=, so live state and the intended reset semantics diverge.
+
+Impact:
+
+- The first entry appended after a live reset receives =:parent-id= equal to the id of an entry that was removed from the session entry collections.
+- The entry behaves like a path root because =e-session-current-path= cannot resolve the old parent, but it is not represented as a root: its =:parent-id= is non-nil.
+- Persistent append after reset writes the dangling =parent-id=, and replay preserves it because the parent id is stored on the message record.
+- This weakens the feature's parent invariant and future branching/compaction assumptions that parent ids reference reachable durable entries.
+
+Suggested fix:
+
+#+begin_src elisp
+(defun e-session-clear-messages (store session-id)
+  ...
+  (plist-put session :messages nil)
+  (plist-put session :activity-events nil)
+  (plist-put session :current-head-id nil)
+  ...)
+#+end_src
+
+Add a regression test that clears a session, appends a new message, and asserts:
+
+- the new message has no =:parent-id=;
+- =e-session-current-path= contains only the new root message;
+- persistent replay preserves that root shape.
+
+** Caveat: identity scope excludes state records
+
+The implementation clearly treats messages, activity events, branch summaries, and compactions as durable entries. Other append-only JSONL records are durable state mutations rather than entries:
+
+- =session=
+- =session-info=
+- =current-branch=
+- =messages-cleared=
+
+Those records do not receive =id= or =parent-id=. This may be fine, but the feature plan uses broad language such as "every durable session entry" and includes =metadata= in the entry type sketch. Before marking the feature =Done=, document whether these state records are intentionally outside the entry identity model or extend the model to cover them.
+
+** Test gap: synthetic branch path is not directly covered
+
+The query helpers support reconstructing a path from an explicit optional =head-id= when entries have parent links, but the current tests do not appear to include a focused synthetic branch case from the feature testing plan. This is lower priority than the reset bug because the minimal acceptance criteria only require the current linear path, but a small synthetic branch test would protect the future branching intent.
+
+* Positive Notes
+
+- ULID generation is compact, Crockford Base32, and monotonic for same-millisecond generation in the current process.
+- Legacy backfill uses timestamp/session/type/ordinal-based deterministic ids, which keeps parent references stable across repeated loads of unchanged legacy files.
+- Harness turn identity is consistently propagated through messages, durable activity events, context providers, tool lifecycle context, and resource/tool helpers.
+- Context construction strips storage-only fields (=id=, =turn-id=, =type=, =parent-id=, =created-at=) before sending backend messages.
+- Compaction integration already uses feature 04 ids for durable =first-kept-entry-id= boundaries and suffix reconstruction.
+- The earlier unresolved broader replay concern is now addressed by the full =eldev test= run and live harness replay probe in this review pass.
 
 * Notes To Resolve
 
-- Run a broader chat/context replay pass before marking this feature =Done=, because the core session and loop tests pass but the changed durable message ids affect transcript consumers outside the focused feature surface.
+Before feature 04 is marked =Done=:
 
+- Fix live =e-session-clear-messages= / reset head handling so the first post-reset entry is a true root with no dangling =parent-id=.
+- Decide and document whether non-entry JSONL state records are intentionally outside the identity model.
+- Consider adding the synthetic branch path regression test described in the feature testing plan.
