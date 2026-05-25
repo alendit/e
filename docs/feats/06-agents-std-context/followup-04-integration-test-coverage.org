@@ -98,3 +98,19 @@ emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona
 - Tests should prove user-visible behavior through context messages and resource operations, not only private helper return values.
 - Keep temporary filesystem setup local to each test with =unwind-protect= cleanup.
 - Avoid adding broad mocks around the layer. The value of these tests is exercising real layer construction, store/resource registration, and context building together.
+
+* Fix evidence
+
+- Added integration coverage for nested AGENTS.md inclusion order from root to
+  leaf.
+- Added the stale-root regression coverage through
+  =e-agents-std-context-test-session-root-controls-project-context=.
+- Added folded and literal frontmatter catalog tests that build real harness
+  context instead of only calling private parser helpers.
+- Added public resource dispatch coverage proving project skill resources read
+  through =e-harness-resources= and remain unsupported for write/edit.
+- Verified =rtk eldev test -f test/e-agents-std-context-test.el=,
+  =rtk eldev test -f test/e-defaults-test.el=,
+  =rtk eldev test -f test/e-harness-test.el=, and
+  =rtk eldev test -f test/e-chat-test.el=.
+- Live reload remained blocked as recorded in follow-up 01.

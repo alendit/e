@@ -98,3 +98,14 @@ emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona
 - Keep parsing owned by =agents-std-context= because it is adapting filesystem skill documents into =e-skill-spec= metadata.
 - Do not add broad defensive swallowing around file I/O. Missing/unreadable skill files are already filtered; unexpected read errors should remain visible unless a concrete user-facing recovery policy is added.
 - Keep the model-facing catalog compact. Block descriptions should be normalized to a short readable string, not copied as full markdown guidance.
+
+* Fix evidence
+
+- Replaced single-line-only frontmatter extraction with a small scalar parser
+  that supports plain values, quoted values, folded block scalars, and literal
+  block scalars for the metadata fields this layer needs.
+- Kept missing-description fallback behavior as =Read <name> guidance.=.
+- Added prompt-path integration tests for folded descriptions, literal
+  descriptions, and missing descriptions in
+  =test/e-agents-std-context-test.el=.
+- Verified =rtk eldev test -f test/e-agents-std-context-test.el=.

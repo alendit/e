@@ -33,6 +33,7 @@
   backend
   context-strategy
   default-options
+  default-project-root
   (sessions (e-session-store-create))
   (active-layers nil)
   (subscribers nil)
@@ -72,12 +73,28 @@
   (setq e-harness--message-counter (1+ e-harness--message-counter))
   (format "msg-user-%d" e-harness--message-counter))
 
+(defun e-harness--normalize-project-root (root)
+  "Return normalized project ROOT, or nil."
+  (when (and (stringp root)
+             (not (string-empty-p (string-trim root))))
+    (file-name-as-directory (expand-file-name root))))
+
+(defun e-harness--normalize-session-metadata (metadata)
+  "Return session METADATA with normalized harness-owned fields."
+  (let ((metadata (copy-sequence metadata)))
+    (when (plist-member metadata :project-root)
+      (if-let ((root (e-harness--normalize-project-root
+                      (plist-get metadata :project-root))))
+          (setq metadata (plist-put metadata :project-root root))
+        (cl-remf metadata :project-root)))
+    metadata))
+
 (cl-defun e-harness-create
     (&key backend context-strategy default-options sessions active-layers
-          layer-change-function)
+          project-root layer-change-function)
   "Create a core harness.
-BACKEND, CONTEXT-STRATEGY, DEFAULT-OPTIONS, SESSIONS, ACTIVE-LAYERS, and
-LAYER-CHANGE-FUNCTION configure the provider-neutral runtime.
+BACKEND, CONTEXT-STRATEGY, DEFAULT-OPTIONS, SESSIONS, ACTIVE-LAYERS,
+PROJECT-ROOT, and LAYER-CHANGE-FUNCTION configure the provider-neutral runtime.
 
 When LAYER-CHANGE-FUNCTION is non-nil, it is called with HARNESS after public
 layer activation or deactivation APIs change the active layer set."
@@ -86,6 +103,8 @@ layer activation or deactivation APIs change the active layer set."
                           :context-strategy (or context-strategy
                                                 (e-context-transcript-stack-create))
                           :default-options default-options
+                          :default-project-root
+                          (e-harness--normalize-project-root project-root)
                           :sessions (or sessions (e-session-store-create))
                           :active-layers nil
                           :active-turns (make-hash-table :test 'equal))))
@@ -121,17 +140,23 @@ layer activation or deactivation APIs change the active layer set."
       (e-capabilities-register-hooks capability registry))
     registry))
 
-(defun e-harness-store (harness)
-  "Return a fresh e:// store view over HARNESS active layers."
+(defun e-harness-store (harness &optional session-id turn-id)
+  "Return a fresh e:// store view over HARNESS active layers.
+SESSION-ID and TURN-ID are passed to context-aware resource providers."
   (let ((store (e-store-create)))
     (dolist (capability (e-harness-active-capabilities harness))
-      (e-capabilities-register-resources capability store))
+      (e-capabilities-register-resources
+       capability
+       store
+       :harness harness
+       :session-id session-id
+       :turn-id turn-id))
     store))
 
 (defun e-harness-resources (harness &optional session-id turn-id)
   "Return a fresh resource registry view over HARNESS active layers."
   (let ((registry (e-resources-registry-create))
-        (store (e-harness-store harness)))
+        (store (e-harness-store harness session-id turn-id)))
     (dolist (capability (e-harness-active-capabilities harness))
       (e-capabilities-register-resource-methods
        capability
@@ -263,7 +288,22 @@ When FUNCTION is nil, clear any existing callback."
   "Create session ID with METADATA in HARNESS."
   (e-session-create (e-harness-sessions harness)
                     :id id
-                    :metadata metadata))
+                    :metadata (e-harness--normalize-session-metadata
+                               metadata)))
+
+(defun e-harness-project-root (harness &optional session-id _turn-id)
+  "Return the explicit project root for HARNESS SESSION-ID, or nil.
+Session metadata wins over the harness default project root.  Consumers that
+own a narrower fallback, such as a layer construction root, should apply it
+after this accessor returns nil."
+  (or
+   (when session-id
+     (when-let ((session (ignore-errors
+                           (e-session-get (e-harness-sessions harness)
+                                          session-id))))
+       (e-harness--normalize-project-root
+        (plist-get (plist-get session :metadata) :project-root))))
+   (e-harness-default-project-root harness)))
 
 (cl-defun e-harness-subscribe (harness subscriber &key session-id)
   "Register SUBSCRIBER for core events from HARNESS.
@@ -391,7 +431,8 @@ an already-removed record is a no-op."
   (let ((options (e-harness--merge-turn-options
                   (e-harness-default-options harness)
                   (e-harness-session-options harness session-id)))
-        (tool-definitions (e-tools-definitions (e-harness-tools harness))))
+        (tool-definitions
+         (e-tools-definitions (e-harness-tools harness session-id))))
     (if tool-definitions
         (plist-put options :tools tool-definitions)
       options)))

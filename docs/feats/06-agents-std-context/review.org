@@ -58,3 +58,17 @@ These are not blockers for the current implementation, but they would catch the 
 * Recommendation
 
 Accept the feature 06 implementation with follow-up work before marking it fully done. The layer itself is clean, stateless, and well aligned with the plan. The main thing I would not leave implicit is the root-selection story for default cached harnesses: injecting the wrong project's AGENTS context is a high-impact failure mode for the feature's purpose. After that, improve frontmatter parsing and document/test skill precedence semantics.
+
+* Resolution
+
+The follow-up work is complete:
+
+- Session-scoped project roots now drive AGENTS context and project skill
+  resources.
+- Skill frontmatter parsing supports the scalar shapes needed for compact
+  skill catalog metadata.
+- Skill precedence semantics are documented and covered by tests.
+- Integration coverage now exercises nested AGENTS ordering, session-root
+  switching, frontmatter catalog text, and read-only resource dispatch.
+
+Feature 06 is ready to mark =Done=.

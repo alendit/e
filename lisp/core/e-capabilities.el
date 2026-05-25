@@ -126,12 +126,24 @@ CONTEXT is passed only to context-aware resource method providers."
      (t
       (e-resources-register registry register)))))
 
-(defun e-capabilities-register-resources (capability store)
-  "Register CAPABILITY in-memory resource providers in STORE."
+(defun e-capabilities--resource-provider-accepts-context-p (provider)
+  "Return non-nil when PROVIDER accepts registration context."
+  (condition-case nil
+      (let ((max-arity (cdr (func-arity provider))))
+        (or (eq max-arity 'many)
+            (> max-arity 2)))
+    (error nil)))
+
+(defun e-capabilities-register-resources (capability store &rest context)
+  "Register CAPABILITY in-memory resource providers in STORE.
+CONTEXT is passed only to providers that accept more than STORE and
+CAPABILITY."
   (dolist (register (e-capability-resources capability))
     (unless (functionp register)
       (signal 'wrong-type-argument (list 'functionp register)))
-    (funcall register store capability)))
+    (if (e-capabilities--resource-provider-accepts-context-p register)
+        (apply register store capability context)
+      (funcall register store capability))))
 
 (defun e-capabilities-register-hooks (capability registry)
   "Register CAPABILITY lifecycle hooks in REGISTRY."

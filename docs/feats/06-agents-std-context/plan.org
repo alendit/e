@@ -19,6 +19,20 @@ orientation without requiring the model to ask for it first.
 - Default chat harnesses activate this layer through the built-in layer
   registry so AGENTS context participates in normal turn context construction.
 
+* Skill precedence
+
+- Skills are scoped by source. Global skills live under
+  =e://agents-std-context/skills/global/<slug>=. Project skills live under
+  =e://agents-std-context/skills/project/<slug>=.
+- The scope is part of the resource path, so same-slug global and project skills
+  are distinct resources and can both be advertised.
+- Project skills are discovered from ancestor =.agents/skills= directories.
+  When multiple project directories define the same slug, the nearest directory
+  to the active project root wins for that project-scope URI.
+- Non-duplicate project skills from parent directories remain available.
+- Prompt catalog ordering is stable: global skills first, then project skills
+  from outer roots to inner roots after duplicate resolution.
+
 * Verification
 
 - Add focused ERT coverage for AGENTS context discovery.

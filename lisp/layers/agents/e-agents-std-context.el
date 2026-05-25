@@ -14,9 +14,12 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'e-capabilities)
 (require 'e-context)
+(require 'e-harness)
 (require 'e-layers)
 (require 'e-skills)
+(require 'e-store)
 (require 'subr-x)
 
 (defgroup e-agents-std-context nil
@@ -115,8 +118,19 @@
      :name 'agents-std-context-agents
      :build (cl-function
              (lambda (&key harness session-id turn-id)
-               (ignore harness session-id turn-id)
-               (e-agents-std-context--agents-messages root))))))
+               (e-agents-std-context--agents-messages
+                (e-agents-std-context--context-root
+                 root
+                 :harness harness
+                 :session-id session-id
+                 :turn-id turn-id)))))))
+
+(cl-defun e-agents-std-context--context-root
+    (fallback-root &key harness session-id turn-id)
+  "Return session project root from HARNESS or FALLBACK-ROOT."
+  (or (and harness
+           (e-harness-project-root harness session-id turn-id))
+      fallback-root))
 
 (defun e-agents-std-context--frontmatter-lines (content)
   "Return YAML-like frontmatter lines from CONTENT."
@@ -144,17 +158,92 @@
         (substring trimmed 1 -1)
       trimmed)))
 
+(defun e-agents-std-context--frontmatter-block-marker-p (value)
+  "Return non-nil when VALUE is a supported YAML block scalar marker."
+  (string-match-p "\\`[>|][+-]?\\'" (string-trim value)))
+
+(defun e-agents-std-context--frontmatter-top-level-key-p (line)
+  "Return non-nil when LINE starts a top-level frontmatter key."
+  (string-match-p "\\`[[:alnum:]_-]+:[ \t]*" line))
+
+(defun e-agents-std-context--line-indent (line)
+  "Return leading whitespace width for LINE."
+  (if (string-match "\\`[ \t]*" line)
+      (length (match-string 0 line))
+    0))
+
+(defun e-agents-std-context--dedent-block-lines (lines)
+  "Return block scalar LINES with common indentation removed."
+  (let (indent)
+    (dolist (line lines)
+      (unless (string-empty-p (string-trim line))
+        (let ((line-indent (e-agents-std-context--line-indent line)))
+          (setq indent
+                (if indent
+                    (min indent line-indent)
+                  line-indent)))))
+    (if (and indent (> indent 0))
+        (mapcar (lambda (line)
+                  (if (>= (length line) indent)
+                      (substring line indent)
+                    line))
+                lines)
+      lines)))
+
+(defun e-agents-std-context--fold-frontmatter-lines (lines)
+  "Return folded scalar text for dedented block LINES."
+  (let (paragraphs current)
+    (dolist (line lines)
+      (if (string-empty-p (string-trim line))
+          (when current
+            (push (string-join (nreverse current) " ") paragraphs)
+            (setq current nil))
+        (push (string-trim line) current)))
+    (when current
+      (push (string-join (nreverse current) " ") paragraphs))
+    (string-trim (string-join (nreverse paragraphs) "\n\n"))))
+
+(defun e-agents-std-context--frontmatter-block-value (marker lines)
+  "Return normalized block scalar value for MARKER and LINES."
+  (let ((dedented (e-agents-std-context--dedent-block-lines lines)))
+    (if (string-prefix-p ">" (string-trim marker))
+        (e-agents-std-context--fold-frontmatter-lines dedented)
+      (string-trim (string-join dedented "\n")))))
+
+(defun e-agents-std-context--frontmatter-values (content)
+  "Return YAML-like scalar frontmatter values from CONTENT as an alist."
+  (let ((lines (e-agents-std-context--frontmatter-lines content))
+        values)
+    (while lines
+      (let ((line (car lines)))
+        (if (string-match "\\`[ \t]*\\([[:alnum:]_-]+\\):[ \t]*\\(.*\\)\\'"
+                          line)
+            (let ((key (match-string 1 line))
+                  (value (match-string 2 line)))
+              (setq lines (cdr lines))
+              (if (e-agents-std-context--frontmatter-block-marker-p value)
+                  (let (block-lines)
+                    (while (and lines
+                                (not
+                                 (e-agents-std-context--frontmatter-top-level-key-p
+                                  (car lines))))
+                      (push (car lines) block-lines)
+                      (setq lines (cdr lines)))
+                    (push
+                     (cons key
+                           (e-agents-std-context--frontmatter-block-value
+                            value
+                            (nreverse block-lines)))
+                     values))
+                (push (cons key
+                            (e-agents-std-context--strip-quotes value))
+                      values)))
+          (setq lines (cdr lines)))))
+    (nreverse values)))
+
 (defun e-agents-std-context--frontmatter-value (content key)
   "Return frontmatter KEY value from CONTENT."
-  (let ((case-fold-search nil)
-        (pattern (format "\\`[ \t]*%s:[ \t]*\\(.+\\)\\'" (regexp-quote key)))
-        value)
-    (dolist (line (e-agents-std-context--frontmatter-lines content))
-      (when (and (not value)
-                 (string-match pattern line))
-        (setq value
-              (e-agents-std-context--strip-quotes (match-string 1 line)))))
-    value))
+  (cdr (assoc key (e-agents-std-context--frontmatter-values content))))
 
 (defun e-agents-std-context--skill-directories (directory)
   "Return skill directories under DIRECTORY in stable order."
@@ -192,7 +281,10 @@
                 (e-agents-std-context--skill-directories directory))))
 
 (defun e-agents-std-context--dedupe-skill-specs (skills)
-  "Return SKILLS with later resource paths taking precedence."
+  "Return SKILLS with later resource paths taking precedence.
+Project skill discovery appends ancestor directories from outer root to inner
+root.  Reversing during de-duplication lets the nearest project directory win
+for duplicate project-scope paths while preserving the final stable order."
   (let (paths deduped)
     (dolist (skill (reverse skills))
       (let ((path (e-skill-spec-path skill)))
@@ -202,7 +294,7 @@
     deduped))
 
 (defun e-agents-std-context--project-skills-directories (directory)
-  "Return project .agents/skills directories discovered from DIRECTORY upward."
+  "Return project .agents/skills directories from outer roots to DIRECTORY."
   (let ((global-skills-directory
          (when (file-directory-p e-agents-std-context-global-skills-directory)
            (file-truename
@@ -218,15 +310,16 @@
           (push skills directories))))
     (nreverse directories)))
 
-(defun e-agents-std-context-skill-specs (&optional directory)
-  "Return discovered global and project skill specs for DIRECTORY."
+(defun e-agents-std-context--global-skill-specs ()
+  "Return discovered global skill specs."
+  (e-agents-std-context--skill-specs-from-directory
+   "global"
+   e-agents-std-context-global-skills-directory))
+
+(defun e-agents-std-context--project-skill-specs (&optional directory)
+  "Return discovered project skill specs for DIRECTORY."
   (let ((root (e-agents-std-context--directory directory))
         (skills nil))
-    (setq skills
-          (append skills
-                  (e-agents-std-context--skill-specs-from-directory
-                   "global"
-                   e-agents-std-context-global-skills-directory)))
     (dolist (skills-directory
              (e-agents-std-context--project-skills-directories root))
       (setq skills
@@ -236,6 +329,78 @@
                      skills-directory))))
     (e-agents-std-context--dedupe-skill-specs skills)))
 
+(defun e-agents-std-context-skill-specs (&optional directory)
+  "Return discovered global and project skill specs for DIRECTORY.
+Global and project skills use separate resource-path scopes, so duplicate
+slugs across those scopes intentionally remain distinct resources."
+  (e-agents-std-context--dedupe-skill-specs
+   (append (e-agents-std-context--global-skill-specs)
+           (e-agents-std-context--project-skill-specs directory))))
+
+(defun e-agents-std-context--skill-uri (skill)
+  "Return the e:// URI for SKILL."
+  (format "e://agents-std-context/%s" (e-skill-spec-path skill)))
+
+(defun e-agents-std-context--skills-catalog-message (skills)
+  "Return a compact catalog context message for SKILLS."
+  (when skills
+    (list
+     (list
+      :role 'system
+      :content
+      (string-join
+       (cons
+        e-skills-default-heading
+        (mapcar
+         (lambda (skill)
+           (format "- %s: %s Read %s"
+                   (e-skill-spec-name skill)
+                   (e-skill-spec-description skill)
+                   (e-agents-std-context--skill-uri skill)))
+         skills))
+       "\n")))))
+
+(defun e-agents-std-context-project-skills-provider (&optional directory)
+  "Return a context provider for project skills under DIRECTORY."
+  (let ((root (e-agents-std-context--directory directory)))
+    (e-context-provider-create
+     :name 'agents-std-context-project-skills
+     :build (cl-function
+             (lambda (&key harness session-id turn-id)
+               (e-agents-std-context--skills-catalog-message
+                (e-agents-std-context--project-skill-specs
+                 (e-agents-std-context--context-root
+                  root
+                  :harness harness
+                  :session-id session-id
+                  :turn-id turn-id))))))))
+
+(defun e-agents-std-context--register-skill-resource (store capability skill)
+  "Register SKILL as an e:// resource for CAPABILITY in STORE."
+  (e-store-register
+   store
+   (e-capability-id capability)
+   (e-skill-spec-path skill)
+   :description (e-skill-spec-description skill)
+   :reader (lambda (_entry range)
+             (funcall (e-skill-spec-reader skill) skill range))
+   :metadata (e-skill-spec-metadata skill)))
+
+(defun e-agents-std-context-project-skills-resource-provider (&optional directory)
+  "Return a resource provider for project skills under DIRECTORY."
+  (let ((root (e-agents-std-context--directory directory)))
+    (cl-function
+     (lambda (store capability &key harness session-id turn-id)
+       (dolist (skill
+                (e-agents-std-context--project-skill-specs
+                 (e-agents-std-context--context-root
+                  root
+                  :harness harness
+                  :session-id session-id
+                  :turn-id turn-id)))
+         (e-agents-std-context--register-skill-resource
+          store capability skill))))))
+
 (defun e-agents-std-context-capability-create (&optional directory)
   "Create the standard agent context capability rooted at DIRECTORY."
   (let ((root (e-agents-std-context--directory directory)))
@@ -243,9 +408,12 @@
      :id 'agents-std-context
      :name "Agents Std Context"
      :instructions e-agents-std-context-instructions
-     :skills (e-agents-std-context-skill-specs root)
+     :skills (e-agents-std-context--global-skill-specs)
+     :resources (list
+                 (e-agents-std-context-project-skills-resource-provider root))
      :context-providers
-     (list (e-agents-std-context-agents-provider root)))))
+     (list (e-agents-std-context-agents-provider root)
+           (e-agents-std-context-project-skills-provider root)))))
 
 (defun e-agents-std-context-layer-create (&optional directory)
   "Create the agents-std-context layer rooted at DIRECTORY."

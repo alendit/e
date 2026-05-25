@@ -66,3 +66,15 @@ emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona
 - Do not introduce a generalized precedence framework until feature 07 needs it. The current real variation is source scope plus nearest-project override.
 - Keep URIs stable. Changing =skills/global= or =skills/project= paths would break already-advertised references and should require a compatibility decision.
 - This follow-up should make future filtering semantics easier: include/exclude can refer to explicit scoped paths or to slugs with documented scope resolution.
+
+* Fix evidence
+
+- Added a skill precedence section to
+  =docs/feats/06-agents-std-context/plan.org= documenting global/project
+  scopes, same-slug behavior, nearest-project override, parent skill
+  availability, and stable ordering.
+- Expanded helper docstrings around project-skill discovery and de-duplication
+  to explain why nearest project directories win duplicate project-scope slugs.
+- Added tests for same-slug global/project distinct resources and parent plus
+  nested project skills remaining available.
+- Verified =rtk eldev test -f test/e-agents-std-context-test.el=.

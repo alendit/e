@@ -99,3 +99,25 @@ Then inspect a live chat context from two different project roots when feasible.
 - This reduces coupling by making root selection explicit instead of relying on ambient dynamic state.
 - Keep the final root decision close to harness/session policy, where user intent and session identity are known.
 - Do not put project-root lookup into presentation rendering or into layer factory plumbing; capabilities that need a root should consume the narrow harness accessor.
+
+* Fix evidence
+
+- Added =e-harness-project-root= as the narrow harness/session accessor for
+  explicit project roots, with session metadata taking precedence over a harness
+  default root.
+- Chat-created sessions now store =:project-root= metadata from the buffer that
+  created the session.
+- =agents-std-context= AGENTS.md context and project skill catalogs/resources
+  now resolve through the active session root and keep the layer construction
+  root only as a fallback.
+- Added =e-agents-std-context-test-session-root-controls-project-context=.
+  It failed before the fix because session B still saw project A context and
+  project skill metadata.
+- Verified =rtk eldev test -f test/e-agents-std-context-test.el=,
+  =rtk eldev test -f test/e-harness-test.el=,
+  =rtk eldev test -f test/e-defaults-test.el=, and
+  =rtk eldev test -f test/e-chat-test.el=.
+- Live reload was attempted with the project-standard =e-dev-reload= command,
+  but the =emacsclient= call hung without output. A second bounded reload
+  attempt using =with-timeout= also hung, so no live Emacs verification was
+  completed for this slice.

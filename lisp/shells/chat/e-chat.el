@@ -746,9 +746,20 @@ The mode line uses this presentation-owned table for context usage display."
 (defun e-chat--ensure-session (harness session-id)
   "Ensure SESSION-ID exists in HARNESS."
   (condition-case nil
-      (e-harness-create-session harness :id session-id)
+      (e-chat--create-session harness session-id)
     (e-session-duplicate
      nil)))
+
+(defun e-chat--session-metadata ()
+  "Return metadata for a chat session created from the current buffer."
+  (list :project-root default-directory))
+
+(defun e-chat--create-session (harness &optional session-id)
+  "Create a chat session in HARNESS with SESSION-ID when non-nil."
+  (e-harness-create-session
+   harness
+   :id session-id
+   :metadata (e-chat--session-metadata)))
 
 (defun e-chat--short-session-id (session-id)
   "Return a compact SESSION-ID for display."
@@ -3324,7 +3335,7 @@ HARNESS, SESSION-ID, and NEW-SESSION are injectable for presentation tests and
 reload.  User-facing commands should call `e-chat-new' or `e-chat-resume'."
   (let* ((chat-harness (or harness (e-chat--default-harness)))
          (session (when (or new-session (not session-id))
-                    (e-harness-create-session chat-harness)))
+                    (e-chat--create-session chat-harness)))
          (chat-session-id (or session-id
                               (plist-get session :id)
                               e-chat-default-session-id))
@@ -3502,7 +3513,7 @@ With prefix argument POP-TO-SIDE, use the pop display path."
 (defun e-chat--latest-session-id (harness)
   "Return the latest session id in HARNESS, creating one when none exists."
   (or (plist-get (car (e-harness-session-list harness)) :id)
-      (plist-get (e-harness-create-session harness) :id)))
+      (plist-get (e-chat--create-session harness) :id)))
 
 (defun e-chat--context-session-picker (harness)
   "Return a session id selected from HARNESS, or create a new session."
@@ -3514,7 +3525,7 @@ With prefix argument POP-TO-SIDE, use the pop display path."
                                     nil
                                     t)))
     (if (equal selected e-chat--new-context-session-label)
-        (plist-get (e-harness-create-session harness) :id)
+        (plist-get (e-chat--create-session harness) :id)
       (let ((index (cl-position selected (cdr labels) :test #'equal)))
         (unless index
           (user-error "No e chat session selected"))
