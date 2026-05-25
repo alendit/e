@@ -171,12 +171,10 @@ session:
 - opening the summary reconstructs the expanded per-line history;
 - active turns reconstructed from durable events should not invent durations
   that were never observed;
-- legacy turns without LLM boundary events may continue to use the old
-  intermittent activity details.
+- older sessions without provider boundary events do not need compatibility
+  rendering; dropping those old session records is acceptable.
 
-If a session is loaded with older activity events, compatibility can be local to
-the presentation replay path.  Do not add broad fallback behavior to the runtime
-unless a current durable format requires it.
+Do not add legacy fallback behavior for older activity shapes.
 
 * Implementation outline
 1. Add failing chat tests for active =Thinking...= lines, completed
@@ -215,7 +213,8 @@ unless a current durable format requires it.
   durable events.  If so, the implementation must add a narrow event without
   leaking backend handles into the chat shell.
 - Existing intermittent activity replay may not have enough information to
-  reconstruct old turns perfectly. That's fine, we don't need to support older sessions
+  reconstruct old turns perfectly. That's fine; older sessions do not need
+  support.
 - Redrawing active progress can disturb block navigation and block-view state.
   Keep the previous preservation tests and add cases for summary/expanded
   progress blocks.

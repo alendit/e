@@ -1736,12 +1736,8 @@ Count tool invocations after the reasoning chunk they followed."
     (nreverse items)))
 
 (defun e-chat--settled-activity-p (record)
-  "Return non-nil when RECORD has activity worth keeping after final output."
-  (or (e-chat--activity-summary-text record)
-      (cl-some
-       (lambda (entry)
-         (not (equal (plist-get entry :title) "Tool call")))
-       (plist-get record :intermittent-entries))))
+  "Return non-nil when RECORD has current activity to keep after final output."
+  (e-chat--activity-summary-text record))
 
 (defun e-chat--transient-text (record)
   "Return visible transient text for RECORD."
@@ -2149,51 +2145,6 @@ SOURCE identifies where the entry came from for duplicate suppression."
 (defun e-chat--tool-message-p (message)
   "Return non-nil when MESSAGE is a tool transcript message."
   (memq (plist-get message :role) '(tool-call tool)))
-
-(defun e-chat--tool-message-covered-by-activity-p
-    (message turn-id activity-events)
-  "Return non-nil when ACTIVITY-EVENTS already represent tool MESSAGE.
-Replay prefers durable activity events because they preserve the model-visible
-reasoning/tool timeline. Transcript tool messages remain a fallback for older
-sessions without durable activity."
-  (let ((role (plist-get message :role))
-        (content (plist-get message :content)))
-    (cl-some
-     (lambda (event)
-       (and
-        (equal (plist-get event :turn-id) turn-id)
-        (let ((payload (plist-get event :payload)))
-          (pcase role
-            ('tool-call
-             (and (eq (plist-get event :event-type) 'tool-started)
-                  (equal (plist-get payload :id)
-                         (plist-get content :id))))
-            ('tool
-             (and (eq (plist-get event :event-type) 'tool-finished)
-                  (let ((tool-call (plist-get payload :tool-call))
-                        (result (plist-get payload :result))
-                        (tool-call-id (plist-get content :tool-call-id)))
-                    (or (equal (plist-get tool-call :id) tool-call-id)
-                        (equal (plist-get result :tool-call-id)
-                               tool-call-id)))))))))
-     activity-events)))
-
-(defun e-chat--record-tool-message (turn-id message)
-  "Record tool MESSAGE as expandable details for TURN-ID."
-  (when-let ((record (e-chat--turn-record turn-id)))
-    (pcase (plist-get message :role)
-      ('tool-call
-       (let ((content (e-chat--format-tool-call (plist-get message :content))))
-         (unless (e-chat--intermittent-entry-exists-p
-                  record "Tool call" content 'activity)
-           (e-chat--add-intermittent-entry
-            record "Tool call" content nil 'transcript))))
-      ('tool
-       (let ((content (format "%S" (plist-get message :content))))
-         (unless (e-chat--intermittent-entry-exists-p
-                  record "Tool" content 'activity)
-           (e-chat--add-intermittent-entry
-            record "Tool" content nil 'transcript)))))))
 
 (defun e-chat--record-replayed-message-time (record message)
   "Record MESSAGE's replay timestamp into RECORD."
@@ -3352,10 +3303,9 @@ When OMIT-COMPOSER is non-nil, leave the buffer as transcript-only."
             (entry (e-chat--message-entry message)))
        (cond
         ((e-chat--tool-message-p message)
-         (e-chat--record-tool-message (plist-get event :turn-id) message)
-         (when-let ((record (e-chat--existing-turn-record
-                             (plist-get event :turn-id))))
-           (e-chat--render-turn-transient (plist-get event :turn-id) record)))
+         ;; Tool transcript messages are internal model context.  Presentation
+         ;; activity is driven only by current durable activity events.
+         nil)
         (t
          (when (eq (plist-get message :role) 'assistant)
            (e-chat--set-turn-time (plist-get event :turn-id)
@@ -3486,10 +3436,7 @@ attached session's full transcript."
           (setq turn-id next-turn-id))
         (setq record (e-chat--turn-record turn-id)))
       (e-chat--record-replayed-message-time record message)
-      (if (e-chat--tool-message-p message)
-          (unless (e-chat--tool-message-covered-by-activity-p
-                   message turn-id activity-events)
-            (e-chat--record-tool-message turn-id message))
+      (unless (e-chat--tool-message-p message)
         (let ((entry (e-chat--message-entry message)))
           (when (eq (plist-get message :role) 'assistant)
             (e-chat--render-turn-activity-events turn-id activity-events)

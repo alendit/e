@@ -4,9 +4,8 @@
 * Scope Reviewed
 
 Reviewed the implementation against =plan.org= for feature 05, focusing on live
-chat progress rendering, provider request boundary replay, final summary
-collapse, and compatibility for legacy activity that does not include provider
-boundary events.
+chat progress rendering, provider request boundary replay, and final summary
+collapse.
 
 The reviewed changes cover:
 
@@ -17,8 +16,6 @@ The reviewed changes cover:
 - settled summary blocks for turns with provider boundary activity;
 - inline expansion text for settled summaries;
 - durable replay of provider boundary events into settled summaries;
-- preservation of the old activity display path for legacy turns without LLM
-  boundary events.
 
 * Plan Acceptance Review
 
@@ -32,19 +29,16 @@ The reviewed changes cover:
 - Singular tool text is handled for one tool call.
 - Summary blocks are navigable and expand to the stored per-line progress
   history.
-- Existing final assistant rendering, composer redraw behavior, block navigation,
-  and legacy tool activity tests remain stable.
+- Existing final assistant rendering, composer redraw behavior, and block
+  navigation tests remain stable.
 - Durable replay reconstructs a settled summary when provider boundary events
   are present.
-- Legacy activity without provider boundaries keeps the previous expanded
-  activity presentation instead of inventing missing LLM timing.
 
 ** Remaining Notes
 
 - Expanded summary details are rendered as inline text under the summary block.
-  Existing legacy activity blocks still open the current tool-list view.  A later
-  polish pass could make each expanded summary line its own navigable child
-  block, but the summary expansion preserves the planned visible history.
+  A later polish pass could make each expanded summary line its own navigable
+  child block, but the summary expansion preserves the planned visible history.
 
 * Verification Evidence
 
