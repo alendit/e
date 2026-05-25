@@ -50,7 +50,12 @@
      :name "Web"
      :summary "Web search, passive fetch, and browser tools."
      :feature e-web
-     :factory e-web-layer-create))
+     :factory e-web-layer-create)
+    (:id text-editing
+     :name "Text Editing"
+     :summary "Progressive guidance for text editing workflows."
+     :feature e-text-editing
+     :factory e-text-editing-layer-create))
   "Built-in layer specs registered during startup."
   :type '(repeat sexp)
   :group 'e)

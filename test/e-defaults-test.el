@@ -55,6 +55,9 @@
   (should (memq 'os-base
                 (mapcar (lambda (spec) (plist-get spec :id))
                         e-default-layer-specs)))
+  (should (memq 'text-editing
+                (mapcar (lambda (spec) (plist-get spec :id))
+                        e-default-layer-specs)))
   (should-not (memq 'base
                     (mapcar (lambda (spec) (plist-get spec :id))
                             e-default-layer-specs))))
