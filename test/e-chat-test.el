@@ -1295,15 +1295,15 @@
           (let ((content (buffer-string)))
             (should (string-match-p
                      (concat (regexp-quote e-chat--assistant-glyph)
-                             " ◐")
+                             " ⠋")
                      content))
             (goto-char (point-min))
-            (search-forward "◐")
+            (search-forward "⠋")
             (should (get-text-property (1- (point)) 'read-only)))
           (e-chat--advance-progress-indicator)
           (should (string-match-p
                    (concat (regexp-quote e-chat--assistant-glyph)
-                           " ◓")
+                           " ⠙")
                    (buffer-string)))
           (should (>= e-chat-progress-interval 0.5))
           (e-chat--render-event
@@ -1320,7 +1320,7 @@
                      content))
             (should-not (string-match-p
                          (concat (regexp-quote e-chat--assistant-glyph)
-                                 " [◐◓◑◒]")
+                                 " [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]")
                          content))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
@@ -1391,7 +1391,7 @@
                             :turn-id "turn-1"
                             :created-at 0
                             :payload '(:status started))))
-          (should (string-match-p "◐ Thinking for 0min 8sec"
+          (should (string-match-p "⠋ Thinking for 0min 8sec"
                                   (buffer-string)))
           (e-chat--render-event
            (e-events-make :type 'provider-request-finished
@@ -1425,7 +1425,7 @@
                             :payload '(:status started))))
           (let ((content (buffer-string)))
             (should (string-match-p
-                     "◐ Thinking for 0min 8sec" content))
+                     "⠋ Thinking for 0min 8sec" content))
             (should-not (string-match-p "Thinking\\.\\.\\." content))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
@@ -1453,7 +1453,7 @@
             (e-chat--advance-progress-indicator))
           (let ((content (buffer-string)))
             (should (string-match-p
-                     "◓ Thinking for 0min 15sec" content))
+                     "⠙ Thinking for 0min 15sec" content))
             (should (= (e-chat-test--count-occurrences
                         "Thinking for" content)
                        1))))
@@ -1529,7 +1529,7 @@
             (should (string-match-p
                      (concat "Thought for 0min 10sec\n"
                              (make-string 64 ?┈)
-                             "\n◐ Thinking for")
+                             "\n⠋ Thinking for")
                      content))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
@@ -1605,10 +1605,10 @@
                             :payload '(:content "planning"))))
           (let ((content (buffer-string)))
             (should (string-match-p
-                     "◐ Thinking for 0min 8sec\n\nplanning"
+                     "⠋ Thinking for 0min 8sec\n\nplanning"
                      content))
             (should-not (string-match-p
-                         "◐ Thinking for 0min 8sec\nplanning"
+                         "⠋ Thinking for 0min 8sec\nplanning"
                          content))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))

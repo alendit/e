@@ -452,7 +452,7 @@ The mode line uses this presentation-owned table for context usage display."
 (defconst e-chat--system-glyph "·"
   "Glyph shown before compact system chat blocks.")
 
-(defconst e-chat--progress-glyphs ["◐" "◓" "◑" "◒"]
+(defconst e-chat--progress-glyphs ["⠋" "⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏"]
   "Glyphs used for the active assistant progress indicator.")
 
 (defconst e-chat--composer-glyph "❯ "
