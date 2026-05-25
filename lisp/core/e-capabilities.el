@@ -108,10 +108,23 @@ slot existed."
   (put symbol 'side-effect-free nil)
   (put symbol 'gv-expander nil))
 
-(defun e-capabilities-register-tools (capability registry)
-  "Register CAPABILITY tool providers in REGISTRY."
+(defun e-capabilities--tool-provider-accepts-context-p (provider)
+  "Return non-nil when PROVIDER accepts registration context."
+  (condition-case nil
+      (let ((max-arity (cdr (func-arity provider))))
+        (or (eq max-arity 'many)
+            (> max-arity 1)))
+    (error nil)))
+
+(defun e-capabilities-register-tools (capability registry &rest context)
+  "Register CAPABILITY tool providers in REGISTRY.
+CONTEXT is passed only to providers that accept more than REGISTRY."
   (dolist (register (e-capability-tools capability))
-    (funcall register registry)))
+    (unless (functionp register)
+      (signal 'wrong-type-argument (list 'functionp register)))
+    (if (e-capabilities--tool-provider-accepts-context-p register)
+        (apply register registry context)
+      (funcall register registry))))
 
 (defun e-capabilities-register-resource-methods
     (capability registry &rest context)

@@ -130,7 +130,12 @@ layer activation or deactivation APIs change the active layer set."
      registry
      (e-harness-resources harness session-id turn-id))
     (dolist (capability (e-harness-active-capabilities harness))
-      (e-capabilities-register-tools capability registry))
+      (e-capabilities-register-tools
+       capability
+       registry
+       :harness harness
+       :session-id session-id
+       :turn-id turn-id))
     registry))
 
 (defun e-harness-hooks (harness)

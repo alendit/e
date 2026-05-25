@@ -14,11 +14,22 @@
 
 (require 'e-base-tools)
 (require 'e-capabilities)
+(require 'e-harness)
 
 (defun e-file-capabilities--directory (directory)
   "Return normalized capability root DIRECTORY."
   (file-name-as-directory
    (expand-file-name (or directory default-directory))))
+
+(defun e-file-capabilities--context-directory (fallback context)
+  "Return session project root from CONTEXT, or FALLBACK."
+  (let* ((harness (plist-get context :harness))
+         (session-id (plist-get context :session-id))
+         (turn-id (plist-get context :turn-id))
+         (root (and (e-harness-p harness)
+                    session-id
+                    (e-harness-project-root harness session-id turn-id))))
+    (e-file-capabilities--directory (or root fallback))))
 
 (defun e-base-guidance-capability-create (instructions)
   "Create a base guidance capability carrying INSTRUCTIONS."
@@ -33,9 +44,13 @@
     (e-capability-create
      :id 'file-inspection
      :name "File Inspection"
-     :resource-methods (list (lambda (registry)
-                               (e-base-tools-register-file-read-resource
-                                registry root))))))
+     :resource-methods
+     (list (e-capability-resource-method-provider-create
+            :handler
+            (lambda (registry &rest context)
+              (e-base-tools-register-file-read-resource
+               registry
+               (e-file-capabilities--context-directory root context))))))))
 
 (defun e-file-mutation-capability-create (&optional directory)
   "Create a file mutation capability rooted at DIRECTORY."
@@ -43,9 +58,13 @@
     (e-capability-create
      :id 'file-mutation
      :name "File Mutation"
-     :resource-methods (list (lambda (registry)
-                               (e-base-tools-register-file-resource
-                                registry root))))))
+     :resource-methods
+     (list (e-capability-resource-method-provider-create
+            :handler
+            (lambda (registry &rest context)
+              (e-base-tools-register-file-resource
+               registry
+               (e-file-capabilities--context-directory root context))))))))
 
 (defun e-shell-process-capability-create (&optional directory)
   "Create a shell process capability rooted at DIRECTORY."
@@ -53,8 +72,10 @@
     (e-capability-create
      :id 'shell-process
      :name "Shell Process"
-     :tools (list (lambda (registry)
-                    (e-base-tools-register-bash registry root))))))
+     :tools (list (lambda (registry &rest context)
+                    (e-base-tools-register-bash
+                     registry
+                     (e-file-capabilities--context-directory root context)))))))
 
 (provide 'e-file-capabilities)
 

@@ -15,6 +15,7 @@
 (require 'seq)
 (require 'e)
 (require 'e-backend)
+(require 'e-base)
 (require 'e-capabilities)
 (require 'e-context)
 (require 'e-harness)
@@ -805,6 +806,57 @@
                     "derived://value"
                     nil)
                    "derived"))))
+
+
+
+(ert-deftest e-harness-test-bash-tools-prefer-session-project-root ()
+  "Session-scoped bash tools run in the session project root."
+  (let* ((fallback-root (make-temp-file "e-harness-fallback-" t))
+         (project-root (make-temp-file "e-harness-project-" t))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :active-layers (list (e-base-layer-create fallback-root)))))
+    (unwind-protect
+        (progn
+          (e-harness-create-session
+           harness
+           :id "session-1"
+           :metadata (list :project-root project-root))
+          (let ((result (e-tools-execute
+                         (e-harness-tools harness "session-1" "turn-1")
+                         '(:id "call-1"
+                           :name "bash"
+                           :arguments (:command "pwd")))))
+            (should (equal (string-trim (plist-get result :content))
+                           (directory-file-name project-root)))))
+      (delete-directory fallback-root t)
+      (delete-directory project-root t))))
+
+(ert-deftest e-harness-test-file-resources-prefer-session-project-root ()
+  "Session-scoped file resources resolve against the session project root."
+  (let* ((fallback-root (make-temp-file "e-harness-fallback-" t))
+         (project-root (make-temp-file "e-harness-project-" t))
+         (nested (expand-file-name "docs/feature" project-root))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :active-layers (list (e-base-layer-create fallback-root)))))
+    (unwind-protect
+        (progn
+          (make-directory nested t)
+          (write-region "rooted" nil
+                        (expand-file-name "README.md" project-root)
+                        nil 'silent)
+          (e-harness-create-session
+           harness
+           :id "session-1"
+           :metadata (list :project-root project-root))
+          (should (equal (e-resources-read
+                          (e-harness-resources harness "session-1" "turn-1")
+                          "file://README.md"
+                          nil)
+                         "rooted")))
+      (delete-directory fallback-root t)
+      (delete-directory project-root t))))
 
 (ert-deftest e-harness-test-built-in-resource-tools-dispatch-through-resources ()
   "Resource operation tools dispatch through active resource methods."

@@ -774,6 +774,41 @@
                            (concat "file://" file)))))
       (delete-file file))))
 
+
+
+(ert-deftest e-chat-test-attach-widens-existing-session-project-root ()
+  "Attaching a session updates a too-narrow stored project root."
+  (let* ((project-root (make-temp-file "e-chat-project-" t))
+         (nested (expand-file-name "docs/feats/item" project-root))
+         (harness (e-harness-create :backend (e-backend-fake-create :items nil))))
+    (unwind-protect
+        (progn
+          (make-directory (expand-file-name ".git" project-root) t)
+          (make-directory nested t)
+          (e-harness-create-session
+           harness
+           :id "session-1"
+           :metadata (list :project-root nested))
+          (let ((default-directory (file-name-as-directory nested)))
+            (e-chat-open :harness harness :session-id "session-1"))
+          (should (equal (e-harness-project-root harness "session-1" nil)
+                         (file-name-as-directory project-root))))
+      (e-chat-test--kill-chat-buffers)
+      (delete-directory project-root t))))
+
+(ert-deftest e-chat-test-session-metadata-prefers-project-root ()
+  "Chat sessions root file tools at the enclosing project, not a subdirectory."
+  (let* ((project-root (make-temp-file "e-chat-project-" t))
+         (nested (expand-file-name "docs/feats/item" project-root)))
+    (unwind-protect
+        (progn
+          (make-directory (expand-file-name ".git" project-root) t)
+          (make-directory nested t)
+          (let ((default-directory (file-name-as-directory nested)))
+            (should (equal (plist-get (e-chat--session-metadata) :project-root)
+                           (file-name-as-directory project-root)))))
+      (delete-directory project-root t))))
+
 (ert-deftest e-chat-test-submits-composer-text-with-inline-references ()
   "Submitting converts inline reference atoms into ordered prompt context."
   (let ((buffer (e-chat-test--buffer nil "chat-reference-submit")))

@@ -303,6 +303,8 @@
        (when session
          (when (plist-member record :name)
            (plist-put session :name (plist-get record :name)))
+         (when (plist-member record :metadata)
+           (plist-put session :metadata (plist-get record :metadata)))
          (when (plist-member record :turn-options)
            (plist-put session
                       :turn-options
@@ -577,6 +579,21 @@ state are requested."
 (defun e-session-turn-options (store session-id)
   "Return session-scoped turn options for SESSION-ID in STORE."
   (copy-sequence (plist-get (e-session-get store session-id) :turn-options)))
+
+(defun e-session-set-metadata (store session-id metadata)
+  "Replace SESSION-ID METADATA in STORE."
+  (let ((session (e-session-get store session-id)))
+    (plist-put session :metadata metadata)
+    (e-session--touch store session)
+    (e-session--refresh-derived-fields store session)
+    (e-session--append-record
+     store session-id
+     (list :type "session-info"
+           :session-id session-id
+           :timestamp (plist-get session :updated-at)
+           :metadata metadata))
+    (e-session--write-index store)
+    metadata))
 
 (defun e-session-set-turn-options (store session-id options)
   "Replace SESSION-ID turn OPTIONS in STORE."

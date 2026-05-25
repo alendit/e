@@ -14,6 +14,7 @@
 
 (require 'cl-lib)
 (require 'pp)
+(require 'project)
 (require 'subr-x)
 (require 'e-chat-session)
 (require 'e-harness)
@@ -743,13 +744,40 @@ The mode line uses this presentation-owned table for context usage display."
 (defun e-chat--ensure-session (harness session-id)
   "Ensure SESSION-ID exists in HARNESS."
   (condition-case nil
-      (e-chat--create-session harness session-id)
-    (e-session-duplicate
-     nil)))
+      (e-chat-session-context harness session-id)
+    (e-session-missing
+     (e-chat--create-session harness session-id))))
+
+(defun e-chat--git-root (directory)
+  "Return Git worktree root containing DIRECTORY, or nil."
+  (when-let ((root (locate-dominating-file directory ".git")))
+    (file-name-as-directory (expand-file-name root))))
+
+(defun e-chat--project-root (&optional directory)
+  "Return the project root for DIRECTORY, falling back to DIRECTORY.
+Projectile is preferred when available, followed by `project-current', then a
+plain Git ancestor check.  The return value is always a normalized directory
+name."
+  (let* ((directory (file-name-as-directory
+                     (expand-file-name (or directory default-directory))))
+         (projectile-root
+          (when (fboundp 'projectile-project-root)
+            (let ((default-directory directory))
+              (ignore-errors (projectile-project-root)))))
+         (project-root
+          (let ((default-directory directory))
+            (ignore-errors
+              (when-let ((project (project-current nil)))
+                (project-root project)))))
+         (root (or projectile-root
+                   project-root
+                   (e-chat--git-root directory)
+                   directory)))
+    (file-name-as-directory (expand-file-name root))))
 
 (defun e-chat--session-metadata ()
   "Return metadata for a chat session created from the current buffer."
-  (list :project-root default-directory))
+  (list :project-root (e-chat--project-root default-directory)))
 
 (defun e-chat--create-session (harness &optional session-id)
   "Create a chat session in HARNESS with SESSION-ID when non-nil."
@@ -3326,6 +3354,8 @@ reload.  User-facing commands should call `e-chat-new' or `e-chat-resume'."
   "Attach BUFFER to HARNESS and SESSION-ID."
   (e-chat--ensure-session harness session-id)
   (with-current-buffer buffer
+    (e-chat-session-ensure-project-root
+     harness session-id (e-chat--project-root default-directory))
     (e-chat--unsubscribe)
     (e-chat-mode)
     (e-chat--disable-modal-editing)

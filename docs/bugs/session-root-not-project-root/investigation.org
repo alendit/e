@@ -1,0 +1,47 @@
+#+title: Investigation: Session Root Uses Feature Directory Instead of Project Root
+#+startup: overview
+
+* Live observation
+From the running Emacs session before the fix, the active chat buffer had:
+
+#+begin_src elisp
+(:default-directory "/Users/dimitrivorona/projects/elisp/e/docs/feats/04-message-turn-identity/"
+ :current-buffer "*e-chat:What is the perf impact o...*"
+ :visible-buffers ("*e-chat:What is the perf impact o...*" "plan.org")
+ :project-current "/Users/dimitrivorona/projects/elisp/e/"
+ :projectile-project-root "/Users/dimitrivorona/projects/elisp/e/")
+#+end_src
+
+So both =project.el= and Projectile could identify the enclosing project root, while the chat/session default directory was a narrower feature directory.
+
+* Source findings
+- =e-chat--session-metadata= stored =:project-root default-directory= when creating chat sessions.
+- =e-harness-project-root= already exposed a session metadata project root or harness default project root.
+- The OS base layer captured a root when the layer was created via =e-base-layer-create= and registered file/shell capabilities against that static root.
+- File resources reject paths outside their configured root with =e-base-tools-path-outside-root=.
+
+* Fix
+- Added chat-side project root detection: Projectile when available, then =project-current=, then Git ancestor, then =default-directory=.
+- New chat sessions now store the detected project root instead of raw =default-directory=.
+- Existing sessions are widened on attach when their stored root is absent or a descendant of the detected project root.
+- File resources and bash tools now receive harness/session context during registration and prefer =e-harness-project-root= over the layer fallback root.
+- Session metadata updates are persisted through append-only =session-info= records.
+
+* Validation
+Batch tests:
+
+#+begin_example
+eldev test test/e-session-test.el test/e-chat-test.el test/e-harness-test.el test/e-base-test.el test/e-file-capabilities-test.el
+#+end_example
+
+Result: 195 tests run, 194 expected passes, 1 expected skip, 0 unexpected.
+
+Live validation after reload:
+
+#+begin_src elisp
+(:root "/Users/dimitrivorona/projects/elisp/e/"
+ :readme-prefix "# e\n\n`e` is a minima"
+ :bash-pwd "/Users/dimitrivorona/projects/elisp/e")
+#+end_src
+
+The active chat session could read =file://README.md= from the project root and ran =bash pwd= in the project root.

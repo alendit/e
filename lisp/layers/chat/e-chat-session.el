@@ -30,6 +30,25 @@ REFERENCES are ordered source references from the composer."
    :delay delay
    :metadata (and references (list :references references))))
 
+(defun e-chat-session-ensure-project-root (harness session-id project-root)
+  "Ensure SESSION-ID uses PROJECT-ROOT when it safely widens the stored root.
+Existing roots are updated only when absent or when they are descendants of
+PROJECT-ROOT."
+  (let* ((project-root (and project-root
+                            (file-name-as-directory
+                             (expand-file-name project-root))))
+         (current-root (and project-root
+                            (e-harness-project-root harness session-id nil))))
+    (when (and project-root
+               (or (not current-root)
+                   (file-in-directory-p current-root project-root)))
+      (let* ((session (e-session-get (e-harness-sessions harness) session-id))
+             (metadata (copy-sequence (plist-get session :metadata))))
+        (unless (equal (plist-get metadata :project-root) project-root)
+          (plist-put metadata :project-root project-root)
+          (e-session-set-metadata
+           (e-harness-sessions harness) session-id metadata))))))
+
 (defun e-chat-session-abort (harness session-id)
   "Abort the active chat turn for SESSION-ID through HARNESS."
   (e-harness-abort harness session-id))

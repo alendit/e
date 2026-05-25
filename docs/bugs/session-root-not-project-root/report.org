@@ -1,0 +1,17 @@
+#+title: Bug Report: Session Root Uses Feature Directory Instead of Project Root
+#+startup: overview
+
+* Report
+The active chat session's file resource root can be captured from the current buffer's =default-directory= instead of the project root. In the reported case, the session was rooted at:
+
+#+begin_example
+/Users/dimitrivorona/projects/elisp/e/docs/feats/04-message-turn-identity/
+#+end_example
+
+This made =file://= reads outside that subdirectory reject as escaping the configured root, even though the files were inside the enclosing project:
+
+#+begin_example
+/Users/dimitrivorona/projects/elisp/e/
+#+end_example
+
+The desired behavior is to root sessions/workspace tools at the project level, based on the Git repository or Projectile/project.el project root.
