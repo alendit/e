@@ -3,65 +3,155 @@
 
 * Scope Reviewed
 
-Reviewed the implementation against =plan.org= for feature 09, focusing on
-provider-neutral context ordering, built-in priority assignments, export wording,
-and preservation of layer/capability order as the tie-breaker.
+Reviewed feature 09 against the current implementation, not only the original
+feature-09 commit.  Later work has since touched adjacent code, especially
+capability config, session-rooted =agents-std-context= project discovery, skill
+precedence documentation, and context compaction.  This review therefore checked
+that the original context-ordering behavior still holds after those follow-up
+changes.
 
-The reviewed changes cover:
+Files and behavior reviewed:
 
-- =e-context-provider= priority metadata with stale-record tolerant accessors.
-- =e-capability= instruction priority metadata with stale-record tolerant
-  accessors.
-- priority sorting inside =e-capabilities-context-messages=.
-- built-in priorities for AGENTS.md, skill catalog/instructions, base guidance,
-  harness guidance, Emacs awareness, and visible buffers.
-- context export wording that describes backend-neutral context fragments rather
-  than provider-submitted message counts.
-- skill ordering kept separate from context-fragment priority.
+- =lisp/core/e-context.el=: =e-context-provider= priority metadata, provider
+  priority/build helpers, and transcript-stack context prefixing.
+- =lisp/core/e-capabilities.el=: =e-capability= instruction priority metadata,
+  compatibility accessors for derived slots, and
+  =e-capabilities-context-messages= fragment collection/sorting.
+- =lisp/core/e-skills.el=: skill preamble construction and preservation of
+  =instruction-priority= through =e-capability-with-skills-create=.
+- =lisp/layers/agents/e-agents-std-context.el=: AGENTS.md provider priority,
+  skill catalog/provider priority, and interaction with capability config and
+  session project roots.
+- =lisp/layers/base/e-base.el= and
+  =lisp/layers/base/e-file-capabilities.el=: OS/base guidance priority.
+- =lisp/layers/harness/e-harness-base.el=: harness guidance priority.
+- =lisp/layers/emacs/e-emacs-capabilities.el=: Emacs awareness and visible
+  buffer priorities.
+- =lisp/layers/e-context-inspection.el=: export wording around backend-neutral
+  context fragments.
+- Relevant tests under =test/e-capabilities-test.el=,
+  =test/e-context-test.el=, =test/e-agents-std-context-test.el=,
+  =test/e-emacs-capabilities-test.el=, =test/e-emacs-base-test.el=,
+  =test/e-context-inspection-test.el=, =test/e-defaults-test.el=,
+  =test/e-chat-session-test.el=, and =test/e-harness-test.el=.
 
 * Plan Acceptance Review
 
 ** Accepted
 
-- Context stays provider-neutral.  The implementation still returns ordered
-  message plists from capability aggregation, and backend adapters remain
-  responsible for provider-specific mapping.
+- Context stays provider-neutral.  Capability aggregation still returns ordered
+  backend-neutral message plists; backend adapters remain responsible for
+  provider-specific mapping/collapsing.
 - Lower numeric priorities appear earlier in generated context.
 - Capabilities without explicit priorities keep the default =200= behavior.
-- Equal priorities preserve capability traversal and provider message order.
+- Equal priorities preserve capability traversal order and provider message
+  order.  Sorting keys are priority, capability traversal index, provider index,
+  and message index.
+- Provider build functions still return ordinary message plists.  Provider
+  priority is provider-level and applies to all messages in that provider's
+  returned list.
+- Capability instruction priority is capability-owned and defaults to =200=.
 - AGENTS.md context is assigned priority =100=.
-- =agents-std-context= instructions and skill catalog are assigned priority
-  =220=.
+- =agents-std-context= instructions/global skill catalog and project skill
+  catalog are assigned priority =220=.
 - OS base guidance is assigned priority =230=.
 - Harness self-management guidance is assigned priority =240=.
 - Emacs awareness instructions are assigned priority =300=.
 - Visible buffers are assigned priority =320=.
-- Context export text now uses "Backend-neutral context fragment count" and adds
-  an adapter-mapping note.
-- Skill ordering is not handled by context priority.  It remains owned by the
-  skill/catalog code; duplicate global/project skill behavior remains a separate
-  bug scope.
+- The default chat layer order still remains meaningful as a tie-breaker:
+  =(chat-session agents-std-context harness-base e os-base emacs-base)= in the
+  live default harness, while priority moves stable project policy ahead of
+  later lower-band guidance where needed.
+- Context export text now uses "Backend-neutral context fragment count", labels
+  sections as "Context fragment N", and includes an adapter-mapping note:
+  "System fragments may be mapped or collapsed by backend adapters before
+  provider submission."
+- Skill ordering remains separate from context-fragment priority.  The current
+  =agents-std-context= skill precedence documentation states that global and
+  project skills are distinct scoped resources, nearest project skill wins for a
+  duplicate project slug, parent project skills remain available, and prompt
+  ordering is global first then project skills from outer to inner roots after
+  duplicate resolution.
+- Later session-root/config changes did not break feature-09 ordering: the
+  current AGENTS.md and project skill providers resolve through the active
+  harness/session project root, then their messages enter the same priority
+  ordering path.
 
-** Remaining Notes
+** Current Implementation Notes
 
-- The live check used a synthetic project with AGENTS.md and one project skill.
-  Before marking this feature =Done=, inspect one ordinary chat buffer context as
-  a final UX check if the active user's chat setup differs from the synthetic
-  harness.
+- The original review's only remaining UX note has been resolved.  I inspected
+  an ordinary live chat context after reload.  The live default chat context had
+  six fragments in this order: AGENTS.md, =agents-std-context= instructions/skill
+  catalog, OS base guidance, harness guidance, Emacs awareness guidance, and
+  visible buffers.
+- The adapter note is intentionally generic rather than Codex-specific.  This
+  is acceptable because the plan allowed provider-neutral wording and only
+  required avoiding the impression that every backend receives separate system
+  messages.
+- Export metadata still returns =:message-count= in the tool result plist for
+  API compatibility, while the Markdown body uses context-fragment wording.  I
+  do not consider that a feature-09 blocker because the user-facing export body
+  was the planned wording change and existing tests still assert the metadata
+  key.
+
+** Follow-up Notes
+
+- Stale-record tolerance is partial.  The custom accessors
+  =e-context-provider-priority= and =e-context-provider--build-function= can read
+  short pre-priority =e-context-provider= vectors directly, and
+  =e-capability-instruction-priority= defaults old =e-capability= vectors to
+  =200=.  However, =cl-defstruct= predicates such as =e-context-provider-p= and
+  =e-capability-p= do not recognize older vectors once the struct length has
+  changed.  As a result, stale context-provider objects can still fail when they
+  flow through =e-capabilities--provider-messages=, and stale capability objects
+  can fail if generated accessors such as =e-capability-instructions= are used
+  before tolerant accessors.  In normal startup/reload paths the default harness
+  recreates configured stateless layers, so this is not showing up in the live
+  default chat context.  If the project wants robust live-upgrade support for
+  arbitrary already-active custom layers, add a small follow-up to make stale
+  provider/capability detection explicit instead of relying on generated struct
+  predicates.
+- Test coverage is good for the main ordering behavior, but the stale-record
+  compatibility edge above is not covered end-to-end.  Add regression coverage
+  if that compatibility guarantee is promoted from "where possible" to a hard
+  requirement.
 
 * Verification Evidence
 
-- =eldev test test/e-capabilities-test.el test/e-context-test.el test/e-skills-test.el test/e-agents-std-context-test.el test/e-emacs-capabilities-test.el test/e-emacs-base-test.el test/e-context-inspection-test.el=:
-  46 tests passed.
-- =eldev test test/e-defaults-test.el test/e-chat-session-test.el test/e-harness-test.el=:
-  58 tests passed.
-- Live reload succeeded with:
-  =emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"=
-- Live synthetic context inspection after reload returned AGENTS.md at index =0=,
-  project skill catalog at index =2=, visible buffers at index =5=, and =6=
-  total context fragments.
+- Ran focused and context-sensitive test set:
+
+  #+begin_src shell
+  eldev test test/e-capabilities-test.el test/e-context-test.el test/e-agents-std-context-test.el test/e-emacs-capabilities-test.el test/e-emacs-base-test.el test/e-context-inspection-test.el test/e-defaults-test.el test/e-chat-session-test.el test/e-harness-test.el
+  #+end_src
+
+  Result: =105= tests passed, =0= unexpected.
+
+- Reloaded the running Emacs successfully with:
+
+  #+begin_src shell
+  emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+  #+end_src
+
+- Inspected the live default chat context after reload.  The active layers were:
+
+  #+begin_example
+  (chat-session agents-std-context harness-base e os-base emacs-base)
+  #+end_example
+
+  The pre-prompt context contained =6= fragments in the expected priority order:
+
+  | Index | Fragment |
+  |-------+----------|
+  | 0 | AGENTS.md context discovered for this turn |
+  | 1 | =agents-std-context= instructions and skill catalog |
+  | 2 | OS base guidance |
+  | 3 | Harness/base reasoning guidance |
+  | 4 | Emacs awareness guidance |
+  | 5 | Visible Emacs buffers |
 
 * Review Result
 
-The feature matches the plan and is ready for in-review follow-up.  The only
-remaining note is a final ordinary chat-context UX inspection before =Done=.
+Feature 09 matches the plan in the current implementation and the previous
+ordinary-chat UX follow-up is complete.  The feature can be marked =Done= once
+the team accepts the stale-record compatibility note as either non-blocking or
+tracked separately for a later live-upgrade hardening pass.

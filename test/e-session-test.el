@@ -139,6 +139,30 @@
                            '("msg-1" "msg-2")))))
       (delete-directory directory t))))
 
+(ert-deftest e-session-test-persistent-appends-avoid-noisy-append-api ()
+  "Persistent session appends avoid the API that emits write messages."
+  (let* ((directory (make-temp-file "e-session-" t))
+         (store (e-session-persistent-store-create directory))
+         (append-to-file-called nil))
+    (unwind-protect
+        (cl-letf (((symbol-function 'append-to-file)
+                   (lambda (start end filename)
+                     (setq append-to-file-called t)
+                     (write-region start end filename t 'silent))))
+          (let* ((session (e-session-create store :id "session-quiet"))
+                 (session-id (plist-get session :id)))
+            (should-not append-to-file-called)
+            (let ((append-to-file-called nil))
+              (e-session-append-message
+               store session-id
+               '(:id "msg-1" :role user :content "quiet append"))
+              (should-not append-to-file-called))
+            (let* ((loaded (e-session-persistent-store-create directory))
+                   (messages (e-session-messages loaded session-id)))
+              (should (equal (plist-get (car messages) :content)
+                             "quiet append")))))
+      (delete-directory directory t))))
+
 (ert-deftest e-session-test-persistent-replay-preserves-entry-ids ()
   "Persistent replay keeps durable ids and parent links instead of regenerating."
   (let* ((directory (make-temp-file "e-session-" t))

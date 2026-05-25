@@ -3,35 +3,61 @@
 
 * Result
 
-PASS. The implementation satisfies the minimal acceptance criteria in
-plan.org for manual context compaction, durable compaction records, context
+PASS. The current implementation satisfies the minimal acceptance criteria in
+=plan.org= for manual context compaction, durable compaction records, context
 reconstruction, repeated compaction, conservative boundary selection,
-summarization input shaping, tool/resource metadata, visible failures, and
-test coverage.
+summarization input shaping, tool/resource metadata, visible failures, and test
+coverage.
+
+This review was refreshed after the remaining concerns were addressed or
+accepted as intentional first-slice tradeoffs. No unresolved blocking review
+notes remain for feature 11.
+
+* Scope Reviewed
+
+- =lisp/core/e-compaction.el=
+- =lisp/core/e-session.el=
+- =lisp/core/e-context.el=
+- =lisp/core/e-harness.el=
+- =lisp/core/e-tools.el=
+- =lisp/core/e-loop.el=
+- =lisp/layers/base/e-base-tools.el=
+- =lisp/layers/chat/e-chat-session.el=
+- =lisp/shells/chat/e-chat.el=
+- =test/e-compaction-test.el=
+- =test/e-context-test.el=
+- =test/e-session-test.el=
+- =test/e-harness-test.el=
+- =test/e-loop-test.el=
+- =test/e-base-tools-test.el=
+- =test/e-chat-test.el=
 
 * Requirements Checked
 
 - Manual compaction appends an identity-bearing durable compaction record with
   =first-kept-entry-id=, =tokens-before=, =tokens-kept=, metadata, and replay
   support in =e-session-append-compaction= and JSONL replay.
-- Context reconstruction uses the latest valid compaction as one backend
+- Context reconstruction uses the latest valid compaction as one backend-facing
   system summary followed by the kept suffix in =e-context--compacted-messages=.
 - Historical transcript messages remain persisted; compaction adds a record
   without deleting old messages.
 - Repeated compaction includes the previous summary and only newly compacted
   suffix content in =e-compaction-prepare= and =e-compaction-summary-messages=.
-- Boundary selection starts the kept suffix at a user message and avoids
-  starting inside tool-call/tool-result pairs.
+- Boundary selection starts the kept suffix at a user message. This conservative
+  rule avoids starting inside assistant/tool-call/tool-result groups for the
+  supported first-slice transcript shape.
 - Tool result text is truncated in summarization input, while affected resource
   metadata is deduplicated into compaction metadata.
 - Resource-backed tools record URI/operation metadata, optional free-tool
   metadata can be supplied, and tool result metadata is persisted on tool
   messages.
 - Manual orchestration in =e-harness-compact-session= rejects active turns,
-  emits lifecycle events, calls the backend for the summary, and records
+  emits lifecycle events, calls the active backend for the summary, and records
   failure events without appending a compaction on expected failures.
 - Chat exposes =e-chat-compact-session= and renders compaction lifecycle
   activity.
+- Optional compaction instructions are accepted through the command/function
+  argument and are included in summary-generation metadata and prompt input.
 
 * Evidence
 
@@ -47,22 +73,124 @@ test coverage.
 - =lisp/core/e-tools.el=, =lisp/core/e-loop.el=, and
   =lisp/layers/base/e-base-tools.el= carry resource usage metadata from tools
   into persisted tool messages.
-- Tests cover compaction preparation, session replay/query helpers, context
-  reconstruction, harness success/failure/repeated compaction, chat command
-  rendering, tool metadata persistence, and resource/free-tool metadata.
-- Verification run: =eldev test= passed with 451 expected passes and one
-  existing skipped markdown rendering test.
-- Live reload succeeded through =e-dev-reload=, and a temporary live harness
-  compaction returned =(:summary "Live summary." :messages ((:role system
-  :content "Live summary.") (:role user :content "new")) :history-count 3)=,
-  proving summary-plus-suffix context while retaining full history.
+- =test/e-compaction-test.el= covers preparation, user-boundary selection,
+  tool-result truncation, affected-resource extraction, and previous-summary
+  reuse.
+- =test/e-context-test.el= covers compacted transcript reconstruction as summary
+  plus kept suffix.
+- =test/e-session-test.el= covers compaction persistence/replay, append order,
+  entry query helpers, and invalid-boundary rejection for latest valid
+  compaction.
+- =test/e-harness-test.el= covers manual compaction success, repeated
+  compaction, context suffix use, and failure without appended compaction.
+- =test/e-loop-test.el= and =test/e-base-tools-test.el= cover tool-result
+  metadata persistence and optional free-tool resource metadata.
+- =test/e-chat-test.el= covers visible manual compaction command activity.
 
-* Residual Risks
+* Addressed Review Concerns
+
+** Manual instruction prompt
+
+The chat command is callable with an optional =instructions= argument, and the
+harness passes those instructions into =e-compaction-prepare=. The summary prompt
+includes them under =Additional instructions:= when non-empty, and the durable
+compaction metadata stores the same instruction string.
+
+This satisfies the first-slice requirement that optional instructions can be
+supplied. A minibuffer prompt on prefix remains a possible UI refinement, but it
+is not required for the minimal acceptance criteria because command callers and
+shell actions can already pass instructions programmatically.
+
+** Resource usage metadata
+
+The first version intentionally keeps durable resource metadata centered on
+=:affected-resources=. Resource tools provide implicit URI/operation metadata;
+free tools can accept optional =:resource_usage= metadata; and compaction
+preparation deduplicates resources by URI/operation.
+
+The plan's richer suggested fields such as =:tool-usage-summaries=,
+=:read-files=, and =:modified-files= are not currently emitted as separate
+metadata fields. That is acceptable for this first slice because the minimal
+acceptance criteria require captured/deduplicated resource usage metadata, and
+=:affected-resources= is the primary durable resource-oriented view. The legacy
+file-only compatibility views can be added later if generated summary display or
+external tooling needs them.
+
+** Boundary conservatism
+
+Boundary selection uses user messages as safe suffix starts. Given the current
+turn representation, this avoids beginning the kept suffix at assistant output,
+tool calls, or tool results. The implementation therefore prefers a simple
+conservative boundary over a speculative full turn-graph splitter.
+
+A future split-turn compaction feature can refine this, but the current behavior
+meets the first manual compaction target.
+
+* Verification
+
+** Batch tests
+
+Ran the full test suite:
+
+#+begin_src sh
+eldev test
+#+end_src
+
+Result:
+
+- 460 tests
+- 459 expected passes
+- 1 existing skipped markdown rendering test
+- 0 unexpected failures
+
+** Live Emacs reload
+
+Reloaded the running Emacs with:
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Result:
+
+#+begin_src emacs-lisp
+"/Users/dimitrivorona/projects/elisp/e/"
+#+end_src
+
+** Live compaction scenario
+
+After reload, inspected a temporary live harness/session with a fake summary
+backend and optional instructions. Manual compaction returned:
+
+#+begin_src emacs-lisp
+(:summary "Live summary."
+ :instructions "focus on decisions"
+ :messages ((:role system :content "Live summary.")
+            (:role user :content "new"))
+ :history-count 3
+ :compactions 1)
+#+end_src
+
+This proves the running Emacs uses summary-plus-suffix context, retains full
+history, appends exactly one compaction record, and carries optional
+instructions into compaction metadata.
+
+* Residual Risks And Follow-ups
 
 - Token counting uses a conservative character-based estimate rather than
   provider tokenizer counts.
-- The manual chat command does not prompt interactively for custom compaction
-  instructions yet; callers can pass instructions programmatically.
 - Optional free-tool resource metadata depends on the model/tool caller
   supplying the hint, so resource-backed tools remain the reliable source for
   automatic affected-resource capture.
+- The first-slice boundary selector is intentionally conservative and user-entry
+  based. Split-turn compaction for unusually large turns remains follow-up work.
+- Separate =:tool-usage-summaries= and file-only compatibility metadata can be
+  added later if a consumer needs those display forms; the current durable
+  metadata already preserves the primary URI/operation resource view.
+
+* Conclusion
+
+Feature 11 is complete for the planned manual context-compaction slice. The
+implementation keeps historical storage append-only, reconstructs compacted
+context from durable entry ids, surfaces expected failures, and is covered by
+batch and live validation.

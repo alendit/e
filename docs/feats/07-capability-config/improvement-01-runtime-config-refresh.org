@@ -1,0 +1,474 @@
+#+title: Improvement 01: Runtime Config Refresh
+#+startup: overview
+
+* Status
+
+Planned.
+
+* Problem
+
+Feature 07 implemented capability-scoped config with a mostly construction-time
+contract: resolve =e-capability-config=, build capability closures from the
+resolved values, then treat the capability as an immutable behavior bundle. That
+matches the original plan, but it works against the interactive development goal
+for =e=: changing config at runtime should change behavior in the running
+harness without forcing users to recreate the chat, reload Emacs, or reconstruct
+all layers manually.
+
+The review called out the current mixed timing explicitly:
+
+- global =agents-std-context= skills are filtered once when the capability is
+  constructed;
+- project skill providers resolve config later from the active session project
+  root;
+- constructed capability =:config= metadata reflects the construction root, not
+  necessarily the effective runtime/session config;
+- dynamic directory-local reads already make some project behavior change after
+  construction, but this is incidental rather than an owned runtime contract.
+
+The resulting behavior is hard to explain: some config edits affect the next
+turn immediately, while other edits require rebuilding capability/layer state.
+
+* Goal
+
+Make capability config runtime-refreshable for behavior that is naturally read at
+turn/context/resource time.
+
+For feature 07's first user, =agents-std-context=, changing global or
+directory-local =e-capability-config= should affect the next context build and
+resource registration/read for the relevant harness/session root, without
+recreating the chat session.
+
+The contract should be explicit:
+
+- capability option declarations remain owned by capabilities;
+- layers remain stateless packages and do not own runtime config;
+- harnesses own the runtime config environment for their active capabilities;
+- different harness instances can run the same layer presets with different
+  runtime config values;
+- behavior that depends on user/project/harness config resolves it through the
+  current harness execution context at use time;
+- capability metadata/introspection can report both construction config and
+  current effective config, instead of pretending construction metadata is the
+  whole truth.
+
+* Non-goals
+
+- Do not add project-local Lisp execution beyond normal Emacs directory-local
+  variables.
+- Do not make every low-level =defcustom= automatically reactive.
+- Do not rebuild every active capability on every variable change.
+- Do not introduce a broad reactive framework, cache invalidation bus, or watcher
+  until there is a concrete second user that needs it.
+- Do not change AGENTS.md discovery semantics except where needed to keep roots
+  and config resolution consistent.
+- Do not add a dedicated config shell in this improvement.
+- Do not make capability users pass option plists directly to each provider;
+  runtime config should be supplied by harness execution context.
+
+* Design Direction
+
+** Harnesses own runtime config scope
+
+Runtime config should be a harness concern, not something every capability user
+or provider manually knows how to resolve.
+
+A harness should carry a runtime config environment that is used whenever active
+capability behavior is materialized for a session. Different harnesses must be
+able to run the same layer presets with different config values. For example, a
+work chat harness can include one =agents-std-context= skill set while a personal
+chat harness includes another, even if both activate the same
+=agents-std-context= layer.
+
+Suggested harness-owned state:
+
+#+begin_src emacs-lisp
+(:capability-config ((agents-std-context
+                      :include ("work-flow")
+                      :exclude ("personal-only")))
+ :config-root "/path/to/project/"
+ :config-generation 12)
+#+end_src
+
+The exact shape can differ, but the ownership should be clear:
+
+- global =e-capability-config= remains the user/default source;
+- directory-local =e-capability-config= remains the project source;
+- harness-local config is an additional source that lets harness instances differ
+  at runtime;
+- explicit construction overrides remain a packaging/default mechanism, not the
+  normal way to make one live harness behave differently from another.
+
+Harness-local config should not live on layers or capability instances. Layers
+can be reused across harnesses; harnesses decide how those packaged capabilities
+are configured for a particular runtime.
+** Runtime config is exposed as a capability execution context
+
+Avoid making each capability provider call a bespoke resolver with ad hoc
+knowledge of =e-capability-config=, session roots, harness-local overrides, and
+precedence. Instead, the harness should pass a narrow execution context to
+capability behavior.
+
+Possible shape:
+
+#+begin_src emacs-lisp
+(:harness harness
+ :session-id session-id
+ :turn-id turn-id
+ :project-root "/path/to/project/"
+ :capability-config-resolver #<function>)
+#+end_src
+
+A provider that needs config asks this context for its own capability id:
+
+#+begin_src emacs-lisp
+(funcall resolver 'agents-std-context e-agents-std-context-config-options)
+#+end_src
+
+This keeps the capability aware only of its own declared options. It does not
+make arbitrary capability users aware of config options, and it keeps root,
+harness-local, and source-precedence policy in the harness/config layer.
+
+Where existing APIs already pass =harness=, =session-id=, and =turn-id= as
+keywords, the implementation can adapt those keywords into this context rather
+than changing every provider signature at once. The important design point is
+that config lookup is a context service supplied by the harness, not a pattern
+copied into each capability.
+
+** Config precedence includes harness-local runtime config
+
+Extend the effective precedence to support different harnesses with different
+runtime configs:
+
+1. capability-declared option defaults;
+2. global =e-capability-config=;
+3. directory-local =e-capability-config= for the active session/project root;
+4. harness-local runtime capability config;
+5. explicit construction/layer overrides, only when the layer is intentionally
+   packaging a stronger default.
+
+This keeps normal interactive changes useful while allowing harness-local config
+to specialize one live harness without mutating global Emacs state. If a layer
+factory truly needs a non-user-overridable value, it can still pass construction
+overrides, but that should be rare and explicit.
+
+Harness-local config should be mutable through a small API, for example:
+
+#+begin_src emacs-lisp
+(e-harness-set-capability-config harness 'agents-std-context
+                                 '(:include ("work-flow")))
+(e-harness-capability-config harness 'agents-std-context)
+#+end_src
+
+Changing harness-local config should increment a generation counter or otherwise
+invalidate only cheap derived caches. The first implementation can avoid caches
+entirely and simply resolve on each context/resource build.
+
+** Capability construction config becomes metadata, not authority
+
+The =:config= stored on an =e-capability= remains useful as construction metadata
+and a fallback/default view, but runtime behavior must not treat it as the final
+authority when a harness execution context is available.
+
+Add a naming/documentation distinction if needed:
+
+- construction config :: the config captured when the capability was created;
+- effective runtime config :: the config resolved for a concrete harness,
+  session, directory, and optional turn.
+
+The UI should prefer effective runtime config when active session context exists
+and show harness-local contributions separately when present.
+
+** Make =agents-std-context= fully runtime-configured
+
+The concrete behavior target is =agents-std-context=.
+
+Currently project skills are already dynamic, but global skills are captured in
+=(:skills ...)= during capability creation by =e-capability-with-skills-create=.
+To make runtime config consistent, move global skill advertisement/resources into
+runtime providers too, or teach the skill-capability builder to accept dynamic
+skill providers.
+
+Prefer the smaller direct change for this improvement:
+
+- keep AGENTS.md provider behavior unchanged except for using the same harness
+  execution context/root service;
+- replace construction-filtered global skills with runtime skill catalog/resource
+  providers that combine global and project skills and filter using current
+  effective config;
+- ensure advertised skill catalog and readable skill resources use the same
+  filtered set for the active session root;
+- keep exact =:include= / =:exclude= matching semantics from feature 07;
+- exclude still wins over include.
+
+The capability may still declare =:config-options= and construction =:config= for
+metadata, but its behavior-bearing skill/resource/context providers should
+resolve current config.
+
+** Interactive describe command uses active session when possible
+
+=e-capability-config-describe= currently resolves a named capability for
+=default-directory=. Improve the chat-buffer workflow:
+
+- when called in an =e-chat= buffer, default the capability prompt to active
+  capabilities from =e-chat-harness=;
+- resolve and display effective runtime config for =e-chat-harness=,
+  =e-chat-session-id=, and the current session root;
+- include the construction config separately when it differs;
+- outside a chat buffer, keep the current named-capability/default-directory
+  behavior.
+
+This can live in the chat shell or in a shell-aware optional helper, as long as
+core config does not depend on presentation internals.
+
+* Implementation Steps
+
+** 1. Tighten config-source semantics
+
+Files:
+
+- =lisp/core/e-capability-config.el=
+- =test/e-capability-config-test.el=
+
+Work:
+
+- Fix or replace =e-capability-config--directory-value= so it can distinguish no
+  directory-local override from an override equal to the global value.
+- Return source metadata from a new helper if useful for diagnostics, for
+  example =(:value ... :source directory-local :directory ...)=.
+- Preserve the existing public effective resolver behavior.
+
+Acceptance:
+
+- No-project-config resolution still equals defaults plus global config.
+- Tests can prove whether a directory-local value was found.
+- Unknown and invalid options still signal the same explicit errors.
+
+** 2. Add harness-local runtime config state
+
+Files:
+
+- =lisp/core/e-harness.el=
+- =test/e-harness-test.el=
+
+Work:
+
+- Add harness-owned capability config storage and accessors, for example
+  =e-harness-set-capability-config= and =e-harness-capability-config=.
+- Add a generation counter only if useful for cheap cache invalidation; avoid
+  caches in the first implementation if direct resolution is simple enough.
+- Ensure two harnesses using the same layer ids can hold different config values
+  at the same time.
+
+Acceptance:
+
+- Harness-local config can be set, read, changed, and cleared at runtime.
+- Two harness instances can resolve different configs for the same capability and
+  layer preset without mutating global =e-capability-config=.
+- Existing harnesses with no local config behave exactly as before.
+
+** 3. Add runtime execution-context config resolution
+
+Files:
+
+- likely =lisp/core/e-capability-config.el= for directory-based source helpers;
+- likely =lisp/core/e-harness.el= for harness/session root selection and
+  harness-local precedence;
+- tests in =test/e-capability-config-test.el= and =test/e-harness-test.el=.
+
+Work:
+
+- Provide one harness-owned resolver service used by behavior providers to
+  resolve config for a current harness/session/turn root.
+- Adapt existing context/resource provider keyword arguments into an execution
+  context so providers do not each reimplement precedence policy.
+- Keep dependency direction clean: stable config code should not need to know
+  chat presentation details, and capability users should not need to know
+  specific option keys.
+
+Acceptance:
+
+- With a harness/session project root, runtime resolution uses that root.
+- Without a session root, runtime resolution falls back to explicit directory or
+  default directory.
+- Global, directory-local, harness-local, and explicit override precedence is
+  tested and documented.
+- A capability provider can obtain its effective config from the supplied runtime
+  context by capability id and option specs.
+
+** 4. Make =agents-std-context= skill behavior dynamic
+
+Files:
+
+- =lisp/layers/agents/e-agents-std-context.el=
+- =test/e-agents-std-context-test.el=
+
+Work:
+
+- Replace construction-time global skill filtering as the behavior authority.
+- Build the skill catalog at context time from global plus project skills, using
+  the effective runtime config for the active root.
+- Register/read skill resources from the same effective runtime filtered set.
+- Ensure a runtime =setq= of =e-capability-config= changes the next context build
+  and resource availability for global as well as project skills.
+- Ensure directory-local changes affect behavior after Emacs has re-read local
+  variables for the relevant root; if Emacs caching means a newly edited
+  =.dir-locals.el= is not noticed automatically, document and use the standard
+  Emacs refresh path in tests.
+
+Acceptance:
+
+- A running harness context build reflects changing =e-capability-config= from
+  include skill A to include skill B without recreating the harness.
+- Global skill catalog/resources and project skill catalog/resources obey the
+  same current effective config.
+- AGENTS.md context remains independent of skill filtering.
+- Existing exact-match tests still pass.
+
+** 5. Update config introspection for active chat/session state
+
+Files:
+
+- =lisp/core/e-capability-config.el= and/or chat shell integration in
+  =lisp/shells/chat/e-chat.el=;
+- =test/e-chat-test.el= or focused command-helper tests.
+
+Work:
+
+- Make =e-capability-config-describe= or a chat-facing wrapper show effective
+  config for the active chat session when invoked from a chat buffer.
+- Display construction config separately only when useful/different.
+
+Acceptance:
+
+- From a chat buffer, describing =agents-std-context= reports the config that the
+  next turn will use for that session root.
+- From a non-chat buffer, the existing current-directory describe workflow still
+  works.
+
+** 6. Update docs and review notes
+
+Files:
+
+- =docs/feats/07-capability-config/plan.org= if the contract changes are meant
+  to supersede the immutable-construction language;
+- =docs/feats/07-capability-config/review.org= after implementation.
+
+Work:
+
+- Replace the old immutable-bundle wording with the runtime-refresh contract, or
+  explicitly scope immutability to static construction metadata only.
+- Update the review follow-up section to point at this improvement and record
+  the outcome.
+
+Acceptance:
+
+- Docs no longer imply users must recreate a harness for ordinary capability
+  config changes that are meant to be interactive.
+- The feature 07 review has a clear resolution note for the mixed config timing
+  deviation.
+
+* Tests To Add Or Update
+
+- Core config test proving directory-local source detection does not collapse
+  into global config.
+- Harness-local config tests proving two harnesses can use the same layer preset
+  with different effective capability configs.
+- Runtime/session resolver test proving the session project root wins over the
+  construction root for effective runtime config.
+- Runtime precedence test covering defaults, global, directory-local,
+  harness-local, and explicit construction override sources.
+- =agents-std-context= test where an existing harness/context provider changes
+  advertised global skills after =(setq e-capability-config ...)=.
+- =agents-std-context= test where project skill filtering changes for the same
+  session root after config changes, without recreating the harness.
+- Resource test proving a skill excluded by the current config is not readable
+  and becomes readable after runtime config changes, or vice versa, using the
+  same harness/session when feasible.
+- Chat/introspection test proving the describe workflow reports active session
+  effective config.
+
+* Verification Plan
+
+Run focused tests first:
+
+#+begin_src sh
+eldev test test/e-capability-config-test.el test/e-agents-std-context-test.el test/e-chat-test.el
+#+end_src
+
+Then run the broader capability/default stack if those areas changed:
+
+#+begin_src sh
+eldev test test/e-capabilities-test.el test/e-defaults-test.el test/e-chat-session-test.el test/e-harness-test.el
+#+end_src
+
+After Lisp changes, reload the running Emacs:
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Live validation should inspect an already-created temporary chat/harness, change
+=e-capability-config= at runtime, rebuild context, and confirm that the skill
+catalog/resource availability changes without recreating the harness.
+
+* Acceptance Criteria
+
+- Runtime config changes affect the next =agents-std-context= context/resource
+  behavior in an existing harness/session.
+- Different harnesses can run the same layer preset with different effective
+  capability configs.
+- Global and project skills have consistent config timing.
+- Active chat/session config introspection reports the same effective config the
+  next turn will use, including harness-local contributions.
+- Capability ownership and layer statelessness remain intact.
+- Existing feature 07 include/exclude semantics and AGENTS.md separation remain
+  unchanged.
+- Tests cover runtime refresh for context and resources.
+- Running Emacs is reloaded and a live runtime-config-change scenario is
+  inspected.
+
+* Design Self-Check
+
+1. If this work package stopped here, would the project be better off than if it
+   had not been built?
+   - Yes. It removes confusing mixed timing and aligns capability config with
+     interactive Emacs use.
+2. What final direction does this move toward?
+   - Live-configurable agents whose behavior reflects current Emacs/session
+     state without restarting the harness.
+3. Which decisions are likely to change, uncertain, or stable?
+   - Stable: capability-owned options and existing precedence. Likely to change:
+     cache/source diagnostics and broader users beyond =agents-std-context=.
+     This plan keeps those local and avoids a speculative reactive framework.
+4. What component owns this behavior, and why?
+   - Core config owns option specs, source parsing, validation, and merging.
+     Harness owns runtime config scope, project-root choice, and harness-local
+     overrides. =agents-std-context= owns how its own effective config changes
+     skill behavior.
+5. Does this change increase or reduce coupling?
+   - It should reduce coupling to construction-time closures and avoid leaking
+     option knowledge to capability users. Providers receive a harness execution
+     context and ask only for their own effective config.
+6. Did any dependency start pointing the wrong way?
+   - The plan explicitly avoids core config depending on chat presentation.
+7. Could any side effect be moved outward into an adapter or shell?
+   - Directory-local lookup remains the Emacs-side boundary; presentation-only
+     introspection stays in chat or shell-aware helpers.
+8. Are the abstractions semantically real?
+   - Runtime config resolution is real because behavior is called with concrete
+     harness/session/directory context, and harness-local config is a real
+     per-harness variation point. No generic watcher abstraction is added.
+9. What compatibility expectations apply?
+   - Existing global/current-directory resolution and exact include/exclude
+     matching must keep working.
+10. What legacy code can we remove now?
+    - After implementation, construction-filtered global skills as behavior
+      authority can be removed for =agents-std-context=.
+11. Where are expected errors handled, and where do unexpected errors surface?
+    - Unknown/invalid options continue as explicit config errors; unexpected
+      provider/resource errors surface through existing context/resource paths.
+12. What tests prove the core behavior independently of the full system?
+    - Core resolver/source tests, harness-local config tests, and layer-level
+      provider/resource tests with fake harnesses prove runtime config
+      independently of real LLM calls.

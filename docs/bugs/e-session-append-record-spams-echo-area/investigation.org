@@ -67,3 +67,18 @@ default.
 Add a regression test around persistent append behavior that proves appending a
 session record does not add user-visible echo-area messages while preserving
 the existing replay guarantees.
+
+* Fix evidence
+
+- Replaced =e-session--append-record='s use of =append-to-file= with
+  append-mode =write-region= using the silent visit flag. The session store
+  still writes UTF-8 JSONL records, but successful appends no longer use the
+  Emacs API that emits =Added to ...= through the global message stream.
+- Added =e-session-test-persistent-appends-avoid-noisy-append-api= to prove
+  persistent session creation and message appends bypass =append-to-file= while
+  preserving replay of the appended message.
+- Verified the focused regression with:
+
+#+begin_example
+eldev test -f test/e-session-test.el e-session-test-persistent-appends-avoid-noisy-append-api
+#+end_example

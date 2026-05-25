@@ -163,8 +163,9 @@
     (let ((coding-system-for-write 'utf-8))
       (with-temp-buffer
         (insert (json-encode record) "\n")
-        (append-to-file (point-min) (point-max)
-                        (e-session--session-file store session-id))))))
+        (write-region (point-min) (point-max)
+                      (e-session--session-file store session-id)
+                      t 'silent)))))
 
 (defun e-session--list-tail (items)
   "Return the tail cell for ITEMS, or nil."

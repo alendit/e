@@ -1,0 +1,21 @@
+#+title: Bug Report Index
+#+startup: overview
+
+State values for coding agents:
+
+- New :: report exists and still needs a fix or explicit closure.
+- Closed :: investigation records fix evidence, validation, or another explicit closure.
+
+| State  | Path | Title |
+|--------+------+-------|
+| Closed | base-guidance-mentions-emacs/ | Base Guidance Mentions Emacs |
+| Closed | bash-timeout-parameter-underdocumented/ | Bash timeout parameter is underdocumented |
+| Closed | compaction-context-strategy-stale-after-reload/ | Compaction Ignored by Stale Context Strategy After Reload |
+| Closed | compaction-context-usage-stays-high/ | Compaction Context Usage Stays High |
+| Closed | e-chat-derived-title-keeps-stale-buffer-name/ | e-chat derived session title leaves stale buffer name |
+| Closed | e-chat-resume-hangs-on-session-replay/ | e-chat-resume hangs on session replay |
+| Closed | e-chat-resume-overview-untitled-sessions/ | e-chat resume overview shows untitled sessions |
+| Closed | e-chat-running-turn-composer-input-reset/ | Running Turn Composer Input Reset |
+| Closed | e-session-append-record-spams-echo-area/ | Session Append Record Spams Echo Area |
+| Closed | global-skills-duplicated-as-project/ | Global Skills Duplicated As Project Skills |
+| Closed | session-root-not-project-root/ | Session Root Uses Feature Directory Instead of Project Root |

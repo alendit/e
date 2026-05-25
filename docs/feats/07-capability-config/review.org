@@ -5,42 +5,325 @@
 
 In-review.
 
+Implementation broadly matches the feature direction: configuration is owned by
+capabilities, layers remain stateless presets, =agents-std-context= has concrete
+=:include= / =:exclude= options, and focused tests plus a live Emacs probe pass.
+
+No blocking correctness issue was found in the reviewed happy paths. The main
+remaining review items are behavioral-contract clarifications around when config
+is resolved for session-specific project roots, and a small UI-scope gap in the
+=describe= command.
+
+* Scope Reviewed
+
+- =lisp/core/e-capability-config.el=
+- =lisp/core/e-capabilities.el=
+- =lisp/core/e-skills.el=
+- =lisp/layers/e-layers.el=
+- =lisp/defaults/e-default-harnesses.el=
+- =lisp/defaults/e-default-layers.el=
+- =lisp/layers/agents/e-agents-std-context.el=
+- =test/e-capability-config-test.el=
+- =test/e-capabilities-test.el=
+- =test/e-skills-test.el=
+- =test/e-agents-std-context-test.el=
+- =test/e-defaults-test.el=
+- =docs/architecture.md=
+
 * Plan Coverage
 
-- Core config module exists in =lisp/core/e-capability-config.el= with a global
-  =e-capability-config= defcustom, safe directory-local predicate, option specs,
-  precedence resolution, validation errors for active unknown keys, and the
-  =e-capability-config-customize= / =e-capability-config-describe= commands.
-- Capabilities now carry optional =:config-options= and =:config= metadata while
-  stale record accessors remain tolerant.
-- Default layer construction can pass a directory to config-aware layer
-  factories, and default chat harness creation accepts a =:directory= root for
-  configured layers.
-- =agents-std-context= declares =:include= and =:exclude= options. Matching is
-  exact against skill name or resource path, exclude wins, and filtering applies
-  to advertised skill catalog entries and readable =e://= skill resources.
-- AGENTS.md discovery remains separate from skill filtering.
-- =docs/architecture.md= documents that configuration is capability-owned and
-  layers remain stateless presets.
+** Step 1: Core config module
 
-* Deviations And Risks
+Covered.
 
-- Project skill filtering resolves config for the active session context root at
-  provider/resource time, because existing =agents-std-context= behavior lets a
-  session project root override the layer construction root. The constructed
-  capability still stores the effective config for its construction root. This
-  preserves current session-root behavior while keeping config validation at the
-  capability boundary.
-- Include/exclude matching is intentionally exact only. Pattern matching remains
-  later work, matching the plan.
+- =lisp/core/e-capability-config.el= defines:
+  - =e-capability-config= as a global =defcustom= with capability-id to plist
+    shape.
+  - =e-capability-config-option= specs with key, type, default,
+    documentation, normalizer, and validator slots.
+  - =e-capability-config-safe-local-value-p= and the
+    =safe-local-variable= property for directory-local use.
+  - =e-capability-config-resolve= with the documented precedence: defaults,
+    global config, directory-local config, explicit overrides.
+  - unknown active option errors through
+    =e-capability-config-unknown-option=.
+  - invalid value errors through =e-capability-config-invalid-value=.
+  - =e-capability-config-customize= and =e-capability-config-describe=.
+- Focused tests cover safe local shape, precedence, unknown-key errors, invalid
+  values, and option registration.
+
+Notes:
+
+- Directory-local lookup uses =hack-dir-local-variables-non-file-buffer= under
+  the requested directory, which keeps the first project override mechanism
+  Emacs-native as planned.
+- Unknown capability ids in global config are effectively ignored until a
+  resolver is called for that capability id.
+
+** Step 2: Capability metadata
+
+Covered.
+
+- =e-capability= now has =config-options= and =config= slots.
+- =e-capability-create= accepts the new keyword arguments while preserving the
+  legacy positional construction path.
+- Compatibility accessors tolerate stale live-reload record shapes and compiler
+  macros are disabled for derived accessors in the same style as existing
+  resource/resource-method compatibility accessors.
+- =e-capability-with-skills-create= forwards =:config-options= and =:config=,
+  so skill-bearing capabilities preserve the metadata.
+
+** Step 3: Default layer construction is config-aware
+
+Covered.
+
+- Registered layer factories can receive a directory through
+  =e-layer-create-registered= when their arity accepts one.
+- =e-default-chat-harness-create= accepts =:directory= and passes it to
+  configured layer activation.
+- =e-default-chat-sync-harness-layers= and the internal default layer activation
+  path also accept a directory argument.
+- Tests prove the default chat harness passes the requested project directory to
+  =agents-std-context= and that directory-local config affects default startup.
+
+Notes:
+
+- The arity-based factory dispatch is intentionally small and direct. It works
+  for the current registered factories, where optional arguments mean directory
+  roots. Future layer factories with optional non-directory parameters would need
+  a more explicit factory contract before registration.
+
+** Step 4: =agents-std-context= skill filtering
+
+Covered, with timing caveats documented below.
+
+- =agents-std-context= declares =:include= and =:exclude= option specs.
+- Option specs are registered with =e-capability-config-register-options=.
+- Selectors match exactly against =e-skill-spec-name= or =e-skill-spec-path=.
+- Nil =:include= means all skills are eligible.
+- =:exclude= wins over =:include=.
+- Filtering is applied after discovery and dedupe.
+- Filtering applies to advertised skill catalog entries and to readable
+  =e://agents-std-context/...= skill resources.
+- AGENTS.md discovery is unaffected by skill filtering.
+- Tests cover include/exclude behavior, excluded resource unreadability,
+  AGENTS.md visibility, global/project skill discovery, and same-slug dedupe
+  semantics.
+
+** Step 5: Minimal UI commands
+
+Mostly covered.
+
+- =M-x e-capability-config-customize= opens Customize for
+  =e-capability-config=.
+- =e-capability-config-describe= can describe the effective config for a named
+  capability id using registered option specs and the current/default directory.
+
+Remaining UI-scope gap:
+
+- The plan said the describe command should report effective config for an
+  active or named capability. The current command implements the named/registered
+  capability path, but it does not infer an active capability from the current
+  chat buffer, harness, or session. This is non-blocking for the first slice if
+  the intended minimum is a named command, but it should be called out as a
+  follow-up if the original “active capability” wording is still required.
+- Completion is based on =e-capability-config-known-options=, so lazily loaded
+  capability option specs only appear after the owning feature has been loaded.
+  This fits the current lazy layer architecture but is worth documenting for UI
+  expectations.
+
+** Step 6: Documentation
+
+Covered.
+
+- =docs/architecture.md= now states that capability configuration is scoped by
+  capability id, option declarations belong to capability owners, and layers may
+  pass directories/defaults without owning runtime config.
+- The architecture API list includes the main config functions and commands.
+- The feature plan remains consistent with the implemented first slice.
+
+* Behavioral Findings
+
+** Config ownership and dependency direction
+
+The implementation keeps config policy in core/capability-owned code rather than
+in presentation or harness shells:
+
+- =e-capability-config-resolve= owns precedence and validation.
+- =agents-std-context= owns its option declarations and skill-selection policy.
+- Default harness/layer code only passes a directory root into factories.
+
+This preserves the intended direction: layers package configured capabilities,
+but option contracts are declared by the capability owner.
+
+** Config resolution and validation
+
+Resolution behavior matches the plan for active capabilities:
+
+1. option defaults
+2. global =e-capability-config=
+3. directory-local =e-capability-config=
+4. construction-time overrides
+
+Unknown keys are only checked for the capability currently being resolved, which
+lets global config contain entries for capabilities that are not active yet.
+Value validation happens after normalization and signals explicit capability
+config errors.
+
+** =agents-std-context= exact matching
+
+The exact matching implementation is intentionally conservative and matches the
+plan. It avoids accidental substring or glob behavior and keeps pattern matching
+available as later work.
+
+** AGENTS.md separation
+
+AGENTS.md discovery remains independent from skill filtering. The tests and live
+probe both confirm that excluding skills does not remove AGENTS.md context.
+
+* Deviations, Risks, And Follow-ups
+
+** Mixed config timing for session project roots
+
+The largest contract nuance is timing.
+
+The plan says the effective value should be resolved before constructing
+behavior-bearing closures and that a configured capability should behave like an
+immutable bundle after construction. The implementation mostly follows this for
+capability metadata and global skills, but existing =agents-std-context=
+behavior also lets a session project root override the layer construction root.
+To preserve that behavior, project skill providers resolve config dynamically
+for the active session context root at context/resource time.
+
+Current behavior by skill category:
+
+- Global skill preamble/resources are filtered once when the capability is
+  constructed, using the construction root config.
+- Project skill catalog/resources are filtered later by providers using the
+  active session project root when one is available.
+- =e-capability-config= metadata on the constructed capability reflects the
+  construction root, not necessarily the per-session root that later providers
+  use.
+
+This is a reasonable compatibility tradeoff for the current harness model, but
+it should remain explicit because it means a multi-project harness can see
+per-session project-skill filtering while static global skill filtering and
+capability introspection still reflect the construction root.
+
+Follow-up options if this becomes confusing:
+
+- make default chat harnesses single-project by construction and recreate layers
+  when the project root changes;
+- make all =agents-std-context= skill advertisement/resource registration fully
+  dynamic per session root, including global skills; or
+- keep construction-time immutable config and stop session roots from changing
+  capability-owned filtering.
+
+** Dynamic directory-local reads can change behavior after construction
+
+Because project skill providers call =e-agents-std-context--config= using the
+current context root, changes to directory-local config can affect later context
+or resource builds without reconstructing the capability. This is useful during
+interactive development but weakens the “immutable configured capability” model
+for the project-skill path.
+
+This is not a failing test today, but it is a contract decision that should be
+kept visible.
+
+Decision: good.
+
+** =e-capability-config-describe= is minimal
+
+The command is useful for registered/named capabilities, but it does not yet use
+active harness/session state. If users expect =M-x e-capability-config-describe=
+from a chat buffer to show the active capability config for that chat session,
+that workflow still needs a shell-aware layer or command integration.
+
+** Directory-local resolver returns the ambient value when no local override exists
+
+=e-capability-config--directory-value= evaluates directory locals in a temp
+buffer and then returns =e-capability-config=. If no local value is applied, that
+is the ambient/global value. In normal resolution this is mostly harmless because
+the global layer and project layer then contain the same plist, so the effective
+config is unchanged. It does mean the helper cannot distinguish “no project
+config” from “project config equals global config”.
+
+This does not currently block the feature, but if diagnostics later need to show
+which layer contributed each value, the resolver should return explicit source
+metadata rather than only the effective plist.
+
+Decision: This is fine
 
 * Verification
 
-- =eldev test test/e-capability-config-test.el test/e-capabilities-test.el test/e-skills-test.el test/e-agents-std-context-test.el test/e-defaults-test.el test/e-chat-session-test.el test/e-harness-test.el=
-  passed: 97 tests, 97 expected, 0 unexpected.
-- Running Emacs was reloaded with =e-dev-reload= for
-  =/Users/dimitrivorona/projects/elisp/e=.
-- Live configured =agents-std-context= probe returned
-  =(:agents t :keep t :drop t :keep-resource t :drop-resource-missing t)=,
-  proving AGENTS remained visible, included skills were advertised/readable, and
-  excluded skills were hidden/unreadable in the running Emacs.
+** Batch tests
+
+Ran:
+
+#+begin_src sh
+eldev test test/e-capability-config-test.el test/e-capabilities-test.el test/e-skills-test.el test/e-agents-std-context-test.el test/e-defaults-test.el test/e-chat-session-test.el test/e-harness-test.el
+#+end_src
+
+Result:
+
+- 102 tests
+- 102 expected
+- 0 unexpected
+
+** Live Emacs reload
+
+The running Emacs was reloaded with:
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Result:
+
+#+begin_src emacs-lisp
+"/Users/dimitrivorona/projects/elisp/e/"
+#+end_src
+
+** Live configured capability probe
+
+After reload, a live =agents-std-context= probe with
+=:include ("context7" "home-assistant-manager")= and
+=:exclude ("home-assistant-manager")= returned only =context7= as advertised,
+proving exclude wins over include in the running Emacs:
+
+#+begin_src emacs-lisp
+(:config
+ (:include ("context7" "home-assistant-manager")
+  :exclude ("home-assistant-manager"))
+ :advertised ("context7")
+ :context7 t
+ :ha nil)
+#+end_src
+
+A live harness/resource probe with AGENTS.md context and the same filtering shape
+confirmed:
+
+- AGENTS.md context remained present.
+- Included skill advertisement remained present.
+- Excluded skill advertisement was absent.
+- Included skill resource was readable.
+- Excluded skill resource signaled =e-store-unknown-resource=.
+
+Returned shape:
+
+#+begin_src emacs-lisp
+(:agents-present t
+ :context7-ad-present t
+ :ha-ad-present nil
+ :context7-bytes 3166
+ :ha-error e-store-unknown-resource)
+#+end_src
+
+* Review Conclusion
+
+Feature 07 is implemented well enough for the planned first slice, provided the
+team accepts the documented compatibility tradeoff around dynamic per-session
+project skill config. The most useful follow-up is to decide whether
+=agents-std-context= should ultimately be immutable per constructed capability or
+fully session-root dynamic, because the current implementation intentionally
+straddles both models to preserve existing behavior.
