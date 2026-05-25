@@ -23,4 +23,4 @@ Status values for coding agents:
 | 10 | Ready | 10-session-append-performance/ | Session Append Performance |
 | 11 | Done | 11-context-compaction/ | Context Compaction |
 | 12 | Ready | 12-session-overview-shell/ | Session Overview Shell |
-| 13 | Planned | 13-global-session-starter/ | Global Session Starter |
+| 13 | Ready | 13-global-session-starter/ | Global Session Starter |

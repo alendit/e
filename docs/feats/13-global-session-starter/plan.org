@@ -85,13 +85,18 @@ workflow.
 ** Popup result behavior
 The popup should be small, local, and disposable.
 
+UI guidance: avoid label words such as "Question:" and "Response:" in the
+popup body. Indicate the user's question and the assistant response visually with
+background highlights matching the chat shell's user and assistant block faces.
+Use a compact source label only when it adds useful context.
+
 Recommended contents while running:
 
 #+begin_example
 Ask e here
 
-Question: <user question>
-Context: file.el:120-128
+<user question>         ;; rendered with the chat user-block background
+file.el:120-128        ;; optional compact source label, muted
 
 ⠋ Thinking...
 #+end_example
@@ -101,7 +106,9 @@ Recommended contents after success:
 #+begin_example
 Ask e here
 
-<assistant answer>
+<user question>         ;; rendered with the chat user-block background
+
+<assistant answer>      ;; rendered with the chat assistant-block background
 
 [c] continue in chat   [o] open buffer   [y] copy   [q] close
 #+end_example
@@ -111,9 +118,11 @@ Recommended contents after failure:
 #+begin_example
 Ask e here
 
-Request failed: <compact error message>
+<user question>         ;; rendered with the chat user-block background
 
-[r] retry   [c] continue in chat   [q] close
+<compact error message> ;; rendered with an error face/background
+
+[c] continue in chat   [q] close
 #+end_example
 
 The popup must not modify the source buffer unless a later explicit command is
@@ -155,12 +164,18 @@ Inside the popup buffer, bind single-key shortcuts after the popup is active:
 - =c= :: continue the ad hoc session in a chat window.
 - =o= :: open the latest assistant answer in a new buffer.
 - =y= :: copy the latest assistant answer.
-- =r= :: retry the one-shot prompt when the turn failed or was cancelled.
 - =q= :: close/dismiss the popup.
 - =RET= :: when an action button is selected, activate it.
 
 Avoid mandatory global bindings by default. The starter command should be exposed
-through shell discovery and may later be added to an opt-in global prefix map.
+through shell discovery and through an opt-in global prefix map.
+
+Recommended opt-in global binding:
+
+- =C-c e .= :: start an ad hoc popup session at point.
+
+The dot means "here / at point" and avoids the planned overview bindings such as
+=C-c e b=, =C-c e s=, =C-c e o=, =C-c e n=, and =C-c e p=.
 
 * Accepted decisions
 ** Presentation shell ownership
@@ -239,29 +254,32 @@ Implementation requirements:
 - Track harness, session id, source reference, prompt text, latest answer, active
   turn id, and subscription handle.
 - Display compact progress from events such as =turn-started=,
-  =provider-request-started=, =reasoning-delta=, =message-added=,
-  =turn-finished=, =turn-failed=, and =turn-cancelled=.
-- Treat the final assistant =message-added= content as the answer to open/copy.
+  =provider-request-started=, =reasoning-delta=, =tool-started=,
+  =tool-finished=, =message-added=, =turn-finished=, =turn-failed=, and
+  =turn-cancelled=.
+- Show tool/thinking/progress output while the turn is running, then collapse it
+  after the final answer, matching chat transcript behavior.
+- Treat the first final assistant =message-added= content as the answer to
+  open/copy. Ignore transient thinking/tool output and empty assistant fragments
+  for answer selection.
 
 ** Popup display policy
-Prefer standard Emacs display primitives and keep the first implementation
-portable.
+Target GUI Emacs / macOS Emacs Plus for the first implementation rather than
+terminal Emacs portability.
 
 Recommended approach:
 
 - Use a dedicated special-mode buffer, for example =*e-start-here*=.
-- Display it near point when feasible using standard APIs. Candidate approaches:
-  - =display-buffer-in-side-window= as a robust fallback;
-  - =display-buffer-at-bottom= as another portable fallback;
-  - a child-frame implementation only behind an optional adapter/defcustom.
-- If true at-cursor child-frame display is added, keep it as presentation-only
-  code and provide a fallback for terminal Emacs and batch tests.
+- Display it near point in GUI Emacs, preferably with a child-frame based popup.
+- Keep popup display code presentation-only. A simple normal-window fallback is
+  acceptable for tests or unavailable child frames, but terminal portability is
+  not a goal for this work package.
 
 Implementation requirements:
 
 - Defcustoms for popup width, height, and display strategy.
-- A clear fallback when at-cursor display is unavailable.
-- Tests should validate rendering and actions without depending on child frames.
+- Tests should validate rendering and actions without requiring child-frame
+  creation in batch.
 
 ** Dependency on chat shell
 The new shell depends on chat shell behavior and should say so explicitly.
@@ -296,7 +314,7 @@ Add a global session starter presentation shell around four pieces:
 3. A one-shot session controller that creates a chat session, submits the prompt,
    subscribes to events, and records the latest answer.
 4. Action commands that continue in chat, open the answer buffer, copy the
-   answer, retry, or dismiss.
+   answer, or dismiss.
 
 Suggested internal API:
 
@@ -311,7 +329,6 @@ Suggested internal API:
 (defun e-chat-starter-continue () ...)
 (defun e-chat-starter-open-answer () ...)
 (defun e-chat-starter-copy-answer () ...)
-(defun e-chat-starter-retry () ...)
 (defun e-chat-starter-dismiss () ...)
 (defun e-chat-start-here () ...)
 #+end_src
@@ -351,8 +368,10 @@ Create the popup buffer mode, keymap, and rendering helpers.
 Acceptance criteria:
 
 - Popup renders draft/running/answered/failed states.
+- Popup visually distinguishes user question and assistant answer with chat-style
+  background-highlighted blocks instead of label words.
 - Popup is read-only except for any intentional prompt-entry area.
-- =c=, =o=, =y=, =r=, =q=, and =RET= have mode-local bindings.
+- =c=, =o=, =y=, =q=, and =RET= have mode-local bindings.
 - Rendering tests can run without real window placement.
 
 ** 3. Implement source capture and prompt construction
@@ -373,8 +392,9 @@ Acceptance criteria:
 
 - A starter invocation creates one session and one initial turn.
 - Progress appears while the turn is running.
-- The latest assistant message becomes the popup answer.
-- Failures render a clear error and keep enough state to continue or retry.
+- The first final assistant message becomes the popup answer; transient
+  thinking/tool/progress output is shown while running and collapsed afterward.
+- Failures render a clear error and keep enough state to continue in chat.
 - Event subscriptions are removed when the popup is dismissed/killed.
 
 ** 5. Implement continuation and answer actions
@@ -386,8 +406,6 @@ Acceptance criteria:
 - =o= opens the latest assistant answer in a separate buffer without a new model
   turn.
 - =y= copies the latest answer to the kill ring.
-- =r= retries the one-shot prompt after failure/cancellation according to a clear
-  policy.
 - =q= closes the popup and cleans up subscriptions.
 
 ** 6. Register shell manifest and startup
@@ -408,8 +426,11 @@ Suggested tests:
 - source reference capture for region and no-region cases;
 - prompt construction includes context and references;
 - popup renderer displays running, answered, and failed states;
-- action keymap binds =c=, =o=, =y=, =r=, and =q=;
-- one-shot controller records latest assistant answer from =message-added=;
+- popup renderer uses chat-style user/assistant backgrounds and avoids
+  "Question:"/"Response:" labels;
+- action keymap binds =c=, =o=, =y=, and =q=;
+- one-shot controller records the first final assistant answer from
+  =message-added= and ignores transient thinking/tool output;
 - failure event records a compact error message;
 - continuation calls the chat open path with the same session id;
 - open-answer creates a buffer containing the answer and provenance;
@@ -441,21 +462,19 @@ Emacs and inspect at least one live scenario:
 7. close the popup and verify subscriptions are cleaned up.
 
 * Risks
-- True at-cursor popup display can be fragile across terminal Emacs, GUI Emacs,
-  child frames, and different window managers. Keep display strategy pluggable
-  and provide a standard window fallback.
+- Child-frame popup behavior can still vary across GUI Emacs builds and macOS
+  window-manager details. Keep the display strategy isolated so it can be
+  adjusted without changing session/controller logic.
 - Calling private chat helpers from a separate starter module can create tight
   coupling. Prefer narrow public chat helpers only where reuse is real.
 - Automatic context capture can become too large or surprising. Keep the default
   bounded and visible in the popup.
 - The popup might outlive the source buffer or chat session. Store copied source
   metadata and handle dead buffers clearly.
-- Retrying can create duplicate turns. Define whether retry uses the same
-  session with another user message or creates a fresh starter session, and test
-  the chosen policy.
-- The first assistant message might be a tool-related or empty assistant message
-  in some backend flows. The controller should capture the latest non-empty
-  assistant content where possible and surface empty-output failures clearly.
+- The popup should treat "first message" as the first final assistant message.
+  Tool/thinking output should be visible during execution and collapsed after the
+  final answer, matching chat transcript behavior. Empty assistant output should
+  surface as an obvious empty-output failure.
 
 * Compatibility
 - Existing chat commands and session persistence must remain compatible.
@@ -463,7 +482,8 @@ Emacs and inspect at least one live scenario:
   hidden from future overviews by default, store explicit origin metadata so the
   overview can filter later; do not special-case this in core without a real
   requirement.
-- Do not require Consult, Evil, Doom, or posframe.
+- Do not require Consult, Evil, Doom, or posframe. GUI Emacs / macOS Emacs Plus
+  is an acceptable display target for the first implementation.
 - If new public chat helpers are added, keep old private helpers available until
   all current callers are migrated.
 
