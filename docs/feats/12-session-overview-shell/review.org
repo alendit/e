@@ -1,0 +1,58 @@
+#+title: Session Overview Shell Review
+#+date: 2026-05-26
+
+* Status
+
+In-review.
+
+The implementation is present in the current tree and matches the ready plan.
+This feature remains =In-review= until the operator accepts the review round.
+
+* Implementation Summary
+
+- =e-chat-switch-session= preserves the existing resume behavior by delegating
+  to =e-chat-resume=.
+- =e-chat-overview= opens a side-window overview buffer listing persisted chat
+  sessions in the order returned by =e-harness-session-list=.
+- Overview rows show title, short session id, message count, last message time,
+  summary, and an unread marker when a loaded session has assistant output newer
+  than the presentation read marker.
+- Overview read markers are presentation-owned JSON state, stored in the active
+  session store directory by default.
+- Opening a session from the overview reuses =e-chat-open= and records the latest
+  assistant message marker as read.
+- The overview subscribes to harness events and refreshes while its buffer is
+  live.
+- The chat shell manifest advertises =switch-session=, =overview=, and
+  =overview-close=.
+
+* Verification
+
+Ran:
+
+#+begin_src sh
+rtk eldev test -f test/e-chat-test.el e-chat-test-overview-renders-sessions-in-recency-order e-chat-test-overview-open-session-marks-session-read e-chat-test-shell-descriptor-advertises-chat-surface
+rtk eldev test -f test/e-chat-test.el
+#+end_src
+
+Result:
+
+- targeted overview/shell tests: 3 expected, 0 unexpected
+- full chat shell test file: 140 expected, 1 skipped, 0 unexpected
+
+Live Emacs:
+
+- The normal =e-dev-reload= command stalled again and the stuck =emacsclient=
+  process was stopped.
+- Narrowly loaded =lisp/shells/chat/e-chat.el= into the running Emacs with
+  =load-file=.
+- A temporary live harness probe verified newest-first overview ordering,
+  opening the selected session, persisting the latest assistant read marker, and
+  clearing the unread marker after open.
+
+* Review Notes
+
+Unread detection avoids transcript loads during listing. For sessions that are
+already loaded, it tracks the latest assistant message id or timestamp. For
+index-only historical sessions, no unread marker is inferred until opening or
+another path loads the transcript.

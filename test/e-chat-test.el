@@ -3368,6 +3368,82 @@
           (should (functionp selected-state))
           (should (eq selected-sort nil)))))))
 
+(ert-deftest e-chat-test-overview-renders-sessions-in-recency-order ()
+  "Overview rows render latest sessions first and mark unread sessions."
+  (let* ((directory (make-temp-file "e-chat-overview-" t))
+         (store (e-session-persistent-store-create directory))
+         (backend (e-backend-fake-create :items nil))
+         (harness (e-chat-test--activate-chat-session
+                   (e-harness-create :backend backend :sessions store)))
+         (e-chat-overview-state-file
+          (expand-file-name "overview-state.json" directory)))
+    (unwind-protect
+        (progn
+          (e-session-create store :id "older-session"
+                            :metadata '(:name "Older"))
+          (e-session-append-message
+           store "older-session"
+           '(:id "old-assistant" :role assistant :content "older answer"))
+          (e-session-create store :id "newer-session"
+                            :metadata '(:name "Newer"))
+          (e-session-append-message
+           store "newer-session"
+           '(:id "new-assistant" :role assistant :content "newer answer"))
+          (let ((buffer (get-buffer-create "*e-chat-overview-test*")))
+            (unwind-protect
+                (with-current-buffer buffer
+                  (e-chat-overview-mode)
+                  (e-chat-overview--render harness)
+                  (let* ((text (buffer-string))
+                         (newer-pos (string-match-p "Newer" text))
+                         (older-pos (string-match-p "Older" text)))
+                    (should newer-pos)
+                    (should older-pos)
+                    (should (< newer-pos older-pos))
+                    (should (string-match-p "! Newer" text))
+                    (should (string-match-p "! Older" text))))
+              (when (buffer-live-p buffer)
+                (kill-buffer buffer)))))
+      (e-chat-test--kill-chat-buffers)
+      (delete-directory directory t))))
+
+(ert-deftest e-chat-test-overview-open-session-marks-session-read ()
+  "Opening from overview records the selected session read marker."
+  (let* ((directory (make-temp-file "e-chat-overview-" t))
+         (store (e-session-persistent-store-create directory))
+         (backend (e-backend-fake-create :items nil))
+         (harness (e-chat-test--activate-chat-session
+                   (e-harness-create :backend backend :sessions store)))
+         (e-chat-overview-state-file
+          (expand-file-name "overview-state.json" directory)))
+    (unwind-protect
+        (progn
+          (e-session-create store :id "read-me"
+                            :metadata '(:name "Read Me"))
+          (e-session-append-message
+           store "read-me"
+           '(:id "assistant-read" :role assistant :content "answer"))
+          (let ((buffer (get-buffer-create "*e-chat-overview-test*")))
+            (unwind-protect
+                (with-current-buffer buffer
+                  (e-chat-overview-mode)
+                  (e-chat-overview--render harness)
+                  (goto-char (point-min))
+                  (let ((chat-buffer (e-chat-overview-open-session)))
+                    (with-current-buffer chat-buffer
+                      (should (equal e-chat-session-id "read-me")))
+                    (should (equal
+                             (e-chat-overview--read-marker "read-me")
+                             "assistant-read"))
+                    (e-chat-overview--render harness)
+                    (should-not (string-match-p
+                                 "! Read Me"
+                                 (buffer-string)))))
+              (when (buffer-live-p buffer)
+                (kill-buffer buffer)))))
+      (e-chat-test--kill-chat-buffers)
+      (delete-directory directory t))))
+
 (ert-deftest e-chat-test-add-context-to-latest-targets-visible-session ()
   "Latest context insertion targets a visible chat before recency."
   (let* ((store (e-session-store-create))
@@ -4035,6 +4111,9 @@
     (should (equal (e-shell-required-capabilities shell) '(chat-session)))
     (dolist (command-id '(new
                           resume
+                          switch-session
+                          overview
+                          overview-close
                           rename
                           set-model
                           set-effort
