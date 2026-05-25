@@ -1196,6 +1196,12 @@ Keep point inside the composer when movement starts there."
           :end-line end-line
           :point-line point-line)))
 
+(defun e-chat--capture-context-reference-for-command ()
+  "Capture a chat context reference and clear source buffer selection."
+  (prog1 (e-chat--capture-context-reference)
+    (when (e-chat--active-region-p)
+      (deactivate-mark t))))
+
 (defun e-chat--next-context-reference-id ()
   "Return the next display-local context reference id."
   (setq e-chat--context-reference-counter
@@ -4221,7 +4227,7 @@ When DISPLAY is non-nil, show the target chat buffer."
 (defun e-chat-add-context-to-latest ()
   "Add the current point or active region to the latest e chat session."
   (interactive)
-  (let* ((reference (e-chat--capture-context-reference))
+  (let* ((reference (e-chat--capture-context-reference-for-command))
          (harness (e-chat--default-harness))
          (session-id (e-chat--latest-session-id harness)))
     (e-chat--add-context-reference-to-session
@@ -4234,7 +4240,7 @@ When DISPLAY is non-nil, show the target chat buffer."
 (defun e-chat-add-context-to-session ()
   "Add the current point or active region to a selected e chat session."
   (interactive)
-  (let* ((reference (e-chat--capture-context-reference))
+  (let* ((reference (e-chat--capture-context-reference-for-command))
          (harness (e-chat--default-harness))
          (session-id (e-chat--context-session-picker harness)))
     (e-chat--add-context-reference-to-session

@@ -13,6 +13,7 @@ State values for coding agents:
 | Closed | compaction-context-strategy-stale-after-reload/ | Compaction Ignored by Stale Context Strategy After Reload |
 | Closed | compaction-context-usage-stays-high/ | Compaction Context Usage Stays High |
 | Closed | e-chat-derived-title-keeps-stale-buffer-name/ | e-chat derived session title leaves stale buffer name |
+| Closed | e-chat-context-source-selection-persists/ | e-chat context shortcut leaves source selection active |
 | Closed | e-chat-resume-hangs-on-session-replay/ | e-chat-resume hangs on session replay |
 | Closed | e-chat-resume-overview-untitled-sessions/ | e-chat resume overview shows untitled sessions |
 | Closed | e-chat-running-turn-composer-input-reset/ | Running Turn Composer Input Reset |

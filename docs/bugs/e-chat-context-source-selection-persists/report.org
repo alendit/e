@@ -1,0 +1,11 @@
+#+title: e-chat context shortcut leaves source selection active
+#+startup: overview
+
+* Report
+
+When =s-i= or =s-I= is invoked with selected text in an original source
+buffer, the context reference is inserted into an =e-chat= composer, but the
+selection in the original buffer remains active.
+
+The expected behavior is that the source buffer selection is reset after the
+selected text has been captured.

@@ -1,0 +1,57 @@
+#+title: Investigation: e-chat context shortcut leaves source selection active
+#+startup: overview
+
+* Investigation
+
+** Source inspection
+
+- =e-chat-context-mode-map= binds =s-i= to =e-chat-add-context-to-latest= and
+  =s-I= to =e-chat-add-context-to-session=.
+- Both commands call =e-chat--capture-context-reference= in the original buffer
+  before opening or focusing a target chat buffer.
+- =e-chat--capture-context-reference= reads the active region but does not
+  deactivate the mark, and the command path switches to the chat buffer without
+  clearing the original buffer's selection.
+
+** Live inspection
+
+After reloading the current checkout into the running Emacs with
+=e-dev-reload=, a live probe created a temp source buffer with an active region
+and invoked =e-chat-add-context-to-latest= against an isolated fake chat
+harness.
+
+The probe returned:
+
+#+begin_src emacs-lisp
+(:mark-active t :buffer " *temp*")
+#+end_src
+
+This confirms that the source buffer selection remains active after the command.
+
+** Conclusion
+
+The context command path should capture the selected text, then deactivate the
+source buffer mark before it switches to the target chat composer. The capture
+helper can remain a pure read helper; the interactive commands own this
+source-buffer UI state cleanup.
+
+** Fix
+
+Added a command-specific capture helper that wraps
+=e-chat--capture-context-reference= and immediately calls
+=(deactivate-mark t)= when a real source region was active. Both
+=e-chat-add-context-to-latest= and =e-chat-add-context-to-session= now use that
+helper.
+
+** Verification
+
+- Added regression tests for both context command paths:
+  =e-chat-test-add-context-to-latest-deactivates-source-region= and
+  =e-chat-test-add-context-to-session-deactivates-source-region=.
+- Confirmed both tests failed before the fix with =mark-active= still true.
+- Ran =rtk eldev test -f test/e-chat-test.el=: 133 expected passes, 1 skipped,
+  0 unexpected.
+- Reloaded the running Emacs with =e-dev-reload=.
+- Repeated live probes for both =e-chat-add-context-to-latest= and
+  =e-chat-add-context-to-session=; both returned =(:mark-active nil ...)= for
+  the source buffer after insertion.

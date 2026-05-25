@@ -3295,6 +3295,34 @@
                             (point-max)))))))))
       (e-chat-test--kill-chat-buffers))))
 
+(ert-deftest e-chat-test-add-context-to-latest-deactivates-source-region ()
+  "Latest context insertion clears the selected region in the source buffer."
+  (let* ((store (e-session-store-create))
+         (backend (e-backend-fake-create :items nil))
+         (harness (e-chat-test--activate-chat-session
+                   (e-harness-create :backend backend :sessions store))))
+    (unwind-protect
+        (e-chat-test--with-empty-harness-registry
+          (let ((e-chat-default-harness-id :chat-test))
+            (e-harness-registry-register :chat-test harness)
+            (e-session-create store :id "latest-session"
+                              :metadata '(:name "latest-session"))
+            (with-temp-buffer
+              (insert "alpha beta gamma")
+              (goto-char (point-min))
+              (search-forward "beta")
+              (set-mark (match-beginning 0))
+              (setq mark-active t)
+              (let ((chat-buffer (e-chat-add-context-to-latest)))
+                (should-not mark-active)
+                (with-current-buffer chat-buffer
+                  (should (string-match-p
+                           "@\\[.*:1\\]"
+                           (buffer-substring-no-properties
+                            e-chat--composer-start-marker
+                            (point-max)))))))))
+      (e-chat-test--kill-chat-buffers))))
+
 (ert-deftest e-chat-test-add-context-clears-target-block-view-mode ()
   "Context insertion into a chat target exits stale block view state."
   (let ((buffer (e-chat-test--buffer nil "chat-context-block-view"))
@@ -3405,6 +3433,38 @@
                                1))
                     (should (string-match-p
                              "@\\[.*:1-3\\]"
+                            (buffer-substring-no-properties
+                             e-chat--composer-start-marker
+                             (point-max))))))))))
+      (e-chat-test--kill-chat-buffers))))
+
+(ert-deftest e-chat-test-add-context-to-session-deactivates-source-region ()
+  "Picker context insertion clears the selected region in the source buffer."
+  (let* ((store (e-session-store-create))
+         (backend (e-backend-fake-create :items nil))
+         (harness (e-chat-test--activate-chat-session
+                   (e-harness-create :backend backend :sessions store))))
+    (unwind-protect
+        (e-chat-test--with-empty-harness-registry
+          (let ((e-chat-default-harness-id :chat-test))
+            (e-harness-registry-register :chat-test harness)
+            (e-session-create store :id "target-session"
+                              :metadata '(:name "target-session"))
+            (cl-letf (((symbol-function 'completing-read)
+                       (lambda (_prompt collection &rest _args)
+                         (cadr collection))))
+              (with-temp-buffer
+                (insert "alpha beta gamma")
+                (goto-char (point-min))
+                (search-forward "beta")
+                (set-mark (match-beginning 0))
+                (setq mark-active t)
+                (let ((chat-buffer (e-chat-add-context-to-session)))
+                  (should-not mark-active)
+                  (with-current-buffer chat-buffer
+                    (should (equal e-chat-session-id "target-session"))
+                    (should (string-match-p
+                             "@\\[.*:1\\]"
                              (buffer-substring-no-properties
                               e-chat--composer-start-marker
                               (point-max))))))))))
