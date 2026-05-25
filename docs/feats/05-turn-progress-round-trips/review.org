@@ -65,39 +65,28 @@ between LLM round-trips:
 - Existing final assistant rendering, composer behavior, response navigation, and
   progress redraw preservation tests remain stable.
 
-** Partially Accepted / Deferred
+** Previously Deferred / Now Resolved
 
 - The plan says the transient activity block shows one line per progress record.
-  The implementation groups display into chunks: thoughts are distinct lines, but
-  tool calls are aggregated as =N tool call(s)= after the preceding reasoning or
-  thought chunk.  This matches the visible examples and acceptance intent, but it
-  is not a one-block-per-record internal presentation.
+  Final state: thoughts, reasoning, and tool batches are represented as semantic
+  =:activity-records= with explicit round ownership.  Tool calls intentionally
+  remain one =N tool call(s)= batch line per provider round, matching the plan's
+  visible examples.
 - The plan says each expanded summary line should be its own block, and that
   expanded tool-batch/thought/reasoning blocks should have individual actions.
-  The implementation currently expands the summary as inline detail text under
-  the summary block.  The expanded history is visible and copyable as part of the
-  summary block/details text, but individual expanded lines are not separate
-  navigable child blocks and tool batches inside the expanded summary do not open
-  the tool-list independently.
+  Final state: summary activation now creates child blocks for thought,
+  reasoning, and tool-batch lines.  Tool-batch children open the existing
+  tool-list flow, and thought/reasoning children copy/open through their own
+  block content.
 
-** Not Accepted / Known Gaps
+** Former Known Gaps Resolved
 
-- There is no dedicated copy-only action for an expanded thought line or
-  reasoning line because expanded lines are not separate blocks.  Copying the
-  summary/details can still copy the text, but not as the line-specific action
-  described in the plan.
-- Tool batch grouping is based on the sequence of intermittent entries rather
-  than an explicit round id attached to tool-batch records.  Provider starts do
-  maintain =:activity-round= and thinking entries carry =:round=, but reasoning
-  and tool entries added through =e-chat--add-intermittent-entry= do not carry a
-  durable round field in the presentation record.  This works for the current
-  visible grouping, but it falls short of the plan's stronger guidance to model
-  semantic records explicitly and avoid relying on display-entry sequencing.
-- Turn failure/cancellation events settle the turn visibly, but the reviewed
-  implementation does not convert an open =Thinking...= entry into a completed or
-  failed thought line before failure/cancellation rendering.  This is acceptable
-  for current failure UI, but it is not a full implementation of the plan note
-  that failure/cancellation should settle any open thinking line.
+- Expanded thought and reasoning lines now have line-specific copy/open behavior
+  through their child blocks.
+- Reasoning and tool batches now belong to explicit semantic provider-round
+  records instead of depending on display-title parsing.
+- Provider errors, turn failures, and cancellations now settle open thinking into
+  duration-bearing terminal thought records under live rendering and replay.
 
 * Detailed Findings
 
@@ -156,20 +145,26 @@ child blocks per expanded line.
 
 - =eldev test test/e-chat-test.el test/e-loop-test.el test/e-harness-test.el test/e-chat-session-test.el=:
   187 tests run; 186 passed; 1 existing Markdown rendering test skipped.
+- =eldev test=:
+  454 tests run; 453 results as expected; 0 unexpected; 1 existing Markdown
+  rendering test skipped.
 - Live reload succeeded with:
   =emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"=
 - Live synthetic feature-05 probe after reload returned:
   =(:thinking 47 :summary 47 :expanded-thought-1 81 :expanded-tool 69 :expanded-thought-2 115)=
   The numeric values are match positions, confirming all probed strings were
   present.
+- Final live synthetic probe after all follow-ups returned:
+  =(:summary (:summary 0 :children (activity-thought activity-reasoning activity-tool-batch activity-thought) :tool-list-count 1) :failure (:cancelled 0 :no-thinking t))=
+  This confirms summary child blocks, tool-list activation, and cancelled
+  thinking settlement in the running Emacs after reload.
 
 * Review Result
 
-The feature is substantially implemented and matches the core runtime,
-persistence, replay, active progress, final summary, and no-legacy-support goals.
-It is ready for use with the known UI/modeling gaps above tracked as follow-up
-polish rather than blockers, unless the plan's child-block/action requirements
-are considered mandatory for this slice.
+The feature implementation now matches the runtime, persistence, replay, active
+progress, final summary, expanded child-block, line action, and failure/cancel
+settlement goals in =plan.org=.  The review follow-ups below have all been
+resolved, so feature 05 can be marked =Done=.
 
 Recommended follow-ups:
 
