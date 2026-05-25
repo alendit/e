@@ -112,21 +112,55 @@ Result:
 
 This exposes a dangling parent after a live clear/reset; see [[*Findings]].
 
+* Resolution Verification
+
+Commands run after addressing the findings:
+
+#+begin_src shell
+eldev test test/e-session-test.el
+eldev test test/e-session-test.el test/e-harness-test.el test/e-chat-test.el test/e-context-test.el test/e-compaction-test.el
+eldev test
+#+end_src
+
+Results:
+
+- =test/e-session-test.el=: 30 tests run; 30 results as expected; 0 unexpected.
+- Focused session/harness/chat/context/compaction suite: 202 tests run; 201 results as expected; 0 unexpected; 1 skipped (=e-chat-test-assistant-markdown-renders-with-text-properties=).
+- Full suite: 446 tests run; 445 results as expected; 0 unexpected; 1 skipped (=e-chat-test-assistant-markdown-renders-with-text-properties=).
+
+Live reload:
+
+#+begin_src shell
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Result: returned ="/Users/dimitrivorona/projects/elisp/e/"=.
+
+Live harness reset-path probe after reload:
+
+#+begin_src elisp
+(:clear-type messages-cleared
+ :clear-parent-is-root t
+ :new-parent-is-clear t
+ :path-markers (session-created messages-cleared user)
+ :path-valid t)
+#+end_src
+
 * Acceptance Review
 
 | Plan criterion | Review |
 |----------------+--------|
-| Every new durable session entry has an =id=. | Satisfied for the implemented entry collections: messages, activity events, branch summaries, and compactions. Caveat: JSONL state records such as =session=, =session-info=, =current-branch=, and =messages-cleared= remain outside the identity model. If the feature intends every durable JSONL record to be addressable as an entry, this is incomplete. |
-| Every new durable session entry has a =parent-id= except the root entry. | Partially satisfied. Normal append/replay paths assign parents from =:current-head-id= and advance the head. However, live =e-session-clear-messages= does not clear =:current-head-id=, so the first message appended after a reset gets a =parent-id= pointing at a cleared, no-longer-queryable entry. |
+| Every new durable session entry has an =id=. | Satisfied. Messages, activity events, branch summaries, compactions, and session-event records all have ids. =session=, =session-info=, =current-branch=, and =messages-cleared= are now eventified and queryable. |
+| Every new durable session entry has a =parent-id= except the root entry. | Satisfied. The =session-created= root has no parent. Messages and state events parent to the current head, and =messages-cleared= intentionally parents to the session root before advancing the head. |
 | Every assistant/user operation has a shared =turn-id=. | Satisfied for harness-owned turns. =e-harness--next-turn-id= allocates a ULID, and the harness tags the user message, assistant/tool messages, durable activity events, tool lifecycle context, resources, and context providers with the same turn id. Low-level =e-loop= intentionally delegates message tagging to its append callback. |
 | Existing sessions can still be loaded and replayed. | Satisfied. Persistent replay preserves ids and parents when present. Legacy records without ids are backfilled in memory with deterministic ids and linear parent links. Full chat/session replay tests pass. |
-| Session entries can be queried by id. | Satisfied for modeled durable entries through =e-session-entry-by-id=. State records outside the entry collections are not queryable by id. |
-| The current linear path can be reconstructed from parent ids. | Satisfied for normal append and replay paths, including mixed message/activity paths. Partially affected by the live reset defect: =e-session-current-path= truncates at the dangling parent, so the visible path is usable but the stored new root still has a non-nil invalid =parent-id=. |
+| Session entries can be queried by id. | Satisfied through =e-session-entry-by-id= for messages, activity events, branch summaries, compactions, and eventified session records. |
+| The current linear path can be reconstructed from parent ids. | Satisfied for normal append/replay paths, mixed message/activity paths, state-event paths, reset-boundary paths, and explicit synthetic branch heads. |
 | The model is ready to store a future compaction entry with =first-kept-entry-id=. | Satisfied, and now beyond placeholder-only readiness. =e-session-append-compaction= persists =:first-kept-entry-id=, =e-session-latest-valid-compaction= validates current-path boundaries, =e-session-entries-from= computes the kept suffix, and =e-context= uses the summary plus suffix when building backend messages. |
 
 * Findings
 
-** Open: live clear/reset leaves a dangling parent head
+** Resolved: live clear/reset leaves a dangling parent head
 
 =e-session-clear-messages= clears =:messages= and =:activity-events= in live state but does not clear =:current-head-id=. The replay handler for =messages-cleared= does clear =:current-head-id=, so live state and the intended reset semantics diverge.
 
@@ -137,24 +171,34 @@ Impact:
 - Persistent append after reset writes the dangling =parent-id=, and replay preserves it because the parent id is stored on the message record.
 - This weakens the feature's parent invariant and future branching/compaction assumptions that parent ids reference reachable durable entries.
 
-Suggested fix:
+Implemented fix:
 
 #+begin_src elisp
 (defun e-session-clear-messages (store session-id)
   ...
   (plist-put session :messages nil)
   (plist-put session :activity-events nil)
-  (plist-put session :current-head-id nil)
+  (plist-put session :current-head-id root-id)
+  (e-session--append-session-event
+   session 'messages-cleared timestamp (list :parent-id root-id))
   ...)
 #+end_src
 
 Add a regression test that clears a session, appends a new message, and asserts:
 
-- the new message has no =:parent-id=;
-- =e-session-current-path= contains only the new root message;
-- persistent replay preserves that root shape.
+- the clear event parents to =session-created=;
+- the new message parents to =messages-cleared=;
+- live and persistent replay preserve that reset-boundary path shape.
 
-** Recommendation: audit non-entry JSONL records as event-log scope, not identity exceptions
+Resolution:
+
+- =messages-cleared= is now a first-class =session-event= entry with an =id=.
+- The clear event intentionally parents to the =session-created= root event instead of the removed transcript head.
+- After clear, the session head advances to the clear event, so the next message parents to =messages-cleared=.
+- Regression coverage now asserts the live and replayed reset path shape:
+  =session-created -> messages-cleared -> user=.
+
+** Resolved: audit non-entry JSONL records as event-log scope, not identity exceptions
 
 The implementation clearly treats messages, activity events, branch summaries, and compactions as durable entries. Other append-only JSONL records are written into the same session log but are not first-class identifiable entries:
 
@@ -178,9 +222,23 @@ For future tree navigation, session comparison, replay diagnostics, time travel,
 
 This makes the reset bug more significant: =messages-cleared= is a historical transcript mutation, so treating it as anonymous mutable state creates ambiguity around whether later entries should parent to the old head, parent to the clear event, or start a new root.
 
-** Test gap: synthetic branch path is not directly covered
+Resolution:
+
+- =session= now becomes the root =session-created= session event, with an =id= and no =parent-id=.
+- =session-info= records now become identifiable =session-event= entries and advance the head for name, metadata, and turn-option changes.
+- =current-branch= records now become identifiable =session-event= entries and advance the head for branch cursor changes.
+- =messages-cleared= records now become identifiable =session-event= entries with reset-boundary semantics.
+- =e-session-session-events= exposes these eventified records as a read-only accessor.
+- =e-session-entry-by-id= and =e-session-current-path= now include session events, so existing and legacy logs have queryable event roots and valid parent chains.
+
+** Resolved: synthetic branch path is not directly covered
 
 The query helpers support reconstructing a path from an explicit optional =head-id= when entries have parent links, but the current tests do not appear to include a focused synthetic branch case from the feature testing plan. This is lower priority than the reset bug because the minimal acceptance criteria only require the current linear path, but a small synthetic branch test would protect the future branching intent.
+
+Resolution:
+
+- Added a focused synthetic branch regression test with two child messages under the =session-created= root.
+- The test validates explicit left/right head path reconstruction and the default current head path.
 
 * Positive Notes
 
@@ -193,8 +251,4 @@ The query helpers support reconstructing a path from an explicit optional =head-
 
 * Notes To Resolve
 
-Before feature 04 is marked =Done=:
-
-- Fix live =e-session-clear-messages= / reset head handling so the first post-reset entry is a true root with no dangling =parent-id=.
-- Audit non-entry JSONL records: historical session events should become identifiable event-log entries; cursor/UI/cache/derived state should move out of the transcript log rather than be exempted from identity.
-- Consider adding the synthetic branch path regression test described in the feature testing plan.
+None remain. Feature 04 is =Done=.

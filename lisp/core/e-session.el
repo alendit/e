@@ -38,7 +38,7 @@
   (sequence 0))
 
 (defconst e-session--replay-list-fields
-  '(:messages :activity-events :branch-summaries :compactions)
+  '(:session-events :messages :activity-events :branch-summaries :compactions)
   "Session fields accumulated in reverse order while replaying JSONL.")
 
 (defconst e-session--ulid-alphabet "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
@@ -250,10 +250,49 @@ When RECORD is non-nil, identity fields may be replayed from the JSONL record."
   (plist-put session :current-head-id (plist-get entry :id))
   entry)
 
+(defun e-session--root-event-id (session)
+  "Return SESSION root event id, when available."
+  (or (plist-get session :root-event-id)
+      (plist-get (car (plist-get session :session-events)) :id)))
+
+(defun e-session--session-event
+    (session event-type timestamp &optional fields record)
+  "Return a normalized session EVENT-TYPE entry for SESSION.
+TIMESTAMP is used as creation metadata.  FIELDS are copied onto the event,
+and RECORD supplies persisted identity fields during replay."
+  (let ((entry (append (list :event-type event-type
+                             :created-at timestamp)
+                       (copy-sequence fields))))
+    (e-session--normalize-entry-from-record
+     session 'session-event entry timestamp record)))
+
+(defun e-session--append-session-event
+    (session event-type timestamp &optional fields record)
+  "Append a normalized session EVENT-TYPE entry to SESSION."
+  (let ((event (e-session--session-event
+                session event-type timestamp fields record)))
+    (plist-put session
+               :session-events
+               (append (plist-get session :session-events) (list event)))
+    (when (eq event-type 'session-created)
+      (plist-put session :root-event-id (plist-get event :id)))
+    event))
+
+(defun e-session--prepend-replayed-session-event
+    (session event-type timestamp &optional fields record)
+  "Prepend a replayed session EVENT-TYPE entry to SESSION."
+  (let ((event (e-session--session-event
+                session event-type timestamp fields record)))
+    (e-session--prepend-replayed-item session :session-events event)
+    (when (eq event-type 'session-created)
+      (plist-put session :root-event-id (plist-get event :id)))
+    event))
+
 (defun e-session--entries (store session-id)
   "Return all durable entries for SESSION-ID in insertion order."
   (let ((session (e-session-get store session-id)))
-    (append (plist-get session :messages)
+    (append (plist-get session :session-events)
+            (plist-get session :messages)
             (plist-get session :activity-events)
             (plist-get session :branch-summaries)
             (plist-get session :compactions))))
@@ -443,6 +482,7 @@ When RECORD is non-nil, identity fields may be replayed from the JSONL record."
       ("session"
        (let ((session (list :id session-id
                             :metadata (plist-get record :metadata)
+                            :session-events nil
                             :messages nil
                             :activity-events nil
                             :branch-summaries nil
@@ -456,6 +496,12 @@ When RECORD is non-nil, identity fields may be replayed from the JSONL record."
                             (e-session--normalize-turn-options
                              (plist-get record :turn-options))
                             :name nil)))
+         (e-session--prepend-replayed-session-event
+          session
+          'session-created
+          (or (plist-get record :created-at) timestamp)
+          (list :metadata (plist-get record :metadata))
+          record)
          (e-session--touch store session (plist-get session :updated-at))
          (puthash session-id session (e-session-store-sessions store))))
       ("message"
@@ -542,9 +588,30 @@ When RECORD is non-nil, identity fields may be replayed from the JSONL record."
        (when session
          (plist-put session :current-branch
                     (plist-get record :branch-id))
+         (e-session--prepend-replayed-session-event
+          session
+          'current-branch
+          timestamp
+          (list :branch-id (plist-get record :branch-id))
+          record)
          (e-session--touch store session timestamp)))
       ("session-info"
        (when session
+         (let (fields)
+           (when (plist-member record :name)
+             (setq fields (plist-put fields :name (plist-get record :name))))
+           (when (plist-member record :metadata)
+             (setq fields (plist-put fields
+                                     :metadata
+                                     (plist-get record :metadata))))
+           (when (plist-member record :turn-options)
+             (setq fields
+                   (plist-put fields
+                              :turn-options
+                              (e-session--normalize-turn-options
+                               (plist-get record :turn-options)))))
+           (e-session--prepend-replayed-session-event
+            session 'session-info timestamp fields record))
          (when (plist-member record :name)
            (plist-put session :name (plist-get record :name)))
          (when (plist-member record :metadata)
@@ -559,7 +626,13 @@ When RECORD is non-nil, identity fields may be replayed from the JSONL record."
        (when session
          (plist-put session :messages nil)
          (plist-put session :activity-events nil)
-         (plist-put session :current-head-id nil)
+         (plist-put session :current-head-id (e-session--root-event-id session))
+         (e-session--prepend-replayed-session-event
+          session
+          'messages-cleared
+          timestamp
+          (list :parent-id (e-session--root-event-id session))
+          record)
          (e-session--touch store session timestamp))))))
 
 (defun e-session-load (store)
@@ -593,6 +666,7 @@ When RECORD is non-nil, identity fields may be replayed from the JSONL record."
     (when id
       (list :id id
             :metadata nil
+            :session-events nil
             :messages nil
             :activity-events nil
             :branch-summaries nil
@@ -781,6 +855,7 @@ state are requested."
   (let* ((timestamp (e-session--timestamp))
          (session (list :id id
                         :metadata metadata
+                        :session-events nil
                         :messages nil
                         :activity-events nil
                         :branch-summaries nil
@@ -791,6 +866,12 @@ state are requested."
                         :updated-at timestamp
                         :name (plist-get metadata :name)
                         :loaded t)))
+    (let ((root (e-session--append-session-event
+                 session
+                 'session-created
+                 timestamp
+                 (list :metadata metadata))))
+      (plist-put session :root-event-id (plist-get root :id)))
     (e-session--touch store session timestamp)
     (e-session--refresh-derived-fields store session)
     (puthash id session (e-session-store-sessions store))
@@ -798,6 +879,7 @@ state are requested."
      store id
      (list :type "session"
            :session-id id
+           :id (e-session--root-event-id session)
            :timestamp timestamp
            :created-at timestamp
            :updated-at timestamp
@@ -821,6 +903,10 @@ state are requested."
   "Return durable activity events for SESSION-ID in STORE in insertion order."
   (copy-sequence (plist-get (e-session-get store session-id) :activity-events)))
 
+(defun e-session-session-events (store session-id)
+  "Return durable session events for SESSION-ID in STORE in insertion order."
+  (copy-sequence (plist-get (e-session-get store session-id) :session-events)))
+
 (defun e-session-compactions (store session-id)
   "Return compaction records for SESSION-ID in STORE in insertion order."
   (copy-sequence (plist-get (e-session-get store session-id) :compactions)))
@@ -831,15 +917,23 @@ state are requested."
 
 (defun e-session-set-metadata (store session-id metadata)
   "Replace SESSION-ID METADATA in STORE."
-  (let ((session (e-session-get store session-id)))
+  (let* ((session (e-session-get store session-id))
+         (timestamp (e-session--timestamp))
+         (event (e-session--append-session-event
+                 session
+                 'session-info
+                 timestamp
+                 (list :metadata metadata))))
     (plist-put session :metadata metadata)
-    (e-session--touch store session)
+    (e-session--touch store session timestamp)
     (e-session--refresh-derived-fields store session)
     (e-session--append-record
      store session-id
      (list :type "session-info"
            :session-id session-id
-           :timestamp (plist-get session :updated-at)
+           :id (plist-get event :id)
+           :parent-id (plist-get event :parent-id)
+           :timestamp timestamp
            :metadata metadata))
     (e-session--write-index store)
     metadata))
@@ -847,15 +941,23 @@ state are requested."
 (defun e-session-set-turn-options (store session-id options)
   "Replace SESSION-ID turn OPTIONS in STORE."
   (let* ((session (e-session-get store session-id))
-         (turn-options (e-session--normalize-turn-options options)))
+         (turn-options (e-session--normalize-turn-options options))
+         (timestamp (e-session--timestamp))
+         (event (e-session--append-session-event
+                 session
+                 'session-info
+                 timestamp
+                 (list :turn-options turn-options))))
     (plist-put session :turn-options turn-options)
-    (e-session--touch store session)
+    (e-session--touch store session timestamp)
     (e-session--refresh-derived-fields store session)
     (e-session--append-record
      store session-id
      (list :type "session-info"
            :session-id session-id
-           :timestamp (plist-get session :updated-at)
+           :id (plist-get event :id)
+           :parent-id (plist-get event :parent-id)
+           :timestamp timestamp
            :turn-options turn-options))
     (e-session--write-index store)
     turn-options))
@@ -991,7 +1093,12 @@ source when available."
 (defun e-session-set-current-branch (store session-id branch-id)
   "Set SESSION-ID current branch cursor to BRANCH-ID in STORE."
   (let* ((session (e-session-get store session-id))
-         (timestamp (e-session--timestamp)))
+         (timestamp (e-session--timestamp))
+         (event (e-session--append-session-event
+                 session
+                 'current-branch
+                 timestamp
+                 (list :branch-id branch-id))))
     (plist-put session :current-branch branch-id)
     (e-session--touch store session timestamp)
     (e-session--refresh-derived-fields store session)
@@ -999,6 +1106,8 @@ source when available."
      store session-id
      (list :type "current-branch"
            :session-id session-id
+           :id (plist-get event :id)
+           :parent-id (plist-get event :parent-id)
            :timestamp timestamp
            :branch-id branch-id))
     (e-session--write-index store)
@@ -1006,33 +1115,53 @@ source when available."
 
 (defun e-session-clear-messages (store session-id)
   "Clear all messages for SESSION-ID in STORE."
-  (let ((session (e-session-get store session-id)))
+  (let* ((session (e-session-get store session-id))
+         (timestamp (e-session--timestamp))
+         (root-id (e-session--root-event-id session))
+         (event nil))
     (plist-put session :messages nil)
     (plist-put session :activity-events nil)
-    (e-session--touch store session)
+    (plist-put session :current-head-id root-id)
+    (setq event
+          (e-session--append-session-event
+           session
+           'messages-cleared
+           timestamp
+           (list :parent-id root-id)))
+    (e-session--touch store session timestamp)
     (e-session--refresh-derived-fields store session)
     (e-session--append-record
      store session-id
      (list :type "messages-cleared"
            :session-id session-id
-           :timestamp (plist-get session :updated-at)))
+           :id (plist-get event :id)
+           :parent-id (plist-get event :parent-id)
+           :timestamp timestamp))
     (e-session--write-index store)
-    session))
+    event))
 
 (defun e-session-rename (store session-id name)
   "Rename SESSION-ID in STORE to NAME."
   (when (string-empty-p (string-trim (or name "")))
     (user-error "Session name must not be empty"))
-  (let ((session (e-session-get store session-id))
-        (name (string-trim name)))
+  (let* ((session (e-session-get store session-id))
+         (name (string-trim name))
+         (timestamp (e-session--timestamp))
+         (event (e-session--append-session-event
+                 session
+                 'session-info
+                 timestamp
+                 (list :name name))))
     (plist-put session :name name)
-    (e-session--touch store session)
+    (e-session--touch store session timestamp)
     (e-session--refresh-derived-fields store session)
     (e-session--append-record
      store session-id
      (list :type "session-info"
            :session-id session-id
-           :timestamp (plist-get session :updated-at)
+           :id (plist-get event :id)
+           :parent-id (plist-get event :parent-id)
+           :timestamp timestamp
            :name name))
     (e-session--write-index store)
     session))

@@ -14,7 +14,7 @@ Status values for coding agents:
 | 01 | Done        | 01-skills-over-capabilities/ | Skills over Capabilities |
 | 02 | Done       | 02-write-path-parents/ | Write Creates Parent Paths |
 | 03 | Done      | 03-web-layer-basic/ | Web Layer Basic |
-| 04 | In-review | 04-message-turn-identity/ | Message and Turn Identity |
+| 04 | Done | 04-message-turn-identity/ | Message and Turn Identity |
 | 05 | In-review | 05-turn-progress-round-trips/ | Turn Progress Round Trips |
 | 06 | Done | 06-agents-std-context/ | Agents Std Context |
 | 07 | In-review | 07-capability-config/ | Capability Config |

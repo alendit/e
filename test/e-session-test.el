@@ -65,19 +65,25 @@
 (ert-deftest e-session-test-append-message-assigns-entry-ids-and-parent-links ()
   "Appending messages assigns durable ids and links to the previous head."
   (let ((store (e-session-store-create)))
-    (e-session-create store :id "session-1")
-    (let* ((first (e-session-append-message
+    (let* ((root (car (e-session-session-events
+                       store
+                       (plist-get (e-session-create store :id "session-1") :id))))
+           (first (e-session-append-message
                    store "session-1" '(:role user :content "hello")))
            (second (e-session-append-message
                     store "session-1" '(:role assistant :content "hi")))
            (path (e-session-current-path store "session-1")))
       (should (string-match-p "\\`[0-9A-HJKMNP-TV-Z]\\{26\\}\\'"
                               (plist-get first :id)))
-      (should-not (plist-get first :parent-id))
+      (should (eq (plist-get root :event-type) 'session-created))
+      (should-not (plist-get root :parent-id))
+      (should (equal (plist-get first :parent-id)
+                     (plist-get root :id)))
       (should (equal (plist-get second :parent-id)
                      (plist-get first :id)))
       (should (equal (mapcar (lambda (entry) (plist-get entry :id)) path)
-                     (list (plist-get first :id)
+                     (list (plist-get root :id)
+                           (plist-get first :id)
                            (plist-get second :id)))))))
 
 (ert-deftest e-session-test-missing-session-surfaces-error ()
@@ -142,11 +148,17 @@
              "{\"type\":\"message\",\"session-id\":\"legacy\",\"timestamp\":\"2026-05-21T10:00:01Z\",\"message\":{\"role\":\"user\",\"content\":\"hello\"}}\n"
              "{\"type\":\"message\",\"session-id\":\"legacy\",\"timestamp\":\"2026-05-21T10:00:02Z\",\"message\":{\"role\":\"assistant\",\"content\":\"hi\"}}\n"))
           (let* ((loaded (e-session-persistent-store-create directory))
+                 (events (e-session-session-events loaded "legacy"))
+                 (root (car events))
                  (messages (e-session-messages loaded "legacy")))
+            (should (= (length events) 1))
+            (should (eq (plist-get root :event-type) 'session-created))
+            (should (plist-get root :id))
             (should (= (length messages) 2))
             (dolist (message messages)
               (should (plist-get message :id)))
-            (should-not (plist-get (car messages) :parent-id))
+            (should (equal (plist-get (car messages) :parent-id)
+                           (plist-get root :id)))
             (should (equal (plist-get (cadr messages) :parent-id)
                            (plist-get (car messages) :id)))))
       (delete-directory directory t))))
@@ -457,8 +469,9 @@
 (ert-deftest e-session-test-latest-valid-compaction-requires-current-boundary ()
   "Latest valid compaction ignores records with missing kept-entry boundaries."
   (let ((store (e-session-store-create)))
-    (e-session-create store :id "session-1")
-    (let* ((first (e-session-append-message
+    (let* ((session-id (plist-get (e-session-create store :id "session-1") :id))
+           (root (car (e-session-session-events store session-id)))
+           (first (e-session-append-message
                    store "session-1" '(:role user :content "one")))
            (second (e-session-append-message
                     store "session-1" '(:role user :content "two"))))
@@ -476,7 +489,8 @@
         (should (equal (mapcar (lambda (entry) (plist-get entry :id))
                                (e-session-entries-before
                                 store "session-1" (plist-get second :id)))
-                       (list (plist-get first :id))))))))
+                       (list (plist-get root :id)
+                             (plist-get first :id))))))))
 
 (ert-deftest e-session-test-current-branch-persists-through-replay ()
   "Current branch cursor records append and replay into session state."
@@ -492,6 +506,69 @@
                                       :current-branch)
                            "branch-b"))))
       (delete-directory directory t))))
+
+(ert-deftest e-session-test-state-records-are-identifiable-session-events ()
+  "Session state JSONL records are first-class identifiable session events."
+  (let* ((directory (make-temp-file "e-session-" t))
+         (store (e-session-persistent-store-create directory))
+         (session-id (plist-get (e-session-create store :id "session-1") :id)))
+    (unwind-protect
+        (progn
+          (e-session-set-metadata store session-id '(:project-root "/tmp/project/"))
+          (e-session-set-turn-options store session-id '(:model "gpt-test"))
+          (e-session-set-current-branch store session-id "branch-a")
+          (let* ((loaded (e-session-persistent-store-create directory))
+                 (events (e-session-session-events loaded session-id))
+                 (types (mapcar (lambda (event)
+                                  (plist-get event :event-type))
+                                events))
+                 (path-types (mapcar (lambda (entry)
+                                       (plist-get entry :event-type))
+                                     (e-session-current-path loaded session-id))))
+            (should (equal types
+                           '(session-created
+                             session-info
+                             session-info
+                             current-branch)))
+            (dolist (event events)
+              (should (plist-get event :id)))
+            (should-not (plist-get (car events) :parent-id))
+            (should (equal (mapcar (lambda (event)
+                                     (plist-get event :id))
+                                   (butlast events))
+                           (mapcar (lambda (event)
+                                     (plist-get event :parent-id))
+                                   (cdr events))))
+            (should (equal path-types types))))
+      (delete-directory directory t))))
+
+(ert-deftest e-session-test-current-path-supports-synthetic-branches ()
+  "Current-path reconstruction can target explicit branch heads."
+  (let ((store (e-session-store-create)))
+    (let* ((session-id (plist-get (e-session-create store :id "session-1") :id))
+           (root (car (e-session-session-events store session-id)))
+           (left (e-session-append-message
+                  store session-id
+                  '(:role user :content "left branch")))
+           (right (e-session-append-message
+                   store session-id
+                   (list :role 'user
+                         :content "right branch"
+                         :parent-id (plist-get root :id)))))
+      (should (equal (mapcar (lambda (entry) (plist-get entry :id))
+                             (e-session-current-path
+                              store session-id (plist-get left :id)))
+                     (list (plist-get root :id)
+                           (plist-get left :id))))
+      (should (equal (mapcar (lambda (entry) (plist-get entry :id))
+                             (e-session-current-path
+                              store session-id (plist-get right :id)))
+                     (list (plist-get root :id)
+                           (plist-get right :id))))
+      (should (equal (mapcar (lambda (entry) (plist-get entry :id))
+                             (e-session-current-path store session-id))
+                     (list (plist-get root :id)
+                           (plist-get right :id)))))))
 
 (ert-deftest e-session-test-clear-messages-is-append-only ()
   "Clearing a session empties replayed transcript without truncating JSONL."
@@ -515,6 +592,37 @@
                                     (with-temp-buffer
                                       (insert-file-contents path)
                                       (buffer-string))))))
+      (delete-directory directory t))))
+
+(ert-deftest e-session-test-clear-messages-creates-reset-boundary-root ()
+  "Clearing messages makes the next message parent to the clear event."
+  (let* ((directory (make-temp-file "e-session-" t))
+         (store (e-session-persistent-store-create directory))
+         (session-id (plist-get (e-session-create store :id "session-1") :id)))
+    (unwind-protect
+        (progn
+          (e-session-append-message
+           store session-id '(:role user :content "old"))
+          (let* ((clear-event (e-session-clear-messages store session-id))
+                 (new-message
+                  (e-session-append-message
+                   store session-id '(:role user :content "new")))
+                 (path (e-session-current-path store session-id))
+                 (loaded (e-session-persistent-store-create directory))
+                 (loaded-path (e-session-current-path loaded session-id)))
+            (should (eq (plist-get clear-event :event-type) 'messages-cleared))
+            (should (equal (plist-get new-message :parent-id)
+                           (plist-get clear-event :id)))
+            (should (equal (mapcar (lambda (entry)
+                                     (or (plist-get entry :event-type)
+                                         (plist-get entry :role)))
+                                   path)
+                           '(session-created messages-cleared user)))
+            (should (equal (mapcar (lambda (entry)
+                                     (or (plist-get entry :event-type)
+                                         (plist-get entry :role)))
+                                   loaded-path)
+                           '(session-created messages-cleared user)))))
       (delete-directory directory t))))
 
 (ert-deftest e-session-test-activity-events-persist-and-clear-with-messages ()
