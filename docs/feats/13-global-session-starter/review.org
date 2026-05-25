@@ -1,0 +1,60 @@
+#+title: Global Session Starter Review
+#+date: 2026-05-26
+
+* Status
+
+In-review.
+
+The implementation is present in the current tree and matches the ready plan.
+This feature remains =In-review= until the operator accepts the review round.
+
+* Implementation Summary
+
+- Added =e-chat-starter= as a separate presentation shell depending on the chat
+  shell.
+- Added =e-chat-start-here= to capture bounded source context from any buffer,
+  create a real chat session, submit one prompt, and render the one-shot result
+  in a compact =special-mode= popup buffer.
+- Added starter popup actions: =c= continues the same session in the normal chat
+  shell, =o= opens the latest answer in a separate buffer, =y= copies the answer,
+  and =q= dismisses the popup interactively.
+- Added narrow public chat helpers for source capture, prompt reference
+  formatting, session creation, session submission, and opening an existing chat
+  session.
+- Starter-created sessions are persisted with =:origin :global-session-starter=
+  and source-reference metadata.
+- Startup now requires and registers the =global-session-starter= shell manifest.
+
+* Verification
+
+Ran:
+
+#+begin_src sh
+rtk eldev test -f test/e-chat-starter-test.el -f test/e-test.el -f test/e-chat-test.el
+rtk eldev test -f test/e-chat-starter-test.el -f test/e-test.el -f test/e-chat-test.el -f test/e-dev-test.el
+#+end_src
+
+Result:
+
+- 164 expected
+- 1 skipped
+- 0 unexpected
+
+Live Emacs:
+
+- The combined package load path stalled when loading =e.el=, so that process
+  was stopped.
+- Narrowly loaded =lisp/shells/chat/e-chat.el=,
+  =lisp/shells/chat/e-chat-starter.el=, and =lisp/dev/e-dev.el= into the
+  running Emacs.
+- Ran =e-chat-starter-startup= and confirmed the =global-session-starter= shell
+  was registered.
+- A temporary live harness probe started a one-shot session from a source buffer,
+  captured the final answer, opened an answer buffer, and exercised continuation
+  through the same session id.
+
+* Review Notes
+
+The popup display uses the normal Emacs display-window fallback in this first
+slice. Child-frame positioning remains isolated behind =e-chat-starter-display-strategy=
+for a later adapter if needed.

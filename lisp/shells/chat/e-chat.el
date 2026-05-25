@@ -1286,16 +1286,24 @@ Keep point inside the composer when movement starts there."
 
 (defun e-chat--capture-context-reference ()
   "Capture the current point or active region as a chat context reference."
+  (e-chat-capture-source-reference))
+
+;;;###autoload
+(defun e-chat-capture-source-reference (&optional line-radius)
+  "Capture the current point or active region as a chat source reference.
+LINE-RADIUS controls the number of lines around point used when no region is
+active.  It defaults to the historical chat context radius of two lines."
   (let* ((point-line (line-number-at-pos))
          (has-region (e-chat--active-region-p))
+         (line-radius (or line-radius 2))
          (start-line (if has-region
                          (line-number-at-pos (region-beginning))
-                       (max 1 (- point-line 2))))
+                       (max 1 (- point-line line-radius))))
          (end-line (if has-region
                        (line-number-at-pos
                         (max (region-beginning) (1- (region-end))))
                      (min (e-chat--last-content-line-number)
-                          (+ point-line 2))))
+                          (+ point-line line-radius))))
          (text (if has-region
                    (buffer-substring-no-properties
                     (region-beginning)
@@ -1423,6 +1431,10 @@ KILLP is passed through to `delete-char' for normal text."
           (e-chat--xml-attribute-escape (plist-get reference :id))
           (e-chat--xml-attribute-escape (plist-get reference :label))))
 
+(defun e-chat-reference-placeholder (reference)
+  "Return the model-facing inline placeholder for REFERENCE."
+  (e-chat--reference-placeholder reference))
+
 (defun e-chat--reference-section-entry (reference)
   "Return model-facing reference body for REFERENCE."
   (format "[%s] %s (%s)\n%s"
@@ -1430,6 +1442,19 @@ KILLP is passed through to `delete-char' for normal text."
           (plist-get reference :label)
           (plist-get reference :uri)
           (plist-get reference :text)))
+
+(defun e-chat-format-reference-prompt (text references)
+  "Return TEXT with model-facing REFERENCES appended."
+  (let ((references (delq nil references)))
+    (if references
+        (string-trim
+         (concat
+          text
+          "\n\nReferences:\n"
+          (mapconcat #'e-chat--reference-section-entry
+                     references
+                     "\n\n")))
+      (string-trim text))))
 
 (defun e-chat--composer-document ()
   "Return composer prompt text and ordered inline reference records."
@@ -1462,14 +1487,7 @@ KILLP is passed through to `delete-char' for normal text."
          (text (plist-get document :text))
          (references (plist-get document :references)))
     (when references
-      (setq text
-            (string-trim
-             (concat
-              text
-              "\n\nReferences:\n"
-              (mapconcat #'e-chat--reference-section-entry
-                         references
-                         "\n\n")))))
+      (setq text (e-chat-format-reference-prompt text references)))
     (list :prompt text :references references)))
 
 (defun e-chat--ensure-turn-registry ()
@@ -4132,6 +4150,29 @@ reload.  User-facing commands should call `e-chat-new' or `e-chat-resume'."
                        chat-harness
                        chat-session-id)))))
     (e-chat--attach-buffer buffer chat-harness chat-session-id)
+    buffer))
+
+(cl-defun e-chat-create-session (&key harness metadata id)
+  "Create and return a chat session in HARNESS with METADATA and optional ID."
+  (e-harness-create-session
+   (or harness (e-chat--default-harness))
+   :id id
+   :metadata metadata))
+
+(cl-defun e-chat-submit-session (harness session-id prompt &key references delay)
+  "Submit PROMPT with REFERENCES to HARNESS SESSION-ID."
+  (e-chat-session-submit
+   harness
+   session-id
+   prompt
+   :references references
+   :delay delay))
+
+(defun e-chat-open-session (harness session-id &optional display)
+  "Open HARNESS SESSION-ID and display it when DISPLAY is non-nil."
+  (let ((buffer (e-chat-open :harness harness :session-id session-id)))
+    (when display
+      (e-chat--pop-to-buffer buffer))
     buffer))
 
 (defun e-chat--attach-buffer (buffer harness session-id)

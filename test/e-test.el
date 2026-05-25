@@ -19,6 +19,7 @@
   '(e-chat
     e-chat-new
     e-chat-resume
+    e-chat-start-here
     e-chat-rename
     e-chat-set-model
     e-chat-set-effort
@@ -39,6 +40,7 @@
 
 (defconst e-test--autoload-functions
   '(e-chat-shell
+    e-chat-starter-shell
     e-canvas-shell
     e-layers-shell)
   "Non-command functions expected to exist from package autoloads.")
@@ -63,6 +65,7 @@
 
 (defconst e-test--non-core-features
   '(e-chat
+    e-chat-starter
     e-canvas
     e-default-layers
     e-default-harnesses
@@ -213,13 +216,16 @@
     (unwind-protect
         (progn
           (setq features (cl-set-difference features
-                                            '(e e-chat e-canvas
+                                            '(e e-chat e-chat-starter e-canvas
                                               e-layers-shell)))
           (load (expand-file-name "e.el" default-directory) nil 'nomessage)
           (should (featurep 'e-chat))
+          (should (featurep 'e-chat-starter))
           (should (featurep 'e-canvas))
           (should (featurep 'e-layers-shell))
           (should (eq (e-shell-id (e-shell-get 'chat)) 'chat))
+          (should (eq (e-shell-id (e-shell-get 'global-session-starter))
+                      'global-session-starter))
           (should (eq (e-shell-id (e-shell-get 'canvas)) 'canvas))
           (should (eq (e-shell-id (e-shell-get 'layers)) 'layers)))
       (setq features original-features)
@@ -293,6 +299,10 @@
             nil
             'nomessage)
       (load (expand-file-name "lisp/shells/chat/e-chat.el" default-directory)
+            nil
+            'nomessage)
+      (load (expand-file-name "lisp/shells/chat/e-chat-starter.el"
+                              default-directory)
             nil
             'nomessage)
       (load (expand-file-name "lisp/shells/e-canvas.el" default-directory)

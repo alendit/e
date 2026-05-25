@@ -81,6 +81,7 @@
   (require 'e-shells)
   (require 'e-layers-shell)
   (require 'e-chat)
+  (require 'e-chat-starter)
   (require 'e-canvas))
 (e-startup-run)
 
