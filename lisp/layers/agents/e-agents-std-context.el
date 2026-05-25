@@ -362,13 +362,23 @@ slugs across those scopes intentionally remain distinct resources."
    (append (e-agents-std-context--global-skill-specs)
            (e-agents-std-context--project-skill-specs directory))))
 
-(defun e-agents-std-context--config (&optional directory overrides)
+(cl-defun e-agents-std-context--config
+    (&optional directory overrides &key harness session-id turn-id)
   "Return effective agents-std-context config for DIRECTORY."
-  (e-capability-config-resolve
-   'agents-std-context
-   e-agents-std-context-config-options
-   :directory (e-agents-std-context--directory directory)
-   :overrides overrides))
+  (let ((root (e-agents-std-context--directory directory)))
+    (if harness
+        (e-harness-effective-capability-config
+         harness
+         'agents-std-context
+         e-agents-std-context-config-options
+         :session-id session-id
+         :directory root
+         :overrides overrides)
+      (e-capability-config-resolve
+       'agents-std-context
+       e-agents-std-context-config-options
+       :directory root
+       :overrides overrides))))
 
 (defun e-agents-std-context--skill-match-p (selector skill)
   "Return non-nil when SELECTOR exactly matches SKILL name or path."
@@ -427,11 +437,11 @@ slugs across those scopes intentionally remain distinct resources."
          skills))
        "\n")))))
 
-(defun e-agents-std-context-project-skills-provider (&optional directory)
-  "Return a context provider for project skills under DIRECTORY."
+(defun e-agents-std-context-skills-provider (&optional directory)
+  "Return a context provider for configured skills under DIRECTORY."
   (let ((root (e-agents-std-context--directory directory)))
     (e-context-provider-create
-     :name 'agents-std-context-project-skills
+     :name 'agents-std-context-skills
      :priority 220
      :build (cl-function
              (lambda (&key harness session-id turn-id)
@@ -443,8 +453,17 @@ slugs across those scopes intentionally remain distinct resources."
                         :session-id session-id
                         :turn-id turn-id)))
                   (e-agents-std-context--filter-skill-specs
-                   (e-agents-std-context--project-skill-specs context-root)
-                   (e-agents-std-context--config context-root)))))))))
+                   (e-agents-std-context-skill-specs context-root)
+                   (e-agents-std-context--config
+                    context-root
+                    nil
+                    :harness harness
+                    :session-id session-id
+                    :turn-id turn-id)))))))))
+
+(defun e-agents-std-context-project-skills-provider (&optional directory)
+  "Return the configured skills context provider rooted at DIRECTORY."
+  (e-agents-std-context-skills-provider directory))
 
 (defun e-agents-std-context--register-skill-resource (store capability skill)
   "Register SKILL as an e:// resource for CAPABILITY in STORE."
@@ -457,8 +476,8 @@ slugs across those scopes intentionally remain distinct resources."
              (funcall (e-skill-spec-reader skill) skill range))
    :metadata (e-skill-spec-metadata skill)))
 
-(defun e-agents-std-context-project-skills-resource-provider (&optional directory)
-  "Return a resource provider for project skills under DIRECTORY."
+(defun e-agents-std-context-skills-resource-provider (&optional directory)
+  "Return a resource provider for configured skills under DIRECTORY."
   (let ((root (e-agents-std-context--directory directory)))
     (cl-function
      (lambda (store capability &key harness session-id turn-id)
@@ -470,28 +489,34 @@ slugs across those scopes intentionally remain distinct resources."
                         :session-id session-id
                         :turn-id turn-id)))
                   (e-agents-std-context--filter-skill-specs
-                   (e-agents-std-context--project-skill-specs context-root)
-                   (e-agents-std-context--config context-root))))
+                   (e-agents-std-context-skill-specs context-root)
+                   (e-agents-std-context--config
+                    context-root
+                    nil
+                    :harness harness
+                    :session-id session-id
+                    :turn-id turn-id))))
          (e-agents-std-context--register-skill-resource
           store capability skill))))))
+
+(defun e-agents-std-context-project-skills-resource-provider (&optional directory)
+  "Return the configured skills resource provider rooted at DIRECTORY."
+  (e-agents-std-context-skills-resource-provider directory))
 
 (defun e-agents-std-context-capability-create (&optional directory)
   "Create the standard agent context capability rooted at DIRECTORY."
   (let* ((root (e-agents-std-context--directory directory))
          (config (e-agents-std-context--config root)))
-    (e-capability-with-skills-create
+    (e-capability-create
      :id 'agents-std-context
      :name "Agents Std Context"
      :instruction-priority 220
      :instructions e-agents-std-context-instructions
-     :skills (e-agents-std-context--filter-skill-specs
-              (e-agents-std-context--global-skill-specs)
-              config)
      :resources (list
-                 (e-agents-std-context-project-skills-resource-provider root))
+                 (e-agents-std-context-skills-resource-provider root))
      :context-providers
      (list (e-agents-std-context-agents-provider root)
-           (e-agents-std-context-project-skills-provider root))
+           (e-agents-std-context-skills-provider root))
      :config-options e-agents-std-context-config-options
      :config config)))
 

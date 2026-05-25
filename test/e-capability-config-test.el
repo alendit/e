@@ -63,6 +63,63 @@
               '(:value "explicit" :items ("project-item"))))))
       (delete-directory directory t))))
 
+(ert-deftest e-capability-config-test-directory-source-distinguishes-absent-local ()
+  "Directory source detection only reports real directory-local config."
+  (let ((empty-directory (make-temp-file "e-capability-config-empty-" t))
+        (local-directory (make-temp-file "e-capability-config-local-" t)))
+    (unwind-protect
+        (let ((e-capability-config '((dummy-config :value "global"))))
+          (should-not
+           (e-capability-config-directory-source empty-directory))
+          (write-region
+           "((nil . ((e-capability-config . ((dummy-config :value \"global\"))))))"
+           nil
+           (expand-file-name ".dir-locals.el" local-directory)
+           nil
+           'silent)
+          (let ((source
+                 (e-capability-config-directory-source local-directory)))
+            (should (equal (plist-get source :source) 'directory-local))
+            (should (equal (plist-get source :directory)
+                           (file-name-as-directory
+                            (expand-file-name local-directory))))
+            (should (equal (plist-get source :value)
+                           '((dummy-config :value "global"))))))
+      (delete-directory empty-directory t)
+      (delete-directory local-directory t))))
+
+(ert-deftest e-capability-config-test-runtime-config-precedes-directory ()
+  "Runtime config wins over directory-local config and loses to overrides."
+  (let ((directory (make-temp-file "e-capability-config-" t)))
+    (unwind-protect
+        (progn
+          (write-region
+           "((nil . ((e-capability-config . ((dummy-config :value \"project\" :items \"project-item\"))))))"
+           nil
+           (expand-file-name ".dir-locals.el" directory)
+           nil
+           'silent)
+          (let ((e-capability-config
+                 '((dummy-config :value "global" :items ("global-item")))))
+            (should
+             (equal
+              (e-capability-config-resolve
+               'dummy-config
+               e-capability-config-test--options
+               :directory directory
+               :runtime-config '(:value "runtime"))
+              '(:value "runtime" :items ("project-item"))))
+            (should
+             (equal
+              (e-capability-config-resolve
+               'dummy-config
+               e-capability-config-test--options
+               :directory directory
+               :runtime-config '(:value "runtime")
+               :overrides '(:value "explicit"))
+              '(:value "explicit" :items ("project-item"))))))
+      (delete-directory directory t))))
+
 (ert-deftest e-capability-config-test-unknown-active-option-errors ()
   "Unknown active config keys fail at resolution time."
   (should-error

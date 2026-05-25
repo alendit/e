@@ -607,6 +607,106 @@
       (delete-directory home t)
       (delete-directory project t))))
 
+(ert-deftest e-agents-std-context-test-global-skill-config-refreshes-for-harness ()
+  "Changing global config changes the next context build for the same harness."
+  (let* ((home (make-temp-file "e-agents-home-" t))
+         (project (make-temp-file "e-agents-project-" t))
+         (alpha-skill
+          (expand-file-name ".agents/skills/alpha/SKILL.md" home))
+         (beta-skill
+          (expand-file-name ".agents/skills/beta/SKILL.md" home)))
+    (unwind-protect
+        (progn
+          (e-agents-std-context-test--write-file
+           alpha-skill
+           "---\nname: Alpha\ndescription: Alpha skill.\n---\n\nAlpha body.")
+          (e-agents-std-context-test--write-file
+           beta-skill
+           "---\nname: Beta\ndescription: Beta skill.\n---\n\nBeta body.")
+          (let* ((e-agents-std-context-global-agents-files nil)
+                 (e-agents-std-context-global-skills-directory
+                  (expand-file-name ".agents/skills" home))
+                 (e-capability-config
+                  '((agents-std-context :include ("Alpha"))))
+                 (harness
+                  (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :active-layers
+                   (list (e-agents-std-context-layer-create project)))))
+            (e-harness-create-session harness :id "session-1")
+            (let ((content
+                   (e-agents-std-context-test--context-content
+                    harness
+                    "session-1")))
+              (should (string-match-p "Alpha: Alpha skill" content))
+              (should-not (string-match-p "Beta: Beta skill" content)))
+            (setq e-capability-config
+                  '((agents-std-context :include ("Beta"))))
+            (let ((content
+                   (e-agents-std-context-test--context-content
+                    harness
+                    "session-1")))
+              (should (string-match-p "Beta: Beta skill" content))
+              (should-not (string-match-p "Alpha: Alpha skill" content)))))
+      (delete-directory home t)
+      (delete-directory project t))))
+
+(ert-deftest e-agents-std-context-test-global-skill-resources-refresh-for-harness ()
+  "Changing global config changes skill resources for the same harness."
+  (let* ((home (make-temp-file "e-agents-home-" t))
+         (project (make-temp-file "e-agents-project-" t))
+         (alpha-skill
+          (expand-file-name ".agents/skills/alpha/SKILL.md" home))
+         (beta-skill
+          (expand-file-name ".agents/skills/beta/SKILL.md" home)))
+    (unwind-protect
+        (progn
+          (e-agents-std-context-test--write-file
+           alpha-skill
+           "---\nname: Alpha\ndescription: Alpha skill.\n---\n\nAlpha body.")
+          (e-agents-std-context-test--write-file
+           beta-skill
+           "---\nname: Beta\ndescription: Beta skill.\n---\n\nBeta body.")
+          (let* ((e-agents-std-context-global-agents-files nil)
+                 (e-agents-std-context-global-skills-directory
+                  (expand-file-name ".agents/skills" home))
+                 (e-capability-config
+                  '((agents-std-context :include ("Alpha"))))
+                 (harness
+                  (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :active-layers
+                   (list (e-agents-std-context-layer-create project)))))
+            (e-harness-create-session harness :id "session-1")
+            (let ((store (e-harness-store harness "session-1")))
+              (should (string-match-p
+                       "Alpha body"
+                       (e-store-read
+                        store
+                        "e://agents-std-context/skills/global/alpha"
+                        nil)))
+              (should-error
+               (e-store-read
+                store
+                "e://agents-std-context/skills/global/beta"
+                nil)))
+            (setq e-capability-config
+                  '((agents-std-context :include ("Beta"))))
+            (let ((store (e-harness-store harness "session-1")))
+              (should (string-match-p
+                       "Beta body"
+                       (e-store-read
+                        store
+                        "e://agents-std-context/skills/global/beta"
+                        nil)))
+              (should-error
+               (e-store-read
+                store
+                "e://agents-std-context/skills/global/alpha"
+                nil)))))
+      (delete-directory home t)
+      (delete-directory project t))))
+
 (ert-deftest e-agents-std-context-test-capability-exposes-effective-config ()
   "The capability carries option metadata and resolved config."
   (let ((e-capability-config

@@ -3,7 +3,33 @@
 
 * Status
 
-Planned.
+Implemented.
+
+Feature 07 remains =In-review= until the operator accepts the review round.
+
+Implemented in this slice:
+
+- =e-capability-config-directory-source= distinguishes absent directory-local
+  config from a real local value that happens to equal the global value.
+- =e-capability-config-resolve= has an explicit runtime config precedence layer:
+  defaults, global, directory-local, harness-local runtime config, explicit
+  overrides.
+- Harnesses own runtime capability config through
+  =e-harness-set-capability-config=, =e-harness-capability-config=, and
+  =e-harness-effective-capability-config=.
+- =agents-std-context= now advertises and registers both global and project
+  skills from runtime providers using the effective harness/session config.
+- =e-capability-config-describe= uses active buffer harness/session state when
+  available, including chat buffers.
+
+Validation:
+
+- =rtk eldev test -f test/e-capability-config-test.el test/e-harness-test.el test/e-agents-std-context-test.el=
+- Full =e-dev-reload= hung in =emacsclient= during validation; the changed Lisp
+  files were loaded directly into the running Emacs.
+- Live probe confirmed that the same harness switched from advertising/serving
+  =Alpha= to advertising/serving =Beta= after changing =e-capability-config=,
+  and =e-capability-config-describe= reported the active session config.
 
 * Problem
 

@@ -15,6 +15,10 @@
 (require 'cl-lib)
 (require 'subr-x)
 
+(declare-function e-harness-effective-capability-config "e-harness"
+                  (harness capability-id options &key session-id directory
+                           overrides))
+
 (define-error 'e-capability-config-unknown-option
   "Unknown capability config option")
 (define-error 'e-capability-config-invalid-value
@@ -85,15 +89,24 @@ capability symbol and PLIST contains keyword options owned by that capability."
      'safe-local-variable
      #'e-capability-config-safe-local-value-p)
 
-(defun e-capability-config--directory-value (directory)
-  "Return directory-local `e-capability-config' for DIRECTORY, or nil."
+(defun e-capability-config-directory-source (directory)
+  "Return directory-local `e-capability-config' source for DIRECTORY.
+The returned plist has `:source', `:directory', and `:value' keys.  Return nil
+when DIRECTORY has no actual directory-local `e-capability-config' binding."
   (when directory
     (let ((root (file-name-as-directory (expand-file-name directory))))
       (when (file-directory-p root)
         (with-temp-buffer
           (let ((default-directory root))
             (hack-dir-local-variables-non-file-buffer)
-            e-capability-config))))))
+            (when (local-variable-p 'e-capability-config (current-buffer))
+              (list :source 'directory-local
+                    :directory root
+                    :value e-capability-config))))))))
+
+(defun e-capability-config--directory-value (directory)
+  "Return directory-local `e-capability-config' for DIRECTORY, or nil."
+  (plist-get (e-capability-config-directory-source directory) :value))
 
 (defun e-capability-config--plist-for (capability-id config)
   "Return CAPABILITY-ID plist from CONFIG."
@@ -161,10 +174,10 @@ capability symbol and PLIST contains keyword options owned by that capability."
     result))
 
 (cl-defun e-capability-config-resolve
-    (capability-id options &key directory overrides)
+    (capability-id options &key directory runtime-config overrides)
   "Resolve CAPABILITY-ID config for OPTIONS.
 Precedence is option defaults, global `e-capability-config', directory-local
-config under DIRECTORY, then explicit OVERRIDES."
+config under DIRECTORY, runtime config, then explicit OVERRIDES."
   (let* ((global (e-capability-config--plist-for
                   capability-id e-capability-config))
          (project (e-capability-config--plist-for
@@ -173,6 +186,7 @@ config under DIRECTORY, then explicit OVERRIDES."
          (parts (list (e-capability-config--default-plist options)
                       global
                       project
+                      runtime-config
                       overrides))
          (resolved nil))
     (dolist (part parts)
@@ -206,22 +220,48 @@ config under DIRECTORY, then explicit OVERRIDES."
           (symbol-name capability-id)
           config))
 
+(defun e-capability-config--buffer-harness ()
+  "Return the active buffer harness when one is bound."
+  (and (boundp 'e-current-harness) e-current-harness))
+
+(defun e-capability-config--buffer-session-id ()
+  "Return the active buffer session id when one is bound."
+  (and (boundp 'e-chat-session-id) e-chat-session-id))
+
 (defun e-capability-config-describe
-    (&optional capability-id directory options)
+    (&optional capability-id directory options harness session-id)
   "Describe effective config for CAPABILITY-ID in DIRECTORY.
-When OPTIONS is nil, use registered option specs for CAPABILITY-ID."
+When OPTIONS is nil, use registered option specs for CAPABILITY-ID.
+When HARNESS is non-nil, include harness-local runtime config for SESSION-ID."
   (interactive
    (let* ((ids (mapcar (lambda (entry) (symbol-name (car entry)))
                        e-capability-config-known-options))
           (id (intern
                (completing-read "Capability: " ids nil t nil nil
                                 (car ids)))))
-     (list id default-directory nil)))
+     (list id
+           nil
+           nil
+           (e-capability-config--buffer-harness)
+           (e-capability-config--buffer-session-id))))
   (let* ((id (or capability-id
                  (user-error "Capability id is required")))
          (specs (or options (e-capability-config-registered-options id)))
-         (config (e-capability-config-resolve
-                  id specs :directory (or directory default-directory)))
+         (active-harness
+          (or harness (e-capability-config--buffer-harness)))
+         (active-session-id
+          (or session-id (e-capability-config--buffer-session-id)))
+         (config
+          (if (and active-harness
+                   (fboundp 'e-harness-effective-capability-config))
+              (e-harness-effective-capability-config
+               active-harness
+               id
+               specs
+               :session-id active-session-id
+               :directory directory)
+            (e-capability-config-resolve
+             id specs :directory (or directory default-directory))))
          (text (e-capability-config-format id config)))
     (if (called-interactively-p 'interactive)
         (with-help-window "*e-capability-config*"

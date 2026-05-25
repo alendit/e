@@ -9,10 +9,15 @@ Implementation broadly matches the feature direction: configuration is owned by
 capabilities, layers remain stateless presets, =agents-std-context= has concrete
 =:include= / =:exclude= options, and focused tests plus a live Emacs probe pass.
 
-No blocking correctness issue was found in the reviewed happy paths. The main
-remaining review items are behavioral-contract clarifications around when config
-is resolved for session-specific project roots, and a small UI-scope gap in the
-=describe= command.
+No blocking correctness issue was found in the reviewed happy paths. The
+previous remaining review items were addressed by
+=improvement-01-runtime-config-refresh.org=: runtime config resolution is now an
+owned harness/session contract, =agents-std-context= global and project skills
+share runtime timing, active-session =describe= is covered, and directory-local
+source detection can distinguish absent local config from equal-valued local
+config.
+
+The feature stays =In-review= until the operator accepts this follow-up slice.
 
 * Scope Reviewed
 
@@ -185,47 +190,37 @@ probe both confirm that excluding skills does not remove AGENTS.md context.
 
 ** Mixed config timing for session project roots
 
+Resolved by improvement 01. =agents-std-context= now builds both global and
+project skill catalogs/resources from runtime providers using the effective
+harness/session config. Constructed capability =:config= remains construction
+metadata, not runtime authority.
+
 The largest contract nuance is timing.
 
-The plan says the effective value should be resolved before constructing
-behavior-bearing closures and that a configured capability should behave like an
-immutable bundle after construction. The implementation mostly follows this for
-capability metadata and global skills, but existing =agents-std-context=
-behavior also lets a session project root override the layer construction root.
-To preserve that behavior, project skill providers resolve config dynamically
-for the active session context root at context/resource time.
+The original implementation mixed construction-time global skill filtering with
+runtime project skill filtering. Improvement 01 makes that timing consistent:
+context/resource providers resolve the effective value when the harness asks for
+context or resources.
 
 Current behavior by skill category:
 
-- Global skill preamble/resources are filtered once when the capability is
-  constructed, using the construction root config.
-- Project skill catalog/resources are filtered later by providers using the
-  active session project root when one is available.
+- Global skill catalog/resources are filtered by providers using the effective
+  runtime config.
+- Project skill catalog/resources are filtered by providers using the effective
+  runtime config.
 - =e-capability-config= metadata on the constructed capability reflects the
   construction root, not necessarily the per-session root that later providers
   use.
 
-This is a reasonable compatibility tradeoff for the current harness model, but
-it should remain explicit because it means a multi-project harness can see
-per-session project-skill filtering while static global skill filtering and
-capability introspection still reflect the construction root.
-
-Follow-up options if this becomes confusing:
-
-- make default chat harnesses single-project by construction and recreate layers
-  when the project root changes;
-- make all =agents-std-context= skill advertisement/resource registration fully
-  dynamic per session root, including global skills; or
-- keep construction-time immutable config and stop session roots from changing
-  capability-owned filtering.
+This keeps layers stateless and keeps harness/session roots as runtime
+authority. Capability metadata remains useful for default/fallback display only.
 
 ** Dynamic directory-local reads can change behavior after construction
 
-Because project skill providers call =e-agents-std-context--config= using the
-current context root, changes to directory-local config can affect later context
-or resource builds without reconstructing the capability. This is useful during
-interactive development but weakens the “immutable configured capability” model
-for the project-skill path.
+Because skill providers call =e-agents-std-context--config= using the current
+context root, changes to global, directory-local, or harness-local config can
+affect later context/resource builds without reconstructing the capability. That
+is now the explicit runtime-refresh contract rather than incidental behavior.
 
 This is not a failing test today, but it is a contract decision that should be
 kept visible.
@@ -234,19 +229,22 @@ Decision: good.
 
 ** =e-capability-config-describe= is minimal
 
-The command is useful for registered/named capabilities, but it does not yet use
-active harness/session state. If users expect =M-x e-capability-config-describe=
-from a chat buffer to show the active capability config for that chat session,
-that workflow still needs a shell-aware layer or command integration.
+Resolved by improvement 01. =e-capability-config-describe= now prefers active
+buffer harness/session state when present, so chat buffers describe the effective
+runtime config for their session root.
+
+The command remains useful for registered/named capabilities outside chat
+buffers; outside active harness state it still falls back to the current
+directory describe workflow.
 
 ** Directory-local resolver returns the ambient value when no local override exists
 
-=e-capability-config--directory-value= evaluates directory locals in a temp
-buffer and then returns =e-capability-config=. If no local value is applied, that
-is the ambient/global value. In normal resolution this is mostly harmless because
-the global layer and project layer then contain the same plist, so the effective
-config is unchanged. It does mean the helper cannot distinguish “no project
-config” from “project config equals global config”.
+Resolved by improvement 01. =e-capability-config-directory-source= returns source
+metadata only when directory locals actually bind =e-capability-config=.
+
+=e-capability-config--directory-value= now derives its value from the explicit
+source helper, so normal resolution no longer duplicates the global value as a
+phantom project source.
 
 This does not currently block the feature, but if diagnostics later need to show
 which layer contributed each value, the resolver should return explicit source
@@ -269,6 +267,27 @@ Result:
 - 102 tests
 - 102 expected
 - 0 unexpected
+
+Improvement 01 follow-up validation:
+
+#+begin_src sh
+rtk eldev test -f test/e-capability-config-test.el test/e-harness-test.el test/e-agents-std-context-test.el
+#+end_src
+
+Result:
+
+- 74 tests
+- 74 expected
+- 0 unexpected
+
+Live improvement 01 probe:
+
+- Full =e-dev-reload= hung in =emacsclient= during this follow-up validation.
+- The changed Lisp files were loaded directly into the running Emacs.
+- A same-harness probe changed =e-capability-config= from =Alpha= to =Beta= and
+  confirmed =Alpha= disappeared, =Beta= appeared, =Beta= became readable as a
+  skill resource, and =e-capability-config-describe= reported the active session
+  config.
 
 ** Live Emacs reload
 
@@ -321,9 +340,7 @@ Returned shape:
 
 * Review Conclusion
 
-Feature 07 is implemented well enough for the planned first slice, provided the
-team accepts the documented compatibility tradeoff around dynamic per-session
-project skill config. The most useful follow-up is to decide whether
-=agents-std-context= should ultimately be immutable per constructed capability or
-fully session-root dynamic, because the current implementation intentionally
-straddles both models to preserve existing behavior.
+Feature 07 remains =In-review= for operator acceptance. The previous timing and
+introspection follow-ups are resolved by improvement 01: runtime config is now a
+harness/session-owned contract, =agents-std-context= skill behavior is fully
+runtime-filtered, and chat/session describe behavior is covered by tests.

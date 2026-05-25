@@ -17,6 +17,7 @@
 (require 'e-backend)
 (require 'e-base)
 (require 'e-capabilities)
+(require 'e-capability-config)
 (require 'e-context)
 (require 'e-harness)
 (require 'e-layers)
@@ -24,6 +25,111 @@
 (require 'e-resources)
 (require 'e-skills)
 (require 'e-store)
+
+(defconst e-harness-test--capability-config-options
+  (list
+   (e-capability-config-option-create
+    :key :value
+    :default "default"
+    :validator #'stringp)
+   (e-capability-config-option-create
+    :key :items
+    :default nil
+    :normalizer #'e-capability-config-string-list
+    :validator #'e-capability-config-string-list-p))
+  "Option specs for harness capability config tests.")
+
+(ert-deftest e-harness-test-capability-config-is-harness-local ()
+  "Runtime capability config belongs to one harness."
+  (let ((first (e-harness-create :backend (e-backend-fake-create :items nil)))
+        (second (e-harness-create :backend (e-backend-fake-create :items nil))))
+    (e-harness-set-capability-config first 'dummy-config '(:value "first"))
+    (e-harness-set-capability-config second 'dummy-config '(:value "second"))
+    (should (equal (e-harness-capability-config first 'dummy-config)
+                   '(:value "first")))
+    (should (equal (e-harness-capability-config second 'dummy-config)
+                   '(:value "second")))
+    (e-harness-set-capability-config first 'dummy-config nil)
+    (should-not (e-harness-capability-config first 'dummy-config))
+    (should (equal (e-harness-capability-config second 'dummy-config)
+                   '(:value "second")))))
+
+(ert-deftest e-harness-test-effective-capability-config-uses-session-root ()
+  "Effective runtime config uses session project root and harness-local config."
+  (let ((directory (make-temp-file "e-harness-config-" t)))
+    (unwind-protect
+        (progn
+          (write-region
+           "((nil . ((e-capability-config . ((dummy-config :value \"project\" :items \"project-item\"))))))"
+           nil
+           (expand-file-name ".dir-locals.el" directory)
+           nil
+           'silent)
+          (let* ((e-capability-config
+                  '((dummy-config :value "global" :items ("global-item"))))
+                 (harness
+                  (e-harness-create
+                   :backend (e-backend-fake-create :items nil))))
+            (e-harness-create-session
+             harness
+             :id "session-1"
+             :metadata (list :project-root directory))
+            (e-harness-set-capability-config
+             harness
+             'dummy-config
+             '(:value "runtime"))
+            (should
+             (equal
+              (e-harness-effective-capability-config
+               harness
+               'dummy-config
+               e-harness-test--capability-config-options
+               :session-id "session-1")
+              '(:value "runtime" :items ("project-item"))))
+            (should
+             (equal
+              (e-harness-effective-capability-config
+               harness
+               'dummy-config
+               e-harness-test--capability-config-options
+               :session-id "session-1"
+               :overrides '(:value "explicit"))
+              '(:value "explicit" :items ("project-item"))))))
+      (delete-directory directory t))))
+
+(ert-deftest e-harness-test-capability-config-describe-uses-buffer-harness ()
+  "Describing config in a chat-like buffer uses the active session root."
+  (let ((project (make-temp-file "e-harness-describe-project-" t))
+        (other (make-temp-file "e-harness-describe-other-" t)))
+    (unwind-protect
+        (progn
+          (write-region
+           "((nil . ((e-capability-config . ((dummy-config :value \"project\"))))))"
+           nil
+           (expand-file-name ".dir-locals.el" project)
+           nil
+           'silent)
+          (let* ((harness
+                  (e-harness-create
+                   :backend (e-backend-fake-create :items nil)))
+                 (e-capability-config '((dummy-config :value "global"))))
+            (e-harness-create-session
+             harness
+             :id "session-1"
+             :metadata (list :project-root project))
+            (with-temp-buffer
+              (let ((default-directory other))
+                (setq-local e-current-harness harness)
+                (setq-local e-chat-session-id "session-1")
+                (should
+                 (string-match-p
+                  ":value \"project\""
+                  (e-capability-config-describe
+                   'dummy-config
+                   nil
+                   e-harness-test--capability-config-options)))))))
+      (delete-directory project t)
+      (delete-directory other t))))
 
 (ert-deftest e-harness-test-prompt-writes-user-and-assistant-messages ()
   "Prompting writes user and assistant messages to the session."

@@ -13,6 +13,7 @@
 
 (require 'cl-lib)
 (require 'e-capabilities)
+(require 'e-capability-config)
 (require 'e-compaction)
 (require 'e-context)
 (require 'e-events)
@@ -35,6 +36,7 @@
   context-strategy
   default-options
   default-project-root
+  runtime-capability-config
   (sessions (e-session-store-create))
   (active-layers nil)
   (subscribers nil)
@@ -86,11 +88,13 @@
     metadata))
 
 (cl-defun e-harness-create
-    (&key backend context-strategy default-options sessions active-layers
+    (&key backend context-strategy default-options capability-config
+          sessions active-layers
           project-root layer-change-function)
   "Create a core harness.
-BACKEND, CONTEXT-STRATEGY, DEFAULT-OPTIONS, SESSIONS, ACTIVE-LAYERS,
-PROJECT-ROOT, and LAYER-CHANGE-FUNCTION configure the provider-neutral runtime.
+BACKEND, CONTEXT-STRATEGY, DEFAULT-OPTIONS, CAPABILITY-CONFIG, SESSIONS,
+ACTIVE-LAYERS, PROJECT-ROOT, and LAYER-CHANGE-FUNCTION configure the
+provider-neutral runtime.
 
 When LAYER-CHANGE-FUNCTION is non-nil, it is called with HARNESS after public
 layer activation or deactivation APIs change the active layer set."
@@ -101,6 +105,8 @@ layer activation or deactivation APIs change the active layer set."
                           :default-options default-options
                           :default-project-root
                           (e-harness--normalize-project-root project-root)
+                          :runtime-capability-config
+                          (copy-tree capability-config)
                           :sessions (or sessions (e-session-store-create))
                           :active-layers nil
                           :active-turns (make-hash-table :test 'equal))))
@@ -109,6 +115,37 @@ layer activation or deactivation APIs change the active layer set."
     (dolist (layer active-layers)
       (e-harness-activate-layer harness layer))
     harness))
+
+(defun e-harness-capability-config (harness capability-id)
+  "Return HARNESS-local runtime config plist for CAPABILITY-ID."
+  (copy-sequence
+   (alist-get capability-id
+              (e-harness-runtime-capability-config harness))))
+
+(defun e-harness-set-capability-config (harness capability-id config)
+  "Set HARNESS-local runtime CONFIG plist for CAPABILITY-ID.
+When CONFIG is nil, clear the runtime config for CAPABILITY-ID."
+  (let ((configs (copy-tree
+                  (e-harness-runtime-capability-config harness))))
+    (if config
+        (setf (alist-get capability-id configs)
+              (copy-sequence config))
+      (setq configs (assq-delete-all capability-id configs)))
+    (setf (e-harness-runtime-capability-config harness) configs)
+    config))
+
+(cl-defun e-harness-effective-capability-config
+    (harness capability-id options &key session-id directory overrides)
+  "Return effective CAPABILITY-ID config for HARNESS.
+Resolution uses DIRECTORY or the session project root, then HARNESS-local
+runtime config, then explicit OVERRIDES."
+  (e-capability-config-resolve
+   capability-id
+   options
+   :directory (or directory
+                  (e-harness-project-root harness session-id))
+   :runtime-config (e-harness-capability-config harness capability-id)
+   :overrides overrides))
 
 (defun e-harness-active-capabilities (harness)
   "Return HARNESS capabilities derived from its active layers."
