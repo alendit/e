@@ -30,26 +30,6 @@
      (e-chat-session-capability-create))
     harness))
 
-(defun e-chat-starter-test--answered-state (buffer-name)
-  "Return an answered starter state wired to BUFFER-NAME."
-  (let* ((harness (e-chat-starter-test--harness))
-         (subscription (e-harness-subscribe harness (lambda (_event))))
-         (buffer (get-buffer-create buffer-name))
-         (state (make-e-chat-starter-state
-                 :harness harness
-                 :session-id "starter-action"
-                 :question "Why?"
-                 :source-reference '(:label "demo.el:4"
-                                     :uri "file:///tmp/demo.el")
-                 :status 'answered
-                 :latest-answer "Because."
-                 :subscription subscription)))
-    (with-current-buffer buffer
-      (e-chat-starter-mode)
-      (setq-local e-chat-starter--state state))
-    (setf (e-chat-starter-state-buffer state) buffer)
-    state))
-
 (ert-deftest e-chat-starter-test-captures-region-source-reference ()
   "Source capture records exact active region text and line bounds."
   (with-temp-buffer
@@ -232,72 +212,46 @@
           (when (buffer-live-p buffer)
             (kill-buffer buffer)))))))
 
-(ert-deftest e-chat-starter-test-continue-closes-popup ()
-  "Continuing opens the chat session and closes the starter popup."
-  (let* ((state (e-chat-starter-test--answered-state
-                 "*e-chat-starter-continue*"))
-         (harness (e-chat-starter-state-harness state))
-         (subscription (e-chat-starter-state-subscription state))
-         (popup (e-chat-starter-state-buffer state))
+(ert-deftest e-chat-starter-test-actions-continue-open-copy-and-dismiss ()
+  "Starter actions reuse the session, expose answer text, and clean up."
+  (let* ((harness (e-chat-starter-test--harness))
+         (subscription (e-harness-subscribe harness (lambda (_event))))
+         (state (make-e-chat-starter-state
+                 :harness harness
+                 :session-id "starter-action"
+                 :question "Why?"
+                 :source-reference '(:label "demo.el:4"
+                                     :uri "file:///tmp/demo.el")
+                 :status 'answered
+                 :latest-answer "Because."
+                 :subscription subscription))
          opened)
-    (unwind-protect
-        (progn
-          (cl-letf (((symbol-function 'e-chat-open-session)
-                     (lambda (open-harness open-session-id &optional display)
-                       (setq opened (list open-harness open-session-id display))
-                       :opened)))
-            (should (eq (with-current-buffer popup
-                          (call-interactively #'e-chat-starter-continue))
-                        :opened)))
-          (should (eq (car opened) harness))
-          (should (equal (cadr opened) "starter-action"))
-          (should-not (buffer-live-p popup))
-          (should-not (memq subscription (e-harness-subscribers harness))))
-      (when (buffer-live-p popup)
-        (kill-buffer popup)))))
-
-(ert-deftest e-chat-starter-test-open-answer-closes-popup ()
-  "Opening the answer keeps the answer buffer and closes the starter popup."
-  (let* ((state (e-chat-starter-test--answered-state
-                 "*e-chat-starter-open-answer*"))
-         (harness (e-chat-starter-state-harness state))
-         (subscription (e-chat-starter-state-subscription state))
-         (popup (e-chat-starter-state-buffer state))
-         answer-buffer)
-    (unwind-protect
-        (progn
-          (setq answer-buffer
-                (with-current-buffer popup
-                  (call-interactively #'e-chat-starter-open-answer)))
-          (should-not (buffer-live-p popup))
-          (should (buffer-live-p answer-buffer))
-          (should-not (memq subscription (e-harness-subscribers harness)))
-          (with-current-buffer answer-buffer
-            (should (string-match-p "Because." (buffer-string)))
-            (should (equal e-chat-starter-answer-session-id
-                           "starter-action"))))
-      (when (buffer-live-p answer-buffer)
-        (kill-buffer answer-buffer))
-      (when (buffer-live-p popup)
-        (kill-buffer popup)))))
-
-(ert-deftest e-chat-starter-test-copy-answer-closes-popup ()
-  "Copying the answer stores it and closes the starter popup."
-  (let* ((state (e-chat-starter-test--answered-state
-                 "*e-chat-starter-copy-answer*"))
-         (harness (e-chat-starter-state-harness state))
-         (subscription (e-chat-starter-state-subscription state))
-         (popup (e-chat-starter-state-buffer state)))
-    (unwind-protect
-        (progn
-          (should (equal (with-current-buffer popup
-                           (call-interactively #'e-chat-starter-copy-answer))
-                         "Because."))
-          (should (equal (current-kill 0 t) "Because."))
-          (should-not (buffer-live-p popup))
-          (should-not (memq subscription (e-harness-subscribers harness))))
-      (when (buffer-live-p popup)
-        (kill-buffer popup)))))
+    (with-current-buffer (get-buffer-create "*e-chat-starter-actions*")
+      (unwind-protect
+          (progn
+            (e-chat-starter-mode)
+            (setq-local e-chat-starter--state state)
+            (setf (e-chat-starter-state-buffer state) (current-buffer))
+            (cl-letf (((symbol-function 'e-chat-open-session)
+                       (lambda (open-harness open-session-id &optional display)
+                         (setq opened (list open-harness open-session-id display))
+                         :opened)))
+              (should (eq (e-chat-starter-continue) :opened)))
+            (should (eq (car opened) harness))
+            (should (equal (cadr opened) "starter-action"))
+            (let ((answer-buffer (e-chat-starter-open-answer)))
+              (unwind-protect
+                  (with-current-buffer answer-buffer
+                    (should (string-match-p "Because." (buffer-string)))
+                    (should (equal e-chat-starter-answer-session-id
+                                   "starter-action")))
+                (kill-buffer answer-buffer)))
+            (e-chat-starter-copy-answer)
+            (should (equal (current-kill 0 t) "Because."))
+            (e-chat-starter-dismiss)
+            (should-not (memq subscription (e-harness-subscribers harness))))
+        (when (buffer-live-p (current-buffer))
+          (kill-buffer (current-buffer)))))))
 
 (ert-deftest e-chat-starter-test-shell-manifest-declares-chat-dependency ()
   "Starter shell is discoverable and declares its chat dependency."

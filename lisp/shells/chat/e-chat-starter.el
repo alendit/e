@@ -215,15 +215,6 @@ so a child-frame adapter can be added without changing controller logic."
        (e-chat-starter-state-subscription state))
       (setf (e-chat-starter-state-subscription state) nil))))
 
-(defun e-chat-starter--close-state-buffer (state)
-  "Close STATE's popup buffer and clean up its subscription."
-  (when-let ((buffer (e-chat-starter-state-buffer state)))
-    (when (buffer-live-p buffer)
-      (with-current-buffer buffer
-        (e-chat-starter--cleanup))
-      (setf (e-chat-starter-state-buffer state) nil)
-      (kill-buffer buffer))))
-
 (defun e-chat-starter--render-state-buffer (state)
   "Render STATE when its popup buffer is live."
   (when-let ((buffer (e-chat-starter-state-buffer state)))
@@ -336,12 +327,10 @@ popup buffer.  DELAY is forwarded to the chat session submit path for tests."
   (interactive)
   (let ((state (e-chat-starter--current-state)))
     (setf (e-chat-starter-state-status state) 'continued)
-    (prog1
-        (e-chat-open-session
-         (e-chat-starter-state-harness state)
-         (e-chat-starter-state-session-id state)
-         t)
-      (e-chat-starter--close-state-buffer state))))
+    (e-chat-open-session
+     (e-chat-starter-state-harness state)
+     (e-chat-starter-state-session-id state)
+     t)))
 
 (defun e-chat-starter--answer-buffer-name (state)
   "Return a buffer name for STATE's latest answer."
@@ -377,7 +366,6 @@ popup buffer.  DELAY is forwarded to the chat session submit path for tests."
         (goto-char (point-min))))
     (when (called-interactively-p 'interactive)
       (pop-to-buffer buffer))
-    (e-chat-starter--close-state-buffer state)
     buffer))
 
 (defun e-chat-starter-copy-answer ()
@@ -389,7 +377,6 @@ popup buffer.  DELAY is forwarded to the chat session submit path for tests."
     (kill-new answer)
     (when (called-interactively-p 'interactive)
       (message "Copied e starter answer"))
-    (e-chat-starter--close-state-buffer state)
     answer))
 
 (defun e-chat-starter-dismiss ()
