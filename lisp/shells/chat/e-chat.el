@@ -654,6 +654,21 @@ The mode line uses this presentation-owned table for context usage display."
 (defvar e-chat-mode-map (e-chat--make-mode-map)
   "Keymap for `e-chat-mode'.")
 
+(defun e-chat--translate-raw-escape (_prompt)
+  "Translate a single raw ESC to <escape> inside `e-chat-mode'.
+Leave longer ESC-prefixed key sequences alone so Meta bindings keep working."
+  (if (and (derived-mode-p 'e-chat-mode)
+           (equal (this-single-command-raw-keys) (kbd "ESC")))
+      [escape]
+    (kbd "ESC")))
+
+(defun e-chat--configure-escape-translation ()
+  "Configure raw Escape translation for chat buffers."
+  (define-key key-translation-map (kbd "ESC")
+              #'e-chat--translate-raw-escape))
+
+(e-chat--configure-escape-translation)
+
 (defvar e-chat-context-mode-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "s-i") #'e-chat-add-context-to-latest)
@@ -4985,6 +5000,7 @@ When DISPLAY is non-nil, show the target chat buffer."
 
 (defun e-chat-startup ()
   "Refresh and register the chat shell provider for package startup."
+  (e-chat--configure-escape-translation)
   (e-chat--configure-modal-editing-policy)
   (e-chat--refresh-keymaps)
   (e-chat-context-mode 1)

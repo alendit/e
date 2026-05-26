@@ -4035,6 +4035,25 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-raw-escape-translation-is-scoped-to-chat ()
+  "A single raw ESC becomes <escape> in chat without stealing Meta chords."
+  (let ((buffer (e-chat-test--buffer nil "chat-raw-escape")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (cl-letf (((symbol-function 'this-single-command-raw-keys)
+                     (lambda () (kbd "ESC"))))
+            (should (equal (e-chat--translate-raw-escape nil) [escape])))
+          (cl-letf (((symbol-function 'this-single-command-raw-keys)
+                     (lambda () (kbd "M-o"))))
+            (should (equal (e-chat--translate-raw-escape nil) (kbd "ESC")))))
+      (with-temp-buffer
+        (text-mode)
+        (cl-letf (((symbol-function 'this-single-command-raw-keys)
+                   (lambda () (kbd "ESC"))))
+          (should (equal (e-chat--translate-raw-escape nil) (kbd "ESC")))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-keymap-refresh-updates-stale-reload-bindings ()
   "Reload-time keymap refresh replaces bindings preserved by `defvar'."
   (let ((e-chat-response-navigation-mode-map (make-sparse-keymap))
