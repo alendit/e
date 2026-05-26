@@ -69,16 +69,24 @@ so a child-frame adapter can be added without changing controller logic."
   buffer
   progress)
 
-(defvar e-chat-starter-mode-map
-  (let ((map (make-sparse-keymap)))
+(defun e-chat-starter--make-mode-map (&optional map)
+  "Return MAP configured as the keymap for `e-chat-starter-mode'."
+  (let ((map (or map (make-sparse-keymap))))
     (set-keymap-parent map special-mode-map)
     (define-key map (kbd "c") #'e-chat-starter-continue)
     (define-key map (kbd "o") #'e-chat-starter-open-answer)
     (define-key map (kbd "y") #'e-chat-starter-copy-answer)
     (define-key map (kbd "q") #'e-chat-starter-dismiss)
+    (define-key map (kbd "<escape>") #'e-chat-starter-dismiss)
     (define-key map (kbd "RET") #'e-chat-starter-continue)
-    map)
+    map))
+
+(defvar e-chat-starter-mode-map
+  (e-chat-starter--make-mode-map)
   "Keymap for `e-chat-starter-mode'.")
+
+(setq e-chat-starter-mode-map
+      (e-chat-starter--make-mode-map e-chat-starter-mode-map))
 
 (defvar-local e-chat-starter--state nil
   "Starter state owned by the current popup buffer.")
@@ -215,6 +223,15 @@ so a child-frame adapter can be added without changing controller logic."
        (e-chat-starter-state-subscription state))
       (setf (e-chat-starter-state-subscription state) nil))))
 
+(defun e-chat-starter--close-state-buffer (state)
+  "Close STATE's popup buffer and clean up its subscription."
+  (when-let ((buffer (e-chat-starter-state-buffer state)))
+    (when (buffer-live-p buffer)
+      (with-current-buffer buffer
+        (e-chat-starter--cleanup))
+      (setf (e-chat-starter-state-buffer state) nil)
+      (kill-buffer buffer))))
+
 (defun e-chat-starter--render-state-buffer (state)
   "Render STATE when its popup buffer is live."
   (when-let ((buffer (e-chat-starter-state-buffer state)))
@@ -327,10 +344,12 @@ popup buffer.  DELAY is forwarded to the chat session submit path for tests."
   (interactive)
   (let ((state (e-chat-starter--current-state)))
     (setf (e-chat-starter-state-status state) 'continued)
-    (e-chat-open-session
-     (e-chat-starter-state-harness state)
-     (e-chat-starter-state-session-id state)
-     t)))
+    (prog1
+        (e-chat-open-session
+         (e-chat-starter-state-harness state)
+         (e-chat-starter-state-session-id state)
+         t)
+      (e-chat-starter--close-state-buffer state))))
 
 (defun e-chat-starter--answer-buffer-name (state)
   "Return a buffer name for STATE's latest answer."
@@ -366,6 +385,7 @@ popup buffer.  DELAY is forwarded to the chat session submit path for tests."
         (goto-char (point-min))))
     (when (called-interactively-p 'interactive)
       (pop-to-buffer buffer))
+    (e-chat-starter--close-state-buffer state)
     buffer))
 
 (defun e-chat-starter-copy-answer ()
@@ -377,6 +397,7 @@ popup buffer.  DELAY is forwarded to the chat session submit path for tests."
     (kill-new answer)
     (when (called-interactively-p 'interactive)
       (message "Copied e starter answer"))
+    (e-chat-starter--close-state-buffer state)
     answer))
 
 (defun e-chat-starter-dismiss ()
@@ -387,8 +408,7 @@ popup buffer.  DELAY is forwarded to the chat session submit path for tests."
                      (current-buffer))))
     (with-current-buffer buffer
       (e-chat-starter--cleanup))
-    (when (and (called-interactively-p 'interactive)
-               (buffer-live-p buffer))
+    (when (buffer-live-p buffer)
       (kill-buffer buffer))))
 
 ;;;###autoload
