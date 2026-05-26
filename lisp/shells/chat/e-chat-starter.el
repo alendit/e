@@ -83,10 +83,29 @@ so a child-frame adapter can be added without changing controller logic."
 (defvar-local e-chat-starter--state nil
   "Starter state owned by the current popup buffer.")
 
+(defun e-chat-starter--enforce-modal-editing-policy ()
+  "Disable modal editing when it is reactivated in starter buffers."
+  (when (and (derived-mode-p 'e-chat-starter-mode)
+             (boundp 'evil-local-mode)
+             evil-local-mode)
+    (e-chat--disable-modal-editing)))
+
+(defun e-chat-starter--configure-modal-editing-policy ()
+  "Configure modal editors to keep `e-chat-starter-mode' non-normal."
+  (when (fboundp 'evil-set-initial-state)
+    (evil-set-initial-state 'e-chat-starter-mode 'emacs)))
+
 (define-derived-mode e-chat-starter-mode special-mode "e-chat-starter"
   "Major mode for one-shot e chat starter popups."
   (setq-local truncate-lines nil)
-  (add-hook 'kill-buffer-hook #'e-chat-starter--cleanup nil t))
+  (add-hook 'evil-local-mode-hook
+            #'e-chat-starter--enforce-modal-editing-policy nil t)
+  (add-hook 'kill-buffer-hook #'e-chat-starter--cleanup nil t)
+  (e-chat--disable-modal-editing))
+
+(e-chat-starter--configure-modal-editing-policy)
+(with-eval-after-load 'evil
+  (e-chat-starter--configure-modal-editing-policy))
 
 (defvar-local e-chat-starter-answer-session-id nil
   "Session id that produced this answer buffer.")
@@ -124,6 +143,13 @@ so a child-frame adapter can be added without changing controller logic."
     (insert (string-trim-right (or text "")) "\n")
     (add-text-properties start (point) `(font-lock-face ,face))))
 
+(defun e-chat-starter--insert-answer-block (text)
+  "Insert assistant answer TEXT with Markdown presentation."
+  (let ((start (point)))
+    (insert (string-trim-right (or text "")) "\n")
+    (e-chat--apply-assistant-markdown start (point))
+    (e-chat--apply-final-assistant-face start (point))))
+
 (defun e-chat-starter--render-status (state)
   "Insert a compact status line for STATE."
   (pcase (e-chat-starter-state-status state)
@@ -138,9 +164,8 @@ so a child-frame adapter can be added without changing controller logic."
           "Starter turn failed")
       'error))
     ('answered
-     (e-chat-starter--insert-block
-      (or (e-chat-starter-state-latest-answer state) "")
-      'e-chat-final-assistant-face))
+     (e-chat-starter--insert-answer-block
+      (or (e-chat-starter-state-latest-answer state) "")))
     (_
      (insert "Ready\n"))))
 

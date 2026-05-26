@@ -102,9 +102,9 @@
                                            'font-lock-face)
                         'e-chat-user-face))
             (search-forward "It explains the form.")
-            (should (eq (get-text-property (match-beginning 0)
-                                           'font-lock-face)
-                        'e-chat-final-assistant-face))
+            (should (memq 'e-chat-final-assistant-face
+                          (ensure-list
+                           (get-text-property (match-beginning 0) 'face))))
             (should (eq (lookup-key e-chat-starter-mode-map (kbd "c"))
                         #'e-chat-starter-continue))
             (should (eq (lookup-key e-chat-starter-mode-map (kbd "o"))
@@ -113,6 +113,48 @@
                         #'e-chat-starter-copy-answer))
             (should (eq (lookup-key e-chat-starter-mode-map (kbd "q"))
                         #'e-chat-starter-dismiss)))
+        (kill-buffer (current-buffer))))))
+
+(ert-deftest e-chat-starter-test-mode-neutralizes-evil-normal-state ()
+  "Starter mode keeps Evil normal bindings from shadowing starter actions."
+  (let (evil-local-mode-argument)
+    (with-current-buffer (get-buffer-create "*e-chat-starter-evil-test*")
+      (unwind-protect
+          (cl-letf (((symbol-function 'evil-local-mode)
+                     (lambda (argument)
+                       (setq evil-local-mode-argument argument)
+                       (setq-local evil-local-mode
+                                   (not (and (numberp argument)
+                                             (< argument 0))))
+                       (unless evil-local-mode
+                         (setq-local evil-state nil)))))
+            (e-chat-starter-mode)
+            (should (equal evil-local-mode-argument -1))
+            (should-not evil-local-mode)
+            (should-not evil-state))
+        (kill-buffer (current-buffer))))))
+
+(ert-deftest e-chat-starter-test-answered-popup-renders-markdown ()
+  "Answered popup applies assistant Markdown presentation in the sidebar."
+  (let ((state (make-e-chat-starter-state
+                :question "Where is the review?"
+                :source-reference '(:label "index.org:20")
+                :status 'answered
+                :latest-answer "Use `docs/feats/14-canvas-shell/review.org`.")))
+    (with-current-buffer (get-buffer-create "*e-chat-starter-markdown-test*")
+      (unwind-protect
+          (progn
+            (e-chat-starter-mode)
+            (setq-local e-chat-starter--state state)
+            (cl-letf (((symbol-function 'e-chat--apply-markdown-mode-properties)
+                       (lambda (_start _end) nil)))
+              (e-chat-starter--render))
+            (goto-char (point-min))
+            (search-forward "docs/feats/14-canvas-shell/review.org")
+            (let ((faces (ensure-list
+                          (get-text-property (1- (point)) 'face))))
+              (should (memq 'e-chat-final-assistant-face faces))
+              (should (memq 'e-chat-markdown-code-face faces))))
         (kill-buffer (current-buffer))))))
 
 (ert-deftest e-chat-starter-test-events-record-first-final-answer ()
