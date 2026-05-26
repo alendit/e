@@ -1,0 +1,57 @@
+#+title: Investigation
+#+startup: overview
+
+* Source inspected
+
+- =lisp/core/e-harness.el=: =e-harness= currently stores
+  =runtime-capability-config= before =sessions= in the struct layout.
+- =lisp/core/e-harness.el=: =e-harness-create= initializes =sessions= with an
+  =e-session-store= and separately activates =active-layers=.
+- =lisp/defaults/e-default-harnesses.el=: =e-default-chat-harness-create= creates
+  the default OpenAI-backed harness with =:sessions= set to
+  =e-default-session-store=.
+- =lisp/defaults/e-default-harnesses.el=: =e-default-chat-sync-harness-layers=
+  reconciles active layers for cached =:chat-default= harnesses during startup,
+  but it does not validate or repair the harness session store.
+- Commit =fb38fe9= inserted =runtime-capability-config= before =sessions= in the
+  =e-harness= struct. Existing live harness structs created before that reload
+  can therefore be interpreted with shifted slots after the struct definition is
+  reloaded.
+
+* Live access
+
+Read-only =emacsclient= inspection of the running Emacs found the cached
+=:chat-default= harness in the bad state:
+
+- =e-harness-p= returned non-nil.
+- =e-harness-active-layers= returned =(chat-session agents-std-context
+  harness-base e os-base emacs-base)=.
+- =e-session-store-p= on =e-harness-sessions= returned nil; the value type was
+  =cons=.
+- =e-session-store-p= on =e-harness-runtime-capability-config= returned non-nil.
+
+This exactly matches the user error: the old =active-layers= slot is now read as
+=sessions=, while the old =sessions= slot is now read as
+=runtime-capability-config=.
+
+* Conclusion
+
+The root cause is a live struct-layout migration issue for cached default chat
+harness instances. A running Emacs can keep an =e-harness= object created before
+=runtime-capability-config= existed. After reload, the new accessors interpret
+that old object with the new slot order.
+
+Startup already syncs active layers for cached default harnesses, but it assumes
+the cached harness internals are otherwise valid. That leaves the shifted
+=sessions= slot in place, so =e-chat-new= eventually calls session APIs with a
+list of =e-layer= structs instead of an =e-session-store=.
+
+* Next step
+
+Add a regression test that creates a stale default chat harness shape with the
+session store in =runtime-capability-config= and layer structs in =sessions=,
+then runs startup sync and verifies the harness is repaired in place.
+
+The fix should live in default harness startup reconciliation, because this is a
+reload/startup migration concern for the cached default harness instance rather
+than chat presentation behavior.

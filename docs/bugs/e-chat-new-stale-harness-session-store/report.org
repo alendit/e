@@ -1,0 +1,18 @@
+#+title: e-chat-new stale harness session store
+#+startup: overview
+
+* Report
+
+Starting a new =e-chat= session can fail with:
+
+#+begin_example
+Wrong type argument: e-session-store, (#s(e-layer chat-session ...) ...)
+#+end_example
+
+The error repeats when trying to start a new chat, and follow-on commands can
+also report =No e chat session at point= because the chat buffer never attaches
+to a valid session.
+
+The value reported where an =e-session-store= should be is a list of active
+default chat layers, including =chat-session=, =agents-std-context=,
+=harness-base=, =e=, =os-base=, and =emacs-base=.
