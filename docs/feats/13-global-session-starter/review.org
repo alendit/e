@@ -3,10 +3,10 @@
 
 * Status
 
-In-review.
+Done.
 
-The implementation is present in the current tree and matches the ready plan.
-This feature remains =In-review= until the operator accepts the review round.
+The implementation is present in the current tree, matches the ready plan, and
+the operator accepted the review round.
 
 * Implementation Summary
 
@@ -18,6 +18,11 @@ This feature remains =In-review= until the operator accepts the review round.
 - Added starter popup actions: =c= continues the same session in the normal chat
   shell, =o= opens the latest answer in a separate buffer, =y= copies the answer,
   and =q= dismisses the popup interactively.
+- Added =C-c C-c= in the starter popup as the chat-consistent shortcut for
+  continuing/submitting the starter session.
+- The starter popup now focuses its temporary window when opened, and action
+  selection closes the temporary popup window before displaying the target chat
+  or answer buffer.
 - Added narrow public chat helpers for source capture, prompt reference
   formatting, session creation, session submission, and opening an existing chat
   session.
@@ -32,29 +37,23 @@ Ran:
 #+begin_src sh
 rtk eldev test -f test/e-chat-starter-test.el -f test/e-test.el -f test/e-chat-test.el
 rtk eldev test -f test/e-chat-starter-test.el -f test/e-test.el -f test/e-chat-test.el -f test/e-dev-test.el
+rtk eldev test -f test/e-chat-starter-test.el -f test/e-chat-test.el -f test/e-test.el
 #+end_src
 
 Result:
 
-- 164 expected
+- 173 expected
 - 1 skipped
 - 0 unexpected
 
 Live Emacs:
 
-- The combined package load path stalled when loading =e.el=, so that process
-  was stopped.
-- Narrowly loaded =lisp/shells/chat/e-chat.el=,
-  =lisp/shells/chat/e-chat-starter.el=, and =lisp/dev/e-dev.el= into the
-  running Emacs.
-- Ran =e-chat-starter-startup= and confirmed the =global-session-starter= shell
-  was registered.
-- A temporary live harness probe started a one-shot session from a source buffer,
-  captured the final answer, opened an answer buffer, and exercised continuation
-  through the same session id.
+- Reloaded the running Emacs with =e-dev-reload=.
+- Confirmed starter popup display selects the temporary window, then closing the
+  starter deletes that window and returns focus to the source window.
+- Confirmed the live starter keymap binds =C-c C-c= to
+  =e-chat-starter-continue=.
 
 * Review Notes
 
-The popup display uses the normal Emacs display-window fallback in this first
-slice. Child-frame positioning remains isolated behind =e-chat-starter-display-strategy=
-for a later adapter if needed.
+No unresolved review notes remain.

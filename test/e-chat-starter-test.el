@@ -134,7 +134,9 @@
             (should (eq (lookup-key e-chat-starter-mode-map (kbd "q"))
                         #'e-chat-starter-dismiss))
             (should (eq (lookup-key e-chat-starter-mode-map (kbd "<escape>"))
-                        #'e-chat-starter-dismiss)))
+                        #'e-chat-starter-dismiss))
+            (should (eq (lookup-key e-chat-starter-mode-map (kbd "C-c C-c"))
+                        #'e-chat-starter-continue)))
         (kill-buffer (current-buffer))))))
 
 (ert-deftest e-chat-starter-test-keymap-refresh-updates-stale-reload-bindings ()
@@ -143,6 +145,8 @@
     (e-chat-starter--make-mode-map e-chat-starter-mode-map)
     (should (eq (lookup-key e-chat-starter-mode-map (kbd "<escape>"))
                 'e-chat-starter-dismiss))
+    (should (eq (lookup-key e-chat-starter-mode-map (kbd "C-c C-c"))
+                'e-chat-starter-continue))
     (should (eq (lookup-key e-chat-starter-mode-map (kbd "c"))
                 'e-chat-starter-continue))))
 
@@ -243,6 +247,41 @@
           (when (buffer-live-p buffer)
             (kill-buffer buffer)))))))
 
+(ert-deftest e-chat-starter-test-display-buffer-selects-popup-window ()
+  "Displaying the starter popup focuses the temporary window."
+  (let ((buffer (get-buffer-create "*e-chat-starter-display-focus*"))
+        popup-window)
+    (unwind-protect
+        (progn
+          (delete-other-windows)
+          (setq popup-window (e-chat-starter--display-buffer buffer))
+          (should (window-live-p popup-window))
+          (should (eq (selected-window) popup-window)))
+      (when (window-live-p popup-window)
+        (delete-window popup-window))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-starter-test-close-state-buffer-deletes-popup-window ()
+  "Closing a starter state removes the temporary popup split."
+  (let* ((state (e-chat-starter-test--answered-state
+                 "*e-chat-starter-close-window*"))
+         (popup (e-chat-starter-state-buffer state))
+         popup-window)
+    (unwind-protect
+        (progn
+          (delete-other-windows)
+          (setq popup-window (display-buffer popup))
+          (should (window-live-p popup-window))
+          (setf (e-chat-starter-state-popup-window state) popup-window)
+          (e-chat-starter--close-state-buffer state)
+          (should-not (buffer-live-p popup))
+          (should-not (window-live-p popup-window)))
+      (when (window-live-p popup-window)
+        (delete-window popup-window))
+      (when (buffer-live-p popup)
+        (kill-buffer popup)))))
+
 (ert-deftest e-chat-starter-test-dismiss-cleans-up-popup ()
   "Dismissing the starter popup closes it and removes subscriptions."
   (let* ((state (e-chat-starter-test--answered-state
@@ -283,6 +322,33 @@
       (when (buffer-live-p popup)
         (kill-buffer popup)))))
 
+(ert-deftest e-chat-starter-test-continue-closes-popup-window-before-opening ()
+  "Continuing removes the temporary popup split before displaying chat."
+  (let* ((state (e-chat-starter-test--answered-state
+                 "*e-chat-starter-continue-window*"))
+         (popup (e-chat-starter-state-buffer state))
+         (source-window nil)
+         (popup-window nil)
+         opened-window)
+    (unwind-protect
+        (progn
+          (delete-other-windows)
+          (setq source-window (selected-window))
+          (setq popup-window (e-chat-starter--display-buffer popup))
+          (setf (e-chat-starter-state-popup-window state) popup-window)
+          (cl-letf (((symbol-function 'e-chat-open-session)
+                     (lambda (_harness _session-id &optional _display)
+                       (setq opened-window (selected-window))
+                       :opened)))
+            (with-current-buffer popup
+              (call-interactively #'e-chat-starter-continue)))
+          (should-not (window-live-p popup-window))
+          (should (eq opened-window source-window)))
+      (when (window-live-p popup-window)
+        (delete-window popup-window))
+      (when (buffer-live-p popup)
+        (kill-buffer popup)))))
+
 (ert-deftest e-chat-starter-test-open-answer-closes-popup ()
   "Opening the answer keeps the answer buffer and closes the starter popup."
   (let* ((state (e-chat-starter-test--answered-state
@@ -305,6 +371,31 @@
                            "starter-action"))))
       (when (buffer-live-p answer-buffer)
         (kill-buffer answer-buffer))
+      (when (buffer-live-p popup)
+        (kill-buffer popup)))))
+
+(ert-deftest e-chat-starter-test-open-answer-closes-popup-window-and-focuses-answer ()
+  "Opening the answer removes the starter split and focuses the answer."
+  (let* ((state (e-chat-starter-test--answered-state
+                 "*e-chat-starter-open-answer-window*"))
+         (popup (e-chat-starter-state-buffer state))
+         popup-window
+         answer-buffer)
+    (unwind-protect
+        (progn
+          (delete-other-windows)
+          (setq popup-window (e-chat-starter--display-buffer popup))
+          (setf (e-chat-starter-state-popup-window state) popup-window)
+          (setq answer-buffer
+                (with-current-buffer popup
+                  (call-interactively #'e-chat-starter-open-answer)))
+          (should-not (window-live-p popup-window))
+          (should (buffer-live-p answer-buffer))
+          (should (eq (window-buffer (selected-window)) answer-buffer)))
+      (when (buffer-live-p answer-buffer)
+        (kill-buffer answer-buffer))
+      (when (window-live-p popup-window)
+        (delete-window popup-window))
       (when (buffer-live-p popup)
         (kill-buffer popup)))))
 

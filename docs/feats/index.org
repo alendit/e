@@ -23,5 +23,5 @@ Status values for coding agents:
 | 10 | In-review | 10-session-append-performance/ | Session Append Performance |
 | 11 | Done | 11-context-compaction/ | Context Compaction |
 | 12 | In-review | 12-session-overview-shell/ | Session Overview Shell |
-| 13 | In-review | 13-global-session-starter/ | Global Session Starter |
+| 13 | Done | 13-global-session-starter/ | Global Session Starter |
 | 14 | In-review | 14-canvas-shell/ | Canvas Shell |

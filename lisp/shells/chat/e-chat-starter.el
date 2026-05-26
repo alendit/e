@@ -67,6 +67,7 @@ so a child-frame adapter can be added without changing controller logic."
   source-window
   source-buffer
   buffer
+  popup-window
   progress)
 
 (defun e-chat-starter--make-mode-map (&optional map)
@@ -78,6 +79,7 @@ so a child-frame adapter can be added without changing controller logic."
     (define-key map (kbd "y") #'e-chat-starter-copy-answer)
     (define-key map (kbd "q") #'e-chat-starter-dismiss)
     (define-key map (kbd "<escape>") #'e-chat-starter-dismiss)
+    (define-key map (kbd "C-c C-c") #'e-chat-starter-continue)
     (define-key map (kbd "RET") #'e-chat-starter-continue)
     map))
 
@@ -207,11 +209,15 @@ so a child-frame adapter can be added without changing controller logic."
 
 (defun e-chat-starter--display-buffer (buffer)
   "Display starter BUFFER using the configured fallback window strategy."
-  (display-buffer
-   buffer
-   `((display-buffer-reuse-window display-buffer-pop-up-window)
-     (window-width . ,e-chat-starter-popup-width)
-     (window-height . ,e-chat-starter-popup-height))))
+  (let ((window
+         (display-buffer
+          buffer
+          `((display-buffer-reuse-window display-buffer-pop-up-window)
+            (window-width . ,e-chat-starter-popup-width)
+            (window-height . ,e-chat-starter-popup-height)))))
+    (when (window-live-p window)
+      (select-window window))
+    window))
 
 (defun e-chat-starter--cleanup ()
   "Clean up the current starter popup subscription."
@@ -230,6 +236,20 @@ so a child-frame adapter can be added without changing controller logic."
       (with-current-buffer buffer
         (e-chat-starter--cleanup))
       (setf (e-chat-starter-state-buffer state) nil)
+      (when-let ((source-window (e-chat-starter-state-source-window state)))
+        (when (window-live-p source-window)
+          (select-window source-window)))
+      (let ((popup-windows
+             (delete-dups
+              (delq nil
+                    (append
+                     (list (e-chat-starter-state-popup-window state))
+                     (get-buffer-window-list buffer nil t))))))
+        (dolist (window popup-windows)
+          (when (and (window-live-p window)
+                     (window-parent window))
+            (delete-window window))))
+      (setf (e-chat-starter-state-popup-window state) nil)
       (kill-buffer buffer))))
 
 (defun e-chat-starter--render-state-buffer (state)
@@ -327,7 +347,8 @@ popup buffer.  DELAY is forwarded to the chat session submit path for tests."
      :references (list reference)
      :delay delay)
     (when display
-      (e-chat-starter--display-buffer buffer))
+      (setf (e-chat-starter-state-popup-window state)
+            (e-chat-starter--display-buffer buffer)))
     state))
 
 ;;;###autoload
@@ -344,12 +365,10 @@ popup buffer.  DELAY is forwarded to the chat session submit path for tests."
   (interactive)
   (let ((state (e-chat-starter--current-state)))
     (setf (e-chat-starter-state-status state) 'continued)
-    (prog1
-        (e-chat-open-session
-         (e-chat-starter-state-harness state)
-         (e-chat-starter-state-session-id state)
-         t)
-      (e-chat-starter--close-state-buffer state))))
+    (let ((harness (e-chat-starter-state-harness state))
+          (session-id (e-chat-starter-state-session-id state)))
+      (e-chat-starter--close-state-buffer state)
+      (e-chat-open-session harness session-id t))))
 
 (defun e-chat-starter--answer-buffer-name (state)
   "Return a buffer name for STATE's latest answer."
@@ -383,9 +402,8 @@ popup buffer.  DELAY is forwarded to the chat session submit path for tests."
         (setq-local e-chat-starter-answer-question
                     (e-chat-starter-state-question state))
         (goto-char (point-min))))
-    (when (called-interactively-p 'interactive)
-      (pop-to-buffer buffer))
     (e-chat-starter--close-state-buffer state)
+    (pop-to-buffer buffer)
     buffer))
 
 (defun e-chat-starter-copy-answer ()
