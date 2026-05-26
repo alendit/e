@@ -557,6 +557,7 @@ The mode line uses this presentation-owned table for context usage display."
     (define-key map (kbd "k") #'e-chat-response-navigation-previous)
     (define-key map (kbd "RET") #'e-chat-response-navigation-activate)
     (define-key map (kbd "i") #'e-chat-response-navigation-insert)
+    (define-key map (kbd "<escape>") #'e-chat-response-navigation-insert)
     (define-key map (kbd "y") #'e-chat-response-navigation-copy)
     (define-key map (kbd "o") #'e-chat-response-navigation-open)
     (define-key map (kbd "d") #'e-chat-response-navigation-details)

@@ -2570,6 +2570,23 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-response-navigation-escape-returns-to-composer ()
+  "Escape leaves navigation mode and focuses the composer."
+  (let ((buffer (e-chat-test--buffer nil "chat-nav-escape")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat-test--render-turn "turn-1" 10 11 "first" "one")
+          (call-interactively #'e-chat-enter-response-navigation)
+          (should (eq (lookup-key e-chat-response-navigation-mode-map
+                                  (kbd "<escape>"))
+                      #'e-chat-response-navigation-insert))
+          (call-interactively
+           (lookup-key e-chat-response-navigation-mode-map (kbd "<escape>")))
+          (should-not e-chat-response-navigation-mode)
+          (should (>= (point) (marker-position e-chat--composer-start-marker))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-response-navigation-copy-and-open-use-block-content ()
   "Copy and open actions use the focused block action text without chrome."
   (let ((buffer (e-chat-test--buffer nil "chat-nav-actions"))
