@@ -217,6 +217,116 @@
     (should (equal (e-chat-starter-state-latest-answer state)
                    "final answer"))))
 
+(ert-deftest e-chat-starter-test-running-activity-uses-chat-rendering ()
+  "Starter running activity uses the normal chat activity formatter and face."
+  (let* ((buffer (get-buffer-create "*e-chat-starter-running-activity*"))
+         (state (make-e-chat-starter-state
+                 :session-id "starter-session"
+                 :question "Explain"
+                 :source-reference '(:label "demo.el:1")
+                 :status 'running
+                 :buffer buffer)))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat-starter-mode)
+          (setq-local e-chat-starter--state state)
+          (e-chat-starter--handle-event
+           state
+           (e-events-make :type 'turn-started
+                          :session-id "starter-session"
+                          :turn-id "turn-1"
+                          :created-at 0))
+          (e-chat-starter--handle-event
+           state
+           (e-events-make :type 'provider-request-started
+                          :session-id "starter-session"
+                          :turn-id "turn-1"
+                          :created-at 0))
+          (e-chat-starter--handle-event
+           state
+           (e-events-make :type 'reasoning-delta
+                          :session-id "starter-session"
+                          :turn-id "turn-1"
+                          :created-at 1
+                          :payload '(:content "planning")))
+          (let ((text (buffer-string)))
+            (should (string-match-p "Thinking for" text))
+            (should (string-match-p "planning" text))
+            (should-not (string-match-p "Thinking - planning" text)))
+          (goto-char (point-min))
+          (search-forward "Thinking")
+          (should (eq (get-text-property (match-beginning 0) 'font-lock-face)
+                      'e-chat-system-face)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-starter-test-settled-activity-uses-chat-summary ()
+  "Starter answered activity renders the same settled summary as chat."
+  (let* ((buffer (get-buffer-create "*e-chat-starter-settled-activity*"))
+         (state (make-e-chat-starter-state
+                 :session-id "starter-session"
+                 :question "Explain"
+                 :source-reference '(:label "demo.el:1")
+                 :status 'running
+                 :buffer buffer)))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat-starter-mode)
+          (setq-local e-chat-starter--state state)
+          (dolist (event
+                   (list
+                    (e-events-make :type 'turn-started
+                                   :session-id "starter-session"
+                                   :turn-id "turn-1"
+                                   :created-at 0)
+                    (e-events-make :type 'provider-request-started
+                                   :session-id "starter-session"
+                                   :turn-id "turn-1"
+                                   :created-at 0)
+                    (e-events-make :type 'reasoning-delta
+                                   :session-id "starter-session"
+                                   :turn-id "turn-1"
+                                   :created-at 1
+                                   :payload '(:content "planning"))
+                    (e-events-make :type 'tool-started
+                                   :session-id "starter-session"
+                                   :turn-id "turn-1"
+                                   :created-at 2
+                                   :payload '(:id "call-1" :name "read"))
+                    (e-events-make :type 'tool-finished
+                                   :session-id "starter-session"
+                                   :turn-id "turn-1"
+                                   :created-at 3
+                                   :payload '(:tool-call (:id "call-1"
+                                                       :name "read")
+                                             :result (:status ok)))
+                    (e-events-make :type 'provider-request-finished
+                                   :session-id "starter-session"
+                                   :turn-id "turn-1"
+                                   :created-at 4
+                                   :payload '(:status done))
+                    (e-events-make :type 'message-added
+                                   :session-id "starter-session"
+                                   :turn-id "turn-1"
+                                   :created-at 4
+                                   :payload '(:message
+                                              (:role assistant
+                                               :content "Final answer.")))
+                    (e-events-make :type 'turn-finished
+                                   :session-id "starter-session"
+                                   :turn-id "turn-1"
+                                   :created-at 4)))
+            (e-chat-starter--handle-event state event))
+          (let ((text (buffer-string)))
+            (should (string-match-p "Turn took .*4sec, 1 tool call\\." text))
+            (should (string-match-p "Final answer\\." text)))
+          (goto-char (point-min))
+          (search-forward "Turn took")
+          (should (eq (get-text-property (match-beginning 0) 'font-lock-face)
+                      'e-chat-system-face)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-starter-test-start-creates-session-and-captures-answer ()
   "Starting here creates one real chat session and records the backend answer."
   (let* ((harness (e-chat-starter-test--harness

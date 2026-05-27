@@ -68,7 +68,8 @@ so a child-frame adapter can be added without changing controller logic."
   source-buffer
   buffer
   popup-window
-  progress)
+  progress
+  activity-events)
 
 (defun e-chat-starter--make-mode-map (&optional map)
   "Return MAP configured as the keymap for `e-chat-starter-mode'."
@@ -160,14 +161,76 @@ so a child-frame adapter can be added without changing controller logic."
     (e-chat--apply-assistant-markdown start (point))
     (e-chat--apply-final-assistant-face start (point))))
 
+(defun e-chat-starter--activity-turn-id (state event)
+  "Return the activity turn id for STATE and EVENT."
+  (or (plist-get event :turn-id)
+      (e-chat-starter-state-turn-id state)
+      (e-chat-starter-state-session-id state)))
+
+(defun e-chat-starter--activity-event (event event-type &optional payload)
+  "Return a durable chat activity EVENT with EVENT-TYPE and PAYLOAD."
+  (list :event-type event-type
+        :turn-id (plist-get event :turn-id)
+        :created-at (plist-get event :created-at)
+        :payload (or payload (plist-get event :payload))))
+
+(defun e-chat-starter--activity-events-for-event (state event)
+  "Return chat activity events derived from starter harness EVENT for STATE."
+  (let* ((turn-id (e-chat-starter--activity-turn-id state event))
+         (event (plist-put (copy-sequence event) :turn-id turn-id)))
+    (pcase (plist-get event :type)
+      ('turn-started
+       (list (e-chat-starter--activity-event event 'turn-started)))
+      ('turn-finished
+       (list (e-chat-starter--activity-event event 'turn-finished)))
+      ((or 'provider-request-started 'provider-request-finished
+           'reasoning-delta 'tool-started 'tool-finished
+           'turn-failed 'turn-cancelled)
+       (list (e-chat-starter--activity-event event (plist-get event :type))))
+      (_ nil))))
+
+(defun e-chat-starter--record-activity-event (state event)
+  "Record starter harness EVENT as reusable chat activity for STATE."
+  (when-let ((events (e-chat-starter--activity-events-for-event state event)))
+    (setf (e-chat-starter-state-activity-events state)
+          (append (e-chat-starter-state-activity-events state) events))))
+
+(defun e-chat-starter--activity-record (state)
+  "Return an `e-chat' activity record rebuilt from STATE events."
+  (when-let ((turn-id (or (e-chat-starter-state-turn-id state)
+                         (e-chat-starter-state-session-id state))))
+    (setq-local e-chat--turn-registry (make-hash-table :test 'equal))
+    (dolist (event (e-chat-starter-state-activity-events state))
+      (when (equal (plist-get event :turn-id) turn-id)
+        (e-chat--record-activity-event turn-id event)))
+    (e-chat--existing-turn-record turn-id)))
+
+(defun e-chat-starter--activity-text (state record)
+  "Return chat-formatted activity text for STATE and RECORD."
+  (when record
+    (pcase (e-chat-starter-state-status state)
+      ((or 'answered 'failed 'continued)
+       (or (when-let ((summary (e-chat--activity-summary-text record)))
+             (concat summary "\n"))
+           (e-chat--transient-text record)))
+      (_
+       (e-chat--transient-text record)))))
+
+(defun e-chat-starter--insert-activity-block (state)
+  "Insert STATE activity using the same formatter as normal chat."
+  (when-let* ((record (e-chat-starter--activity-record state))
+              (text (e-chat-starter--activity-text state record)))
+    (let ((start (point)))
+      (e-chat--insert-protected text 'e-chat-system-face)
+      (e-chat--apply-activity-separator-face start (point)))))
+
 (defun e-chat-starter--render-status (state)
   "Insert a compact status line for STATE."
+  (e-chat-starter--insert-activity-block state)
   (pcase (e-chat-starter-state-status state)
     ('running
-     (insert "Thinking")
-     (when-let ((progress (e-chat-starter-state-progress state)))
-       (insert " - " progress))
-     (insert "\n"))
+     (unless (e-chat-starter-state-activity-events state)
+       (e-chat-starter--insert-block "Thinking" 'e-chat-system-face)))
     ('failed
      (e-chat-starter--insert-block
       (or (e-chat-starter-state-error-message state)
@@ -273,15 +336,24 @@ so a child-frame adapter can be added without changing controller logic."
       ('turn-started
        (setf (e-chat-starter-state-turn-id state)
              (plist-get event :turn-id))
-       (setf (e-chat-starter-state-status state) 'running))
+       (setf (e-chat-starter-state-status state) 'running)
+       (e-chat-starter--record-activity-event state event))
+      ('provider-request-started
+       (setf (e-chat-starter-state-status state) 'running)
+       (e-chat-starter--record-activity-event state event))
+      ('provider-request-finished
+       (e-chat-starter--record-activity-event state event))
       ('reasoning-delta
        (setf (e-chat-starter-state-progress state)
              (or (plist-get (plist-get event :payload) :content)
-                 "thinking")))
+                 "thinking"))
+       (e-chat-starter--record-activity-event state event))
       ('tool-started
-       (setf (e-chat-starter-state-progress state) "using tool"))
+       (setf (e-chat-starter-state-progress state) "using tool")
+       (e-chat-starter--record-activity-event state event))
       ('tool-finished
-       (setf (e-chat-starter-state-progress state) "tool finished"))
+       (setf (e-chat-starter-state-progress state) "tool finished")
+       (e-chat-starter--record-activity-event state event))
       ('message-added
        (let ((message (plist-get (plist-get event :payload) :message)))
          (when (and (eq (plist-get message :role) 'assistant)
@@ -292,9 +364,12 @@ so a child-frame adapter can be added without changing controller logic."
                  (plist-get message :content))
            (setf (e-chat-starter-state-status state) 'answered))))
       ('turn-finished
+       (e-chat-starter--record-activity-event state event)
        (when (e-chat-starter-state-latest-answer state)
          (setf (e-chat-starter-state-status state) 'answered)))
       ((or 'turn-failed 'turn-cancelled 'backend-empty-output)
+       (unless (eq (plist-get event :type) 'backend-empty-output)
+         (e-chat-starter--record-activity-event state event))
        (setf (e-chat-starter-state-status state) 'failed)
        (setf (e-chat-starter-state-error-message state)
              (e-chat-starter--event-error-message event))))
