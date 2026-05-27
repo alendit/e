@@ -1,0 +1,11 @@
+#+title: Missing Chat Sidebar Toggle Command Report
+#+date: 2026-05-26
+
+* Report
+
+The operator reported that the command described in
+=docs/feats/12-session-overview-shell/plan.org= as
+=e-chat-sidebar-toggle= is not visible in their running Emacs.
+
+The referenced plan section says the sidebar command should open or close a side
+window showing the session overview.

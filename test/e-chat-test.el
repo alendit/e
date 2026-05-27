@@ -740,13 +740,40 @@
         (kill-buffer buffer)))))
 
 (ert-deftest e-chat-test-configures-evil-initial-state-as-emacs ()
-  "Chat mode declares a non-normal Evil state when Evil is available."
+  "Chat buffers declare a non-normal Evil state when Evil is available."
   (let (configured)
     (cl-letf (((symbol-function 'evil-set-initial-state)
                (lambda (mode state)
-                 (setq configured (list mode state)))))
+                 (push (list mode state) configured))))
       (e-chat--configure-modal-editing-policy)
-      (should (equal configured '(e-chat-mode emacs))))))
+      (should (member '(e-chat-mode emacs) configured))
+      (should (member '(e-chat-overview-mode emacs) configured)))))
+
+(ert-deftest e-chat-test-overview-mode-neutralizes-evil ()
+  "Overview mode keeps Evil from intercepting sidebar navigation keys."
+  (let ((buffer (get-buffer-create "*e-chat-overview-evil-test*")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'evil-local-mode)
+                   (lambda (argument)
+                     (setq-local evil-local-mode
+                                 (not (and (numberp argument)
+                                           (< argument 0))))
+                     (unless evil-local-mode
+                       (setq-local evil-state nil)))))
+          (with-current-buffer buffer
+            (setq-local evil-local-mode t)
+            (setq-local evil-state 'normal)
+            (e-chat-overview-mode)
+            (should-not evil-local-mode)
+            (should-not evil-state)
+            (should (eq (lookup-key e-chat-overview-mode-map (kbd "RET"))
+                        #'e-chat-overview-open-session))
+            (should (eq (lookup-key e-chat-overview-mode-map (kbd "j"))
+                        #'e-chat-overview-next-session))
+            (should (eq (lookup-key e-chat-overview-mode-map (kbd "k"))
+                        #'e-chat-overview-previous-session))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
 
 (ert-deftest e-chat-test-evil-local-mode-hook-disables-reactivation ()
   "If Evil local mode is reactivated, chat mode turns it off again."
@@ -3424,6 +3451,145 @@
       (e-chat-test--kill-chat-buffers)
       (delete-directory directory t))))
 
+(ert-deftest e-chat-test-overview-compacts-multiline-session-summary ()
+  "Overview rows do not expand raw prompt context into the sidebar."
+  (let* ((store (e-session-store-create))
+         (backend (e-backend-fake-create :items nil))
+         (harness (e-chat-test--activate-chat-session
+                   (e-harness-create :backend backend :sessions store)))
+         (buffer (get-buffer-create "*e-chat-overview-test*")))
+    (unwind-protect
+        (progn
+          (e-session-create store :id "messy-summary")
+          (e-session-append-message
+           store "messy-summary"
+           '(:id "messy-user"
+             :role user
+             :content "<reference id=\"source\" label=\"very-long-reference-name\">Ask about sidebar</reference>\n\nReferences:\n[source] plan.org"))
+          (with-current-buffer buffer
+            (e-chat-overview-mode)
+            (e-chat-overview--render harness)
+            (let ((text (buffer-string)))
+              (should (string-match-p "Ask about sidebar" text))
+              (should-not (string-match-p "<reference" text))
+              (should-not (string-match-p "References:" text)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-overview-styles-session-row-regions ()
+  "Overview rows style title, metadata, and summary as distinct regions."
+  (let* ((store (e-session-store-create))
+         (backend (e-backend-fake-create :items nil))
+         (harness (e-chat-test--activate-chat-session
+                   (e-harness-create :backend backend :sessions store)))
+         (buffer (get-buffer-create "*e-chat-overview-style-test*")))
+    (unwind-protect
+        (progn
+          (e-session-create store :id "styled-session"
+                            :metadata '(:name "Styled Session"))
+          (e-session-append-message
+           store "styled-session"
+           '(:id "styled-user"
+             :role user
+             :content "summary line"
+             :created-at "2026-05-26T21:24:00Z"))
+          (e-session-append-message
+           store "styled-session"
+           '(:id "styled-assistant"
+             :role assistant
+             :content "answer"
+             :created-at "2026-05-26T21:25:42Z"))
+          (with-current-buffer buffer
+            (e-chat-overview-mode)
+            (e-chat-overview--render harness)
+            (let ((text (buffer-string)))
+              (should (string-match-p "\n\n\\'" text))
+              (goto-char (point-min))
+              (should (eq (get-text-property (point) 'font-lock-face)
+                          'e-chat-overview-unread-face))
+              (search-forward "Styled Session")
+              (should (eq (get-text-property (match-beginning 0)
+                                             'font-lock-face)
+                          'e-chat-overview-title-face))
+              (search-forward "05-26 21:25")
+              (should (eq (get-text-property (match-beginning 0)
+                                             'font-lock-face)
+                          'e-chat-overview-meta-face))
+              (search-forward "summary line")
+              (should (eq (get-text-property (match-beginning 0)
+                                             'font-lock-face)
+                          'e-chat-overview-summary-face))
+              (should-not (get-text-property (match-beginning 0)
+                                             'mouse-face)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-overview-hides-summary-when-title-is-derived ()
+  "Overview rows do not repeat summaries that already produced the title."
+  (let* ((store (e-session-store-create))
+         (backend (e-backend-fake-create :items nil))
+         (harness (e-chat-test--activate-chat-session
+                   (e-harness-create :backend backend :sessions store)))
+         (buffer (get-buffer-create "*e-chat-overview-duplicate-test*")))
+    (unwind-protect
+        (progn
+          (e-session-create store :id "derived-title")
+          (e-session-append-message
+           store "derived-title"
+           '(:id "derived-user"
+             :role user
+             :content "this prompt is long enough to become a truncated derived title"
+             :created-at "2026-05-26T21:25:42Z"))
+          (with-current-buffer buffer
+            (e-chat-overview-mode)
+            (e-chat-overview--render harness)
+            (let ((text (buffer-string)))
+              (should (string-match-p "this prompt is long enoug..." text))
+              (should-not (string-match-p "truncated derived title" text)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-overview-j-k-move-by-session-and-preview ()
+  "Overview j/k navigation targets whole session rows and opens a preview."
+  (let* ((store (e-session-store-create))
+         (backend (e-backend-fake-create :items nil))
+         (harness (e-chat-test--activate-chat-session
+                   (e-harness-create :backend backend :sessions store)))
+         (buffer (get-buffer-create "*e-chat-overview-nav-test*")))
+    (unwind-protect
+        (progn
+          (e-session-create store :id "older")
+          (e-session-append-message
+           store "older"
+           '(:id "older-user"
+             :role user
+             :content "older prompt"
+             :created-at "2026-05-26T21:24:00Z"))
+          (e-session-create store :id "newer")
+          (e-session-append-message
+           store "newer"
+           '(:id "newer-user"
+             :role user
+             :content "newer prompt"
+             :created-at "2026-05-26T21:25:00Z"))
+          (with-current-buffer buffer
+            (e-chat-overview-mode)
+            (e-chat-overview--render harness)
+            (goto-char (point-min))
+            (should (equal (e-chat-overview--session-id-at-point) "newer"))
+            (e-chat-overview-next-session)
+            (should (equal (e-chat-overview--session-id-at-point) "older"))
+            (with-current-buffer e-chat--resume-preview-buffer-name
+              (should (string-match-p "older prompt" (buffer-string))))
+            (e-chat-overview-previous-session)
+            (should (equal (e-chat-overview--session-id-at-point) "newer"))
+            (with-current-buffer e-chat--resume-preview-buffer-name
+              (should (string-match-p "newer prompt" (buffer-string))))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (when-let ((preview (get-buffer e-chat--resume-preview-buffer-name)))
+        (kill-buffer preview)))))
+
 (ert-deftest e-chat-test-overview-open-session-marks-session-read ()
   "Opening from overview records the selected session read marker."
   (let* ((directory (make-temp-file "e-chat-overview-" t))
@@ -3460,6 +3626,32 @@
                 (kill-buffer buffer)))))
       (e-chat-test--kill-chat-buffers)
       (delete-directory directory t))))
+
+(ert-deftest e-chat-test-sidebar-toggle-opens-and-closes-overview ()
+  "The planned sidebar toggle command toggles the overview side window."
+  (let* ((store (e-session-store-create))
+         (backend (e-backend-fake-create :items nil))
+         (harness (e-chat-test--activate-chat-session
+                   (e-harness-create :backend backend :sessions store)))
+         (e-chat-overview-buffer-name "*e-chat-overview-toggle-test*")
+         opened-buffer)
+    (unwind-protect
+        (e-chat-test--with-empty-harness-registry
+          (let ((e-chat-default-harness-id :chat-test))
+            (e-harness-registry-register :chat-test harness)
+            (e-session-create store :id "toggle-me"
+                              :metadata '(:name "Toggle Me"))
+            (should (commandp 'e-chat-sidebar-toggle))
+            (e-chat-sidebar-toggle)
+            (setq opened-buffer (get-buffer e-chat-overview-buffer-name))
+            (should (buffer-live-p opened-buffer))
+            (should (e-chat-overview--visible-window))
+            (should (eq (window-buffer (selected-window)) opened-buffer))
+            (e-chat-sidebar-toggle)
+            (should-not (buffer-live-p opened-buffer))
+            (should-not (e-chat-overview--visible-window))))
+      (when (buffer-live-p opened-buffer)
+        (kill-buffer opened-buffer)))))
 
 (ert-deftest e-chat-test-add-context-to-latest-targets-visible-session ()
   "Latest context insertion targets a visible chat before recency."
@@ -4130,6 +4322,7 @@
                           resume
                           switch-session
                           overview
+                          sidebar-toggle
                           overview-close
                           rename
                           set-model

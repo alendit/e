@@ -14,9 +14,11 @@ This feature remains =In-review= until the operator accepts the review round.
   to =e-chat-resume=.
 - =e-chat-overview= opens a side-window overview buffer listing persisted chat
   sessions in the order returned by =e-harness-session-list=.
-- Overview rows show title, short session id, message count, last message time,
-  summary, and an unread marker when a loaded session has assistant output newer
-  than the presentation read marker.
+- Overview rows show styled title, unread marker, compact metadata, compact
+  timestamp, and subdued summary text instead of a dense raw text listing.
+  Summary text is suppressed when it would only repeat a derived title.
+- Sidebar =j= and =k= move between session rows, not physical lines, and moving
+  to a row opens the session preview.
 - Overview read markers are presentation-owned JSON state, stored in the active
   session store directory by default.
 - Opening a session from the overview reuses =e-chat-open= and records the latest
@@ -32,13 +34,17 @@ Ran:
 
 #+begin_src sh
 rtk eldev test -f test/e-chat-test.el e-chat-test-overview-renders-sessions-in-recency-order e-chat-test-overview-open-session-marks-session-read e-chat-test-shell-descriptor-advertises-chat-surface
+rtk eldev test -f test/e-chat-test.el e-chat-test-overview-renders-sessions-in-recency-order e-chat-test-overview-compacts-multiline-session-summary e-chat-test-overview-styles-session-row-regions e-chat-test-overview-hides-summary-when-title-is-derived e-chat-test-overview-j-k-move-by-session-and-preview e-chat-test-overview-open-session-marks-session-read e-chat-test-sidebar-toggle-opens-and-closes-overview e-chat-test-shell-descriptor-advertises-chat-surface
+rtk eldev test -f test/e-chat-test.el e-chat-test-configures-evil-initial-state-as-emacs e-chat-test-overview-mode-neutralizes-evil e-chat-test-evil-local-mode-hook-disables-reactivation e-chat-test-overview-renders-sessions-in-recency-order e-chat-test-overview-compacts-multiline-session-summary e-chat-test-overview-styles-session-row-regions e-chat-test-overview-hides-summary-when-title-is-derived e-chat-test-overview-j-k-move-by-session-and-preview e-chat-test-overview-open-session-marks-session-read e-chat-test-sidebar-toggle-opens-and-closes-overview e-chat-test-shell-descriptor-advertises-chat-surface
 rtk eldev test -f test/e-chat-test.el
 #+end_src
 
 Result:
 
 - targeted overview/shell tests: 3 expected, 0 unexpected
-- full chat shell test file: 140 expected, 1 skipped, 0 unexpected
+- targeted overview/sidebar polish tests: 8 expected, 0 unexpected
+- targeted overview/sidebar modal tests: 11 expected, 0 unexpected
+- full chat shell test file: 147 expected, 1 skipped, 0 unexpected
 
 Live Emacs:
 
@@ -49,6 +55,17 @@ Live Emacs:
 - A temporary live harness probe verified newest-first overview ordering,
   opening the selected session, persisting the latest assistant read marker, and
   clearing the unread marker after open.
+- After sidebar row styling, a live =*e-chat-overview*= refresh showed compact
+  multi-line rows with separate title, metadata, and summary faces.
+- After sidebar interaction fixes, a live =*e-chat-overview*= probe confirmed
+  no row-wide =mouse-face=, =j= moved to the next session id, and the preview
+  buffer was live.
+- After overview modal fixes, sidebar buffers disable local Evil state, =RET=,
+  =j=, and =k= resolve to overview commands, and
+  =e-chat-sidebar-toggle= selects the sidebar window when opening it.
+- The latest modal-fix pass reloaded successfully with =e-dev-reload=; a live
+  key macro probe confirmed =j= moved from the first session row to the next
+  session row and left the overview selected with a live preview buffer.
 
 * Review Notes
 

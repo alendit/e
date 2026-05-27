@@ -1,0 +1,48 @@
+#+title: e-chat overview renders raw prompt context investigation
+#+startup: overview
+
+* Investigation
+
+Live Emacs inspection showed that =*e-chat-overview*= was correctly in
+=e-chat-overview-mode=, with no local =e-chat-mode= session attachment. The
+buffer was not an accidental chat buffer reuse.
+
+The root cause was =e-chat-overview--insert-session-row= inserting raw
+=:title= and =:summary= fields from =e-harness-session-list=. Those fields can
+come from the first user prompt, which may include multiline context/reference
+payloads. The overview renderer therefore expanded one logical row into prompt
+context and reference blocks.
+
+* Fix
+
+The overview renderer now strips inline reference tags, ignores raw reference
+listing lines, compacts row title and summary text to the first meaningful line
+before insertion, and caps the displayed length. It also avoids printing the
+summary when it is identical to the compacted title.
+
+* Verification
+
+Added =e-chat-test-overview-compacts-multiline-session-summary=, which failed
+before the fix because the rendered overview contained =<reference= and
+=References:= text.
+
+Ran:
+
+#+begin_src sh
+rtk eldev test -f test/e-chat-test.el e-chat-test-overview-compacts-multiline-session-summary
+rtk eldev test -f test/e-chat-test.el e-chat-test-overview-renders-sessions-in-recency-order e-chat-test-overview-compacts-multiline-session-summary e-chat-test-overview-open-session-marks-session-read e-chat-test-sidebar-toggle-opens-and-closes-overview e-chat-test-shell-descriptor-advertises-chat-surface
+rtk eldev test -f test/e-chat-test.el
+#+end_src
+
+Result:
+
+- focused regression test: 1 expected, 0 unexpected
+- related overview/sidebar tests: 5 expected, 0 unexpected
+- full chat shell test file: 147 expected, 1 skipped, 0 unexpected
+
+Live Emacs:
+
+- Reloaded the repo with =e-dev-reload=.
+- Refreshed the visible =*e-chat-overview*= buffer.
+- Confirmed =e-chat-sidebar-toggle= is an interactive command and the live
+  overview buffer no longer contains =<reference= or =References:= text.

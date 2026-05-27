@@ -274,6 +274,26 @@ The mode line uses this presentation-owned table for context usage display."
   "Face used for inline context references in the composer."
   :group 'e-chat)
 
+(defface e-chat-overview-unread-face
+  '((t :inherit warning :weight bold))
+  "Face used for unread markers in the chat session overview."
+  :group 'e-chat)
+
+(defface e-chat-overview-title-face
+  '((t :inherit default :weight bold))
+  "Face used for session titles in the chat session overview."
+  :group 'e-chat)
+
+(defface e-chat-overview-meta-face
+  '((t :inherit shadow))
+  "Face used for compact session metadata in the chat session overview."
+  :group 'e-chat)
+
+(defface e-chat-overview-summary-face
+  '((t :inherit shadow :slant italic))
+  "Face used for session summaries in the chat session overview."
+  :group 'e-chat)
+
 (defconst e-chat--user-face-spec
   '((t :inherit default
        :foreground "#d7ecff"
@@ -334,6 +354,22 @@ The mode line uses this presentation-owned table for context usage display."
        :extend t))
   "Default face spec for separators between intermittent activity rounds.")
 
+(defconst e-chat--overview-unread-face-spec
+  '((t :inherit warning :weight bold))
+  "Default face spec for unread overview markers.")
+
+(defconst e-chat--overview-title-face-spec
+  '((t :inherit default :weight bold))
+  "Default face spec for overview session titles.")
+
+(defconst e-chat--overview-meta-face-spec
+  '((t :inherit shadow))
+  "Default face spec for overview session metadata.")
+
+(defconst e-chat--overview-summary-face-spec
+  '((t :inherit shadow :slant italic))
+  "Default face spec for overview session summaries.")
+
 (defun e-chat--refresh-face-specs ()
   "Refresh chat face defaults after live reload."
   (face-spec-set 'e-chat-user-face e-chat--user-face-spec)
@@ -348,7 +384,15 @@ The mode line uses this presentation-owned table for context usage display."
   (face-spec-set 'e-chat-response-separator-face
                  e-chat--response-separator-face-spec)
   (face-spec-set 'e-chat-activity-separator-face
-                 e-chat--activity-separator-face-spec))
+                 e-chat--activity-separator-face-spec)
+  (face-spec-set 'e-chat-overview-unread-face
+                 e-chat--overview-unread-face-spec)
+  (face-spec-set 'e-chat-overview-title-face
+                 e-chat--overview-title-face-spec)
+  (face-spec-set 'e-chat-overview-meta-face
+                 e-chat--overview-meta-face-spec)
+  (face-spec-set 'e-chat-overview-summary-face
+                 e-chat--overview-summary-face-spec))
 
 (e-chat--refresh-face-specs)
 
@@ -668,6 +712,8 @@ The mode line uses this presentation-owned table for context usage display."
     (define-key map (kbd "RET") #'e-chat-overview-open-session)
     (define-key map (kbd "o") #'e-chat-overview-open-session)
     (define-key map (kbd "v") #'e-chat-overview-preview-session)
+    (define-key map (kbd "j") #'e-chat-overview-next-session)
+    (define-key map (kbd "k") #'e-chat-overview-previous-session)
     (define-key map (kbd "g") #'e-chat-overview-refresh)
     (define-key map (kbd "q") #'e-chat-overview-close)
     map))
@@ -765,6 +811,8 @@ The mode line uses this presentation-owned table for context usage display."
 (define-derived-mode e-chat-overview-mode special-mode "e-chat-overview"
   "Major mode for the e chat session overview."
   (add-hook 'kill-buffer-hook #'e-chat-overview--unsubscribe nil t)
+  (add-hook 'evil-local-mode-hook #'e-chat--enforce-modal-editing-policy nil t)
+  (e-chat--disable-modal-editing)
   (setq-local truncate-lines t))
 
 ;;;###autoload
@@ -786,7 +834,8 @@ The mode line uses this presentation-owned table for context usage display."
 
 (defun e-chat--enforce-modal-editing-policy ()
   "Disable modal editing when it is reactivated in chat buffers."
-  (when (and (derived-mode-p 'e-chat-mode)
+  (when (and (or (derived-mode-p 'e-chat-mode)
+                 (derived-mode-p 'e-chat-overview-mode))
              (boundp 'evil-local-mode)
              evil-local-mode)
     (e-chat--disable-modal-editing)))
@@ -794,7 +843,8 @@ The mode line uses this presentation-owned table for context usage display."
 (defun e-chat--configure-modal-editing-policy ()
   "Configure modal editors to keep `e-chat-mode' non-normal."
   (when (fboundp 'evil-set-initial-state)
-    (evil-set-initial-state 'e-chat-mode 'emacs)))
+    (evil-set-initial-state 'e-chat-mode 'emacs)
+    (evil-set-initial-state 'e-chat-overview-mode 'emacs)))
 
 (e-chat--configure-modal-editing-policy)
 (with-eval-after-load 'evil
@@ -4516,30 +4566,100 @@ When DISPLAY is non-nil, show the target chat buffer."
   (or (get-text-property (point) 'e-chat-session-id)
       (get-text-property (line-beginning-position) 'e-chat-session-id)))
 
+(defun e-chat-overview--compact-row-text (text max-chars)
+  "Return TEXT as a single overview row fragment capped at MAX-CHARS."
+  (when (stringp text)
+    (let ((lines (split-string (replace-regexp-in-string "\r" "" text) "\n"))
+          compact)
+      (while (and lines (not compact))
+        (let* ((line (pop lines))
+               (line (replace-regexp-in-string
+                      "</?reference\\b[^>]*>" "" line))
+               (line (string-trim line)))
+          (unless (or (string-empty-p line)
+                      (string-match-p "</?reference\\b" line)
+                      (string= line "References:")
+                      (string-match-p "\\`\\[[^]]+\\]" line))
+            (setq compact (replace-regexp-in-string "[ \t]+" " " line)))))
+      (when compact
+        (if (> (length compact) max-chars)
+            (concat (substring compact 0 max-chars) "...")
+          compact)))))
+
+(defun e-chat-overview--compact-timestamp (timestamp)
+  "Return TIMESTAMP in compact sidebar form."
+  (if (and (stringp timestamp)
+           (string-match
+            "\\`[0-9]\\{4\\}-\\([0-9][0-9]\\)-\\([0-9][0-9]\\)T\\([0-9][0-9]\\):\\([0-9][0-9]\\)"
+            timestamp))
+      (format "%s-%s %s:%s"
+              (match-string 1 timestamp)
+              (match-string 2 timestamp)
+              (match-string 3 timestamp)
+              (match-string 4 timestamp))
+    timestamp))
+
+(defun e-chat-overview--insert-faced (text face)
+  "Insert TEXT with FONT-LOCK FACE."
+  (let ((start (point)))
+    (insert text)
+    (add-text-properties start (point) `(font-lock-face ,face))))
+
+(defun e-chat-overview--summary-duplicates-title-p (summary title)
+  "Return non-nil when SUMMARY is already represented by TITLE."
+  (and (stringp summary)
+       (stringp title)
+       (let ((prefix (if (string-suffix-p "..." title)
+                         (string-remove-suffix "..." title)
+                       title)))
+         (or (string= summary title)
+             (and (not (string-empty-p prefix))
+                  (string-prefix-p prefix summary))))))
+
 (defun e-chat-overview--insert-session-row (harness session)
   "Insert one overview row for SESSION from HARNESS."
   (let* ((session-id (plist-get session :id))
-         (title (or (plist-get session :title) session-id))
-         (summary (plist-get session :summary))
+         (summary (e-chat-overview--compact-row-text
+                   (plist-get session :summary)
+                   72))
+         (title (or (e-chat-overview--compact-row-text
+                     (plist-get session :title)
+                     48)
+                    summary
+                    session-id))
          (message-count (or (plist-get session :message-count) 0))
          (last-message-at (or (plist-get session :last-message-at)
                               (plist-get session :created-at)))
+         (metadata (string-join
+                    (delq nil
+                          (list (format "[%s]"
+                                        (e-chat--short-session-id session-id))
+                                (when (> message-count 0)
+                                  (format "%d %s"
+                                          message-count
+                                          (if (= message-count 1)
+                                              "msg"
+                                            "msgs")))
+                                (e-chat-overview--compact-timestamp
+                                 last-message-at)))
+                    "  "))
          (unread (e-chat-overview--session-unread-p harness session))
          (start (point)))
-    (insert (format "%s %s  [%s]"
-                    (if unread "!" " ")
-                    title
-                    (e-chat--short-session-id session-id)))
-    (when (> message-count 0)
-      (insert (format "  %d" message-count)))
-    (when last-message-at
-      (insert (format "  %s" last-message-at)))
-    (when (and summary (not (string-empty-p summary)))
-      (insert (format "\n  %s" (string-trim summary))))
-    (insert "\n")
+    (e-chat-overview--insert-faced (if unread "! " "  ")
+                                   (if unread
+                                       'e-chat-overview-unread-face
+                                     'e-chat-overview-meta-face))
+    (e-chat-overview--insert-faced title 'e-chat-overview-title-face)
+    (insert "\n  ")
+    (e-chat-overview--insert-faced metadata 'e-chat-overview-meta-face)
+    (when (and summary
+               (not (e-chat-overview--summary-duplicates-title-p
+                     summary title)))
+      (insert "\n  ")
+      (e-chat-overview--insert-faced summary 'e-chat-overview-summary-face))
+    (insert "\n\n")
     (add-text-properties start (point)
                          `(e-chat-session-id ,session-id
-                           mouse-face highlight
                            help-echo "RET opens this e chat session"))))
 
 (defun e-chat-overview--render (&optional harness)
@@ -4572,6 +4692,71 @@ When DISPLAY is non-nil, show the target chat buffer."
            :key (lambda (session) (plist-get session :id))
            :test #'equal))
 
+(defun e-chat-overview--session-row-starts ()
+  "Return overview session row starts as (POSITION . SESSION-ID) pairs."
+  (let ((pos (point-min))
+        (limit (point-max))
+        last-id
+        rows)
+    (while (< pos limit)
+      (let ((session-id (get-text-property pos 'e-chat-session-id)))
+        (when (and session-id (not (equal session-id last-id)))
+          (push (cons pos session-id) rows))
+        (setq last-id session-id)
+        (setq pos (or (next-single-property-change
+                       pos 'e-chat-session-id nil limit)
+                      limit))))
+    (nreverse rows)))
+
+(defun e-chat-overview--current-session-row-index (rows)
+  "Return current session row index in ROWS."
+  (let ((session-id (e-chat-overview--session-id-at-point)))
+    (or (cl-position session-id rows
+                     :key #'cdr
+                     :test #'equal)
+        (user-error "No e chat session at point"))))
+
+(defun e-chat-overview--preview-session-at-point (&optional display)
+  "Preview the overview session at point.
+When DISPLAY is non-nil, display the preview buffer."
+  (let* ((harness (or e-chat-overview--harness
+                      (e-chat--default-harness)))
+         (session-id (or (e-chat-overview--session-id-at-point)
+                         (user-error "No e chat session at point")))
+         (session (or (e-chat-overview--session-for-id harness session-id)
+                      (user-error "No e chat session at point")))
+         (buffer (e-chat--render-resume-preview harness session)))
+    (when display
+      (display-buffer buffer))
+    buffer))
+
+(defun e-chat-overview--goto-session-row (index)
+  "Move point to overview session row INDEX and preview it."
+  (let* ((rows (e-chat-overview--session-row-starts))
+         (row (nth index rows)))
+    (unless row
+      (user-error "No e chat session at target"))
+    (goto-char (car row))
+    (e-chat-overview--preview-session-at-point t)))
+
+(defun e-chat-overview-next-session ()
+  "Move to the next overview session row and preview it."
+  (interactive)
+  (let* ((rows (e-chat-overview--session-row-starts))
+         (index (e-chat-overview--current-session-row-index rows)))
+    (when (>= (1+ index) (length rows))
+      (user-error "No next e chat session"))
+    (e-chat-overview--goto-session-row (1+ index))))
+
+(defun e-chat-overview-previous-session ()
+  "Move to the previous overview session row and preview it."
+  (interactive)
+  (let* ((rows (e-chat-overview--session-row-starts))
+         (index (e-chat-overview--current-session-row-index rows)))
+    (when (<= index 0)
+      (user-error "No previous e chat session"))
+    (e-chat-overview--goto-session-row (1- index))))
+
 (defun e-chat-overview-open-session ()
   "Open the overview session at point and mark assistant output read."
   (interactive)
@@ -4593,16 +4778,8 @@ When DISPLAY is non-nil, show the target chat buffer."
 (defun e-chat-overview-preview-session ()
   "Preview the overview session at point."
   (interactive)
-  (let* ((harness (or e-chat-overview--harness
-                      (e-chat--default-harness)))
-         (session-id (or (e-chat-overview--session-id-at-point)
-                         (user-error "No e chat session at point")))
-         (session (or (e-chat-overview--session-for-id harness session-id)
-                      (user-error "No e chat session at point")))
-         (buffer (e-chat--render-resume-preview harness session)))
-    (when (called-interactively-p 'interactive)
-      (display-buffer buffer))
-    buffer))
+  (e-chat-overview--preview-session-at-point
+   (called-interactively-p 'interactive)))
 
 (defun e-chat-overview-refresh ()
   "Refresh the current overview buffer."
@@ -4632,6 +4809,20 @@ When DISPLAY is non-nil, show the target chat buffer."
               (when (derived-mode-p 'e-chat-overview-mode)
                 (e-chat-overview--render harness))))))))))
 
+(defun e-chat-overview--display (buffer)
+  "Display overview BUFFER as the chat session sidebar."
+  (display-buffer-in-side-window
+   buffer
+   '((side . left)
+     (slot . -1)
+     (window-width . 36))))
+
+(defun e-chat-overview--visible-window ()
+  "Return the visible overview sidebar window, or nil."
+  (when-let ((buffer (get-buffer e-chat-overview-buffer-name))
+             (window (get-buffer-window buffer t)))
+    (and (window-live-p window) window)))
+
 ;;;###autoload
 (defun e-chat-overview ()
   "Open the e chat session overview sidebar."
@@ -4644,11 +4835,7 @@ When DISPLAY is non-nil, show the target chat buffer."
       (e-chat-overview--render harness)
       (e-chat-overview--subscribe buffer harness))
     (when (called-interactively-p 'interactive)
-      (display-buffer-in-side-window
-       buffer
-       '((side . left)
-         (slot . -1)
-         (window-width . 36))))
+      (e-chat-overview--display buffer))
     buffer))
 
 ;;;###autoload
@@ -4660,6 +4847,16 @@ When DISPLAY is non-nil, show the target chat buffer."
       (when-let ((window (get-buffer-window buffer t)))
         (delete-window window))
       (kill-buffer buffer))))
+
+;;;###autoload
+(defun e-chat-sidebar-toggle ()
+  "Open or close the e chat session overview sidebar."
+  (interactive)
+  (if (e-chat-overview--visible-window)
+      (e-chat-overview-close)
+    (let ((window (e-chat-overview--display (e-chat-overview))))
+      (when (window-live-p window)
+        (select-window window)))))
 
 ;;;###autoload
 (defun e-chat-add-context-to-latest ()
@@ -4838,6 +5035,12 @@ When DISPLAY is non-nil, show the target chat buffer."
      :summary "Open the chat session overview sidebar."
      :interactive 'e-chat-overview
      :function 'e-chat-overview
+     :scope 'global)
+    (e-shell-command-create
+     :id 'sidebar-toggle
+     :summary "Toggle the chat session overview sidebar."
+     :interactive 'e-chat-sidebar-toggle
+     :function 'e-chat-sidebar-toggle
      :scope 'global)
     (e-shell-command-create
      :id 'overview-close

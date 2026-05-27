@@ -1,0 +1,10 @@
+#+title: e-chat overview renders raw prompt context
+#+startup: overview
+
+* Report
+
+The operator reported that the Feature 12 sidebar toggle opened a side buffer
+that looked like a chat transcript instead of a compact session overview.
+
+The visible =*e-chat-overview*= buffer showed full prompt context, including
+=<reference ...>= blocks and =References:= text, under individual session rows.

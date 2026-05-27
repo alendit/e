@@ -1,0 +1,37 @@
+#+title: Missing Chat Sidebar Toggle Command Investigation
+#+date: 2026-05-26
+
+* Investigation
+
+Source inspection found overview commands implemented in
+=lisp/shells/chat/e-chat.el=:
+
+- =e-chat-overview=
+- =e-chat-overview-close=
+
+No =e-chat-sidebar-toggle= definition was present.
+
+Live Emacs inspection with:
+
+#+begin_src elisp
+(list (fboundp 'e-chat-sidebar-toggle)
+      (commandp 'e-chat-sidebar-toggle)
+      (featurep 'e-chat)
+      (featurep 'e-session-overview))
+#+end_src
+
+returned:
+
+#+begin_example
+(nil nil t nil)
+#+end_example
+
+A follow-up check confirmed =e-chat-overview= and =e-chat-overview-close= are
+both defined interactive commands in the running Emacs.
+
+* Conclusion
+
+The feature was implemented under the =e-chat-overview= name, but the planned
+user-facing =e-chat-sidebar-toggle= command was not added. Add an interactive
+wrapper command that toggles the visible overview side window and advertise it
+through the chat shell manifest.
