@@ -1,0 +1,68 @@
+#+title: e-chat-new fails with plistp error on legacy index format
+
+* Symptom
+
+Calling =e-chat-new= signals:
+
+#+begin_example
+Wrong type argument: plistp, ("20260520T141022-0a10b3f5d1cc" "name" nil "summary" "What's my upcoming appointments?" "title" "What's my upcoming appointments?" "message-count" 32 "created-at" ...)
+#+end_example
+
+* Trigger
+
+The persistent session index (~index.json~) was written by the pre-=82e2b52=
+code path that used =(json-encode index)= without =vconcat=.  That produced a
+JSON *object* with repeated ="id"= keys whose values are flat arrays:
+
+#+begin_src json
+{"id":["20260520T141022-...","name",null,"summary","What's my upcoming appointments?",...],
+ "id":["20260520T141016-...","name",null,...]}
+#+end_src
+
+* Root cause
+
+=e-session--normalize-index-entry= (added in =a191772=, "fix: load
+object-shaped session indexes") assumes the value associated with each key in
+the object-shaped branch of =e-session--index-entries= is a valid keyword plist.
+In reality, when the value is a JSON array, =json-parse-string= produces a flat
+list of alternating strings and scalars — not a keyword plist.
+
+Calling =(plist-get entry :id)= on such a list triggers the =plistp= type check
+(Emacs 29+) because the list does not satisfy =plistp=: it starts with a plain
+string, and its "keys" are strings rather than keywords/symbols.
+
+* Affected code path
+
+1. =e-chat-new= → =e-chat-open= → =e-chat--create-session=
+2. =e-harness-create-session= → =e-session-create=
+3. =e-session-create= calls =(gethash id (e-session-store-sessions store))=
+   but sessions were never populated because =e-session--load-index= failed
+   silently (the error escapes from =e-session--index-entries= /
+   =e-session--normalize-index-entry= before any entries are stored).
+
+Actually: the =plistp= error propagates *up* from index loading at harness
+creation time (=e-default-session-store= → =e-session-persistent-index-store-create=
+→ =e-session--load-index= → =e-session--index-entries= →
+=e-session--normalize-index-entry=).
+
+* File on disk
+
+=/Users/dvorona/.config/emacs/.local/cache/e/sessions/index.json=
+
+* Reproduction
+
+Any =index.json= written before commit =82e2b52= (which added =vconcat=) will
+have the broken object-with-array-values format.  Loading it with the current
+reader triggers the crash.
+
+* Fix direction (not yet applied)
+
+=e-session--normalize-index-entry= must detect the array-of-strings format and
+either:
+- Convert it to a keyword plist (first element is the id, remaining pairs are
+  string-key / value), or
+- Return nil (skip the entry, fall through to session-file-based loading).
+
+Alternatively, wrap =e-session--normalize-index-entry= calls in the
+object-shaped branch with a =condition-case= to gracefully skip unparseable
+entries.

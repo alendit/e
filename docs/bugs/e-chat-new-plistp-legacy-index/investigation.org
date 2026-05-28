@@ -1,0 +1,51 @@
+#+title: Investigation: plistp error in e-chat-new
+
+* Code paths inspected
+
+** Write path (how the broken index was created)
+
+- =e-session--write-index= at =lisp/core/e-session.el:513=
+- Before commit =82e2b52=: =(insert (json-encode index) "\n")=
+- After =82e2b52=: =(insert (json-encode (vconcat index)) "\n")=
+
+Without =vconcat=, =(json-encode index)= on a list of plists produced a JSON
+object with repeated ="id"= keys (one per session entry) where each value was
+the plist encoded as a JSON array (because =json-encode= failed to recognize
+it as an object without the leading keyword at the top level).
+
+** Read path (where it crashes)
+
+1. =e-session--load-index= (line 839) calls =e-session--json-read-file=
+2. =json-parse-string= with =:object-type 'plist= produces =(:id (...) :id (...)...)=
+   - Duplicate =:id= keys may collapse to one depending on parser behavior
+3. =e-session--index-entries= (line 820) matches second branch:
+   =((and (consp value) (keywordp (car value))))=
+4. Loop extracts =key= = =:id=, =entry= = the flat list
+5. =e-session--normalize-index-entry= (line 807) calls =(plist-get entry :id)=
+6. =plist-get= in Emacs 29+ checks =plistp= → signals error because =entry=
+   starts with a string (the session ID), not a keyword
+
+** Commit history
+
+| Commit   | Description                          | Relevance               |
+|----------+--------------------------------------+-------------------------|
+| =0665a4f= | Initial e-session.el                 | Original write path     |
+| =82e2b52= | Fix chat resume session listing hang | Added =vconcat= to write |
+| =a191772= | Fix: load object-shaped indexes      | Added second branch     |
+
+** Live state
+
+- Index file: =/Users/dvorona/.config/emacs/.local/cache/e/sessions/index.json=
+- Contents confirm the broken format: JSON object with ="id"= keys and array values
+- Session transcript JSONL files exist alongside and are valid
+
+* Conclusion
+
+The =a191772= fix for object-shaped indexes did not account for the specific
+legacy format where values are flat arrays (produced by the old =json-encode=
+without =vconcat=).  It only handles the case where values are proper JSON
+objects (which would parse into keyword plists).
+
+The simplest fix: detect when =entry= is not a valid plist in
+=e-session--normalize-index-entry= and attempt to parse it as the known legacy
+array format =(id key val key val ...)=, converting string keys to keywords.

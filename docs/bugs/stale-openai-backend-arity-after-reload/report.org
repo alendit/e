@@ -1,0 +1,15 @@
+#+title: Stale OpenAI Backend Arity After Reload
+#+startup: overview
+
+* Report
+
+The latest call in the current chat failed with:
+
+#+begin_example
+Turn failed: Wrong number of arguments: #[(response context on-item) ...], 2
+#+end_example
+
+The failing function was =e-openai--emit-response-items=.  The live function
+expected =(response context on-item)=, but the current chat turn invoked it with
+only =(response on-item)=.
+

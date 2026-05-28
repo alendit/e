@@ -73,10 +73,10 @@ Set this to nil to deliberately disable provider HTTP request timeouts."
      :requires-openai-auth t))
   "OpenAI-like model provider profiles keyed by provider symbol.
 
-Each profile is plist data.  `:wire-api' currently supports only
-`responses'.  Profiles with `:requires-openai-auth' non-nil use Codex-managed
-ChatGPT auth.  Profiles with `:requires-openai-auth' nil read a bearer token
-from `:env-key'."
+Each profile is plist data.  `:wire-api' supports `responses' and
+`chat-completion' (`chat-completions' is accepted as a compatibility alias).
+Profiles with `:requires-openai-auth' non-nil use Codex-managed ChatGPT auth.
+Profiles with `:requires-openai-auth' nil read a bearer token from `:env-key'."
   :type '(alist :key-type symbol :value-type sexp)
   :group 'e-openai)
 
@@ -104,9 +104,10 @@ When PROVIDER is nil, use `e-openai-default-provider'."
               (list (format "Unknown provider profile: %S" provider))))
     (let ((profile (cdr entry)))
       (unless (and (listp profile)
-                   (eq (plist-get profile :wire-api) 'responses))
+                   (memq (plist-get profile :wire-api)
+                         '(responses chat-completion chat-completions)))
         (signal 'e-openai-provider-invalid
-                (list (format "Provider %S must use :wire-api responses"
+                (list (format "Provider %S must use :wire-api responses or chat-completion"
                               provider))))
       profile)))
 
@@ -128,6 +129,13 @@ When PROVIDER is nil, use `e-openai-default-provider'."
   (or explicit-model
       (plist-get profile :default-model)
       e-openai-default-model))
+
+(defun e-openai--provider-wire-api (profile)
+  "Return PROFILE's normalized wire API."
+  (let ((wire-api (plist-get profile :wire-api)))
+    (if (eq wire-api 'chat-completions)
+        'chat-completion
+      wire-api)))
 
 (defun e-openai--env-token (env-key)
   "Return bearer token from ENV-KEY or signal an auth error."
@@ -303,12 +311,90 @@ When CODEX-HOME is nil, use the CODEX_HOME environment variable or
       (setq body (append body (list :reasoning reasoning))))
     body))
 
+
+(defun e-openai-chat-completion--message-content (content)
+  "Return Chat Completions message content for CONTENT."
+  (if (stringp content) content (or content "")))
+
+(defun e-openai-chat-completion--tool-definition (tool)
+  "Map backend-neutral TOOL to a Chat Completions tool definition."
+  (let ((function (list :name (plist-get tool :name)
+                        :description (plist-get tool :description)
+                        :parameters (plist-get tool :parameters))))
+    (when (plist-get tool :strict)
+      (setq function (append function (list :strict (plist-get tool :strict)))))
+    (list :type "function" :function function)))
+
+(defun e-openai-chat-completion--tool-definitions (tools)
+  "Map backend-neutral TOOLS to Chat Completions tool definitions."
+  (vconcat (mapcar #'e-openai-chat-completion--tool-definition tools)))
+
+(defun e-openai-chat-completion--message (message)
+  "Map backend-neutral MESSAGE to a Chat Completions message."
+  (let ((role (plist-get message :role))
+        (content (plist-get message :content)))
+    (pcase role
+      ('tool-call
+       (let ((arguments (json-encode
+                         (or (plist-get content :arguments)
+                             (make-hash-table :test 'equal)))))
+         (list :role "assistant"
+               :content nil
+               :tool_calls
+               (vector
+                (list :id (plist-get content :id)
+                      :type "function"
+                      :function (list :name (plist-get content :name)
+                                      :arguments arguments))))))
+      ('tool
+       (let ((result content))
+         (list :role "tool"
+               :tool_call_id (plist-get result :tool-call-id)
+               :content (e-tools-result-content-text
+                         (plist-get result :content)))))
+      (_
+       (list :role (symbol-name role)
+             :content (e-openai-chat-completion--message-content content))))))
+
+(defun e-openai-chat-completion--messages (messages options)
+  "Return Chat Completions messages from backend-neutral MESSAGES and OPTIONS."
+  (let ((instructions (or (plist-get options :instructions)
+                          "You are a helpful assistant.")))
+    (vconcat
+     (append
+      (when (and (stringp instructions)
+                 (not (string-empty-p instructions)))
+        (list (list :role "system" :content instructions)))
+      (mapcar #'e-openai-chat-completion--message messages)))))
+
+(cl-defun e-openai-chat-completion-request-body (&key messages options tools)
+  "Build a Chat Completions request body from MESSAGES, OPTIONS, and TOOLS."
+  (let ((body (list :model (or (plist-get options :model)
+                               e-openai-default-model)
+                    :stream t
+                    :messages (e-openai-chat-completion--messages
+                               messages
+                               options))))
+    (when tools
+      (setq body (append body
+                         (list :tools
+                               (e-openai-chat-completion--tool-definitions tools)
+                               :tool_choice "auto"))))
+    body))
+
 (defun e-openai-responses-url (base-url)
   "Return the Responses endpoint URL for BASE-URL."
   (let ((normalized (string-remove-suffix "/" base-url)))
     (if (string-suffix-p "/responses" normalized)
         normalized
       (concat normalized "/responses"))))
+
+(defun e-openai-chat-completion-url (base-url)
+  "Return the Chat Completions endpoint URL for BASE-URL."
+  (let ((normalized (string-remove-suffix "/" base-url)))
+    (if (string-suffix-p "/chat/completions" normalized)
+        normalized
+      (concat normalized "/chat/completions"))))
 
 (defun e-openai-codex-url (&optional base-url)
   "Return the Codex Responses URL for BASE-URL."
@@ -706,12 +792,165 @@ condition list.  Return a cancellable `e-backend-request' handle."
                   :events (nreverse event-summaries))))
     (nreverse items)))
 
+
+(defun e-openai-chat-completion--choice-delta (choice)
+  "Return CHOICE delta plist from a Chat Completions chunk."
+  (plist-get choice :delta))
+
+(defun e-openai-chat-completion--delta-content (delta)
+  "Return text content from Chat Completions DELTA."
+  (let ((content (plist-get delta :content)))
+    (when (stringp content) content)))
+
+(defun e-openai-chat-completion--delta-tool-calls (delta)
+  "Return tool-call deltas from Chat Completions DELTA."
+  (e-openai-codex--sequence-list (plist-get delta :tool_calls)))
+
+(defun e-openai-chat-completion--usage-item (usage)
+  "Return provider-neutral token usage item for Chat Completions USAGE."
+  (when (consp usage)
+    (let* ((prompt-details (plist-get usage :prompt_tokens_details))
+           (completion-details (plist-get usage :completion_tokens_details))
+           (normalized
+            (list
+             :input-tokens
+             (e-openai-codex--number-or-nil
+              (plist-get usage :prompt_tokens))
+             :cached-input-tokens
+             (e-openai-codex--number-or-nil
+              (plist-get prompt-details :cached_tokens))
+             :output-tokens
+             (e-openai-codex--number-or-nil
+              (plist-get usage :completion_tokens))
+             :reasoning-output-tokens
+             (e-openai-codex--number-or-nil
+              (plist-get completion-details :reasoning_tokens))
+             :total-tokens
+             (e-openai-codex--number-or-nil
+              (plist-get usage :total_tokens)))))
+      (list :type 'token-usage :usage normalized))))
+
+(defun e-openai-chat-completion--tool-call-key (tool-call fallback-index)
+  "Return stable accumulator key for TOOL-CALL with FALLBACK-INDEX."
+  (or (plist-get tool-call :index)
+      (plist-get tool-call :id)
+      fallback-index))
+
+(defun e-openai-chat-completion--merge-tool-call-delta
+    (state tool-call fallback-index)
+  "Merge one TOOL-CALL delta into STATE and return its accumulator."
+  (let* ((key (e-openai-chat-completion--tool-call-key tool-call fallback-index))
+         (existing (or (assoc key state)
+                       (let ((entry (cons key (list :arguments ""))))
+                         (push entry state)
+                         entry)))
+         (acc (cdr existing))
+         (function (plist-get tool-call :function)))
+    (when (plist-get tool-call :id)
+      (setq acc (plist-put acc :id (plist-get tool-call :id))))
+    (when (plist-get function :name)
+      (setq acc (plist-put acc :name (plist-get function :name))))
+    (when (plist-member function :arguments)
+      (setq acc (plist-put acc :arguments
+                           (concat (or (plist-get acc :arguments) "")
+                                   (or (plist-get function :arguments) "")))))
+    (setcdr existing acc)
+    (cons state acc)))
+
+(defun e-openai-chat-completion--finish-reason-symbol (reason)
+  "Return provider-neutral done reason for Chat Completions REASON."
+  (cond
+   ((or (null reason) (equal reason "stop")) 'stop)
+   ((equal reason "length") 'length)
+   ((equal reason "tool_calls") 'tool-calls)
+   ((equal reason "content_filter") 'content-filter)
+   (t (intern (replace-regexp-in-string "_" "-" (format "%s" reason))))))
+
+(defun e-openai-chat-completion-parse-stream (stream-text)
+  "Parse Chat Completions STREAM-TEXT into backend-neutral items."
+  (e-openai-codex--append-raw-response stream-text)
+  (let ((items nil)
+        (text-parts nil)
+        (tool-state nil)
+        (done-seen nil))
+    (cl-labels
+        ((emit-tool-calls
+          ()
+          (dolist (entry (nreverse tool-state))
+            (let* ((acc (cdr entry))
+                   (arguments (plist-get acc :arguments)))
+              (when (and (plist-get acc :id)
+                         (plist-get acc :name))
+                (push (list :type 'tool-call
+                            :id (plist-get acc :id)
+                            :name (plist-get acc :name)
+                            :arguments
+                            (e-openai-codex--parse-function-arguments
+                             arguments))
+                      items))))))
+      (dolist (chunk (split-string stream-text "\n\n" t))
+        (let ((data-lines nil))
+          (dolist (line (split-string chunk "\n"))
+            (when (string-prefix-p "data:" line)
+              (push (string-trim (substring line 5)) data-lines)))
+          (when data-lines
+            (let ((data (string-join (nreverse data-lines) "\n")))
+              (cond
+               ((or (string-empty-p data) (equal data "[DONE]")) nil)
+               (t
+                (let* ((event (e-openai-codex--parse-json data))
+                       (usage-item
+                        (e-openai-chat-completion--usage-item
+                         (plist-get event :usage))))
+                  (when usage-item
+                    (push usage-item items))
+                  (dolist (choice (e-openai-codex--sequence-list
+                                   (plist-get event :choices)))
+                    (let* ((delta (e-openai-chat-completion--choice-delta
+                                   choice))
+                           (content
+                            (e-openai-chat-completion--delta-content delta))
+                           (tool-calls
+                            (e-openai-chat-completion--delta-tool-calls delta))
+                           (finish-reason (plist-get choice :finish_reason)))
+                      (when content
+                        (push content text-parts)
+                        (push (list :type 'assistant-delta
+                                    :content content)
+                              items))
+                      (cl-loop for tool-call in tool-calls
+                               for index from 0
+                               do (let ((merged
+                                         (e-openai-chat-completion--merge-tool-call-delta
+                                          tool-state tool-call index)))
+                                    (setq tool-state (car merged))))
+                      (when finish-reason
+                        (unless done-seen
+                          (emit-tool-calls)
+                          (unless tool-state
+                            (when text-parts
+                              (push (list :type 'assistant-message
+                                          :content (apply #'concat
+                                                          (nreverse text-parts)))
+                                    items)))
+                          (push (list :type 'done
+                                      :reason
+                                      (e-openai-chat-completion--finish-reason-symbol
+                                       finish-reason))
+                                items)
+                          (setq done-seen t))))))))))))
+    (unless items
+      (when-let ((error-item (e-openai-codex--json-error-item stream-text)))
+        (push error-item items)))
+    (nreverse items))))
+
 (cl-defun e-openai--request-context
     (&key provider auth-file base-url model messages options)
   "Return adapter-local request context for PROVIDER request data.
 AUTH-FILE, BASE-URL, MODEL, MESSAGES, and OPTIONS contribute to the encoded
 OpenAI request and backend-neutral context."
   (let* ((profile (e-openai-provider-profile provider))
+         (wire-api (e-openai--provider-wire-api profile))
          (effective-options (copy-sequence options))
          (_ (unless (plist-get effective-options :model)
               (setq effective-options
@@ -719,35 +958,53 @@ OpenAI request and backend-neutral context."
                                :model
                                (e-openai--provider-model profile model)))))
          (body (json-encode
-                (e-openai-codex-request-body
-                 :messages messages
-                 :options effective-options
-                 :tools (plist-get effective-options :tools))))
+                (pcase wire-api
+                  ('responses
+                   (e-openai-codex-request-body
+                    :messages messages
+                    :options effective-options
+                    :tools (plist-get effective-options :tools)))
+                  ('chat-completion
+                   (e-openai-chat-completion-request-body
+                    :messages messages
+                    :options effective-options
+                    :tools (plist-get effective-options :tools))))))
          (session-id (plist-get effective-options :session-id))
-         (url (e-openai-responses-url
-               (or base-url
-                   (e-openai--provider-base-url profile))))
+         (url (pcase wire-api
+                ('responses
+                 (e-openai-responses-url
+                  (or base-url
+                      (e-openai--provider-base-url profile))))
+                ('chat-completion
+                 (e-openai-chat-completion-url
+                  (or base-url
+                      (e-openai--provider-base-url profile))))))
          (headers (e-openai--headers
                    :profile profile
                    :auth-file auth-file
                    :session-id session-id)))
     (list :provider provider
+          :wire-api wire-api
           :url url
           :headers headers
           :body body)))
 
-(defun e-openai--emit-response-items (response on-item)
-  "Parse RESPONSE and emit backend-neutral items through ON-ITEM."
-  (dolist (item (e-openai-codex-parse-stream response))
+(defun e-openai--emit-response-items (response context on-item)
+  "Parse RESPONSE for CONTEXT and emit backend-neutral items through ON-ITEM."
+  (dolist (item (pcase (plist-get context :wire-api)
+                  ('responses (e-openai-codex-parse-stream response))
+                  ('chat-completion
+                   (e-openai-chat-completion-parse-stream response))))
     (funcall on-item item)))
 
 (cl-defun e-openai-backend-create
     (&key provider auth-file base-url request-function name model)
-  "Create an OpenAI-like Responses backend named NAME.
+  "Create an OpenAI-like backend named NAME.
 PROVIDER selects a profile from `e-openai-model-providers'.  AUTH-FILE is used
 for Codex-managed OpenAI auth profiles.  BASE-URL overrides the profile base
 URL.  REQUEST-FUNCTION is injectable for tests.  MODEL is the backend-local
-default when turn options do not include `:model'."
+default when turn options do not include `:model'.  The provider profile's
+`:wire-api' chooses the Responses or Chat Completions request/stream mapping."
   (let ((provider (or provider e-openai-default-provider)))
     (e-backend-create
      :name (or name (e-openai-provider-name provider))
@@ -769,6 +1026,7 @@ default when turn options do not include `:model'."
             :metadata
             (append
              (list :provider (plist-get context :provider)
+                   :wire-api (plist-get context :wire-api)
                    :url (plist-get context :url)
                    :cancellable nil
                    :transport 'sync-wrapper)
@@ -779,7 +1037,7 @@ default when turn options do not include `:model'."
                          :url (plist-get context :url)
                          :headers (plist-get context :headers)
                          :body (plist-get context :body)))
-          (e-openai--emit-response-items response on-item))))
+          (e-openai--emit-response-items response context on-item))))
      :start
      (cl-function
       (lambda (&key messages options on-item on-done on-error
@@ -805,6 +1063,7 @@ default when turn options do not include `:model'."
                        :metadata
                        (append
                         (list :provider (plist-get context :provider)
+                              :wire-api (plist-get context :wire-api)
                               :url (plist-get context :url)
                               :cancellable 'queued-only
                               :transport 'injected-request-function)
@@ -825,7 +1084,7 @@ default when turn options do not include `:model'."
                                        :headers (plist-get context :headers)
                                        :body (plist-get context :body))))
                                  (e-openai--emit-response-items
-                                  response on-item)
+                                  response context on-item)
                                  (when on-done
                                    (funcall on-done '(:status done))))
                              (error
@@ -841,7 +1100,7 @@ default when turn options do not include `:model'."
                     (lambda (response)
                       (condition-case err
                           (progn
-                            (e-openai--emit-response-items response on-item)
+                            (e-openai--emit-response-items response context on-item)
                             (when on-done
                               (funcall on-done '(:status done))))
                         (error
@@ -850,7 +1109,8 @@ default when turn options do not include `:model'."
                     :on-error on-error)))
               (setf (e-backend-request-metadata request)
                     (append
-                     (list :provider (plist-get context :provider))
+                     (list :provider (plist-get context :provider)
+                           :wire-api (plist-get context :wire-api))
                      (e-backend-request-metadata request)))
               (when on-request-start
                 (funcall on-request-start request))
@@ -858,7 +1118,7 @@ default when turn options do not include `:model'."
 
 (cl-defun e-openai-create-harness
     (&key provider auth-file base-url request-function model sessions)
-  "Create a harness configured for an OpenAI-like Responses provider.
+  "Create a harness configured for an OpenAI-like provider.
 PROVIDER selects `e-openai-default-provider' when nil.  AUTH-FILE, BASE-URL,
 and REQUEST-FUNCTION configure the backend adapter.  MODEL is written into
 backend-neutral turn options by the default context strategy path used by

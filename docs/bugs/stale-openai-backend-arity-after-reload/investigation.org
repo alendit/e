@@ -1,0 +1,99 @@
+#+title: Stale OpenAI Backend Arity After Reload Investigation
+#+startup: overview
+
+* Investigation
+
+** Source inspection
+
+=lisp/adapters/openai/e-openai.el= currently defines:
+
+#+begin_example
+(defun e-openai--emit-response-items (response context on-item)
+  ...)
+#+end_example
+
+All source call sites in =lisp/adapters/openai/e-openai.el= pass three
+arguments after the Chat Completions adapter work:
+
+- =response=
+- =context=
+- =on-item=
+
+The source tree did not contain any remaining two-argument calls to
+=e-openai--emit-response-items=.
+
+** Live Emacs inspection
+
+The running Emacs had a cached =:chat-default= harness with backend
+="Local go-llm-proxy"=.  Its backend stream closure still contained the stale
+two-argument call:
+
+#+begin_example
+(e-openai--emit-response-items response on-item)
+#+end_example
+
+At the same time, the global function binding had already been reloaded to the
+new three-argument function:
+
+#+begin_example
+(response context on-item)
+#+end_example
+
+That explains the exact failure: a stale backend closure from the cached default
+harness called the newly reloaded helper using the old arity.
+
+** Root cause
+
+=e-dev-reload= reloads adapter source and then runs startup hooks.
+=e-default-harnesses-startup= reconciled layers and default context strategy on
+existing default harness instances, but it did not refresh the provider backend.
+Existing chat buffers keep a buffer-local reference to the cached harness, so the
+stale backend closure survived reload and was used by the next turn.
+
+** Fix
+
+Default harness startup now refreshes the default chat backend in place using the
+current OpenAI provider configuration.  This preserves the cached harness object,
+session store, active chat buffers, and layers while replacing stale provider
+closures.
+
+Added regression coverage in =test/e-defaults-test.el=:
+
+#+begin_example
+e-defaults-test-startup-refreshes-default-chat-backend
+#+end_example
+
+** Verification
+
+Focused regression red/green:
+
+#+begin_example
+rtk emacs -Q --batch -L . -l e.el -l test/e-defaults-test.el --eval "(ert-run-tests-batch-and-exit 'e-defaults-test-startup-refreshes-default-chat-backend)"
+#+end_example
+
+Before the fix, the test failed because the stale backend remained attached to
+the cached harness.  After the fix, it passed.
+
+Focused defaults and OpenAI adapter suite:
+
+#+begin_example
+rtk emacs -Q --batch -L . -l e.el -l test/e-defaults-test.el -l test/e-openai-test.el -f ert-run-tests-batch-and-exit
+#+end_example
+
+Result: 54 tests run, 54 results as expected, 0 unexpected.
+
+Live reload:
+
+#+begin_example
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dvorona/projects/elisp/e\"))"
+#+end_example
+
+After reload, the live chat buffer
+=*e-chat:Let's brainstorm a amazon...*= still used backend
+="Local go-llm-proxy"=, but its backend closure no longer contained the old
+two-argument call and did contain the new:
+
+#+begin_example
+(e-openai--emit-response-items response context on-item)
+#+end_example
+

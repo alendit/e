@@ -26,12 +26,9 @@ multiplying commands per backend.
 
 * Direction
 
-Introduce a domain-owned configured harness instance registry. A configured
-harness instance is bound to a particular configuration, not to a separate
-interactive command namespace. It is the user-selectable target that resolves to
-a live =e-harness= when work actually starts.
-
-A configured harness instance has:
+Introduce a domain-owned "harness instance" (name tentative) registry for
+configured runtime targets. A harness instance is a user-selectable configured
+runtime target with:
 
 - stable id, e.g. =:chat-default= or =:chat-opus=;
 - display name;
@@ -40,10 +37,9 @@ A configured harness instance has:
 - metadata such as provider/model labels for presentation;
 - optional default marker.
 
-The existing =e-harness= remains the live runtime object and API surface. The
-existing =e-harness-registry= can stay as low-level live-object/factory storage.
-The new abstraction should be the user-facing selection/catalog layer over it,
-so commands stay generic while users can choose between configured targets.
+The existing =e-harness= remains the live runtime object. The existing
+=e-harness-registry= can stay as low-level instance/factory storage. The new
+abstraction should be the user-facing selection/catalog layer over it.
 
 * User-facing behavior
 
@@ -53,8 +49,9 @@ so commands stay generic while users can choose between configured targets.
 harness instance is configured. Possible behavior:
 
 - With one chat instance: keep current behavior.
+- There still should be a "default harness instance"
 - With multiple chat instances: prompt for target using completion, then create a
-  new session in that instance.
+  new session in that instance if universal argument is used before new-chat
 - With prefix argument: always prompt for target even if a default exists.
 - A config option can choose a default target for no-prompt workflows.
 
