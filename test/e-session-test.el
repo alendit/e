@@ -111,6 +111,28 @@
                            (plist-get first :id)
                            (plist-get second :id)))))))
 
+
+(ert-deftest e-session-test-current-path-uses-entry-index ()
+  "Current-path traversal avoids repeated linear entry searches."
+  (let ((store (e-session-store-create)))
+    (e-session-create store :id "session-1")
+    (dotimes (index 25)
+      (e-session-append-message
+       store
+       "session-1"
+       (list :role 'user :content (format "message-%d" index))))
+    (let ((calls 0)
+          (index (e-session--entry-index store "session-1")))
+      (cl-letf (((symbol-function 'e-session--entries)
+                 (lambda (&rest _args)
+                   (setq calls (1+ calls))
+                   nil)))
+        (should (= (length (e-session-current-path store "session-1")) 26))
+        (should (= calls 0))
+        (clrhash index)
+        (should-not (e-session-current-path store "session-1"))
+        (should (> calls 0))))))
+
 (ert-deftest e-session-test-missing-session-surfaces-error ()
   "Appending to a missing session surfaces a domain error."
   (let ((store (e-session-store-create)))

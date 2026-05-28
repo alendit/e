@@ -19,7 +19,7 @@
 (require 'e-session-tmp-resources)
 (require 'e-tools)
 
-(defcustom e-tool-output-truncation-max-bytes (* 50 1024)
+(defcustom e-tool-output-truncation-max-bytes (* 16 1024)
   "Maximum UTF-8 bytes of tool output to expose to the model."
   :type 'integer
   :group 'e)

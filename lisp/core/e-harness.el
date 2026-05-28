@@ -390,9 +390,74 @@ an already-removed record is a no-op."
     compaction-finished compaction-failed)
   "Turn event types stored as durable session activity.")
 
+(defcustom e-harness-durable-tool-finished-result-preview-bytes 4096
+  "Maximum UTF-8 bytes retained from tool results in durable activity events.
+
+Tool transcript messages retain the model-visible tool result.  Durable
+`tool-finished' activity is presentation history, so it stores only a compact
+preview to avoid duplicating large outputs in session JSONL files."
+  :type 'integer
+  :group 'e)
+
 (defun e-harness--durable-activity-event-p (type)
   "Return non-nil when TYPE should be stored as session activity."
   (memq type e-harness--durable-activity-event-types))
+
+(defun e-harness--string-byte-prefix (text max-bytes)
+  "Return TEXT prefix limited to MAX-BYTES UTF-8 bytes."
+  (let ((bytes 0)
+        (index 0)
+        (length (length text)))
+    (while (and (< index length)
+                (let ((next-bytes
+                       (string-bytes (substring text index (1+ index)))))
+                  (when (<= (+ bytes next-bytes) max-bytes)
+                    (setq bytes (+ bytes next-bytes))
+                    t)))
+      (setq index (1+ index)))
+    (substring text 0 index)))
+
+(defun e-harness--compact-tool-result-for-activity (result)
+  "Return compact durable activity representation of tool RESULT."
+  (let* ((content (plist-get result :content))
+         (content-text (e-tools-result-content-text content))
+         (original-bytes (string-bytes content-text))
+         (max-bytes (max 0 e-harness-durable-tool-finished-result-preview-bytes))
+         (truncated (> original-bytes max-bytes))
+         (preview (if truncated
+                      (e-harness--string-byte-prefix content-text max-bytes)
+                    content-text))
+         (metadata (copy-sequence (plist-get result :metadata)))
+         (summary (list :tool-call-id (plist-get result :tool-call-id)
+                        :name (plist-get result :name)
+                        :status (plist-get result :status)
+                        :content preview
+                        :metadata metadata)))
+    (when truncated
+      (setq metadata (plist-put metadata :activity-truncated t))
+      (setq metadata (plist-put metadata :activity-original-bytes
+                                original-bytes))
+      (setq metadata (plist-put metadata :activity-shown-bytes
+                                (string-bytes preview)))
+      (plist-put summary :metadata metadata))
+    summary))
+
+(defun e-harness--compact-tool-finished-payload (payload)
+  "Return PAYLOAD with a compact `:result' for durable activity storage."
+  (if (and (listp payload) (e-tools-result-p (plist-get payload :result)))
+      (let ((copy (copy-sequence payload)))
+        (plist-put copy
+                   :result
+                   (e-harness--compact-tool-result-for-activity
+                    (plist-get payload :result)))
+        copy)
+    payload))
+
+(defun e-harness--durable-activity-payload (type payload)
+  "Return durable activity PAYLOAD for event TYPE."
+  (pcase type
+    ('tool-finished (e-harness--compact-tool-finished-payload payload))
+    (_ payload)))
 
 (defun e-harness--emit-turn-event (harness session-id turn-id type payload)
   "Emit public event TYPE with PAYLOAD for HARNESS SESSION-ID TURN-ID."
@@ -406,7 +471,7 @@ an already-removed record is a no-op."
      session-id
      turn-id
      type
-     payload))
+     (e-harness--durable-activity-payload type payload)))
   (e-harness--emit
    harness
    (e-events-make :type type

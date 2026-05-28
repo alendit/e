@@ -380,6 +380,36 @@
                            (e-harness-messages harness "session-1"))
                    '(user assistant)))))
 
+
+(ert-deftest e-harness-test-tool-finished-activity-compacts-result-payload ()
+  "Durable tool-finished activity avoids duplicating full tool result output."
+  (let* ((harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)))
+         (large-output (make-string 64 ?x)))
+    (e-harness-create-session harness :id "session-1")
+    (let ((e-harness-durable-tool-finished-result-preview-bytes 8))
+      (e-harness--emit-turn-event
+       harness
+       "session-1"
+       "turn-1"
+       'tool-finished
+       (list :tool-call '(:id "call-1" :name "bash")
+             :result (list :tool-call-id "call-1"
+                           :name "bash"
+                           :status 'ok
+                           :content large-output
+                           :metadata '(:tmp-uri "tmp://full.txt"))))
+      (let* ((event (car (e-harness-session-activity-events
+                          harness
+                          "session-1")))
+             (payload (plist-get event :payload))
+             (result (plist-get payload :result))
+             (metadata (plist-get result :metadata)))
+        (should (equal (plist-get result :content) "xxxxxxxx"))
+        (should (plist-get metadata :activity-truncated))
+        (should (equal (plist-get metadata :activity-original-bytes) 64))
+        (should (equal (plist-get metadata :tmp-uri) "tmp://full.txt"))))))
+
 (ert-deftest e-harness-test-token-usage-events-are-durable ()
   "Backend token usage events are retained in session activity."
   (let* ((backend (e-backend-fake-create

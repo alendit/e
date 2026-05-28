@@ -20,6 +20,7 @@
 (require 'e-chat-session)
 (require 'e-harness)
 (require 'e-harness-registry)
+(require 'e-tools)
 (require 'e-session)
 (require 'e-shells)
 (require 'e-startup)
@@ -74,6 +75,16 @@ When nil, read markers are stored in the active session store directory."
 (defcustom e-chat-tool-output-buffer-name "*e-chat-tool-output*"
   "Buffer name for read-only focused tool output."
   :type 'string
+  :group 'e-chat)
+
+(defcustom e-chat-tool-activity-preview-bytes 4096
+  "Maximum UTF-8 bytes of a tool result retained in chat activity UI."
+  :type 'integer
+  :group 'e-chat)
+
+(defcustom e-chat-mode-line-context-estimate-cache-seconds 2.0
+  "Seconds to reuse approximate context-token estimates for mode-line refreshes."
+  :type 'number
   :group 'e-chat)
 
 (defcustom e-chat-submit-backend-delay 0.05
@@ -488,6 +499,12 @@ The mode line uses this presentation-owned table for context usage display."
 
 (defvar-local e-chat--mode-line-status nil
   "Current compact e chat status text shown in the mode line.")
+
+(defvar-local e-chat--mode-line-context-estimate-cache nil
+  "Cached approximate context-token estimate for the current chat buffer.")
+
+(defvar-local e-chat--mode-line-context-estimate-cache-time nil
+  "Float timestamp for `e-chat--mode-line-context-estimate-cache'.")
 
 (defvar-local e-chat--status nil
   "Current chat status text shown in the header line.")
@@ -1954,6 +1971,47 @@ When APPEND is non-nil, merge CONTENT into the previous reasoning child."
               (not (plist-get item :output)))
             (reverse (e-chat--round-tool-items round)))))
 
+(defun e-chat--string-byte-prefix (text max-bytes)
+  "Return TEXT prefix limited to MAX-BYTES UTF-8 bytes."
+  (let ((bytes 0)
+        (index 0)
+        (length (length text)))
+    (while (and (< index length)
+                (let ((next-bytes
+                       (string-bytes (substring text index (1+ index)))))
+                  (when (<= (+ bytes next-bytes) max-bytes)
+                    (setq bytes (+ bytes next-bytes))
+                    t)))
+      (setq index (1+ index)))
+    (substring text 0 index)))
+
+(defun e-chat--tool-result-display-text (result)
+  "Return compact chat activity display text for tool RESULT."
+  (let* ((content (if (e-tools-result-p result)
+                      (plist-get result :content)
+                    result))
+         (text (e-tools-result-content-text content))
+         (original-bytes (string-bytes text))
+         (max-bytes (max 0 e-chat-tool-activity-preview-bytes))
+         (truncated (> original-bytes max-bytes))
+         (preview (if truncated
+                      (e-chat--string-byte-prefix text max-bytes)
+                    text))
+         (metadata (and (e-tools-result-p result)
+                        (plist-get result :metadata)))
+         (uri (or (plist-get metadata :tmp-uri)
+                  (plist-get metadata :full-output-path))))
+    (if truncated
+        (string-trim-right
+         (format "%s
+
+[Tool result preview truncated: showing %d of %d bytes%s]"
+                 preview
+                 (string-bytes preview)
+                 original-bytes
+                 (if uri (format ". Full output: %s" uri) "")))
+      text)))
+
 (defun e-chat--complete-round-tool-result (record payload)
   "Attach tool result PAYLOAD to the matching semantic tool item in RECORD."
   (let* ((tool-id (e-chat--tool-finished-id payload))
@@ -1962,7 +2020,8 @@ When APPEND is non-nil, merge CONTENT into the previous reasoning child."
     (when item
       (plist-put item
                  :output
-                 (format "%S" (plist-get payload :result))))))
+                 (e-chat--tool-result-display-text
+                  (plist-get payload :result))))))
 
 (defun e-chat--round-tool-count (round)
   "Return number of tool calls recorded for ROUND."
@@ -2360,7 +2419,7 @@ STATUS defaults to `done'."
   (e-chat--add-intermittent-entry
    record
    "Tool"
-   (format "%S" (plist-get payload :result))
+   (e-chat--tool-result-display-text (plist-get payload :result))
    nil
    source))
 
@@ -3755,6 +3814,13 @@ When OMIT-COMPOSER is non-nil, leave the buffer as transcript-only."
        "\\.?0+M\\'"
        "M"
        (format "%.2fM" millions))))
+   ((and (>= tokens 1000)
+         (< tokens 10000)
+         (/= (% tokens 1000) 0))
+    (replace-regexp-in-string
+     "\\.?0+k\\'"
+     "k"
+     (format "%.1fk" (/ tokens 1000.0))))
    ((>= tokens 1000)
     (format "%dk" (round (/ tokens 1000.0))))
    (t
@@ -3846,19 +3912,28 @@ When OMIT-COMPOSER is non-nil, leave the buffer as transcript-only."
          (stringp compaction-time)
          (string< usage-time compaction-time))))
 
-(defun e-chat--mode-line-status-text ()
-  "Return the current mode-line text for this e chat buffer."
+(defun e-chat--cached-context-token-estimate (context)
+  "Return cached approximate token estimate for CONTEXT."
+  (let* ((now (float-time))
+         (ttl (if (and (numberp e-chat-mode-line-context-estimate-cache-seconds)
+                       (>= e-chat-mode-line-context-estimate-cache-seconds 0))
+                  e-chat-mode-line-context-estimate-cache-seconds
+                2.0)))
+    (if (and e-chat--mode-line-context-estimate-cache
+             e-chat--mode-line-context-estimate-cache-time
+             (< (- now e-chat--mode-line-context-estimate-cache-time) ttl))
+        e-chat--mode-line-context-estimate-cache
+      (setq-local e-chat--mode-line-context-estimate-cache
+                  (e-chat--context-token-estimate context))
+      (setq-local e-chat--mode-line-context-estimate-cache-time now)
+      e-chat--mode-line-context-estimate-cache)))
+
+(defun e-chat--mode-line-status-text (&optional prefer-token-usage)
+  "Return the current mode-line text for this e chat buffer.
+When PREFER-TOKEN-USAGE is non-nil and fresh provider usage exists, skip the
+expensive context-token estimate path."
   (if (and e-chat-harness e-chat-session-id)
-      (let* ((context (ignore-errors
-                        (e-harness-context e-chat-harness e-chat-session-id)))
-             (options (or (plist-get context :options)
-                          (ignore-errors
-                            (e-harness-turn-options
-                             e-chat-harness
-                             e-chat-session-id))))
-             (model (plist-get options :model))
-             (effort (plist-get options :reasoning-effort))
-             (usage-event (e-chat--latest-token-usage-event))
+      (let* ((usage-event (e-chat--latest-token-usage-event))
              (latest-compaction (e-chat--latest-valid-compaction))
              (usage-tokens
               (unless (e-chat--token-usage-before-compaction-p
@@ -3866,19 +3941,33 @@ When OMIT-COMPOSER is non-nil, leave the buffer as transcript-only."
                        latest-compaction)
                 (e-chat--token-usage-input-tokens
                  (plist-get usage-event :payload))))
+             (context (unless (and prefer-token-usage usage-tokens)
+                        (ignore-errors
+                          (e-harness-context e-chat-harness e-chat-session-id))))
+             (options (or (plist-get context :options)
+                          (ignore-errors
+                            (e-harness-turn-options
+                             e-chat-harness
+                             e-chat-session-id))))
+             (model (plist-get options :model))
+             (effort (plist-get options :reasoning-effort))
              (estimated-tokens
-              (and context
+              (and (not usage-tokens)
+                   context
                    (ignore-errors
-                     (e-chat--context-token-estimate context))))
+                     (e-chat--cached-context-token-estimate context))))
              (used-tokens (or usage-tokens estimated-tokens))
              (max-tokens (e-chat--model-context-token-limit model)))
         (e-chat--format-mode-line-status
          model effort used-tokens max-tokens (not usage-tokens)))
     "e-chat"))
 
-(defun e-chat--refresh-mode-line-status ()
-  "Refresh this buffer's e chat mode-line text."
-  (setq-local e-chat--mode-line-status (e-chat--mode-line-status-text))
+(defun e-chat--refresh-mode-line-status (&optional prefer-token-usage)
+  "Refresh this buffer's e chat mode-line text.
+When PREFER-TOKEN-USAGE is non-nil, prefer fresh provider usage over recomputing
+an approximate full-context estimate."
+  (setq-local e-chat--mode-line-status
+              (e-chat--mode-line-status-text prefer-token-usage))
   (setq-local mode-name e-chat--mode-line-status)
   (force-mode-line-update))
 
@@ -4112,7 +4201,7 @@ When OMIT-COMPOSER is non-nil, leave the buffer as transcript-only."
      (e-chat--stop-progress-indicator (plist-get event :turn-id))
      (e-chat--set-status "done"))
     ('token-usage
-     (e-chat--refresh-mode-line-status))
+     (e-chat--refresh-mode-line-status t))
     ('session-reset
      (e-chat--stop-progress-indicator)
      (e-chat--set-status "idle")

@@ -131,7 +131,7 @@ When READ-ONLY is non-nil, file resources only support reads."
             (should (string-match-p "line-0001" content))
             (should-not (string-match-p "line-2105" content))
             (should (string-match-p
-                     "\\[Showing lines 1-2000 of 2105\\. Use offset=2001 to continue\\.\\]"
+                     "\\[Showing lines 1-[0-9]+ of 2105\\. Use offset=[0-9]+ to continue\\.\\]"
                      content))))
       (delete-directory directory t))))
 

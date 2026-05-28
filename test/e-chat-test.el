@@ -4140,6 +4140,76 @@
       (should (string-match-p "~[0-9]+%" mode-name))
       (should-not (string-match-p "203k/258k tok" mode-name)))))
 
+
+(ert-deftest e-chat-test-token-usage-event-skips-context-estimate ()
+  "Fresh token-usage refreshes avoid full context estimation."
+  (let* ((store (e-session-store-create))
+         (backend (e-backend-fake-create :items nil))
+         (harness (e-harness-create
+                   :backend backend
+                   :sessions store
+                   :default-options
+                   '(:model "gpt-5.5" :reasoning-effort "high")))
+         (buffer (e-chat-open :harness harness
+                              :session-id "chat-token-usage-fast")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-session-append-activity-event
+           store
+           e-chat-session-id
+           "turn-1"
+           'token-usage
+           '(:input-tokens 1200 :total-tokens 1300))
+          (cl-letf (((symbol-function 'e-chat--context-token-estimate)
+                     (lambda (&rest _args)
+                       (error "context estimate should be skipped"))))
+            (e-chat--render-event
+             (e-events-make :type 'token-usage
+                            :session-id e-chat-session-id
+                            :turn-id "turn-1"
+                            :payload '(:input-tokens 1200
+                                       :total-tokens 1300))))
+          (should (string-match-p "1.2k/258k tok" mode-name)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-tool-activity-compacts-large-result-display ()
+  "Chat activity keeps a bounded tool result preview."
+  (let ((buffer (e-chat-test--buffer nil "chat-tool-activity-preview")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (let ((e-chat-tool-activity-preview-bytes 8))
+            (e-chat--render-event
+             (e-events-make :type 'turn-started
+                            :session-id e-chat-session-id
+                            :turn-id "turn-1"))
+            (e-chat--render-event
+             (e-events-make :type 'tool-started
+                            :session-id e-chat-session-id
+                            :turn-id "turn-1"
+                            :payload '(:id "call-1" :name "bash")))
+            (e-chat--render-event
+             (e-events-make :type 'tool-finished
+                            :session-id e-chat-session-id
+                            :turn-id "turn-1"
+                            :payload
+                            (list :tool-call '(:id "call-1" :name "bash")
+                                  :result
+                                  (list :tool-call-id "call-1"
+                                        :name "bash"
+                                        :status 'ok
+                                        :content (make-string 64 ?x)
+                                        :metadata '(:tmp-uri "tmp://full.txt"))))))
+          (let* ((record (e-chat--existing-turn-record "turn-1"))
+                 (item (car (e-chat--activity-tool-items record)))
+                 (output (plist-get item :output)))
+            (should (string-match-p "xxxxxxxx" output))
+            (should (string-match-p "Tool result preview truncated" output))
+            (should (string-match-p "tmp://full.txt" output))
+            (should-not (string-match-p (make-string 32 ?x) output))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-token-usage-events-update-mode-line-without-transcript ()
   "Token usage events update status without rendering system transcript blocks."
   (let* ((store (e-session-store-create))

@@ -31,6 +31,7 @@
 
 (cl-defstruct (e-session-store (:constructor e-session-store-create))
   (sessions (make-hash-table :test 'equal))
+  (entry-indexes (make-hash-table :test 'equal))
   directory
   sessions-directory
   index-file
@@ -166,6 +167,32 @@
         (write-region (point-min) (point-max)
                       (e-session--session-file store session-id)
                       t 'silent)))))
+
+
+(defun e-session--entry-index (store session-id)
+  "Return STORE's entry-id index for SESSION-ID."
+  (or (gethash session-id (e-session-store-entry-indexes store))
+      (puthash session-id
+               (make-hash-table :test 'equal)
+               (e-session-store-entry-indexes store))))
+
+(defun e-session--clear-entry-index (store session-id)
+  "Clear STORE's entry-id index for SESSION-ID."
+  (remhash session-id (e-session-store-entry-indexes store)))
+
+(defun e-session--index-entry (store session-id entry)
+  "Index durable ENTRY for SESSION-ID in STORE."
+  (when-let ((entry-id (plist-get entry :id)))
+    (puthash entry-id entry (e-session--entry-index store session-id)))
+  entry)
+
+(defun e-session--index-session-entries (store session)
+  "Rebuild STORE's entry-id index for SESSION."
+  (let ((session-id (plist-get session :id)))
+    (when session-id
+      (e-session--clear-entry-index store session-id)
+      (dolist (entry (e-session--entries store session-id))
+        (e-session--index-entry store session-id entry)))))
 
 (defun e-session--list-tail (items)
   "Return the tail cell for ITEMS, or nil."
@@ -387,9 +414,10 @@ and RECORD supplies persisted identity fields during replay."
 
 (defun e-session-entry-by-id (store session-id entry-id)
   "Return durable entry ENTRY-ID from SESSION-ID."
-  (seq-find (lambda (entry)
-              (equal (plist-get entry :id) entry-id))
-            (e-session--entries store session-id)))
+  (or (gethash entry-id (e-session--entry-index store session-id))
+      (seq-find (lambda (entry)
+                  (equal (plist-get entry :id) entry-id))
+                (e-session--entries store session-id))))
 
 (defun e-session--entry-children (store session-id parent-id)
   "Return entries whose parent is PARENT-ID in SESSION-ID."
@@ -474,7 +502,9 @@ and RECORD supplies persisted identity fields during replay."
   (e-session--initialize-list-state session)
   (cl-remf session :entry-count)
   (plist-put session :loaded t)
-  (e-session--refresh-derived-fields store session))
+  (e-session--refresh-derived-fields store session)
+  (e-session--index-session-entries store session)
+  session)
 
 (defun e-session--last-message-at (session)
   "Return SESSION's latest message timestamp, when it has messages."
@@ -729,6 +759,7 @@ and RECORD supplies persisted identity fields during replay."
   "Replay STORE's persistent sessions from disk."
   (when (e-session--persistent-p store)
     (clrhash (e-session-store-sessions store))
+    (clrhash (e-session-store-entry-indexes store))
     (setf (e-session-store-sequence store) 0)
     (let ((sessions-directory (e-session-store-sessions-directory store)))
       (when (file-directory-p sessions-directory)
@@ -848,6 +879,7 @@ and RECORD supplies persisted identity fields during replay."
            (entries (e-session--index-entries value)))
       (when entries
         (clrhash (e-session-store-sessions store))
+        (clrhash (e-session-store-entry-indexes store))
         (setf (e-session-store-sequence store) 0)
         (dolist (entry entries)
           (e-session--put-index-entry store entry))
@@ -905,6 +937,7 @@ state are requested."
     (unless (file-readable-p file)
       (signal 'e-session-missing (list session-id)))
     (remhash session-id (e-session-store-sessions store))
+    (e-session--clear-entry-index store session-id)
     (with-temp-buffer
       (let ((coding-system-for-read 'utf-8))
         (insert-file-contents file))
@@ -967,6 +1000,7 @@ state are requested."
     (e-session--touch store session timestamp)
     (e-session--refresh-derived-fields store session)
     (puthash id session (e-session-store-sessions store))
+    (e-session--index-session-entries store session)
     (e-session--append-record
      store id
      (list :type "session"
@@ -1016,6 +1050,7 @@ state are requested."
                  'session-info
                  timestamp
                  (list :metadata metadata))))
+    (e-session--index-entry store session-id event)
     (plist-put session :metadata metadata)
     (e-session--touch store session timestamp)
     (e-session--refresh-derived-fields store session)
@@ -1040,6 +1075,7 @@ state are requested."
                  'session-info
                  timestamp
                  (list :turn-options turn-options))))
+    (e-session--index-entry store session-id event)
     (plist-put session :turn-options turn-options)
     (e-session--touch store session timestamp)
     (e-session--refresh-derived-fields store session)
@@ -1064,6 +1100,7 @@ state are requested."
                    (e-session--message-with-created-at message timestamp)
                    timestamp)))
     (e-session--append-list-item session :messages message)
+    (e-session--index-entry store session-id message)
     (e-session--touch store session timestamp)
     (e-session--update-message-derived-fields-on-append store session message)
     (e-session--append-record
@@ -1091,6 +1128,7 @@ state are requested."
                        :created-at timestamp)
                  timestamp)))
     (e-session--append-list-item session :activity-events event)
+    (e-session--index-entry store session-id event)
     (e-session--touch store session timestamp)
     (e-session--append-record
      store session-id
@@ -1119,6 +1157,7 @@ state are requested."
                         :created-at timestamp)
                   timestamp)))
     (e-session--append-list-item session :branch-summaries record)
+    (e-session--index-entry store session-id record)
     (e-session--touch store session timestamp)
     (e-session--refresh-file-field store session)
     (e-session--append-record
@@ -1155,6 +1194,7 @@ source when available."
                         :created-at timestamp)
                   timestamp)))
     (e-session--append-list-item session :compactions record)
+    (e-session--index-entry store session-id record)
     (e-session--touch store session timestamp)
     (e-session--refresh-file-field store session)
     (e-session--append-record
@@ -1183,6 +1223,7 @@ source when available."
                  'current-branch
                  timestamp
                  (list :branch-id branch-id))))
+    (e-session--index-entry store session-id event)
     (plist-put session :current-branch branch-id)
     (e-session--touch store session timestamp)
     (e-session--refresh-derived-fields store session)
@@ -1206,6 +1247,13 @@ source when available."
     (e-session--replace-list-field session :messages nil)
     (e-session--replace-list-field session :activity-events nil)
     (e-session--clear-message-derived-fields store session)
+    (e-session--clear-entry-index store session-id)
+    (dolist (entry (plist-get session :session-events))
+      (e-session--index-entry store session-id entry))
+    (dolist (entry (plist-get session :branch-summaries))
+      (e-session--index-entry store session-id entry))
+    (dolist (entry (plist-get session :compactions))
+      (e-session--index-entry store session-id entry))
     (plist-put session :current-head-id root-id)
     (setq event
           (e-session--append-session-event
@@ -1213,6 +1261,7 @@ source when available."
            'messages-cleared
            timestamp
            (list :parent-id root-id)))
+    (e-session--index-entry store session-id event)
     (e-session--touch store session timestamp)
     (e-session--append-record
      store session-id
@@ -1236,6 +1285,7 @@ source when available."
                  'session-info
                  timestamp
                  (list :name name))))
+    (e-session--index-entry store session-id event)
     (plist-put session :name name)
     (e-session--touch store session timestamp)
     (e-session--refresh-derived-fields store session)

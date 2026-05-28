@@ -46,7 +46,7 @@ When nil, `shell-command-switch' is used."
 (defconst e-base-tools--max-lines 2000
   "Maximum text lines returned by base tools before truncation.")
 
-(defconst e-base-tools--max-bytes (* 50 1024)
+(defconst e-base-tools--max-bytes (* 16 1024)
   "Maximum text bytes returned by base tools before truncation.")
 
 (defun e-base-tools--argument-string (arguments key)
