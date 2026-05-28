@@ -25,3 +25,4 @@ Status values for coding agents:
 | 12 | In-review | 12-session-overview-shell/ | Session Overview Shell |
 | 13 | Done | 13-global-session-starter/ | Global Session Starter |
 | 14 | In-review | 14-canvas-shell/ | Canvas Shell |
+| 15 | Planned | 15-chat-harness-instances/ | Chat Harness Instances |

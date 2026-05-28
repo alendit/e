@@ -1,0 +1,192 @@
+#+title: Chat Harness Instances
+#+startup: overview
+
+* Status
+
+Planned
+
+* Problem
+
+Chat commands currently assume one default chat harness id through
+=e-chat-default-harness-id=. Adding a second backend currently pushes users toward
+backend-specific commands such as =dvorona/e-chat-new-opus= or toward binding the
+default harness dynamically. That does not scale: =e-chat-new=, =e-chat-resume=,
+=e-chat-overview=, starter flows, and context-add commands should work uniformly
+across configured backends.
+
+The word "harness" is also doing two jobs in user-facing configuration:
+
+- the overall e runtime/harness API and shell capability container;
+- a concrete configured chat target, e.g. GPT via local proxy or Opus via local
+  proxy, with its own backend defaults and maybe its own policy.
+
+We need a named configured target abstraction above raw harness factories so UI
+commands can select, display, and resume across all configured targets without
+multiplying commands per backend.
+
+* Direction
+
+Introduce a domain-owned configured harness instance registry. A configured
+harness instance is bound to a particular configuration, not to a separate
+interactive command namespace. It is the user-selectable target that resolves to
+a live =e-harness= when work actually starts.
+
+A configured harness instance has:
+
+- stable id, e.g. =:chat-default= or =:chat-opus=;
+- display name;
+- shell/use kind, initially =chat=;
+- lazy factory or existing harness reference;
+- metadata such as provider/model labels for presentation;
+- optional default marker.
+
+The existing =e-harness= remains the live runtime object and API surface. The
+existing =e-harness-registry= can stay as low-level live-object/factory storage.
+The new abstraction should be the user-facing selection/catalog layer over it,
+so commands stay generic while users can choose between configured targets.
+
+* User-facing behavior
+
+** New chat
+
+=e-chat-new= should use a generic target selection path when more than one chat
+harness instance is configured. Possible behavior:
+
+- With one chat instance: keep current behavior.
+- With multiple chat instances: prompt for target using completion, then create a
+  new session in that instance.
+- With prefix argument: always prompt for target even if a default exists.
+- A config option can choose a default target for no-prompt workflows.
+
+** Resume
+
+=e-chat-resume= should list sessions across all chat harness instances, not just
+the current default harness. Completion candidates should include target label,
+session title, timestamp, and message count. Selecting a candidate opens the
+session with its owning instance.
+
+** Overview/sidebar
+
+The chat overview should either:
+
+- show sessions from all chat instances in one list with target labels, or
+- provide a target filter while still using one command.
+
+Do not create =e-chat-overview-opus= or similar commands.
+
+** Current buffer commands
+
+Commands that operate on the attached chat, such as =e-chat-set-model=,
+=e-chat-set-effort=, =e-chat-rename=, =e-chat-abort=, and =e-chat-reset=, should
+continue using the buffer-local live harness/session. They do not need target
+selection.
+
+** Context-add commands
+
+Commands that add context to a latest or selected session should use the same
+cross-instance session picker as resume.
+
+* Proposed API sketch
+
+Names are intentionally tentative until implementation.
+
+#+begin_src emacs-lisp
+(cl-defstruct e-harness-instance
+  id
+  name
+  kind
+  factory
+  harness-id
+  metadata
+  default)
+
+(e-harness-instance-register
+ :id :chat-opus
+ :name "Opus 4.7"
+ :kind 'chat
+ :factory (lambda ()
+            (e-default-chat-harness-create
+             :provider 'local-go-llm-proxy-opus))
+ :metadata '(:provider local-go-llm-proxy-opus
+             :model "claude-opus-4-7"))
+
+(e-harness-instance-list :kind 'chat)
+(e-harness-instance-get-or-create :chat-opus)
+(e-harness-instance-default :kind 'chat)
+#+end_src
+
+For compatibility, default startup can register a harness instance for the
+existing =:chat-default= target. The low-level =e-harness-registry-register-factory=
+can remain available for core tests and direct programmatic use.
+
+* Implementation slices
+
+** Slice 1: Registry and default instance
+
+- Add =lisp/core/e-harness-instances.el= or similarly named module.
+- Keep it small: data normalization, register/list/get/default only.
+- Register =:chat-default= as a chat instance in default startup.
+- Tests: registration, lazy creation, default selection, duplicate replacement.
+
+** Slice 2: Chat selection helpers
+
+- Add chat-owned helpers to list chat instances and read one with completion.
+- Update =e-chat-new= and =e-chat-open= entry paths to take an optional instance
+  id while preserving direct harness injection for tests.
+- Preserve no-prompt behavior when only one chat instance exists or a config
+  option requests the default.
+
+** Slice 3: Cross-instance resume and context selection
+
+- Build a combined session candidate list with target id/name and session id.
+- Update =e-chat-resume= and =e-chat-switch-session= to use it.
+- Update context-add session picker to use the same candidate model.
+- Tests should prove sessions from two fake chat instances both appear and open
+  with the correct owning harness.
+
+** Slice 4: Overview integration
+
+- Make overview state track/read sessions with an instance id as well as session
+  id to avoid collisions.
+- Render target labels when more than one instance exists.
+- Open/preview rows with the owning harness.
+
+* Config migration
+
+The user's current second backend config should become something like:
+
+#+begin_src emacs-lisp
+(e-harness-instance-register
+ :id :chat-opus
+ :name "Opus 4.7"
+ :kind 'chat
+ :factory (lambda ()
+            (e-default-chat-harness-create
+             :provider 'local-go-llm-proxy-opus))
+ :metadata '(:model "claude-opus-4-7"))
+#+end_src
+
+No backend-specific interactive commands should be needed.
+
+* Compatibility expectations
+
+- Existing =e-chat-default-harness-id= should keep working during transition.
+- Existing direct =e-chat-open :harness ...= tests and callers should keep
+  working.
+- Low-level =e-harness-registry= remains supported as an implementation detail
+  and programmatic escape hatch.
+- Obsolete backend-specific personal helper commands should be removed from the
+  user's config now; they are not compatibility requirements.
+
+* Open questions
+
+- Final name: "harness instance", "runtime target", "agent instance", or
+  "chat profile"? "Harness instance" matches the user's language, but "target"
+  may better communicate configured destination.
+- Should =e-chat-new= prompt by default when multiple instances exist, or should
+  it use the default unless called with prefix? The user's feedback suggests one
+  command should work across all instances, so prompting when multiple exist is
+  likely best.
+- Should sessions from all instances share one session store or have per-instance
+  stores? Current default harnesses share =e-default-session-store=; this is
+  convenient for resume but may need metadata tagging to avoid ambiguity.
