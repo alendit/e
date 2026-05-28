@@ -1,0 +1,43 @@
+#+title: Claude Opus 4.8 Unknown Model Investigation
+#+startup: overview
+
+* Investigation
+
+The failed session record
+=20260528T212837-c86ed0e4ddd3= shows the turn started at
+=2026-05-28T21:28:41Z= with provider =local-go-llm-proxy-opus=, URL host
+=127.0.0.1=, and URL path =/v1/responses=. The turn then failed with provider
+payload ={"error":{"code":"Not Found","message":"unknown model","type":"not_found_error"}}=.
+
+Live Emacs showed =e-openai-default-provider= set to
+=local-go-llm-proxy-opus= and the cached =:chat-default= harness default
+options set to =(:model "claude-opus-4-8" :reasoning-effort "high")=.
+
+The local proxy configuration at =~/.config/go-llm-proxy/codex.yaml= only
+declares the local Responses models used for GPT/Codex traffic. It does not
+declare =claude-opus-4-8=, so the proxy can return =unknown model= even when the
+upstream gateway has the model.
+
+The engineering gateway model list includes =claude-opus-4-8=. A minimal
+gateway =/v1/chat/completions= smoke test with that model returned a streamed
+=ok= response, proving that the model is available through the direct gateway
+chat-completions wire API.
+
+* Fix
+
+The Doom =e-openai= profile named =local-go-llm-proxy-opus= now points directly
+at the engineering gateway =/v1= base URL and uses =:wire-api chat-completion=.
+The profile id is preserved so the existing default provider and =:chat-opus=
+factory keep working.
+
+* Validation
+
+- Inspected live Emacs provider/default harness state with =emacsclient --eval=.
+- Inspected the persisted failed session activity events.
+- Verified the gateway model list contains =claude-opus-4-8=.
+- Verified a minimal direct gateway chat-completions stream for
+  =claude-opus-4-8= returns =ok=.
+- Ran focused ERT coverage for chat-completions request construction and
+  token-auth harness streaming.
+- Applied the updated provider profile to the running Emacs with
+  =emacsclient --eval= and reconciled the cached default chat harness.

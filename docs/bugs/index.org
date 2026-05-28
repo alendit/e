@@ -8,6 +8,7 @@ State values for coding agents:
 
 | State  | Path | Title |
 |--------+------+-------|
+| Closed | claude-opus-48-unknown-model/ | Claude Opus 4.8 Unknown Model |
 | New    | e-chat-new-stale-harness-session-store/ | e-chat-new stale harness session store |
 | Closed | compaction-kept-tool-output-crowds-context/ | Compaction Kept Tool Output Crowds Context |
 | Closed | e-chat-super-i-session-picker-order/ | e-chat s-I session picker ignores last-message order |
