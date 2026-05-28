@@ -15,6 +15,7 @@
 
 (require 'cl-lib)
 (require 'e-default-layers)
+(require 'e-context)
 (require 'e-harness-registry)
 (require 'e-layers)
 (require 'e-session)
@@ -26,7 +27,9 @@
   :prefix "e-default-")
 
 (defcustom e-default-harness-specs
-  '((:id :chat-default :factory e-default-chat-harness-create))
+  '((:id :chat-default
+     :factory e-default-chat-harness-create
+     :sync e-default-chat-harness-sync))
   "Default harness specs registered during package startup."
   :type '(repeat sexp)
   :group 'e-defaults)
@@ -105,6 +108,35 @@ DIRECTORY is passed to config-aware layer factories."
       (e-harness-set-layer-change-function harness change-function)))
   harness)
 
+(defun e-default-harness-sync-from-factory (harness spec)
+  "Refresh HARNESS generic runtime fields from SPEC's fresh factory result.
+
+Live reload can replace adapter helper functions without recreating cached
+default harnesses.  Refreshing the runtime updates stale backend closures while
+preserving sessions, context state, and active presentation buffers that already
+hold HARNESS."
+  (let ((fresh (funcall (plist-get spec :factory))))
+    (unless (e-harness-p fresh)
+      (signal 'wrong-type-argument (list 'e-harness-p fresh)))
+    (setf (e-harness-backend harness)
+          (e-harness-backend fresh))
+    (setf (e-harness-default-options harness)
+          (copy-sequence (e-harness-default-options fresh)))
+    (setf (e-harness-default-project-root harness)
+          (e-harness-default-project-root fresh))
+    (setf (e-harness-runtime-capability-config harness)
+          (copy-tree (e-harness-runtime-capability-config fresh)))
+    (when (e-context-transcript-stack-p (e-harness-context-strategy harness))
+      (setf (e-harness-context-strategy harness)
+            (e-harness-context-strategy fresh))))
+  harness)
+
+(defun e-default-chat-harness-sync (harness spec)
+  "Reconcile cached default chat HARNESS from SPEC."
+  (e-default-harness-sync-from-factory harness spec)
+  (e-default-chat-sync-harness-layers harness)
+  harness)
+
 (cl-defun e-default-chat-harness-create
     (&key provider sessions layer-ids directory)
   "Create the default chat harness.
@@ -145,9 +177,10 @@ factories are recorded, but no harness is created."
   "Reconcile cached default harness instances with current config.
 Only existing instances are touched; lazy factories are left lazy."
   (dolist (spec (or specs e-default-harness-specs))
-    (when (eq (plist-get spec :id) :chat-default)
-      (when-let ((harness (e-harness-registry-get :chat-default)))
-        (e-default-chat-sync-harness-layers harness))))
+    (when-let ((harness (e-harness-registry-get (plist-get spec :id))))
+      (funcall (or (plist-get spec :sync)
+                   #'e-default-harness-sync-from-factory)
+               harness spec)))
   nil)
 
 (defun e-default-harnesses-clear-instances (&optional specs)

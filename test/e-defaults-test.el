@@ -37,7 +37,8 @@
   "The startup default harness specs currently include only chat-default."
   (should (equal e-default-harness-specs
                  '((:id :chat-default
-                    :factory e-default-chat-harness-create)))))
+                    :factory e-default-chat-harness-create
+                    :sync e-default-chat-harness-sync)))))
 
 (ert-deftest e-defaults-test-registers-chat-default-factory ()
   "Startup default registration adds a lazy chat-default factory."
@@ -264,6 +265,33 @@
               (mapcar #'e-context-provider--name
                       (e-capability-context-providers capability))))
         (should (memq 'chat-session-attachments provider-names))))))
+
+(ert-deftest e-defaults-test-startup-refreshes-default-backend-from-spec-factory ()
+  "Startup sync replaces stale default backend closures through generic specs."
+  (e-defaults-test--with-empty-harness-registry
+    (let* ((stale-backend (e-backend-fake-create :name "stale" :items nil))
+           (fresh-backend (e-backend-fake-create :name "fresh" :items nil))
+           (harness (e-harness-create :backend stale-backend))
+           (custom-store (e-harness-sessions harness))
+           factory-called)
+      (e-harness-registry-register :generic-default harness)
+      (cl-letf (((symbol-function 'e-defaults-test--generic-harness-create)
+                 (lambda ()
+                   (setq factory-called t)
+                   (e-harness-create
+                    :backend fresh-backend
+                    :sessions (e-session-store-create)
+                    :default-options '(:model "fresh-model")))))
+        (let ((e-default-harness-specs
+               '((:id :generic-default
+                  :factory e-defaults-test--generic-harness-create))))
+          (e-default-harnesses-startup)))
+      (should factory-called)
+      (should (eq (e-harness-registry-get :generic-default) harness))
+      (should (eq (e-harness-backend harness) fresh-backend))
+      (should (equal (e-harness-default-options harness)
+                     '(:model "fresh-model")))
+      (should (eq (e-harness-sessions harness) custom-store)))))
 
 (ert-deftest e-defaults-test-startup-refreshes-default-context-strategy ()
   "Startup refreshes cached default transcript-stack strategies after reload."
