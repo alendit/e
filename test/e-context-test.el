@@ -61,6 +61,69 @@
                 (:role user :content "keep this")
                 (:role assistant :content "kept answer")))))))
 
+(ert-deftest e-context-test-compacted-suffix-previews-large-tool-results ()
+  "Compacted transcript keeps turn structure while previewing large tool output."
+  (let ((store (e-session-store-create))
+        (strategy (e-context-transcript-stack-create)))
+    (e-session-create store :id "session-1")
+    (e-session-append-message store "session-1" '(:id "m1" :role user :content "old"))
+    (let ((boundary
+           (e-session-append-message
+            store "session-1" '(:id "m2" :role user :content "inspect output"))))
+      (e-session-append-message
+       store "session-1"
+       '(:id "m3"
+         :role tool-call
+         :content (:id "call-1" :name "bash" :arguments (:command "large"))))
+      (e-session-append-message
+       store "session-1"
+       (list :id "m4"
+             :role 'tool
+             :content (list :tool-call-id "call-1"
+                            :name "bash"
+                            :status 'ok
+                            :content (make-string 2100 ?x)
+                            :metadata
+                            '(:truncated t :tmp-uri "tmp://full-output.txt"))))
+      (e-session-append-message store "session-1"
+                                '(:id "m5" :role assistant :content "done"))
+      (let* ((messages
+              (plist-get
+               (e-context-build strategy
+                                :sessions store
+                                :session-id "session-1"
+                                :options nil)
+               :messages))
+             (tool-result (plist-get (nth 3 messages) :content)))
+        (should (= (length (plist-get tool-result :content)) 2100)))
+      (e-session-append-compaction
+       store "session-1" "Earlier work summary."
+       :first-kept-entry-id (plist-get boundary :id))
+      (let* ((messages
+              (let ((e-compaction-kept-tool-result-character-limit 20))
+                (plist-get
+                 (e-context-build strategy
+                                  :sessions store
+                                  :session-id "session-1"
+                                  :options nil)
+                 :messages)))
+             (tool-message (nth 3 messages))
+             (tool-result (plist-get tool-message :content)))
+        (should (equal (mapcar (lambda (message)
+                                 (plist-get message :role))
+                               messages)
+                       '(system user tool-call tool assistant)))
+        (should (equal (plist-get tool-result :tool-call-id) "call-1"))
+        (should (equal (plist-get tool-result :name) "bash"))
+        (should (equal (plist-get tool-result :status) 'ok))
+        (should (equal (plist-get (plist-get tool-result :metadata) :tmp-uri)
+                       "tmp://full-output.txt"))
+        (should (< (length (plist-get tool-result :content)) 2100))
+        (should (string-match-p "tmp://full-output.txt"
+                                (plist-get tool-result :content)))
+        (should (string-match-p "\\[Tool output preview truncated:"
+                                (plist-get tool-result :content)))))))
+
 (ert-deftest e-context-test-rejects-missing-builder ()
   "Context strategies need a build function."
   (let ((strategy (e-context-create :name 'broken :build nil)))

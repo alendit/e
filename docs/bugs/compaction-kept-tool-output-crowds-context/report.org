@@ -1,0 +1,8 @@
+#+title: Report: Compaction Kept Tool Output Crowds Context
+#+startup: overview
+
+The user reported that after a previous session compaction, valuable
+conversation context was lost because a recent turn contained a large amount of
+tool output.  The desired behavior is to keep the turn structure and surrounding
+messages, but drop or shorten the output of individual tools instead of letting
+one tool result dominate the compacted context.

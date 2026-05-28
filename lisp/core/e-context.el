@@ -117,7 +117,11 @@ backend-neutral messages that should appear before the session transcript."
                 sessions session-id
                 (plist-get compaction :first-kept-entry-id)))))
         (e-context--backend-messages
-         (cons summary (mapcar #'e-context--message-entry-message suffix))))
+         (cons summary
+               (mapcar (lambda (entry)
+                         (e-compaction-preview-kept-message
+                          (e-context--message-entry-message entry)))
+                       suffix))))
     (e-context--backend-messages
      (e-session-messages sessions session-id))))
 

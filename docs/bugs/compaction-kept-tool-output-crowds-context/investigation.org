@@ -1,0 +1,86 @@
+#+title: Investigation: Compaction Kept Tool Output Crowds Context
+#+startup: overview
+
+* Summary
+
+Manual compaction already truncates tool output in the summarizer input, and
+the harness already truncates oversized tool results before they enter durable
+session history.  The missing case was the verbatim kept suffix after a
+compaction boundary: if the kept suffix contained a large tool result, context
+reconstruction replayed that full tool result into the next backend request.
+
+* Source Inspection
+
+In =lisp/core/e-compaction.el=, =e-compaction--entry-text= applies
+=e-compaction-tool-result-character-limit= only while preparing summarization
+input.  That protects the summary-generation prompt but not messages retained
+after =:first-kept-entry-id=.
+
+In =lisp/core/e-context.el=, =e-context--compacted-messages= uses the latest
+valid compaction and then maps the kept suffix directly through
+=e-context--message-entry-message=.  Before this fix, no compacted-context
+projection bounded tool-result content in that suffix.
+
+* Fix
+
+Added =e-compaction-kept-tool-result-character-limit=, defaulting to 2000
+characters, and a compacted-context projection helper:
+=e-compaction-preview-kept-message=.
+
+When compacted context contains a kept =tool= message, the projection now
+preserves the message and structured tool result shape but replaces oversized
+result =:content= with a short preview plus a truncation notice.  Existing
+result ids, tool name, status, metadata, and =:tmp-uri= remain available.
+
+The projection is called only from compacted context reconstruction.  Durable
+session history and uncompacted transcript context remain unchanged.
+
+* Verification
+
+** Regression
+
+Added =e-context-test-compacted-suffix-previews-large-tool-results=.  The test
+first proves uncompacted transcript context still contains the full tool result,
+then appends a compaction record and verifies compacted context keeps roles in
+order:
+
+#+begin_src elisp
+(system user tool-call tool assistant)
+#+end_src
+
+The kept =tool= result preserves its structured fields and metadata while
+previewing =:content= and including the full-output =tmp://= URI in the notice.
+
+** Batch tests
+
+The requested =rtk eldev ...= command could not be used because =eldev= is not
+installed in this environment.  Ran the equivalent available Emacs batch
+command:
+
+#+begin_src shell
+rtk emacs -Q --batch -L . -l e.el -l test/e-compaction-test.el -l test/e-context-test.el -l test/e-harness-test.el -f ert-run-tests-batch-and-exit
+#+end_src
+
+Result: 58 tests run, 58 results as expected, 0 unexpected.
+
+** Live Emacs
+
+Reloaded the running Emacs:
+
+#+begin_src shell
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dvorona/projects/elisp/e\"))"
+#+end_src
+
+Result: reload returned ="/Users/dvorona/projects/elisp/e/"=.
+
+Then inspected a temporary in-memory session through =emacsclient --eval=.  The
+live compacted context returned:
+
+#+begin_src elisp
+(:roles (system user tool-call tool assistant)
+ :tool-content
+ "xxxxxxxxxx
+
+[Tool output preview truncated: showing first 10 of 120 characters. Full output: tmp://live-full.txt]"
+ :metadata (:truncated t :tmp-uri "tmp://live-full.txt"))
+#+end_src

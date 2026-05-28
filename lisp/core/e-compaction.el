@@ -13,6 +13,7 @@
 
 (require 'cl-lib)
 (require 'e-session)
+(require 'e-tools)
 (require 'seq)
 (require 'subr-x)
 
@@ -30,6 +31,11 @@
 
 (defcustom e-compaction-tool-result-character-limit 2000
   "Maximum characters kept per tool result in summarization input."
+  :type 'integer
+  :group 'e-compaction)
+
+(defcustom e-compaction-kept-tool-result-character-limit 2000
+  "Maximum characters kept per tool result in compacted context suffixes."
   :type 'integer
   :group 'e-compaction)
 
@@ -192,6 +198,71 @@ When START-ID is nil, start at the first entry."
 (defun e-compaction--serialize-entries (entries)
   "Serialize ENTRIES for summarization input."
   (string-join (mapcar #'e-compaction--serialize-entry entries) "\n\n"))
+
+(defun e-compaction--kept-tool-result-location (result)
+  "Return a readable full-output location from RESULT metadata, when present."
+  (let ((metadata (plist-get result :metadata)))
+    (or (plist-get metadata :tmp-uri)
+        (plist-get metadata :full-output-path))))
+
+(defun e-compaction--kept-tool-result-notice (shown original location)
+  "Return compacted-context truncation notice for a kept tool result."
+  (format "[Tool output preview truncated: showing first %d of %d characters%s]"
+          shown
+          original
+          (if location
+              (format ". Full output: %s" location)
+            "")))
+
+(defun e-compaction--kept-tool-result-content-preview (text location)
+  "Return compacted-context preview for tool result TEXT and LOCATION."
+  (let* ((limit (max 0 e-compaction-kept-tool-result-character-limit))
+         (original (length text)))
+    (if (<= original limit)
+        text
+      (let ((preview (substring text 0 limit))
+            (notice (e-compaction--kept-tool-result-notice
+                     limit
+                     original
+                     location)))
+        (if (string-empty-p preview)
+            notice
+          (concat preview "\n\n" notice))))))
+
+(defun e-compaction--preview-kept-tool-result (result)
+  "Return RESULT with bounded content for compacted context suffixes."
+  (if (e-tools-result-p result)
+      (let* ((content-text (e-tools-result-content-text
+                            (plist-get result :content)))
+             (preview (e-compaction--kept-tool-result-content-preview
+                       content-text
+                       (e-compaction--kept-tool-result-location result))))
+        (if (equal preview content-text)
+            result
+          (let ((copy (copy-sequence result)))
+            (plist-put copy :content preview)
+            copy)))
+    (let* ((content-text (e-tools-result-content-text result))
+           (preview (e-compaction--kept-tool-result-content-preview
+                     content-text
+                     nil)))
+      (if (equal preview content-text)
+          result
+        preview))))
+
+(defun e-compaction-preview-kept-message (message)
+  "Return MESSAGE projected for a compacted context kept suffix.
+
+This preserves the transcript shape while bounding verbose tool-result content
+that survived the compaction boundary."
+  (if (eq (plist-get message :role) 'tool)
+      (let ((copy (copy-sequence message)))
+        (plist-put copy
+                   :content
+                   (e-compaction--preview-kept-tool-result
+                    (plist-get message :content)))
+        copy)
+    message))
 
 (defun e-compaction-summary-messages (preparation)
   "Return backend messages that ask the model to summarize PREPARATION."

@@ -9,6 +9,7 @@ State values for coding agents:
 | State  | Path | Title |
 |--------+------+-------|
 | New    | e-chat-new-stale-harness-session-store/ | e-chat-new stale harness session store |
+| Closed | compaction-kept-tool-output-crowds-context/ | Compaction Kept Tool Output Crowds Context |
 | Closed | e-chat-super-i-session-picker-order/ | e-chat s-I session picker ignores last-message order |
 | Closed | e-chat-progress-redraw-refocuses-composer/ | e-chat progress redraw refocuses composer |
 | Closed | e-chat-super-i-visible-session-target/ | e-chat s-i ignores visible session buffer |
