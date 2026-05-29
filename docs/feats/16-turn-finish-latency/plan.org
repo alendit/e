@@ -1,0 +1,440 @@
+#+title: Plan: Turn Finish Latency
+#+author: e planning
+#+date: 2026-05-29
+#+startup: overview
+
+* Status
+
+Planned
+
+* Goal
+
+Reduce the main-thread pauses users see when a turn settles or emits dense
+activity, while keeping session persistence durable and chat presentation
+accurate.
+
+The first priority is removing stop-the-world work from the hot path. The live
+investigation measured the current durable-entry ID path at roughly six seconds
+per 100 generated entry ids because =e-session--random-80-bit= calls
+=garbage-collect=. Removing that explicit GC is expected to eliminate the worst
+freeze class before broader rendering or persistence work.
+
+* Non-goals
+
+- Replace JSONL persistence with SQLite or a new storage backend.
+- Remove durable session activity history.
+- Change the public shapes returned by =e-session-messages=,
+  =e-session-activity-events=, or =e-harness-session-activity-events=.
+- Rework backend streaming or provider request semantics.
+- Treat byte compilation as the primary fix.
+- Rewrite the chat shell or split =e-chat.el= as part of this feature.
+
+* Current behavior
+
+Turn completion and related activity callbacks do several kinds of synchronous
+work on the Emacs main thread:
+
+- =e-session--random-80-bit= builds entropy by calling =garbage-collect=, so
+  every new durable entry id can force an expensive global collection.
+- =e-harness--emit-turn-event= persists durable activity through
+  =e-session-append-activity-event= before subscriber callbacks render the event.
+- Message and activity append paths append the JSONL record and call
+  =e-session--write-index= immediately. The index writer serializes the whole
+  session list.
+- =e-chat--set-status= calls =e-chat--refresh-mode-line-status= for almost every
+  status transition. Without fresh provider usage, that can rebuild full harness
+  context and estimate context tokens.
+- Running activity redraw paths delete and recreate transient status/composer
+  text and call =(redisplay t)=.
+
+Byte compilation can help pure Elisp loops and regex-heavy rendering, but it does
+not address the dominant live finding: forced GC inside entry-id generation.
+
+* Accepted decisions
+
+** Remove forced GC from durable entry id generation first
+
+Do not keep =garbage-collect= in =e-session--random-80-bit=. Entropy should come
+from cheap process-local and time/random inputs, and monotonicity should continue
+to be provided by =e-session-generate-ulid=.
+
+Implementation requirements:
+
+- Change only =e-session--random-80-bit= and directly related tests in the first
+  slice.
+- Add a regression test that would fail if =garbage-collect= is called by
+  =e-session-generate-ulid=.
+- Keep the ULID string length and monotonic same-millisecond behavior intact.
+- Benchmark the live running Emacs after reload with a scalar bounded probe.
+
+** Defer broad byte-compilation work
+
+Do not make this feature depend on installing =.elc= or =.eln= files. Development
+reload currently loads source, and the measured freeze is dominated by explicit
+GC and synchronous main-thread work.
+
+Implementation requirements:
+
+- Mention byte compilation only in documentation or review notes as an optional
+  later optimization for pure Elisp CPU work.
+- Do not add build, package, or startup changes for compiled files in this
+  feature.
+
+** Persist less synchronously without losing turn history
+
+Keep durable activity, but avoid rewriting broad metadata for every activity
+event. Session index freshness matters for session lists and resume ordering;
+reasoning/tool activity does not need a full index rewrite on every event.
+
+Implementation requirements:
+
+- Add an internal append option or helper that can skip immediate index writes
+  for activity events whose only effect is activity history.
+- Ensure user and assistant message appends still update the index promptly
+  because they affect session title, summary, recency, and message count.
+- Ensure terminal turn events flush or refresh the index once for the turn if
+  needed.
+- Do not change JSONL record order.
+
+** Make mode-line context refresh event-aware
+
+Status text should not rebuild model-facing context on every event. Token usage
+or cached estimates are enough during a running turn, and full context estimates
+should be explicit, cached, or delayed.
+
+Implementation requirements:
+
+- Split cheap header/status updates from expensive mode-line context/token
+  estimation.
+- Make =e-chat--set-status= avoid recomputing context unless the caller
+  explicitly requests it.
+- Keep =token-usage= events updating the mode line from durable usage without
+  rebuilding context.
+- Add tests around =e-chat--set-status= proving ordinary status transitions do
+  not call =e-harness-context=.
+
+** Coalesce running activity redraws
+
+Progress and tool activity should render at a bounded cadence. Several activity
+events in one callback burst should not each force a full transient redraw and
+redisplay.
+
+Implementation requirements:
+
+- Introduce a chat-local deferred redraw helper that schedules one near-future
+  redraw for the active turn.
+- Keep immediate rendering for final assistant messages, failures, and user
+  submissions.
+- Remove unconditional =(redisplay t)= from ordinary activity events, or gate it
+  behind the deferred redraw helper.
+- Preserve the existing response-navigation, block-view, tool-list, and composer
+  state guarantees.
+
+* Design summary
+
+The work should stay in the current ownership boundaries:
+
+- =e-session.el= owns durable entry id generation, append behavior, JSONL writes,
+  and session index writes.
+- =e-harness.el= owns deciding which turn events are durable and when turn-level
+  persistence/index flushes happen.
+- =e-chat.el= owns presentation status, mode-line text, and redraw cadence.
+- Tests remain focused around these seams instead of timing wall-clock UI
+  freezes directly.
+
+The plan is ordered from highest confidence and lowest coupling to broader UI
+work. Each slice should be useful if the feature stops there.
+
+* Implementation slices
+
+** Slice 1: Remove forced GC from entry ids
+
+Files:
+
+- Modify =lisp/core/e-session.el=
+- Modify =test/e-session-test.el=
+
+Steps:
+
+1. Add a test that advises =garbage-collect= to signal while calling
+   =e-session-generate-ulid= several times.
+
+   #+begin_src emacs-lisp
+   (ert-deftest e-session-test-generate-ulid-does-not-force-garbage-collect ()
+     (cl-letf (((symbol-function 'garbage-collect)
+                (lambda (&rest _args)
+                  (error "garbage-collect should not run"))))
+       (dotimes (_ 5)
+         (should (stringp (e-session-generate-ulid))))))
+   #+end_src
+
+2. Run the focused test and confirm it fails before implementation.
+
+   #+begin_src sh
+   rtk eldev test -f test/e-session-test.el e-session-test-generate-ulid-does-not-force-garbage-collect
+   #+end_src
+
+3. Change =e-session--random-80-bit= so the seed excludes
+   =(garbage-collect)=.
+
+   #+begin_src emacs-lisp
+   (defun e-session--random-80-bit ()
+     "Return a sufficiently random 80-bit integer."
+     (let* ((seed (format "%S" (list (current-time) (random t) (emacs-pid)
+                                     (system-name))))
+            (hex (substring (secure-hash 'sha1 seed) 0 20)))
+       (string-to-number hex 16)))
+   #+end_src
+
+4. Run:
+
+   #+begin_src sh
+   rtk eldev test -f test/e-session-test.el
+   #+end_src
+
+5. Reload the running Emacs and run a bounded scalar benchmark:
+
+   #+begin_src sh
+   emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+   emacsclient --eval "(progn (require 'e-session) (prin1 (list :ulid-100 (car (benchmark-run 100 (e-session-generate-ulid))))))"
+   #+end_src
+
+Expected: the focused test passes, the full session test file passes, and the
+live =:ulid-100= value is far below the previous roughly six second result.
+
+** Slice 2: Avoid per-activity index rewrites
+
+Files:
+
+- Modify =lisp/core/e-session.el=
+- Modify =lisp/core/e-harness.el=
+- Modify =test/e-session-test.el=
+- Modify =test/e-harness-test.el=
+
+Steps:
+
+1. Add an internal optional argument to =e-session-append-activity-event= such as
+   =&key write-index=, defaulting to current behavior for direct callers.
+
+2. Add a helper in =e-harness.el= for durable turn activity persistence. For
+   non-message activity events, call =e-session-append-activity-event= with
+   immediate index writes disabled. For terminal events such as =turn-finished=,
+   =turn-failed=, and =turn-cancelled=, flush the index once after appending the
+   event.
+
+3. Add a test that wraps =e-session--write-index= and emits a representative
+   sequence through =e-harness--emit-turn-event=:
+
+   #+begin_src emacs-lisp
+   (ert-deftest e-harness-test-activity-index-write-is-coalesced ()
+     (let* ((store (e-session-store-create))
+            (harness (e-harness-create
+                      :backend (e-backend-fake-create :items nil)
+                      :sessions store))
+            (write-count 0))
+       (e-harness-create-session harness :id "session-1")
+       (cl-letf (((symbol-function 'e-session--write-index)
+                  (lambda (_store)
+                    (setq write-count (1+ write-count)))))
+         (e-harness--emit-turn-event harness "session-1" "turn-1"
+                                     'provider-request-started
+                                     '(:status started))
+         (e-harness--emit-turn-event harness "session-1" "turn-1"
+                                     'reasoning-delta
+                                     '(:type reasoning-delta :content "thinking"))
+         (e-harness--emit-turn-event harness "session-1" "turn-1"
+                                     'tool-started
+                                     '(:name "read" :arguments nil))
+         (e-harness--emit-turn-event harness "session-1" "turn-1"
+                                     'tool-finished
+                                     '(:tool-call (:name "read") :result "ok"))
+         (e-harness--emit-turn-event harness "session-1" "turn-1"
+                                     'turn-finished
+                                     '(:reason done)))
+       (should (= write-count 1))
+       (should (equal '(provider-request-started reasoning-delta tool-started
+                        tool-finished turn-finished)
+                      (mapcar (lambda (event)
+                                (plist-get event :event-type))
+                              (e-session-activity-events store "session-1"))))))
+   #+end_src
+
+4. Run:
+
+   #+begin_src sh
+   rtk eldev test -f test/e-session-test.el
+   rtk eldev test -f test/e-harness-test.el
+   #+end_src
+
+5. For slices with live loaded chat buffers, reload and verify a live temporary
+   turn still persists ordered activity events. Keep the live probe scalar:
+   counts and event types only. If no Emacs server is available, record the
+   exact =emacsclient= failure.
+
+** Slice 3: Decouple status updates from full context estimates
+
+Files:
+
+- Modify =lisp/shells/chat/e-chat.el=
+- Modify =test/e-chat-test.el=
+
+Steps:
+
+1. Add a cheap status setter or an optional argument to =e-chat--set-status=:
+
+   #+begin_src emacs-lisp
+   (defun e-chat--set-status (status &optional refresh-mode-line)
+     ...)
+   #+end_src
+
+   Ordinary status transitions should update =e-chat--status= and
+   =header-line-format= only. Token usage, explicit model/effort changes, buffer
+   attach, and idle setup may request mode-line refresh.
+
+2. Add a regression test that advises =e-harness-context= to signal, calls
+   =e-chat--set-status= for ordinary states such as ="waiting for provider"= and
+   ="done"=, and asserts no error is raised.
+
+3. Add a companion test proving =e-chat--refresh-mode-line-status= still calls
+   the context path when no fresh token usage is available and an explicit
+   refresh is requested.
+
+4. Run:
+
+   #+begin_src sh
+   rtk eldev test -f test/e-chat-test.el
+   #+end_src
+
+5. Reload and inspect the running chat header/mode-line after one test status
+   update in a temporary chat buffer.
+
+** Slice 4: Coalesce activity redraw and redisplay
+
+Files:
+
+- Modify =lisp/shells/chat/e-chat.el=
+- Modify =test/e-chat-test.el=
+
+Steps:
+
+1. Add buffer-local deferred redraw state:
+
+   #+begin_src emacs-lisp
+   (defvar-local e-chat--pending-activity-redraw-turn-id nil)
+   (defvar-local e-chat--pending-activity-redraw-timer nil)
+   #+end_src
+
+2. Add a helper that schedules one short timer per active turn. The timer should
+   call =e-chat--render-turn-transient= for the latest recorded turn state, then
+   clear the pending state.
+
+3. Update =reasoning-delta=, =tool-started=, =tool-finished=, provider lifecycle
+   events, and progress tick paths to request the deferred redraw instead of
+   forcing immediate =(redisplay t)= after each event.
+
+4. Keep terminal paths immediate:
+
+   - assistant =message-added=
+   - =turn-failed=
+   - =turn-cancelled=
+   - session reset
+
+5. Add tests proving multiple recorded activity events in one burst schedule only
+   one redraw timer and preserve scrollback/navigation state when the timer runs.
+
+6. Run:
+
+   #+begin_src sh
+   rtk eldev test -f test/e-chat-test.el
+   #+end_src
+
+7. Reload and verify a live temporary running turn does not steal focus from
+   scrollback while activity updates are rendered.
+
+** Slice 5: Optional benchmark and review handoff
+
+Files:
+
+- Create or modify =docs/feats/16-turn-finish-latency/review.org=
+
+Steps:
+
+1. Capture before/after numbers for:
+
+   - 100 =e-session-generate-ulid= calls;
+   - 20 message appends in a temporary in-memory store;
+   - one ordinary =e-chat--set-status= call in a visible chat buffer;
+   - activity burst rendering in a temporary chat buffer.
+
+2. Record exact commands, outputs, and any live reload limitations in
+   =review.org=.
+
+3. Keep the feature status =In-review= until review notes are resolved and the
+   operator explicitly marks the feature done.
+
+* Testing plan
+
+Use focused tests first:
+
+#+begin_src sh
+rtk eldev test -f test/e-session-test.el
+rtk eldev test -f test/e-harness-test.el
+rtk eldev test -f test/e-chat-test.el
+#+end_src
+
+When all touched files are stable, run the relevant aggregate command:
+
+#+begin_src sh
+rtk eldev test
+#+end_src
+
+If the aggregate command fails on unrelated dirty-tree blockers, report the
+exact failing tests and keep the feature verification scoped to the touched
+selectors.
+
+* Live verification
+
+After any implementation slice that changes =lisp/*.el=, reload the running
+Emacs:
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Use bounded probes only. Avoid broad printed registries, large session dumps, or
+unbounded buffer-local state. Good probes return scalar timing values, counts, or
+small event-type lists.
+
+* Compatibility expectations
+
+- Existing JSONL session files remain readable.
+- Existing in-memory sessions continue to generate durable ids without format
+  changes.
+- Session recency and title behavior remain message-driven.
+- Existing response navigation, block view, tool list, and composer behavior
+  remain stable during progress redraws.
+- No user config changes are required.
+
+* Risks
+
+- Skipping index writes too aggressively could make resume ordering stale until a
+  terminal event flushes the index.
+- Deferred redraw could make activity feel laggy if the timer interval is too
+  long.
+- Mode-line refresh changes could hide token usage if =token-usage= events do not
+  request the explicit refresh.
+- Removing explicit GC from ID generation must preserve enough uniqueness for
+  practical durable entry ids. The monotonic suffix path should cover
+  same-millisecond calls.
+
+* Review questions
+
+1. Does this reduce the worst live freeze path before touching broader UI code?
+2. Does persistence still record every durable activity event in order?
+3. Are session index writes tied to real index consumers rather than every
+   append?
+4. Does chat status update cheaply by default?
+5. Does activity redraw preserve scrollback, response navigation, block view,
+   tool list, and composer state?
+6. What remaining latency is pure Elisp CPU work that byte compilation could
+   reasonably improve after these structural fixes?
