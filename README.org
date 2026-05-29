@@ -1,0 +1,201 @@
+#+title: Emacs Config Presentation
+
+* e architecture overview
+
+=e= is an Emacs-hosted agent runtime. Its main design goal is to let agents run inside Emacs while keeping the runtime, capabilities, provider adapters, and presentation UI cleanly separated.
+
+** Core idea
+
+The architecture is centered on a stable harness core with replaceable capabilities, layers, backend adapters, and presentation shells around it.
+
+#+begin_src mermaid
+flowchart LR
+    User[Emacs user] --> Shell[Presentation shells]
+    Shell --> Harness[Core harness]
+    Harness --> Context[Context strategy]
+    Context --> Loop[Agent loop]
+    Loop --> Backend[LLM backend adapter]
+    Loop --> Tools[Tool registry]
+    Tools --> Env[Emacs / OS side effects]
+    Harness --> Sessions[Session store]
+    Layers[Layer presets] --> Capabilities[Capabilities]
+    Capabilities --> Harness
+    Capabilities --> Tools
+    Capabilities --> Context
+#+end_src
+
+** Main components
+
+*** Core harness
+
+The harness owns the agent runtime lifecycle:
+
+- sessions and turn state
+- event ordering
+- active layers and capabilities
+- model/tool dispatch
+- resource registries
+- persistent session access
+- async prompt, wait, abort, reset, and follow-up operations
+
+It should not know about chat buffers, keymaps, rendering, OpenAI auth details, or concrete Emacs UI mechanics.
+
+*** Capabilities
+
+Capabilities are the semantic behavior units. A capability can contribute:
+
+- model instructions
+- context providers
+- model-facing tools
+- resource methods such as =file://=, =buffer://=, =tmp://=, and =e://=
+- lifecycle hooks
+- shell-facing actions
+
+Examples:
+
+- =chat-session=
+- =file-inspection=
+- =file-mutation=
+- =shell-process=
+- =emacs-awareness=
+- =buffer-read=
+- =buffer-edit=
+- =elisp-eval=
+- =evidence-retrieval=
+
+*** Layers
+
+Layers are presets over capabilities. They package useful capability sets but should not own durable behavior themselves.
+
+Current examples:
+
+- =harness-base=: session tmp resources and tool-output truncation
+- =os-base=: file read/write/edit and shell process tools
+- =emacs-base=: visible-buffer awareness, buffer resources, buffer editing, and elisp evaluation
+- =agents-std-context=: skill/context resources
+- =chat-session=: chat actions and live context attachments
+
+*** Context strategy
+
+Context strategy converts harness/session state into backend-neutral model input.
+
+The current baseline is transcript-style context plus capability-provided prefix/context messages. The architecture intentionally leaves room for future canvas-state context, where a canvas is the authoritative semantic state and the transcript is append-only evidence.
+
+*** Agent loop
+
+The loop runs a turn:
+
+1. receive backend-neutral context from the harness
+2. stream assistant output from the backend
+3. execute tool calls through the tool registry
+4. append tool results
+5. re-query when needed until the turn settles
+6. emit lifecycle, message, and tool events back to the harness
+
+The loop is backend-neutral and presentation-neutral.
+
+*** Backend adapters
+
+Backends isolate provider-specific behavior:
+
+- auth
+- headers
+- request shape
+- streaming/SSE parsing
+- retry/cancellation behavior
+- model-specific options
+
+The first real adapter is OpenAI-like Responses API access, including ChatGPT/Codex subscription auth where available. The harness depends only on a generic backend contract.
+
+*** Resources and tools
+
+=e= exposes state through URI-addressed resources and explicit tools.
+
+Important schemes:
+
+- =file://=: workspace files
+- =buffer://=: live Emacs buffers
+- =tmp://=: session-scoped temporary resources for large outputs
+- =e://=: capability-provided in-memory resources, including skills and references
+
+The shared resource operations are:
+
+- =read=
+- =write=
+- =edit=
+
+Other concrete tools include:
+
+- =bash=
+- =list_buffers=
+- =save_buffer=
+- =run_elisp=
+
+*** Session store
+
+Sessions are durable, append-only records stored as JSONL plus an index. They hold:
+
+- user messages
+- assistant messages
+- tool results
+- activity events
+- session metadata
+- branch summaries and compactions
+- model and reasoning-effort overrides
+
+Presentation shells render this state but do not own it.
+
+*** Presentation shells
+
+Presentation shells are Emacs UI adapters. They own:
+
+- buffers
+- commands
+- keymaps
+- rendering
+- user interaction
+
+They do not own provider routing, session semantics, tool execution, or durable runtime state.
+
+Current shells:
+
+- =e-chat=: chat buffer presentation over the harness and =chat-session= capability
+- =e-canvas=: commands for attaching buffers/files as live canvas context
+
+** Prompt flow
+
+#+begin_src mermaid
+sequenceDiagram
+    participant User as User
+    participant Shell as Presentation shell
+    participant Cap as Capability action
+    participant H as Harness
+    participant C as Context strategy
+    participant L as Agent loop
+    participant B as Backend adapter
+    participant T as Tool registry
+    participant S as Session store
+
+    User->>Shell: submit prompt
+    Shell->>Cap: chat-session submit
+    Cap->>H: prompt async
+    H->>S: load session state
+    H->>C: build backend-neutral context
+    C-->>H: messages + tools + options
+    H->>L: run turn
+    L->>B: stream model request
+    B-->>L: assistant deltas / tool calls
+    L->>T: execute tool calls
+    T-->>L: structured tool results
+    L-->>H: events and messages
+    H->>S: append durable records
+    H-->>Shell: renderable events
+#+end_src
+
+** Boundary rules
+
+The harness owns lifecycle and runtime ordering, while capabilities own named behavior contracts and layers only package capability sets. Context strategies own model-context construction, backend adapters own provider details, and tools or adapters own side effects. Presentation shells own UI only, and durable semantic state belongs in harness/session records or external Emacs/file state rather than in shells.
+
+** Current direction
+
+=e= is moving toward a capability-first runtime where agents can be live-configured inside Emacs. The important architectural seam is that the same harness can support multiple shells, provider adapters, context strategies, and tool/capability sets without making any one UI or provider the center of the system.
