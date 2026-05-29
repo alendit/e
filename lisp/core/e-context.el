@@ -39,18 +39,18 @@
   (eq (e-context-name strategy) 'transcript-stack))
 
 (defun e-context-provider-priority (provider)
-  "Return PROVIDER priority, defaulting stale providers to 200."
-  (if (>= (length provider) 4)
-      (e-context-provider--priority provider)
-    200))
+  "Return PROVIDER priority."
+  (unless (e-context-provider-p provider)
+    (signal 'wrong-type-argument (list 'e-context-provider-p provider)))
+  (e-context-provider--priority provider))
 
 (put 'e-context-provider-priority 'compiler-macro nil)
 
 (defun e-context-provider--build-function (provider)
-  "Return PROVIDER build function, tolerating stale provider records."
-  (if (>= (length provider) 4)
-      (e-context-provider--build provider)
-    (aref provider 2)))
+  "Return PROVIDER build function."
+  (unless (e-context-provider-p provider)
+    (signal 'wrong-type-argument (list 'e-context-provider-p provider)))
+  (e-context-provider--build provider))
 
 (put 'e-context-provider--build-function 'compiler-macro nil)
 

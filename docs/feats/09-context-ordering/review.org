@@ -96,25 +96,14 @@ Files and behavior reviewed:
 
 ** Follow-up Notes
 
-- Stale-record tolerance is partial.  The custom accessors
-  =e-context-provider-priority= and =e-context-provider--build-function= can read
-  short pre-priority =e-context-provider= vectors directly, and
-  =e-capability-instruction-priority= defaults old =e-capability= vectors to
-  =200=.  However, =cl-defstruct= predicates such as =e-context-provider-p= and
-  =e-capability-p= do not recognize older vectors once the struct length has
-  changed.  As a result, stale context-provider objects can still fail when they
-  flow through =e-capabilities--provider-messages=, and stale capability objects
-  can fail if generated accessors such as =e-capability-instructions= are used
-  before tolerant accessors.  In normal startup/reload paths the default harness
-  recreates configured stateless layers, so this is not showing up in the live
-  default chat context.  If the project wants robust live-upgrade support for
-  arbitrary already-active custom layers, add a small follow-up to make stale
-  provider/capability detection explicit instead of relying on generated struct
-  predicates.
-- Test coverage is good for the main ordering behavior, but the stale-record
-  compatibility edge above is not covered end-to-end.  Add regression coverage
-  if that compatibility guarantee is promoted from "where possible" to a hard
-  requirement.
+- Stale pre-priority =e-context-provider= and =e-capability= records are not a
+  live-upgrade compatibility target.  Intended extension seams that change
+  frequently should remain live-reloadable through rebuilt capability/layer
+  definitions and runtime config refresh, but one-off cardinal changes to core
+  record shape may require a full Emacs restart.
+- The implementation now rejects stale pre-priority provider/capability records
+  explicitly instead of half-supporting them through vector fallback paths.
+  Restarting Emacs rebuilds those runtime objects from the current definitions.
 
 * Verification Evidence
 
@@ -149,9 +138,18 @@ Files and behavior reviewed:
   | 4 | Emacs awareness guidance |
   | 5 | Visible Emacs buffers |
 
+- Follow-up verification after accepting the stale-record policy:
+
+  #+begin_src shell
+  rtk eldev test -f test/e-context-test.el e-context-test-rejects-stale-provider-records
+  rtk eldev test -f test/e-capabilities-test.el e-capabilities-test-instruction-priority-rejects-stale-records
+  #+end_src
+
+  Result: both focused tests passed with =0= unexpected.
+
 * Review Result
 
-Feature 09 matches the plan in the current implementation and the previous
-ordinary-chat UX follow-up is complete.  The feature can be marked =Done= once
-the team accepts the stale-record compatibility note as either non-blocking or
-tracked separately for a later live-upgrade hardening pass.
+Feature 09 is =Done=. It matches the plan in the current implementation, the
+previous ordinary-chat UX follow-up is complete, and the stale-record
+compatibility note is resolved by project policy: frequent extension seams stay
+live-reloadable, while one-off core record shape changes may require a restart.

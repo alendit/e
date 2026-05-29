@@ -111,6 +111,18 @@
     (should (equal (e-capability-actions legacy)
                    '(:legacy ignore)))))
 
+(ert-deftest e-capabilities-test-instruction-priority-rejects-stale-records ()
+  "Priority slot shape changes require capability rebuild, not vector fallback."
+  (let ((legacy (vector 'cl-struct-e-capability
+                        'legacy
+                        "Legacy"
+                        "Instructions."
+                        nil
+                        nil
+                        nil
+                        '(:legacy ignore))))
+    (should-error (e-capability-instruction-priority legacy))))
+
 (ert-deftest e-capabilities-test-register-hooks ()
   "Capability hook providers register against the given registry."
   (should (require 'e-hooks nil t))

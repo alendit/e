@@ -44,6 +44,7 @@ Use this section to evaluate decomposition, dependency direction, side-effect pl
 - Keep interfaces and public contracts narrow and consumer-shaped. Do not force callers or implementations to depend on unused capabilities.
 - Do not create shared interfaces that implementations can only satisfy by narrowing preconditions, weakening behavior, ignoring requirements, or throwing unsupported-operation errors.
 - Make compatibility expectations explicit. Keep legacy handling or legacy paths only when a real compatibility requirement exists; otherwise remove obsolete paths by default and mention that cleanup explicitly.
+- Aim for live reloadability on intended extension seams that change frequently: capability definitions and content, loaded layer definitions, and capability configuration should refresh through reload/sync paths. One-off cardinal changes to harness or core record shapes may require a full Emacs restart instead of compatibility shims that complicate steady-state code.
 - Do not add fallback paths, broad defensive handling, or error swallowing unless that layer can make a correct domain decision; unexpected errors should surface to the top and fail in obvious ways.
 
 ### Required Self-Check For Design-Sensitive Changes

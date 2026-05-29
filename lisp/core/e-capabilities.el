@@ -104,12 +104,10 @@ slot existed."
     nil))
 
 (defun e-capability-instruction-priority (capability)
-  "Return CAPABILITY instruction priority.
-This accessor tolerates stale capability records compiled before the
-`instruction-priority' slot existed."
-  (if (>= (length capability) 11)
-      (or (aref capability 10) 200)
-    200))
+  "Return CAPABILITY instruction priority."
+  (unless (e-capability-p capability)
+    (signal 'wrong-type-argument (list 'e-capability-p capability)))
+  (or (aref capability 10) 200))
 
 (defun e-capability-config-options (capability)
   "Return CAPABILITY declared config option specs.

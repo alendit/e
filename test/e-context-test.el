@@ -134,6 +134,15 @@
                       :options nil)
      :type 'wrong-type-argument)))
 
+(ert-deftest e-context-test-rejects-stale-provider-records ()
+  "One-off provider shape changes require rebuild instead of vector fallback."
+  (let ((stale-provider
+         (vector 'cl-struct-e-context-provider
+                 'legacy-provider
+                 (lambda (&rest _args) nil))))
+    (should-error (e-context-provider-priority stale-provider))
+    (should-error (e-context-provider-build stale-provider))))
+
 (provide 'e-context-test)
 
 ;;; e-context-test.el ends here

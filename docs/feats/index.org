@@ -19,7 +19,7 @@ Status values for coding agents:
 | 06 | Done | 06-agents-std-context/ | Agents Std Context |
 | 07 | Done | 07-capability-config/ | Capability Config |
 | 08 | Done | 08-context-protection-tool-calls/ | Context Protection from Tool Calls |
-| 09 | In-review | 09-context-ordering/ | Context Ordering |
+| 09 | Done | 09-context-ordering/ | Context Ordering |
 | 10 | Done | 10-session-append-performance/ | Session Append Performance |
 | 11 | Done | 11-context-compaction/ | Context Compaction |
 | 12 | Done | 12-session-overview-shell/ | Session Overview Shell |
