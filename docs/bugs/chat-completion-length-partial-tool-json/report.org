@@ -1,0 +1,11 @@
+#+title: Chat Completion Length Partial Tool JSON
+#+startup: overview
+
+* Report
+
+The user reported that the last chat turn failed with:
+
+#+begin_example
+Turn failed: End of file while parsing JSON: 1, 40, 40
+#+end_example
+

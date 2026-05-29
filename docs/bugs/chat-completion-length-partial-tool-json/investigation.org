@@ -1,0 +1,44 @@
+#+title: Chat Completion Length Partial Tool JSON Investigation
+#+startup: overview
+
+* Investigation
+
+The failed turn in session =20260528T212837-c86ed0e4ddd3= reached the direct
+gateway chat-completions endpoint:
+
+- provider: =local-go-llm-proxy-opus=
+- URL path: =/v1/chat/completions=
+- failure time: =2026-05-28T22:08:07Z=
+- error: =End of file while parsing JSON: 1, 40, 40=
+
+The raw provider response retained in the running Emacs showed the stream ended
+with =finish_reason= = "length" while a tool call was still incomplete. The
+accumulated tool-call arguments were only a JSON prefix:
+
+#+begin_example
+{"uri": "file://lisp/shells/e-canvas.el"
+#+end_example
+
+The chat-completions parser treated every finish reason as permission to emit
+and parse accumulated tool calls. That is correct for =tool_calls=, but wrong
+for =length= because the model can be cut off in the middle of the tool-call
+argument JSON.
+
+* Fix
+
+=e-openai-chat-completion-parse-stream= now emits accumulated tool calls only
+when the provider finish reason is =tool_calls=. For =length= and other
+non-tool-call finish reasons, it preserves any assistant text already streamed
+and emits the corresponding =done= item without attempting to parse partial tool
+arguments.
+
+* Validation
+
+- Added a regression test for a =length= finish with partial tool-call JSON.
+- Verified the new test failed before the parser fix with =json-end-of-file=.
+- Verified the new test passes after the parser fix.
+- Ran the focused chat-completions parser test group and token-auth
+  chat-completion harness test.
+- Reloaded the changed Elisp into the running Emacs with =e-dev-reload=.
+- Verified the live parser returns assistant text plus =(:type done :reason
+  length)= for a partial tool-call JSON stream instead of signaling EOF.

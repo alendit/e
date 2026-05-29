@@ -866,6 +866,10 @@ condition list.  Return a cancellable `e-backend-request' handle."
    ((equal reason "content_filter") 'content-filter)
    (t (intern (replace-regexp-in-string "_" "-" (format "%s" reason))))))
 
+(defun e-openai-chat-completion--tool-call-finish-p (reason)
+  "Return non-nil when REASON means accumulated tool calls are complete."
+  (equal reason "tool_calls"))
+
 (defun e-openai-chat-completion-parse-stream (stream-text)
   "Parse Chat Completions STREAM-TEXT into backend-neutral items."
   (e-openai-codex--append-raw-response stream-text)
@@ -926,12 +930,14 @@ condition list.  Return a cancellable `e-backend-request' handle."
                                     (setq tool-state (car merged))))
                       (when finish-reason
                         (unless done-seen
-                          (emit-tool-calls)
-                          (unless tool-state
+                          (if (e-openai-chat-completion--tool-call-finish-p
+                               finish-reason)
+                              (emit-tool-calls)
                             (when text-parts
                               (push (list :type 'assistant-message
-                                          :content (apply #'concat
-                                                          (nreverse text-parts)))
+                                          :content
+                                          (apply #'concat
+                                                 (nreverse text-parts)))
                                     items)))
                           (push (list :type 'done
                                       :reason

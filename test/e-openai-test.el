@@ -604,6 +604,39 @@ data: [DONE]\n\n")
          :arguments (:uri "file://README.md"))
         (:type done :reason tool-calls))))))
 
+(ert-deftest e-openai-test-parse-chat-completion-length-skips-partial-tool-call ()
+  "Chat Completion streams can stop before tool-call JSON is complete."
+  (let ((text (json-encode
+               (list :choices
+                     (vector
+                      (list :delta
+                            (list :content "I will update it.")
+                            :index 0)))))
+        (tool-start (json-encode
+                     (list :choices
+                           (vector
+                            (list :delta
+                                  (list :tool_calls
+                                        (vector
+                                         (list :index 0
+                                               :id "call-1"
+                                               :type "function"
+                                               :function
+                                               (list :name "write"
+                                                     :arguments "{\"uri\""))))
+                                  :index 0)))))
+        (length-finish
+         "data: {\"choices\":[{\"finish_reason\":\"length\",\"index\":0,\"delta\":{}}]}\n\n"))
+    (should
+     (equal
+      (e-openai-chat-completion-parse-stream
+       (concat "data: " text "\n\n"
+               "data: " tool-start "\n\n"
+               length-finish))
+      '((:type assistant-delta :content "I will update it.")
+        (:type assistant-message :content "I will update it.")
+        (:type done :reason length))))))
+
 (ert-deftest e-openai-test-chat-completion-harness-streams-token-provider ()
   "Generic token-auth Chat Completion harnesses stream through injected requesters."
   (let* ((process-environment
