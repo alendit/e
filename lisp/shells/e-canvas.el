@@ -20,6 +20,7 @@
 (require 'e-harness-registry)
 (require 'e-shells)
 (require 'e-startup)
+(require 'seq)
 (require 'subr-x)
 
 (defgroup e-canvas nil
@@ -78,9 +79,75 @@
   (with-current-buffer canvas-buffer
     (e-chat--create-session harness)))
 
+(defun e-canvas--session-canvas-attachment (harness session-id)
+  "Return SESSION-ID's primary canvas attachment in HARNESS, or nil."
+  (seq-find (lambda (attachment)
+              (plist-get attachment :canvas))
+            (e-chat-session-attachments harness session-id)))
+
+(defun e-canvas--session-canvas-buffer (harness session-id)
+  "Return the live canvas buffer for SESSION-ID in HARNESS, or nil.
+Prefer an existing buffer; otherwise visit a file-backed canvas on
+demand."
+  (when-let ((attachment (e-canvas--session-canvas-attachment
+                          harness session-id)))
+    (or (e-chat-session--attachment-live-buffer attachment)
+        (when-let ((file (plist-get attachment :file)))
+          (and (file-readable-p file)
+               (find-file-noselect file))))))
+
+(defun e-canvas--buffer-canvas-session (harness buffer)
+  "Return a session id in HARNESS whose canvas is BUFFER, or nil.
+Match on buffer identity, recorded buffer name, or canvas URI so
+file-backed canvases resolve even without a recorded live buffer."
+  (let ((buffer-uri (e-canvas--buffer-uri buffer))
+        (buffer-name (buffer-name buffer)))
+    (catch 'session
+      (dolist (session (e-harness-session-list harness))
+        (let* ((session-id (plist-get session :id))
+               (attachment (e-canvas--session-canvas-attachment
+                            harness session-id)))
+          (when (and attachment
+                     (or (eq (e-chat-session--attachment-live-buffer
+                              attachment)
+                             buffer)
+                         (equal (plist-get attachment :buffer-name)
+                                buffer-name)
+                         (equal (plist-get attachment :uri) buffer-uri)))
+            (throw 'session session-id)))))))
+
+(defun e-canvas--display-buffer-to-side (buffer)
+  "Display BUFFER in a side pane next to the current window.
+Split off a new pane to the right when the frame has a single window,
+otherwise reuse the adjacent window."
+  (if (one-window-p)
+      (pop-to-buffer buffer
+                     '((display-buffer-pop-up-window)
+                       (direction . right)))
+    (let ((window (next-window)))
+      (set-window-buffer window buffer)
+      (select-window window)))
+  buffer)
+
+(defun e-canvas--display-chat-to-side (chat-buffer)
+  "Display CHAT-BUFFER in a side pane next to the current window.
+When the frame has a single window, split off a new pane to the
+right.  Otherwise reuse the adjacent (side) window so repeated
+canvas sessions share one chat pane."
+  (if (one-window-p)
+      (pop-to-buffer chat-buffer
+                     '((display-buffer-pop-up-window)
+                       (direction . right)))
+    (let ((window (next-window)))
+      (set-window-buffer window chat-buffer)
+      (select-window window)))
+  (e-chat--after-display-buffer chat-buffer)
+  chat-buffer)
+
 (defun e-canvas--open-session-for-buffer (buffer &optional display)
   "Create and open a new chat session using BUFFER as the primary canvas.
-When DISPLAY is non-nil, show both BUFFER and the chat buffer."
+When DISPLAY is non-nil, keep BUFFER in the current pane and show the
+chat buffer in a side pane."
   (let* ((harness (e-canvas--default-harness))
          (session (e-canvas--create-session harness buffer))
          (session-id (plist-get session :id))
@@ -93,7 +160,7 @@ When DISPLAY is non-nil, show both BUFFER and the chat buffer."
     (let ((chat-buffer (e-chat-open :harness harness :session-id session-id)))
       (when display
         (switch-to-buffer buffer)
-        (e-chat--pop-to-buffer chat-buffer))
+        (e-canvas--display-chat-to-side chat-buffer))
       chat-buffer)))
 
 (defun e-canvas--session-choice-label (session)
@@ -130,12 +197,37 @@ When DISPLAY is non-nil, show both BUFFER and the chat buffer."
 
 ;;;###autoload
 (defun e-canvas-open-for-current-buffer ()
-  "Open a new e session using the current buffer as the primary canvas."
+  "Open an e session for the current buffer's canvas.
+When the current buffer is already a canvas for a session, reveal that
+session's chat buffer in a side pane.  Otherwise open a new session
+using the current buffer as the primary canvas."
   (interactive)
-  (let ((source (current-buffer)))
-    (e-canvas--open-session-for-buffer
-     source
-     (called-interactively-p 'interactive))))
+  (let* ((source (current-buffer))
+         (harness (e-canvas--default-harness))
+         (existing (e-canvas--buffer-canvas-session harness source)))
+    (if existing
+        (let ((chat-buffer (e-chat-open :harness harness
+                                        :session-id existing)))
+          (when (called-interactively-p 'interactive)
+            (e-canvas--display-chat-to-side chat-buffer))
+          chat-buffer)
+      (e-canvas--open-session-for-buffer
+       source
+       (called-interactively-p 'interactive)))))
+
+;;;###autoload
+(defun e-canvas-reveal-canvas ()
+  "Reveal the canvas buffer for the current chat session in a side pane.
+The current buffer must be an e chat buffer whose session has a canvas
+attachment."
+  (interactive)
+  (unless (and (derived-mode-p 'e-chat-mode) e-chat-session-id)
+    (user-error "Not in an e chat buffer"))
+  (let* ((harness (or e-chat-harness (e-canvas--default-harness)))
+         (buffer (e-canvas--session-canvas-buffer harness e-chat-session-id)))
+    (unless buffer
+      (user-error "This chat session has no canvas attached"))
+    (e-canvas--display-buffer-to-side buffer)))
 
 ;;;###autoload
 (defun e-canvas-new-buffer (name)
@@ -228,6 +320,12 @@ With prefix argument CANVAS, replace the target session's primary canvas."
      :summary "Attach a file to a session's live context."
      :interactive 'e-canvas-attach-file
      :function 'e-canvas-attach-file
+     :scope 'global)
+    (e-shell-command-create
+     :id 'reveal-canvas
+     :summary "Reveal the current chat session's canvas in a side pane."
+     :interactive 'e-canvas-reveal-canvas
+     :function 'e-canvas-reveal-canvas
      :scope 'global))))
 
 (defun e-canvas-startup ()

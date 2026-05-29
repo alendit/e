@@ -248,18 +248,29 @@ in the next turn's context."
                           (ignore-errors
                             (e-chat-session-attachments harness session-id)))))
     (when attachments
-      (list
-       (list :role 'system
-             :content
-             (string-join
-              (cons
-               (concat
-                "Live session context attachments follow. These are "
-                "current-state attachments rebuilt for every turn; they "
-                "replace prior attachment state and are not transcript "
-                "history.")
-               (mapcar #'e-chat-session--attachment-section attachments))
-              "\n\n"))))))
+      (let ((has-canvas (cl-some (lambda (attachment)
+                                   (plist-get attachment :canvas))
+                                 attachments)))
+        (list
+         (list :role 'system
+               :content
+               (string-join
+                (cons
+                 (concat
+                  "Live session context attachments follow. These are "
+                  "current-state attachments rebuilt for every turn; they "
+                  "replace prior attachment state and are not transcript "
+                  "history."
+                  (when has-canvas
+                    (concat
+                     "\n\nA <canvas> attachment is the user's working "
+                     "document. Prefer to put your answer directly into the "
+                     "canvas by editing it. Use the chat response only to "
+                     "communicate things about the edit that do not belong "
+                     "in the document itself (for example, brief notes, "
+                     "questions, or a short summary of what you changed).")))
+                 (mapcar #'e-chat-session--attachment-section attachments))
+                "\n\n")))))))
 
 (defun e-chat-session-capability-create ()
   "Create the chat-session capability."

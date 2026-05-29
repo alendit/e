@@ -74,6 +74,30 @@
                               :content)))))))))
       (e-canvas-test--kill-chat-buffers))))
 
+(ert-deftest e-canvas-test-open-current-buffer-reveals-existing-canvas-session ()
+  "Opening from an attached canvas buffer reuses the existing chat session."
+  (let ((harness (e-canvas-test--harness)))
+    (unwind-protect
+        (e-canvas-test--with-empty-harness-registry
+          (let ((e-chat-default-harness-id :canvas-test))
+            (e-harness-registry-register :canvas-test harness)
+            (with-temp-buffer
+              (rename-buffer "canvas-existing" t)
+              (insert "canvas body")
+              (e-harness-create-session harness :id "session-1")
+              (e-chat-session-attach-context
+               harness
+               "session-1"
+               (e-canvas--buffer-attachment (current-buffer))
+               :canvas t)
+              (let ((chat-buffer (e-canvas-open-for-current-buffer)))
+                (should (buffer-live-p chat-buffer))
+                (with-current-buffer chat-buffer
+                  (should (derived-mode-p 'e-chat-mode))
+                  (should (equal e-chat-session-id "session-1")))
+                (should (= (length (e-harness-session-list harness)) 1))))))
+      (e-canvas-test--kill-chat-buffers))))
+
 (ert-deftest e-canvas-test-new-file-uses-file-backed-buffer-as-canvas ()
   "Creating a file canvas attaches its visited buffer and file URI."
   (let ((file (make-temp-file "e-canvas-" nil ".txt"))
@@ -131,7 +155,8 @@
                           new-buffer
                           new-file
                           attach-current-buffer
-                          attach-file))
+                          attach-file
+                          reveal-canvas))
       (should (memq command-id command-ids)))))
 
 (ert-deftest e-canvas-test-registers-canvas-shell-on-load ()
