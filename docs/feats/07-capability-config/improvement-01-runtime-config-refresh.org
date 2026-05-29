@@ -5,7 +5,8 @@
 
 Implemented.
 
-Feature 07 remains =In-review= until the operator accepts the review round.
+Feature 07 review is accepted; this improvement resolved the remaining review
+items.
 
 Implemented in this slice:
 

@@ -3,10 +3,10 @@
 
 * Status
 
-In-review.
+Done.
 
-The implementation is present in the current tree and matches the ready plan.
-This feature remains =In-review= until the operator accepts the review round.
+The implementation is present in the current tree, matches the ready plan, and
+the review round is accepted. No unresolved review notes remain.
 
 * Implementation Summary
 

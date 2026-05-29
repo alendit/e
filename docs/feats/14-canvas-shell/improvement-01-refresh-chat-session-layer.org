@@ -3,9 +3,10 @@
 
 * Status
 
-Implemented.
+Done.
 
-Feature 14 remains =In-review= until the operator accepts this follow-up slice.
+Feature 14 review is accepted; this follow-up slice resolved the remaining
+review note.
 
 Validation:
 
@@ -212,8 +213,7 @@ Live validation:
 - Focused and full test suites pass.
 - Running Emacs is reloaded and the stale-layer live scenario is verified.
 - =docs/feats/14-canvas-shell/review.org= is updated to mark the review note
-  resolved, and =docs/feats/index.org= can move feature 14 to =Done= when no
-  other review notes remain.
+  resolved, and =docs/feats/index.org= marks feature 14 =Done=.
 
 * Design Self-Check
 

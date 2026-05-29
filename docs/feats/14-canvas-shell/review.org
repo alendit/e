@@ -3,8 +3,8 @@
 
 * Result
 
-In-review. The feature and its reload compatibility follow-up are implemented.
-It remains =In-review= until the operator accepts the review round.
+Done. The feature and its reload compatibility follow-up are implemented,
+reviewed, and accepted. No unresolved review notes remain.
 
 * Summary
 
@@ -117,7 +117,8 @@ The implementation keeps canvas contents out of durable chat transcript messages
 
 1. If this work package stopped here, would the project be better off than if it had not been built?
    - Yes: the core canvas workflow exists, is tested, and the stale-layer reload
-     gap has been fixed. The feature remains in review for operator acceptance.
+     gap has been fixed. The review round is accepted and no unresolved notes
+     remain.
 2. What final direction does this move toward?
    - A presentation shell model where live session context can be attached to ordinary chat sessions without changing transcript semantics.
 3. Which decisions are likely to change, uncertain, or stable, and are uncertain ones local and reversible instead of hidden behind speculative abstraction?

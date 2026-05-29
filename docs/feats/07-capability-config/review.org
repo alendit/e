@@ -3,7 +3,7 @@
 
 * Status
 
-In-review.
+Done.
 
 Implementation broadly matches the feature direction: configuration is owned by
 capabilities, layers remain stateless presets, =agents-std-context= has concrete
@@ -17,7 +17,7 @@ share runtime timing, active-session =describe= is covered, and directory-local
 source detection can distinguish absent local config from equal-valued local
 config.
 
-The feature stays =In-review= until the operator accepts this follow-up slice.
+The follow-up slice is accepted. No unresolved review notes remain.
 
 * Scope Reviewed
 
@@ -340,7 +340,7 @@ Returned shape:
 
 * Review Conclusion
 
-Feature 07 remains =In-review= for operator acceptance. The previous timing and
-introspection follow-ups are resolved by improvement 01: runtime config is now a
-harness/session-owned contract, =agents-std-context= skill behavior is fully
-runtime-filtered, and chat/session describe behavior is covered by tests.
+Feature 07 is =Done=. The previous timing and introspection follow-ups are
+resolved by improvement 01: runtime config is now a harness/session-owned
+contract, =agents-std-context= skill behavior is fully runtime-filtered, and
+chat/session describe behavior is covered by tests.
