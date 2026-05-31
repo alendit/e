@@ -1,0 +1,283 @@
+#+title: Resource Coherence for Live Buffers and Files
+#+startup: overview
+
+* Status
+
+Planned
+
+* Problem
+
+Agents can leave linked representations of the same underlying resource
+inconsistent.  The immediate example was editing
+=file://docs/feats/17-org-canvas/plan.org= while the same file was open and
+visible as =buffer://plan.org<2>=.  The file was updated on disk, but the visible
+Emacs buffer still showed older open questions until it was explicitly synced.
+
+From the user's perspective, visible Emacs buffers are often the source of truth.
+If an agent writes the backing file without updating or saving the corresponding
+buffer, the user sees stale or conflicting state even though the file tool
+reported success.
+
+This is not Org Canvas-specific.  It is a general resource coherence problem for
+resources that are aliases, live views, or persisted forms of the same entity.
+
+* Goal
+
+Prevent e agents from silently leaving linked resources inconsistent, starting
+with file-backed Emacs buffers and workspace files.
+
+The first version should make the common file/buffer relationship explicit enough
+that agents and tools can:
+
+- discover when a =file://= resource has a live Emacs buffer view;
+- prefer live buffer contents when reading a file that is open in Emacs;
+- avoid writing disk behind a modified or visible buffer without syncing;
+- route edits through the live buffer when appropriate;
+- save or revert linked buffers deliberately when persistence/sync is intended;
+- surface pending coherence issues before the agent claims work is done.
+
+Do not build a broad speculative resource graph.  Start with the real variation
+point: file-backed buffers are live views of files.
+
+* User-facing behavior
+
+- When an agent changes a file that is open in Emacs, the visible buffer should
+  reflect the change before the agent reports completion.
+- When an agent changes a file-backed Emacs buffer and the change should persist,
+  the buffer should be saved before the agent reports completion.
+- If a file-backed buffer has unsaved user edits, file writes to the same path
+  should not silently overwrite or desynchronize it.  The operation should route
+  through the buffer when safe or fail with a clear conflict.
+- Final notes should not claim that a visible file was updated if the visible
+  buffer still shows stale contents.
+- For routine text-file work in Emacs projects, agents should prefer editing live
+  file-backed buffers over direct file writes when such buffers exist.
+
+* Scope
+
+Initial scope:
+
+- =file://= workspace resources;
+- =buffer://= Emacs resources that visit files;
+- visible and non-visible live buffers;
+- read/write/edit/save/revert coherence for text resources.
+
+Out of scope for the first version:
+
+- remote TRAMP coherence;
+- binary files;
+- multi-process file watchers;
+- general alias graphs for arbitrary URI schemes;
+- automatic conflict resolution for modified buffers with user edits;
+- Org Canvas-specific session behavior.
+
+* Resource coherence model
+
+Represent file-backed buffers as linked resources:
+
+#+begin_src emacs-lisp
+(:canonical file:///Users/.../plan.org
+ :aliases (file:///Users/.../plan.org
+           buffer://plan.org<2>)
+ :file "/Users/.../plan.org"
+ :buffers ((:name "plan.org<2>"
+            :visible t
+            :modified nil
+            :file "/Users/.../plan.org")))
+#+end_src
+
+The first implementation does not need a persisted graph.  It can compute links
+on demand by scanning live Emacs buffers and canonicalizing file paths.
+
+* Policy
+
+** Reads
+
+When a =file://= resource is read and a live Emacs buffer visits that file, the
+live buffer contents should win over disk.  This represents unsaved edits and
+matches the existing canvas attachment behavior.
+
+If multiple live buffers visit the same file, prefer the selected/visible buffer
+when possible and otherwise fail or return an explicit ambiguity rather than
+silently choosing an arbitrary buffer.
+
+** File writes/edits with a live buffer
+
+When a =file://= resource is written/edited and a live buffer visits that file:
+
+- if the buffer is modified, reject the file write/edit with a clear coherence
+  conflict unless the operation explicitly targets the buffer;
+- if the buffer is visible, prefer routing the change through the buffer and then
+  saving it, so the user sees the new state immediately;
+- if the buffer is unmodified and not visible, either route through the buffer and
+  save it or write the file and revert the buffer, but do not leave it stale;
+- tool output should state which linked buffers were updated, saved, reverted, or
+  left unresolved.
+
+** Buffer writes/edits for file-backed buffers
+
+When a =buffer://= resource is written/edited and the buffer is file-backed:
+
+- mutate the buffer, not just the file;
+- return whether the buffer is now modified and whether the file was saved;
+- if persistence was requested, call or require =save_buffer=;
+- final agent notes should mention whether the running Emacs buffer was saved.
+
+** Conflicts
+
+If a linked buffer has unsaved edits that may be user-authored, unexpected file
+writes should fail loudly.  Do not silently revert or overwrite modified buffers.
+Expected conflict paths should return actionable messages, for example:
+
+#+begin_example
+Cannot edit file:///.../plan.org directly because live buffer plan.org<2> has
+unsaved changes.  Edit buffer://plan.org<2> or ask the user how to resolve the
+conflict.
+#+end_example
+
+* Guidance stopgap
+
+Add or update agent guidance in the Emacs/base capability while the stronger tool
+policy is being built:
+
+#+begin_quote
+When editing a file that may be open in Emacs, prefer live buffer tools over
+direct file writes.  If you write a file directly and a live file-backed buffer
+exists for it, sync or reload the buffer before reporting completion.  If you
+edit a live file-backed buffer and the change should persist, save the buffer.
+Before finalizing, check visible buffers that correspond to modified resources.
+#+end_quote
+
+Guidance is not sufficient by itself; it is a stopgap so the model has an
+explicit expectation even before the harness can enforce coherence.
+
+* Proposed APIs and helpers
+
+Names are tentative.
+
+#+begin_src emacs-lisp
+(e-resource-links URI)
+;; Return canonical URI, aliases, live buffer views, visibility, modified state.
+
+(e-resource-sync-status URI)
+;; Return whether linked file/buffer resources are coherent, stale, modified,
+;; conflicted, or need saving.
+
+(e-resource-sync URI :strategy STRATEGY)
+;; Strategies may include :prefer-buffer, :prefer-file, :save-buffer,
+;; :revert-buffer-if-unmodified.
+#+end_src
+
+For the first slice, these may be internal helpers owned by the Emacs resource
+adapter rather than public cross-scheme APIs:
+
+- =e-emacs-tools-file-live-buffers=;
+- =e-emacs-tools-file-preferred-buffer=;
+- =e-emacs-tools-file-buffer-conflict=;
+- =e-emacs-tools-sync-file-buffer-after-write=.
+
+Promote them to generic resource APIs only when more schemes need the same
+contract.
+
+* Implementation slices
+
+** Slice 1: Guidance and discovery helpers
+
+- Update Emacs/base instructions with the linked file/buffer sync expectation.
+- Add helpers to find live buffers visiting a local file path.
+- Add helper to describe linked file/buffer state: buffer name, file path,
+  modified flag, visibility, and selected-window status.
+- Tests: discover no buffer, one unmodified buffer, one modified buffer, visible
+  buffer, and multiple buffers for the same file.
+
+** Slice 2: Read coherence
+
+- Change =file://= read behavior to prefer live buffer contents when a buffer
+  visits the file.
+- Ensure this does not regress existing direct file reads when no buffer exists.
+- Tests: file read sees unsaved live buffer contents; file read falls back to
+  disk when no buffer exists; ambiguous multiple-buffer cases are explicit.
+
+** Slice 3: Safer file writes/edits
+
+- Before direct =file://= write/edit, detect live visiting buffers.
+- Reject direct writes when a linked buffer is modified.
+- For unmodified visible buffers, route through the buffer and save it, or write
+  and immediately revert the buffer if routing is not yet available.
+- For unmodified non-visible buffers, ensure the buffer is not left stale.
+- Tests: modified buffer conflict; visible buffer remains in sync; non-visible
+  visiting buffer is updated or reverted; no-buffer write still works.
+
+** Slice 4: Sync status tool or resource metadata
+
+- Add a small inspection tool or resource metadata path that reports coherence
+  state for a =file://= or =buffer://= URI.
+- Include enough detail for final validation: stale linked buffers, modified
+  unsaved buffers, and visible buffers that need refresh.
+- Tests: status reports coherent, needs-save, stale, and conflict states.
+
+** Slice 5: Final validation and live smoke checks
+
+- Ensure agent-facing tool outputs make pending sync obligations visible.
+- Consider adding a harness-level final warning when the current turn wrote files
+  that have stale visible buffers.
+- Live smoke-check in running Emacs:
+  - edit an open visible file via file resource and verify the buffer updates;
+  - edit a file-backed buffer and save it;
+  - attempt direct file edit while the visiting buffer has unsaved edits and
+    verify the conflict is explicit.
+
+* Tests
+
+Add tests for:
+
+- file path canonicalization for local file/buffer links;
+- finding live buffers visiting a file;
+- detecting visible buffers;
+- detecting modified buffers;
+- =file://= reads preferring live unsaved buffer contents;
+- direct file write/edit conflict when a visiting buffer is modified;
+- direct file write/edit keeping an unmodified visible buffer in sync;
+- direct file write/edit keeping an unmodified non-visible buffer coherent;
+- buffer edit of a file-backed buffer reporting unsaved/saved state;
+- sync status reporting coherent, stale, needs-save, and conflict states;
+- existing file tools still work when no Emacs buffer is involved.
+
+* Compatibility expectations
+
+- Direct file operations for files not open in Emacs should keep working as they
+  do today.
+- Existing buffer operations should keep mutating buffers without implicit save
+  unless the operation explicitly chooses a save strategy.
+- Existing canvas attachment reads that already prefer live buffers should keep
+  their current behavior; any duplicated logic should be consolidated only when
+  doing so reduces coupling.
+- Modified user buffers must not be silently overwritten, reverted, or saved.
+- Any new generic resource API should remain narrow and consumer-shaped; do not
+  force non-file schemes to implement unsupported coherence behavior.
+
+* Decisions
+
+- This is separate from Org Canvas.
+- Initial enforcement scope is local file-backed Emacs buffers.
+- Guidance is useful as a stopgap but tool/resource policy should enforce the
+  critical cases.
+- Reads should prefer live buffers over disk.
+- Direct file writes/edits should not silently desynchronize live buffers.
+- Modified live buffers are conflicts unless the operation explicitly targets the
+  buffer or the user resolves the conflict.
+
+* Open questions
+
+None.
+
+* Design notes
+
+- The resource/tool layer owns coherence mechanics because it observes reads,
+  writes, edits, and live Emacs buffers.
+- Presentation buffers should not have to know every possible file write path.
+- Core policy should stay narrow: file-backed buffers are a real linked-resource
+  relation; broader alias graphs can wait until another concrete relation needs
+  the same machinery.
+- Unexpected coherence conflicts should surface clearly rather than being hidden
+  by fallback sync behavior.
