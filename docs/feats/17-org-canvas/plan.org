@@ -1,0 +1,582 @@
+#+title: Org Canvas
+#+startup: overview
+
+* Status
+
+Ready
+
+* Goal
+
+Add an Org Canvas interaction mode for working with an open Org document as the
+main interaction surface while using a small temporary chat input pane for turns.
+
+The core idea is similar to the existing canvas shell, but the canvas document and
+conversation are not presented as two full peer buffers.  The open Org buffer is
+the primary UI and the model is expected to edit or append structured Org content
+there.  Chat input is transient, similar in spirit to =e-chat-start-here=: it
+collects a prompt, submits a turn, shows minimal progress/status, and then gets
+out of the way.  The final assistant turn should contain only a very brief
+summary of what was done or a short question when no safe document edit was made.
+
+Org Canvas should feel like working in one document with an assistant attached to
+it, not like switching to a separate chat app.  The durable output belongs in the
+Org file; the temporary pane is only for prompting, progress, short summaries,
+errors, and reopening prior prompts when needed.
+
+* User-facing behavior
+
+- =e-org-canvas-open-for-current-buffer= starts working with the current Org
+  buffer as an Org Canvas.  If a matching Org Canvas session already exists for
+  that buffer, reuse it; otherwise create one.
+- =e-org-canvas-new-file= creates or visits an Org file and starts an Org Canvas
+  session for it.
+- =e-org-canvas-new-buffer= asks for a target folder, creates a new Org-mode
+  buffer, and starts an Org Canvas session for it.  The folder prompt should
+  default to the last Org Canvas folder used for the current project from project
+  preferences; when no project preference exists yet, default to the discovered
+  project root.
+- When a new unsaved Org Canvas is created, the first interaction should ask the
+  model to suggest an appropriate Org file name from the user's prompt/document
+  intent and save the canvas under that name automatically when the suggestion is
+  safe.  If the suggested name is unsafe, ambiguous, or would overwrite an
+  existing file, ask the user to approve or override the file name.
+- =e-org-canvas-prompt-thread= opens a small temporary input pane for a prompt
+  focused on the current position or heading.
+- =e-org-canvas-prompt-document= opens the same input pane for a document-wide
+  prompt.
+- =e-org-canvas-prompt= prompts for scope (=thread= or =document=) before
+  opening/submitting.
+- In Org Canvas buffers, =s-i= is rebound to thread prompt and =S-i= is rebound
+  to document prompt.  These bindings should be installed by an Org Canvas minor
+  mode or equivalent buffer-local presentation state, not globally for all Org
+  buffers.
+- Org Canvas must interact cleanly with the existing chat context reference mode
+  (=e-chat-context-mode=), which also binds =s-i= / =S-i= for adding references
+  to a chat.  When an Org Canvas buffer enters Org Canvas mode, chat context
+  reference bindings must be disabled or locally suppressed for that buffer so
+  Org Canvas owns those keys unambiguously.
+- =e-org-canvas-list-sessions= lists Org Canvas sessions, with a default filter
+  for the current Org file/buffer when invoked from an Org Canvas or Org buffer.
+- =e-org-canvas-list-project-sessions= lists Org Canvas sessions under the
+  current project by first selecting a file that has sessions, then selecting a
+  session for that file.
+- =e-org-canvas-resume= resumes an Org Canvas session associated with a selected
+  file/buffer/session.  From an Org Canvas or Org buffer, the default candidate
+  set is the current file; a project-wide command provides broader discovery.
+- Org Canvas sessions remain normal e sessions internally, so model controls,
+  resume, compaction, session metadata, and harness lifecycle behavior continue
+  to work.
+
+The default visual layout should keep the Org buffer selected as the main pane.
+The input/status pane is temporary and should not become the main working
+surface.  After submission, point should return to the Org buffer unless the user
+explicitly opens the backing chat session.
+
+* Interaction contract for the model
+
+Org Canvas contributes strong mode instructions:
+
+- Treat the Org buffer as the main interaction surface and primary output target.
+- Read the current Org document state from live context for each turn.
+- Use buffer edit/write tools to place durable results in the Org buffer in
+  structured Org form: headings, lists, drawers, blocks, tables, links, TODO
+  items, or prose under the appropriate heading.
+- Keep the final assistant message very brief: one sentence or short bullet list
+  summarizing document edits, or a concise clarification question when editing is
+  not possible.
+- Do not paste long generated content into the chat response when it belongs in
+  the Org document.
+- Use Org visibility manipulation tools to focus the buffer around the relevant
+  topic before reading or editing when the task is local.
+- Preserve user structure and visibility where practical; when visibility is
+  changed, use it to make the relevant context visible rather than as an output
+  channel.
+
+* Prompt scopes
+
+The Org Canvas capability defines two prompt styles.  The shell records the
+selected scope in turn/session metadata and the capability context provider
+renders scope-specific instructions.
+
+** Thread scope
+
+Implemented initially as positional focus, not real threads.
+
+For =thread= turns, the model receives deliberately lightweight instructions such
+as:
+
+- We are talking about the topic under the cursor.
+- Use the captured point, heading path, visible window, and current document
+  context to decide what the relevant topic boundary is.
+- Prefer edits near or under that topic unless the user explicitly asks for a
+  broader document change.
+
+Do not over-specify thread scope as exactly the current subtree.  The model
+should be allowed to infer whether the user's request concerns the heading, a
+nearby list item, the parent topic, or related visible context.
+
+The first implementation captures enough invocation state to support this:
+
+- buffer name / file URI;
+- point position;
+- current heading title, outline path, and subtree bounds when point is inside a
+  heading;
+- whether the current heading is folded/collapsed;
+- visible window start/end and selected window point where available.
+
+A later simple-annotation integration will replace or augment this positional
+thread reference with durable annotations.  Keep that as a narrow seam:
+
+#+begin_src emacs-lisp
+(cl-defstruct e-org-canvas-focus
+  kind            ; initially 'position, later maybe 'annotation
+  buffer-name
+  uri
+  point
+  heading-path
+  subtree-start
+  subtree-end
+  visibility
+  window-start
+  window-end
+  annotation-id)
+#+end_src
+
+Only the focus capture/rendering code should care whether the focus came from a
+position or an annotation.  Prompt submission, session lookup, and capability
+context should depend on a generic focus object.
+
+** Document scope
+
+For =document= turns, the model receives instructions such as:
+
+- Consider the whole Org document and its outline.
+- Add, reorganize, summarize, or enrich information in the appropriate location
+  across the document.
+- Use visibility tools to inspect or reveal relevant sections as needed, but do
+  not limit the task to the current heading unless the user asks.
+- Adjust document visibility as appropriate for the work.  Do not require exact
+  preservation of the pre-turn visibility state when inspecting or focusing the
+  document; do avoid gratuitous visibility churn.
+
+The current point and visibility state are still provided as useful editor
+context, but are not the main scope boundary.
+
+* Context model
+
+Org Canvas context is current-state context rebuilt on every turn, not transcript
+history.  The open Org buffer is always attached as the primary live document.
+The capability context provider adds Org-specific context beyond the raw buffer
+contents:
+
+- canonical document URI and buffer name;
+- current point position;
+- heading at point and outline path;
+- subtree bounds for the focused heading;
+- visibility state for headings, at least for the current heading path and
+  preferably a compact outline map of collapsed/open headings;
+- window-visible range and selected window point;
+- active prompt scope (=thread= or =document=);
+- scope-specific instruction block.
+
+The existing canvas attachment provider can continue to supply raw current-state
+contents.  Org Canvas should add a distinct =org-canvas= capability/layer whose
+context provider emits Org-aware editor state and instructions.  This avoids
+turning generic chat-session attachments into Org-specific policy.
+
+* Root and session discovery
+
+Org Canvas sessions should use the same root discovery rules as normal chat
+sessions.  When a canvas is file-backed, determine the project/root from the Org
+file location using the existing chat/session root discovery behavior, such as
+nearest git root, Projectile/project root, or the default-directory fallback used
+by chat.  Store the selected root in the session metadata the same way chat does
+so context, tools, and resume behavior are consistent.
+
+Session lookup should support:
+
+- finding an existing Org Canvas session for the current live buffer;
+- matching by canonical file URI when the file is reopened in another buffer;
+- listing all Org Canvas sessions associated with a given file;
+- listing all Org Canvas sessions under the current project/root when no specific
+  file filter is requested.
+
+* Capability and layer design
+
+Add an =org-canvas= capability, packaged by an =org-canvas= layer.
+
+Responsibilities:
+
+- capability instructions for Org Canvas interaction mode;
+- context provider that renders current Org buffer state and prompt scope;
+- tools for Org visibility manipulation;
+- shell-facing actions for attaching/retrieving Org Canvas session metadata if
+  needed.
+
+The shell depends on the =org-canvas= layer, and that layer should be activated
+by default for the default chat harness.  Because it is active by default, the
+capability must gate its Org Canvas instructions/context/tools on session
+metadata: ordinary chat sessions must not receive Org Canvas behavior unless the
+session is marked with =:org-canvas= metadata.
+
+This keeps command discovery and tool availability simple while preserving the
+compatibility requirement that normal chat sessions do not silently become Org
+Canvas sessions.  A future session-scoped layer system can narrow activation
+further, but the first implementation should not wait on that architecture.
+
+Likely files:
+
+- =lisp/layers/org-canvas/e-org-canvas-capabilities.el=
+- =lisp/layers/org-canvas/e-org-canvas.el=
+- =lisp/shells/e-org-canvas.el=
+- =test/e-org-canvas-test.el=
+
+Register the layer in =e-default-layer-specs= and include it in the default chat
+layer ids.  Register the shell from startup so commands are discoverable.
+
+* Org visibility tools
+
+The capability should offer model-facing tools dedicated to safe Org visibility
+manipulation.  These are editor/view tools, not document mutation tools.
+
+Initial tool set:
+
+- =org_canvas_visibility_state= :: return outline/visibility data for the canvas
+  Org buffer, optionally around point or a heading path.
+- =org_canvas_show_context= :: reveal ancestors/current subtree around a point or
+  heading path, optionally with siblings.
+- =org_canvas_cycle_heading= :: cycle, show, hide, or reveal one heading/subtree.
+- =org_canvas_show_all= :: show all headings in the canvas buffer.
+- =org_canvas_overview= :: collapse to overview/top-level headings.
+
+Tool calls should identify the target session/canvas implicitly when possible
+from the active harness/session context, not require the model to guess buffer
+names.  Arguments can accept optional point or heading path for explicit focus.
+
+Visibility tools should fail explicitly when called outside an Org Canvas session
+or when the target live Org buffer cannot be resolved.  If tools are registered
+harness-wide because the layer is active by default, their handlers must check
+=:org-canvas= session metadata before operating.
+
+Implementation detail: Emacs tools currently register handlers without turn
+context unless providers opt into registration context.  The Org Canvas tool
+provider should accept harness/session registration context and close over the
+session's canvas metadata if available, or otherwise resolve the current Org
+Canvas buffer from session metadata at call time.  If the existing tool registry
+does not provide enough context, add the smallest core seam needed rather than
+using global mutable state.
+
+* Shell design
+
+=lisp/shells/e-org-canvas.el= owns presentation behavior:
+
+- create or find Org Canvas sessions for Org buffers;
+- create/visit Org buffers/files;
+- enable Org Canvas buffer-local presentation state/keybindings;
+- disable or locally suppress =e-chat-context-mode= reference-add bindings while
+  the buffer is in Org Canvas mode;
+- capture focus and visibility state at invocation time;
+- open a temporary input/status pane;
+- submit prompt text with scope metadata and focus metadata;
+- return focus to the Org buffer after submit;
+- list/resume Org Canvas sessions associated with the current file or project;
+- optionally expose a command to open the backing normal chat session for
+  debugging/history.
+
+** Keybinding interaction with chat context mode
+
+The existing =e-chat-context-mode= is a global minor mode for adding current
+buffer references to chat sessions.  It binds the same key family that Org Canvas
+wants to use for prompt commands.  Org Canvas must not rely on accidental minor
+mode keymap ordering.
+
+Preferred implementation:
+
+- add a small chat-owned suppression seam, such as a buffer-local predicate or
+  variable checked by =e-chat-context-mode=, so Org Canvas can locally disable
+  the context-reference bindings without changing the user's global setting in
+  other buffers;
+- when =e-org-canvas-mode= is enabled, set that local suppression flag and bind
+  =s-i= / =S-i= to Org Canvas prompt commands;
+- when =e-org-canvas-mode= is disabled, remove the local suppression and restore
+  ordinary =e-chat-context-mode= behavior for the buffer.
+
+If the existing global minor mode cannot be locally suppressed without a small
+refactor, add that refactor as part of Slice 1 rather than letting both modes
+compete for the same keys.  Avoid globally turning off the user's
+=e-chat-context-mode= unless there is no buffer-local alternative; if a global
+fallback is temporarily necessary, record and restore the previous user setting
+and document that compatibility limitation.
+
+The temporary input pane should be a small derived mode rather than reusing the
+full chat buffer.  It can start simple:
+
+- buffer name like =*e-org-canvas-input:TITLE*=;
+- read-only header showing scope and target heading/document;
+- editable prompt area;
+- keybindings for submit/cancel/switch scope;
+- status line for running/done/error;
+- on completion, display only the brief assistant summary or error in the pane;
+- auto-close on success after a short delay;
+- preserve enough prompt/summary metadata to reopen previous prompts for the
+  current Org Canvas session.
+
+When a canvas is created from a new unsaved buffer, =e-org-canvas-new-buffer=
+first asks for a target folder.  The default folder is read from project
+preferences keyed by the discovered project root; if no preference exists, use
+the project root.  After the user chooses a folder, store it back to project
+preferences for that project.
+
+The first interaction should then include a file-naming step: prompt/model
+assistance should suggest the best Org file name, the shell validates and
+sanitizes that name, and the buffer is saved automatically into the chosen folder
+when the result is safe.  Safe automatic saves require at least:
+
+- a relative basename only, not an absolute path;
+- no parent traversal such as =..=;
+- an =.org= extension, adding it if the stem is otherwise safe;
+- a slugified or otherwise filesystem-safe name;
+- no overwrite of an existing file unless the user explicitly confirms.
+
+If the suggestion fails these checks or is ambiguous, prompt the user with the
+chosen folder and sanitized suggestion as the default.  After saving, update the
+session's =:org-canvas= metadata and canvas attachment URI from =buffer://= to
+=file://=.
+
+This mirrors the =start-here= lightweight interaction while keeping the Org
+buffer as the durable output surface.
+
+* Session metadata
+
+Store Org Canvas state in session metadata, separate from generic context
+attachments.  Suggested shape:
+
+#+begin_src emacs-lisp
+:org-canvas (:uri "file:///.../notes.org"
+             :buffer-name "notes.org"
+             :label "notes.org"
+             :mode org
+             :root "/path/to/project/"
+             :last-scope thread
+             :last-focus ...
+             :needs-file-name nil
+             :target-folder "/path/to/project/notes/")
+#+end_src
+
+The generic canvas attachment can still mark the Org buffer as =:canvas t= so
+existing live content plumbing works.  Org-specific fields belong under
+=:org-canvas= so future annotation/thread data has a stable home.
+
+Previous prompt history should be reconstructed from the backing e session turns
+rather than duplicated into session metadata.  Prompt submission should still
+record lightweight turn/session metadata, such as scope, focus, canvas URI, and
+summary pointers, so an Org Canvas prompt picker can identify relevant turns and
+reopen prior prompts/summaries without maintaining a second transcript.
+
+* Simple-annotation seam
+
+Do not implement annotation-backed threads in this feature.  Prepare for them by
+keeping these boundaries explicit:
+
+- focus capture returns a generic focus object/plist;
+- focus rendering turns that object into context instructions;
+- session metadata stores focus with a =:kind= field;
+- thread prompt submission accepts focus without assuming it is point-based;
+- future annotation integration only needs a new focus provider/resolver and does
+  not require rewriting the input pane or Org Canvas session creation.
+
+* Implementation slices
+
+** Slice 1: Plan and shell skeleton
+
+- Create =e-org-canvas= shell with commands to start from current Org buffer,
+  new Org buffer, and new Org file.
+- Reuse =chat-session= attachment APIs to mark the Org buffer as the primary
+  canvas.
+- Store =:org-canvas= session metadata, including root when discoverable.
+- Enable buffer-local Org Canvas presentation state and keybindings.
+- Add the smallest needed =e-chat-context-mode= suppression/refactor so existing
+  chat reference bindings are disabled in Org Canvas buffers while continuing to
+  work elsewhere.
+- Register shell on startup.
+- Tests: creating/reusing a session for an Org buffer; metadata shape; keymap
+  installation; =e-chat-context-mode= suppression/restoration; shell manifest
+  registration.
+
+** Slice 2: Default layer and gated capability context
+
+- Add Org Canvas capability/layer.
+- Register the layer in built-in layer specs and include it in default chat layer
+  ids.
+- Ensure the capability emits instructions/context only for sessions with
+  =:org-canvas= metadata.
+- Tests: ordinary chat context is unchanged; Org Canvas sessions receive Org
+  Canvas instructions.
+
+** Slice 3: Org focus capture and context provider
+
+- Capture point, heading path, subtree bounds, window-visible range, and compact
+  visibility state.
+- Context provider emits document metadata, visibility metadata, and scope
+  instructions for the latest submitted Org Canvas turn.
+- Keep thread prompt wording intentionally broad: "we are talking about the topic
+  under the cursor."
+- Tests: context for thread scope includes cursor/topic focus and local
+  instruction; document scope includes whole-document instruction and still
+  records current point.
+
+** Slice 4: Temporary input pane and prompt submission
+
+- Implement =e-org-canvas-input-mode= with submit/cancel/switch-scope commands.
+- Add =e-org-canvas-prompt-thread=, =e-org-canvas-prompt-document=, and
+  =e-org-canvas-prompt=.
+- Submit via =e-chat-session-submit= or =e-chat-submit-session= with prompt text,
+  scope metadata, and focus metadata.
+- Keep the Org buffer selected after submit.
+- Subscribe to turn/session events only enough to show status and the brief final
+  summary in the temporary pane.
+- Auto-close the pane on success after a short delay.
+- Record lightweight turn metadata needed to reconstruct previous Org Canvas
+  prompts/summaries from the backing session, and expose reopening previous
+  prompts.
+- Tests: prompt submission records metadata and calls the chat-session submit
+  path; pane lifecycle/keymap/history behavior can be tested in buffers.
+
+** Slice 5: New unsaved canvas naming flow
+
+- For =e-org-canvas-new-buffer=, determine the current project root, prompt for a
+  target folder with a default from project preferences or the project root, then
+  create an Org buffer and mark the session as needing an initial file name.
+- Persist the selected target folder in project preferences for that project so
+  future Org Canvas buffers default to the same folder.
+- On first interaction, request or infer a suggested Org file name.  If the
+  sanitized basename is safe and does not overwrite an existing file, save the
+  buffer automatically into the chosen folder, update attachment/session
+  metadata, and continue the prompt.
+- Ensure unsafe, ambiguous, absolute, traversal, or overwrite cases ask the user
+  rather than writing silently.
+- Tests: folder prompt defaults to project root when no preference exists;
+  selected folder is remembered per project; first interaction for an unsaved
+  canvas auto-saves safe suggestions; unsafe/overwrite suggestions prompt;
+  metadata and attachment URI update to the file URI.
+
+** Slice 6: Session listing/resume
+
+- Implement Org Canvas session candidate discovery by live buffer, canonical file
+  URI, and project/root.
+- Add =e-org-canvas-list-sessions= and =e-org-canvas-resume=, defaulting to the
+  current file when invoked from an Org Canvas or Org file buffer.
+- Add =e-org-canvas-list-project-sessions= for project-wide discovery: first
+  choose a file with Org Canvas sessions under the project, then choose one of
+  that file's sessions.
+- Reuse normal chat resume/opening paths internally while restoring the Org
+  buffer as the primary pane.
+- Tests: sessions for a selected/current file are listed by default;
+  project-wide listing groups by file before selecting a session; resume opens
+  the Org buffer and reconnects buffer-local presentation state.
+
+** Slice 7: Visibility tools
+
+- Add Org visibility tool registration to the =org-canvas= capability.
+- Implement state/overview/show-all/show-context/cycle-heading behavior against
+  the session's Org canvas buffer.
+- Ensure tools fail explicitly when the session has no live Org canvas buffer or
+  when the current session is not an Org Canvas session.
+- Tests: collapsed/open state detection; show-context reveals ancestors/current
+  subtree; overview/show-all manipulate visibility without editing text;
+  non-Org-Canvas sessions fail clearly.
+
+** Slice 8: Integration validation
+
+- Run focused tests and full =eldev test=.
+- Reload the running Emacs with =e-dev-reload=.
+- Live smoke-check with a temporary Org buffer: create Org Canvas, submit a
+  thread prompt, inspect model context/metadata if possible, verify auto-close
+  and prompt history, and verify visibility tools operate on the Org buffer.
+
+* Tests
+
+Add tests for:
+
+- Org Canvas shell command creation from current Org buffer;
+- new buffer/file creation uses Org mode and attaches as canvas;
+- =e-org-canvas-new-buffer= folder prompt defaults and per-project remembered
+  folder preferences;
+- first-prompt file naming/saving for new unsaved canvases, including safe
+  auto-save and unsafe/overwrite confirmation paths;
+- session reuse for the same Org file/buffer;
+- listing/resuming Org Canvas sessions associated with a specific file;
+- project-wide Org Canvas listing that selects a file with sessions before
+  selecting a session;
+- root discovery metadata consistent with normal chat;
+- =:org-canvas= metadata persistence and update on prompt submission;
+- buffer-local keybindings for =s-i= and =S-i= only in Org Canvas state;
+- =e-chat-context-mode= reference bindings are disabled/suppressed in Org Canvas
+  buffers and still work in non-Org-Canvas buffers;
+- focus capture at a heading and outside a heading;
+- compact visibility state for collapsed and expanded headings;
+- context provider content for =thread= and =document= scopes;
+- context provider gating so ordinary chat sessions are unchanged;
+- prompt pane auto-close and previous prompt reopening;
+- visibility tools and explicit error cases;
+- shell manifest, layer registration, default layer activation, and package
+  startup registration.
+
+* Compatibility expectations
+
+- Existing canvas sessions and chat sessions must keep working unchanged.
+- Existing =e-chat-context-mode= reference-add behavior must keep working outside
+  Org Canvas buffers.  Org Canvas may suppress that behavior only for buffers
+  currently in Org Canvas mode.
+- Org Canvas must not change generic canvas prompts unless a session is marked as
+  Org Canvas.
+- Because the =org-canvas= layer is activated by default, all Org Canvas
+  behavior must be gated on =:org-canvas= session metadata.
+- Existing =e-canvas-*= commands remain available.
+- Existing sessions without =:org-canvas= metadata are not Org Canvas sessions.
+- The first version may rely on an open/live Org buffer for best behavior;
+  file-backed buffers can be visited on demand when safe.
+
+* Decisions
+
+- Command prefix is =e-org-canvas-*=
+- The shell depends on an =org-canvas= layer.
+- The =org-canvas= layer is activated by default, but its behavior is gated per
+  session by =:org-canvas= metadata.
+- Input panes auto-close on success.
+- =e-org-canvas-new-buffer= asks for a target folder; the default is the
+  remembered Org Canvas folder for the current project, or the project root on
+  first use.
+- The first interaction for a new unsaved canvas auto-saves safe model-suggested
+  filenames into that chosen folder; unsafe, ambiguous, or overwrite cases ask
+  the user.
+- Org Canvas owns =s-i= / =S-i= in Org Canvas buffers; existing chat reference
+  mode bindings must be disabled or locally suppressed there.
+- Previous prompts/summaries should be reopenable by reconstructing them from
+  backing session turns plus lightweight Org Canvas turn metadata, not by
+  duplicating a separate prompt transcript in session metadata.
+- Thread scope should be phrased as "the topic under the cursor" and not hard
+  limited to the current heading/subtree.
+- Document-wide prompts may adjust visibility as appropriate.
+- Org Canvas roots follow normal chat root discovery.
+- =e-org-canvas-list-sessions= defaults to the current file when invoked from an
+  Org Canvas or Org file buffer.
+- Project-wide session discovery is a separate command that lists files with Org
+  Canvas sessions first, then allows selecting a session for the chosen file.
+
+* Open questions
+
+None.
+
+* Design notes
+
+- Presentation remains in the shell: windows, temporary input pane, buffer/file
+  creation, keybindings, session listing, and prompt commands.
+- Org Canvas policy belongs to the Org Canvas capability/layer, not to generic
+  chat-session attachments.
+- Generic canvas content plumbing remains current-state context.  Org Canvas adds
+  Org-aware editor state and prompt-scope instructions.
+- The simple-annotation future is represented as a focus-provider seam, not a
+  speculative threading system.
+- Visibility tools are side-effecting view tools; document editing still uses the
+  existing buffer edit/write tools.
