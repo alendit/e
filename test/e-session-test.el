@@ -87,6 +87,14 @@
       (should (string-match-p "\\`[0-9A-HJKMNP-TV-Z]\\{26\\}\\'" id)))
     (should (equal ids (sort (copy-sequence ids) #'string<)))))
 
+(ert-deftest e-session-test-generate-ulid-does-not-force-garbage-collect ()
+  "Generated durable entry ids do not force global garbage collection."
+  (cl-letf (((symbol-function 'garbage-collect)
+             (lambda (&rest _args)
+               (error "garbage-collect should not run"))))
+    (dotimes (_ 5)
+      (should (stringp (e-session-generate-ulid))))))
+
 (ert-deftest e-session-test-append-message-assigns-entry-ids-and-parent-links ()
   "Appending messages assigns durable ids and links to the previous head."
   (let ((store (e-session-store-create)))
@@ -754,6 +762,27 @@
      store "session-1" "turn-1" 'reasoning-delta '(:content "one"))
     (e-session-append-activity-event
      store "session-1" "turn-1" 'tool-started '(:name "read"))
+    (should (equal (mapcar (lambda (event)
+                             (plist-get event :event-type))
+                           (e-session-activity-events store "session-1"))
+                   '(reasoning-delta tool-started)))))
+
+(ert-deftest e-session-test-append-activity-event-can-skip-index-write ()
+  "Activity event append callers can skip immediate index persistence."
+  (let ((store (e-session-store-create))
+        (write-count 0))
+    (e-session-create store :id "session-1")
+    (cl-letf (((symbol-function 'e-session--write-index)
+               (lambda (_store)
+                 (setq write-count (1+ write-count)))))
+      (e-session-append-activity-event
+       store "session-1" "turn-1" 'reasoning-delta '(:content "one")
+       :write-index nil)
+      (should (= write-count 0))
+      (e-session-append-activity-event
+       store "session-1" "turn-1" 'tool-started '(:name "read")
+       :write-index t)
+      (should (= write-count 1)))
     (should (equal (mapcar (lambda (event)
                              (plist-get event :event-type))
                            (e-session-activity-events store "session-1"))

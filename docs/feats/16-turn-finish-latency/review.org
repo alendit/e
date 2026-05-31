@@ -1,0 +1,130 @@
+#+title: Review: Turn Finish Latency
+#+author: e implementation
+#+date: 2026-05-31
+#+startup: overview
+
+* Status
+
+In-review.
+
+* Implementation summary
+
+- Removed the explicit =garbage-collect= call from durable ULID entropy.
+- Added an internal =:write-index= option for activity-event appends.
+- Moved harness durable activity persistence to skip per-event index rewrites and
+  flush once for terminal turn activity.
+- Made chat status updates refresh header text cheaply by default, with explicit
+  mode-line refresh for attach/model/effort/token-usage paths.
+- Replaced ordinary running activity redisplay calls with a buffer-local deferred
+  redraw timer.
+
+* Verification
+
+Focused tests:
+
+#+begin_src sh
+rtk eldev test -f test/e-session-test.el
+rtk eldev test -f test/e-harness-test.el
+rtk eldev test -f test/e-chat-test.el
+#+end_src
+
+Results:
+
+- =test/e-session-test.el=: 39 passed.
+- =test/e-harness-test.el=: 52 passed.
+- =test/e-chat-test.el=: 152 passed, 1 existing markdown-mode-dependent test skipped.
+
+Aggregate test:
+
+#+begin_src sh
+rtk eldev test
+#+end_src
+
+Result:
+
+- 541 passed, 1 existing markdown-mode-dependent test skipped.
+
+Live reload:
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Result:
+
+#+begin_example
+"/Users/dimitrivorona/projects/elisp/e/"
+#+end_example
+
+* Live probes
+
+ULID generation:
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'benchmark) (require 'e-session) (prin1 (list :ulid-100 (car (benchmark-run 100 (e-session-generate-ulid))))))"
+#+end_src
+
+Result:
+
+#+begin_example
+(:ulid-100 0.005613)
+#+end_example
+
+Activity index write coalescing:
+
+#+begin_example
+(:activity-index-writes 1
+ :event-types (provider-request-started reasoning-delta tool-started turn-finished))
+#+end_example
+
+Ordinary status updates:
+
+#+begin_example
+(:status-context-calls 0
+ :header "E Chat: done - Untitled 2026-05-31T13:18:59Z - gpt-5.5/high"
+ :mode-name "e-chat")
+#+end_example
+
+Deferred activity redraw:
+
+#+begin_example
+(:redraw-scheduled t :turn "turn-1" :pending-after nil :has-tool-summary 47)
+#+end_example
+
+* Review notes
+
+- Byte compilation remains a separate optional optimization for pure Elisp CPU
+  paths; this feature does not add compiled-file startup or build changes.
+- Session compatibility is unchanged: JSONL record order is preserved, entry ids
+  remain 26-character ULIDs, and direct activity append callers still write the
+  index by default.
+- The main remaining latency risk is pure rendering CPU work inside
+  =e-chat--render-running-status= when a deferred redraw actually runs.
+
+* Architecture self-check
+
+1. This package is better stopped here because it removes the measured forced-GC
+   freeze and reduces repeated index/context/redraw work without changing public
+   transcript shapes.
+2. It moves toward a harness-owned runtime with presentation work paced by the
+   chat shell instead of synchronous event bursts.
+3. The uncertain redraw cadence is local to =e-chat-activity-redraw-delay=; the
+   stable persistence and status contracts stay direct.
+4. =e-session.el= owns durable append/index behavior, =e-harness.el= owns
+   terminal activity flush policy, and =e-chat.el= owns presentation redraws.
+5. Coupling is reduced by keeping context estimation out of ordinary status
+   updates and keeping index flush policy at the harness persistence boundary.
+6. Dependencies still point from shells/harness toward session services; core
+   session code does not depend on chat presentation.
+7. Side effects remain at owning boundaries: JSONL/index writes in session,
+   turn-event persistence in harness, timers/redraws in chat.
+8. No new shared interface was added; the new append keyword is an internal,
+   default-preserving option.
+9. Compatibility remains explicit: JSONL order, ULID shape, and direct append
+   index writes are preserved.
+10. The obsolete explicit GC entropy path and forced activity redisplay helper
+    were removed.
+11. Expected terminal events flush or cancel pending work; unexpected errors
+    still surface through existing session, harness, and chat paths.
+12. Tests prove each seam independently: ULID generation, activity index
+    coalescing, cheap status updates, and deferred redraw/navigation behavior.

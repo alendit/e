@@ -390,6 +390,11 @@ an already-removed record is a no-op."
     compaction-finished compaction-failed)
   "Turn event types stored as durable session activity.")
 
+(defconst e-harness--activity-index-flush-event-types
+  '(turn-finished turn-failed turn-cancelled backend-empty-output
+    compaction-finished compaction-failed)
+  "Durable activity event types that should flush the session index.")
+
 (defcustom e-harness-durable-tool-finished-result-preview-bytes 4096
   "Maximum UTF-8 bytes retained from tool results in durable activity events.
 
@@ -402,6 +407,10 @@ preview to avoid duplicating large outputs in session JSONL files."
 (defun e-harness--durable-activity-event-p (type)
   "Return non-nil when TYPE should be stored as session activity."
   (memq type e-harness--durable-activity-event-types))
+
+(defun e-harness--activity-index-flush-event-p (type)
+  "Return non-nil when TYPE should flush coalesced activity index writes."
+  (memq type e-harness--activity-index-flush-event-types))
 
 (defun e-harness--string-byte-prefix (text max-bytes)
   "Return TEXT prefix limited to MAX-BYTES UTF-8 bytes."
@@ -459,6 +468,20 @@ preview to avoid duplicating large outputs in session JSONL files."
     ('tool-finished (e-harness--compact-tool-finished-payload payload))
     (_ payload)))
 
+(defun e-harness--append-durable-activity-event
+    (harness session-id turn-id type payload)
+  "Append durable activity TYPE for HARNESS SESSION-ID TURN-ID."
+  (let ((store (e-harness-sessions harness)))
+    (e-session-append-activity-event
+     store
+     session-id
+     turn-id
+     type
+     (e-harness--durable-activity-payload type payload)
+     :write-index nil)
+    (when (e-harness--activity-index-flush-event-p type)
+      (e-session--write-index store))))
+
 (defun e-harness--emit-turn-event (harness session-id turn-id type payload)
   "Emit public event TYPE with PAYLOAD for HARNESS SESSION-ID TURN-ID."
   (when (and session-id
@@ -466,12 +489,8 @@ preview to avoid duplicating large outputs in session JSONL files."
              (e-harness--durable-activity-event-p type)
              (ignore-errors
                (e-session-get (e-harness-sessions harness) session-id)))
-    (e-session-append-activity-event
-     (e-harness-sessions harness)
-     session-id
-     turn-id
-     type
-     (e-harness--durable-activity-payload type payload)))
+    (e-harness--append-durable-activity-event
+     harness session-id turn-id type payload))
   (e-harness--emit
    harness
    (e-events-make :type type

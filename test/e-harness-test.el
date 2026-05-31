@@ -1471,6 +1471,44 @@
                        provider-request-finished
                        turn-finished))))))
 
+(ert-deftest e-harness-test-activity-index-write-is-coalesced ()
+  "Harness activity events flush the session index once at turn settlement."
+  (let* ((store (e-session-store-create))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :sessions store))
+         (write-count 0))
+    (e-harness-create-session harness :id "session-1")
+    (cl-letf (((symbol-function 'e-session--write-index)
+               (lambda (_store)
+                 (setq write-count (1+ write-count)))))
+      (e-harness--emit-turn-event harness "session-1" "turn-1"
+                                  'provider-request-started
+                                  '(:status started))
+      (e-harness--emit-turn-event harness "session-1" "turn-1"
+                                  'reasoning-delta
+                                  '(:type reasoning-delta
+                                    :content "thinking"))
+      (e-harness--emit-turn-event harness "session-1" "turn-1"
+                                  'tool-started
+                                  '(:name "read" :arguments nil))
+      (e-harness--emit-turn-event harness "session-1" "turn-1"
+                                  'tool-finished
+                                  '(:tool-call (:name "read")
+                                    :result "ok"))
+      (e-harness--emit-turn-event harness "session-1" "turn-1"
+                                  'turn-finished
+                                  '(:reason done)))
+    (should (= write-count 1))
+    (should (equal '(provider-request-started
+                     reasoning-delta
+                     tool-started
+                     tool-finished
+                     turn-finished)
+                   (mapcar (lambda (event)
+                             (plist-get event :event-type))
+                           (e-session-activity-events store "session-1"))))))
+
 (ert-deftest e-harness-test-compact-session-appends-summary-and-uses-context-suffix ()
   "Manual compaction writes a durable record and context uses summary plus suffix."
   (let* ((backend (e-backend-create

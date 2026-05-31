@@ -137,6 +137,12 @@
       (setq pos next))
     count))
 
+(defun e-chat-test--flush-pending-activity-redraw ()
+  "Run any pending chat activity redraw in the current buffer."
+  (when (and (boundp 'e-chat--pending-activity-redraw-turn-id)
+             e-chat--pending-activity-redraw-turn-id)
+    (e-chat--run-pending-activity-redraw)))
+
 (defun e-chat-test--session-subscriber-count (harness session-id)
   "Return HARNESS subscriber count for SESSION-ID."
   (length
@@ -1328,6 +1334,7 @@
             (search-forward "⠋")
             (should (get-text-property (1- (point)) 'read-only)))
           (e-chat--advance-progress-indicator)
+          (e-chat-test--flush-pending-activity-redraw)
           (should (string-match-p
                    (concat (regexp-quote e-chat--assistant-glyph)
                            " ⠙")
@@ -1410,14 +1417,15 @@
                           :session-id e-chat-session-id
                           :turn-id "turn-1"
                           :created-at 0))
-          (cl-letf (((symbol-function 'float-time)
+          (cl-letf (((symbol-function 'e-chat--current-time-seconds)
                      (lambda (&optional _time) 8.0)))
             (e-chat--render-event
              (e-events-make :type 'provider-request-started
                             :session-id e-chat-session-id
                             :turn-id "turn-1"
                             :created-at 0
-                            :payload '(:status started))))
+                            :payload '(:status started)))
+            (e-chat-test--flush-pending-activity-redraw))
           (should (string-match-p "⠋ Thinking for 0min 8sec"
                                   (buffer-string)))
           (e-chat--render-event
@@ -1426,6 +1434,7 @@
                           :turn-id "turn-1"
                           :created-at 63
                           :payload '(:status done)))
+          (e-chat-test--flush-pending-activity-redraw)
           (let ((content (buffer-string)))
             (should (string-match-p "Thought for 1min 3sec" content))
             (should-not (string-match-p "Thinking\\.\\.\\." content))))
@@ -1437,7 +1446,7 @@
   (let ((buffer (e-chat-test--buffer nil "chat-active-thinking-duration")))
     (unwind-protect
         (with-current-buffer buffer
-          (cl-letf (((symbol-function 'float-time)
+          (cl-letf (((symbol-function 'e-chat--current-time-seconds)
                      (lambda (&optional _time) 8.0)))
             (e-chat--render-event
              (e-events-make :type 'turn-started
@@ -1449,7 +1458,8 @@
                             :session-id e-chat-session-id
                             :turn-id "turn-1"
                             :created-at 0
-                            :payload '(:status started))))
+                            :payload '(:status started)))
+            (e-chat-test--flush-pending-activity-redraw))
           (let ((content (buffer-string)))
             (should (string-match-p
                      "⠋ Thinking for 0min 8sec" content))
@@ -1462,7 +1472,7 @@
   (let ((buffer (e-chat-test--buffer nil "chat-active-thinking-rerender")))
     (unwind-protect
         (with-current-buffer buffer
-          (cl-letf (((symbol-function 'float-time)
+          (cl-letf (((symbol-function 'e-chat--current-time-seconds)
                      (lambda (&optional _time) 8.0)))
             (e-chat--render-event
              (e-events-make :type 'turn-started
@@ -1475,9 +1485,10 @@
                             :turn-id "turn-1"
                             :created-at 0
                             :payload '(:status started))))
-          (cl-letf (((symbol-function 'float-time)
+          (cl-letf (((symbol-function 'e-chat--current-time-seconds)
                      (lambda (&optional _time) 15.0)))
-            (e-chat--advance-progress-indicator))
+            (e-chat--advance-progress-indicator)
+            (e-chat-test--flush-pending-activity-redraw))
           (let ((content (buffer-string)))
             (should (string-match-p
                      "⠙ Thinking for 0min 15sec" content))
@@ -1492,7 +1503,7 @@
   (let ((buffer (e-chat-test--buffer nil "chat-active-thinking-timer-restore")))
     (unwind-protect
         (with-current-buffer buffer
-          (cl-letf (((symbol-function 'float-time)
+          (cl-letf (((symbol-function 'e-chat--current-time-seconds)
                      (lambda (&optional _time) 8.0)))
             (e-chat--render-event
              (e-events-make :type 'turn-started
@@ -1511,14 +1522,15 @@
           (setq e-chat--progress-next-tick-time nil)
           (let ((record (e-chat--existing-turn-record "turn-1")))
             (should (e-chat--active-activity-p record))
-            (cl-letf (((symbol-function 'float-time)
+            (cl-letf (((symbol-function 'e-chat--current-time-seconds)
                        (lambda (&optional _time) 15.0)))
               (e-chat--render-turn-transient "turn-1" record))
             (should (equal e-chat--progress-turn-id "turn-1"))
             (should (timerp e-chat--progress-timer))
-            (cl-letf (((symbol-function 'float-time)
+            (cl-letf (((symbol-function 'e-chat--current-time-seconds)
                        (lambda (&optional _time) 16.0)))
-              (e-chat--advance-progress-indicator))
+              (e-chat--advance-progress-indicator)
+              (e-chat-test--flush-pending-activity-redraw))
             (let ((content (buffer-string)))
               (should (string-match-p "⠙ Thinking for 0min 16sec" content))
               (should (= (e-chat-test--count-occurrences
@@ -1555,6 +1567,7 @@
                           :turn-id "turn-1"
                           :created-at 11
                           :payload '(:id "call-1" :name "read")))
+          (e-chat-test--flush-pending-activity-redraw)
           (let ((content (buffer-string)))
             (should (string-match-p
                      "Thought for 0min 10sec +1 tool call" content))
@@ -1592,6 +1605,7 @@
                           :turn-id "turn-1"
                           :created-at 20
                           :payload '(:status started)))
+          (e-chat-test--flush-pending-activity-redraw)
           (let ((content (buffer-string)))
             (should (string-match-p
                      (concat "Thought for 0min 10sec\n"
@@ -1639,6 +1653,7 @@
                           :turn-id "turn-1"
                           :created-at 20
                           :payload '(:status started)))
+          (e-chat-test--flush-pending-activity-redraw)
           (goto-char (point-min))
           (search-forward e-chat--activity-separator)
           (should (eq (get-text-property (match-beginning 0) 'font-lock-face)
@@ -1651,7 +1666,7 @@
   (let ((buffer (e-chat-test--buffer nil "chat-reasoning-spacer")))
     (unwind-protect
         (with-current-buffer buffer
-          (cl-letf (((symbol-function 'float-time)
+          (cl-letf (((symbol-function 'e-chat--current-time-seconds)
                      (lambda (&optional _time) 8.0)))
             (e-chat--render-event
              (e-events-make :type 'turn-started
@@ -1669,7 +1684,8 @@
                             :session-id e-chat-session-id
                             :turn-id "turn-1"
                             :created-at 1
-                            :payload '(:content "planning"))))
+                            :payload '(:content "planning")))
+            (e-chat-test--flush-pending-activity-redraw))
           (let ((content (buffer-string)))
             (should (string-match-p
                      "⠋ Thinking for 0min 8sec\n\nplanning"
@@ -2179,6 +2195,7 @@
                e-chat-block-id "leaked-block"
                e-chat-turn-id "leaked-turn"))
             (e-chat--advance-progress-indicator)
+            (e-chat-test--flush-pending-activity-redraw)
             (goto-char e-chat--composer-start-marker)
             (search-forward "follow-up draft")
             (let ((position (match-beginning 0)))
@@ -2248,20 +2265,21 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest e-chat-test-running-activity-forces-redisplay ()
-  "Running turn activity forces Emacs to repaint before the final response."
-  (let ((buffer (e-chat-test--buffer nil "chat-activity-redisplay"))
-        redisplays)
+(ert-deftest e-chat-test-running-activity-schedules-deferred-redraw ()
+  "Running turn activity coalesces near-future redraw work."
+  (let ((buffer (e-chat-test--buffer nil "chat-activity-redraw"))
+        (redraws 0))
     (unwind-protect
         (with-current-buffer buffer
-          (cl-letf (((symbol-function 'redisplay)
-                     (lambda (&optional force)
-                       (push force redisplays))))
+          (cl-letf (((symbol-function 'e-chat--render-turn-transient)
+                     (lambda (&rest _args)
+                       (setq redraws (1+ redraws)))))
             (e-chat--render-event
              (e-events-make :type 'turn-started
                             :session-id e-chat-session-id
                             :turn-id "turn-1"
                             :created-at 10))
+            (setq redraws 0)
             (e-chat--render-event
              (e-events-make :type 'tool-started
                             :session-id e-chat-session-id
@@ -2269,18 +2287,65 @@
                             :payload '(:type tool-call
                                         :id "call-1"
                                         :name "read"
-                                        :arguments (:uri "file://x")))))
-          (should (equal redisplays '(t t)))
-          (let ((content (buffer-string)))
-            (should (string-match-p "1 tool call" content))
-            (should-not (string-match-p "Working" content))))
+                                        :arguments (:uri "file://x"))))
+            (let ((timer e-chat--pending-activity-redraw-timer))
+              (should (timerp timer))
+              (should (= redraws 0))
+              (e-chat--render-event
+               (e-events-make :type 'reasoning-delta
+                              :session-id e-chat-session-id
+                              :turn-id "turn-1"
+                              :payload '(:content "thinking")))
+              (should (eq e-chat--pending-activity-redraw-timer timer))
+              (should (= redraws 0))
+              (e-chat--run-pending-activity-redraw)
+              (should (= redraws 1))
+              (should-not e-chat--pending-activity-redraw-timer))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest e-chat-test-progress-frame-forces-redisplay ()
-  "Advancing the assistant progress indicator forces Emacs to repaint."
-  (let ((buffer (e-chat-test--buffer nil "chat-progress-redisplay"))
-        redisplays)
+(ert-deftest e-chat-test-deferred-activity-redraw-preserves-scrollback-focus ()
+  "Deferred activity redraw keeps point and window focus in scrollback."
+  (let ((buffer (e-chat-test--buffer nil "chat-activity-scroll-focus"))
+        (window nil))
+    (unwind-protect
+        (progn
+          (setq window (display-buffer buffer))
+          (with-current-buffer buffer
+            (e-chat-test--render-turn "turn-1" 10 11 "first" "one")
+            (e-chat--render-event
+             (e-events-make :type 'turn-started
+                            :session-id e-chat-session-id
+                            :turn-id "turn-2"
+                            :created-at 20))
+            (e-chat--render-event
+             (e-events-make :type 'tool-started
+                            :session-id e-chat-session-id
+                            :turn-id "turn-2"
+                            :created-at 21
+                            :payload '(:type tool-call
+                                        :id "call-1"
+                                        :name "read")))
+            (goto-char (point-min))
+            (set-window-point window (point))
+            (set-window-start window (point))
+            (let ((before-point (point))
+                  (before-window-point (window-point window))
+                  (before-window-start (window-start window)))
+              (e-chat--run-pending-activity-redraw)
+              (should (= (point) before-point))
+              (should (= (window-point window) before-window-point))
+              (should (= (window-start window) before-window-start))
+              (should (string-match-p "1 tool call" (buffer-string))))))
+      (when (window-live-p window)
+        (delete-window window))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-progress-frame-schedules-deferred-redraw ()
+  "Advancing the assistant progress indicator coalesces repaint work."
+  (let ((buffer (e-chat-test--buffer nil "chat-progress-redraw"))
+        (redraws 0))
     (unwind-protect
         (with-current-buffer buffer
           (e-chat--render-event
@@ -2288,12 +2353,14 @@
                           :session-id e-chat-session-id
                           :turn-id "turn-1"
                           :created-at 10))
-          (setq redisplays nil)
-          (cl-letf (((symbol-function 'redisplay)
-                     (lambda (&optional force)
-                       (push force redisplays))))
-            (e-chat--advance-progress-indicator))
-          (should (equal redisplays '(t))))
+          (cl-letf (((symbol-function 'e-chat--render-progress-indicator)
+                     (lambda (&rest _args)
+                       (setq redraws (1+ redraws)))))
+            (e-chat--advance-progress-indicator)
+            (should (= redraws 0))
+            (should (timerp e-chat--pending-activity-redraw-timer))
+            (e-chat--run-pending-activity-redraw)
+            (should (= redraws 1))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -2712,6 +2779,7 @@
                           :payload '(:type tool-call
                                       :id "call-1"
                                       :name "read")))
+          (e-chat-test--flush-pending-activity-redraw)
           (goto-char (point-min))
           (search-forward "1 tool call")
           (call-interactively #'e-chat-enter-response-navigation)
@@ -2796,6 +2864,7 @@
                             :payload (list :type 'tool-call
                                            :id (nth 0 tool)
                                            :name (nth 1 tool)))))
+          (e-chat-test--flush-pending-activity-redraw)
           (goto-char (point-min))
           (search-forward "2 tool calls")
           (call-interactively #'e-chat-enter-response-navigation)
@@ -2804,6 +2873,7 @@
           (call-interactively #'e-chat-tool-list-next)
           (should (= e-chat--tool-list-index 1))
           (e-chat--advance-progress-indicator)
+          (e-chat-test--flush-pending-activity-redraw)
           (should e-chat-tool-list-mode)
           (should (= e-chat--tool-list-index 1))
           (should (string-match-p "write"
@@ -4051,7 +4121,7 @@
            store
            e-chat-session-id
            '(:role user :content "context question"))
-          (e-chat--set-status "idle")
+          (e-chat--set-status "idle" t)
           (should (string-match-p "gpt-5.5/high" mode-name))
           (should (string-match-p "~[0-9]+%" mode-name))
           (should (string-match-p "/100 tok" mode-name)))
@@ -4080,7 +4150,7 @@
              :output-tokens 419
              :reasoning-output-tokens 139
              :total-tokens 203017))
-          (e-chat--set-status "idle")
+          (e-chat--set-status "idle" t)
           (should (equal mode-name
                          "e-chat gpt-5.5/high 78% (203k/258k tok)")))
       (when (buffer-live-p buffer)
@@ -4136,10 +4206,60 @@
          e-chat-session-id
          "summary"
          :first-kept-entry-id "kept"))
-      (e-chat--set-status "idle")
+      (e-chat--set-status "idle" t)
       (should (string-match-p "~[0-9]+%" mode-name))
       (should-not (string-match-p "203k/258k tok" mode-name)))))
 
+
+(ert-deftest e-chat-test-set-status-skips-context-refresh-by-default ()
+  "Ordinary status updates avoid full harness context estimation."
+  (let* ((store (e-session-store-create))
+         (backend (e-backend-fake-create :items nil))
+         (harness (e-harness-create
+                   :backend backend
+                   :sessions store
+                   :default-options
+                   '(:model "gpt-5.5" :reasoning-effort "high")))
+         (buffer (e-chat-open :harness harness
+                              :session-id "chat-status-fast"))
+         (context-calls 0))
+    (unwind-protect
+        (with-current-buffer buffer
+          (cl-letf (((symbol-function 'e-harness-context)
+                     (lambda (&rest _args)
+                       (setq context-calls (1+ context-calls))
+                       (error "context estimate should be skipped"))))
+            (e-chat--set-status "waiting for provider")
+            (e-chat--set-status "done"))
+          (should (= context-calls 0))
+          (should (string-match-p "E Chat: done" header-line-format)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-set-status-can-explicitly-refresh-mode-line ()
+  "Explicit status refresh still updates the context-aware mode line."
+  (let* ((store (e-session-store-create))
+         (backend (e-backend-fake-create :items nil))
+         (harness (e-harness-create
+                   :backend backend
+                   :sessions store
+                   :default-options
+                   '(:model "gpt-5.5" :reasoning-effort "high")))
+         (buffer (e-chat-open :harness harness
+                              :session-id "chat-status-refresh"))
+         (context-calls 0)
+         (original-context (symbol-function 'e-harness-context)))
+    (unwind-protect
+        (with-current-buffer buffer
+          (cl-letf (((symbol-function 'e-harness-context)
+                     (lambda (harness session-id)
+                       (setq context-calls (1+ context-calls))
+                       (funcall original-context harness session-id))))
+            (e-chat--set-status "idle" t))
+          (should (> context-calls 0))
+          (should (string-match-p "gpt-5.5/high" mode-name)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
 
 (ert-deftest e-chat-test-token-usage-event-skips-context-estimate ()
   "Fresh token-usage refreshes avoid full context estimation."

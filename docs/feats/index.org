@@ -26,4 +26,4 @@ Status values for coding agents:
 | 13 | Done | 13-global-session-starter/ | Global Session Starter |
 | 14 | Done | 14-canvas-shell/ | Canvas Shell |
 | 15 | Planned | 15-chat-harness-instances/ | Chat Harness Instances |
-| 16 | Planned | 16-turn-finish-latency/ | Turn Finish Latency |
+| 16 | In-review | 16-turn-finish-latency/ | Turn Finish Latency |

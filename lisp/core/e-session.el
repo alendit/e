@@ -90,7 +90,7 @@
 (defun e-session--random-80-bit ()
   "Return a sufficiently random 80-bit integer."
   (let* ((seed (format "%S" (list (current-time) (random t) (emacs-pid)
-                                  (system-name) (garbage-collect))))
+                                  (system-name))))
          (hex (substring (secure-hash 'sha1 seed) 0 20)))
     (string-to-number hex 16)))
 
@@ -1114,8 +1114,8 @@ state are requested."
     (e-session--write-index store)
     message))
 
-(defun e-session-append-activity-event
-    (store session-id turn-id event-type payload)
+(cl-defun e-session-append-activity-event
+    (store session-id turn-id event-type payload &key (write-index t))
   "Append a durable activity EVENT-TYPE to STORE for SESSION-ID and TURN-ID."
   (let* ((session (e-session-get store session-id))
          (timestamp (e-session--timestamp))
@@ -1140,7 +1140,8 @@ state are requested."
            :timestamp timestamp
            :event-type event-type
            :payload payload))
-    (e-session--write-index store)
+    (when write-index
+      (e-session--write-index store))
     event))
 
 (cl-defun e-session-append-branch-summary

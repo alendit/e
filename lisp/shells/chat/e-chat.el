@@ -102,6 +102,11 @@ When nil, read markers are stored in the active session store directory."
   :type 'number
   :group 'e-chat)
 
+(defcustom e-chat-activity-redraw-delay 0.05
+  "Seconds to coalesce running activity redraws."
+  :type 'number
+  :group 'e-chat)
+
 (defcustom e-chat-model-context-token-limits
   '(("gpt-5.5" . 258400)
     ("gpt-5.4" . 1050000)
@@ -496,6 +501,15 @@ The mode line uses this presentation-owned table for context usage display."
 
 (defvar-local e-chat--running-status-end-marker nil
   "Marker at the end of the active running-turn status region.")
+
+(defvar-local e-chat--pending-activity-redraw-turn-id nil
+  "Turn id with a scheduled running activity redraw.")
+
+(defvar-local e-chat--pending-activity-redraw-timer nil
+  "Timer scheduled to redraw running activity.")
+
+(defvar-local e-chat--pending-activity-redraw-kind nil
+  "Kind of pending activity redraw, either `activity' or `progress'.")
 
 (defvar-local e-chat--mode-line-status nil
   "Current compact e chat status text shown in the mode line.")
@@ -2676,6 +2690,64 @@ When RECORD is nil, clear only buffer-local status markers."
   "Render RECORD's intermittent entries as a temporary block for TURN-ID."
   (e-chat--render-running-status turn-id record))
 
+(defun e-chat--cancel-pending-activity-redraw (&optional turn-id)
+  "Cancel the pending activity redraw.
+When TURN-ID is non-nil, cancel only a redraw for that turn."
+  (when (and e-chat--pending-activity-redraw-turn-id
+             (or (not turn-id)
+                 (equal turn-id e-chat--pending-activity-redraw-turn-id)))
+    (when (timerp e-chat--pending-activity-redraw-timer)
+      (cancel-timer e-chat--pending-activity-redraw-timer))
+    (setq e-chat--pending-activity-redraw-turn-id nil)
+    (setq e-chat--pending-activity-redraw-timer nil)
+    (setq e-chat--pending-activity-redraw-kind nil)))
+
+(defun e-chat--run-pending-activity-redraw ()
+  "Run and clear the pending activity redraw for this chat buffer."
+  (let ((turn-id e-chat--pending-activity-redraw-turn-id)
+        (timer e-chat--pending-activity-redraw-timer)
+        (kind e-chat--pending-activity-redraw-kind))
+    (when (timerp timer)
+      (cancel-timer timer))
+    (setq e-chat--pending-activity-redraw-turn-id nil)
+    (setq e-chat--pending-activity-redraw-timer nil)
+    (setq e-chat--pending-activity-redraw-kind nil)
+    (when turn-id
+      (pcase kind
+        ('progress
+         (e-chat--render-progress-indicator turn-id))
+        (_
+         (when-let ((record (e-chat--existing-turn-record turn-id)))
+           (e-chat--render-turn-transient turn-id record)))))))
+
+(defun e-chat--activity-redraw-kind (existing requested)
+  "Return coalesced redraw kind from EXISTING and REQUESTED kinds."
+  (cond
+   ((eq existing 'activity) 'activity)
+   ((eq requested 'activity) 'activity)
+   (requested)
+   (existing)
+   (t 'activity)))
+
+(defun e-chat--request-activity-redraw (turn-id &optional kind)
+  "Schedule one near-future activity redraw for TURN-ID."
+  (when turn-id
+    (setq e-chat--pending-activity-redraw-turn-id turn-id)
+    (setq e-chat--pending-activity-redraw-kind
+          (e-chat--activity-redraw-kind
+           e-chat--pending-activity-redraw-kind
+           (or kind 'activity)))
+    (unless (timerp e-chat--pending-activity-redraw-timer)
+      (let ((buffer (current-buffer)))
+        (setq e-chat--pending-activity-redraw-timer
+              (run-at-time
+               e-chat-activity-redraw-delay
+               nil
+               (lambda ()
+                 (when (buffer-live-p buffer)
+                   (with-current-buffer buffer
+                     (e-chat--run-pending-activity-redraw))))))))))
+
 (defun e-chat--progress-dots ()
   "Return the current active assistant progress glyph string."
   (aref e-chat--progress-glyphs
@@ -2743,8 +2815,7 @@ When RECORD is nil, clear only buffer-local status markers."
       (setq e-chat--progress-next-tick-time
             (+ now e-chat-progress-interval)))
     (setq e-chat--progress-frame (1+ e-chat--progress-frame))
-    (e-chat--render-progress-indicator e-chat--progress-turn-id)
-    (e-chat--redisplay-running-activity)))
+    (e-chat--request-activity-redraw e-chat--progress-turn-id 'progress)))
 
 (defun e-chat--start-progress-indicator (turn-id)
   "Start the active assistant progress indicator for TURN-ID."
@@ -2780,10 +2851,6 @@ SOURCE identifies where the entry came from for duplicate suppression."
     (let ((record (e-chat--turn-record turn-id)))
       (e-chat--add-intermittent-entry record title content append source)
       (e-chat--render-turn-transient turn-id record))))
-
-(defun e-chat--redisplay-running-activity ()
-  "Force running turn activity to repaint before the turn settles."
-  (redisplay t))
 
 (defun e-chat--format-tool-call (payload)
   "Return a compact display string for tool-call PAYLOAD."
@@ -3791,6 +3858,7 @@ When OMIT-COMPOSER is non-nil, leave the buffer as transcript-only."
       (delete-overlay e-chat--tool-list-overlay))
     (setq e-chat--tool-list-overlay nil)
     (e-chat--cancel-progress-timer)
+    (e-chat--cancel-pending-activity-redraw)
     (setq e-chat--progress-turn-id nil)
     (setq e-chat--progress-frame 0)
     (setq e-chat--progress-start-marker nil)
@@ -3971,8 +4039,9 @@ an approximate full-context estimate."
   (setq-local mode-name e-chat--mode-line-status)
   (force-mode-line-update))
 
-(defun e-chat--set-status (status)
-  "Set chat buffer STATUS."
+(defun e-chat--set-status (status &optional refresh-mode-line)
+  "Set chat buffer STATUS.
+When REFRESH-MODE-LINE is non-nil, also refresh context-aware mode-line text."
   (setq e-chat--status status)
   (setq header-line-format
         (if (and e-chat-harness e-chat-session-id)
@@ -3992,7 +4061,8 @@ an approximate full-context estimate."
                       (or model "model unset")
                       (or effort "effort unset")))
           (format "E Chat: %s" status)))
-  (e-chat--refresh-mode-line-status))
+  (when refresh-mode-line
+    (e-chat--refresh-mode-line-status)))
 
 (defun e-chat--title-block-end ()
   "Return the end position of the current title block."
@@ -4062,16 +4132,17 @@ an approximate full-context estimate."
                              :started-at
                              (plist-get event :created-at))
      (e-chat--start-progress-indicator (plist-get event :turn-id))
-     (e-chat--redisplay-running-activity)
      (e-chat--set-status (format "running %s" (plist-get event :turn-id))))
     ('turn-finished
      (e-chat--set-turn-time (plist-get event :turn-id)
                              :ended-at
                              (plist-get event :created-at))
+     (e-chat--run-pending-activity-redraw)
      (e-chat--set-status "done")
      (e-chat--ensure-composer)
      (e-chat--refresh-composer-position))
     ('turn-failed
+     (e-chat--cancel-pending-activity-redraw (plist-get event :turn-id))
      (e-chat--set-status "error")
      (e-chat--render-turn-failure
       (plist-get event :turn-id)
@@ -4086,6 +4157,7 @@ an approximate full-context estimate."
       (plist-get event :turn-id)
       (plist-get event :created-at)
       'cancelled)
+     (e-chat--cancel-pending-activity-redraw (plist-get event :turn-id))
      (e-chat--stop-progress-indicator (plist-get event :turn-id))
      (e-chat--set-status "cancelled")
      (e-chat--insert-entry "System" "Turn cancelled" t
@@ -4138,6 +4210,7 @@ an approximate full-context estimate."
            (e-chat--set-turn-time (plist-get event :turn-id)
                                   :ended-at
                                   (plist-get event :created-at))
+           (e-chat--cancel-pending-activity-redraw (plist-get event :turn-id))
            (e-chat--stop-progress-indicator (plist-get event :turn-id))
            (when-let ((record (e-chat--existing-turn-record
                                (plist-get event :turn-id))))
@@ -4152,18 +4225,13 @@ an approximate full-context estimate."
      (e-chat--record-provider-started
       (plist-get event :turn-id)
       (plist-get event :created-at))
-     (e-chat--redisplay-running-activity)
-     (when-let ((record (e-chat--existing-turn-record
-                         (plist-get event :turn-id))))
-       (e-chat--render-turn-transient (plist-get event :turn-id) record)))
+     (e-chat--request-activity-redraw (plist-get event :turn-id)))
     ('provider-request-finished
      (e-chat--record-provider-finished
       (plist-get event :turn-id)
       (plist-get event :created-at)
       (plist-get (plist-get event :payload) :status))
-     (when-let ((record (e-chat--existing-turn-record
-                         (plist-get event :turn-id))))
-       (e-chat--render-turn-transient (plist-get event :turn-id) record)))
+     (e-chat--request-activity-redraw (plist-get event :turn-id)))
     ('assistant-delta
      (e-chat--set-status "streaming"))
     ('reasoning-delta
@@ -4175,8 +4243,7 @@ an approximate full-context estimate."
         (plist-get (plist-get event :payload) :content)
         t
         'activity)
-       (e-chat--render-turn-transient (plist-get event :turn-id) record))
-     (e-chat--redisplay-running-activity))
+       (e-chat--request-activity-redraw (plist-get event :turn-id))))
     ('tool-started
      (e-chat--set-status "tool")
      (when-let ((record (e-chat--existing-turn-record
@@ -4185,8 +4252,7 @@ an approximate full-context estimate."
         record
         (plist-get event :payload)
         'activity)
-       (e-chat--render-turn-transient (plist-get event :turn-id) record))
-     (e-chat--redisplay-running-activity))
+       (e-chat--request-activity-redraw (plist-get event :turn-id))))
     ('tool-finished
      (e-chat--set-status "tool done")
      (when-let ((record (e-chat--existing-turn-record
@@ -4195,14 +4261,15 @@ an approximate full-context estimate."
         record
         (plist-get event :payload)
         'activity)
-       (e-chat--render-turn-transient (plist-get event :turn-id) record)
-       (e-chat--redisplay-running-activity)))
+       (e-chat--request-activity-redraw (plist-get event :turn-id))))
     ('backend-empty-output
+     (e-chat--cancel-pending-activity-redraw (plist-get event :turn-id))
      (e-chat--stop-progress-indicator (plist-get event :turn-id))
      (e-chat--set-status "done"))
     ('token-usage
      (e-chat--refresh-mode-line-status t))
     ('session-reset
+     (e-chat--cancel-pending-activity-redraw)
      (e-chat--stop-progress-indicator)
      (e-chat--set-status "idle")
      (e-chat--insert-entry "System" "Session reset" t))
@@ -4332,7 +4399,7 @@ reload.  User-facing commands should call `e-chat-new' or `e-chat-resume'."
     (e-chat--rename-buffer-for-session)
     (e-chat--clear)
     (e-chat--render-session)
-    (e-chat--set-status "idle")
+    (e-chat--set-status "idle" t)
     (e-chat--subscribe harness buffer session-id))
   buffer)
 
@@ -4990,7 +5057,7 @@ When DISPLAY is non-nil, display the preview buffer."
   (e-chat--rename-buffer-for-session)
   (e-chat--clear)
   (e-chat--render-session)
-  (e-chat--set-status "idle")
+  (e-chat--set-status "idle" t)
   (current-buffer))
 
 ;;;###autoload
@@ -5008,7 +5075,7 @@ When DISPLAY is non-nil, display the preview buffer."
   (unless (and e-chat-harness e-chat-session-id)
     (user-error "This buffer is not attached to an e chat session"))
   (e-chat-session-set-model e-chat-harness e-chat-session-id model)
-  (e-chat--set-status "idle")
+  (e-chat--set-status "idle" t)
   (message "Set e chat model to %s" (if (string-empty-p model) "default" model)))
 
 ;;;###autoload
@@ -5032,7 +5099,7 @@ When DISPLAY is non-nil, display the preview buffer."
   (unless (and e-chat-harness e-chat-session-id)
     (user-error "This buffer is not attached to an e chat session"))
   (e-chat-session-set-effort e-chat-harness e-chat-session-id effort)
-  (e-chat--set-status "idle")
+  (e-chat--set-status "idle" t)
   (message "Set e chat effort to %s"
            (if (string-empty-p effort) "default" effort)))
 
