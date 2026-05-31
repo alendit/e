@@ -5,20 +5,206 @@
 
 * Status
 
-In-review.
+Ready.
 
-* Implementation summary
+* Issue review
 
-- Removed the explicit =garbage-collect= call from durable ULID entropy.
+** Issue 1: Durable ULID generation forced garbage collection
+
+*** Problem
+
+Durable ULID entropy generation explicitly called =garbage-collect=. During turn
+finish this could produce a visible freeze on an otherwise small synchronous
+code path.
+
+The original implementation appears to have used =garbage-collect= as an extra
+entropy ingredient for the ULID random suffix: it hashed a seed containing time,
+=(random t)=, the Emacs pid, the system name, and the return value of
+=garbage-collect=. There is no evidence it was needed for ULID ordering or
+correctness; it was likely an over-cautious attempt to add process-local heap
+variation to the seed.
+
+The replacement still uses cheap process-local uniqueness inputs: current time,
+Emacs' =random t= result, the Emacs pid, and the system name, mixed through a
+SHA-1 digest and truncated to the 80-bit ULID random suffix. This is not a
+security boundary; the hash is just a convenient mixer from heterogeneous Elisp
+values to a fixed-width integer. For durable local entry ids we need practical
+collision avoidance plus monotonic same-millisecond ordering, not cryptographic
+unpredictability.
+
+That tradeoff was wrong for this path. The call did not just read entropy; it
+forced a stop-the-world GC every time a fresh durable id was needed. The live
+investigation measured durable entry-id generation at roughly six seconds per
+100 ids. ULID ordering does not require forced GC, so entropy can come from
+cheaper process-local time/random inputs while =e-session-generate-ulid=
+preserves monotonic same-millisecond ids.
+
+*** Change
+
+Removed the explicit =garbage-collect= call from durable ULID entropy.
+
+*** Evidence
+
+ULID generation live probe:
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'benchmark) (require 'e-session) (prin1 (list :ulid-100 (car (benchmark-run 100 (e-session-generate-ulid))))))"
+#+end_src
+
+Result:
+
+#+begin_example
+(:ulid-100 0.005613)
+#+end_example
+
+*** Compatibility
+
+Session compatibility is unchanged: JSONL record order is preserved and entry ids
+remain 26-character ULIDs.
+
+** Issue 2: Activity appends rewrote the index for every event
+
+*** Background: session persistence
+
+=e-session.el= is the durable session store. Each session has an append-only
+JSONL file for the full record stream and an index file for fast session listing
+and resume metadata. Appending a durable entry updates in-memory session state,
+appends one JSONL record, updates the per-session entry index, touches the
+session's =updated-at=/=updated-seq= metadata, and usually rewrites the global
+session index.
+
+The JSONL file is the source of truth for ordered session history. It stores
+session events, messages, activity events, branch summaries, and compactions.
+Each durable entry gets an id and parent id so the current path can be rebuilt
+when the file is replayed.
+
+The separate index is only summary metadata for listing sessions without reading
+every JSONL file: title/name, timestamps, message count, file path, and similar
+resume fields. Because it serializes the full session list, rewriting it is much
+more expensive than appending one line to a session JSONL file.
+
+The harness emits turn events for subscribers and, for durable event types, also
+records them as session activity. A single turn can emit many activity events
+such as provider start, reasoning deltas, tool lifecycle events, token usage, and
+a terminal turn-finished/failed/cancelled event. Those intermediate activity
+records must remain durable and ordered, but the session-list index only needs to
+reflect the final settled metadata once the burst has been appended.
+
+*** Problem
+
+Harness durable activity persistence appended multiple activity events during a
+turn and rewrote the activity index after each append. Terminal turn activity only
+needs one final index flush once the batch of events has been persisted.
+
+*** Change
+
 - Added an internal =:write-index= option for activity-event appends.
 - Moved harness durable activity persistence to skip per-event index rewrites and
   flush once for terminal turn activity.
-- Made chat status updates refresh header text cheaply by default, with explicit
-  mode-line refresh for attach/model/effort/token-usage paths.
-- Replaced ordinary running activity redisplay calls with a buffer-local deferred
-  redraw timer.
 
-* Verification
+*** Evidence
+
+Activity index write coalescing live probe:
+
+#+begin_example
+(:activity-index-writes 1
+ :event-types (provider-request-started reasoning-delta tool-started turn-finished))
+#+end_example
+
+Focused coverage includes session and harness tests:
+
+#+begin_src sh
+rtk eldev test -f test/e-session-test.el
+rtk eldev test -f test/e-harness-test.el
+#+end_src
+
+Results:
+
+- =test/e-session-test.el=: 39 passed.
+- =test/e-harness-test.el=: 52 passed.
+
+*** Compatibility
+
+Direct activity append callers still write the index by default. The new keyword
+is internal and default-preserving.
+
+** Issue 3: Ordinary chat status updates did too much presentation work
+
+*** Problem
+
+Routine status updates refreshed more presentation state than necessary. In
+particular, ordinary running/done status updates could trigger expensive context
+or mode-line work even when only header text needed to change.
+
+*** Change
+
+Made chat status updates refresh header text cheaply by default, with explicit
+mode-line refresh for attach/model/effort/token-usage paths.
+
+*** Evidence
+
+Ordinary status update live probe:
+
+#+begin_example
+(:status-context-calls 0
+ :header "E Chat: done - Untitled 2026-05-31T13:18:59Z - gpt-5.5/high"
+ :mode-name "e-chat")
+#+end_example
+
+Focused chat coverage:
+
+#+begin_src sh
+rtk eldev test -f test/e-chat-test.el
+#+end_src
+
+Result:
+
+- =test/e-chat-test.el=: 152 passed, 1 existing markdown-mode-dependent test
+  skipped.
+
+*** Compatibility
+
+Explicit mode-line refresh remains for the status paths that actually change
+mode-line-visible attach/model/effort/token-usage state.
+
+** Issue 4: Running activity redraw happened synchronously for event bursts
+
+*** Problem
+
+Ordinary running activity redisplay calls caused repeated synchronous rendering
+work during event bursts. Even after persistence improvements, this could still
+leave turn finish or near-finish paths exposed to presentation CPU.
+
+*** Change
+
+Replaced ordinary running activity redisplay calls with a buffer-local deferred
+redraw timer.
+
+*** Evidence
+
+Deferred activity redraw live probe:
+
+#+begin_example
+(:redraw-scheduled t :turn "turn-1" :pending-after nil :has-tool-summary 47)
+#+end_example
+
+Focused chat coverage:
+
+#+begin_src sh
+rtk eldev test -f test/e-chat-test.el
+#+end_src
+
+Result:
+
+- =test/e-chat-test.el=: 152 passed, 1 existing markdown-mode-dependent test
+  skipped.
+
+*** Remaining risk
+
+The main remaining latency risk is pure rendering CPU work inside
+=e-chat--render-running-status= when a deferred redraw actually runs.
+
+* Verification summary
 
 Focused tests:
 
@@ -32,7 +218,8 @@ Results:
 
 - =test/e-session-test.el=: 39 passed.
 - =test/e-harness-test.el=: 52 passed.
-- =test/e-chat-test.el=: 152 passed, 1 existing markdown-mode-dependent test skipped.
+- =test/e-chat-test.el=: 152 passed, 1 existing markdown-mode-dependent test
+  skipped.
 
 Aggregate test:
 
@@ -56,50 +243,13 @@ Result:
 "/Users/dimitrivorona/projects/elisp/e/"
 #+end_example
 
-* Live probes
-
-ULID generation:
-
-#+begin_src sh
-emacsclient --eval "(progn (require 'benchmark) (require 'e-session) (prin1 (list :ulid-100 (car (benchmark-run 100 (e-session-generate-ulid))))))"
-#+end_src
-
-Result:
-
-#+begin_example
-(:ulid-100 0.005613)
-#+end_example
-
-Activity index write coalescing:
-
-#+begin_example
-(:activity-index-writes 1
- :event-types (provider-request-started reasoning-delta tool-started turn-finished))
-#+end_example
-
-Ordinary status updates:
-
-#+begin_example
-(:status-context-calls 0
- :header "E Chat: done - Untitled 2026-05-31T13:18:59Z - gpt-5.5/high"
- :mode-name "e-chat")
-#+end_example
-
-Deferred activity redraw:
-
-#+begin_example
-(:redraw-scheduled t :turn "turn-1" :pending-after nil :has-tool-summary 47)
-#+end_example
-
-* Review notes
+* Cross-cutting review notes
 
 - Byte compilation remains a separate optional optimization for pure Elisp CPU
   paths; this feature does not add compiled-file startup or build changes.
-- Session compatibility is unchanged: JSONL record order is preserved, entry ids
-  remain 26-character ULIDs, and direct activity append callers still write the
-  index by default.
-- The main remaining latency risk is pure rendering CPU work inside
-  =e-chat--render-running-status= when a deferred redraw actually runs.
+- The changes preserve public transcript and activity shapes while reducing
+  synchronous work in four specific places: ULID entropy, activity index flushes,
+  status header updates, and running activity redraw.
 
 * Architecture self-check
 
@@ -120,11 +270,11 @@ Deferred activity redraw:
    turn-event persistence in harness, timers/redraws in chat.
 8. No new shared interface was added; the new append keyword is an internal,
    default-preserving option.
-9. Compatibility remains explicit: JSONL order, ULID shape, and direct append
-   index writes are preserved.
+9. Compatibility remains explicit: JSONL order, ULID shape, direct append index
+   writes, and explicit mode-line refresh paths are preserved.
 10. The obsolete explicit GC entropy path and forced activity redisplay helper
     were removed.
 11. Expected terminal events flush or cancel pending work; unexpected errors
     still surface through existing session, harness, and chat paths.
-12. Tests prove each seam independently: ULID generation, activity index
+12. Tests prove each issue independently: ULID generation, activity index
     coalescing, cheap status updates, and deferred redraw/navigation behavior.

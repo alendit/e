@@ -3,7 +3,7 @@
 
 * Status
 
-Ready
+In-review
 
 * Goal
 
@@ -66,6 +66,11 @@ errors, and reopening prior prompts when needed.
 - Org Canvas sessions remain normal e sessions internally, so model controls,
   resume, compaction, session metadata, and harness lifecycle behavior continue
   to work.
+- Model edits to the Org buffer must flow through normal tool execution in the
+  backing session.  Document mutations are shown as turn activity in the
+  associated conversation, not performed as hidden shell side effects.
+- The temporary input/status pane should surface edit/write tool activity in a
+  compact way and keep a path to the backing chat session for detailed history.
 
 The default visual layout should keep the Org buffer selected as the main pane.
 The input/status pane is temporary and should not become the main working
@@ -86,6 +91,10 @@ Org Canvas contributes strong mode instructions:
   not possible.
 - Do not paste long generated content into the chat response when it belongs in
   the Org document.
+- Make document edits through the normal buffer edit/write tools so those edits
+  become durable =tool-started= / =tool-finished= activity for the active turn.
+  Org Canvas may summarize edits tersely, but it must not hide that they
+  happened from the backing conversation.
 - Use Org visibility manipulation tools to focus the buffer around the relevant
   topic before reading or editing when the task is local.
 - Preserve user structure and visibility where practical; when visibility is
@@ -183,6 +192,27 @@ The existing canvas attachment provider can continue to supply raw current-state
 contents.  Org Canvas should add a distinct =org-canvas= capability/layer whose
 context provider emits Org-aware editor state and instructions.  This avoids
 turning generic chat-session attachments into Org-specific policy.
+
+* Edit event accounting
+
+Document changes made by the model are part of the conversation history.  The
+first implementation should rely on the existing harness/tool lifecycle instead
+of adding an Org-Canvas-specific edit log:
+
+- prompt submission creates a normal backing e turn;
+- buffer edits and writes happen through registered tools, producing normal
+  =tool-started= and =tool-finished= activity events on that turn;
+- durable activity is stored by the session and rendered by the backing chat;
+- the temporary Org Canvas input pane subscribes to the same event stream and
+  displays compact edit/write activity, including error cases;
+- direct shell-side document mutation is allowed only for presentation-owned
+  setup such as creating/saving a new canvas file after user/model-assisted file
+  naming, and those setup actions should still update session metadata visibly.
+
+This keeps Org Canvas from becoming a hidden side-effect channel.  The Org
+buffer is the durable output surface, but the associated conversation remains
+the audit trail for prompts, tool calls, edits, failures, and brief final
+summaries.
 
 * Root and session discovery
 
@@ -435,12 +465,15 @@ keeping these boundaries explicit:
 - Keep the Org buffer selected after submit.
 - Subscribe to turn/session events only enough to show status and the brief final
   summary in the temporary pane.
+- Show compact edit/write tool activity in the temporary pane and leave the full
+  durable tool event history in the backing chat session.
 - Auto-close the pane on success after a short delay.
 - Record lightweight turn metadata needed to reconstruct previous Org Canvas
   prompts/summaries from the backing session, and expose reopening previous
   prompts.
 - Tests: prompt submission records metadata and calls the chat-session submit
-  path; pane lifecycle/keymap/history behavior can be tested in buffers.
+  path; edit/write tool activity remains visible as backing session activity;
+  pane lifecycle/keymap/history behavior can be tested in buffers.
 
 ** Slice 5: New unsaved canvas naming flow
 
@@ -518,6 +551,8 @@ Add tests for:
 - context provider content for =thread= and =document= scopes;
 - context provider gating so ordinary chat sessions are unchanged;
 - prompt pane auto-close and previous prompt reopening;
+- buffer edit/write tool calls made during Org Canvas turns are durable backing
+  session activity and visible through the temporary pane/backing chat path;
 - visibility tools and explicit error cases;
 - shell manifest, layer registration, default layer activation, and package
   startup registration.
