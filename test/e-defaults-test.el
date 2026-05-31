@@ -141,6 +141,26 @@
                       (mapcar #'e-capability-id
                               (e-harness-active-capabilities harness))))))))
 
+(ert-deftest e-defaults-test-chat-harness-enables-web-and-text-editing-by-default ()
+  "Default chat harness activation includes web and text-editing layers."
+  (cl-letf (((symbol-function 'e-openai-create-harness)
+             (lambda (&rest _args)
+               (e-harness-create
+                :backend (e-backend-fake-create :items nil)))))
+    (let ((harness (e-default-chat-harness-create)))
+      (should (memq 'web
+                    (mapcar #'e-layer-id
+                            (e-harness-active-layers harness))))
+      (should (memq 'text-editing
+                    (mapcar #'e-layer-id
+                            (e-harness-active-layers harness))))
+      (should (memq 'web
+                    (mapcar #'e-capability-id
+                            (e-harness-active-capabilities harness))))
+      (should (memq 'annotations
+                    (mapcar #'e-capability-id
+                            (e-harness-active-capabilities harness)))))))
+
 (ert-deftest e-defaults-test-chat-harness-uses-layer-ids-as-source-of-truth ()
   "Default chat harness creation uses configured layer ids."
   (cl-letf (((symbol-function 'e-openai-create-harness)

@@ -92,11 +92,13 @@
   (should (equal e-openai-default-model "gpt-5.5"))
   (should (e-layer-get 'agents-std-context))
   (should (equal e-default-chat-layer-ids
-                 '(agents-std-context harness-base e os-base emacs-base)))
+                 '(agents-std-context harness-base e os-base emacs-base web
+                                      text-editing)))
   (should (equal (mapcar #'e-layer-id
                          (e-harness-active-layers
                           (e-harness-registry-get-or-create :chat-default)))
-                 '(chat-session agents-std-context harness-base e os-base emacs-base))))
+                 '(chat-session agents-std-context harness-base e os-base
+                                emacs-base web text-editing))))
 
 (provide 'e-dev-test)
 
