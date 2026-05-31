@@ -806,6 +806,9 @@
       (should (equal (plist-get reference :start-line) 1))
       (should (equal (plist-get reference :end-line) 4))
       (should (equal (plist-get reference :point-line) 2))
+      (should (equal (plist-get reference :point-context) t))
+      (should (string-match-p ":2 (context 1-4)\\'"
+                              (plist-get reference :label)))
       (should (string-prefix-p "buffer://" (plist-get reference :uri))))))
 
 (ert-deftest e-chat-test-captures-region-reference-exactly ()
@@ -825,9 +828,39 @@
             (should (equal (plist-get reference :start-line) 2))
             (should (equal (plist-get reference :end-line) 2))
             (should (equal (plist-get reference :point-line) 2))
+            (should-not (plist-get reference :point-context))
             (should (equal (plist-get reference :uri)
                            (concat "file://" file)))))
       (delete-file file))))
+
+(ert-deftest e-chat-test-formats-point-reference-with-focused-line-marker ()
+  "Point-context references mark the cursor line inside the preview."
+  (let* ((reference '(:id "ref-1"
+                     :uri "buffer://source"
+                     :label "source:2 (context 1-4)"
+                     :text "one\ntwo\nthree\nfour\n"
+                     :start-line 1
+                     :end-line 4
+                     :point-line 2
+                     :point-context t))
+         (prompt (e-chat-format-reference-prompt
+                  "Look at <reference id=\"ref-1\" label=\"source:2 (context 1-4)\">"
+                  (list reference))))
+    (should (string-match-p
+             (regexp-quote "[ref-1] source:2 (context 1-4) (buffer://source)")
+             prompt))
+    (should (string-match-p
+             (regexp-quote "Context lines 1-4; focused line 2:")
+             prompt))
+    (should (string-match-p
+             (regexp-quote "  1 | one")
+             prompt))
+    (should (string-match-p
+             (regexp-quote "> 2 | two")
+             prompt))
+    (should (string-match-p
+             (regexp-quote "  4 | four")
+             prompt))))
 
 
 
@@ -3750,7 +3783,7 @@
                 (with-current-buffer chat-buffer
                   (should (equal e-chat-session-id "visible-session"))
                   (should (string-match-p
-                           "@\\[.*:1-3\\]"
+                           "@\\[.*:2 (context 1-3)\\]"
                            (buffer-substring-no-properties
                             e-chat--composer-start-marker
                             (point-max)))))))))
@@ -3783,7 +3816,7 @@
                            "latest-session"
                            (buffer-name)))
                   (should (string-match-p
-                           "@\\[.*:1-3\\]"
+                           "@\\[.*:2 (context 1-3)\\]"
                            (buffer-substring-no-properties
                             e-chat--composer-start-marker
                             (point-max)))))))))
@@ -3895,7 +3928,7 @@
                                         e-chat-harness))
                                2))
                     (should (string-match-p
-                             "@\\[.*:1-3\\]"
+                             "@\\[.*:1 (context 1-3)\\]"
                              (buffer-substring-no-properties
                               e-chat--composer-start-marker
                               (point-max))))))))))
@@ -3926,7 +3959,7 @@
                                         e-chat-harness))
                                1))
                     (should (string-match-p
-                             "@\\[.*:1-3\\]"
+                             "@\\[.*:1 (context 1-3)\\]"
                             (buffer-substring-no-properties
                              e-chat--composer-start-marker
                              (point-max))))))))))

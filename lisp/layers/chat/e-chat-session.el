@@ -19,10 +19,11 @@
 (require 'subr-x)
 
 (cl-defun e-chat-session-submit
-    (harness session-id prompt &key delay references)
+    (harness session-id prompt &key delay references metadata)
   "Submit PROMPT to SESSION-ID through HARNESS.
 When DELAY is non-nil, pass it to `e-harness-prompt-async'.
-REFERENCES are ordered source references from the composer."
+REFERENCES are ordered source references from the composer.
+METADATA is caller-provided turn metadata."
   (unless (and (stringp prompt) (not (string-empty-p prompt)))
     (user-error "Prompt must not be empty"))
   (e-harness-prompt-async
@@ -30,7 +31,8 @@ REFERENCES are ordered source references from the composer."
    session-id
    prompt
    :delay delay
-   :metadata (and references (list :references references))))
+   :metadata (append (copy-sequence metadata)
+                     (and references (list :references references)))))
 
 (defun e-chat-session-ensure-project-root (harness session-id project-root)
   "Ensure SESSION-ID uses PROJECT-ROOT when it safely widens the stored root.

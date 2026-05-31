@@ -484,6 +484,9 @@ The mode line uses this presentation-owned table for context usage display."
 (defvar-local e-chat--context-reference-counter 0
   "Counter used to assign inline composer reference ids.")
 
+(defvar-local e-chat--composer-restore-inhibited nil
+  "Non-nil when transient chat rendering should not recreate a composer.")
+
 (defvar-local e-chat--progress-turn-id nil
   "Turn id currently represented by the assistant progress indicator.")
 
@@ -735,6 +738,22 @@ The mode line uses this presentation-owned table for context usage display."
     (define-key map (kbd "s-I") #'e-chat-add-context-to-session)
     map)
   "Global keymap for adding Emacs buffer context to e chat composers.")
+
+(defvar-local e-chat-context-mode-suppressed nil
+  "Non-nil when `e-chat-context-mode' bindings are suppressed locally.")
+
+(defun e-chat-context-mode-suppress-in-current-buffer (suppress)
+  "Suppress `e-chat-context-mode' bindings in the current buffer when SUPPRESS.
+This leaves the global minor mode enabled for every other buffer."
+  (setq-local e-chat-context-mode-suppressed (and suppress t))
+  (setq-local minor-mode-overriding-map-alist
+              (assq-delete-all 'e-chat-context-mode
+                               (copy-sequence
+                                minor-mode-overriding-map-alist)))
+  (when suppress
+    (push (cons 'e-chat-context-mode nil)
+          minor-mode-overriding-map-alist))
+  e-chat-context-mode-suppressed)
 
 (defun e-chat--make-overview-mode-map (&optional map)
   "Return MAP configured as the keymap for `e-chat-overview-mode'."
@@ -1106,28 +1125,29 @@ FACE is applied when non-nil.  PROPERTIES are added with text properties."
 (defun e-chat--restore-composer-state (state)
   "Restore an editable composer from STATE.
 When STATE is nil, insert an empty composer."
-  (if (not state)
-      (e-chat--insert-composer)
-    (let ((offset (plist-get state :point-offset)))
-      (e-chat--insert-composer (plist-get state :text) (not offset))
-      (if offset
-          (goto-char (min (point-max)
-                          (+ (marker-position e-chat--composer-start-marker)
-                             offset)))
-        (let ((point (plist-get state :point))
-              (window (plist-get state :window))
-              (window-point (plist-get state :window-point))
-              (window-start (plist-get state :window-start)))
-          (when point
-            (goto-char (min point (point-max))))
-          (when (window-live-p window)
-            (when window-start
-              (set-window-start window
-                                (min window-start (point-max))
-                                t))
-            (when window-point
-              (set-window-point window
-                                (min window-point (point-max))))))))))
+  (unless e-chat--composer-restore-inhibited
+    (if (not state)
+        (e-chat--insert-composer)
+      (let ((offset (plist-get state :point-offset)))
+        (e-chat--insert-composer (plist-get state :text) (not offset))
+        (if offset
+            (goto-char (min (point-max)
+                            (+ (marker-position e-chat--composer-start-marker)
+                               offset)))
+          (let ((point (plist-get state :point))
+                (window (plist-get state :window))
+                (window-point (plist-get state :window-point))
+                (window-start (plist-get state :window-start)))
+            (when point
+              (goto-char (min point (point-max))))
+            (when (window-live-p window)
+              (when window-start
+                (set-window-start window
+                                  (min window-start (point-max))
+                                  t))
+              (when window-point
+                (set-window-point window
+                                  (min window-point (point-max)))))))))))
 
 (defun e-chat--delete-composer ()
   "Delete the active composer from the current chat buffer.
@@ -1356,15 +1376,26 @@ Keep point inside the composer when movement starts there."
       (concat "file://" (expand-file-name buffer-file-name))
     (concat "buffer://" (buffer-name))))
 
-(defun e-chat--source-label (start-line end-line)
-  "Return a compact source label for START-LINE through END-LINE."
+(defun e-chat--source-label (start-line end-line &optional focus-line)
+  "Return a compact source label for START-LINE through END-LINE.
+When FOCUS-LINE is non-nil, make that point line the primary label and keep
+the surrounding line range as context."
   (format "%s:%s"
           (if buffer-file-name
               (file-name-nondirectory buffer-file-name)
             (buffer-name))
-          (if (= start-line end-line)
-              (number-to-string start-line)
-            (format "%d-%d" start-line end-line))))
+          (cond
+           ((and focus-line (= start-line end-line))
+            (number-to-string focus-line))
+           (focus-line
+            (format "%d (context %d-%d)"
+                    focus-line
+                    start-line
+                    end-line))
+           ((= start-line end-line)
+            (number-to-string start-line))
+           (t
+            (format "%d-%d" start-line end-line)))))
 
 (defun e-chat--capture-context-reference ()
   "Capture the current point or active region as a chat context reference."
@@ -1391,12 +1422,19 @@ active.  It defaults to the historical chat context radius of two lines."
                     (region-beginning)
                     (region-end))
                  (e-chat--line-range-text start-line end-line))))
-    (list :uri (e-chat--source-uri)
-          :label (e-chat--source-label start-line end-line)
-          :text text
-          :start-line start-line
-          :end-line end-line
-          :point-line point-line)))
+    (let ((reference
+           (list :uri (e-chat--source-uri)
+                 :label (e-chat--source-label
+                         start-line
+                         end-line
+                         (and (not has-region) point-line))
+                 :text text
+                 :start-line start-line
+                 :end-line end-line
+                 :point-line point-line)))
+      (unless has-region
+        (setq reference (plist-put reference :point-context t)))
+      reference)))
 
 (defun e-chat--capture-context-reference-for-command ()
   "Capture a chat context reference and clear source buffer selection."
@@ -1517,13 +1555,50 @@ KILLP is passed through to `delete-char' for normal text."
   "Return the model-facing inline placeholder for REFERENCE."
   (e-chat--reference-placeholder reference))
 
+(defun e-chat--reference-text-lines (text)
+  "Return TEXT split into content lines, ignoring one trailing newline."
+  (let ((lines (split-string (replace-regexp-in-string
+                              "\r" "" (or text "") t t)
+                             "\n")))
+    (if (and (cdr lines)
+             (string-empty-p (car (last lines))))
+        (butlast lines)
+      lines)))
+
+(defun e-chat--point-context-reference-body (reference)
+  "Return a line-numbered body for point-context REFERENCE."
+  (let* ((start-line (plist-get reference :start-line))
+         (end-line (plist-get reference :end-line))
+         (point-line (plist-get reference :point-line))
+         (width (length (number-to-string (or end-line start-line 0))))
+         (line-number start-line)
+         lines)
+    (dolist (line (e-chat--reference-text-lines (plist-get reference :text)))
+      (push (format "%s %s | %s"
+                    (if (= line-number point-line) ">" " ")
+                    (format (format "%%%dd" width) line-number)
+                    line)
+            lines)
+      (setq line-number (1+ line-number)))
+    (format "Context lines %d-%d; focused line %d:\n%s"
+            start-line
+            end-line
+            point-line
+            (string-join (nreverse lines) "\n"))))
+
+(defun e-chat--reference-body (reference)
+  "Return model-facing body text for REFERENCE."
+  (if (plist-get reference :point-context)
+      (e-chat--point-context-reference-body reference)
+    (plist-get reference :text)))
+
 (defun e-chat--reference-section-entry (reference)
   "Return model-facing reference body for REFERENCE."
   (format "[%s] %s (%s)\n%s"
           (plist-get reference :id)
           (plist-get reference :label)
           (plist-get reference :uri)
-          (plist-get reference :text)))
+          (e-chat--reference-body reference)))
 
 (defun e-chat-format-reference-prompt (text references)
   "Return TEXT with model-facing REFERENCES appended."
@@ -4366,14 +4441,16 @@ reload.  User-facing commands should call `e-chat-new' or `e-chat-resume'."
    :id id
    :metadata metadata))
 
-(cl-defun e-chat-submit-session (harness session-id prompt &key references delay)
-  "Submit PROMPT with REFERENCES to HARNESS SESSION-ID."
+(cl-defun e-chat-submit-session
+    (harness session-id prompt &key references delay metadata)
+  "Submit PROMPT with REFERENCES and METADATA to HARNESS SESSION-ID."
   (e-chat-session-submit
    harness
    session-id
    prompt
    :references references
-   :delay delay))
+   :delay delay
+   :metadata metadata))
 
 (defun e-chat-open-session (harness session-id &optional display)
   "Open HARNESS SESSION-ID and display it when DISPLAY is non-nil."

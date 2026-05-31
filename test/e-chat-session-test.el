@@ -36,6 +36,25 @@
                                 :content)
                      "hello")))))
 
+(ert-deftest e-chat-session-test-submit-preserves-explicit-metadata ()
+  "Submitting can record caller metadata beyond composer references."
+  (let* ((backend (e-backend-fake-create
+                   :items '((:type assistant-message :content "answer")
+                            (:type done :reason stop))))
+         (harness (e-harness-create :backend backend)))
+    (e-harness-create-session harness :id "session-1")
+    (e-chat-session-submit
+     harness
+     "session-1"
+     "hello"
+     :metadata '(:org-canvas-scope thread)
+     :references '((:uri "buffer://source")))
+    (let ((metadata (plist-get (car (e-harness-messages harness "session-1"))
+                               :metadata)))
+      (should (equal (plist-get metadata :org-canvas-scope) 'thread))
+      (should (equal (plist-get metadata :references)
+                     '((:uri "buffer://source")))))))
+
 (ert-deftest e-chat-session-test-abort-reset-and-rename ()
   "Chat-session actions delegate abort, reset, and rename to the harness/store."
   (let ((harness (e-harness-create
