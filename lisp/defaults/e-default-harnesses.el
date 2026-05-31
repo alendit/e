@@ -35,7 +35,7 @@
   :group 'e-defaults)
 
 (defcustom e-default-chat-layer-ids
-  '(agents-std-context harness-base e os-base emacs-base web text-editing)
+  '(agents-std-context harness-base e os-base emacs-base web text-editing org-canvas)
   "Layer ids activated by default chat harnesses.
 
 This option is the source of truth for the stateless layer preset attached to
@@ -149,6 +149,7 @@ sets the root used by config-aware default layers."
   (require 'e-harness)
   (require 'e-layer-selection)
   (require 'e-layers)
+  (require 'e-org-canvas-capabilities)
   (require 'e-openai)
   (e-default-layers-register)
   (let ((harness (e-openai-create-harness

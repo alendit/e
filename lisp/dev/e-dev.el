@@ -119,6 +119,7 @@
                   "lisp/layers/web/e-web-tools.el"
                   "lisp/layers/web/e-web-capabilities.el"
                   "lisp/layers/web/e-web.el"
+                  "lisp/layers/org-canvas/e-org-canvas-capabilities.el"
                   "lisp/layers/chat/e-chat-session.el"
                   "lisp/adapters/openai/e-openai.el"
                   "lisp/defaults/e-default-layers.el"
@@ -128,6 +129,7 @@
                   "lisp/shells/chat/e-chat.el"
                   "lisp/shells/chat/e-chat-starter.el"
                   "lisp/shells/e-canvas.el"
+                  "lisp/shells/e-org-canvas.el"
                   "lisp/dev/e-dev.el")))
     (dolist (file files)
       (load (expand-file-name file root) nil 'nomessage))

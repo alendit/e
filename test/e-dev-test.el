@@ -93,12 +93,12 @@
   (should (e-layer-get 'agents-std-context))
   (should (equal e-default-chat-layer-ids
                  '(agents-std-context harness-base e os-base emacs-base web
-                                      text-editing)))
+                                      text-editing org-canvas)))
   (should (equal (mapcar #'e-layer-id
                          (e-harness-active-layers
                           (e-harness-registry-get-or-create :chat-default)))
                  '(chat-session agents-std-context harness-base e os-base
-                                emacs-base web text-editing))))
+                                emacs-base web text-editing org-canvas))))
 
 (provide 'e-dev-test)
 

@@ -55,7 +55,12 @@
      :name "Text Editing"
      :summary "Progressive guidance for text editing workflows."
      :feature e-text-editing
-     :factory e-text-editing-layer-create))
+     :factory e-text-editing-layer-create)
+    (:id org-canvas
+     :name "Org Canvas"
+     :summary "Org document canvas context and visibility tools."
+     :feature e-org-canvas-capabilities
+     :factory e-org-canvas-layer-create))
   "Built-in layer specs registered during startup."
   :type '(repeat sexp)
   :group 'e)

@@ -34,6 +34,7 @@
       "lisp/layers/evidence"
       "lisp/layers/web"
       "lisp/layers/text-editing"
+      "lisp/layers/org-canvas"
       "lisp/layers/chat"
       "lisp/defaults"
       "lisp/shells"
@@ -66,6 +67,7 @@
                            "lisp/layers/evidence"
                            "lisp/layers/web"
                            "lisp/layers/text-editing"
+                           "lisp/layers/org-canvas"
                            "lisp/layers/chat"
                            "lisp/defaults"
                            "lisp/shells"
@@ -82,7 +84,8 @@
   (require 'e-layers-shell)
   (require 'e-chat)
   (require 'e-chat-starter)
-  (require 'e-canvas))
+  (require 'e-canvas)
+  (require 'e-org-canvas))
 (e-startup-run)
 
 (defgroup e nil

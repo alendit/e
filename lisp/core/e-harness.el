@@ -820,7 +820,7 @@ provider or loop failure."
      :turn-id turn-id
      :messages (plist-get context :messages)
      :backend (e-harness-backend harness)
-     :tools (e-harness-tools harness)
+     :tools (e-harness-tools harness session-id turn-id)
      :tool-lifecycle (e-harness-tool-lifecycle harness session-id turn-id)
      :options (plist-get context :options)
      :on-event (lambda (type payload)
@@ -841,7 +841,7 @@ provider or loop failure."
      :turn-id turn-id
      :messages (plist-get context :messages)
      :backend (e-harness-backend harness)
-     :tools (e-harness-tools harness)
+     :tools (e-harness-tools harness session-id turn-id)
      :tool-lifecycle (e-harness-tool-lifecycle harness session-id turn-id)
      :options (plist-get context :options)
      :on-event (or on-event

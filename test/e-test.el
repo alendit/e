@@ -32,6 +32,16 @@
     e-canvas-new-file
     e-canvas-attach-current-buffer
     e-canvas-attach-file
+    e-org-canvas-open-for-current-buffer
+    e-org-canvas-new-file
+    e-org-canvas-new-buffer
+    e-org-canvas-prompt-thread
+    e-org-canvas-prompt-document
+    e-org-canvas-prompt
+    e-org-canvas-reopen-last-prompt
+    e-org-canvas-list-sessions
+    e-org-canvas-list-project-sessions
+    e-org-canvas-resume
     e-layers-toggle
     e-layers-enable
     e-layers-disable
@@ -42,6 +52,7 @@
   '(e-chat-shell
     e-chat-starter-shell
     e-canvas-shell
+    e-org-canvas-shell
     e-layers-shell)
   "Non-command functions expected to exist from package autoloads.")
 
@@ -67,6 +78,8 @@
   '(e-chat
     e-chat-starter
     e-canvas
+    e-org-canvas
+    e-org-canvas-capabilities
     e-default-layers
     e-default-harnesses
     e-layer-selection
@@ -205,6 +218,16 @@
   (should (commandp 'e-canvas-new-file))
   (should (commandp 'e-canvas-attach-current-buffer))
   (should (commandp 'e-canvas-attach-file))
+  (should (commandp 'e-org-canvas-open-for-current-buffer))
+  (should (commandp 'e-org-canvas-new-buffer))
+  (should (commandp 'e-org-canvas-new-file))
+  (should (commandp 'e-org-canvas-prompt-thread))
+  (should (commandp 'e-org-canvas-prompt-document))
+  (should (commandp 'e-org-canvas-prompt))
+  (should (commandp 'e-org-canvas-reopen-last-prompt))
+  (should (commandp 'e-org-canvas-list-sessions))
+  (should (commandp 'e-org-canvas-list-project-sessions))
+  (should (commandp 'e-org-canvas-resume))
   (should (commandp 'e-layers-toggle))
   (should (commandp 'e-layers-enable))
   (should (commandp 'e-layers-disable))
@@ -217,16 +240,19 @@
         (progn
           (setq features (cl-set-difference features
                                             '(e e-chat e-chat-starter e-canvas
+                                              e-org-canvas
                                               e-layers-shell)))
           (load (expand-file-name "e.el" default-directory) nil 'nomessage)
           (should (featurep 'e-chat))
           (should (featurep 'e-chat-starter))
           (should (featurep 'e-canvas))
+          (should (featurep 'e-org-canvas))
           (should (featurep 'e-layers-shell))
           (should (eq (e-shell-id (e-shell-get 'chat)) 'chat))
           (should (eq (e-shell-id (e-shell-get 'global-session-starter))
                       'global-session-starter))
           (should (eq (e-shell-id (e-shell-get 'canvas)) 'canvas))
+          (should (eq (e-shell-id (e-shell-get 'org-canvas)) 'org-canvas))
           (should (eq (e-shell-id (e-shell-get 'layers)) 'layers)))
       (setq features original-features)
       (load (expand-file-name "e.el" default-directory) nil 'nomessage))))
