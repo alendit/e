@@ -1,0 +1,53 @@
+#+title: Investigation
+#+startup: overview
+
+* Source inspected
+
+- =lisp/shells/e-org-canvas.el=: =e-org-canvas-new-file= used interactive code
+  =FOrg Canvas file:=, then passed the selected value directly to
+  =find-file-noselect= and forced =org-mode= in the returned buffer.
+- Selecting an existing directory therefore visited a Dired buffer. Changing
+  that buffer into =org-mode= while Dired's directory listing process was still
+  active could leave Dired's process sentinel running against a buffer without
+  Dired's expected =dired-subdir-alist= state, matching the reported
+  =No subdir-alist= sentinel error.
+- =docs/feats/17-org-canvas/plan.org= separates the command contracts:
+  =e-org-canvas-new-file= creates or visits an Org file, while
+  =e-org-canvas-new-buffer= asks for a target folder.
+- =test/e-org-canvas-test.el= covered normal file-backed canvas behavior and
+  the folder-targeted new-buffer workflow, but did not cover directory input to
+  =e-org-canvas-new-file=.
+
+* Live access
+
+- The user's live run already reproduced the sentinel failure after selecting a
+  directory.
+- After the fix, =e-dev-reload= reloaded the repository into the running Emacs.
+- A live =emacsclient --eval= probe called =e-org-canvas-new-file= with a
+  temporary directory path. The running Emacs now returns:
+
+  #+begin_example
+  (:error user-error ("Org Canvas file must be a file path, not a directory"))
+  #+end_example
+
+* Conclusion
+
+The root cause was that =e-org-canvas-new-file= accepted a directory path even
+though its command contract is file-backed Org Canvas creation. The directory
+path went through =find-file-noselect=, producing a Dired buffer, and Org Canvas
+then forced =org-mode= over that Dired buffer.
+
+The command should reject directory paths before visiting them. Folder-oriented
+creation remains owned by =e-org-canvas-new-buffer=.
+
+* Fix evidence
+
+- Added =e-org-canvas-test-new-file-rejects-directory=. It failed before the
+  fix because =e-org-canvas-new-file= did not signal =user-error= at the command
+  boundary.
+- Updated =e-org-canvas-new-file= to expand the selected path and signal a
+  clear =user-error= when it names an existing directory.
+- Verified the focused regression test passes.
+- Verified all =test/e-org-canvas-test.el= tests pass.
+- Reloaded the running Emacs with =e-dev-reload= and verified the live directory
+  probe now returns the expected =user-error=.

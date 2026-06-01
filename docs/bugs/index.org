@@ -8,6 +8,7 @@ State values for coding agents:
 
 | State  | Path | Title |
 |--------+------+-------|
+| Closed | org-canvas-new-file-directory/ | Org Canvas New File Accepts Directory |
 | Closed | empty-skill-description-crashes-context/ | Empty Skill Description Crashes Context |
 | Closed | chat-completion-length-partial-tool-json/ | Chat Completion Length Partial Tool JSON |
 | Closed | claude-opus-48-unknown-model/ | Claude Opus 4.8 Unknown Model |

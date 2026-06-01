@@ -152,6 +152,13 @@
           (kill-buffer buffer)))
       (delete-directory directory t))))
 
+(ert-deftest e-org-canvas-test-new-file-rejects-directory ()
+  "Creating an Org file canvas rejects directory paths before visiting them."
+  (let ((directory (make-temp-file "e-org-canvas-directory-" t)))
+    (unwind-protect
+        (should-error (e-org-canvas-new-file directory) :type 'user-error)
+      (delete-directory directory t))))
+
 (ert-deftest e-org-canvas-test-mode-owns-prompt-keys-and-suppresses-chat-context ()
   "Org Canvas mode owns s-i/S-i without disabling chat context elsewhere."
   (with-temp-buffer
