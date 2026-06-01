@@ -181,7 +181,9 @@
                   (with-current-buffer target-buffer
                     (should (derived-mode-p 'org-mode))
                     (should-not buffer-file-name)
-                    (should (equal default-directory directory))))))))
+                    (should (equal default-directory directory)))
+                  (should (eq (window-buffer (selected-window))
+                              target-buffer)))))))
       (e-org-canvas-test--kill-chat-buffers)
       (dolist (buffer (buffer-list))
         (when (string-prefix-p "*e-org-canvas:" (buffer-name buffer))

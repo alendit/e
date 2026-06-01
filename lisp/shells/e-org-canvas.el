@@ -395,6 +395,15 @@
              (buffer-name buffer))
     (e-chat-open :harness harness :session-id session-id)))
 
+(defun e-org-canvas--open-session-for-buffer-and-display
+    (buffer &optional needs-file-name target-folder)
+  "Create an Org Canvas session for BUFFER, display BUFFER, and return chat."
+  (prog1 (e-org-canvas--open-session-for-buffer
+          buffer
+          needs-file-name
+          target-folder)
+    (switch-to-buffer buffer)))
+
 ;;;###autoload
 (defun e-org-canvas-open-for-current-buffer ()
   "Start or reuse an Org Canvas session for the current Org buffer."
@@ -425,7 +434,7 @@
       (let ((buffer (find-file-noselect file)))
         (with-current-buffer buffer
           (org-mode))
-        (e-org-canvas--open-session-for-buffer buffer)))))
+        (e-org-canvas--open-session-for-buffer-and-display buffer)))))
 
 (defun e-org-canvas--project-folder-default (project-root)
   "Return remembered Org Canvas folder for PROJECT-ROOT or PROJECT-ROOT."
@@ -464,7 +473,7 @@
     (with-current-buffer buffer
       (setq-local default-directory folder)
       (org-mode))
-    (e-org-canvas--open-session-for-buffer buffer t folder)))
+    (e-org-canvas--open-session-for-buffer-and-display buffer t folder)))
 
 (defun e-org-canvas--slugify (text)
   "Return a filesystem-safe slug for TEXT."

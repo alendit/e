@@ -18,9 +18,14 @@
 - The command UX should allow selecting an existing directory from
   =e-org-canvas-new-file= and then delegate into the existing
   =e-org-canvas-new-buffer= workflow.
+- After that delegation was added, directory selection created the right
+  unsaved canvas metadata but did not display the newly created Org buffer.
+  =e-org-canvas--open-session-for-buffer= returns the backing chat buffer and
+  does not select any buffer, so the visible window could remain on the
+  previous canvas.
 - =test/e-org-canvas-test.el= covered normal file-backed canvas behavior and
   the folder-targeted new-buffer workflow, but did not cover directory input to
-  =e-org-canvas-new-file=.
+  =e-org-canvas-new-file= or the selected-window presentation result.
 
 * Live access
 
@@ -29,14 +34,20 @@
 - An initial narrow fix rejected directory paths with =user-error=. The user
   clarified that selecting a directory should be supported as the
   model-derived-file-name workflow.
-- After the final fix, =e-dev-reload= reloaded the repository into the running
-  Emacs.
+- The user then reported that running =e-org-canvas-new-file= again still kept
+  the previous canvas visible. The focused regression test was tightened to
+  require the selected window to show the newly created Org Canvas buffer.
+- After the final display fix, =e-dev-reload= reloaded the repository into the
+  running Emacs.
 - A live =emacsclient --eval= probe called =e-org-canvas-new-file= with a
-  temporary directory path. The running Emacs now returns Org Canvas metadata
-  for an unsaved buffer:
+  temporary directory path while an older Org Canvas buffer was visible. The
+  running Emacs now returns Org Canvas metadata for an unsaved buffer and shows
+  that the selected window displays the new target:
 
   #+begin_example
-  (:ok (:needs-file-name t :target-folder "/.../e-org-canvas-live-dir-.../"))
+  (:ok (:needs-file-name t
+        :target-folder "/.../e-org-canvas-live-dir-.../"
+        :selected-buffer "*e-org-canvas:org-canvas*"))
   #+end_example
 
 * Conclusion
@@ -51,6 +62,10 @@ folder-targeted canvas workflow and delegate to =e-org-canvas-new-buffer= before
 visiting anything. That keeps Dired out of the path and preserves
 model-derived file naming on the first prompt.
 
+For newly-created file or folder canvases, Org Canvas should also display the
+Org buffer as the primary presentation surface while still returning the backing
+chat buffer for existing call sites and tests that inspect session state.
+
 * Fix evidence
 
 - Replaced the narrow rejection test with
@@ -59,8 +74,13 @@ model-derived file naming on the first prompt.
   =user-error= for directories.
 - Updated =e-org-canvas-new-file= to expand the selected path and delegate
   existing directories to =e-org-canvas-new-buffer=.
+- Tightened the regression test to assert that the selected window displays the
+  newly created unsaved Org Canvas buffer. It failed before the display fix
+  because the selected window still showed the prior buffer.
+- Added =e-org-canvas--open-session-for-buffer-and-display= and used it for
+  newly-created file and folder canvases.
 - Verified the focused regression test passes.
 - Verified all =test/e-org-canvas-test.el= tests pass.
 - Reloaded the running Emacs with =e-dev-reload= and verified the live directory
   probe now returns unsaved Org Canvas metadata with =:needs-file-name= and the
-  selected =:target-folder=.
+  selected =:target-folder= while selecting the new Org Canvas buffer.
