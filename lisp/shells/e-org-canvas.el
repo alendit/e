@@ -420,12 +420,12 @@
   "Create or visit Org FILE and start an Org Canvas session for it."
   (interactive "FOrg Canvas file: ")
   (let ((file (expand-file-name file)))
-    (when (file-directory-p file)
-      (user-error "Org Canvas file must be a file path, not a directory"))
-    (let ((buffer (find-file-noselect file)))
-      (with-current-buffer buffer
-        (org-mode))
-      (e-org-canvas--open-session-for-buffer buffer))))
+    (if (file-directory-p file)
+        (e-org-canvas-new-buffer file)
+      (let ((buffer (find-file-noselect file)))
+        (with-current-buffer buffer
+          (org-mode))
+        (e-org-canvas--open-session-for-buffer buffer)))))
 
 (defun e-org-canvas--project-folder-default (project-root)
   "Return remembered Org Canvas folder for PROJECT-ROOT or PROJECT-ROOT."

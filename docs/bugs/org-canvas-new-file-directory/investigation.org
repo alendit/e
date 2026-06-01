@@ -11,9 +11,13 @@
   active could leave Dired's process sentinel running against a buffer without
   Dired's expected =dired-subdir-alist= state, matching the reported
   =No subdir-alist= sentinel error.
-- =docs/feats/17-org-canvas/plan.org= separates the command contracts:
-  =e-org-canvas-new-file= creates or visits an Org file, while
-  =e-org-canvas-new-buffer= asks for a target folder.
+- =docs/feats/17-org-canvas/plan.org= separates the internal workflows:
+  file-backed canvases create or visit an Org file, while
+  =e-org-canvas-new-buffer= asks for a target folder and marks the canvas with
+  =:needs-file-name= so the first prompt can drive model-suggested file naming.
+- The command UX should allow selecting an existing directory from
+  =e-org-canvas-new-file= and then delegate into the existing
+  =e-org-canvas-new-buffer= workflow.
 - =test/e-org-canvas-test.el= covered normal file-backed canvas behavior and
   the folder-targeted new-buffer workflow, but did not cover directory input to
   =e-org-canvas-new-file=.
@@ -22,32 +26,41 @@
 
 - The user's live run already reproduced the sentinel failure after selecting a
   directory.
-- After the fix, =e-dev-reload= reloaded the repository into the running Emacs.
+- An initial narrow fix rejected directory paths with =user-error=. The user
+  clarified that selecting a directory should be supported as the
+  model-derived-file-name workflow.
+- After the final fix, =e-dev-reload= reloaded the repository into the running
+  Emacs.
 - A live =emacsclient --eval= probe called =e-org-canvas-new-file= with a
-  temporary directory path. The running Emacs now returns:
+  temporary directory path. The running Emacs now returns Org Canvas metadata
+  for an unsaved buffer:
 
   #+begin_example
-  (:error user-error ("Org Canvas file must be a file path, not a directory"))
+  (:ok (:needs-file-name t :target-folder "/.../e-org-canvas-live-dir-.../"))
   #+end_example
 
 * Conclusion
 
 The root cause was that =e-org-canvas-new-file= accepted a directory path even
-though its command contract is file-backed Org Canvas creation. The directory
-path went through =find-file-noselect=, producing a Dired buffer, and Org Canvas
-then forced =org-mode= over that Dired buffer.
+though its file-visiting path only worked for file paths. The directory path
+went through =find-file-noselect=, producing a Dired buffer, and Org Canvas then
+forced =org-mode= over that Dired buffer.
 
-The command should reject directory paths before visiting them. Folder-oriented
-creation remains owned by =e-org-canvas-new-buffer=.
+The command should treat an existing directory as a request for the
+folder-targeted canvas workflow and delegate to =e-org-canvas-new-buffer= before
+visiting anything. That keeps Dired out of the path and preserves
+model-derived file naming on the first prompt.
 
 * Fix evidence
 
-- Added =e-org-canvas-test-new-file-rejects-directory=. It failed before the
-  fix because =e-org-canvas-new-file= did not signal =user-error= at the command
-  boundary.
-- Updated =e-org-canvas-new-file= to expand the selected path and signal a
-  clear =user-error= when it names an existing directory.
+- Replaced the narrow rejection test with
+  =e-org-canvas-test-new-file-directory-starts-unsaved-folder-canvas=. It failed
+  before the final fix because =e-org-canvas-new-file= still signaled
+  =user-error= for directories.
+- Updated =e-org-canvas-new-file= to expand the selected path and delegate
+  existing directories to =e-org-canvas-new-buffer=.
 - Verified the focused regression test passes.
 - Verified all =test/e-org-canvas-test.el= tests pass.
 - Reloaded the running Emacs with =e-dev-reload= and verified the live directory
-  probe now returns the expected =user-error=.
+  probe now returns unsaved Org Canvas metadata with =:needs-file-name= and the
+  selected =:target-folder=.

@@ -152,11 +152,40 @@
           (kill-buffer buffer)))
       (delete-directory directory t))))
 
-(ert-deftest e-org-canvas-test-new-file-rejects-directory ()
-  "Creating an Org file canvas rejects directory paths before visiting them."
-  (let ((directory (make-temp-file "e-org-canvas-directory-" t)))
+(ert-deftest e-org-canvas-test-new-file-directory-starts-unsaved-folder-canvas ()
+  "Selecting a directory creates an unsaved Org Canvas targeting that folder."
+  (let ((directory (file-name-as-directory
+                    (make-temp-file "e-org-canvas-directory-" t)))
+        (harness (e-org-canvas-test--harness)))
     (unwind-protect
-        (should-error (e-org-canvas-new-file directory) :type 'user-error)
+        (e-org-canvas-test--with-empty-harness-registry
+          (let ((e-chat-default-harness-id :org-canvas-test))
+            (e-harness-registry-register :org-canvas-test harness)
+            (let ((chat-buffer (e-org-canvas-new-file directory)))
+              (with-current-buffer chat-buffer
+                (let* ((session (e-session-get
+                                 (e-harness-sessions e-chat-harness)
+                                 e-chat-session-id))
+                       (org-canvas (plist-get
+                                    (plist-get session :metadata)
+                                    :org-canvas))
+                       (target-buffer (get-buffer
+                                       (plist-get org-canvas :buffer-name))))
+                  (should (plist-get org-canvas :needs-file-name))
+                  (should (equal (plist-get org-canvas :target-folder)
+                                 directory))
+                  (should (string-prefix-p
+                           "buffer://"
+                           (plist-get org-canvas :uri)))
+                  (should (buffer-live-p target-buffer))
+                  (with-current-buffer target-buffer
+                    (should (derived-mode-p 'org-mode))
+                    (should-not buffer-file-name)
+                    (should (equal default-directory directory))))))))
+      (e-org-canvas-test--kill-chat-buffers)
+      (dolist (buffer (buffer-list))
+        (when (string-prefix-p "*e-org-canvas:" (buffer-name buffer))
+          (kill-buffer buffer)))
       (delete-directory directory t))))
 
 (ert-deftest e-org-canvas-test-mode-owns-prompt-keys-and-suppresses-chat-context ()

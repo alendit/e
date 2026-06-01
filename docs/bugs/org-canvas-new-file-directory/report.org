@@ -1,8 +1,10 @@
-#+title: Org Canvas New File Accepts Directory
+#+title: Org Canvas New File Directory Selection Broke Folder Workflow
 #+startup: overview
 
 The user reported that running =e-org-canvas-new-file= and selecting a
-directory produced process sentinel errors:
+directory produced process sentinel errors, even though Org Canvas should have a
+folder-targeted mode where the model later determines the file name from the
+topic:
 
 #+begin_example
 error in process sentinel: dired-current-directory: No subdir-alist in topics
