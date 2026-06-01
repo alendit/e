@@ -23,9 +23,14 @@
   =e-org-canvas--open-session-for-buffer= returns the backing chat buffer and
   does not select any buffer, so the visible window could remain on the
   previous canvas.
+- After the new canvas was visible, the first prompt save path suggested a file
+  name by returning the entire prompt from =e-org-canvas--suggest-file-name=.
+  That produced unreadable slugs such as =let-s-design-a-knowledge-...org= and
+  did not ask the configured model for a concise title.
 - =test/e-org-canvas-test.el= covered normal file-backed canvas behavior and
   the folder-targeted new-buffer workflow, but did not cover directory input to
-  =e-org-canvas-new-file= or the selected-window presentation result.
+  =e-org-canvas-new-file=, the selected-window presentation result, or the
+  model-backed first-prompt filename suggestion.
 
 * Live access
 
@@ -37,6 +42,8 @@
 - The user then reported that running =e-org-canvas-new-file= again still kept
   the previous canvas visible. The focused regression test was tightened to
   require the selected window to show the newly created Org Canvas buffer.
+- The user then reported that the save prompt still used a slug of the whole
+  first prompt instead of asking the LLM for the file name.
 - After the final display fix, =e-dev-reload= reloaded the repository into the
   running Emacs.
 - A live =emacsclient --eval= probe called =e-org-canvas-new-file= with a
@@ -66,6 +73,11 @@ For newly-created file or folder canvases, Org Canvas should also display the
 Org buffer as the primary presentation surface while still returning the backing
 chat buffer for existing call sites and tests that inspect session state.
 
+For first-prompt file naming, Org Canvas should ask the configured harness
+backend for a concise filename stem. The raw prompt should never be used as the
+fallback filename; if the backend returns nothing, use an Org heading or the
+default =org-canvas= stem instead.
+
 * Fix evidence
 
 - Replaced the narrow rejection test with
@@ -79,6 +91,16 @@ chat buffer for existing call sites and tests that inspect session state.
   because the selected window still showed the prior buffer.
 - Added =e-org-canvas--open-session-for-buffer-and-display= and used it for
   newly-created file and folder canvases.
+- Added =e-org-canvas-test-first_prompt_asks_backend_for_file_name=. It failed
+  before the filename fix because the file name was a slug of the prompt rather
+  than the fake backend's concise suggestion.
+- Added
+  =e-org-canvas-test-first_prompt_empty_backend_does_not_use_prompt_as_file_name=
+  to keep empty backend output from falling back to the raw prompt.
+- Updated =e-org-canvas--suggest-file-name= to call the harness backend with a
+  small filename-suggestion prompt, sanitize the assistant text, omit normal
+  canvas tools from the naming request, and fall back only to local canvas
+  context.
 - Verified the focused regression test passes.
 - Verified all =test/e-org-canvas-test.el= tests pass.
 - Reloaded the running Emacs with =e-dev-reload= and verified the live directory

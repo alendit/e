@@ -14,6 +14,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'e-backend)
 (require 'e-canvas)
 (require 'e-chat)
 (require 'e-chat-session)
@@ -51,6 +52,15 @@
   "Seconds to keep a successful Org Canvas prompt pane visible."
   :type 'number
   :group 'e-org-canvas)
+
+(defconst e-org-canvas--file-name-suggestion-instructions
+  (string-join
+   '("Suggest a concise file name stem for saving an Org canvas."
+     "Return only lowercase words separated by hyphens."
+     "Do not include a path, extension, quotes, Markdown, or explanation."
+     "Keep it under 60 characters.")
+   " ")
+  "System instructions for model-suggested Org Canvas file names.")
 
 (defvar e-org-canvas--project-folders (make-hash-table :test 'equal)
   "Remembered Org Canvas target folders keyed by project root.")
@@ -500,15 +510,74 @@
             (unless (file-exists-p file)
               file)))))))
 
-(defun e-org-canvas--suggest-file-name (prompt buffer)
-  "Suggest a file name from PROMPT and BUFFER."
-  (or (and (stringp prompt) (not (string-empty-p (string-trim prompt)))
-           prompt)
-      (with-current-buffer buffer
-        (save-excursion
-          (goto-char (point-min))
-          (when (re-search-forward org-heading-regexp nil t)
-            (org-get-heading t t t t))))))
+(defun e-org-canvas--fallback-file-name-suggestion (buffer)
+  "Return a local fallback file name suggestion from BUFFER."
+  (with-current-buffer buffer
+    (save-excursion
+      (goto-char (point-min))
+      (or (when (re-search-forward org-heading-regexp nil t)
+            (org-get-heading t t t t))
+          e-org-canvas-default-buffer-name))))
+
+(defun e-org-canvas--file-name-suggestion-context (prompt buffer)
+  "Return user message content for file name suggestion from PROMPT and BUFFER."
+  (let ((excerpt
+         (with-current-buffer buffer
+           (string-trim
+            (buffer-substring-no-properties
+             (point-min)
+             (min (point-max) (+ (point-min) 2000)))))))
+    (string-join
+     (list
+      "Suggest a short file name for this Org canvas."
+      ""
+      "First prompt:"
+      (or prompt "")
+      ""
+      "Current Org canvas excerpt:"
+      (if (string-empty-p excerpt) "(empty)" excerpt))
+     "\n")))
+
+(defun e-org-canvas--clean-file-name-suggestion (suggestion)
+  "Return cleaned file name SUGGESTION text."
+  (when (stringp suggestion)
+    (let* ((line (car (split-string (string-trim suggestion) "\n" t)))
+           (line (string-trim (or line "") "[`'\"[:space:]]+" "[`'\"[:space:]]+")))
+      (unless (string-empty-p line)
+        line))))
+
+(defun e-org-canvas--file-name-suggestion-options (harness session-id)
+  "Return backend options for a file name suggestion in HARNESS SESSION-ID."
+  (let ((options (copy-sequence (e-harness-turn-options harness session-id))))
+    (cl-remf options :tools)
+    options))
+
+(defun e-org-canvas--suggest-file-name (harness session-id prompt buffer)
+  "Ask HARNESS backend to suggest a file name for PROMPT and BUFFER."
+  (let (message parts)
+    (condition-case nil
+        (e-backend-stream
+         (e-harness-backend harness)
+         :messages
+         (list
+          (list :role 'system
+                :content e-org-canvas--file-name-suggestion-instructions)
+          (list :role 'user
+                :content
+                (e-org-canvas--file-name-suggestion-context prompt buffer)))
+         :options (e-org-canvas--file-name-suggestion-options harness session-id)
+         :on-item
+         (lambda (item)
+           (pcase (plist-get item :type)
+             ('assistant-message
+              (setq message (plist-get item :content)))
+             ('assistant-delta
+              (push (or (plist-get item :content) "") parts)))))
+      (error nil))
+    (or (e-org-canvas--clean-file-name-suggestion
+         (or message
+             (and parts (string-join (nreverse parts) ""))))
+        (e-org-canvas--fallback-file-name-suggestion buffer))))
 
 (defun e-org-canvas--maybe-save-new-buffer (harness session-id prompt)
   "Save a new unsaved Org Canvas before first PROMPT when safe."
@@ -522,7 +591,7 @@
           (let* ((folder (or (plist-get canvas :target-folder)
                              default-directory))
                  (suggestion (e-org-canvas--suggest-file-name
-                              prompt buffer))
+                              harness session-id prompt buffer))
                  (file (e-org-canvas--safe-suggested-file
                         folder suggestion)))
             (unless file

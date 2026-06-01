@@ -799,7 +799,8 @@
            :target-folder directory
            :needs-file-name t)
           (cl-letf (((symbol-function 'e-org-canvas--suggest-file-name)
-                     (lambda (_prompt _buffer) "Project Notes")))
+                     (lambda (_harness _session-id _prompt _buffer)
+                       "Project Notes")))
             (e-org-canvas--maybe-save-new-buffer
              harness "session-1" "make project notes"))
           (should (equal (file-name-nondirectory buffer-file-name)
@@ -818,6 +819,126 @@
                            (plist-get org-canvas :uri)))))
       (when-let ((buffer (find-buffer-visiting
                           (expand-file-name "project-notes.org" directory))))
+        (kill-buffer buffer))
+      (delete-directory directory t))))
+
+(ert-deftest e-org-canvas-test-first_prompt_asks_backend_for_file_name ()
+  "The first prompt for a new unsaved canvas asks the backend for a file name."
+  (let* ((directory (file-name-as-directory
+                     (make-temp-file "e-org-canvas-target-" t)))
+         captured-messages
+         (backend
+          (e-backend-create
+           :name "file-name-suggester"
+           :stream
+           (cl-function
+            (lambda (&key messages options on-item)
+              (ignore options)
+              (setq captured-messages messages)
+              (funcall on-item
+                       '(:type assistant-message
+                         :content "knowledge-agenda-system"))))))
+         (harness (e-org-canvas-test--harness)))
+    (setf (e-harness-backend harness) backend)
+    (unwind-protect
+        (with-temp-buffer
+          (rename-buffer "unsaved-org-canvas-backend" t)
+          (org-mode)
+          (e-harness-create-session harness :id "session-1")
+          (e-org-canvas--mark-session
+           harness "session-1" (current-buffer)
+           :scope 'thread
+           :target-folder directory
+           :needs-file-name t)
+          (e-org-canvas--maybe-save-new-buffer
+           harness
+           "session-1"
+           "Let's design a knowledge and agenda management system for the repo")
+          (should (equal (file-name-nondirectory buffer-file-name)
+                         "knowledge-agenda-system.org"))
+          (should captured-messages)
+          (should (string-match-p
+                   "knowledge and agenda management system"
+                   (plist-get (cadr captured-messages) :content))))
+      (when-let ((buffer (find-buffer-visiting
+                          (expand-file-name
+                           "knowledge-agenda-system.org"
+                           directory))))
+        (kill-buffer buffer))
+      (delete-directory directory t))))
+
+(ert-deftest e-org-canvas-test-first_prompt_empty_backend_does_not_use_prompt_as_file_name ()
+  "Empty backend suggestions fall back locally instead of slugging the prompt."
+  (let ((directory (file-name-as-directory
+                    (make-temp-file "e-org-canvas-target-" t)))
+        (harness (e-org-canvas-test--harness)))
+    (unwind-protect
+        (with-temp-buffer
+          (rename-buffer "unsaved-org-canvas-empty-backend" t)
+          (org-mode)
+          (e-harness-create-session harness :id "session-1")
+          (e-org-canvas--mark-session
+           harness "session-1" (current-buffer)
+           :scope 'thread
+           :target-folder directory
+           :needs-file-name t)
+          (e-org-canvas--maybe-save-new-buffer
+           harness
+           "session-1"
+           "Let's design a knowledge and agenda management system for the repo")
+          (should (equal (file-name-nondirectory buffer-file-name)
+                         "org-canvas.org")))
+      (when-let ((buffer (find-buffer-visiting
+                          (expand-file-name "org-canvas.org" directory))))
+        (kill-buffer buffer))
+      (delete-directory directory t))))
+
+(ert-deftest e-org-canvas-test-first_prompt_file_name_request_omits_tools ()
+  "File name suggestion requests use the session model options without tools."
+  (let* ((directory (file-name-as-directory
+                     (make-temp-file "e-org-canvas-target-" t)))
+         backend-called
+         captured-options
+         (backend
+          (e-backend-create
+           :name "file-name-suggester"
+           :stream
+           (cl-function
+            (lambda (&key messages options on-item)
+              (ignore messages)
+              (setq backend-called t)
+              (setq captured-options options)
+              (funcall on-item
+                       '(:type assistant-message
+                         :content "tool-free-title"))))))
+         (harness (e-org-canvas-test--harness t)))
+    (setf (e-harness-backend harness) backend)
+    (unwind-protect
+        (with-temp-buffer
+          (rename-buffer "unsaved-org-canvas-no-tools" t)
+          (org-mode)
+          (e-harness-create-session harness :id "session-1")
+          (e-harness-set-session-model harness "session-1" "model-for-names")
+          (e-org-canvas--mark-session
+           harness "session-1" (current-buffer)
+           :scope 'thread
+           :target-folder directory
+           :needs-file-name t)
+          (should (plist-get
+                   (e-harness-turn-options harness "session-1")
+                   :tools))
+          (e-org-canvas--maybe-save-new-buffer
+           harness
+           "session-1"
+           "Name this canvas")
+          (should (equal (file-name-nondirectory buffer-file-name)
+                         "tool-free-title.org"))
+          (should backend-called)
+          (should (equal (plist-get captured-options :model)
+                         "model-for-names"))
+          (should-not (plist-get captured-options :tools)))
+      (when-let ((buffer (find-buffer-visiting
+                          (expand-file-name "tool-free-title.org" directory))))
         (kill-buffer buffer))
       (delete-directory directory t))))
 
