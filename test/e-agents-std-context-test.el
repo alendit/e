@@ -275,6 +275,34 @@
       (delete-directory home t)
       (delete-directory project t))))
 
+(ert-deftest e-agents-std-context-test-empty-description-uses-fallback ()
+  "Skill files with empty descriptions keep a useful compact fallback."
+  (let* ((home (make-temp-file "e-agents-home-" t))
+         (project (make-temp-file "e-agents-project-" t))
+         (skill (expand-file-name ".agents/skills/refocus/SKILL.md" project)))
+    (unwind-protect
+        (progn
+          (e-agents-std-context-test--write-file
+           skill
+           "---\nname: refocus\ndescription:\n---\n\nRefocus body.")
+          (let* ((e-agents-std-context-global-skills-directory
+                  (expand-file-name ".agents/skills" home))
+                 (harness
+                  (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :active-layers
+                   (list (e-agents-std-context-layer-create project))))
+                 (_session (e-harness-create-session harness :id "session-1"))
+                 (content
+                  (e-agents-std-context-test--context-content
+                   harness
+                   "session-1")))
+            (should (string-match-p
+                     "refocus: Read refocus guidance. Read e://agents-std-context/skills/project/refocus"
+                     content))))
+      (delete-directory home t)
+      (delete-directory project t))))
+
 (ert-deftest e-agents-std-context-test-global-skills-are-not-project-ancestors ()
   "The configured global skills directory is not also advertised as project."
   (let* ((home (make-temp-file "e-agents-home-" t))

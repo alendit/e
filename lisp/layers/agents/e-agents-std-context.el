@@ -286,8 +286,15 @@
              (name (or (e-agents-std-context--frontmatter-value content "name")
                        slug))
              (description
-              (or (e-agents-std-context--frontmatter-value content "description")
-                  (format "Read %s guidance." name)))
+              (let ((value
+                     (e-agents-std-context--frontmatter-value
+                      content
+                      "description"))
+                    (fallback (format "Read %s guidance." name)))
+                (if (and (stringp value)
+                         (not (string-empty-p value)))
+                    value
+                  fallback)))
              (path (format "skills/%s/%s" scope slug)))
         (e-skill-spec-create
          :name name

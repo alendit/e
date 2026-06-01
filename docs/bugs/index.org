@@ -8,6 +8,7 @@ State values for coding agents:
 
 | State  | Path | Title |
 |--------+------+-------|
+| Closed | empty-skill-description-crashes-context/ | Empty Skill Description Crashes Context |
 | Closed | chat-completion-length-partial-tool-json/ | Chat Completion Length Partial Tool JSON |
 | Closed | claude-opus-48-unknown-model/ | Claude Opus 4.8 Unknown Model |
 | New    | e-chat-new-stale-harness-session-store/ | e-chat-new stale harness session store |

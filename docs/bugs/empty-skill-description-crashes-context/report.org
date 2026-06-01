@@ -1,0 +1,11 @@
+#+title: Empty Skill Description Crashes Context
+#+startup: overview
+
+The user reported this runtime error while building agent context:
+
+#+begin_example
+49:    (signal 'wrong-type-argument (list 'skill-description description)))
+#+end_example
+
+The error points at =e-skills--normalize-description= rejecting an empty skill
+description.

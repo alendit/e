@@ -1,0 +1,52 @@
+#+title: Investigation
+#+startup: overview
+
+* Source inspected
+
+- =lisp/core/e-skills.el=: =e-skills--normalize-description= intentionally
+  rejects non-string and empty descriptions for core skill specs.
+- =lisp/layers/agents/e-agents-std-context.el=:
+  =e-agents-std-context--skill-spec= already had a fallback for missing
+  =description= frontmatter, but not for present empty values. Because Emacs
+  Lisp treats =""= as non-nil, =(or value fallback)= passed the empty string to
+  =e-skill-spec-create= and triggered =wrong-type-argument skill-description ""=.
+- =test/e-agents-std-context-test.el= already covered missing descriptions,
+  folded YAML descriptions, and literal YAML descriptions, but did not cover a
+  present empty =description:= field.
+
+* Live access
+
+- Before reload, a live =emacsclient --eval= probe created a temporary
+  =SKILL.md= with empty =description:= frontmatter and called
+  =e-agents-std-context--skill-spec=. The running Emacs returned:
+
+  #+begin_example
+  (:error wrong-type-argument (skill-description ""))
+  #+end_example
+
+- After applying the fix, =e-dev-reload= reloaded the repository into the
+  running Emacs.
+- A follow-up live probe of the same temporary =SKILL.md= returned:
+
+  #+begin_example
+  (:ok "Read empty guidance.")
+  #+end_example
+
+* Conclusion
+
+The root cause was the filesystem skill loader treating an explicitly empty
+=description:= frontmatter value as valid metadata instead of absent metadata.
+Core skill validation was correct to reject empty model-facing descriptions;
+the loader needed to apply the same compact fallback used for missing
+descriptions.
+
+* Fix evidence
+
+- Added =e-agents-std-context-test-empty-description-uses-fallback=. It failed
+  before the fix with =wrong-type-argument skill-description ""=.
+- Updated =e-agents-std-context--skill-spec= to treat empty description
+  frontmatter as absent and use =Read <name> guidance.=.
+- Verified the focused regression test passes.
+- Verified all =test/e-agents-std-context-test.el= tests pass.
+- Reloaded the running Emacs with =e-dev-reload= and verified the live probe
+  now returns the fallback description.
