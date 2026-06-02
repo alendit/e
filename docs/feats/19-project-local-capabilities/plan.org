@@ -1,0 +1,169 @@
+#+title: Project-Local Capabilities
+#+startup: overview
+
+* Goal
+
+Let a repository contribute its own =e= *capabilities* — not just static
+=AGENTS.md= text and read-only =SKILL.md= bodies, but real model-facing tools,
+resource methods, and (optionally) stateful behavior — discovered and loaded
+the way =agents-std-context= already discovers project =AGENTS.md= and
+=.agents/skills=. EDIT: Also shells.
+
+Motivating consumer: the =grimoire= knowledge/agenda repo wants a repo-scoped
+"topic" capability (state in Org =:PROPERTIES:= drawers, =index.org=
+regeneration, =topic-new/close/open=, =daily=, =graduate=) that ships *inside
+the repo* and activates only when =e= is operating in that repo.
+
+* What exists today (inventory)
+
+- =agents-std-context= (=lisp/layers/agents/e-agents-std-context.el=) walks
+  ancestor directories from the project root and discovers:
+  - project =AGENTS.md= files -> a context provider (system message).
+  - project =.agents/skills/*/SKILL.md= -> =e-skill-spec= records advertised in
+    a catalog message and exposed as read-only
+    =e://agents-std-context/skills/project/<slug>= resources.
+- Skills are *guidance only*. A =SKILL.md= can describe a workflow but cannot
+  register a tool, a resource method, or mutate state. The =reader= just returns
+  the file body.
+- Project root comes from =e-harness-project-root= (session metadata, else
+  harness default). Layer factories that accept a =directory= arg
+  (=e-layer--factory-accepts-directory-p=) get it at construction.
+- Capabilities (=lisp/core/e-capabilities.el=) already support everything a
+  project capability would need: =instructions=, =tools=, =resource-methods=,
+  =resources=, =context-providers=, =actions=, =hooks=, =config-options=.
+- Layers are registered in =e-default-layer-specs= and activated by
+  =e-default-chat--activate-configured-layers=.
+
+*Gap:* no path from "files in a repo" to "an activated capability that
+contributes tools/resource-methods/state". Skills stop at read-only text.
+
+* Design
+
+** Discovery: =.agents/capabilities/= alongside =.agents/skills/=
+
+Comment: shouldn't probably be .agents. Go with .e
+
+Mirror the existing skills-discovery walk. From the project root, walk ancestors
+collecting =.agents/capabilities/= directories. Each subdirectory is one
+project-local capability:
+
+#+begin_example
+<repo>/.agents/capabilities/<id>/
+  capability.el            # loader entrypoint (see contract)
+  CAPABILITY.md            # optional: description, frontmatter id/name
+  skills/<slug>/SKILL.md   # optional: capability-scoped skills
+#+end_example
+
+Discovery is *opt-in by presence*: a repo with no =.agents/capabilities/=
+behaves exactly as today.
+
+** Loading contract (trust-gated)
+
+Loading project elisp is a real trust boundary (arbitrary code from a repo).
+Contract:
+
+1. Discovery finds =capability.el= files but does *not* load them automatically.
+2. A user-controlled allowlist (=e-project-capabilities-allowed-roots=, a
+   persisted defcustom) gates loading per project root. Unknown roots are
+   reported, not executed.
+3. For an allowed root, =e= loads =capability.el=. The file makes a
+   registration call when loaded:
+   #+begin_src elisp
+   (e-project-capability-register
+    :id 'topic
+    :factory (lambda (directory) (grimoire-topic-capability-create directory)))
+   #+end_src
+   The factory is called with the discovered directory and must return an
+   =e-capability= (built via =e-capability-create=).
+4. The returned capability is wrapped in an anonymous layer
+   (=e-harness-activate-capability=) and participates in normal turn context,
+   tool dispatch, and resource registration like any built-in capability.
+
+** Project-defined layers (namespaced)
+
+*Can projects define their own layers?* Yes. The only real objection to repo-defined
+layers is id collision in the global registry (=e-layer--registry=,
+=e-default-layer-specs=) — a repo could shadow a built-in id (=e=, =web=,
+=os-base=, ...). That is avoidable by *namespacing*: project layer ids are
+mechanically prefixed with the project (e.g. =project/<repo>/<id>=) at
+registration time, so they cannot collide with built-ins or with other
+projects. With that, a repo may contribute *multiple* layers, each grouping a
+cohesive set of capabilities, just like built-in layers do.
+
+What stays harness-owned is the *trust gate*, not the layer seam: discovered
+repo layers are registered but only *activated* for allowlisted roots, and
+activation reports (never silently overrides) on collision after namespacing.
+The registration call a =capability.el= makes returns one or more
+=e-layer= objects (or capabilities the loader wraps into a project layer); the
+harness assigns/validates the namespaced id rather than trusting a
+repo-supplied raw id.
+
+A built-in discovery layer (=project-local=, feature =e-project-local=,
+factory =e-project-local-layer-create= taking =directory=) drives this. It:
+
+- discovers =.e/capabilities/= from the (session) project root,
+- filters to allowlisted roots,
+- loads each =capability.el=, collecting whatever layers/capabilities the repo
+  registers,
+- namespaces each repo-supplied layer id (=project/<repo>/<id>=) and registers
+  the resulting layers, reporting any post-namespacing collision instead of
+  overriding,
+- activates the namespaced layers for the allowlisted root,
+- additionally folds in any capability-scoped =skills/= via the existing
+  skill-spec machinery (factor the =e-agents-std-context= skill helpers into a
+  shared =e-skills= discovery util to avoid duplication).
+
+Because layer factories are re-run on =e-default-chat-sync-harness-layers=,
+edits to project =capability.el= refresh on reload (consistent with =e='s live
+reload direction).
+
+** Config + precedence
+
+- Reuse =e-capability-config= so a project capability can declare
+  =config-options= and be tuned per project via existing config plumbing.
+- Project capabilities load *after* built-in layers so they can rely on base
+  resources (=file://=, =buffer://=) but cannot silently replace core tools;
+  id collisions with built-ins are an error surfaced to the user, not a silent
+  override.
+
+** Boundary rules honored
+
+- Harness still owns lifecycle/dispatch; the new layer is just another
+  capability source.
+- Side effects (loading elisp, touching the allowlist) live in the layer/shell,
+  not in core.
+- Trust decision is explicit and user-owned; =e= does not auto-execute repo
+  code. Failures surface (no silent swallow), per =AGENTS.md= error policy.
+
+* Open design questions
+
+1. *Allowlist UX*: prompt-on-first-encounter (like =dir-locals= "mark safe")
+   vs. a pure defcustom the user edits. Leaning prompt + persist.
+2. *Entrypoint convention*: registration call (chosen above) vs. fixed
+   function-name-by-id. Registration is more flexible and avoids name templating.
+3. *Sandboxing*: none initially (it is the user's own repo), but document that
+   =capability.el= runs with full Emacs privileges.
+4. *Skills-only fast path*: capability-scoped =skills/= without a =capability.el=
+   should still work (pure guidance), reusing existing discovery.
+
+* Verification
+
+- ERT: discovery walks ancestor =.agents/capabilities/= correctly; empty repo
+  is a no-op.
+- ERT: allowlist gating — disallowed root yields no loaded capability and a
+  reported entry; allowed root yields an activated capability.
+- ERT: a fixture =capability.el= contributes a tool + resource method that show
+  up in =e-harness-tools= / =e-harness-resources=.
+- Live: load the grimoire topic capability in a scratch repo, confirm =topic-*=
+  tools are dispatchable and =index.org= regenerates.
+
+* Status
+
+Planned.
+
+* Relationship to grimoire
+
+This feature is the substrate. The grimoire topic capability is the first real
+consumer: it ships as =<grimoire>/.agents/capabilities/topic/capability.el=
+contributing topic state I/O + index regeneration tools and =topic-*= /
+=daily= / =graduate= skills.
