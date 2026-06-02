@@ -1,0 +1,44 @@
+#+title: Org Canvas Input Progress Bottom Investigation
+#+startup: overview
+
+* Source inspected
+
+- =lisp/shells/e-org-canvas.el=: submitted input panes enter result mode and
+  delegate active turn progress rendering to =e-chat--render-event=.
+- =lisp/shells/e-org-canvas.el=: =e-org-canvas--input-render-event= handled
+  =turn-started=, =reasoning-delta=, =tool-started=, and related progress events
+  without explicitly moving the transient input window to the latest rendered
+  progress.
+- =lisp/shells/chat/e-chat.el=: normal chat progress redraw intentionally
+  preserves scrollback focus. That behavior is correct for ordinary chat
+  buffers, but the Org Canvas input/result pane is a transient progress surface
+  and should follow the latest status.
+
+* Reproduction
+
+Added =e-org-canvas-test-input-progress_keeps_latest_status_visible=. It creates
+a small visible Org Canvas input/result window, emits enough reasoning progress
+to overflow that window, flushes the pending activity redraw, and checks that
+the newest progress line is inside the window's visible range.
+
+The test failed before the fix because the window did not include the newest
+progress line after redraw.
+
+* Fix
+
+Implemented. Org Canvas input progress events now flush the pending chat
+activity redraw immediately for the transient result pane and then move visible
+windows for that pane to the last non-empty line.
+
+This keeps normal chat scrollback preservation unchanged while making the
+short-lived Org Canvas composer/result pane behave like a tailing progress
+panel.
+
+Validation:
+
+- =rtk emacs -Q --batch -L . -l e.el -l test/e-org-canvas-test.el --eval '(ert-run-tests-batch "e-org-canvas-test-input-progress_keeps_latest_status_visible")'=
+- =rtk emacs -Q --batch -L . -l e.el -l test/e-org-canvas-test.el -f ert-run-tests-batch-and-exit=
+- Reloaded the running Emacs with =e-dev-reload=.
+- Ran a live temporary input-pane probe in the running Emacs. The newest
+  progress line was inside the visible window range:
+  =latest-visible=t window-start=50 window-end=58=.

@@ -1,0 +1,12 @@
+#+title: Org Canvas Input Progress Bottom
+#+startup: overview
+
+* Report
+
+During a running Org Canvas prompt, the transient input/result pane can show the
+oldest visible thinking/progress line instead of the newest one.
+
+The user reported this while the pane showed multiple =Thought for ...= progress
+blocks and tool-call summaries. The desired behavior is for Org Canvas progress
+in the composer/result pane to always keep the bottom-most, latest progress
+message visible.
