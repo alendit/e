@@ -60,7 +60,12 @@
      :name "Org Canvas"
      :summary "Org document canvas context and visibility tools."
      :feature e-org-canvas-capabilities
-     :factory e-org-canvas-layer-create))
+     :factory e-org-canvas-layer-create)
+    (:id project-local
+     :name "Project Local"
+     :summary "Capabilities a repository ships under .e/capabilities/."
+     :feature e-project-local
+     :factory e-project-local-layer-create))
   "Built-in layer specs registered during startup."
   :type '(repeat sexp)
   :group 'e)

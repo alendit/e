@@ -120,6 +120,7 @@
                   "lisp/layers/web/e-web-capabilities.el"
                   "lisp/layers/web/e-web.el"
                   "lisp/layers/org-canvas/e-org-canvas-capabilities.el"
+                  "lisp/layers/project-local/e-project-local.el"
                   "lisp/layers/chat/e-chat-session.el"
                   "lisp/adapters/openai/e-openai.el"
                   "lisp/defaults/e-default-layers.el"

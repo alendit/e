@@ -159,7 +159,71 @@ reload direction).
 
 * Status
 
-Planned.
+In-progress.
+
+* Implementation notes
+
+Implemented as a single built-in discovery layer rather than per-repo
+namespaced layers in the global registry.  The registry contract
+(=e-layer-create-registered=) requires a registered factory to return a layer
+whose id equals the registered id, so repo-supplied raw layer ids cannot be
+returned through that seam without weakening the contract.  Instead:
+
+- =project-local= (feature =e-project-local=, factory
+  =e-project-local-layer-create= taking =directory=) discovers
+  =.e/capabilities/= from the project root, loads allowlisted =capability.el=
+  loaders, and bundles the resulting capabilities into one =project-local=
+  layer.  This keeps the trust gate and id-collision handling harness/shell
+  owned and avoids a speculative per-repo namespacing layer that no consumer
+  needs yet.
+- Capability ids are de-duplicated within the layer (nearest directory wins);
+  collisions are reported via =message=, never silently overridden.
+- =.e/capabilities/= replaces the =.agents/capabilities/= sketch per the
+  inline review comment ("go with .e").
+- Skill discovery helpers were factored into shared =e-skills-*= functions in
+  =lisp/core/e-skills.el=; =e-agents-std-context= now delegates to them, so
+  capability-scoped =skills/= reuse the same machinery without duplication.
+- Capability-scoped skills register under =e://<id>/skills/project/<slug>=.
+
+Per-project config tuning via =e-capability-config= is available to project
+capabilities because they declare =config-options= like any built-in
+capability; no project-specific config plumbing was added.
+
+* Self-check (design-sensitive review)
+
+1. *Better off if stopped here?* Yes: repos can now ship real tools, resource
+   methods, and skills that activate only in their own tree, which is the
+   substrate the grimoire topic capability needs.
+2. *Final direction:* live-configurable, repo-contributed capabilities loaded
+   the way project AGENTS.md/skills already are.
+3. *Likely/uncertain/stable decisions:* The registration-call entrypoint and
+   single-layer bundling are the stable choices.  The allowlist UX (defcustom
+   vs. prompt-and-persist) is the uncertain decision and is kept local to the
+   layer via =e-project-local-allowed-roots=; switching to a prompt later does
+   not touch core.  No speculative per-repo namespacing layer was added.
+4. *Owning component:* the =project-local= layer owns discovery, the trust
+   gate, and capability/layer wrapping (one reason to change: how repo
+   capabilities are discovered/loaded).  The harness still owns lifecycle and
+   dispatch.
+5. *Coupling:* low.  Core gained no dependency on the new layer.  The shared
+   =e-skills= discovery helpers are consumer-shaped and depended on by both
+   discovery layers.
+6. *Dependency direction:* unchanged.  Stable core (=e-capabilities=,
+   =e-skills=, =e-harness=) is depended on by the new layer, not vice versa.
+7. *Side effects:* loading repo elisp and reading the allowlist live in the
+   layer, not core.
+8. *Real abstractions:* the registration record and capability factory are
+   semantically real; project capabilities substitute for built-in
+   capabilities without narrowing preconditions.
+9. *Compatibility:* none required; this is new surface.  No legacy paths added.
+10. *Legacy removal:* duplicated frontmatter/skill discovery in
+    =e-agents-std-context= was removed in favor of shared =e-skills= helpers.
+11. *Errors:* the allowlist gate reports unallowed/duplicate ids via =message=;
+    a factory returning the wrong type or id signals and surfaces to the top
+    rather than being swallowed.
+12. *Tests:* =test/e-project-local-test.el= proves discovery, allowlist gating,
+    duplicate-id precedence, the load-context guard, bad-factory signalling,
+    and tool/resource/skill contribution independently of the full chat shell.
 
 * Relationship to grimoire
 

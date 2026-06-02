@@ -70,31 +70,19 @@
 
 (defun e-agents-std-context--directory (directory)
   "Return normalized context root DIRECTORY."
-  (file-name-as-directory
-   (expand-file-name (or directory default-directory))))
+  (e-skills-normalize-directory directory))
 
 (defun e-agents-std-context--readable-file-p (path)
   "Return non-nil when PATH is a readable regular file."
-  (and (stringp path)
-       (file-readable-p path)
-       (not (file-directory-p path))))
+  (e-skills-readable-file-p path))
 
 (defun e-agents-std-context--read-file (path)
   "Return PATH content as a string."
-  (with-temp-buffer
-    (insert-file-contents path)
-    (buffer-string)))
+  (e-skills-read-file path))
 
 (defun e-agents-std-context--ancestor-directories (directory)
   "Return ancestor directories for DIRECTORY from root to DIRECTORY."
-  (let ((dir (e-agents-std-context--directory directory))
-        dirs parent)
-    (while dir
-      (push dir dirs)
-      (setq parent (file-name-directory (directory-file-name dir)))
-      (setq dir (unless (equal parent dir)
-                  parent)))
-    dirs))
+  (e-skills-ancestor-directories directory))
 
 (defun e-agents-std-context--project-agents-files (directory)
   "Return project AGENTS.md files discovered from DIRECTORY upward."
@@ -157,160 +145,9 @@
            (e-harness-project-root harness session-id turn-id))
       fallback-root))
 
-(defun e-agents-std-context--frontmatter-lines (content)
-  "Return YAML-like frontmatter lines from CONTENT."
-  (let ((lines (split-string content "\n")))
-    (when (string= (car lines) "---")
-      (catch 'frontmatter
-        (let ((remaining (cdr lines))
-              frontmatter)
-          (while remaining
-            (let ((line (car remaining)))
-              (if (string= line "---")
-                  (throw 'frontmatter (nreverse frontmatter))
-                (push line frontmatter)
-                (setq remaining (cdr remaining)))))
-          nil)))))
-
-(defun e-agents-std-context--strip-quotes (value)
-  "Return VALUE without matching surrounding quotes."
-  (let ((trimmed (string-trim value)))
-    (if (and (>= (length trimmed) 2)
-             (or (and (string-prefix-p "\"" trimmed)
-                      (string-suffix-p "\"" trimmed))
-                 (and (string-prefix-p "'" trimmed)
-                      (string-suffix-p "'" trimmed))))
-        (substring trimmed 1 -1)
-      trimmed)))
-
-(defun e-agents-std-context--frontmatter-block-marker-p (value)
-  "Return non-nil when VALUE is a supported YAML block scalar marker."
-  (string-match-p "\\`[>|][+-]?\\'" (string-trim value)))
-
-(defun e-agents-std-context--frontmatter-top-level-key-p (line)
-  "Return non-nil when LINE starts a top-level frontmatter key."
-  (string-match-p "\\`[[:alnum:]_-]+:[ \t]*" line))
-
-(defun e-agents-std-context--line-indent (line)
-  "Return leading whitespace width for LINE."
-  (if (string-match "\\`[ \t]*" line)
-      (length (match-string 0 line))
-    0))
-
-(defun e-agents-std-context--dedent-block-lines (lines)
-  "Return block scalar LINES with common indentation removed."
-  (let (indent)
-    (dolist (line lines)
-      (unless (string-empty-p (string-trim line))
-        (let ((line-indent (e-agents-std-context--line-indent line)))
-          (setq indent
-                (if indent
-                    (min indent line-indent)
-                  line-indent)))))
-    (if (and indent (> indent 0))
-        (mapcar (lambda (line)
-                  (if (>= (length line) indent)
-                      (substring line indent)
-                    line))
-                lines)
-      lines)))
-
-(defun e-agents-std-context--fold-frontmatter-lines (lines)
-  "Return folded scalar text for dedented block LINES."
-  (let (paragraphs current)
-    (dolist (line lines)
-      (if (string-empty-p (string-trim line))
-          (when current
-            (push (string-join (nreverse current) " ") paragraphs)
-            (setq current nil))
-        (push (string-trim line) current)))
-    (when current
-      (push (string-join (nreverse current) " ") paragraphs))
-    (string-trim (string-join (nreverse paragraphs) "\n\n"))))
-
-(defun e-agents-std-context--frontmatter-block-value (marker lines)
-  "Return normalized block scalar value for MARKER and LINES."
-  (let ((dedented (e-agents-std-context--dedent-block-lines lines)))
-    (if (string-prefix-p ">" (string-trim marker))
-        (e-agents-std-context--fold-frontmatter-lines dedented)
-      (string-trim (string-join dedented "\n")))))
-
-(defun e-agents-std-context--frontmatter-values (content)
-  "Return YAML-like scalar frontmatter values from CONTENT as an alist."
-  (let ((lines (e-agents-std-context--frontmatter-lines content))
-        values)
-    (while lines
-      (let ((line (car lines)))
-        (if (string-match "\\`[ \t]*\\([[:alnum:]_-]+\\):[ \t]*\\(.*\\)\\'"
-                          line)
-            (let ((key (match-string 1 line))
-                  (value (match-string 2 line)))
-              (setq lines (cdr lines))
-              (if (e-agents-std-context--frontmatter-block-marker-p value)
-                  (let (block-lines)
-                    (while (and lines
-                                (not
-                                 (e-agents-std-context--frontmatter-top-level-key-p
-                                  (car lines))))
-                      (push (car lines) block-lines)
-                      (setq lines (cdr lines)))
-                    (push
-                     (cons key
-                           (e-agents-std-context--frontmatter-block-value
-                            value
-                            (nreverse block-lines)))
-                     values))
-                (push (cons key
-                            (e-agents-std-context--strip-quotes value))
-                      values)))
-          (setq lines (cdr lines)))))
-    (nreverse values)))
-
-(defun e-agents-std-context--frontmatter-value (content key)
-  "Return frontmatter KEY value from CONTENT."
-  (cdr (assoc key (e-agents-std-context--frontmatter-values content))))
-
-(defun e-agents-std-context--skill-directories (directory)
-  "Return skill directories under DIRECTORY in stable order."
-  (when (file-directory-p directory)
-    (cl-remove-if-not
-     #'file-directory-p
-     (sort (directory-files directory t "\\`[^.]" t) #'string<))))
-
-(defun e-agents-std-context--skill-spec (scope skill-directory)
-  "Return a skill spec for SCOPE and SKILL-DIRECTORY."
-  (let* ((slug (file-name-nondirectory (directory-file-name skill-directory)))
-         (skill-file (expand-file-name "SKILL.md" skill-directory)))
-    (when (e-agents-std-context--readable-file-p skill-file)
-      (let* ((content (e-agents-std-context--read-file skill-file))
-             (name (or (e-agents-std-context--frontmatter-value content "name")
-                       slug))
-             (description
-              (let ((value
-                     (e-agents-std-context--frontmatter-value
-                      content
-                      "description"))
-                    (fallback (format "Read %s guidance." name)))
-                (if (and (stringp value)
-                         (not (string-empty-p value)))
-                    value
-                  fallback)))
-             (path (format "skills/%s/%s" scope slug)))
-        (e-skill-spec-create
-         :name name
-         :description description
-         :path path
-         :reader (lambda (_skill _range)
-                   (e-agents-std-context--read-file skill-file))
-         :metadata (list :scope scope
-                         :source (abbreviate-file-name skill-file)))))))
-
 (defun e-agents-std-context--skill-specs-from-directory (scope directory)
   "Return skill specs for SCOPE from DIRECTORY."
-  (delq nil
-        (mapcar (lambda (skill-directory)
-                  (e-agents-std-context--skill-spec scope skill-directory))
-                (e-agents-std-context--skill-directories directory))))
+  (e-skills-specs-from-directory scope directory))
 
 (defun e-agents-std-context--dedupe-skill-specs (skills)
   "Return SKILLS with later resource paths taking precedence.
