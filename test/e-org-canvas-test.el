@@ -652,6 +652,68 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-org-canvas-test-input-progress_keeps_latest_status_visible ()
+  "Submitted input panes keep the newest progress visible in their window."
+  (let* ((harness (e-org-canvas-test--harness))
+         (target (get-buffer-create "org-canvas-progress-target"))
+         input
+         window
+         original-window
+         original-buffer)
+    (e-harness-create-session harness :id "session-1")
+    (unwind-protect
+        (progn
+          (setq original-window (selected-window))
+          (setq original-buffer (window-buffer original-window))
+          (delete-other-windows)
+          (with-current-buffer target
+            (org-mode)
+            (erase-buffer)
+            (insert "* Topic\nBody\n"))
+          (setq input
+                (e-org-canvas--input-buffer
+                 :harness harness
+                 :session-id "session-1"
+                 :scope 'document
+                 :target-buffer target))
+          (setq window (split-window (selected-window) -4 'below))
+          (set-window-buffer window input)
+          (with-current-buffer input
+            (setq-local e-org-canvas-input--active-turn-id "turn-1")
+            (e-org-canvas--input-enter-result-state))
+          (e-harness--emit
+           harness
+           (e-events-make
+            :type 'turn-started
+            :session-id "session-1"
+            :turn-id "turn-1"
+            :created-at 0))
+          (dotimes (index 8)
+            (e-harness--emit
+             harness
+             (e-events-make
+              :type 'reasoning-delta
+              :session-id "session-1"
+              :turn-id "turn-1"
+              :created-at (1+ index)
+              :payload (list :type 'reasoning-delta
+                             :content (format "step-%d\n" index)))))
+          (with-current-buffer input
+            (e-chat--run-pending-activity-redraw))
+          (with-current-buffer input
+            (should (save-excursion
+                      (goto-char (window-start window))
+                      (search-forward "step-7" (window-end window t) t)))))
+      (when (window-live-p window)
+        (delete-window window))
+      (when (window-live-p original-window)
+        (select-window original-window)
+        (when (buffer-live-p original-buffer)
+          (set-window-buffer original-window original-buffer)))
+      (dolist (buffer (list input target))
+        (when (buffer-live-p buffer)
+          (kill-buffer buffer))))))
+
 (ert-deftest e-org-canvas-test-input-pane_shows_done_on_terminal_turn_without_final_message ()
   "Submitted input panes show a done line when a turn has no assistant output."
   (let* ((harness (e-org-canvas-test--harness))

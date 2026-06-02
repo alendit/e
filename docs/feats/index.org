@@ -29,3 +29,4 @@ Status values for coding agents:
 | 16 | Ready | 16-turn-finish-latency/ | Turn Finish Latency |
 | 17 | In-review | 17-org-canvas/ | Org Canvas |
 | 18 | Planned | 18-resource-coherence/ | Resource Coherence for Live Buffers and Files |
+| 19 | Planned | 19-project-local-capabilities/ | Project-Local Capabilities |

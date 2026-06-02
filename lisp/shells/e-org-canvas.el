@@ -723,6 +723,24 @@
       (when (window-live-p window)
         (select-window window)))))
 
+(defun e-org-canvas--input-follow-bottom (buffer)
+  "Keep visible Org Canvas input/result windows for BUFFER at the bottom."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (let ((bottom
+             (save-excursion
+               (goto-char (point-max))
+               (skip-chars-backward "\n")
+               (line-beginning-position))))
+        (save-selected-window
+          (dolist (window (get-buffer-window-list buffer nil t))
+            (when (window-live-p window)
+              (set-window-point window bottom)
+              (with-selected-window window
+                (goto-char bottom)
+                (ignore-errors
+                  (recenter -1))))))))))
+
 (defun e-org-canvas--input-enter-result-state ()
   "Switch the current input pane from editable composer to result display."
   (setq-local e-chat--composer-restore-inhibited t)
@@ -791,7 +809,9 @@
            'assistant-delta 'reasoning-delta 'tool-started 'tool-finished
            'token-usage)
        (e-org-canvas--input-enter-result-state)
-       (e-chat--render-event event)))))
+       (e-chat--render-event event)
+       (e-chat--run-pending-activity-redraw)
+       (e-org-canvas--input-follow-bottom buffer)))))
 
 (defun e-org-canvas--input-handle-event (buffer event)
   "Render BUFFER updates for its active Org Canvas turn."

@@ -8,6 +8,7 @@ State values for coding agents:
 
 | State  | Path | Title |
 |--------+------+-------|
+| Closed | org-canvas-input-progress-bottom/ | Org Canvas Input Progress Bottom |
 | Closed | org-canvas-new-file-directory/ | Org Canvas New File Directory Selection Broke Folder Workflow |
 | Closed | empty-skill-description-crashes-context/ | Empty Skill Description Crashes Context |
 | Closed | chat-completion-length-partial-tool-json/ | Chat Completion Length Partial Tool JSON |
