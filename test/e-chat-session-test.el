@@ -129,7 +129,12 @@
                                       :messages))
                                 :content)))
         (should (string-match-p "<canvas" content))
-        (should (string-match-p "first canvas state" content)))
+        (should (string-match-p "first canvas state" content))
+        ;; The canvas guidance must steer writes to the attachment uri and
+        ;; warn off look-alike helper buffers, so the model does not write to
+        ;; the wrong buffer.
+        (should (string-match-p "Always write to the exact uri" content))
+        (should (string-match-p "e-org-canvas-input" content)))
       (erase-buffer)
       (insert "second canvas state")
       (let ((content (plist-get (car (plist-get

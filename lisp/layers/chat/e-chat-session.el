@@ -270,7 +270,17 @@ in the next turn's context."
                      "canvas by editing it. Use the chat response only to "
                      "communicate things about the edit that do not belong "
                      "in the document itself (for example, brief notes, "
-                     "questions, or a short summary of what you changed).")))
+                     "questions, or a short summary of what you changed)."
+                     "\n\nAlways write to the exact uri given in the <canvas> "
+                     "tag's uri attribute (the authoritative write target). "
+                     "Do not write to other buffers just because they are "
+                     "visible or have a similar name -- editor scratch, input, "
+                     "or overlay buffers (for example names like "
+                     "*e-org-canvas:...* or *e-org-canvas-input:...*) are NOT "
+                     "the canvas and editing them has no effect on the "
+                     "document. If a write does not appear in the canvas, "
+                     "re-read the <canvas> uri and write to that exact uri "
+                     "rather than guessing another buffer.")))
                  (mapcar #'e-chat-session--attachment-section attachments))
                 "\n\n")))))))
 

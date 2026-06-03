@@ -202,6 +202,7 @@
               (list
                "Org Canvas mode is active for this session."
                "Treat the Org buffer as the main interaction surface and primary output target. Put durable results in the Org document as structured Org content. Keep the final assistant message brief."
+               "Write durable output to document-uri below (the canonical canvas resource); it matches the <canvas> attachment uri. Do not write to the *e-org-canvas:...* / *e-org-canvas-input:...* helper buffers -- they are editor chrome, not the document, and editing them has no effect on the canvas."
                instructions
                (format "document-uri=%s buffer=%s point=%s"
                        (plist-get metadata :uri)

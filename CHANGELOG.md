@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Org Canvas / chat-session canvas guidance now directs durable writes to the
+  canvas attachment uri (document-uri) and explicitly warns against writing to
+  the look-alike *e-org-canvas:...* / *e-org-canvas-input:...* helper buffers,
+  preventing edits that silently miss the document.
 - Org Canvas buffers now show the same context-state indicator as chat (model,
   reasoning effort, and context-token usage/estimate against the model limit)
   in the major-mode slot, and offer `e-org-canvas-compact` (`C-c C-m`) to
