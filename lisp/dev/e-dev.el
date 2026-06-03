@@ -127,6 +127,7 @@
                   "lisp/defaults/e-default-harnesses.el"
                   "lisp/shells/e-shells.el"
                   "lisp/shells/e-layers-shell.el"
+                  "lisp/shells/e-context-status.el"
                   "lisp/shells/chat/e-chat.el"
                   "lisp/shells/chat/e-chat-starter.el"
                   "lisp/shells/e-canvas.el"

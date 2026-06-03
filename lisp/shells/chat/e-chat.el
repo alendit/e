@@ -18,6 +18,7 @@
 (require 'project)
 (require 'subr-x)
 (require 'e-chat-session)
+(require 'e-context-status)
 (require 'e-harness)
 (require 'e-harness-registry)
 (require 'e-tools)
@@ -518,10 +519,9 @@ The mode line uses this presentation-owned table for context usage display."
   "Current compact e chat status text shown in the mode line.")
 
 (defvar-local e-chat--mode-line-context-estimate-cache nil
-  "Cached approximate context-token estimate for the current chat buffer.")
-
-(defvar-local e-chat--mode-line-context-estimate-cache-time nil
-  "Float timestamp for `e-chat--mode-line-context-estimate-cache'.")
+  "Caller-owned (TOKENS . TIME) cache cell for context-token estimates.
+Passed to `e-context-status-text' to reuse approximate estimates between
+mode-line refreshes for the current chat buffer.")
 
 (defvar-local e-chat--status nil
   "Current chat status text shown in the header line.")
@@ -3948,162 +3948,39 @@ When OMIT-COMPOSER is non-nil, leave the buffer as transcript-only."
 
 (defun e-chat--format-token-count (tokens)
   "Return compact display text for TOKENS."
-  (cond
-   ((not (and (integerp tokens) (>= tokens 0)))
-    "?")
-   ((>= tokens 1000000)
-    (let ((millions (/ tokens 1000000.0)))
-      (replace-regexp-in-string
-       "\\.?0+M\\'"
-       "M"
-       (format "%.2fM" millions))))
-   ((and (>= tokens 1000)
-         (< tokens 10000)
-         (/= (% tokens 1000) 0))
-    (replace-regexp-in-string
-     "\\.?0+k\\'"
-     "k"
-     (format "%.1fk" (/ tokens 1000.0))))
-   ((>= tokens 1000)
-    (format "%dk" (round (/ tokens 1000.0))))
-   (t
-    (number-to-string tokens))))
+  (e-context-status-format-token-count tokens))
 
 (defun e-chat--format-mode-line-status
     (model effort used-tokens max-tokens &optional approximate)
   "Return compact mode-line text for MODEL, EFFORT, and context token usage."
-  (let ((model-text (or model "model unset"))
-        (effort-text (or effort "effort unset")))
-    (if (and (integerp used-tokens) (>= used-tokens 0))
-        (let ((used-text (e-chat--format-token-count used-tokens))
-              (prefix (if approximate "~" "")))
-          (if (and (integerp max-tokens) (> max-tokens 0))
-              (let ((percent
-                     (if (= used-tokens 0)
-                         0
-                       (funcall (if approximate #'ceiling #'floor)
-                                (* 100.0
-                                   (/ used-tokens
-                                      (float max-tokens)))))))
-                (format "e-chat %s/%s %s%d%% (%s%s/%s tok)"
-                        model-text
-                        effort-text
-                        prefix
-                        percent
-                        prefix
-                        used-text
-                        (e-chat--format-token-count max-tokens)))
-            (format "e-chat %s/%s ?%% (%s%s/? tok)"
-                    model-text effort-text prefix used-text)))
-      (format "e-chat %s/%s" model-text effort-text))))
+  (e-context-status-format
+   "e-chat" model effort used-tokens max-tokens approximate))
 
 (defun e-chat--model-context-token-limit (model)
   "Return configured max context tokens for MODEL, or nil."
-  (when (stringp model)
-    (cdr (assoc-string model e-chat-model-context-token-limits t))))
+  (e-context-status-model-token-limit
+   model e-chat-model-context-token-limits))
 
 (defun e-chat--context-token-estimate (context)
   "Return approximate token count for model-facing CONTEXT."
-  (let* ((options (plist-get context :options))
-         (model-facing-context
-          (list :messages (plist-get context :messages)
-                :tools (plist-get options :tools)))
-         (bytes (string-bytes (prin1-to-string model-facing-context)))
-         (bytes-per-token
-          (if (and (numberp e-chat-context-token-estimate-bytes-per-token)
-                   (> e-chat-context-token-estimate-bytes-per-token 0))
-              e-chat-context-token-estimate-bytes-per-token
-            4.0)))
-    (ceiling (/ bytes (float bytes-per-token)))))
-
-(defun e-chat--token-usage-input-tokens (usage)
-  "Return input token count from provider-neutral USAGE."
-  (let ((tokens (or (plist-get usage :input-tokens)
-                    (plist-get usage :input_tokens))))
-    (when (and (integerp tokens) (>= tokens 0))
-      tokens)))
-
-(defun e-chat--latest-token-usage-event ()
-  "Return latest durable provider token usage event for this chat buffer."
-  (when (and e-chat-harness e-chat-session-id)
-    (let (usage-event)
-      (dolist (event (ignore-errors
-                       (e-harness-session-activity-events
-                        e-chat-harness
-                        e-chat-session-id))
-                     usage-event)
-        (when (eq (plist-get event :event-type) 'token-usage)
-          (setq usage-event event))))))
-
-(defun e-chat--latest-token-usage ()
-  "Return latest durable provider token usage for this chat buffer."
-  (plist-get (e-chat--latest-token-usage-event) :payload))
-
-(defun e-chat--latest-valid-compaction ()
-  "Return latest valid compaction for this chat buffer."
-  (when (and e-chat-harness e-chat-session-id)
-    (ignore-errors
-      (e-session-latest-valid-compaction
-       (e-harness-sessions e-chat-harness)
-       e-chat-session-id))))
-
-(defun e-chat--token-usage-before-compaction-p (usage-event compaction)
-  "Return non-nil when USAGE-EVENT predates COMPACTION."
-  (let ((usage-time (plist-get usage-event :created-at))
-        (compaction-time (plist-get compaction :created-at)))
-    (and (stringp usage-time)
-         (stringp compaction-time)
-         (string< usage-time compaction-time))))
-
-(defun e-chat--cached-context-token-estimate (context)
-  "Return cached approximate token estimate for CONTEXT."
-  (let* ((now (float-time))
-         (ttl (if (and (numberp e-chat-mode-line-context-estimate-cache-seconds)
-                       (>= e-chat-mode-line-context-estimate-cache-seconds 0))
-                  e-chat-mode-line-context-estimate-cache-seconds
-                2.0)))
-    (if (and e-chat--mode-line-context-estimate-cache
-             e-chat--mode-line-context-estimate-cache-time
-             (< (- now e-chat--mode-line-context-estimate-cache-time) ttl))
-        e-chat--mode-line-context-estimate-cache
-      (setq-local e-chat--mode-line-context-estimate-cache
-                  (e-chat--context-token-estimate context))
-      (setq-local e-chat--mode-line-context-estimate-cache-time now)
-      e-chat--mode-line-context-estimate-cache)))
+  (e-context-status-context-token-estimate
+   context e-chat-context-token-estimate-bytes-per-token))
 
 (defun e-chat--mode-line-status-text (&optional prefer-token-usage)
   "Return the current mode-line text for this e chat buffer.
 When PREFER-TOKEN-USAGE is non-nil and fresh provider usage exists, skip the
 expensive context-token estimate path."
-  (if (and e-chat-harness e-chat-session-id)
-      (let* ((usage-event (e-chat--latest-token-usage-event))
-             (latest-compaction (e-chat--latest-valid-compaction))
-             (usage-tokens
-              (unless (e-chat--token-usage-before-compaction-p
-                       usage-event
-                       latest-compaction)
-                (e-chat--token-usage-input-tokens
-                 (plist-get usage-event :payload))))
-             (context (unless (and prefer-token-usage usage-tokens)
-                        (ignore-errors
-                          (e-harness-context e-chat-harness e-chat-session-id))))
-             (options (or (plist-get context :options)
-                          (ignore-errors
-                            (e-harness-turn-options
-                             e-chat-harness
-                             e-chat-session-id))))
-             (model (plist-get options :model))
-             (effort (plist-get options :reasoning-effort))
-             (estimated-tokens
-              (and (not usage-tokens)
-                   context
-                   (ignore-errors
-                     (e-chat--cached-context-token-estimate context))))
-             (used-tokens (or usage-tokens estimated-tokens))
-             (max-tokens (e-chat--model-context-token-limit model)))
-        (e-chat--format-mode-line-status
-         model effort used-tokens max-tokens (not usage-tokens)))
-    "e-chat"))
+  (unless (consp e-chat--mode-line-context-estimate-cache)
+    (setq-local e-chat--mode-line-context-estimate-cache (cons nil nil)))
+  (let ((e-context-status-estimate-cache-seconds
+         e-chat-mode-line-context-estimate-cache-seconds))
+    (e-context-status-text
+     e-chat-harness e-chat-session-id
+     :prefix "e-chat"
+     :prefer-token-usage prefer-token-usage
+     :estimate-cache e-chat--mode-line-context-estimate-cache
+     :token-limits e-chat-model-context-token-limits
+     :bytes-per-token e-chat-context-token-estimate-bytes-per-token)))
 
 (defun e-chat--refresh-mode-line-status (&optional prefer-token-usage)
   "Refresh this buffer's e chat mode-line text.

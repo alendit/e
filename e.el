@@ -84,6 +84,7 @@
   (require 'e-default-harnesses)
   (require 'e-shells)
   (require 'e-layers-shell)
+  (require 'e-context-status)
   (require 'e-chat)
   (require 'e-chat-starter)
   (require 'e-canvas)

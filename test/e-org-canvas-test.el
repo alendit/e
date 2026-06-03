@@ -18,11 +18,13 @@
 (require 'e-backend)
 (require 'e-chat)
 (require 'e-chat-session)
+(require 'e-context-status)
 (require 'e-default-harnesses)
 (require 'e-events)
 (require 'e-harness)
 (require 'e-harness-registry)
 (require 'e-layers)
+(require 'e-session)
 (require 'e-shells)
 (require 'e-tools)
 
@@ -229,6 +231,73 @@
     (e-org-canvas-mode -1)
     (should (equal mode-name "Custom Org"))))
 
+(ert-deftest e-org-canvas-test-mode-shows-context-state-indicator ()
+  "Attached Org Canvas buffers show model, effort, and token context."
+  (let* ((store (e-session-store-create))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :sessions store
+                   :default-options
+                   '(:model "gpt-5.5" :reasoning-effort "high")))
+         (e-context-status-model-token-limits '(("gpt-5.5" . 100)))
+         (e-context-status-estimate-bytes-per-token 1.0))
+    (e-harness-activate-capability harness (e-chat-session-capability-create))
+    (with-temp-buffer
+      (org-mode)
+      (e-session-create store :id "org-canvas-status")
+      (e-session-append-message
+       store "org-canvas-status" '(:role user :content "context question"))
+      (setq-local e-org-canvas-harness harness)
+      (setq-local e-org-canvas-session-id "org-canvas-status")
+      (e-org-canvas-mode 1)
+      (should (string-match-p "Org Canvas gpt-5.5/high" mode-name))
+      (should (string-match-p "~[0-9]+%" mode-name))
+      (should (string-match-p "/100 tok" mode-name))
+      (e-org-canvas-mode -1))))
+
+(ert-deftest e-org-canvas-test-mode-refreshes-indicator-on-token-usage ()
+  "Org Canvas indicator updates from durable provider token usage events."
+  (let* ((store (e-session-store-create))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :sessions store
+                   :default-options
+                   '(:model "gpt-5.5" :reasoning-effort "high"))))
+    (e-harness-activate-capability harness (e-chat-session-capability-create))
+    (with-temp-buffer
+      (org-mode)
+      (e-session-create store :id "org-canvas-usage")
+      (setq-local e-org-canvas-harness harness)
+      (setq-local e-org-canvas-session-id "org-canvas-usage")
+      (e-org-canvas-mode 1)
+      (e-session-append-activity-event
+       store "org-canvas-usage" "turn-1" 'token-usage
+       '(:input-tokens 202598 :total-tokens 203017))
+      (e-harness--emit
+       harness
+       (e-events-make :type 'token-usage
+                      :session-id "org-canvas-usage"
+                      :turn-id "turn-1"))
+      (should (equal mode-name "Org Canvas gpt-5.5/high 78% (203k/258k tok)"))
+      (e-org-canvas-mode -1))))
+
+(ert-deftest e-org-canvas-test-compact-uses-session-action ()
+  "Org Canvas compaction delegates to the shared session compaction action."
+  (let* ((harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)))
+         (calls nil))
+    (cl-letf (((symbol-function 'e-chat-session-compact)
+               (lambda (h session-id &rest args)
+                 (push (list h session-id args) calls))))
+      (with-temp-buffer
+        (org-mode)
+        (setq-local e-org-canvas-harness harness)
+        (setq-local e-org-canvas-session-id "org-canvas-compact")
+        (e-org-canvas-compact)
+        (e-org-canvas-mode -1)))
+    (should (equal (length calls) 1))
+    (should (equal (nth 1 (car calls)) "org-canvas-compact"))))
+
 (ert-deftest e-org-canvas-test-mode-installs-buffer-local-evil-prompt_keys ()
   "Org Canvas mode overrides Evil normal-state chat context bindings locally."
   (with-temp-buffer
@@ -337,7 +406,11 @@
                       (plist-get (e-harness-context harness "org") :messages)
                       "\n")))
         (should (string-match-p "whole Org document" content))
-        (should (string-match-p "point=" content))))))
+        (should (string-match-p "point=" content))
+        ;; Guidance must point durable writes at document-uri and warn off the
+        ;; *e-org-canvas* / *e-org-canvas-input* helper buffers.
+        (should (string-match-p "document-uri" content))
+        (should (string-match-p "helper buffers" content))))))
 
 (ert-deftest e-org-canvas-test-submit-records-scope-focus-and_canvas_metadata ()
   "Prompt submission records Org Canvas turn metadata through chat-session."

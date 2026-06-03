@@ -1,0 +1,78 @@
+#+title: Org Canvas Context Status and Compaction
+#+startup: overview
+
+* Status
+
+In-review
+
+* Goal
+
+Org Canvas buffers should display the same context-state indicator that the chat
+shell shows in its status line (model, reasoning effort, and context-token usage
+or estimate against the model context limit), and offer the same context
+compaction command.  The background computation that powers the chat indicator
+and the compaction action must be reused rather than duplicated.
+
+* Motivation
+
+Org Canvas sessions are normal =e= sessions, so they accumulate context and can
+benefit from compaction exactly like chat sessions.  Today the live context-state
+indicator and the =compact-session= command only exist in the chat shell.  An
+Org Canvas user working in the Org buffer cannot see how full the session context
+is, nor compact it without switching to the backing chat buffer.
+
+* Background reuse
+
+The chat indicator logic in =lisp/shells/chat/e-chat.el= mixes two concerns:
+
+- *Background context-state computation* (reusable): token-usage lookup,
+  compaction-aware staleness check, approximate context-token estimate, model
+  context-token limit table, and the compact status text formatter.  These only
+  need =(harness session-id)= plus presentation-owned configuration; they are not
+  chat-buffer specific.
+- *Chat presentation* (chat specific): the buffer-local =mode-name= /
+  =header-line-format= wiring, estimate caching tied to chat buffer locals, and
+  event handlers that decide when to refresh.
+
+The compaction action is already a shared session-layer action:
+=e-chat-session-compact= -> =e-harness-compact-session=.
+
+* Plan
+
+1. Extract the background context-state computation into a new shared
+   presentation module =lisp/shells/e-context-status.el=.
+2. Refactor =e-chat.el= to delegate to the shared module while keeping the
+   existing =e-chat--*= helper names and =e-chat-*= custom variables as thin
+   delegations so chat behavior, the =e-chat ...= prefix, and existing tests are
+   preserved.
+3. Add context status + compaction to Org Canvas in
+   =lisp/shells/e-org-canvas.el=: render the indicator in the Org Canvas
+   =mode-name= slot with an =Org Canvas= prefix, refresh on session
+   attach/resume and relevant harness events, and add =e-org-canvas-compact=
+   bound in the mode map and exposed as a session-scoped shell command.
+
+* Self-check (design-sensitive)
+
+1. Stopping here leaves Org Canvas with a real, useful context indicator and
+   compaction parity with chat; better off.
+2. Moves toward consistent, shell-agnostic presentation of harness/session
+   context state across shells.
+3. Stable: the background computation contract =(harness session-id) -> text=.
+   Local/reversible: the display prefix and where each shell renders it.
+4. The new module owns context-state computation/formatting; each shell owns its
+   own rendering surface and refresh policy.
+5. Reduces coupling: removes duplicated computation behind a narrow
+   consumer-shaped =e-context-status-text= contract.
+6. No dependency points the wrong way: the shared module depends on stable
+   harness/session reads, not on chat or org-canvas presentation.
+7. Side effects (buffer-local mode-name, caches) stay in the shells; the module
+   is pure given inputs and a caller-owned cache cell.
+8. The formatter substitutes across shells via the =prefix= argument with no
+   narrowed preconditions.
+9. Compatibility: chat internal helper names/customs kept as delegations so
+   existing tests and behavior hold.
+10. Duplicated chat computation is removed in favor of the shared module.
+11. Empty/missing session state yields the bare prefix text; unexpected harness
+    errors surface as before.
+12. Shared computation/formatting is tested directly; chat tests keep covering
+    the chat wiring via delegation.

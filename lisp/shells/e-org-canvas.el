@@ -18,6 +18,7 @@
 (require 'e-canvas)
 (require 'e-chat)
 (require 'e-chat-session)
+(require 'e-context-status)
 (require 'e-harness)
 (require 'e-harness-registry)
 (require 'e-org-canvas-capabilities)
@@ -70,6 +71,14 @@
 
 (defvar-local e-org-canvas-harness nil
   "Harness associated with this Org Canvas buffer.")
+
+(defvar-local e-org-canvas--status-subscription nil
+  "Harness event subscription refreshing this buffer's context status.")
+
+(defvar-local e-org-canvas--status-estimate-cache nil
+  "Caller-owned (TOKENS . TIME) cache cell for context-token estimates.
+Passed to `e-context-status-text' to reuse approximate estimates between
+Org Canvas status refreshes for the current buffer.")
 
 (defvar-local e-org-canvas-input--harness nil
   "Harness used by the current input pane.")
@@ -136,6 +145,7 @@
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "s-i") #'e-org-canvas-prompt-thread)
     (define-key map (kbd "s-I") #'e-org-canvas-prompt-document)
+    (define-key map (kbd "C-c C-m") #'e-org-canvas-compact)
     map))
 
 (defvar e-org-canvas-mode-map (e-org-canvas--make-mode-map)
@@ -153,6 +163,15 @@
              (kbd "s-I")
              (and enable #'e-org-canvas-prompt-document))))
 
+(defun e-org-canvas--context-status-text ()
+  "Return Org Canvas context-state status text for the current buffer."
+  (unless (consp e-org-canvas--status-estimate-cache)
+    (setq-local e-org-canvas--status-estimate-cache (cons nil nil)))
+  (e-context-status-text
+   e-org-canvas-harness e-org-canvas-session-id
+   :prefix e-org-canvas--mode-name
+   :estimate-cache e-org-canvas--status-estimate-cache))
+
 (defun e-org-canvas--set-mode-name-indicator (enable)
   "Set or restore the major-mode slot indicator when ENABLE is non-nil."
   (if enable
@@ -162,7 +181,7 @@
           (setq-local e-org-canvas--saved-mode-name-local-p
                       (local-variable-p 'mode-name (current-buffer)))
           (setq-local e-org-canvas--saved-mode-name-recorded-p t))
-        (setq-local mode-name e-org-canvas--mode-name)
+        (setq-local mode-name (e-org-canvas--context-status-text))
         (force-mode-line-update))
     (when e-org-canvas--saved-mode-name-recorded-p
       (if e-org-canvas--saved-mode-name-local-p
@@ -173,6 +192,44 @@
       (kill-local-variable 'e-org-canvas--saved-mode-name-recorded-p)
       (force-mode-line-update))))
 
+(defun e-org-canvas--refresh-status ()
+  "Refresh the Org Canvas context-state indicator for the current buffer."
+  (when (bound-and-true-p e-org-canvas-mode)
+    (setq-local mode-name (e-org-canvas--context-status-text))
+    (force-mode-line-update)))
+
+(defun e-org-canvas--status-relevant-event-p (event)
+  "Return non-nil when EVENT should refresh the Org Canvas context indicator."
+  (memq (plist-get event :type)
+        '(turn-started turn-finished turn-failed turn-cancelled
+          token-usage session-reset
+          compaction-started compaction-prepared compaction-summary-started
+          compaction-finished compaction-failed)))
+
+(defun e-org-canvas--subscribe-status (buffer harness session-id)
+  "Subscribe BUFFER's context indicator to HARNESS events for SESSION-ID."
+  (when (and harness session-id)
+    (with-current-buffer buffer
+      (e-org-canvas--unsubscribe-status)
+      (setq-local
+       e-org-canvas--status-subscription
+       (e-harness-subscribe
+        harness
+        (lambda (event)
+          (when (and (buffer-live-p buffer)
+                     (e-org-canvas--status-relevant-event-p event))
+            (with-current-buffer buffer
+              (when (eq e-org-canvas-harness harness)
+                (e-org-canvas--refresh-status)))))
+        :session-id session-id)))))
+
+(defun e-org-canvas--unsubscribe-status ()
+  "Remove this buffer's Org Canvas context indicator subscription."
+  (when (and e-org-canvas-harness e-org-canvas--status-subscription)
+    (e-harness-unsubscribe e-org-canvas-harness
+                           e-org-canvas--status-subscription))
+  (setq-local e-org-canvas--status-subscription nil))
+
 (defun e-org-canvas--refresh-mode-buffers ()
   "Refresh local Org Canvas state in buffers where the mode is already active."
   (dolist (buffer (buffer-list))
@@ -180,7 +237,9 @@
       (when (bound-and-true-p e-org-canvas-mode)
         (e-org-canvas--set-mode-name-indicator t)
         (e-chat-context-mode-suppress-in-current-buffer t)
-        (e-org-canvas--set-evil-local-prompt-bindings t)))))
+        (e-org-canvas--set-evil-local-prompt-bindings t)
+        (e-org-canvas--subscribe-status
+         buffer e-org-canvas-harness e-org-canvas-session-id)))))
 
 (defun e-org-canvas--make-input-mode-map ()
   "Return the Org Canvas input-mode keymap."
@@ -215,7 +274,10 @@
       (progn
         (e-org-canvas--set-mode-name-indicator t)
         (e-chat-context-mode-suppress-in-current-buffer t)
-        (e-org-canvas--set-evil-local-prompt-bindings t))
+        (e-org-canvas--set-evil-local-prompt-bindings t)
+        (e-org-canvas--subscribe-status
+         (current-buffer) e-org-canvas-harness e-org-canvas-session-id))
+    (e-org-canvas--unsubscribe-status)
     (e-org-canvas--set-evil-local-prompt-bindings nil)
     (e-chat-context-mode-suppress-in-current-buffer nil)
     (e-org-canvas--set-mode-name-indicator nil)))
@@ -714,12 +776,35 @@
               (set-window-buffer window target-buffer)
               (select-window window)))))))))
 
+(defun e-org-canvas--input-display-window (buffer)
+  "Display input/result BUFFER below its target canvas window.
+
+When two canvases are visible side by side, the composer must occupy only
+the horizontal span of its own canvas window.  Reuse an existing window for
+BUFFER when one exists, otherwise split the window showing
+`e-org-canvas-input--target-buffer' so the composer sits directly below that
+canvas.  Fall back to a frame-wide bottom window only when the target canvas
+has no visible window."
+  (when (buffer-live-p buffer)
+    (or (get-buffer-window buffer t)
+        (let* ((target (buffer-local-value
+                        'e-org-canvas-input--target-buffer buffer))
+               (target-window (and (buffer-live-p target)
+                                   (get-buffer-window target t))))
+          (if (window-live-p target-window)
+              (with-selected-window target-window
+                (display-buffer
+                 buffer
+                 '((display-buffer-below-selected)
+                   (window-height . 8)
+                   (inhibit-same-window . t))))
+            (display-buffer buffer '((display-buffer-at-bottom)
+                                     (window-height . 8))))))))
+
 (defun e-org-canvas--input-select-result-buffer (buffer)
   "Display and select submitted input/result BUFFER."
   (when (buffer-live-p buffer)
-    (let ((window (or (get-buffer-window buffer t)
-                      (display-buffer buffer '((display-buffer-at-bottom)
-                                               (window-height . 8))))))
+    (let ((window (e-org-canvas--input-display-window buffer)))
       (when (window-live-p window)
         (select-window window)))))
 
@@ -1067,8 +1152,7 @@
     (e-org-canvas--hide-visible-backing-chat-buffers
      e-org-canvas-input--session-id
      e-org-canvas-input--target-buffer))
-  (let ((window (display-buffer input '((display-buffer-at-bottom)
-                                        (window-height . 8)))))
+  (let ((window (e-org-canvas--input-display-window input)))
     (when (window-live-p window)
       (select-window window))
     (e-chat--after-display-buffer input)
@@ -1107,6 +1191,17 @@
                                   '("thread" "document")
                                   nil t nil nil "thread"))))
   (e-org-canvas--prompt-scope scope))
+
+;;;###autoload
+(defun e-org-canvas-compact (&optional instructions)
+  "Compact the backing session for the current Org Canvas buffer."
+  (interactive)
+  (unless (and e-org-canvas-harness e-org-canvas-session-id)
+    (user-error "This buffer is not an Org Canvas"))
+  (e-chat-session-compact
+   e-org-canvas-harness
+   e-org-canvas-session-id
+   :instructions instructions))
 
 (defun e-org-canvas--last-prompt-message (harness session-id)
   "Return the last Org Canvas user prompt message for SESSION-ID."
@@ -1263,6 +1358,12 @@
      :summary "Reopen the previous Org Canvas prompt."
      :interactive 'e-org-canvas-reopen-last-prompt
      :function 'e-org-canvas-reopen-last-prompt
+     :scope 'session)
+    (e-shell-command-create
+     :id 'compact
+     :summary "Compact the current Org Canvas session context."
+     :interactive 'e-org-canvas-compact
+     :function 'e-org-canvas-compact
      :scope 'session)
     (e-shell-command-create
      :id 'list-sessions
