@@ -19,6 +19,7 @@
 (require 'e-capabilities)
 (require 'e-capability-config)
 (require 'e-context)
+(require 'e-dev-profile)
 (require 'e-harness)
 (require 'e-layers)
 (require 'e-operations)
@@ -730,6 +731,26 @@
       (should (equal (plist-get (plist-get context :options) :model)
                      "session-model")))))
 
+(ert-deftest e-harness-test-profile-records-context-build ()
+  "Enabled dev profiling records harness context spans."
+  (let* ((profile-directory (make-temp-file "e-harness-profile-" t))
+         (e-dev-profile-directory profile-directory)
+         (e-dev-profile--enabled nil)
+         (e-dev-profile--current-file nil)
+         (e-dev-profile--latest-file nil)
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil))))
+    (unwind-protect
+        (progn
+          (e-harness-create-session harness :id "session-1")
+          (e-dev-profile-start)
+          (e-harness-context harness "session-1" "turn-1")
+          (e-dev-profile-stop)
+          (let* ((report (e-dev-profile-report-data e-dev-profile--latest-file))
+                 (aggregates (plist-get report :aggregates)))
+            (should (alist-get "harness.context" aggregates nil nil #'equal))))
+      (delete-directory profile-directory t))))
+
 (ert-deftest e-harness-test-activate-capability-registers-tools-and-context ()
   "Direct capability activation registers capability contributions."
   (let* ((capability
@@ -914,6 +935,63 @@
                      "prepared"))
       (should (equal (plist-get (plist-get tool-result :content) :content)
                      "prepared-post")))))
+
+(ert-deftest e-harness-test-profile-records-tool-start ()
+  "Enabled dev profiling records harness tool start spans."
+  (let* ((profile-directory (make-temp-file "e-harness-profile-" t))
+         (e-dev-profile-directory profile-directory)
+         (e-dev-profile--enabled nil)
+         (e-dev-profile--current-file nil)
+         (e-dev-profile--latest-file nil)
+         (calls 0)
+         (backend
+          (e-backend-create
+           :name "fake-harness-profile-tool"
+           :stream
+           (cl-function
+            (lambda (&key messages options on-item)
+              (ignore messages options)
+              (setq calls (1+ calls))
+              (if (= calls 1)
+                  (progn
+                    (funcall on-item
+                             '(:type tool-call
+                               :id "call-1"
+                               :name "echo"
+                               :arguments (:text "raw")))
+                    (funcall on-item '(:type done :reason tool-use)))
+                (funcall on-item
+                         '(:type assistant-message :content "done"))
+                (funcall on-item '(:type done :reason stop)))))))
+         (tools-capability
+          (e-capability-create
+           :id 'echo-tool
+           :tools
+           (list (lambda (registry)
+                   (e-tools-register
+                    registry
+                    :name "echo"
+                    :description "Echo text."
+                    :handler (lambda (arguments)
+                               (plist-get arguments :text)))))))
+         (harness
+          (e-harness-create
+           :backend backend
+           :active-layers
+           (list (e-layer-create
+                  :id 'tool-layer
+                  :name "Tool Layer"
+                  :capabilities (list tools-capability))))))
+    (unwind-protect
+        (progn
+          (e-harness-create-session harness :id "session-1")
+          (e-dev-profile-start)
+          (e-harness-prompt harness "session-1" "use tool")
+          (e-dev-profile-stop)
+          (let* ((report (e-dev-profile-report-data e-dev-profile--latest-file))
+                 (aggregates (plist-get report :aggregates)))
+            (should (alist-get "harness.tool-start" aggregates nil nil #'equal))))
+      (delete-directory profile-directory t))))
 
 (ert-deftest e-harness-test-resources-are-derived-from-active-layers ()
   "The harness resource surface is rebuilt from active layers on demand."

@@ -14,6 +14,7 @@
 (require 'cl-lib)
 (require 'ert)
 (require 'e)
+(require 'e-dev-profile)
 (require 'e-session)
 
 (ert-deftest e-session-test-create-and-read ()
@@ -787,6 +788,29 @@
                              (plist-get event :event-type))
                            (e-session-activity-events store "session-1"))
                    '(reasoning-delta tool-started)))))
+
+(ert-deftest e-session-test-profile-records-persistent-appends-and-index-writes ()
+  "Enabled dev profiling records persistent append and index write spans."
+  (let* ((directory (make-temp-file "e-session-profile-" t))
+         (profile-directory (make-temp-file "e-session-profile-trace-" t))
+         (e-dev-profile-directory profile-directory)
+         (e-dev-profile--enabled nil)
+         (e-dev-profile--current-file nil)
+         (e-dev-profile--latest-file nil)
+         (store (e-session-persistent-store-create directory)))
+    (unwind-protect
+        (progn
+          (e-dev-profile-start)
+          (e-session-create store :id "session-1")
+          (e-session-append-message
+           store "session-1" '(:role user :content "hello" :turn-id "turn-1"))
+          (e-dev-profile-stop)
+          (let* ((report (e-dev-profile-report-data e-dev-profile--latest-file))
+                 (aggregates (plist-get report :aggregates)))
+            (should (alist-get "session.append-record" aggregates nil nil #'equal))
+            (should (alist-get "session.write-index" aggregates nil nil #'equal))))
+      (delete-directory directory t)
+      (delete-directory profile-directory t))))
 
 (ert-deftest e-session-test-append-after-replay-and-clear-keeps-clean-order ()
   "Replay finalization and clear reset internal append state."

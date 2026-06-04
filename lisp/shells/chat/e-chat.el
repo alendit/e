@@ -27,6 +27,8 @@
 (require 'e-startup)
 
 (declare-function markdown-mode "markdown-mode")
+(declare-function e-dev-profile-enabled-p "e-dev-profile")
+(declare-function e-dev-profile-measure-thunk "e-dev-profile")
 
 (defgroup e-chat nil
   "Chat presentation for e."
@@ -50,6 +52,18 @@
 
 (defconst e-chat--resume-preview-buffer-name "*e-chat-resume-preview*"
   "Buffer name for temporary resume candidate previews.")
+
+(defun e-chat--profile-enabled-p ()
+  "Return non-nil when developer profiling is currently available."
+  (and (fboundp 'e-dev-profile-enabled-p)
+       (fboundp 'e-dev-profile-measure-thunk)
+       (e-dev-profile-enabled-p)))
+
+(defun e-chat--profile-call (event options thunk)
+  "Measure THUNK as EVENT with OPTIONS when developer profiling is enabled."
+  (if (e-chat--profile-enabled-p)
+      (e-dev-profile-measure-thunk event options thunk)
+    (funcall thunk)))
 
 (defcustom e-chat-overview-buffer-name "*e-chat-overview*"
   "Buffer name for the chat session overview."
@@ -2782,18 +2796,25 @@ When TURN-ID is non-nil, cancel only a redraw for that turn."
   (let ((turn-id e-chat--pending-activity-redraw-turn-id)
         (timer e-chat--pending-activity-redraw-timer)
         (kind e-chat--pending-activity-redraw-kind))
-    (when (timerp timer)
-      (cancel-timer timer))
-    (setq e-chat--pending-activity-redraw-turn-id nil)
-    (setq e-chat--pending-activity-redraw-timer nil)
-    (setq e-chat--pending-activity-redraw-kind nil)
-    (when turn-id
-      (pcase kind
-        ('progress
-         (e-chat--render-progress-indicator turn-id))
-        (_
-         (when-let ((record (e-chat--existing-turn-record turn-id)))
-           (e-chat--render-turn-transient turn-id record)))))))
+    (e-chat--profile-call
+     'chat.activity-redraw
+     (list :session-id e-chat-session-id
+           :turn-id turn-id
+           :buffer-name (buffer-name)
+           :metadata (list :kind (and kind (symbol-name kind))))
+     (lambda ()
+       (when (timerp timer)
+         (cancel-timer timer))
+       (setq e-chat--pending-activity-redraw-turn-id nil)
+       (setq e-chat--pending-activity-redraw-timer nil)
+       (setq e-chat--pending-activity-redraw-kind nil)
+       (when turn-id
+         (pcase kind
+           ('progress
+            (e-chat--render-progress-indicator turn-id))
+           (_
+            (when-let ((record (e-chat--existing-turn-record turn-id)))
+              (e-chat--render-turn-transient turn-id record)))))))))
 
 (defun e-chat--activity-redraw-kind (existing requested)
   "Return coalesced redraw kind from EXISTING and REQUESTED kinds."
@@ -3994,27 +4015,34 @@ an approximate full-context estimate."
 (defun e-chat--set-status (status &optional refresh-mode-line)
   "Set chat buffer STATUS.
 When REFRESH-MODE-LINE is non-nil, also refresh context-aware mode-line text."
-  (setq e-chat--status status)
-  (setq header-line-format
-        (if (and e-chat-harness e-chat-session-id)
-            (let* ((title (ignore-errors
-                            (e-harness-session-title
-                             e-chat-harness
-                             e-chat-session-id)))
-                   (options (ignore-errors
-                              (e-harness-turn-options
-                               e-chat-harness
-                               e-chat-session-id)))
-                   (model (plist-get options :model))
-                   (effort (plist-get options :reasoning-effort)))
-              (format "E Chat: %s - %s - %s/%s"
-                      status
-                      title
-                      (or model "model unset")
-                      (or effort "effort unset")))
-          (format "E Chat: %s" status)))
-  (when refresh-mode-line
-    (e-chat--refresh-mode-line-status)))
+  (e-chat--profile-call
+   'chat.status
+   (list :session-id e-chat-session-id
+         :buffer-name (buffer-name)
+         :metadata (list :status status
+                         :refresh-mode-line (and refresh-mode-line t)))
+   (lambda ()
+     (setq e-chat--status status)
+     (setq header-line-format
+           (if (and e-chat-harness e-chat-session-id)
+               (let* ((title (ignore-errors
+                               (e-harness-session-title
+                                e-chat-harness
+                                e-chat-session-id)))
+                      (options (ignore-errors
+                                 (e-harness-turn-options
+                                  e-chat-harness
+                                  e-chat-session-id)))
+                      (model (plist-get options :model))
+                      (effort (plist-get options :reasoning-effort)))
+                 (format "E Chat: %s - %s - %s/%s"
+                         status
+                         title
+                         (or model "model unset")
+                         (or effort "effort unset")))
+             (format "E Chat: %s" status)))
+     (when refresh-mode-line
+       (e-chat--refresh-mode-line-status)))))
 
 (defun e-chat--title-block-end ()
   "Return the end position of the current title block."

@@ -1,0 +1,133 @@
+#+title: Developer Profiling Traces Review
+#+startup: overview
+
+* Status
+
+In-review.
+
+* Summary
+
+Implemented opt-in developer profiling traces for normal E usage. Developers can
+start a trace, use chat/harness/session paths normally, stop tracing, and inspect
+raw JSONL or an aggregate report.
+
+Implemented pieces:
+
+- =lisp/dev/e-dev-profile.el= owns profiler state, JSONL writing, thunk/macro
+  measurement helpers, report aggregation, and interactive commands.
+- =e-dev-reload= reloads the profiler module.
+- =e.el= autoloads the developer profiling commands.
+- =.e/dev-profiles/= is ignored as generated local trace storage.
+- Session persistence records =session.append-record= and
+  =session.write-index= spans when profiling is enabled.
+- Harness records =harness.context= and =harness.tool-start= spans.
+- Chat records =chat.status= and =chat.activity-redraw= spans.
+
+* Verification
+
+Focused profile/reload tests:
+
+#+begin_src sh
+rtk eldev test -f test/e-dev-profile-test.el -f test/e-dev-test.el
+#+end_src
+
+Result:
+
+#+begin_example
+Ran 10 tests, 10 results as expected, 0 unexpected
+#+end_example
+
+Focused touched-surface tests:
+
+#+begin_src sh
+rtk eldev test -f test/e-session-test.el -f test/e-harness-test.el -f test/e-chat-test.el -f test/e-dev-profile-test.el
+#+end_src
+
+Result:
+
+#+begin_example
+Ran 258 tests, 257 results as expected, 0 unexpected, 1 skipped
+SKIPPED e-chat-test-assistant-markdown-renders-with-text-properties
+#+end_example
+
+Aggregate tests:
+
+#+begin_src sh
+rtk eldev test
+#+end_src
+
+Result:
+
+#+begin_example
+Ran 611 tests, 610 results as expected, 0 unexpected, 1 skipped
+SKIPPED e-chat-test-assistant-markdown-renders-with-text-properties
+#+end_example
+
+Whitespace check:
+
+#+begin_src sh
+git diff --check
+#+end_src
+
+Result: no output, exit 0.
+
+* Live verification
+
+Reloaded the running Emacs:
+
+#+begin_src sh
+emacsclient --timeout=5 --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Result:
+
+#+begin_example
+"/Users/dimitrivorona/projects/elisp/e/"
+#+end_example
+
+Ran a bounded live profile probe:
+
+#+begin_src sh
+emacsclient --timeout=5 --eval "(progn (require 'e-dev-profile) (require 'e-harness) (require 'e-backend) (require 'e-chat) (let* ((store (e-session-store-create)) (harness (e-harness-create :backend (e-backend-fake-create :items nil) :sessions store)) result) (e-harness-create-session harness :id \"profile-live\") (e-dev-profile-start) (e-harness-context harness \"profile-live\" \"turn-live\") (e-session-append-message store \"profile-live\" '(:role user :content \"hello\")) (with-temp-buffer (e-chat-mode) (setq e-chat-harness harness e-chat-session-id \"profile-live\") (e-chat--set-status \"profiling\")) (setq result (e-dev-profile-report-data (e-dev-profile-stop))) (prin1 (list :events (mapcar #'car (plist-get result :aggregates)) :count (plist-get result :event-count)))))"
+#+end_src
+
+Result:
+
+#+begin_example
+(:events ("harness.context" "chat.status" "session.append-record" "session.write-index") :count 4)
+#+end_example
+
+* Review notes
+
+- Current instrumentation intentionally covers the first useful normal-usage
+  boundaries, not every possible rendering or backend callback.
+- Core/session/chat modules avoid a hard runtime dependency on the dev module by
+  calling profiling helpers only when =e-dev-profile= is loaded and enabled.
+- Raw traces are generated under ignored local storage and are not part of
+  session transcript persistence.
+
+* Architecture self-check
+
+1. If this work stopped here, E is better off because future performance work can
+   start from live trace evidence rather than one-off probes.
+2. This moves toward a snappier interactive runtime by making slow boundaries
+   observable during normal dev testing.
+3. Stable decisions: opt-in profiling, JSONL records, scalar metadata. Likely
+   changing decisions: exact event set and report formatting; both are local to
+   the dev profiler and call sites.
+4. The dev profiler owns trace policy, storage, and reporting. Harness, session,
+   and chat own only small boundary call sites.
+5. Coupling is limited by dynamic availability checks; normal runtime modules do
+   not require the dev profiler.
+6. Stable runtime policy does not depend on a concrete profiling adapter at load
+   time; instrumentation is inert unless the dev module is loaded and enabled.
+7. File writes and reporting side effects stay in =lisp/dev/e-dev-profile.el=.
+8. The profiling helper abstraction is real: call sites need only "measure this
+   thunk with scalar metadata".
+9. Compatibility expectation: disabled profiling preserves existing runtime
+   behavior and public APIs. No obsolete public paths were added.
+10. No legacy profiling code exists to remove.
+11. Expected report/no-event cases are handled. Unexpected errors in measured
+    bodies are recorded and re-signaled.
+12. Tests prove recorder behavior independently and verify integration at
+    session, harness, and chat boundaries.

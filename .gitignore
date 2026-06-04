@@ -1,3 +1,4 @@
 .eldev/
 *.elc
 dist/
+.e/dev-profiles/

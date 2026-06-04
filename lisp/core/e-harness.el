@@ -27,6 +27,9 @@
 (require 'e-tools)
 (require 'subr-x)
 
+(declare-function e-dev-profile-enabled-p "e-dev-profile")
+(declare-function e-dev-profile-measure-thunk "e-dev-profile")
+
 (define-error 'e-harness-no-active-turn "No active turn")
 (define-error 'e-harness-active-turn-exists
   "Session already has an active turn")
@@ -86,6 +89,18 @@
           (setq metadata (plist-put metadata :project-root root))
         (cl-remf metadata :project-root)))
     metadata))
+
+(defun e-harness--profile-enabled-p ()
+  "Return non-nil when developer profiling is currently available."
+  (and (fboundp 'e-dev-profile-enabled-p)
+       (fboundp 'e-dev-profile-measure-thunk)
+       (e-dev-profile-enabled-p)))
+
+(defun e-harness--profile-call (event options thunk)
+  "Measure THUNK as EVENT with OPTIONS when developer profiling is enabled."
+  (if (e-harness--profile-enabled-p)
+      (e-dev-profile-measure-thunk event options thunk)
+    (funcall thunk)))
 
 (cl-defun e-harness-create
     (&key backend context-strategy default-options capability-config
@@ -602,41 +617,52 @@ preview to avoid duplicating large outputs in session JSONL files."
        :start
        (cl-function
         (lambda (tool-call &key on-request-start on-done on-error)
-          (e-tools-start
-           tools
-           tool-call
-           :context (context)
-           :on-request-start on-request-start
-           :on-done
-           (lambda (result)
-             (condition-case err
-                 (when on-done
-                   (funcall on-done
-                            (e-hooks-run-reduce
-                             (hooks)
-                             :post-tool-call
-                             result
-                             (context))))
-               (error
-                (if on-error
-                    (funcall on-error err)
-                  (signal (car err) (cdr err))))))
-           :on-error on-error)))))))
+          (e-harness--profile-call
+           'harness.tool-start
+           (list :session-id session-id
+                 :turn-id turn-id
+                 :metadata (list :tool-name (plist-get tool-call :name)))
+           (lambda ()
+             (e-tools-start
+              tools
+              tool-call
+              :context (context)
+              :on-request-start on-request-start
+              :on-done
+              (lambda (result)
+                (condition-case err
+                    (when on-done
+                      (funcall on-done
+                               (e-hooks-run-reduce
+                                (hooks)
+                                :post-tool-call
+                                result
+                                (context))))
+                  (error
+                   (if on-error
+                       (funcall on-error err)
+                     (signal (car err) (cdr err))))))
+              :on-error on-error)))))))))
 
 (defun e-harness-context (harness session-id &optional turn-id)
   "Return backend-neutral context for SESSION-ID in HARNESS.
 TURN-ID is passed to active capability context providers when present."
-  (e-context-build
-   (e-harness-context-strategy harness)
-   :sessions (e-harness-sessions harness)
-   :session-id session-id
-   :options (e-harness-turn-options harness session-id)
-   :prefix-messages
-   (e-capabilities-context-messages
-    (e-harness-active-capabilities harness)
-    :harness harness
-    :session-id session-id
-    :turn-id turn-id)))
+  (e-harness--profile-call
+   'harness.context
+   (list :session-id session-id
+         :turn-id turn-id)
+   (lambda ()
+     (e-context-build
+      (e-harness-context-strategy harness)
+      :sessions (e-harness-sessions harness)
+      :session-id session-id
+      :options (e-harness-turn-options harness session-id)
+      :prefix-messages
+      (e-capabilities-context-messages
+       (e-harness-active-capabilities harness)
+       :harness harness
+       :session-id session-id
+       :turn-id turn-id)))))
 
 (defun e-harness--active-turn-id (entry)
   "Return active turn id from ENTRY."

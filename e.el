@@ -119,6 +119,14 @@
 
 ;;;###autoload
 (autoload 'e-dev-reload "e-dev" "Reload e package files during development." t)
+;;;###autoload
+(autoload 'e-dev-profile-start "e-dev-profile" "Start an e developer profiling trace." t)
+;;;###autoload
+(autoload 'e-dev-profile-stop "e-dev-profile" "Stop an e developer profiling trace." t)
+;;;###autoload
+(autoload 'e-dev-profile-report "e-dev-profile" "Open an e developer profiling report." t)
+;;;###autoload
+(autoload 'e-dev-profile-open-latest "e-dev-profile" "Open the latest e profiling trace." t)
 
 (provide 'e)
 

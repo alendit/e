@@ -16,6 +16,9 @@
 (require 'seq)
 (require 'subr-x)
 
+(declare-function e-dev-profile-enabled-p "e-dev-profile")
+(declare-function e-dev-profile-measure-thunk "e-dev-profile")
+
 (define-error 'e-session-missing "Session does not exist")
 (define-error 'e-session-duplicate "Session already exists")
 
@@ -147,6 +150,18 @@
   (and (e-session-store-persistent store)
        (e-session-store-directory store)))
 
+(defun e-session--profile-enabled-p ()
+  "Return non-nil when developer profiling is currently available."
+  (and (fboundp 'e-dev-profile-enabled-p)
+       (fboundp 'e-dev-profile-measure-thunk)
+       (e-dev-profile-enabled-p)))
+
+(defun e-session--profile-call (event options thunk)
+  "Measure THUNK as EVENT with OPTIONS when developer profiling is enabled."
+  (if (e-session--profile-enabled-p)
+      (e-dev-profile-measure-thunk event options thunk)
+    (funcall thunk)))
+
 (defun e-session--ensure-directories (store)
   "Ensure persistent directories for STORE exist."
   (when (e-session--persistent-p store)
@@ -159,14 +174,19 @@
 
 (defun e-session--append-record (store session-id record)
   "Append RECORD for SESSION-ID in persistent STORE."
-  (when (e-session--persistent-p store)
-    (e-session--ensure-directories store)
-    (let ((coding-system-for-write 'utf-8))
-      (with-temp-buffer
-        (insert (json-encode record) "\n")
-        (write-region (point-min) (point-max)
-                      (e-session--session-file store session-id)
-                      t 'silent)))))
+  (e-session--profile-call
+   'session.append-record
+   (list :session-id session-id
+         :metadata (list :record-type (plist-get record :type)))
+   (lambda ()
+     (when (e-session--persistent-p store)
+       (e-session--ensure-directories store)
+       (let ((coding-system-for-write 'utf-8))
+         (with-temp-buffer
+           (insert (json-encode record) "\n")
+           (write-region (point-min) (point-max)
+                         (e-session--session-file store session-id)
+                         t 'silent)))))))
 
 
 (defun e-session--entry-index (store session-id)
@@ -542,12 +562,16 @@ and RECORD supplies persisted identity fields during replay."
 
 (defun e-session--write-index (store)
   "Write STORE's persistent session index."
-  (when (e-session--persistent-p store)
-    (e-session--ensure-directories store)
-    (let ((coding-system-for-write 'utf-8)
-          (index (e-session-list store)))
-      (with-temp-file (e-session-store-index-file store)
-        (insert (json-encode (vconcat index)) "\n")))))
+  (e-session--profile-call
+   'session.write-index
+   (list :metadata (list :persistent (and (e-session--persistent-p store) t)))
+   (lambda ()
+     (when (e-session--persistent-p store)
+       (e-session--ensure-directories store)
+       (let ((coding-system-for-write 'utf-8)
+             (index (e-session-list store)))
+         (with-temp-file (e-session-store-index-file store)
+           (insert (json-encode (vconcat index)) "\n")))))))
 
 (defun e-session--json-read-line (line)
   "Parse one JSONL LINE as a plist."

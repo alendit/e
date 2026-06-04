@@ -17,6 +17,7 @@
 (require 'e-backend)
 (require 'e-chat)
 (require 'e-chat-session)
+(require 'e-dev-profile)
 (require 'e-events)
 (require 'e-harness)
 (require 'e-harness-registry)
@@ -2337,6 +2338,39 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-profile-records-pending-activity-redraw ()
+  "Enabled dev profiling records the actual deferred activity redraw body."
+  (let ((buffer (e-chat-test--buffer nil "chat-profile-activity-redraw"))
+        (profile-directory (make-temp-file "e-chat-profile-" t))
+        (e-dev-profile-directory nil)
+        (e-dev-profile--enabled nil)
+        (e-dev-profile--current-file nil)
+        (e-dev-profile--latest-file nil))
+    (setq e-dev-profile-directory profile-directory)
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat--render-event
+           (e-events-make :type 'turn-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 10))
+          (e-chat--render-event
+           (e-events-make :type 'tool-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :payload '(:type tool-call
+                                      :id "call-1"
+                                      :name "read")))
+          (e-dev-profile-start)
+          (e-chat--run-pending-activity-redraw)
+          (e-dev-profile-stop)
+          (let* ((report (e-dev-profile-report-data e-dev-profile--latest-file))
+                 (aggregates (plist-get report :aggregates)))
+            (should (alist-get "chat.activity-redraw" aggregates nil nil #'equal))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (delete-directory profile-directory t))))
+
 (ert-deftest e-chat-test-deferred-activity-redraw-preserves-scrollback-focus ()
   "Deferred activity redraw keeps point and window focus in scrollback."
   (let ((buffer (e-chat-test--buffer nil "chat-activity-scroll-focus"))
@@ -4268,6 +4302,30 @@
           (should (string-match-p "E Chat: done" header-line-format)))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-profile-records-status-updates ()
+  "Enabled dev profiling records chat status updates."
+  (let* ((profile-directory (make-temp-file "e-chat-profile-" t))
+         (e-dev-profile-directory profile-directory)
+         (e-dev-profile--enabled nil)
+         (e-dev-profile--current-file nil)
+         (e-dev-profile--latest-file nil)
+         (store (e-session-store-create))
+         (backend (e-backend-fake-create :items nil))
+         (harness (e-harness-create :backend backend :sessions store))
+         (buffer (e-chat-open :harness harness
+                              :session-id "chat-status-profile")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-dev-profile-start)
+          (e-chat--set-status "waiting for provider")
+          (e-dev-profile-stop)
+          (let* ((report (e-dev-profile-report-data e-dev-profile--latest-file))
+                 (aggregates (plist-get report :aggregates)))
+            (should (alist-get "chat.status" aggregates nil nil #'equal))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (delete-directory profile-directory t))))
 
 (ert-deftest e-chat-test-set-status-can-explicitly-refresh-mode-line ()
   "Explicit status refresh still updates the context-aware mode line."
