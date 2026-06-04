@@ -1,0 +1,540 @@
+#+title: Developer Profiling Traces
+#+startup: overview
+
+* Status
+
+Planned.
+
+* Goal
+
+Add an opt-in developer profiling facility that records structured timing traces
+while E is used normally in a live Emacs session, so slow chat, harness, tool,
+rendering, and persistence paths can be investigated from real interaction
+instead of one-off benchmark probes.
+
+* Motivation
+
+Feature 16 removed several known turn-finish latency hotspots, but its benchmark
+handoff stayed ad hoc. E needs to feel snappy across normal usage, and the next
+slow path may be in context assembly, provider callbacks, tool lifecycle, chat
+rendering, session persistence, canvas integration, or mode-line refresh. A
+developer should be able to enable tracing, use E naturally for a few turns,
+stop tracing, and inspect a compact report plus the raw trace.
+
+* Non-goals
+
+- Do not add always-on production telemetry.
+- Do not persist profile events into user session transcripts.
+- Do not record prompt text, assistant text, tool result bodies, full context
+  payloads, or broad buffer-local/session state.
+- Do not solve every known latency issue in this feature. The output is
+  instrumentation and a report that makes those fixes grounded.
+- Do not introduce byte-compilation, startup optimization, or broad asynchronous
+  rendering changes here.
+
+* Current behavior
+
+- Developers can use Emacs built-ins such as =benchmark-run=, =elp=, and
+  =profiler-start= manually, but E does not provide a repo-specific workflow for
+  tracing normal chat/canvas/tool usage.
+- Existing latency docs include scalar probes for specific suspected hotspots,
+  but there is no reusable trace file or aggregate report.
+- =e-dev-reload= owns live development reload support. It currently reloads
+  development helpers from =lisp/dev/e-dev.el=.
+- The harness emits lifecycle events and the chat shell subscribes/render them,
+  but there is no timing wrapper that correlates slow spans with session/turn
+  identifiers.
+
+* Accepted decisions
+
+** Use opt-in dev tracing, not always-on runtime telemetry
+
+Profiling is developer-operated. Disabled tracing should add only cheap predicate
+checks at instrumented boundaries. Enabled tracing writes JSONL records to a
+developer trace file while normal E commands continue to run.
+
+Why:
+
+- The performance problem is real, but the first useful artifact is evidence.
+- Runtime semantics stay unchanged when profiling is off.
+- Trace overhead, privacy, and storage policy remain contained in the dev layer.
+
+** Keep profile traces outside source-controlled docs by default
+
+Raw traces should be written under an ignored runtime/cache path, not under
+=docs/feats/=. The implementation should use a default such as:
+
+#+begin_example
+.e/dev-profiles/YYYYMMDD-HHMMSS.jsonl
+#+end_example
+
+If =.e/= is not already ignored, add the narrow ignore entry that keeps generated
+developer traces out of commits.
+
+Feature reviews can quote selected report output in =review.org= when needed,
+but raw traces are local artifacts.
+
+** Use structured JSONL events with scalar metadata
+
+Each record should include:
+
+- =timestamp= :: floating-point seconds from =float-time=.
+- =event= :: stable symbol/name such as =harness.context= or
+  =chat.render-transcript=.
+- =duration-ms= :: elapsed wall-clock milliseconds for measured spans.
+- =session-id= :: optional short or full session id when cheaply available.
+- =turn-id= :: optional turn id when cheaply available.
+- =buffer-name= :: optional buffer name for presentation shell spans.
+- =metadata= :: optional compact plist/alist with counts or ids only.
+
+Do not include prompt text, assistant content, tool output bodies, complete
+context messages, full activity payloads, or unbounded object prints.
+
+** Build a small dev-owned recorder module
+
+Create =lisp/dev/e-dev-profile.el=. It owns:
+
+- enabled state;
+- active trace file path;
+- latest trace file path;
+- event write helper;
+- measured-span helper/macro;
+- report parsing and aggregation helpers;
+- interactive commands.
+
+Core, harness, session, and chat code may call narrow helpers from this module,
+but profiling policy and trace/report formatting stay in =lisp/dev/=.
+
+** Instrument useful boundaries first
+
+The first instrumentation set should cover boundaries that affect perceived
+snappiness and were involved in prior latency work:
+
+- harness turn lifecycle:
+  - context build;
+  - prompt/turn entrypoints;
+  - backend callback handling where the callback boundary is local;
+  - tool lifecycle dispatch;
+  - message append;
+  - durable activity append;
+- session persistence:
+  - JSONL append record;
+  - index write;
+  - session load/list paths when used by visible UI;
+- chat presentation:
+  - status updates;
+  - running activity redraw flush;
+  - transcript refresh/render;
+  - composer insert/delete/restore.
+
+Keep each span small enough to identify an owning component. Avoid wrapping a
+large top-level turn in a way that hides which child boundary was slow.
+
+** Reports should be useful inside Emacs
+
+Provide =e-dev-profile-report= to open a human-readable buffer summarizing the
+latest or selected trace:
+
+- total event count;
+- wall-clock trace range;
+- slowest individual events;
+- aggregate count/total/average/max by event name;
+- optional grouping by session id and turn id when present.
+
+The report should be compact enough to paste into =review.org=.
+
+* Proposed API
+
+Developer commands:
+
+- =e-dev-profile-start= :: create the trace directory if needed, open a new JSONL
+  trace file, enable profiling, and return the trace path.
+- =e-dev-profile-stop= :: disable profiling, flush/close any active state, and
+  display a report for the latest trace.
+- =e-dev-profile-open-latest= :: open the latest trace file.
+- =e-dev-profile-report= :: render an aggregate report for the latest trace or a
+  selected trace path.
+
+Internal helpers:
+
+- =e-dev-profile-enabled-p=
+- =e-dev-profile-record=
+- =e-dev-profile-measure=
+- =e-dev-profile-report-data=
+- =e-dev-profile-format-report=
+
+If a macro is introduced for lower call-site noise, keep it private to the dev
+module unless tests show a function is too awkward for the instrumentation sites.
+
+* File plan
+
+- Create =lisp/dev/e-dev-profile.el= for recorder state, JSONL writes, report
+  parsing/formatting, and interactive commands.
+- Modify =lisp/dev/e-dev.el= so =e-dev-reload= loads =e-dev-profile.el=.
+- Modify =e.el= if a public autoload or package entrypoint is needed for
+  developer commands.
+- Modify =lisp/core/e-harness.el= to wrap selected harness spans.
+- Modify =lisp/core/e-session.el= to wrap session persistence spans.
+- Modify =lisp/shells/chat/e-chat.el= to wrap selected presentation spans.
+- Add =test/e-dev-profile-test.el= for recorder/report behavior.
+- Update =test/e-dev-test.el= if reload expectations need to include the new dev
+  file or command availability.
+- Add a narrow generated-trace ignore rule if needed.
+
+* Implementation slices
+
+** Slice 1: Recorder core and command shell
+
+Files:
+
+- Create =lisp/dev/e-dev-profile.el=
+- Modify =lisp/dev/e-dev.el=
+- Modify =test/e-dev-test.el= if command availability belongs there
+- Add =test/e-dev-profile-test.el=
+
+Steps:
+
+1. Add tests for disabled behavior:
+
+   - =e-dev-profile-enabled-p= returns nil by default.
+   - =e-dev-profile-record= returns nil and does not create a file when disabled.
+   - =e-dev-profile-measure= returns the wrapped expression result when disabled.
+
+2. Implement the disabled path with minimal state:
+
+   - =e-dev-profile--enabled=
+   - =e-dev-profile--current-file=
+   - =e-dev-profile--latest-file=
+
+3. Add tests for =e-dev-profile-start=:
+
+   - creates the target directory;
+   - enables profiling;
+   - records current/latest file;
+   - returns a path ending in =.jsonl=.
+
+4. Implement =e-dev-profile-start= with a configurable directory:
+
+   - defcustom =e-dev-profile-directory=, defaulting to
+     =(expand-file-name ".e/dev-profiles/" e-dev-source-directory)= or the
+     explicit source directory passed through reload context if that is cleaner.
+   - generated names should include timestamp enough to avoid collisions.
+
+5. Add tests for =e-dev-profile-stop=:
+
+   - disables profiling;
+   - preserves latest file;
+   - can be called when already disabled without error.
+
+6. Implement =e-dev-profile-stop= without reporting first. Reporting lands in a
+   later slice.
+
+7. Load the new file from =e-dev-reload= after core package files and before the
+   final =lisp/dev/e-dev.el= reload if that is required for command freshness.
+
+8. Run:
+
+   #+begin_src sh
+   rtk eldev test -f test/e-dev-profile-test.el -f test/e-dev-test.el
+   #+end_src
+
+** Slice 2: JSONL record shape and report aggregation
+
+Files:
+
+- Modify =lisp/dev/e-dev-profile.el=
+- Modify =test/e-dev-profile-test.el=
+
+Steps:
+
+1. Add tests for one written record:
+
+   - =event= is serialized as a stable string;
+   - =duration-ms= is numeric when supplied;
+   - =timestamp= is numeric;
+   - optional =session-id=, =turn-id=, =buffer-name=, and =metadata= are present
+     only when supplied;
+   - prompt/tool/result text is not added by the helper itself.
+
+2. Implement =e-dev-profile-record=:
+
+   - accept =event= and keyword arguments for =duration-ms=, =session-id=,
+     =turn-id=, =buffer-name=, and =metadata=;
+   - append one compact JSON object per line to the active trace file;
+   - use =json-encode= and direct file append;
+   - bind =coding-system-for-write= to =utf-8=.
+
+3. Add tests for =e-dev-profile-measure=:
+
+   - result value is preserved;
+   - duration is recorded when enabled;
+   - metadata function/value support is deterministic if included.
+
+4. Implement =e-dev-profile-measure= as either a function accepting a thunk or a
+   macro wrapping body forms. Choose the smallest call-site shape after checking
+   the first harness/chat instrumentation sites.
+
+5. Add tests for report data aggregation:
+
+   - parse a small JSONL fixture with repeated event names;
+   - return count, total, average, and max duration by event;
+   - return slowest individual events sorted descending.
+
+6. Implement =e-dev-profile-report-data= and =e-dev-profile-format-report=.
+
+7. Add =e-dev-profile-report= and =e-dev-profile-open-latest= commands.
+
+8. Run:
+
+   #+begin_src sh
+   rtk eldev test -f test/e-dev-profile-test.el
+   #+end_src
+
+** Slice 3: Harness and session instrumentation
+
+Files:
+
+- Modify =lisp/core/e-harness.el=
+- Modify =lisp/core/e-session.el=
+- Modify =test/e-harness-test.el=
+- Modify =test/e-session-test.el=
+- Modify =test/e-dev-profile-test.el= if shared test helpers are needed
+
+Steps:
+
+1. Add focused tests with profiling disabled to prove harness/session behavior and
+   return values are unchanged.
+
+2. Add enabled profiling tests around synthetic harness/session operations:
+
+   - prompt entrypoint or a smaller internal turn helper emits at least one
+     harness span with =session-id= and =turn-id= when available;
+   - =e-session-append-message= emits a session append span;
+   - =e-session--write-index= emits an index write span.
+
+3. Instrument harness boundaries with the recorder:
+
+   - context build in =e-harness-context= or the smallest caller-owned boundary
+     that measures context assembly;
+   - prompt/turn wrapper in async and sync paths where return/callback semantics
+     are preserved;
+   - tool lifecycle dispatch in =e-harness-tool-lifecycle=;
+   - message/activity append helper calls.
+
+4. Instrument session persistence:
+
+   - =e-session--append-record=;
+   - =e-session--write-index=;
+   - session load/list paths if they are visible-shell hot paths.
+
+5. Keep disabled overhead small:
+
+   - call =e-dev-profile-enabled-p= before building metadata that is not already
+     available;
+   - do not allocate large metadata plists on disabled paths.
+
+6. Run:
+
+   #+begin_src sh
+   rtk eldev test -f test/e-dev-profile-test.el -f test/e-session-test.el -f test/e-harness-test.el
+   #+end_src
+
+** Slice 4: Chat presentation instrumentation
+
+Files:
+
+- Modify =lisp/shells/chat/e-chat.el=
+- Modify =test/e-chat-test.el=
+- Modify =test/e-dev-profile-test.el= if shared parsing helpers are needed
+
+Steps:
+
+1. Add disabled-path tests around representative chat helpers to prove visible
+   output remains unchanged when profiling is off.
+
+2. Add enabled profiling tests for:
+
+   - status update span;
+   - running activity redraw flush span;
+   - transcript render/refresh span;
+   - composer insert/delete/restore span.
+
+3. Instrument the selected chat helpers:
+
+   - wrap only the helper body that owns the presentation work;
+   - include =buffer-name=;
+   - include =session-id= and =turn-id= only when already available cheaply;
+   - avoid serializing buffer text or rendered block content.
+
+4. Check deferred redraw behavior:
+
+   - profiling must measure the actual timer flush body, not only timer
+     scheduling;
+   - tests that assert activity text should flush pending redraw using the
+     existing helper pattern from feature 16.
+
+5. Run:
+
+   #+begin_src sh
+   rtk eldev test -f test/e-dev-profile-test.el -f test/e-chat-test.el
+   #+end_src
+
+** Slice 5: Generated trace hygiene and developer workflow docs
+
+Files:
+
+- Modify =.gitignore= or the repo's equivalent ignore file if =.e/= is not
+  already ignored
+- Modify =docs/feats/21-dev-profiling/plan.org= only if implementation discovers
+  a better generated-trace path
+- Create =docs/feats/21-dev-profiling/review.org= during implementation review
+
+Steps:
+
+1. Check whether =.e/dev-profiles/= or =.e/= is ignored.
+
+2. If not ignored, add the narrowest ignore entry that excludes generated profile
+   traces without hiding source files.
+
+3. Add a short workflow note to the review after implementation:
+
+   #+begin_src elisp
+   (e-dev-profile-start)
+   ;; use E normally for a few turns
+   (e-dev-profile-stop)
+   (e-dev-profile-report)
+   #+end_src
+
+4. Include a sample report excerpt in =review.org= after live verification.
+
+** Slice 6: Live verification and review handoff
+
+Files:
+
+- Create =docs/feats/21-dev-profiling/review.org=
+- Modify =docs/feats/index.org= status when implementation begins and when ready
+  for review
+
+Steps:
+
+1. Reload the running Emacs:
+
+   #+begin_src sh
+   emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+   #+end_src
+
+2. Start profiling live:
+
+   #+begin_src sh
+   emacsclient --eval "(progn (require 'e-dev-profile) (prin1 (e-dev-profile-start)))"
+   #+end_src
+
+3. Exercise one bounded live scenario:
+
+   - create or reuse a temporary E chat/session buffer;
+   - submit or simulate a small turn using the existing test/dev-safe backend
+     pattern if available;
+   - trigger at least one tool lifecycle or chat redraw path without mutating
+     user buffers.
+
+4. Stop profiling:
+
+   #+begin_src sh
+   emacsclient --eval "(progn (require 'e-dev-profile) (prin1 (e-dev-profile-stop)))"
+   #+end_src
+
+5. Open/report latest trace:
+
+   #+begin_src sh
+   emacsclient --eval "(progn (require 'e-dev-profile) (prin1 (e-dev-profile-report-data e-dev-profile--latest-file)))"
+   #+end_src
+
+   If direct access to private state is replaced by a public latest-file helper
+   during implementation, use that helper instead.
+
+6. Record in =review.org=:
+
+   - exact test commands and results;
+   - reload result;
+   - trace path;
+   - event count;
+   - slowest events excerpt;
+   - any limitation, such as no running Emacs server.
+
+* Testing plan
+
+Focused tests:
+
+#+begin_src sh
+rtk eldev test -f test/e-dev-profile-test.el
+rtk eldev test -f test/e-dev-test.el
+rtk eldev test -f test/e-session-test.el
+rtk eldev test -f test/e-harness-test.el
+rtk eldev test -f test/e-chat-test.el
+#+end_src
+
+Aggregate test before review:
+
+#+begin_src sh
+rtk eldev test
+#+end_src
+
+If aggregate tests fail because of unrelated dirty-tree blockers, record the
+exact failures in =review.org= and keep the feature verification scoped to the
+touched selectors.
+
+* Live verification
+
+After changing =lisp/*.el= or =e.el=, reload the running Emacs:
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Then verify that:
+
+- =e-dev-profile-start= returns a trace path;
+- normal E usage writes records without requiring individual benchmark commands;
+- =e-dev-profile-stop= disables tracing;
+- =e-dev-profile-report= shows aggregate slowest-event data;
+- disabled profiling does not keep writing new events.
+
+Use bounded scalar probes only. Do not print full session records, full buffer
+text, raw context payloads, or unbounded registries from the live Emacs.
+
+* Compatibility expectations
+
+- Disabled profiling must preserve current runtime behavior.
+- Existing public session, harness, and chat APIs should not change.
+- Developer commands may be new public interactive commands, but trace recorder
+  internals should remain dev-owned.
+- Trace JSONL shape should be stable enough for reports and review snippets, but
+  it is not yet a user-facing persistence format.
+
+* Risks
+
+- Profiling can perturb the timings it measures. Mitigate by making disabled
+  paths cheap and enabled records compact.
+- Instrumentation call sites can accidentally allocate metadata even when
+  disabled. Guard expensive metadata construction behind
+  =e-dev-profile-enabled-p=.
+- Broad trace metadata can leak user content. Keep metadata scalar and never
+  record prompt/tool/result bodies.
+- Async callback instrumentation can change callback semantics if wrapped
+  carelessly. Preserve return values and error propagation; unexpected errors
+  should still surface.
+
+* Review questions
+
+1. If this work package stopped here, would the project be better off than if it had not been built?
+2. What final direction does this move toward?
+3. Which decisions are likely to change, uncertain, or stable, and are uncertain ones local and reversible instead of hidden behind speculative abstraction? Are extension points tied to real variation instead of hypothetical futures?
+4. What component owns this behavior, and why? Does it have one cohesive responsibility and one primary reason to change?
+5. Does this change increase or reduce coupling? Are interfaces narrow, consumer-shaped, and free of unused capabilities?
+6. Did any dependency start pointing the wrong way, especially from stable policy toward concrete adapters, providers, UI, transport, persistence, or tool clients?
+7. Could any side effect be moved outward into an adapter or shell?
+8. Are the abstractions and interfaces semantically real, and can implementations substitute for each other without narrowed preconditions, weakened behavior, ignored requirements, or unsupported-operation errors?
+9. What compatibility expectations apply, and were obsolete paths removed unless required?
+10. What legacy code can we remove now?
+11. Where are expected errors handled, and where do unexpected errors surface?
+12. What tests prove the core behavior independently of the full system? If the design changed, would tests change narrowly, or would unrelated tests need rewrites?

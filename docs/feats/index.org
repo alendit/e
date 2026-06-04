@@ -31,3 +31,4 @@ Status values for coding agents:
 | 18 | Planned | 18-resource-coherence/ | Resource Coherence for Live Buffers and Files |
 | 19 | In-progress | 19-project-local-capabilities/ | Project-Local Capabilities |
 | 20 | In-review | 20-org-canvas-context-status/ | Org Canvas Context Status and Compaction |
+| 21 | Ready | 21-dev-profiling/ | Developer Profiling Traces |
