@@ -157,7 +157,12 @@ slice should avoid mutating the active registry during an in-flight turn.
 
 ** Result mapping
 
-Initial result support should cover text content.
+Initial result support should cover all basic JSON types.
+
+Basic JSON means strings, numbers, booleans, null, arrays, and objects. The
+mapping should preserve values from MCP =structuredContent= as structured
+tool-result content when present, and fall back to model-visible text for plain
+MCP text blocks.
 
 MCP result:
 
@@ -175,10 +180,34 @@ MCP result:
 
 maps to a normal =e= tool result whose model-visible content is the text.
 
-If multiple text blocks are returned, join them with blank lines and preserve
-order. Unsupported content blocks should be summarized with their type and
-omitted payload details in the first slice, so the model gets a truthful result
-without pretending to support media or binary artifacts.
+Structured JSON result:
+
+#+begin_src json
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "Created issue #123"
+    }
+  ],
+  "structuredContent": {
+    "issue": 123,
+    "labels": ["bug", "mcp"],
+    "closed": false
+  },
+  "isError": false
+}
+#+end_src
+
+maps to an =e= tool result that retains the object shape and renders through
+the same deterministic JSON normalization used by normal =e= tool results.
+
+If both =content= and =structuredContent= are returned, preserve both: text
+blocks provide the conversational summary, and =structuredContent= provides the
+machine-readable JSON value. Unsupported media, resource, or binary content
+blocks should be summarized with their type and omitted payload details in the
+first slice, so the model gets a truthful result without pretending to support
+content classes that are not implemented yet.
 
 * Implementation Plan
 
@@ -248,8 +277,8 @@ Steps:
 5. Track =notifications/tools/list_changed= and stale catalog state per server.
 6. Return normalized helper responses with =ok=, =result=, =error=, and
    =diagnostics= fields.
-7. Add a minimal fixture MCP server for tests that exposes one echo tool and one
-   failing tool.
+7. Add a minimal fixture MCP server for tests that exposes one echo tool, one
+   structured JSON value tool, and one failing tool.
 
 Verification:
 
@@ -294,12 +323,15 @@ Steps:
 1. Implement generated tool handlers that call the helper with original MCP
    server id, MCP tool name, and arguments.
 2. Convert MCP text content into model-visible =e= result content.
-3. Convert MCP =isError: true= into a model-visible tool execution error
+3. Convert MCP =structuredContent= into structured =e= result content for
+   strings, numbers, booleans, null, arrays, and objects.
+4. Convert MCP =isError: true= into a model-visible tool execution error
    result.
-4. Signal hard infrastructure errors for helper timeout, invalid helper
+5. Signal hard infrastructure errors for helper timeout, invalid helper
    response, missing server, missing tool, and protocol failure.
-5. Test success, MCP execution error, unsupported content, timeout, and helper
-   protocol error cases.
+6. Test text success, structured JSON success for every basic JSON type, MCP
+   execution error, unsupported content, timeout, and helper protocol error
+   cases.
 
 Verification:
 
@@ -359,6 +391,8 @@ rtk eldev test -f e-mcp-test -f e-harness-test
 - Calling a generated tool sends MCP =tools/call= with the original MCP tool
   name and arguments.
 - Text results are returned as model-visible =e= tool content.
+- Basic JSON results are preserved as structured =e= tool content for strings,
+  numbers, booleans, null, arrays, and objects.
 - MCP =isError: true= is visible to the model as a tool execution error.
 - Helper/process/protocol failures surface as infrastructure errors.
 - The harness and core capability contract stay MCP-agnostic.
