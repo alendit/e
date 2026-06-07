@@ -4027,6 +4027,10 @@ an approximate full-context estimate."
   (setq-local mode-name e-chat--mode-line-status)
   (force-mode-line-update))
 
+(defun e-chat--invalidate-mode-line-context-estimate ()
+  "Clear the buffer-local context estimate used by the mode-line status."
+  (setq-local e-chat--mode-line-context-estimate-cache (cons nil nil)))
+
 (defun e-chat--set-status (status &optional refresh-mode-line)
   "Set chat buffer STATUS.
 When REFRESH-MODE-LINE is non-nil, also refresh context-aware mode-line text."
@@ -4190,7 +4194,8 @@ When REFRESH-MODE-LINE is non-nil, also refresh context-aware mode-line text."
      (e-chat--set-status "summarizing context"))
     ('compaction-finished
      (let ((payload (plist-get event :payload)))
-       (e-chat--set-status "compacted")
+       (e-chat--invalidate-mode-line-context-estimate)
+       (e-chat--set-status "compacted" t)
        (e-chat--insert-entry
         "System"
         (format "Context compacted into %s"

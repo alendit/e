@@ -4466,6 +4466,57 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-compaction-finished-refreshes-context-estimate ()
+  "Finished compactions immediately refresh stale context estimates."
+  (let* ((timestamps '("2026-05-25T10:00:00Z"
+                       "2026-05-25T10:00:01Z"
+                       "2026-05-25T10:00:02Z"
+                       "2026-05-25T10:00:03Z"))
+         (store (e-session-store-create))
+         (backend (e-backend-fake-create :items nil))
+         (harness (e-harness-create
+                   :backend backend
+                   :sessions store
+                   :default-options
+                   '(:model "gpt-5.5" :reasoning-effort "high")))
+         (e-chat-context-token-estimate-bytes-per-token 1.0)
+         (buffer (e-chat-open :harness harness
+                              :session-id "chat-compaction-refresh")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (cl-letf (((symbol-function 'e-session--timestamp)
+                     (lambda (&optional _time)
+                       (prog1 (car timestamps)
+                         (setq timestamps (cdr timestamps))))))
+            (e-session-append-message
+             store
+             e-chat-session-id
+             (list :id "old"
+                   :role 'user
+                   :content (make-string 1000 ?x)))
+            (e-session-append-message
+             store
+             e-chat-session-id
+             '(:id "kept" :role user :content "kept suffix"))
+            (e-chat--set-status "idle" t)
+            (should (string-match-p "~[0-9]+%" mode-name))
+            (let ((before mode-name))
+              (e-session-append-compaction
+               store
+               e-chat-session-id
+               "summary"
+               :first-kept-entry-id "kept")
+              (e-chat--render-event
+               (e-events-make :type 'compaction-finished
+                              :session-id e-chat-session-id
+                              :turn-id "turn-compact"
+                              :payload '(:compaction-id "compaction-1"
+                                         :first-kept-entry-id "kept")))
+              (should (string-match-p "~[0-9]+%" mode-name))
+              (should-not (equal mode-name before)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-tool-activity-compacts-large-result-display ()
   "Chat activity keeps a bounded tool result preview."
   (let ((buffer (e-chat-test--buffer nil "chat-tool-activity-preview")))
