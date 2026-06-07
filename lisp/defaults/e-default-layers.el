@@ -63,7 +63,7 @@
      :factory e-org-canvas-layer-create)
     (:id project-local
      :name "Project Local"
-     :summary "Capabilities a repository ships under .e/capabilities/."
+     :summary "Capabilities and shells a repository ships under .e/layers/."
      :feature e-project-local
      :factory e-project-local-layer-create))
   "Built-in layer specs registered during startup."

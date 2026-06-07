@@ -22,6 +22,7 @@
   id
   name
   capabilities
+  shells
   defaults)
 
 (cl-defstruct (e-layer-spec (:constructor e-layer-spec-create))

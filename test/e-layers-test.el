@@ -18,6 +18,7 @@
 (require 'e-context)
 (require 'e-harness)
 (require 'e-layers)
+(require 'e-shells)
 (require 'e-tools)
 
 (defmacro e-layers-test--with-empty-layer-registry (&rest body)
@@ -140,6 +141,23 @@
     (should-not (e-harness-layer-active-p harness 'first))
     (should (equal (mapcar #'e-layer-id (e-harness-active-layers harness))
                    '(second)))))
+
+(ert-deftest e-layers-test-harness-activates-layer-owned-shells ()
+  "Activating and deactivating a layer controls its shell manifests."
+  (let ((e-shell--registry (make-hash-table :test 'eq))
+        (e-shell--scoped-registry (make-hash-table :test 'eq)))
+    (let* ((harness (e-harness-create
+                     :backend (e-backend-fake-create :items nil)))
+           (shell (e-shell-create :id 'topic :name "Topic"))
+           (layer (e-layer-create
+                   :id 'topic-layer
+                   :name "Topic Layer"
+                   :shells (list shell))))
+      (e-harness-activate-layer harness layer)
+      (should (eq (e-shell-get-active 'topic harness) shell))
+      (should (memq shell (e-shell-list-active harness)))
+      (should (eq (e-harness-deactivate-layer harness 'topic-layer) layer))
+      (should-not (e-shell-get-active 'topic harness)))))
 
 (provide 'e-layers-test)
 

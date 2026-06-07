@@ -1,0 +1,66 @@
+#+title: Project Local Layers
+#+startup: overview
+
+* Purpose
+
+Project-local layers let a repository ship model-facing capabilities and
+presentation shell manifests together under the project tree.  They are loaded
+only for trusted project roots and are flattened into the built-in
+=project-local= aggregate layer for the active harness.
+
+* Layout
+
+Preferred package layout:
+
+#+begin_example
+<repo>/.e/layers/<layer-id>/layer.el
+<repo>/.e/layers/<layer-id>/skills/<slug>/SKILL.md
+#+end_example
+
+=layer.el= runs as trusted Emacs Lisp after the project root is allowed in
+=e-project-local-allowed-roots=.  It should register one or more factories:
+
+#+begin_src emacs-lisp
+(e-project-layer-register
+ :id 'topic
+ :factory
+ (lambda (directory)
+   (e-layer-create
+    :id 'topic
+    :name "Topic"
+    :capabilities (list (topic-capability-create directory))
+    :shells (list (topic-shell-create directory)))))
+#+end_src
+
+The factory receives the layer directory and must return an =e-layer= whose id
+matches the registered id.  Capabilities must be =e-capability= values.  Shells
+must be =e-shell= values with valid shell and command ids.
+
+* Trust
+
+Project layer loading executes repository Emacs Lisp.  Unknown roots are skipped
+with a message.  Add only roots you trust to =e-project-local-allowed-roots=.
+
+The compatibility layout remains supported:
+
+#+begin_example
+<repo>/.e/capabilities/<capability-id>/capability.el
+#+end_example
+
+Use =.e/layers/= for new project packages.  Keep =.e/capabilities/= for existing
+capability-only packages that do not need shell manifests.
+
+* Shell Discovery
+
+Built-in shells are still registered globally with =e-shell-register= and read
+with =e-shell-list= or =e-shell-get=.
+
+Layer-owned shells are active only for the harness that activated the owning
+layer.  Callers that have a harness should use:
+
+- =e-shell-list-active=
+- =e-shell-get-active=
+
+Global shell ids take precedence.  If a layer shell id collides with a global
+shell id, the layer shell is reported and skipped instead of replacing the
+built-in shell.

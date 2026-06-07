@@ -25,6 +25,7 @@
 (require 'e-layers)
 (require 'e-openai)
 (require 'e-session)
+(require 'e-shells)
 
 (defmacro e-defaults-test--with-empty-harness-registry (&rest body)
   "Run BODY with an isolated harness registry."
@@ -285,6 +286,32 @@
               (mapcar #'e-context-provider--name
                       (e-capability-context-providers capability))))
         (should (memq 'chat-session-attachments provider-names))))))
+
+(ert-deftest e-defaults-test-sync-clears-stale-layer-owned-shells ()
+  "Default harness layer sync removes old layer-owned shell registrations."
+  (let ((e-layer--registry (make-hash-table :test 'eq))
+        (e-shell--registry (make-hash-table :test 'eq))
+        (e-shell--scoped-registry (make-hash-table :test 'eq))
+        (current-shell-id 'old-topic))
+    (e-layer-register
+     (e-layer-spec-create
+      :id 'shell-sync
+      :name "Shell Sync"
+      :factory (lambda (&optional _directory)
+                 (e-layer-create
+                  :id 'shell-sync
+                  :name "Shell Sync"
+                  :shells (list (e-shell-create
+                                 :id current-shell-id
+                                 :name "Topic"))))))
+    (let ((harness (e-harness-create
+                    :backend (e-backend-fake-create :items nil))))
+      (e-default-chat-sync-harness-layers harness '(shell-sync) nil)
+      (should (e-shell-get-active 'old-topic harness))
+      (setq current-shell-id 'new-topic)
+      (e-default-chat-sync-harness-layers harness '(shell-sync) nil)
+      (should-not (e-shell-get-active 'old-topic harness))
+      (should (e-shell-get-active 'new-topic harness)))))
 
 (ert-deftest e-defaults-test-startup-refreshes-default-backend-from-spec-factory ()
   "Startup sync replaces stale default backend closures through generic specs."

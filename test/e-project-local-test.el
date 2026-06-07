@@ -7,8 +7,9 @@
 
 ;;; Commentary:
 
-;; ERT tests for discovery, allowlist gating, and capability contribution of
-;; project-local capabilities shipped under `.e/capabilities/'.
+;; ERT tests for discovery, allowlist gating, and contribution of project-local
+;; layers shipped under `.e/layers/' plus compatibility capabilities under
+;; `.e/capabilities/'.
 
 ;;; Code:
 
@@ -18,6 +19,7 @@
 (require 'e-capabilities)
 (require 'e-harness)
 (require 'e-project-local)
+(require 'e-shells)
 (require 'e-store)
 (require 'e-tools)
 
@@ -37,7 +39,7 @@
       (e-capability-create
        :id '%s
        :name \"Topic\"
-       :instructions \"Topic capability.\"
+       :instructions (format \"Topic rooted at %%s\" directory)
        :tools
        (list (lambda (registry)
                (e-tools-register
@@ -60,6 +62,36 @@ SOURCE overrides the default capability source."
   (e-project-local-test--write-file
    (expand-file-name (format ".e/capabilities/%s/capability.el" id) root)
    (or source (e-project-local-test--capability-source id))))
+
+(defun e-project-local-test--layer-source (id)
+  "Return layer.el source contributing a capability and shell for ID."
+  (format
+   ";;; layer.el -*- lexical-binding: t; -*-
+(e-project-layer-register
+ :id '%s
+ :factory
+ (lambda (directory)
+   (e-layer-create
+    :id '%s
+    :name \"Topic Layer\"
+    :capabilities
+    (list (e-capability-create
+           :id '%s
+           :name \"Topic\"
+           :instructions (format \"Topic rooted at %%s\" directory)))
+    :shells
+    (list (e-shell-create
+           :id '%s
+           :name \"Topic Shell\"
+           :commands (list (e-shell-command-create :id 'open)))))))"
+   id id id id))
+
+(defun e-project-local-test--make-layer (root id &optional source)
+  "Create a `.e/layers/ID/layer.el' fixture under ROOT.
+SOURCE overrides the default layer source."
+  (e-project-local-test--write-file
+   (expand-file-name (format ".e/layers/%s/layer.el" id) root)
+   (or source (e-project-local-test--layer-source id))))
 
 (ert-deftest e-project-local-test-empty-repo-is-no-op ()
   "A repo with no .e/capabilities yields only the guidance capability."
@@ -117,7 +149,10 @@ SOURCE overrides the default capability source."
           (e-project-local-test--make-capability inner 'topic)
           (let ((capabilities (e-project-local-capabilities inner)))
             (should (= (length capabilities) 1))
-            (should (eq (e-capability-id (car capabilities)) 'topic))))
+            (should (eq (e-capability-id (car capabilities)) 'topic))
+            (should (string-match-p
+                     (regexp-quote inner)
+                     (e-capability-instructions (car capabilities))))))
       (delete-directory outer t))))
 
 (ert-deftest e-project-local-test-bad-factory-result-signals ()
@@ -177,6 +212,76 @@ SOURCE overrides the default capability source."
               (should (string-match-p "Daily steps."
                                       (e-store-read-entry entry))))))
       (delete-directory project t))))
+
+(ert-deftest e-project-local-test-project-layer-contributes-capability-and-shell ()
+  "Trusted `.e/layers/' packages are flattened into the project-local layer."
+  (let* ((project (make-temp-file "e-project-local-layer-" t))
+         (e-project-local-allowed-roots (list project)))
+    (unwind-protect
+        (progn
+          (e-project-local-test--make-layer project 'topic)
+          (let ((layer (e-project-local-layer-create project)))
+            (should (eq (e-layer-id layer) 'project-local))
+            (should (cl-find 'topic
+                             (e-layer-capabilities layer)
+                             :key #'e-capability-id))
+            (should (cl-find 'topic
+                             (e-layer-shells layer)
+                             :key #'e-shell-id))))
+      (delete-directory project t))))
+
+(ert-deftest e-project-local-test-project-layer-loading-is-allowlisted ()
+  "Untrusted project layer roots are skipped before loading layer.el."
+  (let ((project (make-temp-file "e-project-local-layer-gate-" t)))
+    (unwind-protect
+        (progn
+          (e-project-local-test--make-layer project 'topic)
+          (let ((e-project-local-allowed-roots nil))
+            (let ((layer (e-project-local-layer-create project)))
+              (should-not (cl-find 'topic
+                                   (e-layer-shells layer)
+                                   :key #'e-shell-id))))
+          (let ((e-project-local-allowed-roots (list project)))
+            (let ((layer (e-project-local-layer-create project)))
+              (should (cl-find 'topic
+                               (e-layer-shells layer)
+                               :key #'e-shell-id)))))
+      (delete-directory project t))))
+
+(ert-deftest e-project-local-test-project-layer-bad-factory-result-signals ()
+  "A project layer factory returning a mismatched id signals an error."
+  (let* ((project (make-temp-file "e-project-local-layer-bad-" t))
+         (e-project-local-allowed-roots (list project)))
+    (unwind-protect
+        (progn
+          (e-project-local-test--make-layer
+           project 'topic
+           "(e-project-layer-register
+             :id 'topic
+             :factory (lambda (_dir)
+                        (e-layer-create :id 'other :name \"Other\")))")
+          (should-error (e-project-local-layer-create project)))
+      (delete-directory project t))))
+
+(ert-deftest e-project-local-test-duplicate-project-layer-ids-nearest-wins ()
+  "Nearer project layer directories win when ids collide."
+  (let* ((outer (make-temp-file "e-project-local-layer-outer-" t))
+         (inner (expand-file-name "inner" outer))
+         (e-project-local-allowed-roots (list outer)))
+    (unwind-protect
+        (progn
+          (make-directory inner t)
+          (e-project-local-test--make-layer outer 'topic)
+          (e-project-local-test--make-layer inner 'topic)
+          (let* ((layer (e-project-local-layer-create inner))
+                 (topic (cl-find 'topic
+                                 (e-layer-capabilities layer)
+                                 :key #'e-capability-id)))
+            (should topic)
+            (should (string-match-p
+                     (regexp-quote inner)
+                     (e-capability-instructions topic)))))
+      (delete-directory outer t))))
 
 (provide 'e-project-local-test)
 

@@ -1,0 +1,456 @@
+#+title: Project Shells
+#+startup: overview
+
+* Status
+
+In-review.
+
+* Goal
+
+Let projects define their own presentation shells, in the same spirit that they
+can define project-local capabilities.  A project shell should be discoverable
+and invokable only when =e= is operating in that project, and it should be able
+to package project-specific commands, keymaps, prompt flows, buffer layouts, or
+other presentation behavior near the project files that need it.
+
+In the course of this feature, make *layers* the single package concept for
+project extensions.  A layer can bundle:
+
+- model-facing capabilities;
+- presentation shell manifests;
+- shell/capability skills or resources when useful;
+- layer metadata that describes what the package contributes.
+
+This means projects come with project-local layers under =.e/layers/=, and each
+project layer can include capabilities, shells, or both.  The existing
+=.e/capabilities/= project-local capability path should be treated as a
+compatibility path or migration target, not the final package shape.
+
+* User-facing behavior
+
+- Projects may ship one or more layer directories under =.e/layers/<id>/=.
+- Project layers are considered only for the active project/root, using the same
+  root and ancestor discovery expectations as project-local capabilities and
+  AGENTS.md context.
+- Unknown project layer roots are reported but not executed.  Loading project
+  Elisp remains trust-gated by the existing project-local allowlist concept or a
+  renamed layer-oriented allowlist.
+- Once a trusted project layer is active, its shells appear in ordinary shell
+  discovery through =e-shell-list= / =e-shell-get= and can be invoked like
+  built-in shells.
+- Project shell manifests can advertise interactive commands, command ids,
+  summaries, keymaps, metadata, and required/optional capabilities just like
+  built-in shell manifests.
+- Project layers may bundle their shell with the capabilities it expects.  For
+  example, a project may ship a =topic= layer that contributes =topic-*= tools,
+  topic resources, topic skills, and a =topic= shell for interactive topic
+  navigation.
+- Project shells are active only while their owning project layer is active for
+  the current harness/project.  Switching to another project should not leave the
+  previous project shell globally visible as an active shell.
+- Built-in shell ids cannot be silently replaced by project shells.  Collisions
+  are either mechanically namespaced or reported as errors.
+- Existing canvas and org-canvas commands should keep working.  This feature
+  generalizes the shell/layer relationship; it should not require every built-in
+  shell to become project-defined before the project-shell use case works.
+
+* Motivation and examples
+
+Project Canvas showed that a shell can be project- or document-specific while
+still using ordinary chat sessions and capabilities underneath.  Project-local
+capabilities showed that repositories want to ship live behavior rather than
+only static =AGENTS.md= or =SKILL.md= guidance.  Project Shells combine these:
+projects can ship the model-facing behavior and the presentation affordances as
+one layer package.
+
+Example project layer layout:
+
+#+begin_example
+<repo>/.e/layers/topic/
+  layer.el                  # loader entrypoint
+  LAYER.md                  # optional metadata / docs / trust prompt text
+  capabilities/topic.el     # optional helper loaded by layer.el
+  shells/topic.el           # optional helper loaded by layer.el
+  skills/triage/SKILL.md    # optional layer-scoped skills
+#+end_example
+
+Example loader contract sketch:
+
+#+begin_src emacs-lisp
+(e-project-layer-register
+ :id 'topic
+ :factory
+ (lambda (directory)
+   (e-layer-create
+    :id 'topic
+    :name "Topic"
+    :capabilities (list (grimoire-topic-capability-create directory))
+    :shells (list (grimoire-topic-shell-create directory)))))
+#+end_src
+
+The exact steady-state contract may use an =e-project-layer-create= helper or a
+registration struct instead of requiring repo code to construct the final layer
+record directly.  The important constraints are: project code declares a layer,
+the harness/discovery layer validates it, and project ids are namespaced or
+scoped before they enter runtime registries.
+
+* Current state and gaps
+
+** Shell manifests today
+
+=lisp/shells/e-shells.el= defines =e-shell= and =e-shell-command= manifests plus
+a global =e-shell--registry=.  Built-in shells call =e-shell-register= during
+startup hooks.  The manifest is presentation metadata; it does not currently
+have an owning layer, lifecycle scope, project root, or unregister path.
+
+Gap: because the shell registry is global and persistent, simply loading a
+project shell would leak it outside the project unless shells gain ownership and
+scope.
+
+** Layers today
+
+=lisp/layers/e-layers.el= defines =e-layer= with =id=, =name=, =capabilities=,
+and =defaults=.  The layer registry stores known built-in layer specs and
+creates layer instances for a harness.  Layers are already the harness-owned
+package concept for capabilities.
+
+Gap: layers do not yet contain shells.  Shells are registered separately at
+startup and are not activated/deactivated with layer lifecycle.
+
+** Project-local capabilities today
+
+=lisp/layers/project-local/e-project-local.el= discovers
+=.e/capabilities/<id>/capability.el=, trust-gates loading via
+=e-project-local-allowed-roots=, and bundles discovered capabilities into a
+single =project-local= layer.
+
+Gap: the implemented result intentionally avoided project-defined layers because
+there was no immediate consumer and because the built-in layer registry expected
+factory ids to match registered ids.  Project Shells create the consumer for a
+project layer package seam.
+
+* Design
+
+** Layers own shell manifests
+
+Extend =e-layer= with a =shells= slot:
+
+#+begin_src emacs-lisp
+(cl-defstruct (e-layer (:constructor e-layer-create))
+  id
+  name
+  capabilities
+  shells
+  defaults)
+#+end_src
+
+A layer's shells are presentation manifests associated with that layer instance.
+When the layer is active in a harness/project, its shells are visible through
+shell discovery.  When the layer is inactive, the shells are not visible except
+perhaps as inactive metadata in layer inspection.
+
+Built-in layers may start without shell slots.  Compatibility is straightforward
+because absent =shells= means no layer-owned shells.
+
+** Shell registry gains scoped entries
+
+Replace or augment the global shell registry with scoped registrations.  The
+shell registry should know enough to answer two different questions:
+
+1. Which globally registered built-in shells exist at package startup?
+2. Which shells are active for this harness/project because active layers provide
+   them?
+
+A small, non-speculative shape:
+
+- Keep =e-shell-register= for built-in/global shells during the transition.
+- Add owner-aware registration records internally, with fields such as
+  =:id=, =:shell=, =:owner-kind=, =:owner-id=, =:project-root=, =:harness=, and
+  =:active=.
+- Add =e-shell-register-layer-shells= and =e-shell-unregister-layer-shells= (or
+  equivalent) called by harness layer activation/deactivation.
+- Add =e-shell-list-active= / =e-shell-get-active= that accept optional harness
+  and project/root context.  Existing =e-shell-list= and =e-shell-get= can
+  delegate to the global context for compatibility, but presentation code that
+  needs correctness should use the active variants.
+
+The shell registry, not project code, owns collision handling.  It can either:
+
+- namespace project shell ids mechanically, e.g. =project/<repo>/<layer>/<shell>=;
+  or
+- preserve local ids in layer metadata while storing a scoped registry key, so
+  =topic= can be shown as =topic= inside the project but cannot replace a global
+  =topic= shell.
+
+Prefer scoped registry keys with display ids preserved in metadata.  This keeps
+completion labels friendly while avoiding global collision.
+
+** Harness activates and deactivates layer shells
+
+=e-harness-activate-layer= should register that layer's shells for the harness,
+and =e-harness-deactivate-layer= should unregister shells owned by that
+harness/layer.  This keeps shell lifecycle tied to the same activation point as
+capabilities.
+
+If the current harness layer list is rebuilt during live reload,
+=e-default-chat-sync-harness-layers= should clear stale layer-owned shell
+registrations for the harness before registering shells from fresh layer
+instances.  This is important for live-configurable project shells: editing a
+project layer's shell code and reloading should refresh its command manifests
+without retaining stale commands.
+
+** Project-local layer discovery
+
+Introduce project layer discovery under:
+
+#+begin_example
+<repo>/.e/layers/<id>/layer.el
+#+end_example
+
+A project layer loader registers one or more layer factories while dynamically
+bound inside the sanctioned load, analogous to =e-project-capability-register=.
+Possible API:
+
+#+begin_src emacs-lisp
+(e-project-layer-register :id ID :factory FACTORY)
+#+end_src
+
+=FACTORY= receives the project layer directory and returns an =e-layer= or a
+project-layer registration value that can be converted to an =e-layer=.  The
+loader validates:
+
+- =ID= is a symbol;
+- =FACTORY= is callable;
+- the returned object is an =e-layer=;
+- the raw layer id matches the registered id before namespacing/scoping;
+- =capabilities= are =e-capability= values;
+- =shells= are =e-shell= values;
+- shell command descriptors are valid;
+- duplicate ids within a project layer are reported and ignored or signalled
+  according to the collision policy.
+
+Project layer loading is trust-gated.  Loading =layer.el= runs arbitrary Emacs
+Lisp, so unknown roots must be reported and skipped exactly like project-local
+capabilities.
+
+** Project layer id scoping
+
+Project layer ids should not enter the global built-in =e-layer--registry= under
+raw repo-supplied ids.  Instead, the =project-local= built-in discovery layer can
+continue to be the only globally registered layer id, and it can bundle the
+project-defined layer instances it discovers.
+
+Two viable implementation paths:
+
+*** Preferred first implementation: project-local aggregate layer
+
+Keep the existing built-in =project-local= layer.  Extend it so it discovers
+=.e/layers/= and flattens trusted project layers into one active layer instance:
+
+- capabilities from project layers are appended to the aggregate layer;
+- shell manifests from project layers are appended to the aggregate layer's
+  =shells= slot;
+- layer-scoped skills are folded into the relevant capability or a guidance
+  capability;
+- project layer metadata is retained in aggregate layer defaults/metadata for
+  diagnostics.
+
+This avoids speculative changes to the built-in layer registry and fits the
+current design that already routes project-local behavior through one discovery
+layer.
+
+*** Future alternative: session-scoped project layer specs
+
+If users later need to enable/disable individual project layers independently,
+add a session-scoped project layer registry whose ids are qualified by project
+root.  Do not force that now unless the implementation proves the aggregate path
+cannot support command discovery or diagnostics.
+
+** Relationship to existing =.e/capabilities/=
+
+Do not break existing project-local capabilities.  Support both layouts during
+this feature:
+
+- =.e/layers/<id>/layer.el= is the new preferred package form.
+- =.e/capabilities/<id>/capability.el= remains supported by wrapping each legacy
+  capability as an implicit project layer with no shells.
+
+Document =.e/capabilities/= as a compatibility path.  When practical, add a
+message or docs note encouraging new project packages to use =.e/layers/=.
+
+** Layer-scoped skills
+
+Project layers can include =skills/<slug>/SKILL.md=.  Reuse =e-skills= helpers
+factored during project-local capabilities.
+
+Resource URI shape should make ownership clear.  Candidate forms:
+
+- =e://project-local/layers/<layer-id>/skills/project/<slug>= for aggregate
+  layer resources; or
+- =e://<capability-id>/skills/project/<slug>= when the skill clearly belongs to
+  one capability.
+
+Prefer the first form for layer-level skills that describe shell workflows or a
+bundle as a whole, because not every project layer has exactly one capability.
+
+** Shell/capability bundling semantics
+
+A project shell may require capabilities from its same layer.  The shell manifest
+already has =required-capabilities= and =optional-capabilities= slots.  Use those
+slots for discovery and diagnostics, but do not make shell registration depend
+on all required capabilities being present unless there is a concrete invocation
+safety issue.
+
+When a command is invoked, command code should resolve the target harness/session
+using normal shell logic.  If a required capability is missing or inactive, it
+should fail explicitly with a useful message rather than silently falling back.
+
+** Startup and live reload
+
+- =e.el= should continue requiring built-in shells as before.
+- Project shells should not be required from =e.el= directly; they are loaded by
+  the project-local discovery layer when the project root is trusted.
+- =e-dev-reload= should reload the changed shell registry/layer/harness/project
+  discovery modules and reconcile existing default harness instances so stale
+  layer-owned shell registrations are cleared and re-added.
+- Editing project layer files should refresh after the default harness sync path
+  re-runs the project-local layer factory for the current root.
+
+* Proposed implementation slices
+
+** Slice 1: Layer-owned shell manifests
+
+Goal: allow built-in layers to contain shells and have the harness register them
+for active discovery.
+
+Tasks:
+
+- Add a =shells= slot to =e-layer=.
+- Add shell validation helpers in =e-shells.el=.
+- Add owner/scoped registration support for shell manifests.
+- Register/unregister layer-owned shells from harness layer activation and
+  deactivation.
+- Clear/reconcile layer-owned shells during default harness sync.
+- Add tests proving a synthetic layer shell appears when a layer is active and
+  disappears when the layer is disabled or sync rebuilds layers.
+
+Stop point value: the runtime has a real layer-shell relationship even before
+project code contributes shells.
+
+** Slice 2: Project-local layer loader
+
+Goal: discover trusted =.e/layers/<id>/layer.el= packages and flatten their
+capabilities/shells into the existing =project-local= aggregate layer.
+
+Tasks:
+
+- Add =e-project-layer-register= and registration structs.
+- Discover =.e/layers/= directories while preserving ancestor precedence.
+- Trust-gate loading using the existing allowlist or a renamed
+  =e-project-local-allowed-roots= alias that still preserves compatibility.
+- Validate returned layers, capabilities, and shells.
+- Append project-layer capabilities and shells to the aggregate =project-local=
+  layer.
+- Preserve =.e/capabilities/= as legacy capability discovery and wrap legacy
+  capabilities into the aggregate layer as before.
+- Add tests for allowed/unallowed roots, returned layer validation, shell
+  contribution, capability contribution, duplicate ids, and legacy compatibility.
+
+Stop point value: projects can ship full layer packages with shells and
+capabilities.
+
+** Slice 3: Shell discovery and invocation UX
+
+Goal: make active project shells visible and understandable to users.
+
+Tasks:
+
+- Update any shell listing/completion UI to use active shell discovery for the
+  current harness/project rather than only global startup shells.
+- Show project/layer ownership in completion labels or shell metadata.
+- Add diagnostics for skipped untrusted project layers and shell id collisions.
+- If needed, add a command to list active project layers and their shells.
+- Add tests for shell list labels and collision behavior.
+
+Stop point value: users can find and invoke project shells without inspecting
+Elisp internals.
+
+** Slice 4: Documentation and migration guidance
+
+Goal: document the project layer package format and how it relates to existing
+project-local capabilities.
+
+Tasks:
+
+- Document =.e/layers/<id>/layer.el=, the registration API, trust behavior, and
+  shell manifest expectations.
+- Document =.e/capabilities/= as compatibility-only for new work.
+- Add a minimal example project layer with one toy shell and one toy capability
+  if test fixtures are not enough.
+- Update dev notes/index references.
+
+Stop point value: project authors can build layers without reverse-engineering
+fixtures.
+
+* Tests
+
+Focused ERT coverage should include:
+
+- =e-layer= accepts shell manifests and preserves compatibility for layers with
+  no shells.
+- Activating a layer registers its shells for the target harness.
+- Deactivating a layer unregisters its shells.
+- Re-syncing/reloading a harness removes stale layer-owned shell registrations.
+- A trusted fixture under =.e/layers/topic/layer.el= can contribute both a tool
+  capability and a shell manifest.
+- An untrusted fixture is discovered/reported but not loaded.
+- A project shell id colliding with a built-in shell does not replace the built-in
+  global shell.
+- Duplicate project shell ids within one active project are handled according to
+  the selected scoped-key policy.
+- Legacy =.e/capabilities/= fixtures still contribute capabilities.
+- Layer-scoped skills are exposed through the selected URI shape.
+
+Live validation:
+
+- Create a temporary trusted project with a project layer that contributes a
+  shell command and a trivial capability/tool.
+- Reload the running Emacs with =e-dev-reload=.
+- Open or create a default chat harness rooted in that project.
+- Confirm the active shell list includes the project shell, the command can be
+  invoked, and leaving/disabling the project-local layer removes it.
+
+* Design constraints and decisions
+
+- The harness owns layer lifecycle.  Shells should become visible because their
+  layer is active, not because project code mutates global state directly.
+- Project Elisp remains a trust boundary.  Discovery must not execute unknown
+  project files.
+- Keep presentation and harness separate: shell manifests and commands are
+  presentation-facing; capabilities remain model-facing; layers bundle them
+  without mixing their responsibilities.
+- Prefer the existing aggregate =project-local= built-in layer first.  A
+  per-project global layer registry is only needed if users need independent
+  project-layer enable/disable semantics.
+- Do not add broad fallback paths.  Missing required capabilities, invalid
+  project layer factories, and shell collisions should surface clearly.
+- Built-in shells remain valid.  This feature generalizes shell ownership; it is
+  not a prerequisite to refactor every built-in shell into a layer-owned shell.
+
+* Open questions
+
+1. Should project shells be shown under their raw shell id inside the owning
+   project, or should the UI always show a qualified id such as
+   =project/topic= even when no collision exists?
+2. Should users be able to enable/disable individual project layers, or is the
+   aggregate =project-local= layer enough for the first release?
+3. Should the allowlist option be renamed from =e-project-local-allowed-roots= to
+   a layer-oriented name, with the old name kept as an alias, or should the
+   existing name remain because it already covers all project-local executable
+   code?
+4. Should layer-scoped skills attach to the aggregate =project-local= resource
+   namespace, to a synthetic per-layer capability, or to each capability in the
+   project layer?
+5. Should project layer shell commands be allowed to install project-local
+   keybindings automatically, or should automatic keybindings require an
+   explicit user approval separate from loading the layer?

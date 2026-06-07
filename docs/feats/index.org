@@ -32,3 +32,4 @@ Status values for coding agents:
 | 19 | In-progress | 19-project-local-capabilities/ | Project-Local Capabilities |
 | 20 | In-review | 20-org-canvas-context-status/ | Org Canvas Context Status and Compaction |
 | 21 | In-review | 21-dev-profiling/ | Developer Profiling Traces |
+| 22 | In-review | 22-project-shells/ | Project Shells |

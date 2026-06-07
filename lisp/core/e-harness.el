@@ -23,6 +23,7 @@
 (require 'e-operations)
 (require 'e-resources)
 (require 'e-session)
+(require 'e-shells)
 (require 'e-store)
 (require 'e-tools)
 (require 'subr-x)
@@ -320,6 +321,11 @@ When FUNCTION is nil, clear any existing callback."
   "Activate LAYER in HARNESS."
   (setf (e-harness-active-layers harness)
         (append (e-harness-active-layers harness) (list layer)))
+  (when (e-layer-shells layer)
+    (e-shell-register-layer-shells
+     harness (e-layer-id layer) (e-layer-shells layer)
+     :project-root (e-harness-default-project-root harness)
+     :metadata (list :layer-id (e-layer-id layer))))
   (e-harness--notify-layers-changed harness)
   layer)
 
@@ -345,6 +351,7 @@ When FUNCTION is nil, clear any existing callback."
         (push layer layers)))
     (setf (e-harness-active-layers harness) (nreverse layers))
     (when removed
+      (e-shell-unregister-layer-shells harness layer-id)
       (e-harness--notify-layers-changed harness))
     removed))
 

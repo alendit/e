@@ -67,6 +67,27 @@
     (should (eq (e-shell-get 'registry-test) second))
     (should-not (memq first (e-shell-list)))))
 
+(ert-deftest e-shells-test-active-shells-include-harness-layer-shells ()
+  "Active shell discovery includes layer-owned shells for the target harness."
+  (let ((e-shell--registry (make-hash-table :test 'eq))
+        (e-shell--scoped-registry (make-hash-table :test 'eq)))
+    (let* ((harness-a (cons 'harness 'a))
+           (harness-b (cons 'harness 'b))
+           (global (e-shell-create :id 'chat :name "Chat"))
+           (project (e-shell-create :id 'topic :name "Topic"))
+           (collision (e-shell-create :id 'chat :name "Project Chat")))
+      (e-shell-register global)
+      (e-shell-register-layer-shells
+       harness-a 'project-local (list project collision)
+       :project-root "/tmp/example/")
+      (should (eq (e-shell-get-active 'chat harness-a) global))
+      (should (eq (e-shell-get-active 'topic harness-a) project))
+      (should-not (e-shell-get-active 'topic harness-b))
+      (should (memq project (e-shell-list-active harness-a)))
+      (should-not (memq collision (e-shell-list-active harness-a)))
+      (e-shell-unregister-layer-shells harness-a 'project-local)
+      (should-not (e-shell-get-active 'topic harness-a)))))
+
 (ert-deftest e-shells-test-command-lookup-finds-command-by-id ()
   "Command lookup returns the shell command descriptor matching id."
   (let* ((open (e-shell-command-create :id 'open))

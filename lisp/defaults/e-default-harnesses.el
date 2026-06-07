@@ -19,6 +19,7 @@
 (require 'e-harness-registry)
 (require 'e-layers)
 (require 'e-session)
+(require 'e-shells)
 (require 'e-startup)
 
 (defgroup e-defaults nil
@@ -101,8 +102,10 @@ DIRECTORY is passed to config-aware layer factories."
     (unwind-protect
         (progn
           (e-harness-set-layer-change-function harness nil)
-          (setf (e-harness-active-layers harness)
-                (list (e-default-chat--chat-session-layer)))
+          (e-shell-clear-harness-shells harness)
+          (setf (e-harness-active-layers harness) nil)
+          (e-harness-activate-layer
+           harness (e-default-chat--chat-session-layer))
           (e-default-chat--activate-configured-layers
            harness layer-ids directory))
       (e-harness-set-layer-change-function harness change-function)))

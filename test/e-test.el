@@ -347,6 +347,10 @@
   (should (fboundp 'e-shell-register))
   (should (fboundp 'e-shell-get))
   (should (fboundp 'e-shell-list))
+  (should (fboundp 'e-shell-get-active))
+  (should (fboundp 'e-shell-list-active))
+  (should (fboundp 'e-shell-register-layer-shells))
+  (should (fboundp 'e-shell-unregister-layer-shells))
   (should (fboundp 'e-shell-command-by-id)))
 
 (ert-deftest e-test-exposes-core-harness-api ()

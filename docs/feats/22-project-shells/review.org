@@ -1,0 +1,62 @@
+#+title: Project Shells Review
+#+startup: overview
+
+* Status
+
+In-review.
+
+* Implementation Notes
+
+- =e-layer= now accepts shell manifests through a =shells= slot.
+- =e-shells= keeps global built-in shell registration and adds harness-scoped
+  layer shell registration plus active discovery helpers.
+- Harness layer activation and deactivation register and unregister layer-owned
+  shells.
+- Default chat harness resync clears scoped shell registrations before
+  rebuilding active layers, so live reload does not retain stale project shells.
+- =e-project-local= discovers trusted =.e/layers/<id>/layer.el= packages and
+  flattens their capabilities and shells into the aggregate =project-local=
+  layer while preserving =.e/capabilities/= compatibility.
+- =docs/references/project_local_layers.org= documents the project layer layout,
+  trust boundary, compatibility path, and active shell discovery API.
+
+* Review Questions
+
+1. If this work package stopped here, would the project be better off than if it had not been built?
+   Yes.  Layers now own shell manifests and trusted project packages can ship a
+   capability/shell bundle without mutating global shell state directly.
+2. What final direction does this move toward?
+   Project extensions become layer packages that can include capabilities,
+   shells, and related resources near the project code that needs them.
+3. Which decisions are likely to change, uncertain, or stable, and are uncertain ones local and reversible instead of hidden behind speculative abstraction?
+   The aggregate =project-local= layer is the chosen first implementation.
+   Independent per-project layer enablement remains a future decision isolated
+   from the global layer registry.
+4. What component owns this behavior, and why?
+   =e-project-local= owns trusted project discovery, =e-harness= owns lifecycle,
+   and =e-shells= owns shell registry/collision policy.
+5. Does this change increase or reduce coupling?
+   It reduces coupling by tying project shell visibility to active layers rather
+   than project code mutating the global shell registry.
+6. Did any dependency start pointing the wrong way?
+   No.  Harness lifecycle depends on the shell registry contract; project-local
+   discovery produces layer data but does not control shell lifecycle.
+7. Could any side effect be moved outward into an adapter or shell?
+   Project file loading stays in the project-local layer because it is the
+   existing trust-gated side-effect boundary.
+8. Are the abstractions and interfaces semantically real?
+   Yes.  Layers already package runtime behavior; shell manifests are another
+   layer-owned contribution.
+9. What compatibility expectations apply?
+   Existing =.e/capabilities/= packages and global shell registration continue
+   to work.
+10. What legacy code can we remove now?
+   None yet.  The compatibility path is still required for existing project
+   capability fixtures and users.
+11. Where are expected errors handled, and where do unexpected errors surface?
+   Untrusted roots and duplicate shell/layer ids are reported and skipped.
+   Invalid factory results and invalid manifest values signal.
+12. What tests prove the core behavior independently of the full system?
+   Focused ERT tests cover active shell registry scoping, harness shell
+   lifecycle, default resync cleanup, trusted project layer contribution,
+   allowlist gating, and invalid project layer factories.
