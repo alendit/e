@@ -33,4 +33,4 @@ Status values for coding agents:
 | 20 | In-review | 20-org-canvas-context-status/ | Org Canvas Context Status and Compaction |
 | 21 | In-review | 21-dev-profiling/ | Developer Profiling Traces |
 | 22 | In-review | 22-project-shells/ | Project Shells |
-| 24 | Planned | 24-mcp-capability-wrapper/ | MCP Capability Wrapper |
+| 24 | In-review | 24-mcp-capability-wrapper/ | MCP Capability Wrapper |

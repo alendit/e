@@ -22,6 +22,7 @@
 (require 'e-capability-config)
 (require 'e-capabilities)
 (require 'e-hooks)
+(require 'e-mcp)
 (require 'e-skills)
 (require 'e-startup)
 (require 'e-session)
@@ -41,6 +42,7 @@
         :compaction t
         :capabilities t
         :hooks t
+        :mcp t
         :context t
         :events t
         :operations t

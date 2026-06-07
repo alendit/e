@@ -1,0 +1,83 @@
+#+title: MCP Capability Wrapper Review
+#+startup: overview
+
+* Status
+
+In-review.
+
+* Implementation Summary
+
+- Added =e-mcp-server= and =e-mcp-tool= specs with validation.
+- Added =e-capability-with-mcp-create= so MCP catalogs register as ordinary
+  =e= tools through existing capability paths.
+- Added the Node helper process for stdio MCP server lifecycle, JSON-RPC
+  framing, =initialize=, =tools/list=, =tools/call=, refresh, stderr
+  diagnostics, and process reset.
+- Added result mapping for text, basic structured JSON values, MCP execution
+  errors, unsupported content summaries, and helper infrastructure failures.
+- Kept MCP opt-in; no default layer integration was added.
+
+* Review Notes
+
+- Reviewer pass found that refresh did not fetch a fresh catalog; fixed by
+  making helper refresh perform =tools/list= and return the refreshed catalog.
+- Reviewer pass found that exited MCP child processes could be treated as live;
+  fixed by checking exit state and clearing child process state on exit.
+
+* Verification
+
+- =rtk eldev test -f test/e-mcp-test.el=
+- =rtk eldev test -f test/e-mcp-test.el -f test/e-harness-test.el -f test/e-tools-test.el=
+- =rtk eldev test=
+- Live reload through =e-dev-reload=.
+- Live fixture probe through a generated =mcp.fixture.echo= tool.
+
+* Architecture Self-Check
+
+1. If this work package stopped here, would the project be better off than if
+   it had not been built?
+   - Yes. MCP stdio tool discovery and calls are usable through opt-in
+     capabilities without changing default tools.
+2. What final direction does this move toward?
+   - Capability-owned external tool adapters that keep protocol details below
+     the harness boundary.
+3. Which decisions are likely to change, uncertain, or stable, and are
+   uncertain ones local and reversible instead of hidden behind speculative
+   abstraction?
+   - Stable: capabilities remain the extension seam. Likely to change:
+     resources/prompts/auth/non-stdio support. Those remain local to =e-mcp=
+     and its helper.
+4. What component owns this behavior, and why?
+   - =e-mcp= owns MCP capability construction and result mapping; the Node
+     helper owns server subprocesses and MCP JSON-RPC framing.
+5. Does this change increase or reduce coupling?
+   - It keeps coupling narrow by registering ordinary =e= tools and storing
+     MCP metadata on the tool record.
+6. Did any dependency start pointing the wrong way, especially from stable
+   policy toward concrete adapters, providers, UI, transport, persistence, or
+   tool clients?
+   - No harness dependency on MCP was added. =e-core= loads the helper module
+     as part of the pure runtime surface, and the harness still consumes only
+     capabilities and tools.
+7. Could any side effect be moved outward into an adapter or shell?
+   - The protocol side effects are already outside the harness in the helper
+     process boundary.
+8. Are the abstractions and interfaces semantically real, and can
+   implementations substitute for each other without narrowed preconditions,
+   weakened behavior, ignored requirements, or unsupported-operation errors?
+   - The public contract is concrete MCP server specs, catalog tools, refresh,
+     and generated =e= tools. Unsupported MCP content is summarized truthfully
+     rather than exposed as a false capability.
+9. What compatibility expectations apply, and were obsolete paths removed
+   unless required?
+   - This is new opt-in behavior. Existing tool definitions remain backend
+     neutral; optional metadata is stored without changing provider payloads.
+10. What legacy code can we remove now?
+    - None in this first slice.
+11. Where are expected errors handled, and where do unexpected errors surface?
+    - MCP =isError= results become model-visible tool errors. Helper, timeout,
+      process, and protocol failures surface as infrastructure errors.
+12. What tests prove the core behavior independently of the full system?
+    - =test/e-mcp-test.el= covers validation, fake transport, registration,
+      result mapping, refresh, helper process integration, child respawn, and
+      harness tool execution.

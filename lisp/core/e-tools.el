@@ -41,8 +41,8 @@
     (funcall cancel)))
 
 (cl-defun e-tools-register
-    (registry &key name description parameters handler start)
-  "Register tool NAME in REGISTRY with DESCRIPTION, PARAMETERS, HANDLER, and START.
+    (registry &key name description parameters handler start metadata)
+  "Register tool NAME in REGISTRY with DESCRIPTION, PARAMETERS, HANDLER, START, and METADATA.
 HANDLER is a synchronous implementation.  START is a callback-driven async
 implementation."
   (unless (or (functionp handler) (functionp start))
@@ -54,6 +54,7 @@ implementation."
            (list :name name
                  :description description
                  :parameters parameters
+                 :metadata metadata
                  :handler handler
                  :start start)
            (e-tools-registry-tools registry)))
@@ -327,13 +328,17 @@ CONTEXT is dynamically visible to tool start functions through
                              name (plist-get call :arguments)))))))
              (finish-error
               (err)
-              (when on-done
-                (funcall on-done
-                         (e-tools--result
-                          call
-                          'error
-                          (error-message-string err)
-                          (list :error (car err))))))
+              (if (and (get (car err) 'e-tools-infrastructure-error)
+                       on-error)
+                  (when on-error
+                    (funcall on-error err))
+                (when on-done
+                  (funcall on-done
+                           (e-tools--result
+                            call
+                            'error
+                            (error-message-string err)
+                            (list :error (car err)))))))
              (publish-request
               (request)
               (when (and request on-request-start)
