@@ -13,8 +13,10 @@
 
 (require 'cl-lib)
 (require 'ert)
+(require 'e)
 (require 'e-backend)
 (require 'e-context-status)
+(require 'e-dev-profile)
 (require 'e-events)
 (require 'e-harness)
 (require 'e-session)
@@ -101,6 +103,31 @@
         (e-context-status-text harness "status-cache"
                                :prefix "e-chat" :estimate-cache cache)))
     (should (equal calls 1))))
+
+(ert-deftest e-context-status-test-profile-records-status-text ()
+  "Enabled dev profiling records context status text computation."
+  (let* ((profile-directory (make-temp-file "e-context-status-profile-" t))
+         (e-dev-profile-directory profile-directory)
+         (e-dev-profile--enabled nil)
+         (e-dev-profile--current-file nil)
+         (e-dev-profile--latest-file nil)
+         (store (e-session-store-create))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :sessions store
+                   :default-options '(:model "gpt-5.5"))))
+    (unwind-protect
+        (progn
+          (e-session-create store :id "status-profile")
+          (e-dev-profile-start)
+          (e-context-status-text harness "status-profile"
+                                 :prefix "e-chat"
+                                 :estimate-context nil)
+          (e-dev-profile-stop)
+          (let* ((report (e-dev-profile-report-data e-dev-profile--latest-file))
+                 (aggregates (plist-get report :aggregates)))
+            (should (alist-get "context-status.text" aggregates nil nil #'equal))))
+      (delete-directory profile-directory t))))
 
 (provide 'e-context-status-test)
 

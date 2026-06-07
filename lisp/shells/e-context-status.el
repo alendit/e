@@ -23,6 +23,9 @@
 (require 'e-session)
 (require 'subr-x)
 
+(declare-function e-dev-profile-enabled-p "e-dev-profile")
+(declare-function e-dev-profile-measure-thunk "e-dev-profile")
+
 (defgroup e-context-status nil
   "Shared context-state status presentation for e shells."
   :group 'e)
@@ -55,6 +58,18 @@ Shells use this presentation-owned table for context usage display."
   "Seconds to reuse approximate context-token estimates for status refreshes."
   :type 'number
   :group 'e-context-status)
+
+(defun e-context-status--profile-enabled-p ()
+  "Return non-nil when developer profiling is currently available."
+  (and (fboundp 'e-dev-profile-enabled-p)
+       (fboundp 'e-dev-profile-measure-thunk)
+       (e-dev-profile-enabled-p)))
+
+(defun e-context-status--profile-call (event options thunk)
+  "Measure THUNK as EVENT with OPTIONS when developer profiling is enabled."
+  (if (e-context-status--profile-enabled-p)
+      (e-dev-profile-measure-thunk event options thunk)
+    (funcall thunk)))
 
 (defun e-context-status-model-token-limit (model &optional limits)
   "Return configured max context tokens for MODEL, or nil.
@@ -188,42 +203,51 @@ mutated in place.  BYTES-PER-TOKEN is forwarded to the estimator."
 (cl-defun e-context-status-text
     (harness session-id
              &key (prefix "e-context") prefer-token-usage estimate-cache
-             token-limits bytes-per-token)
+             token-limits bytes-per-token (estimate-context t))
   "Return context-state status text for SESSION-ID through HARNESS.
 PREFIX is the leading label.  When PREFER-TOKEN-USAGE is non-nil and fresh
 provider usage exists, skip the expensive context-token estimate.
 ESTIMATE-CACHE is an optional caller-owned cons cell (TOKENS . TIME) reused
 across calls.
-TOKEN-LIMITS and BYTES-PER-TOKEN override the configured defaults."
-  (if (and harness session-id)
-      (let* ((usage-event (e-context-status--latest-token-usage-event
-                           harness session-id))
-             (latest-compaction (e-context-status--latest-valid-compaction
-                                  harness session-id))
-             (usage-tokens
-              (unless (e-context-status--usage-before-compaction-p
-                       usage-event latest-compaction)
-                (e-context-status--token-usage-input-tokens
-                 (plist-get usage-event :payload))))
-             (context (unless (and prefer-token-usage usage-tokens)
-                        (ignore-errors
-                          (e-harness-context harness session-id))))
-             (options (or (plist-get context :options)
-                          (ignore-errors
-                            (e-harness-turn-options harness session-id))))
-             (model (plist-get options :model))
-             (effort (plist-get options :reasoning-effort))
-             (estimated-tokens
-              (and (not usage-tokens)
-                   context
-                   (ignore-errors
-                     (e-context-status--cached-estimate
-                      context estimate-cache bytes-per-token))))
-             (used-tokens (or usage-tokens estimated-tokens))
-             (max-tokens (e-context-status-model-token-limit model token-limits)))
-        (e-context-status-format
-         prefix model effort used-tokens max-tokens (not usage-tokens)))
-    prefix))
+TOKEN-LIMITS and BYTES-PER-TOKEN override the configured defaults.
+When ESTIMATE-CONTEXT is nil, avoid building full model-facing context."
+  (e-context-status--profile-call
+   'context-status.text
+   (list :session-id session-id
+         :metadata (list :prefix prefix
+                         :prefer-token-usage (and prefer-token-usage t)
+                         :estimate-context (and estimate-context t)))
+   (lambda ()
+     (if (and harness session-id)
+         (let* ((usage-event (e-context-status--latest-token-usage-event
+                              harness session-id))
+                (latest-compaction (e-context-status--latest-valid-compaction
+                                     harness session-id))
+                (usage-tokens
+                 (unless (e-context-status--usage-before-compaction-p
+                          usage-event latest-compaction)
+                   (e-context-status--token-usage-input-tokens
+                    (plist-get usage-event :payload))))
+                (context (when (and estimate-context
+                                    (not (and prefer-token-usage usage-tokens)))
+                           (ignore-errors
+                             (e-harness-context harness session-id))))
+                (options (or (plist-get context :options)
+                             (ignore-errors
+                               (e-harness-turn-options harness session-id))))
+                (model (plist-get options :model))
+                (effort (plist-get options :reasoning-effort))
+                (estimated-tokens
+                 (and (not usage-tokens)
+                      context
+                      (ignore-errors
+                        (e-context-status--cached-estimate
+                         context estimate-cache bytes-per-token))))
+                (used-tokens (or usage-tokens estimated-tokens))
+                (max-tokens (e-context-status-model-token-limit model token-limits)))
+           (e-context-status-format
+            prefix model effort used-tokens max-tokens (not usage-tokens)))
+       prefix))))
 
 (provide 'e-context-status)
 

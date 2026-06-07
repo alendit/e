@@ -4303,6 +4303,33 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-set-status-skips-duplicate-updates ()
+  "Repeated ordinary status updates do not rewrite header-line state."
+  (let* ((store (e-session-store-create))
+         (backend (e-backend-fake-create :items nil))
+         (harness (e-harness-create
+                   :backend backend
+                   :sessions store
+                   :default-options
+                   '(:model "gpt-5.5" :reasoning-effort "high")))
+         (buffer (e-chat-open :harness harness
+                              :session-id "chat-status-duplicate"))
+         (session-title-calls 0)
+         (original-session-title (symbol-function 'e-harness-session-title)))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat--set-status "waiting for provider")
+          (cl-letf (((symbol-function 'e-harness-session-title)
+                     (lambda (&rest args)
+                       (setq session-title-calls (1+ session-title-calls))
+                       (apply original-session-title args))))
+            (e-chat--set-status "waiting for provider"))
+          (should (= session-title-calls 0))
+          (should (string-match-p "E Chat: waiting for provider"
+                                  header-line-format)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-profile-records-status-updates ()
   "Enabled dev profiling records chat status updates."
   (let* ((profile-directory (make-temp-file "e-chat-profile-" t))
@@ -4323,6 +4350,36 @@
           (let* ((report (e-dev-profile-report-data e-dev-profile--latest-file))
                  (aggregates (plist-get report :aggregates)))
             (should (alist-get "chat.status" aggregates nil nil #'equal))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (delete-directory profile-directory t))))
+
+(ert-deftest e-chat-test-profile-records-render-ui-spans ()
+  "Enabled dev profiling records chat render UI spans."
+  (let* ((profile-directory (make-temp-file "e-chat-profile-" t))
+         (e-dev-profile-directory profile-directory)
+         (e-dev-profile--enabled nil)
+         (e-dev-profile--current-file nil)
+         (e-dev-profile--latest-file nil)
+         (store (e-session-store-create))
+         (backend (e-backend-fake-create :items nil))
+         (harness (e-harness-create :backend backend :sessions store))
+         (buffer (e-chat-open :harness harness
+                              :session-id "chat-render-profile")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-dev-profile-start)
+          (e-chat--render-event
+           (list :type 'message-added
+                 :turn-id "turn-profile"
+                 :created-at "2026-06-07T20:00:00Z"
+                 :payload (list :message
+                                '(:role assistant :content "profiled"))))
+          (e-dev-profile-stop)
+          (let* ((report (e-dev-profile-report-data e-dev-profile--latest-file))
+                 (aggregates (plist-get report :aggregates)))
+            (should (alist-get "chat.render-event" aggregates nil nil #'equal))
+            (should (alist-get "chat.insert-entry" aggregates nil nil #'equal))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer))
       (delete-directory profile-directory t))))
@@ -4349,6 +4406,31 @@
             (e-chat--set-status "idle" t))
           (should (> context-calls 0))
           (should (string-match-p "gpt-5.5/high" mode-name)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-prefer-token-usage-skips-missing-context-estimate ()
+  "Fast mode-line refresh avoids context rebuilding when usage is missing."
+  (let* ((store (e-session-store-create))
+         (backend (e-backend-fake-create :items nil))
+         (harness (e-harness-create
+                   :backend backend
+                   :sessions store
+                   :default-options
+                   '(:model "gpt-5.5" :reasoning-effort "high")))
+         (buffer (e-chat-open :harness harness
+                              :session-id "chat-mode-line-fast"))
+         (context-calls 0))
+    (unwind-protect
+        (with-current-buffer buffer
+          (cl-letf (((symbol-function 'e-harness-context)
+                     (lambda (&rest _args)
+                       (setq context-calls (1+ context-calls))
+                       (error "context estimate should be skipped"))))
+            (e-chat--refresh-mode-line-status t))
+          (should (= context-calls 0))
+          (should (equal mode-name
+                         "e-chat gpt-5.5/high")))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 

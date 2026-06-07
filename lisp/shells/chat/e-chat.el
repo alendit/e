@@ -2777,7 +2777,13 @@ When RECORD is nil, clear only buffer-local status markers."
 
 (defun e-chat--render-turn-transient (turn-id record)
   "Render RECORD's intermittent entries as a temporary block for TURN-ID."
-  (e-chat--render-running-status turn-id record))
+  (e-chat--profile-call
+   'chat.render-turn-transient
+   (list :session-id e-chat-session-id
+         :turn-id turn-id
+         :buffer-name (buffer-name))
+   (lambda ()
+     (e-chat--render-running-status turn-id record))))
 
 (defun e-chat--cancel-pending-activity-redraw (&optional turn-id)
   "Cancel the pending activity redraw.
@@ -3455,51 +3461,59 @@ Preserve Markdown faces already present in the range."
 When ENSURE-COMPOSER is non-nil, recreate the composer after inserting.
 TURN-ID tags the rendered entry for response navigation.  DETAILS-TEXT, when
 non-nil, is used by focused block activation."
-  (let* ((active-turn-id e-chat--progress-turn-id)
-         (active-record (and active-turn-id
-                             (e-chat--existing-turn-record active-turn-id)))
-         (had-composer nil)
-         (side (e-chat--entry-side title))
-         (block-id (and turn-id (e-chat--next-block-id))))
-    (when active-turn-id
-      (e-chat--delete-running-status active-record))
-    (setq had-composer (e-chat--delete-composer))
-    (let ((inhibit-read-only t))
-      (goto-char (point-max))
-      (unless (or (bobp) (bolp))
-        (insert "\n"))
-      (e-chat--insert-durable-entry-separators turn-id side)
-      (let ((start (point)))
-        (let ((content-start (+ start (e-chat--entry-content-offset title))))
-          (e-chat--insert-protected
-           (e-chat--entry-text title content)
-           (e-chat--entry-face title)
-           (when block-id
-             `(e-chat-turn-id ,turn-id
-               e-chat-block-id ,block-id)))
-          (when (equal title "Assistant")
-            (e-chat--apply-assistant-markdown
-             content-start
-             (point))
-            (e-chat--apply-final-assistant-face
-             content-start
-             (point)))
-          (e-chat--update-block-bounds
-           block-id
-           turn-id
-           start
-           (point)
-           (e-chat--block-kind-for-title title)
-           content
-           content-start
-           (+ content-start (length content))
-           nil
-           details-text)
-          (e-chat--record-durable-entry-rendered turn-id side))))
-    (if active-turn-id
-        (e-chat--render-running-status active-turn-id active-record)
-      (when (or ensure-composer had-composer)
-        (e-chat--insert-composer)))))
+  (e-chat--profile-call
+   'chat.insert-entry
+   (list :session-id e-chat-session-id
+         :turn-id turn-id
+         :buffer-name (buffer-name)
+         :metadata (list :title title
+                         :ensure-composer (and ensure-composer t)))
+   (lambda ()
+     (let* ((active-turn-id e-chat--progress-turn-id)
+            (active-record (and active-turn-id
+                                (e-chat--existing-turn-record active-turn-id)))
+            (had-composer nil)
+            (side (e-chat--entry-side title))
+            (block-id (and turn-id (e-chat--next-block-id))))
+       (when active-turn-id
+         (e-chat--delete-running-status active-record))
+       (setq had-composer (e-chat--delete-composer))
+       (let ((inhibit-read-only t))
+         (goto-char (point-max))
+         (unless (or (bobp) (bolp))
+           (insert "\n"))
+         (e-chat--insert-durable-entry-separators turn-id side)
+         (let ((start (point)))
+           (let ((content-start (+ start (e-chat--entry-content-offset title))))
+             (e-chat--insert-protected
+              (e-chat--entry-text title content)
+              (e-chat--entry-face title)
+              (when block-id
+                `(e-chat-turn-id ,turn-id
+                  e-chat-block-id ,block-id)))
+             (when (equal title "Assistant")
+               (e-chat--apply-assistant-markdown
+                content-start
+                (point))
+               (e-chat--apply-final-assistant-face
+                content-start
+                (point)))
+             (e-chat--update-block-bounds
+              block-id
+              turn-id
+              start
+              (point)
+              (e-chat--block-kind-for-title title)
+              content
+              content-start
+              (+ content-start (length content))
+              nil
+              details-text)
+             (e-chat--record-durable-entry-rendered turn-id side))))
+       (if active-turn-id
+           (e-chat--render-running-status active-turn-id active-record)
+         (when (or ensure-composer had-composer)
+           (e-chat--insert-composer)))))))
 
 (defun e-chat-enter-response-navigation ()
   "Enter response navigation mode and focus the nearest rendered turn."
@@ -3999,6 +4013,7 @@ expensive context-token estimate path."
      e-chat-harness e-chat-session-id
      :prefix "e-chat"
      :prefer-token-usage prefer-token-usage
+     :estimate-context (not prefer-token-usage)
      :estimate-cache e-chat--mode-line-context-estimate-cache
      :token-limits e-chat-model-context-token-limits
      :bytes-per-token e-chat-context-token-estimate-bytes-per-token)))
@@ -4015,34 +4030,37 @@ an approximate full-context estimate."
 (defun e-chat--set-status (status &optional refresh-mode-line)
   "Set chat buffer STATUS.
 When REFRESH-MODE-LINE is non-nil, also refresh context-aware mode-line text."
-  (e-chat--profile-call
-   'chat.status
-   (list :session-id e-chat-session-id
-         :buffer-name (buffer-name)
-         :metadata (list :status status
-                         :refresh-mode-line (and refresh-mode-line t)))
-   (lambda ()
-     (setq e-chat--status status)
-     (setq header-line-format
-           (if (and e-chat-harness e-chat-session-id)
-               (let* ((title (ignore-errors
-                               (e-harness-session-title
-                                e-chat-harness
-                                e-chat-session-id)))
-                      (options (ignore-errors
-                                 (e-harness-turn-options
+  (unless (and (not refresh-mode-line)
+               (equal status e-chat--status)
+               header-line-format)
+    (e-chat--profile-call
+     'chat.status
+     (list :session-id e-chat-session-id
+           :buffer-name (buffer-name)
+           :metadata (list :status status
+                           :refresh-mode-line (and refresh-mode-line t)))
+     (lambda ()
+       (setq e-chat--status status)
+       (setq header-line-format
+             (if (and e-chat-harness e-chat-session-id)
+                 (let* ((title (ignore-errors
+                                 (e-harness-session-title
                                   e-chat-harness
                                   e-chat-session-id)))
-                      (model (plist-get options :model))
-                      (effort (plist-get options :reasoning-effort)))
-                 (format "E Chat: %s - %s - %s/%s"
-                         status
-                         title
-                         (or model "model unset")
-                         (or effort "effort unset")))
-             (format "E Chat: %s" status)))
-     (when refresh-mode-line
-       (e-chat--refresh-mode-line-status)))))
+                        (options (ignore-errors
+                                   (e-harness-turn-options
+                                    e-chat-harness
+                                    e-chat-session-id)))
+                        (model (plist-get options :model))
+                        (effort (plist-get options :reasoning-effort)))
+                   (format "E Chat: %s - %s - %s/%s"
+                           status
+                           title
+                           (or model "model unset")
+                           (or effort "effort unset")))
+               (format "E Chat: %s" status)))
+       (when refresh-mode-line
+         (e-chat--refresh-mode-line-status))))))
 
 (defun e-chat--title-block-end ()
   "Return the end position of the current title block."
@@ -4063,14 +4081,19 @@ When REFRESH-MODE-LINE is non-nil, also refresh context-aware mode-line text."
 
 (defun e-chat--refresh-session-display ()
   "Refresh presentation surfaces derived from attached session metadata."
-  (when (and e-chat-harness e-chat-session-id)
-    (let ((title (e-chat--session-title)))
-      (unless (equal title e-chat--rendered-session-title)
-        (setq e-chat--rendered-session-title title)
-        (e-chat--rename-buffer-for-session)
-        (e-chat--refresh-title-block)
-        (when e-chat--status
-          (e-chat--set-status e-chat--status))))))
+  (e-chat--profile-call
+   'chat.refresh-session-display
+   (list :session-id e-chat-session-id
+         :buffer-name (buffer-name))
+   (lambda ()
+     (when (and e-chat-harness e-chat-session-id)
+       (let ((title (e-chat--session-title)))
+         (unless (equal title e-chat--rendered-session-title)
+           (setq e-chat--rendered-session-title title)
+           (e-chat--rename-buffer-for-session)
+           (e-chat--refresh-title-block)
+           (when e-chat--status
+             (e-chat--set-status e-chat--status))))))))
 
 (defun e-chat--context-buffer-text (context session-id)
   "Return display text for CONTEXT belonging to SESSION-ID."
@@ -4106,7 +4129,15 @@ When REFRESH-MODE-LINE is non-nil, also refresh context-aware mode-line text."
 
 (defun e-chat--render-event (event)
   "Render harness EVENT into the current chat buffer."
-  (pcase (plist-get event :type)
+  (e-chat--profile-call
+   'chat.render-event
+   (list :session-id e-chat-session-id
+         :turn-id (plist-get event :turn-id)
+         :buffer-name (buffer-name)
+         :metadata (list :event-type
+                         (symbol-name (plist-get event :type))))
+   (lambda ()
+     (pcase (plist-get event :type)
     ('turn-started
      (e-chat--set-turn-time (plist-get event :turn-id)
                              :started-at
@@ -4254,7 +4285,7 @@ When REFRESH-MODE-LINE is non-nil, also refresh context-aware mode-line text."
      (e-chat--set-status "idle")
      (e-chat--insert-entry "System" "Session reset" t))
     (_
-     (e-chat--insert-entry "System" (format "Event: %S" event) t))))
+     (e-chat--insert-entry "System" (format "Event: %S" event) t))))))
 
 (defun e-chat--tail-messages (messages limit)
   "Return at most LIMIT trailing MESSAGES."
