@@ -1091,6 +1091,20 @@ has no visible window."
           (select-window window)
         (pop-to-buffer target)))))
 
+(defun e-org-canvas--input-abort-active-turn ()
+  "Abort the running turn attached to the current input/result pane."
+  (when (and e-org-canvas-input--harness
+             e-org-canvas-input--session-id
+             e-org-canvas-input--active-turn-id
+             (equal (plist-get
+                     (e-harness-state
+                      e-org-canvas-input--harness
+                      e-org-canvas-input--session-id)
+                     :active-turn)
+                    e-org-canvas-input--active-turn-id))
+    (e-chat-session-abort e-org-canvas-input--harness
+                          e-org-canvas-input--session-id)))
+
 ;;;###autoload
 (defun e-org-canvas-input-cancel ()
   "Cancel the current Org Canvas input pane."
@@ -1098,6 +1112,7 @@ has no visible window."
   (let ((input (current-buffer))
         (target e-org-canvas-input--target-buffer)
         (input-window (get-buffer-window (current-buffer) t)))
+    (e-org-canvas--input-abort-active-turn)
     (e-org-canvas--input-clear-source-selection)
     (e-org-canvas--input-cleanup)
     (if-let ((target-window (and (buffer-live-p target)

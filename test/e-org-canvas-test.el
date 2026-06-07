@@ -875,6 +875,84 @@
       (when (buffer-live-p target)
         (kill-buffer target)))))
 
+(ert-deftest e-org-canvas-test-input-cancel-aborts-active-tool-request ()
+  "Cancelling a submitted input pane aborts the active Org Canvas turn."
+  (let* ((e-chat-submit-backend-delay 0)
+         (tool-callbacks nil)
+         (tool-cancelled nil)
+         (backend
+          (e-backend-create
+           :name "org-canvas-tool-abort"
+           :start
+           (cl-function
+            (lambda (&key messages options on-item on-done on-error
+                           on-request-start)
+              (ignore messages options on-error on-request-start)
+              (funcall on-item
+                       '(:type tool-call
+                         :id "call-1"
+                         :name "held-tool"
+                         :arguments (:text "hi")))
+              (funcall on-item '(:type done :reason tool-use))
+              (funcall on-done '(:status done))
+              nil))))
+         (tools (e-tools-registry-create))
+         (harness (e-harness-create :backend backend))
+         (target (get-buffer-create "org-canvas-abort-target"))
+         (input nil))
+    (e-tools-register
+     tools
+     :name "held-tool"
+     :description "Hold."
+     :start
+     (cl-function
+      (lambda (&key arguments on-done on-error on-request-start)
+        (ignore arguments on-error)
+        (setq tool-callbacks (list :on-done on-done))
+        (let ((request
+               (e-tools-request-create
+                :cancel (lambda ()
+                          (setq tool-cancelled t)
+                          t))))
+          (funcall on-request-start request)
+          request))))
+    (unwind-protect
+        (progn
+          (e-harness-create-session harness :id "session-1")
+          (with-current-buffer target
+            (org-mode)
+            (erase-buffer)
+            (insert "* Topic\nBody\n")
+            (e-org-canvas--mark-session
+             harness "session-1" target :scope 'thread :target-folder nil))
+          (setq input
+                (e-org-canvas--input-buffer
+                 :harness harness
+                 :session-id "session-1"
+                 :scope 'document
+                 :target-buffer target))
+          (cl-letf (((symbol-function 'e-harness-tools)
+                     (lambda (_harness &optional _session-id _turn-id) tools))
+                    ((symbol-function 'pop-to-buffer)
+                     (lambda (&rest _args) nil)))
+            (with-current-buffer input
+              (goto-char (point-max))
+              (insert "run held tool")
+              (e-org-canvas-input-submit)))
+          (should tool-callbacks)
+          (with-current-buffer input
+            (e-org-canvas-input-cancel))
+          (funcall (plist-get tool-callbacks :on-done) "late result")
+          (should (equal (plist-get
+                          (e-harness-wait harness "session-1" 0.1)
+                          :status)
+                         'cancelled))
+          (should tool-cancelled))
+      (when (buffer-live-p input)
+        (kill-buffer input))
+      (when (buffer-live-p target)
+        (kill-buffer target)))))
+
 (ert-deftest e-org-canvas-test-reopen-last-prompt-restores_scope_and_text ()
   "Reopening a prior prompt restores its scope and draft body."
   (let ((harness (e-org-canvas-test--harness))
