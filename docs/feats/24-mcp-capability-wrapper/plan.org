@@ -1,0 +1,412 @@
+#+title: MCP Capability Wrapper
+#+startup: overview
+
+* Goal
+
+Let =e= consume tools exposed by configured Model Context Protocol servers by
+turning discovered MCP tools into ordinary =e= tools contributed by an ordinary
+=e-capability=.
+
+The feature should preserve the current architecture boundary: capabilities are
+the runtime extension seam, and the harness should not gain a separate MCP
+runtime category.
+
+* Status
+
+Planned.
+
+* Background
+
+MCP support should follow the same broad shape as the skills wrapper:
+construction-time helper code returns an ordinary =e-capability=, and the
+harness consumes the result through existing capability contribution paths.
+
+Unlike skills, MCP servers are active protocol endpoints. They require
+subprocess ownership, JSON-RPC framing, initialization, discovery, tool calls,
+timeouts, and diagnostics. Those concerns should stay outside core harness
+policy.
+
+The chosen direction is discovery/registration, not a generic
+=mcp_call_tool=. =e= should discover MCP tools and register them as normal
+model-facing tools with stable names, descriptions, and JSON schemas.
+
+* Non-goals
+
+- Do not add MCP as a peer runtime primitive next to capabilities.
+- Do not teach =e-harness= about MCP server state, JSON-RPC framing, or MCP
+  lifecycle details.
+- Do not expose a single generic =mcp_call_tool= as the first user-facing API.
+- Do not implement MCP resources, prompts, sampling, auth UX, non-stdio
+  transports, or rich non-text content in the first slice.
+- Do not dynamically mutate the active tool registry during a model turn.
+
+* Design
+
+** Capability builder
+
+Add an MCP-specific capability builder:
+
+#+begin_src elisp
+(e-capability-with-mcp-create
+ :id "github-mcp"
+ :name "GitHub MCP"
+ :mcp-servers
+ (list (e-mcp-server-create
+        :id "github"
+        :command '("npx" "-y" "@modelcontextprotocol/server-github")
+        :env '(("GITHUB_TOKEN" . "...")))))
+#+end_src
+
+The builder returns an ordinary =e-capability=. Its =:tools= contribution is a
+registration function that registers generated =e= tools based on the MCP tool
+catalog.
+
+The harness sees only a capability. It registers the generated tools through
+the existing =e-tools-register= path.
+
+** Helper process boundary
+
+Introduce a small MCP wrapper/helper process owned outside the harness.
+
+The helper owns:
+
+- MCP server subprocess startup and shutdown.
+- MCP stdio JSON-RPC framing.
+- =initialize= and capability negotiation.
+- =tools/list= discovery.
+- =tools/call= execution.
+- =notifications/tools/list_changed= handling.
+- stdout/stderr capture and diagnostics.
+- timeout and protocol error normalization.
+
+Emacs talks to the helper using a small framed JSON protocol, following the
+same broad process pattern as the existing browser helper: lazy startup,
+request ids, per-request timeouts, stderr diagnostics, and reset support.
+
+** Discovery and registration flow
+
+On capability activation or explicit refresh:
+
+1. Ensure the MCP helper process is live.
+2. For each configured server, ask the helper to initialize or reuse the MCP
+   session.
+3. Ask the helper for the server's =tools/list= catalog.
+4. Convert each MCP tool into an =e= tool definition.
+5. Register each generated tool with =e-tools-register=.
+
+Generated tool names are deterministic and namespaced:
+
+#+begin_example
+mcp.<server-id>.<tool-name>
+#+end_example
+
+Example:
+
+#+begin_example
+mcp.github.create_issue
+#+end_example
+
+The generated =e= tool:
+
+- uses the MCP tool description, prefixed with the MCP server id when useful;
+- uses the MCP =inputSchema= as =e= =:parameters=;
+- stores metadata with the originating server id and MCP tool name;
+- calls the helper with the original MCP tool name and supplied arguments.
+
+** Tool call flow
+
+When the model calls =mcp.github.create_issue=:
+
+1. The generated =e= handler receives the already schema-shaped arguments.
+2. The handler sends a helper request equivalent to MCP =tools/call=:
+
+   #+begin_src json
+   {
+     "server": "github",
+     "tool": "create_issue",
+     "arguments": {
+       "title": "Bug",
+       "body": "Details"
+     }
+   }
+   #+end_src
+
+3. The helper sends MCP =tools/call= to the server.
+4. The helper returns normalized result content and diagnostics to Emacs.
+5. The generated handler returns a normal =e= tool result.
+
+MCP tool execution errors where the server returns =isError: true= should be
+model-visible tool errors. Infrastructure failures, such as dead helper
+process, invalid JSON-RPC, timeout, missing server, or missing MCP tool, should
+surface as hard backend/tool infrastructure errors.
+
+** Tool catalog refresh
+
+When the MCP server emits =notifications/tools/list_changed=, the helper marks
+that server catalog stale.
+
+The first implementation should support explicit refresh only:
+
+#+begin_example
+M-x e-mcp-refresh
+#+end_example
+
+or an equivalent internal refresh function used by tests. A later slice can add
+live shell notification or automatic refresh before the next turn. The first
+slice should avoid mutating the active registry during an in-flight turn.
+
+** Result mapping
+
+Initial result support should cover text content.
+
+MCP result:
+
+#+begin_src json
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "Created issue #123"
+    }
+  ],
+  "isError": false
+}
+#+end_src
+
+maps to a normal =e= tool result whose model-visible content is the text.
+
+If multiple text blocks are returned, join them with blank lines and preserve
+order. Unsupported content blocks should be summarized with their type and
+omitted payload details in the first slice, so the model gets a truthful result
+without pretending to support media or binary artifacts.
+
+* Implementation Plan
+
+** Task 1: MCP server and catalog data model
+
+Files:
+
+- Create =lisp/core/e-mcp.el=.
+- Create =test/e-mcp-test.el=.
+
+Steps:
+
+1. Add =e-mcp-server= with slots for =id=, =command=, =env=, and optional
+   =timeout=.
+2. Add =e-mcp-tool= with slots for =server-id=, =name=, =description=,
+   =input-schema=, and =metadata=.
+3. Add validators that reject empty server ids, empty commands, empty tool
+   names, and non-object input schemas.
+4. Test valid construction and each validation failure.
+
+Verification:
+
+#+begin_src sh
+rtk eldev test -f e-mcp-test
+#+end_src
+
+** Task 2: Helper protocol client in Emacs
+
+Files:
+
+- Modify =lisp/core/e-mcp.el=.
+- Modify =test/e-mcp-test.el=.
+
+Steps:
+
+1. Add helper process state, lazy startup, stderr capture, reset, and request id
+   generation.
+2. Add a framed JSON request function for helper operations:
+   - =list-tools=
+   - =call-tool=
+   - =refresh=
+3. Use per-request timeout handling and return diagnostics on helper failures.
+4. Unit-test the request/response parsing with a fake process buffer or helper
+   transport function so tests do not need a real MCP server.
+
+Verification:
+
+#+begin_src sh
+rtk eldev test -f e-mcp-test
+#+end_src
+
+** Task 3: MCP helper process
+
+Files:
+
+- Create =lisp/core/e-mcp-helper.mjs=.
+- Modify =lisp/core/e-mcp.el=.
+- Modify =test/e-mcp-test.el=.
+
+Steps:
+
+1. Implement a Node helper that accepts newline-delimited JSON requests from
+   Emacs.
+2. For each configured server, spawn the MCP server command with stdio pipes.
+3. Send MCP =initialize= before discovery or calls.
+4. Implement =tools/list= and =tools/call= forwarding.
+5. Track =notifications/tools/list_changed= and stale catalog state per server.
+6. Return normalized helper responses with =ok=, =result=, =error=, and
+   =diagnostics= fields.
+7. Add a minimal fixture MCP server for tests that exposes one echo tool and one
+   failing tool.
+
+Verification:
+
+#+begin_src sh
+rtk eldev test -f e-mcp-test
+#+end_src
+
+** Task 4: Discovery to =e= tool registration
+
+Files:
+
+- Modify =lisp/core/e-mcp.el=.
+- Modify =test/e-mcp-test.el=.
+
+Steps:
+
+1. Add =e-capability-with-mcp-create=.
+2. During the capability's tool registration contribution, list tools for each
+   configured MCP server.
+3. Register every MCP tool with a deterministic =mcp.<server-id>.<tool-name>=
+   name through =e-tools-register=.
+4. Map MCP =inputSchema= directly to =:parameters=.
+5. Store origin metadata on generated tool definitions.
+6. Test that a fake catalog registers the expected =e= tool names, schemas, and
+   descriptions.
+
+Verification:
+
+#+begin_src sh
+rtk eldev test -f e-mcp-test
+#+end_src
+
+** Task 5: Tool call result and error mapping
+
+Files:
+
+- Modify =lisp/core/e-mcp.el=.
+- Modify =test/e-mcp-test.el=.
+
+Steps:
+
+1. Implement generated tool handlers that call the helper with original MCP
+   server id, MCP tool name, and arguments.
+2. Convert MCP text content into model-visible =e= result content.
+3. Convert MCP =isError: true= into a model-visible tool execution error
+   result.
+4. Signal hard infrastructure errors for helper timeout, invalid helper
+   response, missing server, missing tool, and protocol failure.
+5. Test success, MCP execution error, unsupported content, timeout, and helper
+   protocol error cases.
+
+Verification:
+
+#+begin_src sh
+rtk eldev test -f e-mcp-test
+#+end_src
+
+** Task 6: Refresh command and diagnostics
+
+Files:
+
+- Modify =lisp/core/e-mcp.el=.
+- Modify =test/e-mcp-test.el=.
+
+Steps:
+
+1. Add =e-mcp-refresh= to ask the helper for fresh catalogs and clear stale
+   state.
+2. Expose captured helper/server stderr in diagnostics.
+3. Ensure refresh does not mutate the active registry during an in-flight turn;
+   it should affect the next capability construction or explicit harness sync.
+4. Test explicit refresh with a fake catalog that changes after
+   =notifications/tools/list_changed=.
+
+Verification:
+
+#+begin_src sh
+rtk eldev test -f e-mcp-test
+#+end_src
+
+** Task 7: Default integration smoke path
+
+Files:
+
+- Modify =test/e-mcp-test.el=.
+- Do not modify =lisp/defaults/e-default-layers.el= in the first slice.
+- Do not modify =test/e-defaults-test.el= in the first slice.
+
+Steps:
+
+1. Keep MCP opt-in by explicit capability construction for the first slice.
+2. Add a test-only capability using the fixture MCP server.
+3. Verify the generated tool appears in a harness tool registry.
+4. Execute the generated tool through =e-tools-execute= and assert the result.
+
+Verification:
+
+#+begin_src sh
+rtk eldev test -f e-mcp-test -f e-harness-test
+#+end_src
+
+* Acceptance Criteria
+
+- A configured stdio MCP server can be discovered through the helper.
+- MCP =tools/list= entries become normal =e= tools with deterministic names.
+- Generated tools use MCP descriptions and input schemas.
+- Calling a generated tool sends MCP =tools/call= with the original MCP tool
+  name and arguments.
+- Text results are returned as model-visible =e= tool content.
+- MCP =isError: true= is visible to the model as a tool execution error.
+- Helper/process/protocol failures surface as infrastructure errors.
+- The harness and core capability contract stay MCP-agnostic.
+- MCP support is opt-in and does not alter existing default tools.
+
+* Test Plan
+
+Run focused tests while developing:
+
+#+begin_src sh
+rtk eldev test -f e-mcp-test
+#+end_src
+
+Run integration-adjacent tests after registration is wired:
+
+#+begin_src sh
+rtk eldev test -f e-mcp-test -f e-harness-test -f e-tools-test
+#+end_src
+
+After changing loaded Elisp files during implementation, reload the user's
+running Emacs from the repo root:
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Then verify a small live scenario with a fixture MCP server if a running Emacs
+server is available.
+
+* Architecture Review Questions
+
+1. If this work package stopped here, would the project be better off than if
+   it had not been built?
+2. What final direction does this move toward?
+3. Which decisions are likely to change, uncertain, or stable, and are
+   uncertain ones local and reversible instead of hidden behind speculative
+   abstraction?
+4. What component owns this behavior, and why?
+5. Does this change increase or reduce coupling?
+6. Did any dependency start pointing the wrong way, especially from stable
+   policy toward concrete adapters, providers, UI, transport, persistence, or
+   tool clients?
+7. Could any side effect be moved outward into an adapter or shell?
+8. Are the abstractions and interfaces semantically real, and can
+   implementations substitute for each other without narrowed preconditions,
+   weakened behavior, ignored requirements, or unsupported-operation errors?
+9. What compatibility expectations apply, and were obsolete paths removed
+   unless required?
+10. What legacy code can we remove now?
+11. Where are expected errors handled, and where do unexpected errors surface?
+12. What tests prove the core behavior independently of the full system?
