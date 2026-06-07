@@ -14,13 +14,15 @@
 (require 'e-context-inspection)
 (require 'e-layer-selection)
 (require 'e-layers)
+(require 'e-runtime-context)
 
 (defun e-core-layer-create ()
   "Create the e self-management layer."
   (e-layer-create
    :id 'e
    :name "e"
-   :capabilities (list (e-layer-selection-capability-create)
+   :capabilities (list (e-runtime-context-capability-create)
+                       (e-layer-selection-capability-create)
                        (e-context-inspection-capability-create))))
 
 (provide 'e-layer)

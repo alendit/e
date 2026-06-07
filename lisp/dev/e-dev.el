@@ -103,6 +103,7 @@
                   "lisp/core/e-core.el"
                   "lisp/layers/e-layer-selection.el"
                   "lisp/layers/e-context-inspection.el"
+                  "lisp/layers/e-runtime-context.el"
                   "lisp/layers/e-layer.el"
                   "lisp/layers/e-dev-layer.el"
                   "lisp/layers/agents/e-agents-std-context.el"

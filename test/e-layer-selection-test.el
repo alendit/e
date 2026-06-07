@@ -19,6 +19,7 @@
 (require 'e-layer)
 (require 'e-layer-selection)
 (require 'e-layers)
+(require 'e-resources)
 
 (defmacro e-layer-selection-test--with-empty-layer-registry (&rest body)
   "Run BODY with an isolated layer registry."
@@ -36,7 +37,31 @@
     (should (functionp (e-capabilities-action capability :toggle)))
     (should (eq (e-layer-id layer) 'e))
     (should (equal (mapcar #'e-capability-id (e-layer-capabilities layer))
-                   '(layer-selection context-inspection)))))
+                   '(e-runtime-context layer-selection context-inspection)))))
+
+(ert-deftest e-layer-selection-test-runtime-context-explains-e ()
+  "The default e layer explains the e runtime independently of projects."
+  (let* ((harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)))
+         (layer (e-core-layer-create)))
+    (e-harness-activate-layer harness layer)
+    (e-harness-create-session harness :id "session-1")
+    (let ((content (mapconcat
+                    (lambda (message)
+                      (plist-get message :content))
+                    (plist-get (e-harness-context harness "session-1")
+                               :messages)
+                    "\n\n")))
+      (should (string-match-p "Emacs-hosted agent runtime" content))
+      (should (string-match-p "e://e/refs/runtime.md" content))
+      (should (string-match-p "e://e/refs/architecture.md" content)))
+    (let ((resources (e-harness-resources harness "session-1")))
+      (should (string-match-p
+               "capabilities"
+               (e-resources-read resources "e://e/refs/runtime.md" nil)))
+      (should (string-match-p
+               "harness"
+               (e-resources-read resources "e://e/refs/architecture.md" nil))))))
 
 (ert-deftest e-layer-selection-test-toggles-known-layer-on-harness ()
   "Layer selection can enable and disable a registered layer by id."
