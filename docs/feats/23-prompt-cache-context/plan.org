@@ -1,0 +1,564 @@
+#+title: Plan: Prompt Cache Friendly Context
+#+author: e planning
+#+date: 2026-06-07
+#+startup: overview
+
+* Status
+
+Planned.
+
+* Goal
+
+Make default chat, canvas, and Org Canvas context assembly more friendly to
+OpenAI prompt caching by keeping stable request prefixes stable, moving
+per-turn dynamic context later, and wiring explicit cache controls through the
+OpenAI adapter.
+
+* Motivation
+
+Cached input tokens are cheaper and can reduce latency. Current E requests can
+benefit from OpenAI's automatic prompt caching when long stable prefixes repeat,
+but the default chat context strategy does not deliberately maximize that
+benefit:
+
+- the OpenAI adapter records cached token usage after the response, but does not
+  send =prompt_cache_key= or =prompt_cache_retention=;
+- all capability context is built as prefix messages before transcript history;
+- dynamic canvas, Org Canvas focus, visible-buffer, and attachment content can
+  appear early enough to shorten reusable prefixes;
+- canvas and Org Canvas use the default chat harness, so their cache behavior is
+  a consequence of the shared context pipeline rather than a separately designed
+  strategy.
+
+Current OpenAI guidance is to keep static or repeated content at the beginning,
+place dynamic user-specific context at the end, use =prompt_cache_key=
+consistently for repeated traffic with common prefixes, optionally use
+=prompt_cache_retention= where supported, and monitor cached token counts.
+
+* Non-goals
+
+- Do not switch E to OpenAI-managed conversation state or =previous_response_id=
+  in this feature.
+- Do not remove transcript-stack session semantics.
+- Do not change the user-facing behavior of chat, canvas, or Org Canvas prompts.
+- Do not hide live buffer, canvas, or visible-window context from the model.
+- Do not make cache behavior OpenAI-only in core harness abstractions. Core may
+  expose neutral metadata or options, but provider-specific request fields belong
+  in the OpenAI adapter.
+- Do not optimize every token in the prompt. This feature is about stable prefix
+  structure and measurable cache controls, not prompt minification.
+
+* Current behavior
+
+- =e-default-chat-layer-ids= activates =agents-std-context=, =harness-base=,
+  =e=, =os-base=, =emacs-base=, =web=, =text-editing=, =org-canvas=, and
+  =project-local= by default.
+- =e-default-chat-harness-create= creates an OpenAI harness, attaches the
+  internal =chat-session= layer, then activates configured layers.
+- =e-harness-context= asks capabilities for context messages, then passes those
+  messages as =:prefix-messages= to =e-context-build=.
+- =e-context-transcript-stack-create= returns transcript messages, optionally
+  compacted, and =e-context-build= prepends all capability context messages.
+- =e-capabilities-context-messages= sorts capability instructions and context
+  provider messages by priority and stable tie-breakers.
+- =e-openai-codex-request-body= moves all backend-neutral system messages into
+  the Responses API top-level =instructions= string, then sends non-system
+  messages as =input= items.
+- =e-openai-codex--usage-item= and
+  =e-openai-chat-completion--usage-item= normalize =cached_tokens= into
+  =:cached-input-tokens=, so E can already observe prompt-cache results.
+- =e-chat-session-context-attachments-provider= emits current attachment and
+  canvas contents as a system context message with priority 120.
+- =e-org-canvas-context-provider= emits current scope, document uri, heading
+  path, focus summary, and visibility state as a system context message with
+  priority 118.
+- =e-emacs-visible-buffers-context-provider= emits visible-buffer state with
+  priority 320.
+
+* Accepted decisions
+
+** Preserve the shared default context pipeline
+
+Default chat, canvas, and Org Canvas should continue to use the default chat
+harness and transcript-stack strategy. Canvas-specific behavior should be
+expressed through capability context and metadata, not by forking a separate
+backend path.
+
+Why:
+
+- Canvas and Org Canvas already rely on chat sessions, tools, compaction, token
+  usage, and presentation state.
+- A shared fix improves every surface and avoids divergent provider behavior.
+- The underlying issue is ordering and request metadata, not a need for a new
+  shell-specific harness.
+
+** Add cache controls at the OpenAI adapter boundary
+
+Introduce backend-neutral turn options that the OpenAI adapter maps to API
+fields:
+
+- =:prompt-cache-key= -> =prompt_cache_key=
+- =:prompt-cache-retention= -> =prompt_cache_retention=
+
+The OpenAI adapter should include these fields only when present. Other
+backends should ignore these options unless they explicitly support comparable
+request fields later.
+
+Default chat should derive a stable cache key when no explicit key is present.
+The key should be stable for the repeated prefix shape but not include prompt
+text, transcript text, canvas contents, or tool outputs. A suitable first key is
+based on:
+
+- provider profile or wire API;
+- model;
+- normalized project root when available;
+- active layer ids;
+- a small version string for the cache-context strategy.
+
+** Classify context fragments by cache stability
+
+Do not rely only on numeric provider priorities to express cache behavior. Add a
+small cache-placement concept to context providers or capability fragments, with
+at least:
+
+- =static-prefix= :: repeated instructions and project policy that should appear
+  earliest;
+- =stable-context= :: project/layer context that may change across projects but
+  is stable across many turns in one session;
+- =dynamic-context= :: per-turn state such as live attachments, Org focus,
+  visible buffers, current selection, and token/status observations.
+
+Keep current priority ordering within a placement bucket so existing feature 09
+ordering semantics remain useful. Existing providers without an explicit
+placement should default to =stable-context= or the current behavior in a way
+that preserves compatibility.
+
+** Move dynamic context after stable instructions and policy
+
+The model still needs dynamic context every turn, but it should not interrupt
+the reusable prefix before stable guidance. The request should be shaped as:
+
+1. base/provider instructions;
+2. static capability instructions;
+3. stable project and AGENTS context;
+4. stable skill catalog/resource pointers;
+5. dynamic live context for the current turn;
+6. transcript and current user prompt.
+
+For the Responses API adapter this still becomes a top-level =instructions=
+string plus =input= items, but the top-level string should keep stable sections
+before dynamic sections.
+
+** Treat canvas and Org Canvas as dynamic context sources
+
+Canvas and Org Canvas providers should explicitly mark their per-turn state as
+=dynamic-context=:
+
+- =e-chat-session-context-attachments-provider= for attachment and canvas
+  contents;
+- =e-org-canvas-context-provider= for focus, scope, heading path, document uri,
+  and visibility state;
+- =e-emacs-visible-buffers-context-provider= for visible-buffer summaries.
+
+Their short, stable instructions can stay early. Their changing state should be
+late enough that repeated default chat/project policy remains cacheable.
+
+** Measure cache benefit with existing token usage events
+
+Do not add a separate analytics system. Extend tests and, if needed, developer
+status/reporting helpers to make =:cached-input-tokens= visible enough for
+review. The feature review should compare at least two repeated requests with
+the same cache key and stable prefix shape, recording:
+
+- input tokens;
+- cached input tokens;
+- model/provider;
+- cache key shape, not the full key if it contains local paths;
+- surface used: default chat, canvas, or Org Canvas.
+
+* Proposed API
+
+Backend-neutral options:
+
+#+begin_src emacs-lisp
+(:prompt-cache-key "e:openai:gpt-5.5:/path/hash:layers/hash:v1"
+ :prompt-cache-retention "24h")
+#+end_src
+
+OpenAI Responses body fields when present:
+
+#+begin_src json
+{
+  "prompt_cache_key": "e:openai:gpt-5.5:project:layers:v1",
+  "prompt_cache_retention": "24h"
+}
+#+end_src
+
+Context provider creation should remain compact. One possible shape:
+
+#+begin_src emacs-lisp
+(e-context-provider-create
+ :name 'org-canvas
+ :priority 118
+ :cache-placement 'dynamic-context
+ :build #'e-org-canvas-context-provider)
+#+end_src
+
+If adding a struct slot is too reload-sensitive, use provider metadata or a
+small wrapper helper instead. Do not add compatibility shims unless live reload
+requires them for intended extension seams.
+
+* File plan
+
+- Modify =lisp/core/e-context.el= for provider cache-placement metadata and
+  accessors, if placement belongs on providers.
+- Modify =lisp/core/e-capabilities.el= so capability context aggregation sorts
+  by cache-placement before priority while preserving stable tie-breakers.
+- Modify =lisp/core/e-harness.el= if default prompt-cache options are best
+  derived where harness, session, turn options, project root, and active layers
+  are all visible.
+- Modify =lisp/defaults/e-default-harnesses.el= if default chat harness creation
+  or sync should install cache defaults.
+- Modify =lisp/adapters/openai/e-openai.el= to serialize
+  =prompt_cache_key= and =prompt_cache_retention=.
+- Modify =lisp/layers/chat/e-chat-session.el= to mark live attachment/canvas
+  context as dynamic.
+- Modify =lisp/layers/org-canvas/e-org-canvas-capabilities.el= to mark Org
+  Canvas focus context as dynamic.
+- Modify =lisp/layers/emacs/e-emacs-capabilities.el= to mark visible-buffer
+  summaries as dynamic.
+- Modify =lisp/layers/agents/e-agents-std-context.el= only if AGENTS or skill
+  catalog providers need explicit stable placement.
+- Modify =test/e-context-test.el= and =test/e-capabilities-test.el= for context
+  placement and ordering behavior.
+- Modify =test/e-openai-test.el= for request body serialization and cached usage
+  expectations.
+- Modify =test/e-defaults-test.el= or =test/e-harness-test.el= for derived cache
+  key behavior.
+- Modify =test/e-org-canvas-test.el= and =test/e-chat-session-test.el= only if
+  provider placement is tested at the surface layer.
+
+* Implementation slices
+
+** Slice 1: OpenAI request cache controls
+
+Files:
+
+- Modify =lisp/adapters/openai/e-openai.el=
+- Modify =test/e-openai-test.el=
+
+Steps:
+
+1. Add a failing test for Responses request serialization:
+
+   #+begin_src emacs-lisp
+   (ert-deftest e-openai-test-request-body-includes-prompt-cache-options ()
+     "Responses requests include explicit prompt-cache controls when provided."
+     (should
+      (equal
+       (e-openai-codex-request-body
+        :messages '((:role user :content "hello"))
+        :options '(:model "gpt-test"
+                   :prompt-cache-key "e-test-cache"
+                   :prompt-cache-retention "24h"))
+       '(:model "gpt-test"
+         :store :json-false
+         :stream t
+         :instructions "You are a helpful assistant."
+         :input [(:type "message"
+                  :role "user"
+                  :content [(:type "input_text" :text "hello")])]
+         :tool_choice "auto"
+         :parallel_tool_calls t
+         :prompt_cache_key "e-test-cache"
+         :prompt_cache_retention "24h"))))
+   #+end_src
+
+2. Run the focused test and confirm it fails:
+
+   #+begin_src sh
+   rtk eldev test -f test/e-openai-test.el e-openai-test-request-body-includes-prompt-cache-options
+   #+end_src
+
+3. In =e-openai-codex-request-body=, append =:prompt_cache_key= and
+   =:prompt_cache_retention= when the corresponding backend-neutral options are
+   present and non-empty strings.
+
+4. Add a test that absent cache options preserve the current request body.
+
+5. Run:
+
+   #+begin_src sh
+   rtk eldev test -f test/e-openai-test.el
+   #+end_src
+
+** Slice 2: Provider cache-placement ordering
+
+Files:
+
+- Modify =lisp/core/e-context.el=
+- Modify =lisp/core/e-capabilities.el=
+- Modify =test/e-context-test.el=
+- Modify =test/e-capabilities-test.el=
+
+Steps:
+
+1. Add a provider cache-placement accessor test. The default for existing
+   providers should be stable and explicit:
+
+   #+begin_src emacs-lisp
+   (ert-deftest e-context-test-provider-default-cache-placement ()
+     (let ((provider (e-context-provider-create
+                      :name 'sample
+                      :priority 200
+                      :build (lambda (&rest _args) nil))))
+       (should (eq (e-context-provider-cache-placement provider)
+                   'stable-context))))
+   #+end_src
+
+2. Add a context aggregation ordering test where dynamic context has a lower
+   numeric priority than stable context but still appears later:
+
+   #+begin_src emacs-lisp
+   (ert-deftest e-capabilities-test-context-messages-keep-dynamic-after-stable ()
+     (let* ((dynamic-provider
+             (e-context-provider-create
+              :name 'dynamic
+              :priority 10
+              :cache-placement 'dynamic-context
+              :build (lambda (&rest _)
+                       (list (list :role 'system :content "dynamic")))))
+            (stable-provider
+             (e-context-provider-create
+              :name 'stable
+              :priority 900
+              :cache-placement 'stable-context
+              :build (lambda (&rest _)
+                       (list (list :role 'system :content "stable")))))
+            (capability
+             (e-capability-create
+              :id 'sample
+              :name "Sample"
+              :instructions "static instructions"
+              :context-providers (list dynamic-provider stable-provider))))
+       (should
+        (equal
+         (mapcar (lambda (message) (plist-get message :content))
+                 (e-capabilities-context-messages (list capability)))
+         '("static instructions" "stable" "dynamic")))))
+   #+end_src
+
+3. Implement a narrow placement slot or metadata helper in =e-context-provider=.
+   Valid placements should be =static-prefix=, =stable-context=, and
+   =dynamic-context=. Invalid values should signal clearly at construction or
+   accessor time.
+
+4. Update =e-capabilities-context-messages= sorting so the primary key is
+   placement rank, then current priority, capability index, provider index, and
+   message index.
+
+5. Preserve current instruction behavior by treating capability instructions as
+   =static-prefix=.
+
+6. Run:
+
+   #+begin_src sh
+   rtk eldev test -f test/e-context-test.el -f test/e-capabilities-test.el
+   #+end_src
+
+** Slice 3: Mark dynamic live context providers
+
+Files:
+
+- Modify =lisp/layers/chat/e-chat-session.el=
+- Modify =lisp/layers/org-canvas/e-org-canvas-capabilities.el=
+- Modify =lisp/layers/emacs/e-emacs-capabilities.el=
+- Modify =test/e-chat-session-test.el= if provider shape is asserted there
+- Modify =test/e-org-canvas-test.el= if provider shape is asserted there
+- Modify =test/e-emacs-capabilities-test.el= if provider shape is asserted there
+
+Steps:
+
+1. Update =e-chat-session-capability-create= so
+   =chat-session-attachments= uses =:cache-placement 'dynamic-context=.
+
+2. Update =e-org-canvas-capability-create= so =org-canvas= uses
+   =:cache-placement 'dynamic-context=.
+
+3. Update =e-emacs-visible-buffers-context-provider= so =visible-buffers= uses
+   =:cache-placement 'dynamic-context=.
+
+4. Add or adjust tests that inspect provider placement through the created
+   capabilities. Keep tests focused on metadata and ordering, not full prompt
+   bodies.
+
+5. Run:
+
+   #+begin_src sh
+   rtk eldev test -f test/e-chat-session-test.el -f test/e-org-canvas-test.el -f test/e-emacs-capabilities-test.el
+   #+end_src
+
+** Slice 4: Derive default cache keys for default chat harnesses
+
+Files:
+
+- Modify =lisp/core/e-harness.el=
+- Modify =lisp/defaults/e-default-harnesses.el= if default-harness setup is the
+  cleaner owner
+- Modify =test/e-harness-test.el= or =test/e-defaults-test.el=
+
+Steps:
+
+1. Add tests for a derived prompt cache key:
+
+   - key is present for a default chat turn when no explicit
+     =:prompt-cache-key= is set;
+   - key is stable across two turns with the same provider, model, project root,
+     and active layer ids;
+   - key changes when active layer ids change;
+   - explicit =:prompt-cache-key= in session or turn options wins.
+
+2. Implement a small helper such as =e-harness-default-prompt-cache-key= or a
+   default-chat-specific helper. The helper should hash long local paths and
+   layer lists so request metadata stays compact.
+
+3. Merge the derived key into turn options before the OpenAI adapter sees the
+   request. Do this in a provider-neutral place only if the option name remains
+   harmless for non-OpenAI backends.
+
+4. Default =:prompt-cache-retention= to ="24h"= only for OpenAI Responses
+   providers that support it. If provider capability is not explicit enough,
+   leave retention opt-in and document that decision in =review.org=.
+
+5. Run:
+
+   #+begin_src sh
+   rtk eldev test -f test/e-harness-test.el -f test/e-defaults-test.el
+   #+end_src
+
+** Slice 5: Context export and review evidence
+
+Files:
+
+- Modify =lisp/layers/e-context-inspection.el= if exported default context
+  should display cache-placement sections.
+- Modify =test/e-context-inspection-test.el= if export wording changes.
+- Create =docs/feats/23-prompt-cache-context/review.org= during implementation
+  handoff.
+
+Steps:
+
+1. If context inspection currently prints one flat default context, update the
+   export text to show the effective order of static, stable, and dynamic
+   fragments without dumping unbounded live content.
+
+2. Add or adjust tests for the export wording only if the user-visible context
+   inspection output changes.
+
+3. Run the focused context inspection test:
+
+   #+begin_src sh
+   rtk eldev test -f test/e-context-inspection-test.el
+   #+end_src
+
+4. In =review.org=, record a small before/after ordering sample and cached token
+   observations from repeated live requests. Use counts and cache key shape only;
+   do not paste full prompts, full document bodies, or secrets.
+
+* Testing plan
+
+Focused tests:
+
+#+begin_src sh
+rtk eldev test -f test/e-openai-test.el
+rtk eldev test -f test/e-context-test.el
+rtk eldev test -f test/e-capabilities-test.el
+rtk eldev test -f test/e-harness-test.el
+rtk eldev test -f test/e-defaults-test.el
+rtk eldev test -f test/e-chat-session-test.el
+rtk eldev test -f test/e-org-canvas-test.el
+rtk eldev test -f test/e-emacs-capabilities-test.el
+#+end_src
+
+Aggregate test before review:
+
+#+begin_src sh
+rtk eldev test
+#+end_src
+
+If aggregate tests fail because of unrelated dirty-tree blockers, record the
+exact failures in =review.org= and keep feature verification scoped to touched
+selectors.
+
+* Live verification
+
+After changing =lisp/*.el= or =e.el=, reload the running Emacs:
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Then verify with bounded probes:
+
+- export or inspect the default chat context order and confirm stable policy
+  appears before dynamic live context;
+- start a default chat turn and confirm the raw request metadata includes
+  =prompt_cache_key=;
+- repeat a similar default chat request with the same project/layer shape and
+  confirm =:cached-input-tokens= is reported when the provider returns usage;
+- open Org Canvas, submit a thread-scope prompt, and confirm Org focus/canvas
+  content remains present but appears in the dynamic portion of the context;
+- verify no full prompt bodies, full canvas text, or unbounded session state are
+  printed by diagnostics.
+
+Use scalar probes only. Avoid broad dumps of session records, buffer-local
+registries, full request bodies, or full document contents.
+
+* Compatibility expectations
+
+- Existing sessions remain readable.
+- Existing context provider constructors without cache-placement continue to
+  work.
+- Current prompt behavior remains semantically equivalent: the model still
+  receives stable instructions, project context, live Emacs context, canvas
+  content, Org focus, transcript history, tools, and user prompts.
+- Provider-specific prompt-cache fields are emitted only for OpenAI-compatible
+  request bodies that support them.
+- A full Emacs restart may be acceptable if adding a provider struct slot makes
+  old live records stale. Do not add long-lived compatibility shims solely for
+  stale in-memory struct layouts.
+
+* Risks
+
+- Reordering context can change model behavior even when all content is still
+  present. Mitigate with focused chat, canvas, and Org Canvas tests plus live
+  probes.
+- Adding a struct slot can make live-reloaded provider records stale. Keep the
+  change simple, document restart expectations if needed, and avoid masking
+  unexpected wrong-type errors.
+- A cache key that is too broad can miss cache opportunities; a key that is too
+  narrow can cause cache churn. Start with project/model/layer granularity and
+  record observations in review.
+- =prompt_cache_retention= support may vary by model/provider. The OpenAI
+  adapter should only send it when intentionally configured or clearly supported.
+- Dynamic context moved too late could be easier for the model to overlook.
+  Preserve clear headings and source labels.
+
+* Review questions
+
+1. Does the request prefix keep static instructions and project policy before
+   per-turn live context?
+2. Do default chat, canvas, and Org Canvas all use the same cache-friendly
+   context pipeline?
+3. Are provider-specific cache fields isolated in the OpenAI adapter?
+4. Is the cache key stable for repeated traffic but sensitive to model, project,
+   and active layer shape?
+5. Does the model still receive all live context needed for correct canvas and
+   Org Canvas edits?
+6. Are cached token counts visible enough to verify the feature without adding a
+   separate telemetry system?
+7. What compatibility expectations apply to live reload and stale in-memory
+   provider structs?
+8. Where do unsupported provider/model cache options surface?
+9. What tests prove ordering independently of a real OpenAI request?
+10. What live evidence shows cached-token behavior improved?
