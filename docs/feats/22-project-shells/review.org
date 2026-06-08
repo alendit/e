@@ -5,58 +5,159 @@
 
 In-review.
 
-* Implementation Notes
+* Summary
 
-- =e-layer= now accepts shell manifests through a =shells= slot.
-- =e-shells= keeps global built-in shell registration and adds harness-scoped
-  layer shell registration plus active discovery helpers.
-- Harness layer activation and deactivation register and unregister layer-owned
-  shells.
-- Default chat harness resync clears scoped shell registrations before
-  rebuilding active layers, so live reload does not retain stale project shells.
-- =e-project-local= discovers trusted =.e/layers/<id>/layer.el= packages and
-  flattens their capabilities and shells into the aggregate =project-local=
-  layer while preserving =.e/capabilities/= compatibility.
-- =docs/references/project_local_layers.org= documents the project layer layout,
-  trust boundary, compatibility path, and active shell discovery API.
+Feature 22 landed the main runtime seams promised by the plan: =e-layer= can
+carry shell manifests, harness layer activation registers and unregisters
+layer-owned shells, default harness sync clears stale scoped shells, and trusted
+=.e/layers/<id>/layer.el= packages are flattened into the aggregate
+=project-local= layer alongside compatibility =.e/capabilities/= packages.
 
-* Review Questions
+The focused test suite for the changed shell, layer, project-local, and default
+harness paths passes, but this review found two gaps that should be fixed before
+the feature moves from =In-review= to =Done=.
+
+* Findings
+
+** P1 Missing shell and command ids now validate as valid ids
+
+=e-shell--validate-id= accepts any symbol, and =nil= is a symbol in Emacs Lisp
+(=lisp/shells/e-shells.el:51=).  That regresses the old =e-shell-register=
+guard, which rejected a shell with no id before writing it into
+=e-shell--registry=.  The same helper validates command ids, so a command with
+no id also passes =e-shell-validate= (=lisp/shells/e-shells.el:56= and
+=lisp/shells/e-shells.el:63=).
+
+Evidence from this review pass:
+
+#+begin_example
+rtk eldev eval '(progn (require (quote e-shells)) (condition-case err (progn (e-shell-register (e-shell-create :id nil :name "Bad")) (princ "accepted")) (error (princ (format "error:%S" err)))))'
+accepted
+#+end_example
+
+Why this matters: layer-owned project shells are now loaded from trusted project
+Elisp and then registered through the same validation path.  A malformed project
+shell can occupy the =nil= key, appear in active shell lists with no usable id,
+and make command lookup/completion behavior ambiguous instead of failing at the
+manifest boundary.
+
+Expected fix: make =e-shell--validate-id= reject =nil=, add focused tests for
+shell ids and command ids, and keep the old missing-id behavior for global
+registration and the new layer-owned registration path.
+
+** P2 Layer-scoped skills are documented and planned, but not exposed
+
+The feature plan says project layers can include
+=.e/layers/<layer-id>/skills/<slug>/SKILL.md= and prefers a layer-owned resource
+URI such as =e://project-local/layers/<layer-id>/skills/project/<slug>=
+(=docs/feats/22-project-shells/plan.org:281=).  The test plan also calls out
+coverage for layer-scoped skills (=docs/feats/22-project-shells/plan.org:412=).
+The reference doc advertises the same preferred package layout
+(=docs/references/project_local_layers.org:15=).
+
+The implementation only scans =skills/= under legacy capability directories via
+=e-project-local--capability-skill-resources= and wraps those resources onto
+capabilities (=lisp/layers/project-local/e-project-local.el:214= and
+=lisp/layers/project-local/e-project-local.el:232=).  Project layer discovery
+loads the layer and aggregates its capabilities and shells
+(=lisp/layers/project-local/e-project-local.el:278= and
+=lisp/layers/project-local/e-project-local.el:303=), but it never creates or
+registers resources for =.e/layers/<id>/skills/=.
+
+Why this matters: a project author following the new reference document can add
+a layer-level skill file and see no runtime resource for it.  That makes the
+documented package layout partially inert and leaves one planned test case
+unimplemented.
+
+Expected fix: either implement layer-scoped skill resource exposure with the
+chosen URI shape and tests, or explicitly mark layer-scoped skills as deferred
+in both =plan.org= and =docs/references/project_local_layers.org= so the feature
+contract matches the implementation.
+
+* Verification
+
+Focused test run:
+
+#+begin_example
+rtk eldev test -f test/e-shells-test.el -f test/e-layers-test.el -f test/e-project-local-test.el -f test/e-defaults-test.el
+#+end_example
+
+Result: 39 tests run, 39 results as expected, 0 unexpected.
+
+Additional probe:
+
+#+begin_example
+rtk eldev eval '(progn (require (quote e-shells)) (condition-case err (progn (e-shell-register (e-shell-create :id nil :name "Bad")) (princ "accepted")) (error (princ (format "error:%S" err)))))'
+#+end_example
+
+Result: accepted a nil shell id, confirming Finding 1.
+
+Live validation was not rerun in this review pass.  The plan's live validation
+scenario should still be run after the findings above are addressed: reload the
+running Emacs, create a temporary trusted project layer with a shell and trivial
+capability/tool, confirm =e-shell-list-active= sees it for the project harness,
+and confirm leaving or disabling =project-local= removes it.
+
+* Plan Coverage
+
+- Slice 1 is substantially implemented: layer-owned shells exist, lifecycle
+  registration is harness-owned, global shell collisions are skipped, and sync
+  clears stale scoped shells.
+- Slice 2 is substantially implemented for =.e/layers/= loading, trust gating,
+  capability/shell aggregation, duplicate layer ids, and legacy
+  =.e/capabilities/= compatibility.
+- Slice 3 is partially implemented through =e-shell-list-active= and
+  =e-shell-get-active=.  There is no broader completion/listing UI update in
+  this slice; current docs direct harness-aware callers to the active APIs.
+- Slice 4 is partially implemented through
+  =docs/references/project_local_layers.org=, but the documented
+  layer-scoped =skills/= layout does not yet have runtime support.
+
+* Architecture Self-Check
 
 1. If this work package stopped here, would the project be better off than if it had not been built?
-   Yes.  Layers now own shell manifests and trusted project packages can ship a
-   capability/shell bundle without mutating global shell state directly.
+   Yes.  Layers now have a real shell-manifest slot, and project-local packages
+   can contribute shells and capabilities through harness-owned lifecycle
+   instead of mutating global shell state directly.
 2. What final direction does this move toward?
-   Project extensions become layer packages that can include capabilities,
-   shells, and related resources near the project code that needs them.
+   Project extensions become trusted layer packages that bundle model-facing
+   capabilities, presentation shells, and eventually layer-level resources near
+   the project code that needs them.
 3. Which decisions are likely to change, uncertain, or stable, and are uncertain ones local and reversible instead of hidden behind speculative abstraction?
-   The aggregate =project-local= layer is the chosen first implementation.
-   Independent per-project layer enablement remains a future decision isolated
-   from the global layer registry.
-4. What component owns this behavior, and why?
-   =e-project-local= owns trusted project discovery, =e-harness= owns lifecycle,
-   and =e-shells= owns shell registry/collision policy.
-5. Does this change increase or reduce coupling?
-   It reduces coupling by tying project shell visibility to active layers rather
-   than project code mutating the global shell registry.
-6. Did any dependency start pointing the wrong way?
-   No.  Harness lifecycle depends on the shell registry contract; project-local
-   discovery produces layer data but does not control shell lifecycle.
+   The aggregate =project-local= layer is the chosen first implementation and is
+   reversible if independent project-layer enablement becomes necessary.  The
+   layer-scoped skill URI is still unsettled and should stay local to
+   =e-project-local= until implemented.
+4. What component owns this behavior, and why? Does it have one cohesive responsibility and one primary reason to change?
+   =e-project-local= owns trusted project discovery, =e-harness= owns active
+   layer lifecycle, and =e-shells= owns shell registry validation and collision
+   policy.  Those responsibilities are cohesive.
+5. Does this change increase or reduce coupling? Are interfaces narrow, consumer-shaped, and free of unused capabilities?
+   It reduces coupling by making active shell visibility derive from active
+   layers.  =e-shell-list-active= and =e-shell-get-active= are narrow
+   harness-aware interfaces.
+6. Did any dependency start pointing the wrong way, especially from stable policy toward concrete adapters, providers, UI, transport, persistence, or tool clients?
+   No reversed dependency was found.  Harness lifecycle depends on the shell
+   registry contract, and project-local discovery produces layer data.
 7. Could any side effect be moved outward into an adapter or shell?
-   Project file loading stays in the project-local layer because it is the
-   existing trust-gated side-effect boundary.
-8. Are the abstractions and interfaces semantically real?
-   Yes.  Layers already package runtime behavior; shell manifests are another
-   layer-owned contribution.
-9. What compatibility expectations apply?
-   Existing =.e/capabilities/= packages and global shell registration continue
-   to work.
+   Project file loading stays in =e-project-local= because that is the existing
+   trust-gated side-effect boundary.  Shell registration is correctly performed
+   by the harness lifecycle, not project code.
+8. Are the abstractions and interfaces semantically real, and can implementations substitute for each other without narrowed preconditions, weakened behavior, ignored requirements, or unsupported-operation errors?
+   The layer-shell relationship is semantically real.  The current validation
+   gap around =nil= ids weakens the manifest boundary and should be fixed.
+9. What compatibility expectations apply, and were obsolete paths removed unless required?
+   Existing =.e/capabilities/= project packages remain supported as a
+   compatibility path.  No obsolete path is removable yet.
 10. What legacy code can we remove now?
-   None yet.  The compatibility path is still required for existing project
-   capability fixtures and users.
+   None in this slice.  Legacy capability-only packages still require
+   =.e/capabilities/= support.
 11. Where are expected errors handled, and where do unexpected errors surface?
-   Untrusted roots and duplicate shell/layer ids are reported and skipped.
-   Invalid factory results and invalid manifest values signal.
-12. What tests prove the core behavior independently of the full system?
-   Focused ERT tests cover active shell registry scoping, harness shell
-   lifecycle, default resync cleanup, trusted project layer contribution,
-   allowlist gating, and invalid project layer factories.
+   Untrusted roots and duplicate layer/shell ids are reported and skipped.
+   Invalid factories and invalid manifest values should signal; nil shell and
+   command ids currently fail to signal and should be corrected.
+12. What tests prove the core behavior independently of the full system? If the design changed, would tests change narrowly, or would unrelated tests need rewrites?
+   Focused tests cover scoped shell registration, harness layer lifecycle,
+   default sync cleanup, trusted project layer contribution, allowlist gating,
+   duplicate ids, and legacy capability compatibility.  Missing narrow tests are
+   nil id rejection and layer-scoped skill resources.
