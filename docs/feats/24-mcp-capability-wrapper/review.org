@@ -5,37 +5,98 @@
 
 In-review.
 
+Review pass: <2026-06-08 Mon>.
+
+* Findings
+
+No blocking implementation defect was found in the reviewed MCP wrapper slice.
+The implementation matches the main plan direction: MCP remains an opt-in
+capability helper, discovered MCP tools register as normal =e= tools, and the
+harness still consumes capability/tool records rather than MCP-specific runtime
+state.
+
+Open review notes:
+
+- Coverage gap: the plan asks to test helper timeout and invalid helper response
+  paths in [[file:plan.org::*Task 5: Tool call result and error mapping][Task 5]].
+  The implementation has =e-mcp-backend-timeout= and
+  =e-mcp-protocol-error= paths in [[file:../../../lisp/core/e-mcp.el][e-mcp.el]],
+  and it tests helper =ok: false= infrastructure failures, but the current test
+  file does not include explicit timeout or invalid-response tests.
+- Coverage gap: the plan asks to test explicit refresh after
+  =notifications/tools/list_changed= in [[file:plan.org::*Task 6: Refresh command and diagnostics][Task 6]].
+  The helper marks a session stale when that notification arrives and refresh
+  clears the stale flag, but the current tests change the fake catalog directly
+  rather than asserting the notification-driven stale transition.
+- Evidence hygiene: the previous review text listed full-suite testing, live
+  reload, and a live fixture probe without preserving current evidence. This
+  review pass re-verified the focused and integration-adjacent suites below, but
+  did not re-run a full suite or a live Emacs probe.
+
 * Implementation Summary
 
-- Added =e-mcp-server= and =e-mcp-tool= specs with validation.
-- Added =e-capability-with-mcp-create= so MCP catalogs register as ordinary
-  =e= tools through existing capability paths.
+- Added =e-mcp-server= and =e-mcp-tool= specs with validation for server ids,
+  commands, tool names, and input schemas.
+- Added =e-capability-with-mcp-create= so MCP catalogs register generated tools
+  through the existing capability tool contribution path.
 - Added the Node helper process for stdio MCP server lifecycle, JSON-RPC
-  framing, =initialize=, =tools/list=, =tools/call=, refresh, stderr
-  diagnostics, and process reset.
-- Added result mapping for text, basic structured JSON values, MCP execution
-  errors, unsupported content summaries, and helper infrastructure failures.
-- Kept MCP opt-in; no default layer integration was added.
+  framing, =initialize=, =tools/list=, =tools/call=, refresh, stderr diagnostics,
+  stale catalog tracking, and process reset.
+- Added result mapping for text blocks, basic structured JSON values, combined
+  text plus =structuredContent=, MCP =isError= execution errors, unsupported
+  content summaries, and helper infrastructure failures.
+- Kept MCP opt-in. No default layer integration was added.
 
-* Review Notes
+* Plan Comparison
 
-- Reviewer pass found that refresh did not fetch a fresh catalog; fixed by
-  making helper refresh perform =tools/list= and return the refreshed catalog.
-- Reviewer pass found that exited MCP child processes could be treated as live;
-  fixed by checking exit state and clearing child process state on exit.
+Implemented plan items:
+
+- [[file:plan.org::*Task 1: MCP server and catalog data model][Task 1]]:
+  =e-mcp-server= and =e-mcp-tool= data models exist with validation and focused
+  construction tests.
+- [[file:plan.org::*Task 2: Helper protocol client in Emacs][Task 2]]:
+  Emacs owns helper request ids, lazy helper startup, stdout/stderr buffers,
+  reset, timeout handling, and fake transport support for unit tests.
+- [[file:plan.org::*Task 3: MCP helper process][Task 3]]:
+  =e-mcp-helper.mjs= starts configured stdio MCP servers, initializes them,
+  forwards =tools/list= and =tools/call=, tracks list-changed notifications, and
+  returns normalized helper responses.
+- [[file:plan.org::*Task 4: Discovery to =e= tool registration][Task 4]]:
+  Generated tools use deterministic =mcp.<server-id>.<tool-name>= names,
+  MCP input schemas as =:parameters=, MCP descriptions, and origin metadata.
+- [[file:plan.org::*Task 5: Tool call result and error mapping][Task 5]]:
+  Generated handlers call the original MCP tool name with supplied arguments,
+  map success and =isError= results into normal =e= tool results, and signal
+  helper failures through infrastructure-error conditions.
+- [[file:plan.org::*Task 6: Refresh command and diagnostics][Task 6]]:
+  =e-mcp-refresh= asks the helper for fresh catalogs without mutating an active
+  registry during a turn.
+- [[file:plan.org::*Task 7: Default integration smoke path][Task 7]]:
+  The smoke test constructs an explicit MCP capability/layer, activates it on a
+  harness, observes the generated tool, and executes it through =e-tools=.
 
 * Verification
 
+Current review-pass verification:
+
 - =rtk eldev test -f test/e-mcp-test.el=
+  - Result: 14 tests, 14 passed, 0 unexpected.
 - =rtk eldev test -f test/e-mcp-test.el -f test/e-harness-test.el -f test/e-tools-test.el=
-- =rtk eldev test=
+  - Result: 80 tests, 80 passed, 0 unexpected.
+
+Not re-run in this pass:
+
+- Full =rtk eldev test=.
 - Live reload through =e-dev-reload=.
-- Live fixture probe through a generated =mcp.fixture.echo= tool.
+- Live fixture probe in a running Emacs session.
+
+No Elisp behavior changed during this review pass, so no live reload was needed
+for the review document edit itself.
 
 * Architecture Self-Check
 
-1. If this work package stopped here, would the project be better off than if
-   it had not been built?
+1. If this work package stopped here, would the project be better off than if it
+   had not been built?
    - Yes. MCP stdio tool discovery and calls are usable through opt-in
      capabilities without changing default tools.
 2. What final direction does this move toward?
@@ -45,31 +106,31 @@ In-review.
    uncertain ones local and reversible instead of hidden behind speculative
    abstraction?
    - Stable: capabilities remain the extension seam. Likely to change:
-     resources/prompts/auth/non-stdio support. Those remain local to =e-mcp=
-     and its helper.
+     resources, prompts, auth UX, non-stdio transports, and richer content
+     blocks. Those remain local to =e-mcp= and its helper.
 4. What component owns this behavior, and why?
-   - =e-mcp= owns MCP capability construction and result mapping; the Node
+   - =e-mcp= owns MCP capability construction and result mapping. The Node
      helper owns server subprocesses and MCP JSON-RPC framing.
 5. Does this change increase or reduce coupling?
-   - It keeps coupling narrow by registering ordinary =e= tools and storing
-     MCP metadata on the tool record.
+   - It keeps coupling narrow by registering ordinary =e= tools and storing MCP
+     origin metadata on the tool record.
 6. Did any dependency start pointing the wrong way, especially from stable
    policy toward concrete adapters, providers, UI, transport, persistence, or
    tool clients?
-   - No harness dependency on MCP was added. =e-core= loads the helper module
-     as part of the pure runtime surface, and the harness still consumes only
+   - No harness dependency on MCP was added. =e-core= loads the MCP module as
+     part of the core runtime surface, and the harness still consumes only
      capabilities and tools.
 7. Could any side effect be moved outward into an adapter or shell?
-   - The protocol side effects are already outside the harness in the helper
-     process boundary.
+   - The protocol and subprocess side effects are already outside the harness in
+     the helper process boundary.
 8. Are the abstractions and interfaces semantically real, and can
    implementations substitute for each other without narrowed preconditions,
    weakened behavior, ignored requirements, or unsupported-operation errors?
    - The public contract is concrete MCP server specs, catalog tools, refresh,
      and generated =e= tools. Unsupported MCP content is summarized truthfully
      rather than exposed as a false capability.
-9. What compatibility expectations apply, and were obsolete paths removed
-   unless required?
+9. What compatibility expectations apply, and were obsolete paths removed unless
+   required?
    - This is new opt-in behavior. Existing tool definitions remain backend
      neutral; optional metadata is stored without changing provider payloads.
 10. What legacy code can we remove now?
@@ -80,4 +141,5 @@ In-review.
 12. What tests prove the core behavior independently of the full system?
     - =test/e-mcp-test.el= covers validation, fake transport, registration,
       result mapping, refresh, helper process integration, child respawn, and
-      harness tool execution.
+      harness tool execution. The remaining coverage gaps are listed in
+      [[*Findings][Findings]].
