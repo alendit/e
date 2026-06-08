@@ -287,6 +287,59 @@
       (should (equal (plist-get (plist-get payload :result) :content)
                      "hi")))))
 
+(ert-deftest e-loop-test-refreshes-messages-after-tool-requesting-context-refresh ()
+  "A tool result may ask the loop to rebuild context before follow-up sampling."
+  (let* ((calls 0)
+         (second-request-messages nil)
+         (refreshed-messages
+          '((:role compaction-summary :content "summary")
+            (:role user :content "recent prompt")))
+         (backend (e-backend-create
+                   :name "fake-refresh-after-tool"
+                   :stream (cl-function
+                            (lambda (&key messages options on-item)
+                              (ignore options)
+                              (setq calls (1+ calls))
+                              (if (= calls 1)
+                                  (progn
+                                    (funcall on-item
+                                             '(:type tool-call
+                                               :id "call-1"
+                                               :name "compact_session"
+                                               :arguments nil))
+                                    (funcall on-item
+                                             '(:type done :reason tool-use)))
+                                (setq second-request-messages messages)
+                                (funcall on-item
+                                         '(:type assistant-message
+                                           :content "done"))
+                                (funcall on-item
+                                         '(:type done :reason stop)))))))
+         (tools (e-tools-registry-create)))
+    (e-tools-register
+     tools
+     :name "compact_session"
+     :description "Compact session."
+     :handler
+     (lambda (_arguments)
+       (e-tools-result-create
+        (plist-get (e-tools-current-context) :tool-call)
+        'ok
+        "compacted"
+        '(:refresh-context t))))
+    (e-loop-run-turn
+     :session-id "session-1"
+     :turn-id "turn-1"
+     :messages '((:role user :content "old prompt"))
+     :backend backend
+     :tools tools
+     :options nil
+     :on-event #'ignore
+     :append-message #'ignore
+     :refresh-messages (lambda () refreshed-messages))
+    (should (= calls 2))
+    (should (equal second-request-messages refreshed-messages))))
+
 (ert-deftest e-loop-test-tool-lifecycle-prepares-call-before-append ()
   "The tool lifecycle can transform a call before the loop appends it."
   (let* ((calls 0)

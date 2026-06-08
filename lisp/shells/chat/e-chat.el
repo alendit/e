@@ -4178,9 +4178,15 @@ When REFRESH-MODE-LINE is non-nil, also refresh context-aware mode-line text."
      (e-chat--insert-entry "System" "Turn cancelled" t
                            (plist-get event :turn-id)))
     ('compaction-started
-     (e-chat--set-status "compacting")
-     (e-chat--insert-entry "System" "Context compaction started" t
-                           (plist-get event :turn-id)))
+     (let ((payload (plist-get event :payload)))
+       (e-chat--set-status "compacting")
+       (e-chat--insert-entry
+        "System"
+        (if (plist-get payload :active-turn)
+            "Agent compacting context mid-turn"
+          "Context compaction started")
+        t
+        (plist-get event :turn-id))))
     ('compaction-prepared
      (let ((payload (plist-get event :payload)))
        (e-chat--set-status "compaction prepared")

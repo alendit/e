@@ -103,19 +103,24 @@
   (seq-filter #'e-compaction--message-entry-p
               (e-session-current-path store session-id)))
 
-(defun e-compaction--safe-boundary-entry-p (entry)
-  "Return non-nil if compaction may keep suffix starting at ENTRY."
-  (eq (e-compaction--message-role entry) 'user))
+(defun e-compaction--safe-boundary-entry-p (entry boundary-roles)
+  "Return non-nil if compaction may keep suffix starting at ENTRY.
+BOUNDARY-ROLES is the list of roles accepted as suffix boundaries."
+  (memq (e-compaction--message-role entry) boundary-roles))
 
-(defun e-compaction--select-boundary (entries keep-tokens)
-  "Select a conservative boundary in ENTRIES keeping about KEEP-TOKENS."
+(defun e-compaction--select-boundary
+    (entries keep-tokens boundary-roles previous-boundary)
+  "Select a conservative boundary in ENTRIES keeping about KEEP-TOKENS.
+BOUNDARY-ROLES controls the accepted suffix-start roles.  PREVIOUS-BOUNDARY is
+the previous compaction boundary id, if any."
   (catch 'done
     (let ((kept 0)
           candidate)
       (dolist (entry (reverse entries))
         (setq kept (+ kept (e-compaction-entry-token-estimate entry)))
-        (when (and (not candidate)
-                   (e-compaction--safe-boundary-entry-p entry))
+        (when (and (e-compaction--safe-boundary-entry-p entry boundary-roles)
+                   (e-compaction--entries-between
+                    entries previous-boundary (plist-get entry :id)))
           (setq candidate entry))
         (when (and candidate (>= kept keep-tokens))
           (throw 'done candidate)))
@@ -293,17 +298,23 @@ that survived the compaction boundary."
        "\n\n")))))
 
 (cl-defun e-compaction-prepare
-    (store session-id &key keep-recent-tokens instructions)
+    (store session-id &key keep-recent-tokens instructions allow-split-turn)
   "Prepare compaction data for SESSION-ID in STORE."
   (let* ((keep (or keep-recent-tokens e-compaction-keep-recent-tokens))
          (entries (e-compaction--message-entries store session-id))
-         (boundary (e-compaction--select-boundary entries keep)))
+         (previous (e-session-latest-valid-compaction store session-id))
+         (previous-boundary (plist-get previous :first-kept-entry-id))
+         (boundary-roles (if allow-split-turn
+                             '(user assistant tool-call)
+                           '(user)))
+         (boundary
+          (e-compaction--select-boundary
+           entries keep boundary-roles previous-boundary)))
     (unless boundary
       (signal 'e-compaction-error
               (list "No safe message boundary available for compaction")))
-    (let* ((previous (e-session-latest-valid-compaction store session-id))
-           (previous-boundary (plist-get previous :first-kept-entry-id))
-           (boundary-id (plist-get boundary :id))
+    (let* ((boundary-id (plist-get boundary :id))
+           (boundary-role (e-compaction--message-role boundary))
            (to-summarize
             (e-compaction--entries-between entries previous-boundary boundary-id))
            (to-keep (member boundary entries)))
@@ -325,6 +336,8 @@ that survived the compaction boundary."
                     :instructions instructions
                     :previous-compaction-id (plist-get previous :id)
                     :previous-summary (plist-get previous :summary)
+                    :boundary-role boundary-role
+                    :split-turn (not (eq boundary-role 'user))
                     :compacted-entry-count (length to-summarize)
                     :kept-entry-count (length to-keep)
                     :affected-resources resources))))))

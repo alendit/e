@@ -53,15 +53,16 @@ published, used to calculate `:elapsed-seconds' for finished events."
 
 (cl-defun e-loop-start-turn
     (&key session-id turn-id messages backend tools tool-lifecycle options on-event
-          append-message on-request-start on-done on-error cancelled-p)
+          append-message refresh-messages on-request-start on-done on-error
+          cancelled-p)
   "Start one async agent turn for SESSION-ID and TURN-ID.
 MESSAGES, BACKEND, TOOLS, TOOL-LIFECYCLE, and OPTIONS describe the turn input.  ON-EVENT,
-APPEND-MESSAGE, ON-REQUEST-START, ON-DONE, ON-ERROR, and CANCELLED-P receive
-turn progress, output, provider request handles, settlement, failures, and
-cancellation state.  The provider request is started through `e-backend-start'.
-Tool execution is started through TOOL-LIFECYCLE when supplied, otherwise
-through `e-tools-start'.  Provider I/O, tool I/O, and turn settlement are
-callback-driven."
+APPEND-MESSAGE, REFRESH-MESSAGES, ON-REQUEST-START, ON-DONE, ON-ERROR, and
+CANCELLED-P receive turn progress, output, refreshed context, provider request
+handles, settlement, failures, and cancellation state.  The provider request is
+started through `e-backend-start'.  Tool execution is started through
+TOOL-LIFECYCLE when supplied, otherwise through `e-tools-start'.  Provider I/O,
+tool I/O, and turn settlement are callback-driven."
   (ignore session-id turn-id)
   (let ((turn-messages (copy-sequence messages))
         (settled nil)
@@ -174,6 +175,10 @@ callback-driven."
                          :type 'tool-finished
                          :payload (list :tool-call tool-call
                                         :result result)))
+                      (when (and refresh-messages
+                                 (plist-get (plist-get result :metadata)
+                                            :refresh-context))
+                        (setq turn-messages (funcall refresh-messages)))
                       (start-next-tool)
                       (maybe-start-followup)))
                    (start-next-tool
@@ -339,12 +344,12 @@ callback-driven."
 
 (cl-defun e-loop-run-turn
     (&key session-id turn-id messages backend tools tool-lifecycle options on-event
-          append-message on-request-start)
+          append-message refresh-messages on-request-start)
   "Run one agent turn for SESSION-ID and TURN-ID.
-MESSAGES, BACKEND, TOOLS, TOOL-LIFECYCLE, OPTIONS, ON-EVENT, and APPEND-MESSAGE define the
-turn context and output callbacks.  ON-REQUEST-START receives the backend
-request handle when an adapter exposes one.  This is a blocking convenience
-wrapper over `e-loop-start-turn'."
+MESSAGES, BACKEND, TOOLS, TOOL-LIFECYCLE, OPTIONS, ON-EVENT, APPEND-MESSAGE,
+and REFRESH-MESSAGES define the turn context and output callbacks.
+ON-REQUEST-START receives the backend request handle when an adapter exposes
+one.  This is a blocking convenience wrapper over `e-loop-start-turn'."
   (let ((done nil)
         (result nil)
         (failure nil))
@@ -358,6 +363,7 @@ wrapper over `e-loop-start-turn'."
      :options options
      :on-event on-event
      :append-message append-message
+     :refresh-messages refresh-messages
      :on-request-start on-request-start
      :on-done (lambda (value)
                 (setq result value)

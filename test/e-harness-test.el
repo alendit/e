@@ -1624,6 +1624,47 @@
                     (:role user :content "new question")
                     (:role assistant :content "new answer")))))))))
 
+(ert-deftest e-harness-test-compact-session-can-opt-into-active-turn ()
+  "Compaction rejects active turns unless the caller opts into turn-local compaction."
+  (let* ((backend (e-backend-create
+                   :name 'summary
+                   :stream
+                   (cl-function
+                    (lambda (&key messages options on-item)
+                      (ignore messages options)
+                      (funcall on-item
+                               '(:type assistant-message
+                                 :content "Old exchange summary."))))))
+         (harness (e-harness-create :backend backend))
+         (store (e-harness-sessions harness))
+         (active-entry '(:id "turn-active" :status running)))
+    (e-harness-create-session harness :id "session-1")
+    (e-session-append-message store "session-1"
+                              '(:role user :content "old question"))
+    (e-session-append-message store "session-1"
+                              '(:role assistant :content "old answer"))
+    (e-session-append-message store "session-1"
+                              '(:role user :content "new question"))
+    (puthash "session-1" active-entry (e-harness-active-turns harness))
+    (should-error
+     (e-harness-compact-session harness "session-1" :keep-recent-tokens 1)
+     :type 'e-harness-active-turn-exists)
+    (let ((record (e-harness-compact-session
+                   harness "session-1"
+                   :keep-recent-tokens 1
+                   :allow-active-turn t
+                   :turn-id "turn-active")))
+      (should (equal (plist-get record :summary)
+                     "Old exchange summary."))
+      (should (eq (gethash "session-1" (e-harness-active-turns harness))
+                  active-entry))
+      (should
+       (cl-find-if
+        (lambda (event)
+          (and (equal (plist-get event :turn-id) "turn-active")
+               (eq (plist-get event :event-type) 'compaction-finished)))
+        (e-session-activity-events store "session-1"))))))
+
 (ert-deftest e-harness-test-repeated-compaction-summarizes-from-previous-summary ()
   "Repeated compaction summarizes previous summary plus newly compacted suffix."
   (let ((calls nil)

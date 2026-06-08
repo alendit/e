@@ -28,12 +28,38 @@
       (e-session-append-message store "session-1" '(:role tool-call :content (:name "x")))
       (e-session-append-message store "session-1" '(:role tool :content "tool output"))
       (let ((preparation (e-compaction-prepare
-                          store "session-1" :keep-recent-tokens 1)))
+                          store "session-1" :keep-recent-tokens 20)))
         (should (equal (plist-get preparation :first-kept-entry-id)
                        (plist-get boundary :id)))
         (should (string-match-p "old answer"
                                 (plist-get preparation :summary-input)))
         (should-not (string-match-p "tool output"
+                                    (plist-get preparation :summary-input)))))))
+
+(ert-deftest e-compaction-test-prepare-can-choose-mid-turn-tool-call-boundary ()
+  "Split-turn compaction may keep a suffix from a tool call, never its result."
+  (let ((store (e-session-store-create)))
+    (e-session-create store :id "session-1")
+    (e-session-append-message store "session-1" '(:role user :content "old"))
+    (e-session-append-message store "session-1" '(:role assistant :content "early work"))
+    (let ((boundary
+           (e-session-append-message
+            store "session-1"
+            '(:role tool-call :content (:name "read_file" :arguments (:path "x.el"))))))
+      (e-session-append-message store "session-1"
+                                '(:role tool :content "recent tool result"))
+      (let* ((preparation (e-compaction-prepare
+                           store "session-1"
+                           :keep-recent-tokens 1
+                           :allow-split-turn t))
+             (metadata (plist-get preparation :metadata)))
+        (should (equal (plist-get preparation :first-kept-entry-id)
+                       (plist-get boundary :id)))
+        (should (equal (plist-get metadata :boundary-role) 'tool-call))
+        (should (eq (plist-get metadata :split-turn) t))
+        (should (string-match-p "early work"
+                                (plist-get preparation :summary-input)))
+        (should-not (string-match-p "recent tool result"
                                     (plist-get preparation :summary-input)))))))
 
 (ert-deftest e-compaction-test-prepare-truncates-tool-results-and-records-resources ()

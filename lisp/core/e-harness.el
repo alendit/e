@@ -683,12 +683,14 @@ TURN-ID is passed to active capability context providers when present."
        (eq (plist-get entry :status) 'running)))
 
 (cl-defun e-harness-compact-session
-    (harness session-id &key instructions keep-recent-tokens)
+    (harness session-id &key instructions keep-recent-tokens allow-active-turn
+             turn-id)
   "Manually compact SESSION-ID in HARNESS and append a durable record."
-  (when (e-harness--active-turn-running-p
-         (gethash session-id (e-harness-active-turns harness)))
+  (when (and (not allow-active-turn)
+             (e-harness--active-turn-running-p
+              (gethash session-id (e-harness-active-turns harness))))
     (signal 'e-harness-active-turn-exists (list session-id)))
-  (let ((turn-id (e-harness--next-turn-id))
+  (let ((turn-id (or turn-id (e-harness--next-turn-id)))
         preparation
         summary-parts
         summary-message
@@ -697,13 +699,15 @@ TURN-ID is passed to active capability context providers when present."
         (progn
           (e-harness--emit-turn-event
            harness session-id turn-id 'compaction-started
-           (list :instructions instructions))
+           (list :instructions instructions
+                 :active-turn allow-active-turn))
           (setq preparation
                 (e-compaction-prepare
                  (e-harness-sessions harness)
                  session-id
                  :instructions instructions
-                 :keep-recent-tokens keep-recent-tokens))
+                 :keep-recent-tokens keep-recent-tokens
+                 :allow-split-turn allow-active-turn))
           (e-harness--emit-turn-event
            harness session-id turn-id 'compaction-prepared
            (list :first-kept-entry-id
@@ -860,6 +864,10 @@ provider or loop failure."
                  (e-harness--emit-turn-event
                   harness session-id turn-id type payload))
      :on-request-start on-request-start
+     :refresh-messages
+     (lambda ()
+       (plist-get (e-harness-context harness session-id turn-id)
+                  :messages))
      :append-message
      (lambda (message)
        (e-harness--append-message harness session-id turn-id message)))))
@@ -885,6 +893,10 @@ provider or loop failure."
      :cancelled-p cancelled-p
      :on-done on-done
      :on-error on-error
+     :refresh-messages
+     (lambda ()
+       (plist-get (e-harness-context harness session-id turn-id)
+                  :messages))
      :append-message
      (or append-message
          (lambda (message)

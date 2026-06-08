@@ -21,6 +21,7 @@
 (require 'e-events)
 (require 'e-harness)
 (require 'e-harness-registry)
+(require 'e-layer)
 (require 'e-tools)
 
 (defun e-chat-test--buffer (&optional items session-id)
@@ -4839,6 +4840,55 @@
                                     (buffer-string)))
             (should (string-match-p "Context compacted into"
                                     (buffer-string)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-mid-turn-compact-session-renders-visible-message ()
+  "A model-triggered compaction tool call renders visible chat progress."
+  (let* ((calls 0)
+         (backend
+          (e-backend-create
+           :name 'mid-turn-summary
+           :stream
+           (cl-function
+            (lambda (&key messages options on-item)
+              (ignore messages options)
+              (setq calls (1+ calls))
+              (pcase calls
+                (1
+                 (funcall on-item
+                          '(:type tool-call
+                            :id "call-1"
+                            :name "compact_session"
+                            :arguments (:keep_recent_tokens 1)))
+                 (funcall on-item '(:type done :reason tool-use)))
+                (2
+                 (funcall on-item
+                          '(:type assistant-message
+                            :content "Compacted active turn."))
+                 (funcall on-item '(:type done :reason stop)))
+                (_
+                 (funcall on-item
+                          '(:type assistant-message :content "done"))
+                 (funcall on-item '(:type done :reason stop))))))))
+         (harness (e-harness-create :backend backend))
+         (buffer (e-chat-open :harness harness
+                              :session-id "chat-mid-turn-compact")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-harness-activate-layer e-chat-harness (e-core-layer-create))
+          (let ((store (e-harness-sessions e-chat-harness)))
+            (e-session-append-message store e-chat-session-id
+                                      '(:role user :content "old"))
+            (e-session-append-message store e-chat-session-id
+                                      '(:role assistant :content "old answer"))
+            (e-chat-submit "continue")
+            (e-harness-wait e-chat-harness e-chat-session-id 1.0)
+            (should (string-match-p "Agent compacting context mid-turn"
+                                    (buffer-string)))
+            (should (string-match-p "Context compacted into"
+                                    (buffer-string)))
+            (should (string-match-p "done" (buffer-string)))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 

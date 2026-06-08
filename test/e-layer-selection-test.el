@@ -37,7 +37,10 @@
     (should (functionp (e-capabilities-action capability :toggle)))
     (should (eq (e-layer-id layer) 'e))
     (should (equal (mapcar #'e-capability-id (e-layer-capabilities layer))
-                   '(e-runtime-context layer-selection context-inspection)))))
+                   '(e-runtime-context
+                     layer-selection
+                     context-inspection
+                     session-compaction)))))
 
 (ert-deftest e-layer-selection-test-runtime-context-explains-e ()
   "The default e layer explains the e runtime independently of projects."
