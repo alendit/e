@@ -1,0 +1,45 @@
+#+title: Resource Coherence Review
+#+startup: overview
+
+* Status
+
+Ready for review.
+
+* Summary
+
+Implemented the first resource-coherence slice for local file-backed Emacs
+buffers:
+
+- =file://= reads now prefer live buffer contents when a buffer visits the file.
+- =file://= writes and edits detect visiting buffers.
+- Modified visiting buffers are explicit coherence conflicts.
+- Unmodified visiting buffers are updated through the live buffer and saved.
+- Other unmodified linked buffers are reverted after save instead of left stale.
+- Added =resource_sync_status= for file/buffer coherence inspection.
+- Added Emacs guidance about preferring live buffer tools and saving buffers.
+
+* Validation
+
+- =eldev test= passed: 650 expected, 0 unexpected, 1 skipped
+  (=e-chat-test-assistant-markdown-renders-with-text-properties=).
+- Reloaded the running Emacs via =e-dev-reload= after the initial implementation;
+  a later =emacsclient --eval= reload attempt timed out while the server was
+  busy, but live inspection confirmed the loaded function body included the final
+  canonical-path update.
+- Live smoke check in the running Emacs via =run_elisp= verified:
+  - writing =file://sample.txt= with a live visiting buffer routes through and
+    saves the buffer;
+  - a subsequent direct file write with unsaved buffer edits raises an explicit
+    coherence conflict;
+  - =resource_sync_status= reports =needs-save= for the modified linked buffer.
+
+* Notes
+
+- Canonical path comparison uses =file-truename= so macOS =/tmp= and
+  =/private/tmp= aliases resolve to the same live buffer.
+- The sync status tool is registered by both file inspection and file mutation
+  capabilities, so it is available even with read-only file access.
+
+* Unresolved
+
+None.

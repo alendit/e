@@ -19,7 +19,9 @@
 (require 'e-layers)
 
 (defconst e-emacs-base-instructions
-  "You are running inside Emacs. Use buffer tools for buffer inspection and live buffer edits. Buffer edits do not save files; call save_buffer when persistence is required."
+  "You are running inside Emacs. Use buffer tools for buffer inspection and live buffer edits. Buffer edits do not save files; call save_buffer when persistence is required.
+
+When editing a file that may be open in Emacs, prefer live buffer tools over direct file writes. If you write a file directly and a live file-backed buffer exists for it, sync or reload the buffer before reporting completion. If you edit a live file-backed buffer and the change should persist, save the buffer. Before finalizing, check visible buffers that correspond to modified resources."
   "Default instructions contributed by Emacs awareness capabilities.")
 
 (defun e-emacs-capabilities-visible-buffer-context ()

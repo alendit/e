@@ -65,6 +65,18 @@
                          "new")))
       (delete-directory directory t))))
 
+(ert-deftest e-file-capabilities-test-file-inspection-registers-sync-status-tool ()
+  "File inspection exposes a resource coherence status tool."
+  (should (equal (e-file-capabilities-test--tool-names
+                  (e-file-inspection-capability-create default-directory))
+                 '("resource_sync_status"))))
+
+(ert-deftest e-file-capabilities-test-file-mutation-registers-sync-status-tool ()
+  "File mutation also exposes resource coherence status."
+  (should (equal (e-file-capabilities-test--tool-names
+                  (e-file-mutation-capability-create default-directory))
+                 '("resource_sync_status"))))
+
 (ert-deftest e-file-capabilities-test-shell-process-registers-bash-only ()
   "The shell-process capability registers only the bash tool."
   (should (equal (e-file-capabilities-test--tool-names

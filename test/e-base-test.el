@@ -31,7 +31,7 @@
     (should (equal (mapcar (lambda (definition)
                              (plist-get definition :name))
                            (e-tools-definitions (e-harness-tools harness)))
-                   '("read" "write" "edit" "bash")))))
+                   '("read" "write" "edit" "resource_sync_status" "bash")))))
 
 (ert-deftest e-base-test-layer-activates-file-capabilities ()
   "The OS base layer is a preset over file and process capabilities."

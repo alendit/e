@@ -41,6 +41,8 @@ When nil, `shell-command-switch' is used."
 (define-error 'e-base-tools-path-outside-root
   "Base file resource path escapes the configured root")
 (define-error 'e-base-tools-edit-invalid "Base edit tool input is invalid")
+(define-error 'e-base-tools-coherence-conflict
+  "Base file resource conflicts with a live Emacs buffer")
 (define-error 'e-base-tools-bash-invalid "Base bash tool input is invalid")
 
 (defconst e-base-tools--max-lines 2000
@@ -72,6 +74,108 @@ When nil, `shell-command-switch' is used."
       (signal 'e-base-tools-path-outside-root
               (list (format "Path escapes workspace root: %s" path))))
     absolute-path))
+
+(defun e-base-tools--canonical-file-name (path)
+  "Return a canonical comparison path for local PATH."
+  (file-truename (expand-file-name path)))
+
+(defun e-base-tools--buffer-visible-p (buffer)
+  "Return non-nil when BUFFER is visible in a live window."
+  (and (get-buffer-window buffer t) t))
+
+(defun e-base-tools--buffer-selected-window-p (buffer)
+  "Return non-nil when BUFFER is displayed in the selected window."
+  (and (selected-window)
+       (eq buffer (window-buffer (selected-window)))))
+
+(defun e-base-tools--buffer-file-matches-p (buffer file)
+  "Return non-nil when BUFFER visits FILE."
+  (with-current-buffer buffer
+    (and buffer-file-name
+         (equal (e-base-tools--canonical-file-name buffer-file-name)
+                (e-base-tools--canonical-file-name file)))))
+
+(defun e-base-tools-file-live-buffers (file)
+  "Return live Emacs buffers visiting local FILE."
+  (let (buffers)
+    (dolist (buffer (buffer-list))
+      (when (e-base-tools--buffer-file-matches-p buffer file)
+        (push buffer buffers)))
+    (nreverse buffers)))
+
+(defun e-base-tools--buffer-link-state (buffer)
+  "Return linked-resource state for BUFFER."
+  (with-current-buffer buffer
+    (list :name (buffer-name buffer)
+          :file buffer-file-name
+          :modified (buffer-modified-p buffer)
+          :visible (e-base-tools--buffer-visible-p buffer)
+          :selected-window (e-base-tools--buffer-selected-window-p buffer))))
+
+(defun e-base-tools-file-link-state (file)
+  "Return linked live-buffer state for local FILE."
+  (let ((absolute-file (e-base-tools--canonical-file-name file)))
+    (list :canonical (concat "file://" absolute-file)
+          :file absolute-file
+          :buffers (mapcar #'e-base-tools--buffer-link-state
+                           (e-base-tools-file-live-buffers absolute-file)))))
+
+(defun e-base-tools--live-buffer-names (buffers)
+  "Return comma-separated live BUFFER names."
+  (mapconcat #'buffer-name buffers ", "))
+
+(defun e-base-tools--modified-live-buffers (buffers)
+  "Return modified buffers from BUFFERS."
+  (seq-filter (lambda (buffer)
+                (with-current-buffer buffer
+                  (buffer-modified-p)))
+              buffers))
+
+(defun e-base-tools--preferred-live-buffer (file buffers)
+  "Return preferred live buffer for FILE from BUFFERS, or signal ambiguity."
+  (let* ((selected (seq-filter #'e-base-tools--buffer-selected-window-p buffers))
+         (visible (seq-filter #'e-base-tools--buffer-visible-p buffers)))
+    (cond
+     ((null buffers) nil)
+     ((= (length buffers) 1) (car buffers))
+     ((= (length selected) 1) (car selected))
+     ((= (length visible) 1) (car visible))
+     (t
+      (signal 'e-base-tools-coherence-conflict
+              (list (format "Cannot choose a live buffer for %s because multiple Emacs buffers visit it: %s. Target buffer://<name> explicitly or close the ambiguity."
+                            file
+                            (e-base-tools--live-buffer-names buffers))))))))
+
+(defun e-base-tools--check-live-buffer-write-conflicts (file buffers)
+  "Signal if writing FILE would conflict with modified BUFFERS."
+  (when-let ((modified (e-base-tools--modified-live-buffers buffers)))
+    (signal 'e-base-tools-coherence-conflict
+            (list (format "Cannot edit file://%s directly because live buffer(s) %s have unsaved changes. Edit buffer://<name> or ask the user how to resolve the conflict."
+                          file
+                          (e-base-tools--live-buffer-names modified))))))
+
+(defun e-base-tools--sync-other-live-buffers (written-buffer buffers)
+  "Revert unmodified BUFFERS other than WRITTEN-BUFFER after a file save."
+  (let (synced)
+    (dolist (buffer buffers)
+      (when (and (buffer-live-p buffer)
+                 (not (eq buffer written-buffer)))
+        (with-current-buffer buffer
+          (unless (buffer-modified-p)
+            (revert-buffer :ignore-auto :noconfirm)
+            (push (e-base-tools--buffer-link-state buffer) synced)))))
+    (nreverse synced)))
+
+(defun e-base-tools--save-buffer-content-to-file (buffer content)
+  "Replace BUFFER contents with CONTENT and save its visited file."
+  (with-current-buffer buffer
+    (let ((inhibit-read-only t)
+          (require-final-newline nil)
+          (mode-require-final-newline nil))
+      (erase-buffer)
+      (insert content)
+      (save-buffer)
+      (e-base-tools--buffer-link-state buffer))))
 
 (defun e-base-tools--read-file-literally (path)
   "Return literal contents of PATH."
@@ -173,8 +277,8 @@ TOTAL-LINES is the full file line count.  START-LINE is 1-based."
             :end-line total-lines
             :total-lines total-lines))))
 
-(defun e-base-tools--file-text (path)
-  "Return text contents of PATH or signal a clear read error."
+(defun e-base-tools--file-disk-text (path)
+  "Return text contents of disk PATH or signal a clear read error."
   (unless (file-readable-p path)
     (signal 'e-base-tools-read-invalid
             (list (format "File is not readable: %s" path))))
@@ -186,6 +290,17 @@ TOTAL-LINES is the full file line count.  START-LINE is 1-based."
       (signal 'e-base-tools-read-invalid
               (list "The read tool is text-only in v1; binary and image files are not supported.")))
     (e-base-tools--decode-text content)))
+
+(defun e-base-tools--file-text (path)
+  "Return coherent text contents of PATH.
+Live Emacs buffers visiting PATH win over disk so unsaved buffer edits are
+visible through file:// reads."
+  (let* ((absolute-path (e-base-tools--canonical-file-name path))
+         (buffers (e-base-tools-file-live-buffers absolute-path)))
+    (if-let ((buffer (e-base-tools--preferred-live-buffer absolute-path buffers)))
+        (with-current-buffer buffer
+          (buffer-substring-no-properties (point-min) (point-max)))
+      (e-base-tools--file-disk-text absolute-path))))
 
 (defun e-base-tools--read-text (path offset limit)
   "Read text PATH with 1-based OFFSET and optional LIMIT."
@@ -264,32 +379,150 @@ TOTAL-LINES is the full file line count.  START-LINE is 1-based."
 (defun e-base-tools--write-file-resource (uri content directory)
   "Write CONTENT to parsed file URI in DIRECTORY."
   (let* ((path (plist-get uri :address))
-         (absolute-path (e-base-tools--resource-path uri directory)))
+         (absolute-path (e-base-tools--resource-path uri directory))
+         (buffers (e-base-tools-file-live-buffers absolute-path)))
+    (e-base-tools--check-live-buffer-write-conflicts absolute-path buffers)
     (make-directory (file-name-directory absolute-path) t)
-    (let ((coding-system-for-write 'utf-8-unix))
-      (write-region content nil absolute-path nil 'silent))
-    (format "Successfully wrote %d bytes to %s"
-            (string-bytes content)
-            path)))
+    (if-let ((buffer (e-base-tools--preferred-live-buffer absolute-path buffers)))
+        (let* ((saved (e-base-tools--save-buffer-content-to-file buffer content))
+               (synced (e-base-tools--sync-other-live-buffers buffer buffers)))
+          (format "Successfully wrote %d bytes to %s through live buffer %s. Saved buffer and synced %d linked buffer(s)."
+                  (string-bytes content)
+                  path
+                  (plist-get saved :name)
+                  (length synced)))
+      (let ((coding-system-for-write 'utf-8-unix))
+        (write-region content nil absolute-path nil 'silent))
+      (format "Successfully wrote %d bytes to %s"
+              (string-bytes content)
+              path))))
 
 (defun e-base-tools--edit-file-resource (uri edits directory)
   "Apply exact EDITS to parsed file URI in DIRECTORY."
   (let* ((path (plist-get uri :address))
          (absolute-path (e-base-tools--resource-path uri directory))
-         (raw-content (e-base-tools--file-text absolute-path))
-         (line-ending (e-base-tools--line-ending raw-content))
-         (content (e-base-tools--normalize-line-endings raw-content))
-         (normalized-edits (e-base-tools--normalize-edits edits))
-         (new-content (e-base-tools--apply-edits content normalized-edits path))
-         (final-content
-          (e-base-tools--restore-line-endings new-content line-ending)))
-    (let ((coding-system-for-write 'utf-8-unix))
-      (write-region final-content nil absolute-path nil 'silent))
-    (list :message (format "Successfully replaced %d block(s) in %s."
-                           (length normalized-edits)
-                           path)
-          :replacements (length normalized-edits)
-          :diff (e-base-tools--simple-diff content new-content))))
+         (buffers (e-base-tools-file-live-buffers absolute-path)))
+    (e-base-tools--check-live-buffer-write-conflicts absolute-path buffers)
+    (let* ((buffer (e-base-tools--preferred-live-buffer absolute-path buffers))
+           (raw-content (e-base-tools--file-text absolute-path))
+           (line-ending (e-base-tools--line-ending raw-content))
+           (content (e-base-tools--normalize-line-endings raw-content))
+           (normalized-edits (e-base-tools--normalize-edits edits))
+           (new-content (e-base-tools--apply-edits content normalized-edits path))
+           (final-content
+            (e-base-tools--restore-line-endings new-content line-ending))
+           saved
+           synced)
+      (if buffer
+          (progn
+            (make-directory (file-name-directory absolute-path) t)
+            (setq saved (e-base-tools--save-buffer-content-to-file
+                         buffer final-content))
+            (setq synced (e-base-tools--sync-other-live-buffers buffer buffers)))
+        (let ((coding-system-for-write 'utf-8-unix))
+          (write-region final-content nil absolute-path nil 'silent)))
+      (list :message (if buffer
+                         (format "Successfully replaced %d block(s) in %s through live buffer %s. Saved buffer and synced %d linked buffer(s)."
+                                 (length normalized-edits)
+                                 path
+                                 (plist-get saved :name)
+                                 (length synced))
+                       (format "Successfully replaced %d block(s) in %s."
+                               (length normalized-edits)
+                               path))
+            :replacements (length normalized-edits)
+            :linked-buffers (when buffer
+                              (list :saved saved :synced synced))
+            :diff (e-base-tools--simple-diff content new-content)))))
+
+(defun e-base-tools--buffer-content (buffer)
+  "Return BUFFER contents without text properties."
+  (with-current-buffer buffer
+    (buffer-substring-no-properties (point-min) (point-max))))
+
+(defun e-base-tools--file-buffer-sync-state (file buffer disk-content disk-error)
+  "Return sync state for BUFFER linked to FILE and DISK-CONTENT."
+  (let* ((state (e-base-tools--buffer-link-state buffer))
+         (modified (plist-get state :modified))
+         (status (cond
+                  (modified 'needs-save)
+                  (disk-error 'unknown)
+                  ((not (file-exists-p file)) 'file-missing)
+                  ((equal (e-base-tools--buffer-content buffer) disk-content)
+                   'coherent)
+                  (t 'stale))))
+    (append state
+            (list :status status))))
+
+(defun e-base-tools--sync-status-for-file (file)
+  "Return file/buffer coherence status for FILE."
+  (let* ((absolute-file (e-base-tools--canonical-file-name file))
+         (buffers (e-base-tools-file-live-buffers absolute-file))
+         disk-content
+         disk-error)
+    (condition-case err
+        (when (file-exists-p absolute-file)
+          (setq disk-content (e-base-tools--file-disk-text absolute-file)))
+      (error
+       (setq disk-error (error-message-string err))))
+    (let* ((buffer-states
+            (mapcar (lambda (buffer)
+                      (e-base-tools--file-buffer-sync-state
+                       absolute-file buffer disk-content disk-error))
+                    buffers))
+           (statuses (mapcar (lambda (state) (plist-get state :status))
+                             buffer-states))
+           (overall (cond
+                     ((memq 'needs-save statuses) 'needs-save)
+                     ((memq 'stale statuses) 'stale)
+                     (disk-error 'unknown)
+                     ((not (file-exists-p absolute-file)) 'missing)
+                     (t 'coherent))))
+      (list :uri (concat "file://" absolute-file)
+            :file absolute-file
+            :status overall
+            :disk-readable (and (not disk-error) (file-exists-p absolute-file))
+            :disk-error disk-error
+            :buffers buffer-states))))
+
+(defun e-base-tools--sync-status-for-uri (uri directory)
+  "Return file/buffer coherence status for parsed URI in DIRECTORY."
+  (pcase (plist-get uri :scheme)
+    ("file"
+     (e-base-tools--sync-status-for-file
+      (e-base-tools--resource-path uri directory)))
+    ("buffer"
+     (let* ((name (plist-get uri :address))
+            (buffer (get-buffer name)))
+       (unless buffer
+         (signal 'e-base-tools-read-invalid
+                 (list (format "No buffer named %s" name))))
+       (with-current-buffer buffer
+         (if (not buffer-file-name)
+             (list :uri (concat "buffer://" name)
+                   :buffer (e-base-tools--buffer-link-state buffer)
+                   :status 'buffer-only)
+           (append (e-base-tools--sync-status-for-file buffer-file-name)
+                   (list :uri (concat "buffer://" name)))))))
+    (_
+     (signal 'e-base-tools-read-invalid
+             (list (format "Unsupported sync status URI scheme: %s"
+                           (plist-get uri :scheme)))))))
+
+(defun e-base-tools-register-resource-sync-status (registry directory)
+  "Register a file/buffer resource coherence status tool in REGISTRY."
+  (e-tools-register
+   registry
+   :name "resource_sync_status"
+   :description "Report file-backed Emacs buffer coherence for a file:// or buffer:// URI."
+   :parameters '(:type "object"
+                 :properties (:uri (:type "string"))
+                 :required ["uri"])
+   :handler
+   (lambda (arguments)
+     (let* ((uri-text (e-base-tools--argument-string arguments :uri))
+            (uri (e-resources-parse-uri uri-text)))
+       (e-base-tools--sync-status-for-uri uri directory)))))
 
 (defun e-base-tools--file-read-method (directory)
   "Return a file read resource method rooted at DIRECTORY."

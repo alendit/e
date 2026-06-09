@@ -46,6 +46,10 @@
     (e-capability-create
      :id 'file-inspection
      :name "File Inspection"
+     :tools (list (lambda (registry &rest context)
+                    (e-base-tools-register-resource-sync-status
+                     registry
+                     (e-file-capabilities--context-directory root context))))
      :resource-methods
      (list (e-capability-resource-method-provider-create
             :handler
@@ -60,6 +64,10 @@
     (e-capability-create
      :id 'file-mutation
      :name "File Mutation"
+     :tools (list (lambda (registry &rest context)
+                    (e-base-tools-register-resource-sync-status
+                     registry
+                     (e-file-capabilities--context-directory root context))))
      :resource-methods
      (list (e-capability-resource-method-provider-create
             :handler

@@ -291,6 +291,134 @@ When READ-ONLY is non-nil, file resources only support reads."
           (should-not (file-exists-p target)))
       (delete-directory directory t))))
 
+(ert-deftest e-base-tools-test-file-live-buffers-reports-linked-state ()
+  "File/buffer discovery reports linked buffer metadata."
+  (let* ((directory (make-temp-file "e-base-live-buffers-" t))
+         (file (expand-file-name "sample.txt" directory))
+         buffer)
+    (unwind-protect
+        (progn
+          (write-region "disk" nil file nil 'silent)
+          (setq buffer (find-file-noselect file))
+          (with-current-buffer buffer
+            (insert " changed"))
+          (let* ((state (e-base-tools-file-link-state file))
+                 (buffers (plist-get state :buffers))
+                 (first (car buffers)))
+            (should (equal (plist-get state :file) (file-truename file)))
+            (should (equal (plist-get first :name) (buffer-name buffer)))
+            (should (plist-get first :modified))
+            (should-not (plist-get first :visible))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (delete-directory directory t))))
+
+(ert-deftest e-base-tools-test-read-file-prefers-unsaved-live-buffer ()
+  "file:// reads return live buffer contents when the file is open in Emacs."
+  (let* ((directory (make-temp-file "e-base-read-live-" t))
+         (file (expand-file-name "sample.txt" directory))
+         (registry (e-base-tools-test--resource-tools directory))
+         buffer)
+    (unwind-protect
+        (progn
+          (write-region "disk" nil file nil 'silent)
+          (setq buffer (find-file-noselect file))
+          (with-current-buffer buffer
+            (erase-buffer)
+            (insert "live unsaved"))
+          (should (equal (plist-get
+                          (e-base-tools-test--execute
+                           registry "read" '(:uri "file://sample.txt"))
+                          :content)
+                         "live unsaved")))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (delete-directory directory t))))
+
+(ert-deftest e-base-tools-test-write-file-conflicts-with-modified-live-buffer ()
+  "Direct file writes fail when a visiting buffer has unsaved changes."
+  (let* ((directory (make-temp-file "e-base-write-conflict-" t))
+         (file (expand-file-name "sample.txt" directory))
+         (registry (e-base-tools-test--resource-tools directory))
+         buffer)
+    (unwind-protect
+        (progn
+          (write-region "disk" nil file nil 'silent)
+          (setq buffer (find-file-noselect file))
+          (with-current-buffer buffer
+            (insert " unsaved"))
+          (let ((result (e-base-tools-test--execute
+                         registry "write"
+                         '(:uri "file://sample.txt" :content "new"))))
+            (should (equal (plist-get result :status) 'error))
+            (should (string-match-p "unsaved changes"
+                                    (plist-get result :content)))
+            (should (equal (with-temp-buffer
+                             (insert-file-contents file)
+                             (buffer-string))
+                           "disk"))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (delete-directory directory t))))
+
+(ert-deftest e-base-tools-test-write-file-routes-through-unmodified-live-buffer ()
+  "Direct file writes update and save a linked unmodified buffer."
+  (let* ((directory (make-temp-file "e-base-write-live-" t))
+         (file (expand-file-name "sample.txt" directory))
+         (registry (e-base-tools-test--resource-tools directory))
+         buffer)
+    (unwind-protect
+        (progn
+          (write-region "old" nil file nil 'silent)
+          (setq buffer (find-file-noselect file))
+          (should-not (with-current-buffer buffer (buffer-modified-p)))
+          (let ((result (e-base-tools-test--execute
+                         registry "write"
+                         '(:uri "file://sample.txt" :content "new"))))
+            (should (equal (plist-get result :status) 'ok))
+            (should (string-match-p "through live buffer"
+                                    (plist-get result :content))))
+          (should (equal (with-current-buffer buffer (buffer-string)) "new"))
+          (should-not (with-current-buffer buffer (buffer-modified-p)))
+          (should (equal (with-temp-buffer
+                           (insert-file-contents file)
+                           (buffer-string))
+                         "new")))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (delete-directory directory t))))
+
+(ert-deftest e-base-tools-test-resource-sync-status-reports-needs-save-and-stale ()
+  "The resource_sync_status tool reports linked buffer coherence states."
+  (let* ((directory (make-temp-file "e-base-sync-status-" t))
+         (file (expand-file-name "sample.txt" directory))
+         (registry (e-tools-registry-create))
+         buffer)
+    (unwind-protect
+        (progn
+          (write-region "disk" nil file nil 'silent)
+          (e-base-tools-register-resource-sync-status registry directory)
+          (setq buffer (find-file-noselect file))
+          (with-current-buffer buffer
+            (insert " unsaved"))
+          (let ((result (e-base-tools-test--execute
+                         registry "resource_sync_status"
+                         '(:uri "file://sample.txt"))))
+            (should (equal (plist-get result :status) 'ok))
+            (should (eq (plist-get (plist-get result :content) :status)
+                        'needs-save)))
+          (with-current-buffer buffer
+            (set-buffer-modified-p nil))
+          (write-region "disk changed" nil file nil 'silent)
+          (let ((result (e-base-tools-test--execute
+                         registry "resource_sync_status"
+                         '(:uri "file://sample.txt"))))
+            (should (eq (plist-get (plist-get result :content) :status)
+                        'stale))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (delete-directory directory t))))
+
 (ert-deftest e-base-tools-test-bash-captures-output-and-errors ()
   "The bash tool captures stdout/stderr and reports nonzero exits."
   (let* ((directory (make-temp-file "e-base-bash-" t))
