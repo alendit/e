@@ -16,6 +16,7 @@
 (require 'subr-x)
 (require 'e-capabilities)
 (require 'e-operations)
+(require 'e-resource-coherence)
 (require 'e-resources)
 (require 'e-tools)
 
@@ -42,7 +43,8 @@ When nil, `shell-command-switch' is used."
   "Base file resource path escapes the configured root")
 (define-error 'e-base-tools-edit-invalid "Base edit tool input is invalid")
 (define-error 'e-base-tools-coherence-conflict
-  "Base file resource conflicts with a live Emacs buffer")
+  "Base file resource conflicts with a live Emacs buffer"
+  'e-resource-coherence-conflict)
 (define-error 'e-base-tools-bash-invalid "Base bash tool input is invalid")
 
 (defconst e-base-tools--max-lines 2000
@@ -114,45 +116,139 @@ When nil, `shell-command-switch' is used."
 
 (defun e-base-tools-file-link-state (file)
   "Return linked live-buffer state for local FILE."
-  (let ((absolute-file (e-base-tools--canonical-file-name file)))
-    (list :canonical (concat "file://" absolute-file)
-          :file absolute-file
-          :buffers (mapcar #'e-base-tools--buffer-link-state
-                           (e-base-tools-file-live-buffers absolute-file)))))
+  (let ((group (e-base-tools-file-buffer-coherence-group file)))
+    (list :canonical (plist-get group :canonical-uri)
+          :file (plist-get (plist-get group :metadata) :file)
+          :buffers (mapcar (lambda (view)
+                             (copy-sequence (plist-get view :metadata)))
+                           (e-resource-coherence-views-by-kind
+                            group 'buffer)))))
 
-(defun e-base-tools--live-buffer-names (buffers)
-  "Return comma-separated live BUFFER names."
-  (mapconcat #'buffer-name buffers ", "))
+(defun e-base-tools--file-uri (file)
+  "Return canonical file URI for FILE."
+  (concat "file://" (e-base-tools--canonical-file-name file)))
 
-(defun e-base-tools--modified-live-buffers (buffers)
-  "Return modified buffers from BUFFERS."
-  (seq-filter (lambda (buffer)
-                (with-current-buffer buffer
-                  (buffer-modified-p)))
-              buffers))
+(defun e-base-tools--buffer-uri (buffer)
+  "Return buffer URI for BUFFER."
+  (concat "buffer://" (buffer-name buffer)))
 
-(defun e-base-tools--preferred-live-buffer (file buffers)
-  "Return preferred live buffer for FILE from BUFFERS, or signal ambiguity."
-  (let* ((selected (seq-filter #'e-base-tools--buffer-selected-window-p buffers))
-         (visible (seq-filter #'e-base-tools--buffer-visible-p buffers)))
-    (cond
-     ((null buffers) nil)
-     ((= (length buffers) 1) (car buffers))
-     ((= (length selected) 1) (car selected))
-     ((= (length visible) 1) (car visible))
-     (t
-      (signal 'e-base-tools-coherence-conflict
-              (list (format "Cannot choose a live buffer for %s because multiple Emacs buffers visit it: %s. Target buffer://<name> explicitly or close the ambiguity."
-                            file
-                            (e-base-tools--live-buffer-names buffers))))))))
+(defun e-base-tools--buffer-from-view (view)
+  "Return live buffer described by coherence VIEW, or nil."
+  (when-let ((name (plist-get (plist-get view :metadata) :name)))
+    (get-buffer name)))
 
-(defun e-base-tools--check-live-buffer-write-conflicts (file buffers)
-  "Signal if writing FILE would conflict with modified BUFFERS."
-  (when-let ((modified (e-base-tools--modified-live-buffers buffers)))
-    (signal 'e-base-tools-coherence-conflict
-            (list (format "Cannot edit file://%s directly because live buffer(s) %s have unsaved changes. Edit buffer://<name> or ask the user how to resolve the conflict."
-                          file
-                          (e-base-tools--live-buffer-names modified))))))
+(defun e-base-tools--file-buffer-view-status (file buffer disk-content disk-error)
+  "Return coherence status for BUFFER visiting FILE."
+  (cond
+   ((with-current-buffer buffer (buffer-modified-p)) 'needs-save)
+   (disk-error 'unknown)
+   ((not (file-exists-p file)) 'missing)
+   ((equal (e-base-tools--buffer-content buffer) disk-content) 'coherent)
+   (t 'stale)))
+
+(defun e-base-tools--file-disk-view (file disk-error)
+  "Return a generic coherence view for disk FILE."
+  (e-resource-coherence-view-create
+   :uri (e-base-tools--file-uri file)
+   :canonical-uri (e-base-tools--file-uri file)
+   :label (e-base-tools--file-uri file)
+   :kind 'file
+   :role 'persisted
+   :status (cond (disk-error 'unknown)
+                 ((file-exists-p file) 'coherent)
+                 (t 'missing))
+   :modified nil
+   :live nil
+   :visible nil
+   :selected-window nil
+   :priority 0
+   :metadata (list :file file :disk-error disk-error)))
+
+(defun e-base-tools--file-buffer-view (file buffer disk-content disk-error)
+  "Return a generic coherence view for BUFFER visiting FILE."
+  (let ((metadata (e-base-tools--buffer-link-state buffer)))
+    (e-resource-coherence-view-create
+     :uri (e-base-tools--buffer-uri buffer)
+     :canonical-uri (e-base-tools--file-uri file)
+     :label (buffer-name buffer)
+     :kind 'buffer
+     :role 'live-view
+     :status (e-base-tools--file-buffer-view-status
+              file buffer disk-content disk-error)
+     :modified (plist-get metadata :modified)
+     :live t
+     :visible (plist-get metadata :visible)
+     :selected-window (plist-get metadata :selected-window)
+     :priority 100
+     :metadata metadata)))
+
+(defun e-base-tools-file-buffer-coherence-group (file &optional subject-uri)
+  "Return a generic coherence group for local FILE and its live buffer views."
+  (let* ((absolute-file (e-base-tools--canonical-file-name file))
+         (file-uri (e-base-tools--file-uri absolute-file))
+         (buffers (e-base-tools-file-live-buffers absolute-file))
+         disk-content
+         disk-error)
+    (condition-case err
+        (when (file-exists-p absolute-file)
+          (setq disk-content (e-base-tools--file-disk-text absolute-file)))
+      (error
+       (setq disk-error (error-message-string err))))
+    (e-resource-coherence-group-with-status
+     (e-resource-coherence-group-create
+      :canonical-uri file-uri
+      :subject-uri (or subject-uri file-uri)
+      :views (cons (e-base-tools--file-disk-view absolute-file disk-error)
+                   (mapcar (lambda (buffer)
+                             (e-base-tools--file-buffer-view
+                              absolute-file buffer disk-content disk-error))
+                           buffers))
+      :metadata (list :file absolute-file :disk-error disk-error)))))
+
+(defun e-base-tools--buffer-only-coherence-group (buffer)
+  "Return a generic coherence group for non-file-backed BUFFER."
+  (let ((uri (e-base-tools--buffer-uri buffer)))
+    (e-resource-coherence-group-with-status
+     (e-resource-coherence-group-create
+      :canonical-uri uri
+      :subject-uri uri
+      :views (list
+              (e-resource-coherence-view-create
+               :uri uri
+               :canonical-uri uri
+               :label (buffer-name buffer)
+               :kind 'buffer
+               :role 'live-view
+               :status 'coherent
+               :modified (with-current-buffer buffer (buffer-modified-p))
+               :live t
+               :visible (e-base-tools--buffer-visible-p buffer)
+               :selected-window (e-base-tools--buffer-selected-window-p buffer)
+               :priority 100
+               :metadata (e-base-tools--buffer-link-state buffer)))
+      :metadata (list :buffer (buffer-name buffer))))))
+
+(defun e-base-tools-file-buffer-coherence-provider (directory)
+  "Return a generic coherence provider for files rooted at DIRECTORY and buffers."
+  (e-resource-coherence-provider-create
+   :id 'local-file-backed-buffers
+   :schemes '("file" "buffer")
+   :handler
+   (lambda (uri)
+     (pcase (plist-get uri :scheme)
+       ("file"
+        (let ((file (e-base-tools--resource-path uri directory)))
+          (e-base-tools-file-buffer-coherence-group
+           file
+           (plist-get uri :uri))))
+       ("buffer"
+        (when-let ((buffer (get-buffer (plist-get uri :address))))
+          (with-current-buffer buffer
+            (if buffer-file-name
+                (e-base-tools-file-buffer-coherence-group
+                 buffer-file-name
+                 (plist-get uri :uri))
+              (e-base-tools--buffer-only-coherence-group buffer)))))))))
 
 (defun e-base-tools--sync-other-live-buffers (written-buffer buffers)
   "Revert unmodified BUFFERS other than WRITTEN-BUFFER after a file save."
@@ -291,13 +387,32 @@ TOTAL-LINES is the full file line count.  START-LINE is 1-based."
               (list "The read tool is text-only in v1; binary and image files are not supported.")))
     (e-base-tools--decode-text content)))
 
+(defun e-base-tools--preferred-buffer-for-group (group)
+  "Return preferred live buffer view from generic coherence GROUP, or nil."
+  (when-let ((view (e-resource-coherence-preferred-view
+                   (e-resource-coherence-views-by-kind group 'buffer)
+                   "live buffer view")))
+    (e-base-tools--buffer-from-view view)))
+
+(defun e-base-tools--signal-base-coherence-conflict (err)
+  "Signal ERR as a base-tools coherence conflict for compatibility."
+  (signal 'e-base-tools-coherence-conflict (cdr err)))
+
+(defun e-base-tools--check-coherence-write-conflicts
+    (group subject-uri action)
+  "Signal if writing SUBJECT-URI with ACTION conflicts in GROUP."
+  (condition-case err
+      (e-resource-coherence-conflict-if-dirty group subject-uri action)
+    (e-resource-coherence-conflict
+     (e-base-tools--signal-base-coherence-conflict err))))
+
 (defun e-base-tools--file-text (path)
   "Return coherent text contents of PATH.
-Live Emacs buffers visiting PATH win over disk so unsaved buffer edits are
-visible through file:// reads."
+Live resource views visiting PATH win over disk so unsaved edits are visible
+through file:// reads."
   (let* ((absolute-path (e-base-tools--canonical-file-name path))
-         (buffers (e-base-tools-file-live-buffers absolute-path)))
-    (if-let ((buffer (e-base-tools--preferred-live-buffer absolute-path buffers)))
+         (group (e-base-tools-file-buffer-coherence-group absolute-path)))
+    (if-let ((buffer (e-base-tools--preferred-buffer-for-group group)))
         (with-current-buffer buffer
           (buffer-substring-no-properties (point-min) (point-max)))
       (e-base-tools--file-disk-text absolute-path))))
@@ -380,12 +495,17 @@ visible through file:// reads."
   "Write CONTENT to parsed file URI in DIRECTORY."
   (let* ((path (plist-get uri :address))
          (absolute-path (e-base-tools--resource-path uri directory))
-         (buffers (e-base-tools-file-live-buffers absolute-path)))
-    (e-base-tools--check-live-buffer-write-conflicts absolute-path buffers)
+         (file-uri (e-base-tools--file-uri absolute-path))
+         (group (e-base-tools-file-buffer-coherence-group
+                 absolute-path
+                 (plist-get uri :uri))))
+    (e-base-tools--check-coherence-write-conflicts group file-uri "edit")
     (make-directory (file-name-directory absolute-path) t)
-    (if-let ((buffer (e-base-tools--preferred-live-buffer absolute-path buffers)))
+    (if-let ((buffer (e-base-tools--preferred-buffer-for-group group)))
         (let* ((saved (e-base-tools--save-buffer-content-to-file buffer content))
-               (synced (e-base-tools--sync-other-live-buffers buffer buffers)))
+               (synced (e-base-tools--sync-other-live-buffers
+                        buffer
+                        (e-base-tools-file-live-buffers absolute-path))))
           (format "Successfully wrote %d bytes to %s through live buffer %s. Saved buffer and synced %d linked buffer(s)."
                   (string-bytes content)
                   path
@@ -401,9 +521,12 @@ visible through file:// reads."
   "Apply exact EDITS to parsed file URI in DIRECTORY."
   (let* ((path (plist-get uri :address))
          (absolute-path (e-base-tools--resource-path uri directory))
-         (buffers (e-base-tools-file-live-buffers absolute-path)))
-    (e-base-tools--check-live-buffer-write-conflicts absolute-path buffers)
-    (let* ((buffer (e-base-tools--preferred-live-buffer absolute-path buffers))
+         (file-uri (e-base-tools--file-uri absolute-path))
+         (group (e-base-tools-file-buffer-coherence-group
+                 absolute-path
+                 (plist-get uri :uri))))
+    (e-base-tools--check-coherence-write-conflicts group file-uri "edit")
+    (let* ((buffer (e-base-tools--preferred-buffer-for-group group))
            (raw-content (e-base-tools--file-text absolute-path))
            (line-ending (e-base-tools--line-ending raw-content))
            (content (e-base-tools--normalize-line-endings raw-content))
@@ -418,7 +541,9 @@ visible through file:// reads."
             (make-directory (file-name-directory absolute-path) t)
             (setq saved (e-base-tools--save-buffer-content-to-file
                          buffer final-content))
-            (setq synced (e-base-tools--sync-other-live-buffers buffer buffers)))
+            (setq synced (e-base-tools--sync-other-live-buffers
+                          buffer
+                          (e-base-tools-file-live-buffers absolute-path))))
         (let ((coding-system-for-write 'utf-8-unix))
           (write-region final-content nil absolute-path nil 'silent)))
       (list :message (if buffer
@@ -440,77 +565,37 @@ visible through file:// reads."
   (with-current-buffer buffer
     (buffer-substring-no-properties (point-min) (point-max))))
 
-(defun e-base-tools--file-buffer-sync-state (file buffer disk-content disk-error)
-  "Return sync state for BUFFER linked to FILE and DISK-CONTENT."
-  (let* ((state (e-base-tools--buffer-link-state buffer))
-         (modified (plist-get state :modified))
-         (status (cond
-                  (modified 'needs-save)
-                  (disk-error 'unknown)
-                  ((not (file-exists-p file)) 'file-missing)
-                  ((equal (e-base-tools--buffer-content buffer) disk-content)
-                   'coherent)
-                  (t 'stale))))
-    (append state
-            (list :status status))))
-
-(defun e-base-tools--sync-status-for-file (file)
-  "Return file/buffer coherence status for FILE."
-  (let* ((absolute-file (e-base-tools--canonical-file-name file))
-         (buffers (e-base-tools-file-live-buffers absolute-file))
-         disk-content
-         disk-error)
-    (condition-case err
-        (when (file-exists-p absolute-file)
-          (setq disk-content (e-base-tools--file-disk-text absolute-file)))
-      (error
-       (setq disk-error (error-message-string err))))
-    (let* ((buffer-states
-            (mapcar (lambda (buffer)
-                      (e-base-tools--file-buffer-sync-state
-                       absolute-file buffer disk-content disk-error))
-                    buffers))
-           (statuses (mapcar (lambda (state) (plist-get state :status))
-                             buffer-states))
-           (overall (cond
-                     ((memq 'needs-save statuses) 'needs-save)
-                     ((memq 'stale statuses) 'stale)
-                     (disk-error 'unknown)
-                     ((not (file-exists-p absolute-file)) 'missing)
-                     (t 'coherent))))
-      (list :uri (concat "file://" absolute-file)
-            :file absolute-file
-            :status overall
-            :disk-readable (and (not disk-error) (file-exists-p absolute-file))
-            :disk-error disk-error
-            :buffers buffer-states))))
+(defun e-base-tools--sync-status-group->result (group)
+  "Return model-facing sync status RESULT for generic coherence GROUP."
+  (let ((group (e-resource-coherence-group-with-status group)))
+    (append
+     (list :uri (plist-get group :subject-uri)
+           :canonical-uri (plist-get group :canonical-uri)
+           :status (plist-get group :status)
+           :views (e-resource-coherence-group-views group))
+     (when-let ((file (plist-get (plist-get group :metadata) :file)))
+       (list :file file
+             :disk-readable (file-exists-p file)
+             :disk-error (plist-get (plist-get group :metadata) :disk-error)
+             :buffers (mapcar (lambda (view)
+                                (append (copy-sequence
+                                         (plist-get view :metadata))
+                                        (list :status
+                                              (plist-get view :status))))
+                              (e-resource-coherence-views-by-kind
+                               group 'buffer)))))))
 
 (defun e-base-tools--sync-status-for-uri (uri directory)
-  "Return file/buffer coherence status for parsed URI in DIRECTORY."
-  (pcase (plist-get uri :scheme)
-    ("file"
-     (e-base-tools--sync-status-for-file
-      (e-base-tools--resource-path uri directory)))
-    ("buffer"
-     (let* ((name (plist-get uri :address))
-            (buffer (get-buffer name)))
-       (unless buffer
-         (signal 'e-base-tools-read-invalid
-                 (list (format "No buffer named %s" name))))
-       (with-current-buffer buffer
-         (if (not buffer-file-name)
-             (list :uri (concat "buffer://" name)
-                   :buffer (e-base-tools--buffer-link-state buffer)
-                   :status 'buffer-only)
-           (append (e-base-tools--sync-status-for-file buffer-file-name)
-                   (list :uri (concat "buffer://" name)))))))
-    (_
-     (signal 'e-base-tools-read-invalid
-             (list (format "Unsupported sync status URI scheme: %s"
-                           (plist-get uri :scheme)))))))
+  "Return generic linked-resource coherence status for parsed URI in DIRECTORY."
+  (let ((registry (e-resource-coherence-registry-create)))
+    (e-resource-coherence-register
+     registry
+     (e-base-tools-file-buffer-coherence-provider directory))
+    (e-base-tools--sync-status-group->result
+     (e-resource-coherence-group registry (plist-get uri :uri)))))
 
 (defun e-base-tools-register-resource-sync-status (registry directory)
-  "Register a file/buffer resource coherence status tool in REGISTRY."
+  "Register a linked-resource coherence status tool in REGISTRY."
   (e-tools-register
    registry
    :name "resource_sync_status"

@@ -18,6 +18,7 @@
 (require 'e-events)
 (require 'e-operations)
 (require 'e-resources)
+(require 'e-resource-coherence)
 (require 'e-store)
 (require 'e-capability-config)
 (require 'e-capabilities)
@@ -47,6 +48,7 @@
         :events t
         :operations t
         :resources t
+        :resource-coherence t
         :store t
         :skills t
         :startup t

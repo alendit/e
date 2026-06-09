@@ -7,26 +7,40 @@ Ready for review.
 
 * Summary
 
-Implemented the first resource-coherence slice for local file-backed Emacs
-buffers:
+Implemented resource coherence as a generic linked-resource model, with the
+local file/file-backed-buffer case as the first concrete provider.
 
-- =file://= reads now prefer live buffer contents when a buffer visits the file.
-- =file://= writes and edits detect visiting buffers.
-- Modified visiting buffers are explicit coherence conflicts.
-- Unmodified visiting buffers are updated through the live buffer and saved.
-- Other unmodified linked buffers are reverted after save instead of left stale.
-- Added =resource_sync_status= for file/buffer coherence inspection.
-- Added Emacs guidance about preferring live buffer tools and saving buffers.
+Generic model added in =e-resource-coherence=:
+
+- coherence registries that dispatch to providers by URI scheme;
+- provider objects that return a coherence group for a URI;
+- arbitrary-size coherence groups containing any number of linked resource views;
+- view metadata for canonical URI, kind, role, status, modified/dirty state,
+  liveness, visibility, selected-window state, priority, and adapter metadata;
+- generic aggregate status, dirty-view conflict detection, preferred-view
+  selection, and view filtering helpers.
+
+The existing local file/buffer behavior now uses that generic model:
+
+- =file://= reads prefer a preferred live view from a coherence group;
+- =file://= writes/edits ask generic dirty-view policy before mutating;
+- modified visiting buffers remain explicit coherence conflicts;
+- unmodified visiting buffers are updated through the live buffer and saved;
+- other unmodified linked buffers are reverted after save instead of left stale;
+- =resource_sync_status= reports the generic group and still includes the
+  compatibility-oriented file/buffer fields that existing tests and agents use.
 
 * Validation
 
-- =eldev test= passed: 650 expected, 0 unexpected, 1 skipped
+- =eldev test= passed: 654 expected, 0 unexpected, 1 skipped
   (=e-chat-test-assistant-markdown-renders-with-text-properties=).
-- Reloaded the running Emacs via =e-dev-reload= after the initial implementation;
-  a later =emacsclient --eval= reload attempt timed out while the server was
-  busy, but live inspection confirmed the loaded function body included the final
-  canonical-path update.
-- Live smoke check in the running Emacs via =run_elisp= verified:
+- Focused tests passed:
+  - =test/e-resource-coherence-test.el=;
+  - =test/e-base-tools-test.el=;
+  - =test/e-file-capabilities-test.el=;
+  - =test/e-base-test.el=.
+- Earlier live smoke check in the running Emacs verified the concrete
+  file/buffer behavior after the first slice:
   - writing =file://sample.txt= with a live visiting buffer routes through and
     saves the buffer;
   - a subsequent direct file write with unsaved buffer edits raises an explicit
@@ -39,6 +53,9 @@ buffers:
   =/private/tmp= aliases resolve to the same live buffer.
 - The sync status tool is registered by both file inspection and file mutation
   capabilities, so it is available even with read-only file access.
+- The generic model is deliberately provider-shaped rather than a persisted
+  global graph. It can represent any number of linked resource views for a
+  canonical entity while keeping concrete discovery/sync mechanics in adapters.
 
 * Unresolved
 
