@@ -442,6 +442,23 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
       :payload (:error (:message "Invalid schema"
                        :type "invalid_request_error")))))))
 
+(ert-deftest e-openai-test-parse-html-error-response ()
+  "HTML provider error responses become explicit backend error items."
+  (let* ((items
+          (e-openai-codex-parse-stream
+           "<html><body><h1>Web server is returning an unknown error</h1>\
+<p>Error reference number: 520</p></body></html>"))
+         (item (car items)))
+    (should (= (length items) 1))
+    (should (equal (plist-get item :type) 'backend-error))
+    (should (string-match-p "HTML" (plist-get item :content)))
+    (should (string-match-p "520" (plist-get item :content)))
+    (should (equal (plist-get (plist-get item :payload) :response-kind)
+                   'html))
+    (should (string-match-p "520"
+                            (plist-get (plist-get item :payload)
+                                       :preview)))))
+
 (ert-deftest e-openai-test-response-failed-keeps-summary-and-payload ()
   "Responses failure events keep a readable summary and full payload."
   (let* ((items

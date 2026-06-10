@@ -689,6 +689,40 @@ condition list.  Return a cancellable `e-backend-request' handle."
               :content message
               :payload payload)))))
 
+(defun e-openai-codex--text-preview (text &optional limit)
+  "Return a compact single-line preview of TEXT.
+LIMIT defaults to 240 characters."
+  (let* ((limit (or limit 240))
+         (preview (string-trim
+                   (replace-regexp-in-string
+                    "[[:space:]\n\r\t]+" " " (or text "")))))
+    (if (> (length preview) limit)
+        (concat (substring preview 0 limit) "...")
+      preview)))
+
+(defun e-openai-codex--html-text-preview (html &optional limit)
+  "Return a compact text preview for HTML.
+LIMIT defaults to 240 characters."
+  (e-openai-codex--text-preview
+   (replace-regexp-in-string "<[^>]+>" " " (or html ""))
+   limit))
+
+(defun e-openai-codex--non-stream-error-item (stream-text)
+  "Return a backend error item for non-empty non-SSE STREAM-TEXT."
+  (let* ((trimmed (string-trim-left (or stream-text "")))
+         (html (string-prefix-p "<" trimmed))
+         (preview (if html
+                      (e-openai-codex--html-text-preview stream-text)
+                    (e-openai-codex--text-preview stream-text)))
+         (kind (if html 'html 'text)))
+    (when (not (string-empty-p preview))
+      (list :type 'backend-error
+            :content (format "Provider returned %s instead of a Responses stream: %s"
+                             (if html "HTML" "non-stream text")
+                             preview)
+            :payload (list :response-kind kind
+                           :preview preview)))))
+
 (defun e-openai-codex--event-item (event)
   "Map parsed Responses EVENT to one backend-neutral item, or nil."
   (let ((type (plist-get event :type)))
@@ -785,6 +819,10 @@ condition list.  Return a cancellable `e-backend-request' handle."
         (push assistant-message-candidate items)))
     (unless items
       (when-let ((error-item (e-openai-codex--json-error-item stream-text)))
+        (push error-item items)))
+    (unless items
+      (when-let ((error-item
+                  (e-openai-codex--non-stream-error-item stream-text)))
         (push error-item items)))
     (when e-openai-codex-debug
       (setq e-openai-codex--last-diagnostics
