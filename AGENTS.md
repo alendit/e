@@ -27,6 +27,11 @@
 - Bug reports belong under `docs/bugs/`. When a user creates a bug report, create a new directory under `docs/bugs/` containing `report.org` with a short description of what the user reported, then create `investigation.org` in the same directory with the results of investigating the report using both code and live access.
 - See `docs/references/dev_work.org` for the current dev work, tiny work, research, and bug report conventions.
 
+## Post-Change Checklist
+
+- After finishing a coherent semantic slice, run the relevant verification, reload live Emacs when required, update the applicable docs/bug/feature ledger, and commit that slice before starting unrelated work unless the user explicitly asks not to commit.
+- Keep commits semantic and scoped: stage only files that belong to the slice, leave unrelated dirty or untracked files alone, and split independent behavior, documentation, or guidance changes into separate commits.
+
 ## Architecture Guidance
 
 Use this section to evaluate decomposition, dependency direction, side-effect placement, interface design, and testability.
