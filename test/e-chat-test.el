@@ -2301,6 +2301,38 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-final-message-preserves-follow-up-draft ()
+  "Assistant final output keeps already typed follow-up composer text."
+  (let ((buffer (e-chat-test--buffer nil "chat-final-preserve-draft")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat--render-event
+           (e-events-make :type 'turn-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 10))
+          (goto-char (point-max))
+          (insert "follow-up draft")
+          (e-chat--render-event
+           (e-events-make :type 'message-added
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 11
+                          :payload '(:message (:role assistant
+                                                :content "Final answer."))))
+          (should (e-chat--composer-active-p))
+          (should (equal (e-chat--composer-text) "follow-up draft"))
+          (e-chat--render-event
+           (e-events-make :type 'turn-finished
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 12
+                          :payload '(:reason stop)))
+          (should (e-chat--composer-active-p))
+          (should (equal (e-chat--composer-text) "follow-up draft")))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-running-activity-schedules-deferred-redraw ()
   "Running turn activity coalesces near-future redraw work."
   (let ((buffer (e-chat-test--buffer nil "chat-activity-redraw"))

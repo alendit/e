@@ -98,3 +98,28 @@ text and inline context-reference properties.
 - Removed the pending bottom chrome path from the running-turn composer flow.
 - Verified the focused regression tests:
   =rtk eldev test -f test/e-chat-test.el e-chat-test-progress-rerender-keeps-editable-composer-draft e-chat-test-progress-rerender-preserves-context-reference e-chat-test-submit-keeps-follow-up-composer-editable=.
+
+* Follow-up fix evidence: final message render
+
+The active-turn composer could still be cleared when the assistant's final
+message arrived after the user had already typed a follow-up draft.
+=e-chat--insert-entry= captured only whether a composer existed, then deleted
+the bottom region and recreated an empty composer after inserting the final
+assistant entry.
+
+- Added =e-chat-test-final-message-preserves-follow-up-draft=. It failed
+  before the fix because the draft became the empty string immediately after
+  the assistant =message-added= event.
+- Changed =e-chat--insert-entry= to capture full composer state before deleting
+  bottom chrome and restore that state after inserting the entry. For active
+  turns, the captured composer state is restored before the running-status
+  renderer redraws so the shared status path can preserve it normally.
+- Verified the focused regression, adjacent composer redraw selectors, and the
+  full chat test file:
+  =rtk eldev test -f test/e-chat-test.el e-chat-test-final-message-preserves-follow-up-draft=,
+  =rtk eldev test -f test/e-chat-test.el e-chat-test-progress-rerender-keeps-editable-composer-draft e-chat-test-progress-rerender-preserves-scrollback-focus e-chat-test-progress-rerender-strips-composer-presentation-properties e-chat-test-progress-rerender-preserves-context-reference e-chat-test-submit-keeps-follow-up-composer-editable e-chat-test-final-message-preserves-follow-up-draft=,
+  and =rtk eldev test -f test/e-chat-test.el=.
+- Verified the running Emacs after =e-dev-reload= with a temporary chat buffer
+  live probe. After final assistant =message-added= and =turn-finished=,
+  the probe returned =:composer-active t= and
+  =:composer-text "follow-up draft"=.

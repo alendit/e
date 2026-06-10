@@ -3473,6 +3473,7 @@ non-nil, is used by focused block activation."
      (let* ((active-turn-id e-chat--progress-turn-id)
             (active-record (and active-turn-id
                                 (e-chat--existing-turn-record active-turn-id)))
+            (composer-state (e-chat--capture-composer-state))
             (had-composer nil)
             (side (e-chat--entry-side title))
             (block-id (and turn-id (e-chat--next-block-id))))
@@ -3512,9 +3513,11 @@ non-nil, is used by focused block activation."
               details-text)
              (e-chat--record-durable-entry-rendered turn-id side))))
        (if active-turn-id
-           (e-chat--render-running-status active-turn-id active-record)
+           (progn
+             (e-chat--restore-composer-state composer-state)
+             (e-chat--render-running-status active-turn-id active-record))
          (when (or ensure-composer had-composer)
-           (e-chat--insert-composer)))))))
+           (e-chat--restore-composer-state composer-state)))))))
 
 (defun e-chat-enter-response-navigation ()
   "Enter response navigation mode and focus the nearest rendered turn."
