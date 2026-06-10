@@ -1349,7 +1349,7 @@ When PRESERVE-FOCUS is non-nil, do not move point or window focus to it."
 Keep point inside the composer when movement starts there."
   (interactive "^p\np")
   (let ((started-in-composer (e-chat--point-in-composer-p)))
-    (previous-line arg try-vscroll)
+    (line-move (- (or arg 1)) nil nil try-vscroll)
     (when started-in-composer
       (e-chat--clamp-to-composer))))
 

@@ -42,7 +42,8 @@
 
 (cl-defun e-tools-register
     (registry &key name description parameters handler start metadata)
-  "Register tool NAME in REGISTRY with DESCRIPTION, PARAMETERS, HANDLER, START, and METADATA.
+  "Register tool NAME in REGISTRY.
+DESCRIPTION, PARAMETERS, HANDLER, START, and METADATA describe the tool.
 HANDLER is a synchronous implementation.  START is a callback-driven async
 implementation."
   (unless (or (functionp handler) (functionp start))

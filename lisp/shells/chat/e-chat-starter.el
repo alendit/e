@@ -12,6 +12,8 @@
 
 ;;; Code:
 
+(declare-function markdown-mode "ext:markdown-mode")
+
 (require 'cl-lib)
 (require 'subr-x)
 (require 'e-chat)

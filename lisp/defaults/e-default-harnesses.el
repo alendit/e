@@ -13,6 +13,10 @@
 
 ;;; Code:
 
+(declare-function e-chat-session-capability-create "e-chat-session")
+(declare-function e-openai-create-harness "e-openai")
+(defvar e-openai-default-provider)
+
 (require 'cl-lib)
 (require 'e-default-layers)
 (require 'e-context)

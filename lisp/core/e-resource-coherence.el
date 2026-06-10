@@ -181,8 +181,8 @@ error text, defaulting to the edit action."
 
 (defun e-resource-coherence-preferred-view (views &optional description)
   "Return preferred view from VIEWS, or nil.
-If multiple VIEWS are equally preferred, signal a coherence conflict.  DESCRIPTION
-is used in ambiguity error text."
+If multiple VIEWS are equally preferred, signal a coherence conflict.
+DESCRIPTION is used in ambiguity error text."
   (when views
     (let* ((ranked (sort (copy-sequence views)
                          (lambda (left right)

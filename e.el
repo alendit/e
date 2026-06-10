@@ -18,6 +18,9 @@
 
 ;;; Code:
 
+(declare-function e-core-status "e-core")
+(declare-function e-startup-run "e-startup")
+
 (eval-and-compile
   (defconst e--directory
     (file-name-directory

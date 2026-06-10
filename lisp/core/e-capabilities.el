@@ -25,7 +25,8 @@
                              (&key id name instructions tools
                                    resource-methods resources
                                    context-providers actions hooks
-                                   instruction-priority config-options config)))
+                                   instruction-priority config-options config))
+               (:conc-name e-capability--))
   id
   name
   instructions
@@ -38,6 +39,22 @@
   (instruction-priority 200)
   config-options
   config)
+
+(defun e-capability-id (capability)
+  "Return CAPABILITY id."
+  (e-capability--id capability))
+
+(defun e-capability-name (capability)
+  "Return CAPABILITY display name."
+  (e-capability--name capability))
+
+(defun e-capability-instructions (capability)
+  "Return CAPABILITY instructions."
+  (e-capability--instructions capability))
+
+(defun e-capability-tools (capability)
+  "Return CAPABILITY tool providers."
+  (e-capability--tools capability))
 
 (cl-defstruct (e-capability-resource-method-provider
                (:constructor e-capability-resource-method-provider-create))
@@ -64,7 +81,7 @@
 This accessor tolerates stale capability records compiled before the
 `resource-methods' slot existed."
   (if (>= (length capability) 8)
-      (aref capability 5)
+      (e-capability--resource-methods capability)
     nil))
 
 (defun e-capability-context-providers (capability)
@@ -72,7 +89,7 @@ This accessor tolerates stale capability records compiled before the
 This accessor tolerates stale capability records compiled before the
 `resources' or `resource-methods' slot existed."
   (if (>= (length capability) 9)
-      (aref capability 7)
+      (e-capability--context-providers capability)
     (if (>= (length capability) 8)
         (aref capability 6)
       (aref capability 5))))
@@ -82,7 +99,7 @@ This accessor tolerates stale capability records compiled before the
 This accessor tolerates stale capability records compiled before the
 `resources' slot existed."
   (if (>= (length capability) 9)
-      (aref capability 6)
+      (e-capability--resources capability)
     nil))
 
 (defun e-capability-actions (capability)
@@ -90,7 +107,7 @@ This accessor tolerates stale capability records compiled before the
 This accessor tolerates stale capability records compiled before the `resources'
 or `resource-methods' slot existed."
   (if (>= (length capability) 9)
-      (aref capability 8)
+      (e-capability--actions capability)
     (if (>= (length capability) 8)
         (aref capability 7)
       (aref capability 6))))
@@ -100,21 +117,21 @@ or `resource-methods' slot existed."
 This accessor tolerates stale capability records compiled before the `hooks'
 slot existed."
   (if (>= (length capability) 10)
-      (aref capability 9)
+      (e-capability--hooks capability)
     nil))
 
 (defun e-capability-instruction-priority (capability)
   "Return CAPABILITY instruction priority."
   (unless (e-capability-p capability)
     (signal 'wrong-type-argument (list 'e-capability-p capability)))
-  (or (aref capability 10) 200))
+  (or (e-capability--instruction-priority capability) 200))
 
 (defun e-capability-config-options (capability)
   "Return CAPABILITY declared config option specs.
 This accessor tolerates stale capability records compiled before the
 `config-options' slot existed."
   (if (>= (length capability) 12)
-      (aref capability 11)
+      (e-capability--config-options capability)
     nil))
 
 (defun e-capability-config (capability)
@@ -122,10 +139,14 @@ This accessor tolerates stale capability records compiled before the
 This accessor tolerates stale capability records compiled before the `config'
 slot existed."
   (if (>= (length capability) 13)
-      (aref capability 12)
+      (e-capability--config capability)
     nil))
 
-(dolist (symbol '(e-capability-resource-methods
+(dolist (symbol '(e-capability-id
+                  e-capability-name
+                  e-capability-instructions
+                  e-capability-tools
+                  e-capability-resource-methods
                   e-capability-resources
                   e-capability-context-providers
                   e-capability-actions

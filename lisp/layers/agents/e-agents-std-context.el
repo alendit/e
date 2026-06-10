@@ -207,7 +207,7 @@ slugs across those scopes intentionally remain distinct resources."
            (e-agents-std-context--project-skill-specs directory))))
 
 (cl-defun e-agents-std-context--config
-    (&optional directory overrides &key harness session-id turn-id)
+    (&optional directory overrides &key harness session-id _turn-id)
   "Return effective agents-std-context config for DIRECTORY."
   (let ((root (e-agents-std-context--directory directory)))
     (if harness

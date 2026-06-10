@@ -228,6 +228,19 @@
   (let ((point (plist-get arguments :point)))
     (and (numberp point) point)))
 
+
+(defun e-org-canvas--show-all ()
+  "Show all Org headings without hard dependency on one Org fold API version."
+  (funcall (if (fboundp 'org-fold-show-all)
+               #'org-fold-show-all
+             (intern "org-show-all"))))
+
+(defun e-org-canvas--show-subtree ()
+  "Show the current Org subtree across supported Org fold API versions."
+  (funcall (if (fboundp 'org-fold-show-subtree)
+               #'org-fold-show-subtree
+             (intern "org-show-subtree"))))
+
 (defun e-org-canvas--goto-tool-target (arguments)
   "Move point to the tool target described by ARGUMENTS."
   (when-let ((point (e-org-canvas--tool-target-point arguments)))
@@ -242,7 +255,7 @@
 (defun e-org-canvas--show-all-tool (buffer _arguments)
   "Show all headings in BUFFER."
   (with-current-buffer buffer
-    (org-show-all)
+    (e-org-canvas--show-all)
     "Shown all headings in the Org Canvas buffer."))
 
 (defun e-org-canvas--overview-tool (buffer _arguments)
@@ -258,7 +271,7 @@
       (e-org-canvas--goto-tool-target arguments)
       (org-reveal)
       (when (e-org-canvas--inside-heading-p)
-        (org-show-subtree)))
+        (e-org-canvas--show-subtree)))
     "Revealed Org Canvas context."))
 
 (defun e-org-canvas--cycle-heading-tool (buffer arguments)
@@ -270,7 +283,7 @@
         (user-error "No Org heading at target"))
       (org-back-to-heading t)
       (pcase (or (plist-get arguments :operation) "cycle")
-        ("show" (org-show-subtree))
+        ("show" (e-org-canvas--show-subtree))
         ("hide" (outline-hide-subtree))
         ("reveal" (org-reveal))
         (_ (org-cycle))))

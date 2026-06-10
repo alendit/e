@@ -123,6 +123,30 @@
                         '(:legacy ignore))))
     (should-error (e-capability-instruction-priority legacy))))
 
+(ert-deftest e-capabilities-test-public-accessors-do-not-keep-struct-metadata ()
+  "Public capability accessors stay reload-safe plain functions."
+  (let ((symbols '(e-capability-id
+                   e-capability-name
+                   e-capability-instructions
+                   e-capability-tools
+                   e-capability-resource-methods
+                   e-capability-resources
+                   e-capability-context-providers
+                   e-capability-actions
+                   e-capability-hooks
+                   e-capability-instruction-priority
+                   e-capability-config-options
+                   e-capability-config)))
+    (dolist (symbol symbols)
+      (put symbol 'compiler-macro 'stale)
+      (put symbol 'side-effect-free 'stale)
+      (put symbol 'gv-expander 'stale))
+    (load-file (locate-library "e-capabilities.el"))
+    (dolist (symbol symbols)
+      (should-not (get symbol 'compiler-macro))
+      (should-not (get symbol 'side-effect-free))
+      (should-not (get symbol 'gv-expander)))))
+
 (ert-deftest e-capabilities-test-register-hooks ()
   "Capability hook providers register against the given registry."
   (should (require 'e-hooks nil t))

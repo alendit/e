@@ -56,13 +56,13 @@ published, used to calculate `:elapsed-seconds' for finished events."
           append-message refresh-messages on-request-start on-done on-error
           cancelled-p)
   "Start one async agent turn for SESSION-ID and TURN-ID.
-MESSAGES, BACKEND, TOOLS, TOOL-LIFECYCLE, and OPTIONS describe the turn input.  ON-EVENT,
-APPEND-MESSAGE, REFRESH-MESSAGES, ON-REQUEST-START, ON-DONE, ON-ERROR, and
-CANCELLED-P receive turn progress, output, refreshed context, provider request
-handles, settlement, failures, and cancellation state.  The provider request is
-started through `e-backend-start'.  Tool execution is started through
-TOOL-LIFECYCLE when supplied, otherwise through `e-tools-start'.  Provider I/O,
-tool I/O, and turn settlement are callback-driven."
+MESSAGES, BACKEND, TOOLS, TOOL-LIFECYCLE, and OPTIONS describe the turn input.
+ON-EVENT, APPEND-MESSAGE, REFRESH-MESSAGES, ON-REQUEST-START, ON-DONE,
+ON-ERROR, and CANCELLED-P receive turn progress, output, refreshed context,
+provider request handles, settlement, failures, and cancellation state.  The
+provider request is started through `e-backend-start'.  Tool execution is
+started through TOOL-LIFECYCLE when supplied, otherwise through `e-tools-start'.
+Provider I/O, tool I/O, and turn settlement are callback-driven."
   (ignore session-id turn-id)
   (let ((turn-messages (copy-sequence messages))
         (settled nil)
