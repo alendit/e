@@ -18,6 +18,7 @@
 (require 'project)
 (require 'subr-x)
 (require 'e-chat-session)
+(require 'e-context-inspection)
 (require 'e-context-status)
 (require 'e-harness)
 (require 'e-harness-registry)
@@ -4399,6 +4400,133 @@ reload.  User-facing commands should call `e-chat-new' or `e-chat-resume'."
    :delay delay
    :metadata metadata))
 
+(defun e-chat--failed-turn-target-at-point ()
+  "Return failed turn target at point in a chat buffer, or nil."
+  (when (and (derived-mode-p 'e-chat-mode)
+             e-chat-session-id)
+    (let* ((block-id (e-chat--block-at-point))
+           (block (and block-id
+                       (hash-table-p e-chat--block-registry)
+                       (gethash block-id e-chat--block-registry)))
+           (turn-id (plist-get block :turn-id))
+           (turn-record (e-chat--existing-turn-record turn-id)))
+      (when (and turn-id
+                 (plist-get turn-record :failure-error))
+        (list :session-id e-chat-session-id
+              :turn-id turn-id
+              :harness e-chat-harness
+              :source 'point)))))
+
+(defun e-chat--latest-failed-turn-target (harness)
+  "Return newest failed turn target from HARNESS, or nil."
+  (car (e-context-inspection-recent-failures
+        :harness harness
+        :limit 1)))
+
+(defun e-chat--inspect-error-target (harness session-id turn-id)
+  "Return an inspect-error target for HARNESS SESSION-ID TURN-ID."
+  (cond
+   ((and session-id turn-id)
+    (list :session-id session-id :turn-id turn-id :source 'explicit))
+   ((and session-id (not turn-id))
+    (signal 'e-context-inspection-invalid
+            (list "e-inspect-error requires turn-id with session-id")))
+   ((and turn-id (not session-id))
+    (signal 'e-context-inspection-invalid
+            (list "e-inspect-error requires session-id with turn-id")))
+   (t
+    (or (e-chat--failed-turn-target-at-point)
+        (e-chat--latest-failed-turn-target harness)))))
+
+(defun e-chat--inspect-error-title (detail)
+  "Return an investigation session title for failure DETAIL."
+  (let* ((session (plist-get detail :session))
+         (turn (plist-get detail :turn))
+         (terminal-error (plist-get detail :terminal-error))
+         (error-text (or (plist-get terminal-error :error)
+                         "failed turn")))
+    (format "Inspect error: %s %s"
+            (plist-get session :id)
+            (or (plist-get turn :id)
+                error-text))))
+
+(defun e-chat--inspect-error-prompt (detail)
+  "Return the seeded investigation prompt for failure DETAIL."
+  (let* ((session (plist-get detail :session))
+         (turn (plist-get detail :turn))
+         (terminal-error (plist-get detail :terminal-error))
+         (session-id (plist-get session :id))
+         (turn-id (plist-get turn :id)))
+    (with-temp-buffer
+      (insert "Investigate this recent failed e turn.\n\n")
+      (insert "Goals:\n")
+      (insert "- Explain the likely root cause.\n")
+      (insert "- Identify the strongest evidence in the attached timeline.\n")
+      (insert "- Propose remediation and hardening steps.\n")
+      (insert "- Do not retry, mutate, or edit the original failed session unless explicitly asked.\n\n")
+      (insert (format "Failure target: session `%s`, turn `%s`.\n"
+                      session-id turn-id))
+      (when-let ((project-root (plist-get session :project-root)))
+        (insert (format "Project root: `%s`.\n" project-root)))
+      (insert "\nTerminal error:\n")
+      (insert "```elisp\n")
+      (insert (pp-to-string terminal-error))
+      (insert "```\n\n")
+      (insert "Structured diagnostic context:\n")
+      (insert "```elisp\n")
+      (insert (pp-to-string detail))
+      (insert "```\n")
+      (buffer-string))))
+
+(defun e-chat--inspect-error-reference (detail prompt)
+  "Return a diagnostic reference for failure DETAIL and PROMPT body."
+  (let* ((session (plist-get detail :session))
+         (turn (plist-get detail :turn))
+         (session-id (plist-get session :id))
+         (turn-id (plist-get turn :id)))
+    (list :uri (format "e://session/%s/turn/%s/failure"
+                       session-id turn-id)
+          :label (format "Failed turn %s/%s" session-id turn-id)
+          :body prompt)))
+
+;;;###autoload
+(cl-defun e-inspect-error (&key session-id turn-id harness)
+  "Start a new chat session to inspect a failed e turn.
+Interactive use prefers a failed turn at point in chat buffers, otherwise the
+newest failed turn from the default chat harness.  SESSION-ID, TURN-ID, and
+HARNESS are internal test seams."
+  (interactive)
+  (let* ((harness (or harness (e-chat--default-harness)))
+         (target (e-chat--inspect-error-target harness session-id turn-id)))
+    (unless target
+      (user-error "No failed e turns found"))
+    (let* ((source-session-id (plist-get target :session-id))
+           (source-turn-id (plist-get target :turn-id))
+           (source-harness (or (plist-get target :harness) harness))
+           (detail (e-context-inspection-failure-detail
+                    :harness source-harness
+                    :session-id source-session-id
+                    :turn-id source-turn-id))
+           (title (e-chat--inspect-error-title detail))
+           (metadata (list :name title
+                           :source 'e-inspect-error
+                           :source-session-id source-session-id
+                           :source-turn-id source-turn-id))
+           (session (e-chat-create-session
+                     :harness source-harness
+                     :metadata metadata))
+           (new-session-id (plist-get session :id))
+           (prompt (e-chat--inspect-error-prompt detail))
+           (reference (e-chat--inspect-error-reference detail prompt)))
+      (e-chat-open-session source-harness new-session-id t)
+      (e-chat-submit-session
+       source-harness
+       new-session-id
+       prompt
+       :references (list reference)
+       :metadata metadata)
+      new-session-id)))
+
 (defun e-chat-open-session (harness session-id &optional display)
   "Open HARNESS SESSION-ID and display it when DISPLAY is non-nil."
   (let ((buffer (e-chat-open :harness harness :session-id session-id)))
@@ -5270,6 +5398,12 @@ When DISPLAY is non-nil, display the preview buffer."
      :interactive 'e-chat-compact-session
      :function 'e-chat-compact-session
      :scope 'session)
+    (e-shell-command-create
+     :id 'inspect-error
+     :summary "Start a new chat session to inspect a recent failed turn."
+     :interactive 'e-inspect-error
+     :function 'e-inspect-error
+     :scope 'global)
     (e-shell-command-create
      :id 'submit
      :summary "Submit the current chat prompt."

@@ -1,0 +1,15 @@
+#+title: Backend Empty Output Masks Provider HTML Error
+#+startup: overview
+
+* Report
+
+The user reported that a recent review turn failed in the chat UI with:
+
+#+begin_example
+Turn failed: Backend returned no assistant output
+#+end_example
+
+The visible turn had performed several read tool calls before failing. The user
+asked to debug why the turn failed and to suggest hardening, including better
+user-facing error reporting and agent-facing tools to inspect and remediate
+recent =e= failures.

@@ -1,0 +1,163 @@
+#+title: Backend Empty Output Masks Provider HTML Error Investigation
+#+startup: overview
+
+* Investigation
+
+The failed session is =20260610T070244-8f1b1dab0971= under the persistent
+session store:
+
+#+begin_example
+~/.emacs.d/.local/cache/e/sessions/sessions/20260610T070244-8f1b1dab0971.jsonl
+#+end_example
+
+The persisted timeline shows:
+
+- =2026-06-10T07:03:19Z= :: user requested a review of feature 17 Org Canvas.
+- =2026-06-10T07:03:19Z= :: provider request started against =chatgpt.com=
+  path =/backend-api/codex/responses=.
+- =2026-06-10T07:03:25Z= through =2026-06-10T07:04:07Z= :: the model issued
+  read tool calls and tool results were persisted normally.
+- =2026-06-10T07:04:07Z= :: a follow-up provider request started after the last
+  tool result.
+- =2026-06-10T07:04:48Z= :: that provider request finished with status =done=
+  after =40.856= seconds.
+- immediately after :: =e-loop= emitted =backend-empty-output= with
+  =(:reason nil)=, then =turn-failed= with =Backend returned no assistant
+  output=.
+
+The running Emacs server was reachable via a bounded =emacsclient --timeout=2=
+probe. The hidden raw provider response buffer
+= *e-openai-codex-raw-responses*= contained a Cloudflare =520= HTML error page
+at the tail rather than a Responses API server-sent-event stream.
+
+The relevant code path is:
+
+- =lisp/adapters/openai/e-openai.el=
+  - =e-openai-codex--http-request-start= treats a non-empty response body from a
+    =url.el= error status as =on-complete=.
+  - =e-openai-codex-parse-stream= appends the raw response to the hidden buffer,
+    but only emits backend errors for JSON error bodies or =response.failed=
+    SSE events.
+  - A non-SSE HTML error page therefore produces no parsed backend items.
+- =lisp/core/e-loop.el=
+  - when the backend completes without tool calls and without assistant text,
+    =e-loop-start-turn= emits =backend-empty-output= and signals
+    =e-loop-empty-output=.
+
+So the likely root cause is not an actually empty assistant response. The
+provider transport received an HTML Cloudflare 520 error page, but the adapter
+classified it as a successful empty provider stream. The loop then reported the
+generic empty-output symptom, losing the real provider failure.
+
+* Hardening
+
+Immediate fixes:
+
+- Make =e-openai-codex--http-request-start= preserve HTTP/error status metadata
+  and report non-2xx or =url.el= errors as backend errors even when the response
+  body is non-empty.
+- Make =e-openai-codex-parse-stream= detect non-empty, non-SSE, non-JSON
+  response bodies and emit a =backend-error= item with a sanitized body preview
+  and response classification, not an empty item list.
+- Include parsed =backend-empty-output= diagnostics in the failure payload:
+  provider name, URL host/path, elapsed seconds, done reason, parsed item count,
+  raw response kind, and a redacted preview when safe.
+- Keep the raw response retention path, but expose a bounded, sanitized
+  inspection surface so users and agents do not need to manually inspect the
+  hidden raw buffer.
+
+User-facing reporting:
+
+- Render this class as a provider/transport failure, for example:
+
+#+begin_example
+Turn failed: provider returned Cloudflare 520 HTML instead of a Responses stream
+#+end_example
+
+- Show compact details in the failed turn block: provider, endpoint path,
+  elapsed time, HTTP/status class, and where to inspect raw diagnostics.
+- Keep =Backend returned no assistant output= only for a real parsed provider
+  completion with no assistant/tool/error items.
+
+Agent-facing inspection and remediation:
+
+- Add an =e-inspect-error= user command that starts a new diagnostic session for
+  the most recent failed turn or the failed turn at point.
+- The command should attach focused context:
+  - session id, turn id, failed event payload, and surrounding activity events;
+  - provider lifecycle metadata and elapsed times;
+  - sanitized raw provider response classification/preview;
+  - recent tool calls and their result metadata;
+  - current project root and relevant loaded backend/harness settings.
+- Back it with a capability/tool set so the agent can inspect failures from
+  inside =e= without shell access:
+  - =e_error_recent_failures= :: list recent failed turns across sessions.
+  - =e_error_failure_detail= :: return one failed turn timeline and diagnostics.
+  - =e_error_raw_provider_preview= :: return a sanitized bounded raw response
+    preview for a failure.
+  - =e_error_retry_turn= or a user-confirmed remediation command :: retry the
+    failed turn after transport/provider errors, preserving the original prompt
+    and context options.
+- Keep remediation user-confirmed by default. Inspection can be agent-initiated,
+  but retrying, changing provider/model, or mutating session state should require
+  explicit command intent or confirmation.
+
+* Suggested Tests
+
+- Parser regression: a Cloudflare-style HTML body returns one =backend-error=
+  item, not nil.
+- Transport regression: =url.el= error status plus non-empty body calls
+  =on-error= or emits a backend error containing sanitized status/body metadata.
+- Loop regression: backend completion with a =backend-error= item produces
+  =turn-failed= with the provider message and does not degrade to
+  =e-loop-empty-output=.
+- UI regression: failed turn rendering shows provider diagnostics when present.
+- Capability regression: =e_error_recent_failures= and
+  =e_error_failure_detail= can inspect the persisted session above without
+  reading unrelated full transcripts.
+
+* Partial Fix
+
+=e-openai-codex-parse-stream= now classifies non-empty, non-SSE, non-JSON
+provider bodies as explicit =backend-error= items instead of returning an empty
+item list. HTML bodies are compacted into a single-line text preview and tagged
+with =(:response-kind html :preview ...)= in the backend-error payload.
+
+This fixes the observed Cloudflare 520 class of failures at the parser boundary:
+the loop now receives a backend error item, so the harness can surface the
+provider failure and details through the existing =turn-failed= payload path
+instead of falling through to =Backend returned no assistant output=.
+
+The follow-up inspection slice is now implemented:
+
+- =e-context-inspection= registers read-only agent tools:
+  =e_error_recent_failures=, =e_error_failure_detail=, and
+  =e_error_raw_provider_preview=.
+- =e-inspect-error= starts a new normal chat session for the failed turn at
+  point in a chat buffer, or the newest persisted failed turn otherwise.
+- The inspection session receives a compact investigation prompt plus structured
+  metadata/reference context with the source session id and turn id.
+- Retry, provider switching, transcript mutation, and raw response persistence
+  changes remain out of scope for this slice.
+
+* Validation
+
+- Confirmed the new parser regression failed before the fix:
+  =rtk eldev test -f test/e-openai-test.el e-openai-test-parse-html-error-response=.
+- Confirmed the new parser regression passed after the fix.
+- Confirmed all OpenAI adapter tests pass:
+  =rtk eldev test -f test/e-openai-test.el=.
+- Confirmed the existing loop backend-error path still passes:
+  =rtk eldev test -f test/e-loop-test.el e-loop-test-surfaces-backend-error=.
+- Confirmed structured backend details still survive through harness
+  =turn-failed= payloads:
+  =rtk eldev test -f test/e-harness-test.el e-harness-test-backend-error-details-are-surfaced=.
+- Confirmed context inspection failure tools pass:
+  =rtk eldev test -f test/e-context-inspection-test.el=.
+- Confirmed focused chat shell coverage for =e-inspect-error= target selection
+  and shell registration passes:
+  =rtk eldev test -f test/e-chat-test.el e-chat-test-inspect-error-targets-failed-turn-at-point e-chat-test-inspect-error-targets-newest-failure-outside-block e-chat-test-shell-descriptor-advertises-chat-surface=.
+- Reloaded the running Emacs with =e-dev-reload=.
+- Confirmed live Emacs has =e-inspect-error= bound, the chat shell advertises
+  =inspect-error=, and the default chat harness registers all three
+  =e_error_*= tools.

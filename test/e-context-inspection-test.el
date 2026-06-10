@@ -23,7 +23,7 @@
 (require 'e-tools)
 
 (ert-deftest e-context-inspection-test-capability-registers-export-tool ()
-  "The context-inspection capability exposes only export-context."
+  "The context-inspection capability exposes context and error tools."
   (let* ((capability (e-context-inspection-capability-create))
          (registry (e-tools-registry-create)))
     (e-capabilities-register-tools capability registry)
@@ -31,7 +31,10 @@
     (should (equal (mapcar (lambda (definition)
                              (plist-get definition :name))
                            (e-tools-definitions registry))
-                   '("export-context")))))
+                   '("export-context"
+                     "e_error_recent_failures"
+                     "e_error_failure_detail"
+                     "e_error_raw_provider_preview")))))
 
 (ert-deftest e-context-inspection-test-dev-layer-contains-context-inspection ()
   "The e-dev layer packages context-inspection."
@@ -135,6 +138,102 @@
         (should (string-match-p "system guidance" content))
         (should (string-match-p "existing prompt" content))
         (should-not (string-match-p "Export metadata" content))))))
+
+(ert-deftest e-context-inspection-test-recent-failures-finds-turn-failed ()
+  "Recent failure inspection lists failed turns newest first."
+  (let* ((store (e-session-store-create))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :sessions store)))
+    (e-harness-create-session harness :id "session-1")
+    (e-session-append-message
+     store "session-1"
+     '(:id "msg-1" :role user :content "broken prompt" :turn-id "turn-1"))
+    (e-session-append-activity-event
+     store "session-1" "turn-1" 'turn-failed
+     '(:error "provider failed" :details (:status 520)))
+    (let ((failures (e-context-inspection-recent-failures
+                     :harness harness)))
+      (should (= (length failures) 1))
+      (should (equal (plist-get (car failures) :session-id) "session-1"))
+      (should (equal (plist-get (car failures) :turn-id) "turn-1"))
+      (should (equal (plist-get (car failures) :error) "provider failed"))
+      (should (equal (plist-get (car failures) :details) '(:status 520))))))
+
+(ert-deftest e-context-inspection-test-failure-detail-includes-turn-timeline ()
+  "Failure detail includes prompt, provider lifecycle, tools, and terminal error."
+  (let* ((store (e-session-store-create))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :sessions store)))
+    (e-harness-create-session harness :id "session-1"
+                              :metadata '(:project-root "/tmp/project/"))
+    (e-session-append-message
+     store "session-1"
+     '(:id "msg-1" :role user :content "please debug" :turn-id "turn-1"))
+    (e-session-append-message
+     store "session-1"
+     '(:id "call-msg" :role tool-call
+       :content (:type "tool-call" :id "call-1" :name "read"
+                 :arguments (:uri "file://broken"))
+       :turn-id "turn-1"))
+    (e-session-append-message
+     store "session-1"
+     '(:id "tool-msg" :role tool
+       :content (:tool-call-id "call-1" :name "read" :status ok
+                 :content "tool output")
+       :turn-id "turn-1"))
+    (e-session-append-activity-event
+     store "session-1" "turn-1" 'provider-request-started
+     '(:provider codex :url-path "/backend-api/codex/responses"))
+    (e-session-append-activity-event
+     store "session-1" "turn-1" 'tool-started
+     '(:type "tool-call" :id "call-1" :name "read"))
+    (e-session-append-activity-event
+     store "session-1" "turn-1" 'tool-finished
+     '(:tool-call (:id "call-1" :name "read")
+       :result (:status ok :content "tool output")))
+    (e-session-append-activity-event
+     store "session-1" "turn-1" 'turn-failed
+     '(:error "provider returned HTML"
+       :details (:response-kind html :preview "520")))
+    (let ((detail (e-context-inspection-failure-detail
+                   :harness harness
+                   :session-id "session-1"
+                   :turn-id "turn-1")))
+      (should (equal (plist-get (plist-get detail :session) :id)
+                     "session-1"))
+      (should (equal (plist-get (plist-get detail :session) :project-root)
+                     "/tmp/project/"))
+      (should (equal (plist-get (plist-get detail :turn) :id) "turn-1"))
+      (should (equal (plist-get (plist-get detail :terminal-error) :error)
+                     "provider returned HTML"))
+      (should (= (length (plist-get detail :messages)) 3))
+      (should (= (length (plist-get detail :tool-calls)) 1))
+      (should (seq-find (lambda (event)
+                          (eq (plist-get event :event-type)
+                              'provider-request-started))
+                        (plist-get detail :events))))))
+
+(ert-deftest e-context-inspection-test-failure-detail-rejects-unknown-turn ()
+  "Failure detail errors when the requested turn has no terminal failure."
+  (let* ((store (e-session-store-create))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :sessions store)))
+    (e-harness-create-session harness :id "session-1")
+    (should-error
+     (e-context-inspection-failure-detail
+      :harness harness
+      :session-id "session-1"
+      :turn-id "missing-turn")
+     :type 'e-context-inspection-invalid)))
+
+(ert-deftest e-context-inspection-test-raw-provider-preview-unavailable ()
+  "Raw provider preview returns an explicit unavailable shape by default."
+  (let ((preview (e-context-inspection-raw-provider-preview)))
+    (should-not (plist-get preview :available))
+    (should (equal (plist-get preview :source) "unavailable"))))
 
 (provide 'e-context-inspection-test)
 

@@ -17,6 +17,7 @@
 (require 'e-backend)
 (require 'e-chat)
 (require 'e-chat-session)
+(require 'e-context-inspection)
 (require 'e-dev-profile)
 (require 'e-events)
 (require 'e-harness)
@@ -4756,6 +4757,7 @@
                           response-navigation-insert
                           open-latest-response
                           copy-latest-response
+                          inspect-error
                           add-context-to-latest
                           add-context-to-session))
       (should (memq command-id command-ids)))
@@ -4771,6 +4773,95 @@
                                            (plist-get entry :id)))
                            :keymap)
                 e-chat-response-navigation-mode-map))))
+
+(ert-deftest e-chat-test-inspect-error-targets-failed-turn-at-point ()
+  "e-inspect-error prefers a failed turn under point in a chat buffer."
+  (let* ((store (e-session-store-create))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :sessions store))
+         captured)
+    (e-harness-create-session harness :id "failed-session"
+                              :metadata '(:project-root "/tmp/project/"))
+    (e-session-append-message
+     store "failed-session"
+     '(:id "msg-1" :role user :content "broken" :turn-id "failed-turn"))
+    (e-session-append-activity-event
+     store "failed-session" "failed-turn" 'turn-failed
+     '(:error "failed at point" :details (:status 520)))
+    (with-current-buffer (e-chat-open :harness harness
+                                      :session-id "failed-session")
+      (e-chat--render-turn-failure
+       "failed-turn"
+       "2026-06-10T00:00:00Z"
+       '(:error "failed at point" :details (:status 520))
+       t)
+      (goto-char (point-min))
+      (search-forward "Turn failed")
+      (cl-letf (((symbol-function 'e-chat-create-session)
+                 (lambda (&rest args)
+                   (setq captured (plist-put captured :create-args args))
+                   '(:id "inspection-session")))
+                ((symbol-function 'e-chat-open-session)
+                 (lambda (_harness session-id &optional _display)
+                   (setq captured (plist-put captured :opened-session
+                                             session-id))
+                   (current-buffer)))
+                ((symbol-function 'e-chat-submit-session)
+                 (lambda (_harness session-id prompt
+                          &key references delay metadata)
+                   (setq captured
+                         (append captured
+                                 (list :submitted-session session-id
+                                       :prompt prompt
+                                       :references references
+                                       :delay delay
+                                       :metadata metadata))))))
+        (e-inspect-error :harness harness)
+        (should (equal (plist-get captured :submitted-session)
+                       "inspection-session"))
+        (should (string-match-p "failed-session"
+                                (plist-get captured :prompt)))
+        (should (string-match-p "failed-turn"
+                                (plist-get captured :prompt)))
+        (should (equal (plist-get (plist-get captured :metadata)
+                                  :source-session-id)
+                       "failed-session"))
+        (should (equal (plist-get (plist-get captured :metadata)
+                                  :source-turn-id)
+                       "failed-turn"))))))
+
+(ert-deftest e-chat-test-inspect-error-targets-newest-failure-outside-block ()
+  "e-inspect-error falls back to the newest persisted failed turn."
+  (let* ((store (e-session-store-create))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :sessions store))
+         prompt)
+    (e-harness-create-session harness :id "older-session")
+    (e-session-append-message
+     store "older-session"
+     '(:id "older-msg" :role user :content "older" :turn-id "older-turn"))
+    (e-session-append-activity-event
+     store "older-session" "older-turn" 'turn-failed
+     '(:error "older failure"))
+    (e-harness-create-session harness :id "newer-session")
+    (e-session-append-message
+     store "newer-session"
+     '(:id "newer-msg" :role user :content "newer" :turn-id "newer-turn"))
+    (e-session-append-activity-event
+     store "newer-session" "newer-turn" 'turn-failed
+     '(:error "newer failure"))
+    (cl-letf (((symbol-function 'e-chat-create-session)
+               (lambda (&rest _args) '(:id "inspection-session")))
+              ((symbol-function 'e-chat-open-session)
+               (lambda (&rest _args) nil))
+              ((symbol-function 'e-chat-submit-session)
+               (lambda (_harness _session-id submitted-prompt &rest _args)
+                 (setq prompt submitted-prompt))))
+      (e-inspect-error :harness harness)
+      (should (string-match-p "newer-session" prompt))
+      (should (string-match-p "newer-turn" prompt)))))
 
 (ert-deftest e-chat-test-startup-enables-global-context-mode ()
   "Chat shell startup enables the global context insertion keymap."
