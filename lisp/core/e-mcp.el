@@ -73,6 +73,9 @@
 (defvar e-mcp--known-servers nil
   "MCP servers observed during capability construction.")
 
+(defvar e-mcp--latest-diagnostics nil
+  "Most recent diagnostics returned by the MCP helper.")
+
 (defvar e-mcp-helper-transport-function nil
   "Optional fake helper transport function for tests.
 When non-nil, the function receives the helper request plist and returns a
@@ -168,7 +171,12 @@ helper response plist.")
   (setq e-mcp--helper-stdout nil)
   (setq e-mcp--helper-stderr nil)
   (setq e-mcp--helper-next-id 0)
+  (setq e-mcp--latest-diagnostics nil)
   t)
+
+(defun e-mcp-diagnostics ()
+  "Return diagnostics from the most recent MCP helper response."
+  e-mcp--latest-diagnostics)
 
 (defun e-mcp--helper-live-p ()
   "Return non-nil when the MCP helper process is live."
@@ -290,6 +298,7 @@ helper response plist.")
     (unless (and (listp response) (plist-member response :ok))
       (signal 'e-mcp-protocol-error
               (list "MCP helper returned an invalid response" response)))
+    (setq e-mcp--latest-diagnostics (plist-get response :diagnostics))
     (unless (e-mcp--truthy-p (plist-get response :ok))
       (e-mcp--helper-error response "MCP helper returned an error"))
     (plist-get response :result)))

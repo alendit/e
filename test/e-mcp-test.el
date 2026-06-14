@@ -116,6 +116,28 @@
                              (nreverse requests))
                      '("list-tools" "call-tool" "refresh"))))))
 
+(ert-deftest e-mcp-test-helper-request-rejects-malformed-response ()
+  "Malformed helper responses signal a protocol error."
+  (e-mcp-test--with-transport
+      (lambda (_request)
+        '(:result (:tools [])))
+    (should-error (e-mcp-list-tools (list (e-mcp-test--server)))
+                  :type 'e-mcp-protocol-error)))
+
+(ert-deftest e-mcp-test-helper-request-times-out ()
+  "A live helper process that never answers signals a backend timeout."
+  (skip-unless (executable-find "tail"))
+  (let ((server (e-mcp-test--server)))
+    (unwind-protect
+        (cl-letf (((symbol-function 'e-mcp--helper-command)
+                   (lambda () '("tail" "-f" "/dev/null"))))
+          (e-mcp-reset)
+          (should-error
+           (e-mcp--helper-request "list-tools" (list server) :timeout 0.02)
+           :type 'e-mcp-backend-timeout)
+          (should (get 'e-mcp-backend-timeout 'e-tools-infrastructure-error)))
+      (e-mcp-reset))))
+
 (ert-deftest e-mcp-test-capability-registers-discovered-tools ()
   "MCP capability construction registers discovered tools as normal e tools."
   (e-mcp-test--with-transport
@@ -423,6 +445,39 @@
                    '("echo" "structured" "fail"))))
       (e-mcp-reset))))
 
+(ert-deftest e-mcp-test-real-helper-reports-stale-after-list-changed-notification ()
+  "A tools/list_changed notification marks diagnostics stale until refresh."
+  (skip-unless (executable-find "node"))
+  (let* ((fixture (expand-file-name
+                   "test/fixtures/e-mcp-stale-after-list-server.mjs"
+                   default-directory))
+         (server (e-mcp-server-create
+                  :id "stale"
+                  :command (list "node" fixture)
+                  :timeout 2)))
+    (unwind-protect
+        (progn
+          (e-mcp-reset)
+          (should (equal (mapcar #'e-mcp-tool-name
+                                 (e-mcp-list-tools (list server)))
+                         '("echo")))
+          (sleep-for 0.05)
+          (should (equal
+                   (e-mcp-call-tool (list server) "stale" "echo" nil)
+                   '(:content [(:type "text" :text "ok")]
+                     :isError :json-false)))
+          (should (plist-get (e-mcp-diagnostics) :stale))
+          (should (equal
+                   (mapcar (lambda (item) (plist-get item :name))
+                           (append (plist-get (e-mcp-refresh (list server))
+                                              :tools)
+                                   nil))
+                   '("echo")))
+          (should-not (e-mcp--truthy-p
+                       (plist-get (plist-get (e-mcp-diagnostics) :stale)
+                                  :stale))))
+      (e-mcp-reset))))
+
 (ert-deftest e-mcp-test-real-helper-respawns-exited-server ()
   "The Node helper starts a fresh MCP server after a clean server exit."
   (skip-unless (executable-find "node"))
@@ -439,6 +494,7 @@
           (should (equal (mapcar #'e-mcp-tool-name
                                  (e-mcp-list-tools (list server)))
                          '("once")))
+          (sleep-for 0.05)
           (should (equal (mapcar #'e-mcp-tool-name
                                  (e-mcp-list-tools (list server)))
                          '("once"))))

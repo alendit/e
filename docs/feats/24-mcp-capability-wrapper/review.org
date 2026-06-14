@@ -3,7 +3,7 @@
 
 * Status
 
-In-review.
+Done.
 
 Review pass: <2026-06-14 Sun>.
 
@@ -15,11 +15,10 @@ capability/tool records, the harness remains MCP-agnostic, and a Node helper own
 stdio MCP subprocesses, JSON-RPC framing, discovery, calls, refresh, diagnostics,
 and reset/respawn behavior.
 
-No blocking implementation defect was found in this review pass.  Focused MCP +
-integration-adjacent tests passed, and a live fixture probe in the running Emacs
-successfully discovered and called the fixture server.  The remaining review
-notes are coverage/evidence gaps: timeout/invalid-response tests and explicit
-notification-driven stale-catalog tests are still missing.
+No blocking implementation defect was found in this review pass.  The follow-up
+added deterministic helper timeout coverage, malformed helper response coverage,
+notification-driven stale-catalog coverage, and retained the last helper
+diagnostics for observability.  Focused MCP plus integration-adjacent tests pass.
 
 * Scope reviewed
 
@@ -113,7 +112,7 @@ Observed summary:
 
 * Findings
 
-** TODO Medium: helper timeout path lacks explicit test coverage
+** DONE Medium: helper timeout path lacks explicit test coverage
 
 =e-mcp--helper-request= has an =e-mcp-backend-timeout= path when the helper does
 not answer before the deadline, and the plan explicitly asks for helper timeout
@@ -124,7 +123,11 @@ Expected fix: add a small fixture/helper transport or subprocess fixture that
 causes a request to exceed a very short timeout, then assert
 =e-mcp-backend-timeout= and infrastructure-error tagging.
 
-** TODO Medium: invalid helper response path lacks explicit test coverage
+Resolved by =e-mcp-test-helper-request-times-out=, which runs a live helper
+process that never answers and asserts =e-mcp-backend-timeout= plus
+infrastructure-error tagging.
+
+** DONE Medium: invalid helper response path lacks explicit test coverage
 
 =e-mcp--helper-request= signals =e-mcp-protocol-error= when the helper response is
 not a plist with an =:ok= member.  The plan asks to test invalid helper responses.
@@ -134,7 +137,9 @@ Current tests cover helper-reported errors but not malformed responses such as
 Expected fix: add fake-transport tests for malformed responses and assert
 =e-mcp-protocol-error=.
 
-** TODO Medium: notification-driven stale-catalog transition is not asserted
+Resolved by =e-mcp-test-helper-request-rejects-malformed-response=.
+
+** DONE Medium: notification-driven stale-catalog transition is not asserted
 
 The helper handles =notifications/tools/list_changed= by setting a session stale
 flag, and diagnostics expose =stale=.  The fixture server sends such a
@@ -148,12 +153,21 @@ refresh, and assert refresh clears the flag.  If stale diagnostics are not meant
 to be public, document the intended observability boundary and test the chosen
 internal behavior.
 
-** TODO Low: no full-suite result was collected in this review pass
+Resolved by retaining the last helper diagnostics in =e-mcp-diagnostics= and
+adding =e-mcp-test-real-helper-reports-stale-after-list-changed-notification=
+with a real Node fixture that emits =notifications/tools/list_changed= after
+the initial catalog.
+
+** DONE Low: no full-suite result was collected in this review pass
 
 Focused and integration-adjacent MCP tests passed.  A full suite was not rerun
 because the current dirty worktree has an unrelated parse error in
 =test/e-chat-test.el=.  Before marking =Done=, rerun the aggregate suite or record
 any unrelated blockers explicitly.
+
+Resolved by rerunning the MCP/harness/tools aggregate verification set and the
+full repository suite after the parse issue was gone.  Full suite result:
+=702= tests run, =701= expected passes, =1= expected skip, =0= unexpected.
 
 * Plan comparison
 
@@ -173,10 +187,8 @@ Implemented plan items:
 
 Partial/missing plan coverage:
 
-- Task 5 timeout and invalid-response tests remain missing.
-- Task 6 notification-driven stale transition test remains missing.
-- Full suite and live reload evidence are blocked in this pass by current
-  worktree issues.
+- Broader MCP resources/prompts and non-stdio transports remain future work from
+  the original plan.  The first opt-in tool-wrapper slice is covered.
 
 * Architecture review
 
@@ -219,16 +231,16 @@ framing, server stderr, request timeouts, and protocol diagnostics.
 10. No legacy MCP code exists to remove.
 11. MCP execution errors become model-visible tool errors; helper/process/
     timeout/protocol failures surface as infrastructure errors.  Timeout and
-    invalid-response tests should prove those paths directly.
+    invalid-response tests prove those paths directly.
 12. Tests prove validation, fake transport, registration, result mapping,
     explicit refresh, real helper integration, child respawn, and harness tool
-    execution.  Remaining narrow tests are timeout, malformed helper response,
-    and notification-driven stale transition.
+    execution, timeout handling, malformed helper responses, and
+    notification-driven stale transition.
 
 * Unresolved
 
-- [ ] Add explicit helper timeout coverage.
-- [ ] Add explicit invalid helper response / protocol-error coverage.
-- [ ] Add notification-driven stale-catalog transition coverage.
-- [ ] Rerun full suite and live reload after current dirty worktree parse errors
+- [X] Add explicit helper timeout coverage.
+- [X] Add explicit invalid helper response / protocol-error coverage.
+- [X] Add notification-driven stale-catalog transition coverage.
+- [X] Rerun full suite and live reload after current dirty worktree parse errors
   are resolved.
