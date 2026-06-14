@@ -50,8 +50,8 @@
 
 (defun e-shell--validate-id (id)
   "Signal unless ID is a valid shell id."
-  (unless (symbolp id)
-    (signal 'wrong-type-argument (list 'symbolp id))))
+  (unless (and id (symbolp id))
+    (signal 'wrong-type-argument (list 'non-nil-symbol-p id))))
 
 (defun e-shell--validate-command (command)
   "Signal unless COMMAND is a valid shell command descriptor."

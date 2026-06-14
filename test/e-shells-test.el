@@ -12,6 +12,7 @@
 ;;; Code:
 
 (require 'ert)
+(require 'e)
 (require 'e-shells)
 
 (ert-deftest e-shells-test-command-struct-preserves-fields ()
@@ -66,6 +67,21 @@
     (e-shell-register second)
     (should (eq (e-shell-get 'registry-test) second))
     (should-not (memq first (e-shell-list)))))
+
+(ert-deftest e-shells-test-rejects-missing-shell-id ()
+  "Shell manifests must have explicit non-nil ids."
+  (should-error
+   (e-shell-register (e-shell-create :id nil :name "Missing"))
+   :type 'wrong-type-argument))
+
+(ert-deftest e-shells-test-rejects-missing-command-id ()
+  "Shell commands must have explicit non-nil ids."
+  (should-error
+   (e-shell-validate
+    (e-shell-create
+     :id 'missing-command-id
+     :commands (list (e-shell-command-create :id nil))))
+   :type 'wrong-type-argument))
 
 (ert-deftest e-shells-test-active-shells-include-harness-layer-shells ()
   "Active shell discovery includes layer-owned shells for the target harness."

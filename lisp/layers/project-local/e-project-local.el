@@ -329,6 +329,42 @@ e://<capability>/skills/project/<slug> resources.  Returns nil when none."
        :config (e-capability-config capability))
     capability))
 
+(defun e-project-local--layer-skill-specs (layer-id directory)
+  "Return layer-scoped skill specs for LAYER-ID under DIRECTORY."
+  (mapcar
+   (lambda (skill)
+     (e-skill-spec-create
+      :name (e-skill-spec-name skill)
+      :description (e-skill-spec-description skill)
+      :path (format "layers/%s/%s" layer-id (e-skill-spec-path skill))
+      :reader (lambda (_skill range)
+                (funcall (e-skill-spec-reader skill) skill range))
+      :metadata (append (e-skill-spec-metadata skill)
+                        (list :layer-id layer-id))))
+   (e-skills-specs-from-directory
+    "project"
+    (expand-file-name "skills" directory))))
+
+(defun e-project-local--layer-skill-capability (layer-id directory)
+  "Return a resource-only capability for LAYER-ID skills under DIRECTORY."
+  (let ((skills (e-project-local--layer-skill-specs layer-id directory)))
+    (when skills
+      (e-capability-with-skills-create
+       :id 'project-local
+       :name "Project Local Layer Skills"
+       :skills skills))))
+
+(defun e-project-local--with-layer-skills (layer directory)
+  "Return LAYER extended with layer-scoped skill resources from DIRECTORY."
+  (if-let ((capability (e-project-local--layer-skill-capability
+                        (e-layer-id layer)
+                        directory)))
+      (progn
+        (setf (e-layer-capabilities layer)
+              (append (e-layer-capabilities layer) (list capability)))
+        layer)
+    layer))
+
 (defun e-project-local--discover-capabilities (directory)
   "Return capabilities discovered for project root DIRECTORY.
 Walks `.e/capabilities/' ancestors, skips capability.el under roots that are
@@ -376,8 +412,10 @@ duplicate ids (nearer directory wins)."
                 (message "e-project-local: ignoring duplicate project layer id %s from %s"
                          id (abbreviate-file-name layer-directory))
               (push id seen)
-              (push (e-project-local--instantiate-layer-registration
-                     registration layer-directory)
+              (push (e-project-local--with-layer-skills
+                     (e-project-local--instantiate-layer-registration
+                      registration layer-directory)
+                     layer-directory)
                     layers)))))))
     (nreverse layers)))
 

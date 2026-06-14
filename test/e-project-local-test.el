@@ -213,6 +213,30 @@ SOURCE overrides the default layer source."
                                       (e-store-read-entry entry))))))
       (delete-directory project t))))
 
+(ert-deftest e-project-local-test-folds-in-layer-skills ()
+  "Layer-scoped skills register as project-local read-only e:// resources."
+  (let* ((project (make-temp-file "e-project-local-layer-skills-" t))
+         (e-project-local-allowed-roots (list project)))
+    (unwind-protect
+        (progn
+          (e-project-local-test--make-layer project 'topic)
+          (e-project-local-test--write-file
+           (expand-file-name ".e/layers/topic/skills/triage/SKILL.md"
+                             project)
+           "---\nname: triage\ndescription: Triage project topics.\n---\nTriage steps.")
+          (let* ((harness (e-harness-create))
+                 (layer (e-project-local-layer-create project)))
+            (e-harness-activate-layer harness layer)
+            (let* ((store (e-harness-store harness))
+                   (uri "e://project-local/layers/topic/skills/project/triage")
+                   (entry (cl-find uri (e-store-list store)
+                                   :key #'e-store-entry-uri
+                                   :test #'string=)))
+              (should entry)
+              (should (string-match-p "Triage steps."
+                                      (e-store-read-entry entry))))))
+      (delete-directory project t))))
+
 (ert-deftest e-project-local-test-project-layer-contributes-capability-and-shell ()
   "Trusted `.e/layers/' packages are flattened into the project-local layer."
   (let* ((project (make-temp-file "e-project-local-layer-" t))
