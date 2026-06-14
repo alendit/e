@@ -694,6 +694,7 @@ TURN-ID is passed to active capability context providers when present."
         preparation
         summary-parts
         summary-message
+        summary-item-types
         request)
     (condition-case err
         (progn
@@ -725,6 +726,7 @@ TURN-ID is passed to active capability context providers when present."
                                (setq request value))
            :on-item
            (lambda (item)
+             (push (plist-get item :type) summary-item-types)
              (pcase (plist-get item :type)
                ('assistant-message
                 (setq summary-message (plist-get item :content)))
@@ -736,7 +738,14 @@ TURN-ID is passed to active capability context providers when present."
                  (metadata (plist-get preparation :metadata)))
             (when (string-empty-p summary)
               (signal 'e-compaction-error
-                      (list "Compaction backend returned an empty summary")))
+                      (list
+                       "Compaction backend returned an empty summary"
+                       (list :request-started
+                             (and request t)
+                             :item-types
+                             (nreverse (delq nil summary-item-types))
+                             :summary-source
+                             'none))))
             (let ((record
                    (e-session-append-compaction
                     (e-harness-sessions harness)
@@ -809,9 +818,12 @@ TURN-ID is passed to active capability context providers when present."
 
 (defun e-harness--backend-error-details (err)
   "Return structured provider details from condition ERR, or nil."
-  (when (and (consp err)
-             (eq (car err) 'e-loop-backend-error))
-    (nth 2 err)))
+  (when (consp err)
+    (pcase (car err)
+      ('e-loop-backend-error
+       (nth 2 err))
+      ('e-compaction-error
+       (caddr err)))))
 
 (defun e-harness--emit-turn-failed
     (harness session-id turn-id error-message &optional details)

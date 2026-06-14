@@ -1751,6 +1751,48 @@
      :type 'user-error)
     (should-not (e-session-compactions store "session-1"))))
 
+(ert-deftest e-harness-test-compact-session-empty-summary-records-diagnostics ()
+  "Empty compaction summaries record bounded backend diagnostics."
+  (let* ((request (e-backend-request-create
+                   :metadata '(:provider fake-summary)))
+         (backend (e-backend-create
+                   :name 'empty-summary
+                   :stream
+                   (cl-function
+                    (lambda (&key messages options on-item)
+                      (ignore messages options)
+                      (e-backend-note-request-started request)
+                      (funcall on-item
+                               '(:type reasoning-delta
+                                 :content "thinking"))))))
+         (harness (e-harness-create :backend backend))
+         (store (e-harness-sessions harness)))
+    (e-harness-create-session harness :id "session-1")
+    (e-session-append-message store "session-1" '(:role user :content "old"))
+    (e-session-append-message store "session-1"
+                              '(:role assistant :content "old answer"))
+    (e-session-append-message store "session-1" '(:role user :content "new"))
+    (should-error
+     (e-harness-compact-session harness "session-1" :keep-recent-tokens 1)
+     :type 'e-compaction-error)
+    (let* ((events (e-session-activity-events store "session-1"))
+           (failed (seq-find
+                    (lambda (event)
+                      (eq (plist-get event :event-type)
+                          'compaction-failed))
+                    events))
+           (payload (plist-get failed :payload))
+           (details (plist-get payload :details)))
+      (should failed)
+      (should (string-match-p
+               "Compaction backend returned an empty summary"
+               (plist-get payload :message)))
+      (should (eq (plist-get details :request-started) t))
+      (should (equal (plist-get details :item-types)
+                     '(reasoning-delta)))
+      (should (equal (plist-get details :summary-source)
+                     'none)))))
+
 (provide 'e-harness-test)
 
 ;;; e-harness-test.el ends here

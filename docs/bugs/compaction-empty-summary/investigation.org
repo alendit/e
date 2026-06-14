@@ -184,4 +184,26 @@ Likely next steps:
 
 * Fix Applied
 
-None.
+Implemented in =lisp/core/e-harness.el=.
+
+The compaction path now records bounded diagnostics while reading backend summary
+items.  If the backend completes without a usable =assistant-message= or
+=assistant-delta= summary, the raised =e-compaction-error= keeps the existing
+human-readable error string and attaches structured details to the
+=compaction-failed= event:
+
+- whether a backend request handle was observed;
+- which normalized backend item types arrived;
+- that no summary source was accepted.
+
+This keeps the empty-summary guard intact, avoids appending unsafe empty
+compaction records, and gives the failed activity record enough evidence to
+distinguish provider no-output from adapter-normalization gaps.
+
+Verification:
+
+#+begin_example
+rtk eldev test -f test/e-harness-test.el e-harness-test-compact-session-empty-summary-records-diagnostics
+rtk eldev test -f test/e-compaction-test.el
+rtk eldev test -f test/e-harness-test.el
+#+end_example
