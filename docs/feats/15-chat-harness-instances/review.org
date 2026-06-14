@@ -5,7 +5,7 @@
 
 * Status
 
-In-review.
+Done.
 
 * Review summary
 
@@ -22,6 +22,16 @@ resume the same transcript through the wrong configured target/provider.  The
 planned user config for a second default-style chat instance calls
 =e-default-chat-harness-create= without a separate session store, so this is a
 likely real configuration rather than an edge case.
+
+The follow-up slice resolves that ambiguity.  New chat sessions created through
+a configured chat instance now persist =:harness-instance-id= metadata.  Resume,
+context insertion, and overview rows all use one candidate policy: owned
+sessions appear only under their persisted owner; legacy unowned sessions in
+shared stores appear once under the default instance; legacy unowned sessions in
+unique per-instance stores remain listed under that instance.  The obsolete
+=e-chat--context-session-picker= helper was removed, and =e-chat-new= now
+documents that its prefix argument both prompts for a target and uses the pop
+display path.
 
 * Scope reviewed
 
@@ -310,13 +320,10 @@ which harness happened to enumerate the same store.
 
 * Unresolved
 
-- [ ] Define and implement a session ownership policy for multiple chat
-  instances sharing one session store.
-- [ ] Persist creating harness-instance ownership, or choose and document a
-  different explicit shared-store policy.
-- [ ] Add shared-store regression coverage for resume, context picker, and
-  overview rows.
-- [ ] Remove the obsolete =e-chat--context-session-picker= helper if no
-  compatibility caller exists.
-- [ ] Clarify =e-chat-new= prefix semantics around prompting vs side-window
-  display.
+No unresolved review notes remain.
+
+Follow-up verification:
+
+#+begin_example
+rtk eldev test -f test/e-chat-test.el e-chat-test-new-persists-owning-chat-instance e-chat-test-session-candidates-deduplicate-shared-store-by-owner e-chat-test-overview-deduplicates-shared-store-by-owner e-chat-test-add-context-deduplicates-shared-store-by-owner e-chat-test-new-prompts-for-chat-instance-when-multiple-exist e-chat-test-resume-selects-session-across-chat-instances e-chat-test-overview-renders-and-opens-owning-chat-instance e-chat-test-add-context-picker-selects-session-across-chat-instances
+#+end_example

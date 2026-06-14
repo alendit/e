@@ -537,6 +537,7 @@ and RECORD supplies persisted identity fields during replay."
   (list :id (plist-get session :id)
         :name (plist-get session :name)
         :summary (plist-get session :summary)
+        :metadata (plist-get session :metadata)
         :title (e-session--display-title-for-session session)
         :message-count (or (plist-get session :message-count) 0)
         :created-at (plist-get session :created-at)

@@ -3460,6 +3460,38 @@
                 (should (= (length (e-harness-session-list alpha-harness)) 0))))))
       (e-chat-test--kill-chat-buffers))))
 
+(ert-deftest e-chat-test-new-persists-owning-chat-instance ()
+  "New sessions remember the configured chat instance that created them."
+  (let* ((store (e-session-store-create))
+         (alpha-harness (e-chat-test--activate-chat-session
+                         (e-harness-create
+                          :backend (e-backend-fake-create :items nil)
+                          :sessions store)))
+         (beta-harness (e-chat-test--activate-chat-session
+                        (e-harness-create
+                         :backend (e-backend-fake-create :items nil)
+                         :sessions store))))
+    (unwind-protect
+        (e-chat-test--with-empty-harness-registry
+          (let ((e-chat-default-harness-id :chat-alpha))
+            (e-chat-test--register-chat-instance
+             :chat-alpha "Alpha Target" alpha-harness t)
+            (e-chat-test--register-chat-instance
+             :chat-beta "Beta Target" beta-harness)
+            (cl-letf (((symbol-function 'completing-read)
+                       (lambda (_prompt collection &rest _args)
+                         (cl-find-if
+                          (lambda (candidate)
+                            (string-match-p "Beta Target" candidate))
+                          (all-completions "" collection)))))
+              (with-current-buffer (e-chat-new)
+                (let* ((session (e-session-get store e-chat-session-id))
+                       (metadata (plist-get session :metadata)))
+                  (should (eq e-chat-harness-instance-id :chat-beta))
+                  (should (eq (plist-get metadata :harness-instance-id)
+                              :chat-beta)))))))
+      (e-chat-test--kill-chat-buffers))))
+
 (ert-deftest e-chat-test-resume-selects-existing-session ()
   "Resuming uses completing-read over persisted sessions and renders transcript."
   (let* ((directory (make-temp-file "e-chat-" t))
@@ -3519,6 +3551,53 @@
                 (should (eq e-chat-harness-instance-id :chat-beta))
                 (should (equal e-chat-session-id "beta-session"))))))
       (e-chat-test--kill-chat-buffers))))
+
+(ert-deftest e-chat-test-session-candidates-deduplicate-shared-store-by-owner ()
+  "Shared-store sessions appear once under their owning chat instance."
+  (let* ((store (e-session-store-create))
+         (alpha-harness (e-chat-test--activate-chat-session
+                         (e-harness-create
+                          :backend (e-backend-fake-create :items nil)
+                          :sessions store)))
+         (beta-harness (e-chat-test--activate-chat-session
+                        (e-harness-create
+                         :backend (e-backend-fake-create :items nil)
+                         :sessions store))))
+    (e-chat-test--with-empty-harness-registry
+      (let ((e-chat-default-harness-id :chat-alpha))
+        (e-chat-test--register-chat-instance
+         :chat-alpha "Alpha Target" alpha-harness t)
+        (e-chat-test--register-chat-instance
+         :chat-beta "Beta Target" beta-harness)
+        (e-session-create store :id "legacy-session"
+                          :metadata '(:name "Legacy Session"))
+        (e-session-create store :id "beta-session"
+                          :metadata '(:name "Beta Session"
+                                      :harness-instance-id :chat-beta))
+        (let ((candidates (e-chat--session-candidates)))
+          (should (= (length candidates) 2))
+          (should (cl-find-if
+                   (lambda (candidate)
+                     (and (equal (plist-get candidate :session-id)
+                                 "legacy-session")
+                          (eq (plist-get candidate :instance-id)
+                              :chat-alpha)))
+                   candidates))
+          (should (cl-find-if
+                   (lambda (candidate)
+                     (and (equal (plist-get candidate :session-id)
+                                 "beta-session")
+                          (eq (plist-get candidate :instance-id)
+                              :chat-beta)))
+                   candidates))
+          (should-not
+           (cl-find-if
+            (lambda (candidate)
+              (and (equal (plist-get candidate :session-id)
+                          "beta-session")
+                   (eq (plist-get candidate :instance-id)
+                       :chat-alpha)))
+            candidates)))))))
 
 (ert-deftest e-chat-test-resume-preview-state-renders-selected-session ()
   "Resume completion preview renders the highlighted session in a preview buffer."
@@ -3921,6 +4000,48 @@
         (kill-buffer buffer))
       (e-chat-test--kill-chat-buffers))))
 
+(ert-deftest e-chat-test-overview-deduplicates-shared-store-by-owner ()
+  "Overview rows show shared-store sessions only under their owning instance."
+  (let* ((store (e-session-store-create))
+         (alpha-harness (e-chat-test--activate-chat-session
+                         (e-harness-create
+                          :backend (e-backend-fake-create :items nil)
+                          :sessions store)))
+         (beta-harness (e-chat-test--activate-chat-session
+                        (e-harness-create
+                         :backend (e-backend-fake-create :items nil)
+                         :sessions store)))
+         (buffer (get-buffer-create "*e-chat-overview-shared-store-test*")))
+    (unwind-protect
+        (e-chat-test--with-empty-harness-registry
+          (let ((e-chat-default-harness-id :chat-alpha))
+            (e-chat-test--register-chat-instance
+             :chat-alpha "Alpha Target" alpha-harness t)
+            (e-chat-test--register-chat-instance
+             :chat-beta "Beta Target" beta-harness)
+            (e-session-create store :id "legacy-session"
+                              :metadata '(:name "Legacy Session"))
+            (e-session-create store :id "beta-session"
+                              :metadata '(:name "Beta Session"
+                                          :harness-instance-id :chat-beta))
+            (with-current-buffer buffer
+              (e-chat-overview-mode)
+              (e-chat-overview--render)
+              (let ((text (buffer-string)))
+                (should (= (e-chat-test--count-occurrences
+                            "Legacy Session" text)
+                           1))
+                (should (= (e-chat-test--count-occurrences
+                            "Beta Session" text)
+                           1))
+                (should (string-match-p "Alpha Target.*Legacy Session" text))
+                (should (string-match-p "Beta Target.*Beta Session" text))
+                (should-not
+                 (string-match-p "Alpha Target.*Beta Session" text))))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (e-chat-test--kill-chat-buffers))))
+
 (ert-deftest e-chat-test-sidebar-toggle-opens-and-closes-overview ()
   "The planned sidebar toggle command toggles the overview side window."
   (let* ((store (e-session-store-create))
@@ -4199,6 +4320,65 @@
                              (buffer-substring-no-properties
                               e-chat--composer-start-marker
                               (point-max))))))))))
+      (e-chat-test--kill-chat-buffers))))
+
+(ert-deftest e-chat-test-add-context-deduplicates-shared-store-by-owner ()
+  "Context insertion lists shared-store sessions under the owning instance only."
+  (let* ((store (e-session-store-create))
+         (alpha-harness (e-chat-test--activate-chat-session
+                         (e-harness-create
+                          :backend (e-backend-fake-create :items nil)
+                          :sessions store)))
+         (beta-harness (e-chat-test--activate-chat-session
+                        (e-harness-create
+                         :backend (e-backend-fake-create :items nil)
+                         :sessions store)))
+         seen-candidates)
+    (unwind-protect
+        (e-chat-test--with-empty-harness-registry
+          (let ((e-chat-default-harness-id :chat-alpha))
+            (e-chat-test--register-chat-instance
+             :chat-alpha "Alpha Target" alpha-harness t)
+            (e-chat-test--register-chat-instance
+             :chat-beta "Beta Target" beta-harness)
+            (e-session-create store :id "legacy-session"
+                              :metadata '(:name "Legacy Session"))
+            (e-session-create store :id "beta-session"
+                              :metadata '(:name "Beta Session"
+                                          :harness-instance-id :chat-beta))
+            (cl-letf (((symbol-function 'completing-read)
+                       (lambda (_prompt collection &rest _args)
+                         (setq seen-candidates
+                               (all-completions "" collection))
+                         (cl-find-if
+                          (lambda (candidate)
+                            (string-match-p "Beta Target.*Beta Session"
+                                            candidate))
+                          seen-candidates))))
+              (with-temp-buffer
+                (insert "one\ntwo\n")
+                (goto-char (point-min))
+                (let ((chat-buffer (e-chat-add-context-to-session)))
+                  (with-current-buffer chat-buffer
+                    (should (eq e-chat-harness beta-harness))
+                    (should (eq e-chat-harness-instance-id :chat-beta))
+                    (should (equal e-chat-session-id "beta-session"))))))
+            (should (= (length seen-candidates) 3))
+            (should (cl-find-if
+                     (lambda (candidate)
+                       (string-match-p "Alpha Target.*Legacy Session"
+                                       candidate))
+                     seen-candidates))
+            (should (cl-find-if
+                     (lambda (candidate)
+                       (string-match-p "Beta Target.*Beta Session"
+                                       candidate))
+                     seen-candidates))
+            (should-not
+             (cl-find-if
+              (lambda (candidate)
+                (string-match-p "Alpha Target.*Beta Session" candidate))
+              seen-candidates))))
       (e-chat-test--kill-chat-buffers))))
 
 (ert-deftest e-chat-test-add-context-picker-preserves-session-list-order ()

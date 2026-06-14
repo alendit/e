@@ -1010,12 +1010,12 @@ PROMPT forces completion even when only one/default instance exists."
      (default)
      (t (car instances)))))
 
-(defun e-chat--ensure-session (harness session-id)
+(defun e-chat--ensure-session (harness session-id &optional instance-id)
   "Ensure SESSION-ID exists in HARNESS."
   (condition-case nil
       (e-chat-session-context harness session-id)
     (e-session-missing
-     (e-chat--create-session harness session-id))))
+     (e-chat--create-session harness session-id instance-id))))
 
 (defun e-chat--git-root (directory)
   "Return Git worktree root containing DIRECTORY, or nil."
@@ -1044,16 +1044,19 @@ name."
                    directory)))
     (file-name-as-directory (expand-file-name root))))
 
-(defun e-chat--session-metadata ()
+(defun e-chat--session-metadata (&optional instance-id)
   "Return metadata for a chat session created from the current buffer."
-  (list :project-root (e-chat--project-root default-directory)))
+  (let ((metadata (list :project-root (e-chat--project-root default-directory))))
+    (when instance-id
+      (setq metadata (plist-put metadata :harness-instance-id instance-id)))
+    metadata))
 
-(defun e-chat--create-session (harness &optional session-id)
+(defun e-chat--create-session (harness &optional session-id instance-id)
   "Create a chat session in HARNESS with SESSION-ID when non-nil."
   (e-harness-create-session
    harness
    :id session-id
-   :metadata (e-chat--session-metadata)))
+   :metadata (e-chat--session-metadata instance-id)))
 
 (defun e-chat--short-session-id (session-id)
   "Return a compact SESSION-ID for display."
@@ -4450,7 +4453,8 @@ reload.  User-facing commands should call `e-chat-new' or `e-chat-resume'."
                                (and instance
                                     (e-harness-instance-id instance))))
          (session (when (or new-session (not session-id))
-                    (e-chat--create-session chat-harness)))
+                    (e-chat--create-session
+                     chat-harness nil chat-instance-id)))
          (chat-session-id (or session-id
                               (plist-get session :id)
                               e-chat-default-session-id))
@@ -4620,7 +4624,7 @@ HARNESS are internal test seams."
 
 (defun e-chat--attach-buffer (buffer harness session-id &optional instance-id)
   "Attach BUFFER to HARNESS and SESSION-ID."
-  (e-chat--ensure-session harness session-id)
+  (e-chat--ensure-session harness session-id instance-id)
   (with-current-buffer buffer
     (e-chat-session-ensure-project-root
      harness session-id (e-chat--project-root default-directory))
@@ -4674,7 +4678,8 @@ HARNESS are internal test seams."
 ;;;###autoload
 (defun e-chat-new (&optional pop-to-side)
   "Create and open a new persisted e chat session.
-With prefix argument POP-TO-SIDE, use the pop display path."
+With prefix argument POP-TO-SIDE, prompt for the chat target and use the pop
+display path."
   (interactive "P")
   (let* ((instance (e-chat--select-chat-instance pop-to-side))
          (buffer (e-chat-open
@@ -4815,21 +4820,61 @@ When SHOW-INSTANCE is non-nil, prefix the owning target label."
                 session-label)
       session-label)))
 
+(defun e-chat--session-owner-instance-id (harness session)
+  "Return persisted chat harness instance owner for SESSION, or nil."
+  (ignore harness)
+  (plist-get (plist-get session :metadata) :harness-instance-id))
+
+(defun e-chat--session-belongs-to-instance-p
+    (harness session instance-id default-instance-id shared-store-p)
+  "Return non-nil when SESSION should be listed under INSTANCE-ID.
+Owned sessions are listed only under their persisted owner.  Legacy unowned
+sessions in shared stores are listed under the default instance so they show
+once.  Legacy sessions in unique stores stay under their store's instance."
+  (let ((owner (e-chat--session-owner-instance-id harness session)))
+    (if owner
+        (eq owner instance-id)
+      (or (not shared-store-p)
+          (eq instance-id default-instance-id)))))
+
+(defun e-chat--shared-session-store-p (harness store-counts)
+  "Return non-nil when HARNESS shares its session store in STORE-COUNTS."
+  (> (or (gethash (e-harness-sessions harness) store-counts) 0) 1))
+
 (defun e-chat--session-candidates ()
   "Return chat session candidates across configured chat instances."
   (let ((instances (e-chat--chat-instances))
+        (default-instance-id
+         (when-let ((default-instance
+                     (or (e-chat--default-chat-instance)
+                         (e-harness-instance-default :kind 'chat))))
+           (e-harness-instance-id default-instance)))
+        (store-counts (make-hash-table :test 'eq))
         candidates)
     (if instances
         (progn
           (dolist (instance instances)
-            (let ((harness (e-chat--harness-for-instance instance)))
+            (let* ((harness (e-chat--harness-for-instance instance))
+                   (store (e-harness-sessions harness)))
+              (puthash store (1+ (or (gethash store store-counts) 0))
+                       store-counts)))
+          (dolist (instance instances)
+            (let ((harness (e-chat--harness-for-instance instance))
+                  (instance-id (e-harness-instance-id instance)))
               (dolist (session (e-harness-session-list harness))
-                (push (list :instance instance
-                            :instance-id (e-harness-instance-id instance)
-                            :harness harness
-                            :session session
-                            :session-id (plist-get session :id))
-                      candidates))))
+                (when (e-chat--session-belongs-to-instance-p
+                       harness
+                       session
+                       instance-id
+                       default-instance-id
+                       (e-chat--shared-session-store-p
+                        harness store-counts))
+                  (push (list :instance instance
+                              :instance-id instance-id
+                              :harness harness
+                              :session session
+                              :session-id (plist-get session :id))
+                        candidates)))))
           (setq candidates
                 (sort candidates
                       (lambda (left right)
@@ -4919,24 +4964,6 @@ When SHOW-INSTANCE is non-nil, prefix the owning target label."
   (or (plist-get (car (e-harness-session-list harness)) :id)
       (plist-get (e-chat--create-session harness) :id)))
 
-(defun e-chat--context-session-picker (harness)
-  "Return a session id selected from HARNESS, or create a new session."
-  (let* ((sessions (e-harness-session-list harness))
-         (labels (cons e-chat--new-context-session-label
-                       (mapcar #'e-chat--session-choice-label sessions)))
-         (selected (completing-read "Add context to e session: "
-                                    (e-chat--ordered-completion-table
-                                     labels
-                                     'e-chat-session)
-                                    nil
-                                    t)))
-    (if (equal selected e-chat--new-context-session-label)
-        (plist-get (e-chat--create-session harness) :id)
-      (let ((index (cl-position selected (cdr labels) :test #'equal)))
-        (unless index
-          (user-error "No e chat session selected"))
-        (plist-get (nth index sessions) :id)))))
-
 (defun e-chat--context-session-target ()
   "Return a selected context insertion target across chat instances."
   (let* ((default-instance (or (e-chat--default-chat-instance)
@@ -4962,7 +4989,10 @@ When SHOW-INSTANCE is non-nil, prefix the owning target label."
                                     nil
                                     t)))
     (if (equal selected e-chat--new-context-session-label)
-        (let ((session (e-chat--create-session default-harness)))
+        (let ((session (e-chat--create-session
+                        default-harness
+                        nil
+                        (plist-get new-target :instance-id))))
           (append new-target
                   (list :session-id (plist-get session :id))))
       (let ((candidate (e-chat--candidate-for-label
