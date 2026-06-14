@@ -1,0 +1,268 @@
+#+title: Org Canvas Review
+#+startup: overview
+
+* Status
+
+In-review.
+
+Review pass: <2026-06-10 Wed>.
+
+* Summary
+
+Org Canvas has a substantial implementation in place.  The shell, minor mode,
+transient input pane, session metadata, default layer registration, gated
+context provider, Org visibility tools, first-prompt file naming, session
+listing/resume, and focused ERT coverage all exist.
+
+The focused Org Canvas test suite passes in this review pass, but the feature
+does not yet fully match =plan.org=.  The main gaps are user-facing layout
+semantics, missing input-pane auto-close, incomplete first-prompt file-name
+safety around user overrides, in-memory-only folder preferences, and missing
+coverage for the behaviors that would catch those issues.
+
+* Findings
+
+** P1 Opening or resuming an Org Canvas can leave the backing chat selected
+
+The plan says the Org buffer is the primary UI and the default visual layout
+should keep it selected as the main pane.  It also says session resume should
+restore the Org buffer as the primary pane.
+
+Current implementation:
+
+- New session creation delegates to =e-chat-open= and returns the backing chat
+  buffer (=lisp/shells/e-org-canvas.el:454= to
+  =lisp/shells/e-org-canvas.el:468=).
+- =e-org-canvas-open-for-current-buffer= does the same for an existing session
+  (=lisp/shells/e-org-canvas.el:480= to
+  =lisp/shells/e-org-canvas.el:497=).
+- =e-org-canvas-resume-session= calls =e-chat-open=, enables
+  =e-org-canvas-mode= in the Org buffer, and returns the buffer, but does not
+  display or select it (=lisp/shells/e-org-canvas.el:1272= to
+  =lisp/shells/e-org-canvas.el:1284=).
+
+=e-org-canvas-new-file= and =e-org-canvas-new-buffer= go through
+=e-org-canvas--open-session-for-buffer-and-display=, which switches back to the
+Org buffer after opening the chat (=lisp/shells/e-org-canvas.el:470= to
+=lisp/shells/e-org-canvas.el:477=).  The current-buffer and resume paths do not
+get the same treatment.
+
+Why this matters: the core feature promise is "work in one Org document with an
+assistant attached."  If the entrypoint or resume command leaves the user in the
+backing chat, the shell still behaves like a chat-first UI.
+
+Suggested fix: make all user-facing Org Canvas entrypoints restore/display the
+Org buffer as the selected working buffer after attaching or resuming the
+backing session.  Add tests that assert the selected window after
+=e-org-canvas-open-for-current-buffer= and =e-org-canvas-resume-session=.
+
+** P1 Input panes do not auto-close on success
+
+The plan explicitly calls for input panes to auto-close after successful turns
+(=plan.org=, "Temporary input pane and prompt submission", "Tests", and
+"Decisions").  The code has =e-org-canvas-input-auto-close-delay= and
+=e-org-canvas-input--close-timer=, but the timer is only cancelled during
+cleanup and is never scheduled (=lisp/shells/e-org-canvas.el:52= to
+=lisp/shells/e-org-canvas.el:55= and =lisp/shells/e-org-canvas.el:733= to
+=lisp/shells/e-org-canvas.el:741=).
+
+The tests currently encode the opposite behavior:
+=e-org-canvas-test-input-pane_shows_done_on_terminal_turn_without_final_message=
+asserts =e-org-canvas-input--close-timer= is nil
+(=test/e-org-canvas-test.el:790= to =test/e-org-canvas-test.el:824=), and
+=e-org-canvas-test-input-pane_displays_final_message_until_q= says assistant
+output remains until =q= (=test/e-org-canvas-test.el:826= to
+=test/e-org-canvas-test.el:878=).
+
+Why this matters: this is a direct plan/implementation mismatch, not just
+missing polish.  Either the feature should auto-close successful panes, or the
+plan should be revised to say the result pane is intentionally manual-dismiss.
+
+Suggested fix: implement a success timer that calls the existing close path
+after =e-org-canvas-input-auto-close-delay= for successful terminal turns, while
+leaving failed/cancelled/error panes open.  If manual-dismiss is now the desired
+behavior, update =plan.org= and the feature status notes to record that design
+change.
+
+** P2 Unsafe file-name suggestions fall back to an unconstrained file picker
+
+The plan says unsafe, ambiguous, absolute, traversal, or overwrite cases should
+ask the user instead of writing silently.  It also frames the chosen folder as
+the target for the new canvas file.
+
+Current implementation correctly rejects unsafe automatic suggestions through
+=e-org-canvas--safe-suggested-file= (=lisp/shells/e-org-canvas.el:557= to
+=lisp/shells/e-org-canvas.el:573=).  However, when that returns nil,
+=e-org-canvas--maybe-save-new-buffer= calls =read-file-name= and then writes
+whatever file name was returned, unless an existing file triggers the overwrite
+prompt (=lisp/shells/e-org-canvas.el:659= to
+=lisp/shells/e-org-canvas.el:671=).
+
+That manual path does not re-check:
+
+- whether the selected path is inside the chosen target folder;
+- whether the basename is relative and traversal-free;
+- whether the file has an =.org= extension;
+- whether a sanitized default still became an empty or surprising name.
+
+Why this matters: an unsafe model suggestion should move the workflow into a
+safe user override, not into an arbitrary write path.  The current fallback can
+save outside the intended canvas folder if the minibuffer returns an absolute
+path.
+
+Suggested fix: after =read-file-name=, validate the selected file against the
+same target-folder and extension policy, with a clear prompt or error for paths
+outside the target folder.  Add tests for absolute manual override, traversal
+manual override, missing extension, and overwrite confirmation.
+
+** P2 Target-folder preferences are in-memory only
+
+The plan asks for the selected target folder to be remembered in project
+preferences for the current project.  The implementation uses the process-local
+hash table =e-org-canvas--project-folders= (=lisp/shells/e-org-canvas.el:66=
+and =lisp/shells/e-org-canvas.el:511= to =lisp/shells/e-org-canvas.el:531=).
+
+That satisfies "remembered during this Emacs process" but not durable project
+preferences.  A restart loses the folder choice, and there is no integration
+with project-local configuration or session metadata as a durable source.
+
+Suggested fix: either wire this to the project's intended preference store, or
+explicitly defer durable project preferences in the plan and review.  Add a
+test that proves the preference survives the mechanism chosen for persistence,
+not only a let-bound hash-table lookup.
+
+** P3 Visibility tools implement point targeting but not heading-path targeting
+
+The plan says visibility tools can accept optional point or heading path for
+explicit focus.  The current tool implementation only extracts =:point= from
+arguments (=lisp/layers/org-canvas/e-org-canvas-capabilities.el:226= to
+=lisp/layers/org-canvas/e-org-canvas-capabilities.el:229=), and tool schemas
+only expose =:point= plus =:operation= where applicable
+(=lisp/layers/org-canvas/e-org-canvas-capabilities.el:319= to
+=lisp/layers/org-canvas/e-org-canvas-capabilities.el:335=).
+
+This is a reasonable first implementation, but the plan should mark heading
+path targeting as deferred, or the tools should support it with tests.
+
+* Plan Coverage
+
+- Slice 1 is mostly implemented: shell commands, Org-mode session metadata,
+  canvas attachment, buffer-local mode/keybindings, chat-context suppression,
+  and startup registration exist.  The main gap is that current-buffer open and
+  resume paths can leave the backing chat selected.
+- Slice 2 is implemented: the =org-canvas= layer exists, is registered in
+  built-in layer specs, is included in =e-default-chat-layer-ids=, and context
+  is gated on =:org-canvas= metadata.
+- Slice 3 is implemented for point-based focus: heading path, subtree bounds,
+  visibility, window range, and scope-specific instructions are captured and
+  rendered.  Annotation-backed threads remain correctly deferred.
+- Slice 4 is partially implemented: the transient input pane, prompt commands,
+  scope switching, event rendering, backing session activity, cancellation, and
+  reopen-last-prompt exist.  The success auto-close requirement is missing or
+  intentionally changed without updating the plan.
+- Slice 5 is partially implemented: new unsaved canvases, backend-assisted file
+  naming, safe automatic suggestions, metadata update, and attachment URI update
+  exist.  Durable project preferences and safe validation of user-selected
+  fallback names remain gaps.
+- Slice 6 is partially implemented: file/project candidate discovery,
+  list/resume commands, and file visiting exist.  Resume does not yet restore
+  the Org buffer as the selected primary pane.
+- Slice 7 is mostly implemented: visibility state, show context, cycle heading,
+  show all, overview, and explicit non-Org-Canvas failure are covered.  Heading
+  path targeting is not implemented.
+- Slice 8 is incomplete for this review pass: focused tests pass, but full
+  =eldev test= and live smoke validation were not rerun here.
+
+* Test And Verification Notes
+
+Focused review-pass verification:
+
+#+begin_example
+rtk emacs -Q --batch -L . -l e.el -l test/e-org-canvas-test.el -f ert-run-tests-batch-and-exit
+#+end_example
+
+Result: 39 tests run, 39 results as expected, 0 unexpected.
+
+Coverage is strong for the implemented shell/capability paths, including session
+metadata, gating, prompt submission, event rendering, cancel/abort parity,
+file-name suggestion basics, session discovery, resume file visiting, tool
+operation, tool failure outside Org Canvas, shell registration, and default
+layer registration.
+
+Missing or insufficient coverage:
+
+- selected-window behavior for =e-org-canvas-open-for-current-buffer= and
+  =e-org-canvas-resume-session=;
+- successful input-pane auto-close after the configured delay;
+- manual file-name fallback validation after unsafe suggestions;
+- durable target-folder preferences beyond the in-memory hash table;
+- heading-path tool targeting;
+- full-suite and live Emacs smoke validation from Slice 8.
+
+No Elisp behavior changed during this review document edit, so no live
+=e-dev-reload= was required for the review itself.
+
+* Improvement Suggestions
+
+- Introduce one helper for "open backing chat but restore canvas selection" and
+  use it for create, existing-session open, and resume.  This keeps the
+  presentation rule local to the shell.
+- Split file-name handling into two explicit functions: one that validates
+  automatic model suggestions and one that validates user overrides.  Both
+  should return a normalized target file or a clear reason to ask again.
+- Replace =e-org-canvas--project-folders= with the project's intended durable
+  preference/config mechanism, or store target-folder history in session/project
+  metadata with a documented fallback.
+- Decide whether success panes should auto-close or remain manual-dismiss.  The
+  code, tests, and plan should all say the same thing.
+  + Decision: autoclose
+- Add a focused "primary pane" test group; most of the risky user-facing gaps
+  here are window-selection/layout assertions rather than data-model failures.
+
+* Architecture Self-Check
+
+1. If this work package stopped here, would the project be better off than if it had not been built?
+   Yes.  Org Canvas is usable enough to attach an assistant to an Org document,
+   carries Org-aware context, and keeps durable document edits in normal tool
+   activity rather than hidden shell side effects.
+2. What final direction does this move toward?
+   A document-first Emacs agent workflow where presentation shells stay thin and
+   Org-specific model policy/tools live in a gated capability layer.
+3. Which decisions are likely to change, uncertain, or stable, and are uncertain ones local and reversible instead of hidden behind speculative abstraction?
+   Stable: Org Canvas sessions are normal chat sessions with metadata.  Likely
+   to change: target-folder persistence, auto-close UX, and future annotation
+   focus.  The annotation seam is local; target-folder persistence is currently
+   too ad hoc.
+4. What component owns this behavior, and why? Does it have one cohesive responsibility and one primary reason to change?
+   =e-org-canvas.el= owns presentation, buffers, windows, prompts, and session
+   discovery.  =e-org-canvas-capabilities.el= owns model instructions, context,
+   and visibility tools.  This ownership split matches the plan.
+5. Does this change increase or reduce coupling? Are interfaces narrow, consumer-shaped, and free of unused capabilities?
+   The capability boundary is narrow and gated by session metadata.  The shell
+   does rely on several chat presentation helpers for the input pane, which is
+   pragmatic but should remain confined to the shell.
+6. Did any dependency start pointing the wrong way, especially from stable policy toward concrete adapters, providers, UI, transport, persistence, or tool clients?
+   No reversed core dependency was found.  Org-specific policy stays in the
+   Org Canvas layer; UI behavior stays in the shell.
+7. Could any side effect be moved outward into an adapter or shell?
+   The first-prompt save side effect is correctly shell-owned setup, but it
+   needs stricter path validation.  Visibility tools are intentional editor-view
+   side effects in the capability layer.
+8. Are the abstractions and interfaces semantically real, and can implementations substitute for each other without narrowed preconditions, weakened behavior, ignored requirements, or unsupported-operation errors?
+   The focus plist is a real seam for future annotation-backed focus.  The
+   in-memory folder preference is not a durable project preference yet and
+   should not be treated as satisfying that contract.
+9. What compatibility expectations apply, and were obsolete paths removed unless required?
+   Ordinary chat sessions are protected by =:org-canvas= gating.  Existing
+   =e-canvas= commands remain separate.  No obsolete path is removable from
+   this slice.
+10. What legacy code can we remove now?
+    None.  The open issue is alignment, not legacy cleanup.
+11. Where are expected errors handled, and where do unexpected errors surface?
+    Visibility tools surface explicit errors outside Org Canvas sessions or
+    without live buffers.  File-name safety handles unsafe automatic
+    suggestions, but the manual fallback path still accepts unexpected targets.
+12. What tests prove the core behavior independently of the full system? If the design changed, would tests change narrowly, or would unrelated tests need rewrites?
+    =test/e-org-canvas-test.el= proves most shell and capability behavior
+    independently.  The missing tests listed above are narrow and should not
+    require unrelated rewrites.
