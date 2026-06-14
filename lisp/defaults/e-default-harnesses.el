@@ -119,6 +119,16 @@ DIRECTORY is passed to config-aware layer factories."
       (e-harness-set-layer-change-function harness change-function)))
   harness)
 
+(defun e-default-harness--repair-shifted-session-store (harness)
+  "Repair HARNESS when a live reload shifted the session store slot."
+  (when (and (not (e-session-store-p (e-harness-sessions harness)))
+             (e-session-store-p
+              (e-harness-runtime-capability-config harness)))
+    (setf (e-harness-sessions harness)
+          (e-harness-runtime-capability-config harness))
+    (setf (e-harness-runtime-capability-config harness) nil))
+  harness)
+
 (defun e-default-harness-sync-from-factory (harness spec)
   "Refresh HARNESS generic runtime fields from SPEC's fresh factory result.
 
@@ -126,6 +136,7 @@ Live reload can replace adapter helper functions without recreating cached
 default harnesses.  Refreshing the runtime updates stale backend closures while
 preserving sessions, context state, and active presentation buffers that already
 hold HARNESS."
+  (e-default-harness--repair-shifted-session-store harness)
   (let ((fresh (funcall (plist-get spec :factory))))
     (unless (e-harness-p fresh)
       (signal 'wrong-type-argument (list 'e-harness-p fresh)))

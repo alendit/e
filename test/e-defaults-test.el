@@ -307,6 +307,33 @@
                       (e-capability-context-providers capability))))
         (should (memq 'chat-session-attachments provider-names))))))
 
+(ert-deftest e-defaults-test-startup-repairs-shifted-chat-default-session-store ()
+  "Startup sync repairs cached chat-default harnesses with shifted reload slots."
+  (e-defaults-test--with-empty-harness-registry
+    (cl-letf (((symbol-function 'e-openai-create-harness)
+               (lambda (&rest _args)
+                 (e-harness-create
+                  :backend (e-backend-fake-create :items nil)))))
+      (let* ((store (e-session-store-create))
+             (bad-session-slot
+              (list (e-layer-create :id 'chat-session
+                                    :name "Old Chat Session")))
+             (harness (e-harness-create
+                       :backend (e-backend-fake-create :items nil))))
+        (setf (e-harness-runtime-capability-config harness) store)
+        (setf (e-harness-sessions harness) bad-session-slot)
+        (e-harness-registry-register :chat-default harness)
+        (let ((e-default-chat-layer-ids nil))
+          (e-default-harnesses-startup))
+        (should (eq (e-harness-registry-get :chat-default) harness))
+        (should (eq (e-harness-sessions harness) store))
+        (should (e-session-store-p (e-harness-sessions harness)))
+        (should-not (e-session-store-p
+                     (e-harness-runtime-capability-config harness)))
+        (should (equal (mapcar #'e-layer-id
+                               (e-harness-active-layers harness))
+                       '(chat-session)))))))
+
 (ert-deftest e-defaults-test-sync-clears-stale-layer-owned-shells ()
   "Default harness layer sync removes old layer-owned shell registrations."
   (let ((e-layer--registry (make-hash-table :test 'eq))

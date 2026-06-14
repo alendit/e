@@ -55,3 +55,26 @@ then runs startup sync and verifies the harness is repaired in place.
 The fix should live in default harness startup reconciliation, because this is a
 reload/startup migration concern for the cached default harness instance rather
 than chat presentation behavior.
+
+* Fix Applied
+
+Implemented in =lisp/defaults/e-default-harnesses.el=.
+
+Default harness startup reconciliation now checks cached harnesses before
+refreshing them from a fresh factory result.  If =sessions= is not an
+=e-session-store= but =runtime-capability-config= is one, startup treats the
+harness as a live reload object with shifted slots, moves the store back into
+=sessions=, and clears the temporary runtime slot before copying fresh runtime
+configuration.
+
+The repair is intentionally scoped to default harness synchronization.  Chat
+presentation commands continue to require a valid harness/session store and do
+not own struct-layout migration.
+
+Verification:
+
+#+begin_example
+rtk eldev test -f test/e-defaults-test.el e-defaults-test-startup-repairs-shifted-chat-default-session-store
+rtk eldev test -f test/e-defaults-test.el
+rtk eldev test -f test/e-chat-test.el e-chat-test-reload-buffers-refreshes-existing-chat-harness e-chat-test-new-creates-distinct-persisted-sessions
+#+end_example
