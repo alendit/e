@@ -3,7 +3,7 @@
 
 * Status
 
-In-review.
+Done.
 
 Review pass: <2026-06-14 Sun>.
 
@@ -216,8 +216,12 @@ shell.
 
 * Unresolved
 
-- [ ] Fix or document missing-session fallback so it matches the intended
+- [X] Fix or document missing-session fallback so it matches the intended
   behavior.
-- [ ] Add direct regression coverage for token usage predating compaction.
-- [ ] Rerun chat/touched-surface tests after the current dirty worktree parse
+- [X] Add direct regression coverage for token usage predating compaction.
+- [X] Rerun chat/touched-surface tests after the current dirty worktree parse
   error is resolved.
+
+Follow-up resolution: =e-context-status-text= now returns the bare prefix for a
+missing session id, and direct coverage proves token usage predating the latest
+valid compaction is ignored in favor of a fresh context estimate.

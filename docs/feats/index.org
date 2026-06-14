@@ -30,7 +30,7 @@ Status values for coding agents:
 | 17 | Done | 17-org-canvas/ | Org Canvas |
 | 18 | Done | 18-resource-coherence/ | Resource Coherence for Live Buffers and Files |
 | 19 | In-progress | 19-project-local-capabilities/ | Project-Local Capabilities |
-| 20 | In-review | 20-org-canvas-context-status/ | Org Canvas Context Status and Compaction |
+| 20 | Done | 20-org-canvas-context-status/ | Org Canvas Context Status and Compaction |
 | 21 | In-review | 21-dev-profiling/ | Developer Profiling Traces |
 | 22 | In-review | 22-project-shells/ | Project Shells |
 | 23 | Planned | 23-prompt-cache-context/ | Prompt Cache Friendly Context |

@@ -45,6 +45,18 @@
   (should (equal (e-context-status-text nil nil :prefix "Org Canvas")
                  "Org Canvas")))
 
+(ert-deftest e-context-status-test-text-missing-session-returns-prefix ()
+  "A missing session id does not render unset model/effort placeholders."
+  (let* ((store (e-session-store-create))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :sessions store
+                   :default-options
+                   '(:model "gpt-5.5" :reasoning-effort "high"))))
+    (should (equal (e-context-status-text harness "missing"
+                                          :prefix "Org Canvas")
+                   "Org Canvas"))))
+
 (ert-deftest e-context-status-test-text-estimates-context ()
   "Without provider usage, the status text estimates context tokens."
   (let* ((store (e-session-store-create))
@@ -79,6 +91,33 @@
      '(:input-tokens 202598 :total-tokens 203017))
     (should (equal (e-context-status-text harness "status-usage" :prefix "e-chat")
                    "e-chat gpt-5.5/high 78% (203k/258k tok)"))))
+
+(ert-deftest e-context-status-test-text-ignores-usage-before-compaction ()
+  "Provider usage before the latest valid compaction is treated as stale."
+  (let* ((store (e-session-store-create))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :sessions store
+                   :default-options
+                   '(:model "gpt-5.5" :reasoning-effort "high"))))
+    (e-session-create store :id "status-compacted")
+    (let ((kept (e-session-append-message
+                 store "status-compacted"
+                 '(:role user :content "small kept context"))))
+      (e-session-append-activity-event
+       store "status-compacted" "turn-1" 'token-usage
+       '(:input-tokens 202598 :total-tokens 203017))
+      (e-session-append-compaction
+       store "status-compacted" "Summary"
+       :first-kept-entry-id (plist-get kept :id))
+      (let ((text (e-context-status-text
+                   harness "status-compacted"
+                   :prefix "e-chat"
+                   :token-limits '(("gpt-5.5" . 100))
+                   :bytes-per-token 1.0)))
+        (should (string-match-p "\\`e-chat gpt-5.5/high " text))
+        (should (string-match-p "~" text))
+        (should-not (string-match-p "203k" text))))))
 
 (ert-deftest e-context-status-test-estimate-cache-reuses-value ()
   "A caller-owned cache cell reuses the last estimate within the TTL."

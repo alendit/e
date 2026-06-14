@@ -171,13 +171,27 @@ BYTES-PER-TOKEN defaults to `e-context-status-estimate-bytes-per-token'."
        (e-harness-sessions harness)
        session-id))))
 
+(defun e-context-status--session-exists-p (harness session-id)
+  "Return non-nil when HARNESS has SESSION-ID."
+  (and harness
+       session-id
+       (ignore-errors
+         (e-session-get (e-harness-sessions harness) session-id)
+         t)))
+
 (defun e-context-status--usage-before-compaction-p (usage-event compaction)
   "Return non-nil when USAGE-EVENT predates COMPACTION."
   (let ((usage-time (plist-get usage-event :created-at))
-        (compaction-time (plist-get compaction :created-at)))
+        (compaction-time (plist-get compaction :created-at))
+        (usage-id (plist-get usage-event :id))
+        (compaction-id (plist-get compaction :id)))
     (and (stringp usage-time)
          (stringp compaction-time)
-         (string< usage-time compaction-time))))
+         (or (string< usage-time compaction-time)
+             (and (equal usage-time compaction-time)
+                  (stringp usage-id)
+                  (stringp compaction-id)
+                  (string< usage-id compaction-id))))))
 
 (defun e-context-status--cached-estimate (context cache bytes-per-token)
   "Return cached approximate token estimate for CONTEXT.
@@ -218,7 +232,7 @@ When ESTIMATE-CONTEXT is nil, avoid building full model-facing context."
                          :prefer-token-usage (and prefer-token-usage t)
                          :estimate-context (and estimate-context t)))
    (lambda ()
-     (if (and harness session-id)
+     (if (e-context-status--session-exists-p harness session-id)
          (let* ((usage-event (e-context-status--latest-token-usage-event
                               harness session-id))
                 (latest-compaction (e-context-status--latest-valid-compaction
