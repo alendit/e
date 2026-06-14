@@ -5,93 +5,318 @@
 
 * Status
 
-Done. No unresolved review notes.
+In-review.
 
-* Issue review
+* Review summary
 
-** Issue 1: Chat commands had no user-facing target catalog
+Feature 15 adds the intended user-facing chat target catalog and wires it into
+new-chat, resume, context insertion, overview rows, and live buffer ownership.
+The implementation is small in core, keeps live harness objects in the existing
+registry, preserves direct harness injection for tests, and has good focused
+coverage for the per-instance-store case.
 
-*** Problem
+The review found one blocking ownership ambiguity before this can be marked
+=Done=: when two chat harness instances share the same session store, every
+session is listed once for each instance.  That is not just duplicated UI; it can
+resume the same transcript through the wrong configured target/provider.  The
+planned user config for a second default-style chat instance calls
+=e-default-chat-harness-create= without a separate session store, so this is a
+likely real configuration rather than an edge case.
 
-=e-chat-new=, =e-chat-resume=, =e-chat-overview=, and context insertion commands
-only knew about =e-chat-default-harness-id=. A second backend therefore needed
-backend-specific commands or dynamic rebinding of the default harness id.
+* Scope reviewed
 
-*** Change
+Implementation surfaces inspected:
 
-Added =e-harness-instances= as a core catalog over the existing low-level
-=e-harness-registry=. A harness instance carries an id, display name, kind,
-factory/harness id, metadata, and default marker. The default startup spec now
-registers =:chat-default= as the default chat instance while preserving the
-legacy registry factory.
+- =lisp/core/e-harness-instances.el=
+- =lisp/core/e-core.el=
+- =lisp/defaults/e-default-harnesses.el=
+- =lisp/shells/chat/e-chat.el=
+- =lisp/dev/e-dev.el=
+- =test/e-harness-instances-test.el=
+- =test/e-chat-test.el=
+- =test/e-defaults-test.el=
+- =test/e-test.el=
 
-*** Compatibility
+Relevant plan expectations checked:
 
-Existing direct =e-harness-registry= use still works. If no chat instances are
-registered, chat commands keep using =e-chat-default-harness-id= through the
-legacy registry path.
+- A domain-owned configured target catalog exists above raw harness factories.
+- Default startup registers =:chat-default= as a chat instance while preserving
+  the legacy default harness registry path.
+- =e-chat-new= uses instance selection and preserves legacy/direct harness paths.
+- Resume and context selection can pick sessions across configured chat targets.
+- Overview rows carry instance ownership and render target labels when needed.
+- Current-buffer commands continue using buffer-local harness/session state.
+- Compatibility remains for =e-chat-default-harness-id= and direct
+  =e-chat-open :harness ...= callers.
 
-** Issue 2: Chat UI commands needed instance ownership
+* What looks good
 
-*** Problem
+- =e-harness-instances= is a narrow catalog over =e-harness-registry= rather
+  than a second live harness owner.  It validates ids/kinds, registers lazy
+  factories with the low-level registry, tracks kind-scoped defaults, and sorts
+  catalog output deterministically.
+- Default startup registers the legacy =:chat-default= spec as a default chat
+  instance and still registers the low-level factory, so older registry-based
+  code paths remain available.
+- =e-chat-open= accepts an optional =:instance-id= while still allowing direct
+  =:harness= injection.  Buffer reuse checks both harness and instance id, so
+  colliding session ids in different stores do not accidentally reuse the wrong
+  live buffer.
+- =e-chat-harness-instance-id= gives attached chat buffers, overview rows, and
+  context insertion paths enough ownership metadata for the per-instance-store
+  case.
+- =e-chat-new= prompts when multiple chat instances are configured and falls
+  back to the default/legacy path when no instances are configured.
+- Resume, context picker, latest-context fallback, and overview rendering all use
+  the cross-instance candidate model when chat instances are registered.
+- Overview read markers include the instance id when available, avoiding marker
+  collisions for equal session ids across different configured targets.
+- The focused tests cover registry behavior, new-chat selection, resume across
+  two instances, overview open with colliding session ids, and context insertion
+  across instances.
 
-Session ids alone are not enough once multiple configured chat targets exist.
-The overview and buffer reuse paths could otherwise open or reuse the wrong
-buffer when two targets contain the same session id.
+* Verification performed during review
 
-*** Change
-
-Chat buffers now track =e-chat-harness-instance-id= in addition to the live
-harness and session id. New chat prompts for a target when multiple chat
-instances exist. Resume and context selection build owned session candidates
-from all chat instances. The overview renders target labels when multiple chat
-instances exist and stores instance ids on rows so preview/open actions use the
-owning harness.
-
-*** Compatibility
-
-Direct =e-chat-open :harness ...= callers and tests still work without an
-instance id. Existing current-buffer commands continue to use the attached
-buffer-local harness/session.
-
-* Verification summary
+Focused registry tests:
 
 #+begin_src sh
 rtk eldev test -f test/e-harness-instances-test.el
-rtk eldev test -f test/e-chat-test.el
-rtk eldev test -f test/e-defaults-test.el
-rtk eldev test -f test/e-test.el e-test-exposes-core-harness-api e-test-requiring-e-registers-chat-default-factory
-rtk eldev test -f test/e-canvas-test.el -f test/e-org-canvas-test.el e-canvas-test-attach-current-buffer-to-selected-session e-canvas-test-new-file-uses-file-backed-buffer-as-canvas e-canvas-test-open-current-buffer-creates-canvas-session e-canvas-test-open-current-buffer-reveals-existing-canvas-session e-org-canvas-test-new-file-directory-starts-unsaved-folder-canvas e-org-canvas-test-open-current-buffer-creates-session-metadata e-org-canvas-test-open-reuses-session-by-file-uri e-org-canvas-test-prompt-scope-hides_visible_backing_chat_buffer
-rtk eldev test
-emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
-emacsclient --eval "(progn (require 'e-harness-instances) (require 'e-chat) (let* ((instances (e-harness-instance-list :kind 'chat)) (default (e-harness-instance-default :kind 'chat))) (prin1 (list :chat-instance-count (length instances) :default-instance-id (and default (e-harness-instance-id default)) :selection-helper (fboundp 'e-chat--select-chat-instance) :candidate-helper (fboundp 'e-chat--session-candidates)))))"
 #+end_src
 
-The full suite passed with 678 expected results, 0 unexpected results, and 1
-pre-existing skipped markdown-rendering test. Live reload succeeded, and the
-bounded probe reported one default chat instance, =:chat-default=, with the
-selection and session-candidate helpers loaded. Eldev test commands must run
-serially because the project lock rejects parallel batch runs.
+Result:
 
-* Architecture self-check
+#+begin_example
+Ran 4 tests, 4 results as expected, 0 unexpected
+#+end_example
 
-1. The work leaves the project better off if it stops here because chat commands
-   can select configured targets without backend-specific command growth.
-2. It moves toward a generic runtime-target catalog over backend adapters.
-3. The uncertain naming is localized to =e-harness-instance= APIs and metadata;
-   live harness ownership stays in the existing registry.
-4. =e-harness-instances= owns catalog metadata. =e-chat= owns chat selection and
-   presentation behavior.
-5. Coupling is reduced by removing UI dependence on one default registry id for
-   all selection workflows.
-6. Core policy does not depend on concrete providers, UI buffers, or transport.
-7. Side effects stay in startup registration and chat shell commands.
-8. The abstraction is semantically real: configured targets all resolve to a
-   live harness through the same registry contract.
+Focused chat tests:
+
+#+begin_src sh
+rtk eldev test -f test/e-chat-test.el
+#+end_src
+
+Result:
+
+#+begin_example
+Ran 168 tests, 167 results as expected, 0 unexpected, 1 skipped
+SKIPPED e-chat-test-assistant-markdown-renders-with-text-properties
+#+end_example
+
+Focused defaults/API compatibility tests:
+
+#+begin_src sh
+rtk eldev test -f test/e-defaults-test.el
+rtk eldev test -f test/e-harness-instances-test.el -f test/e-chat-test.el -f test/e-defaults-test.el -f test/e-test.el e-test-exposes-core-harness-api e-test-requiring-e-registers-chat-default-factory
+#+end_src
+
+Results:
+
+#+begin_example
+Ran 18 tests, 18 results as expected, 0 unexpected
+Ran 2 tests, 2 results as expected, 0 unexpected
+#+end_example
+
+Full suite:
+
+#+begin_src sh
+rtk eldev test
+#+end_src
+
+Result:
+
+#+begin_example
+Ran 679 tests, 678 results as expected, 0 unexpected, 1 skipped
+SKIPPED e-chat-test-assistant-markdown-renders-with-text-properties
+#+end_example
+
+Reloaded the running Emacs before live probes:
+
+#+begin_src emacs-lisp
+(progn (require 'e-dev) (e-dev-reload "/Users/dimitrivorona/projects/elisp/e"))
+#+end_src
+
+Result:
+
+#+begin_example
+"/Users/dimitrivorona/projects/elisp/e/"
+#+end_example
+
+Live per-instance-store probe after reload:
+
+- Registered two temporary chat instances, =:chat-alpha= and =:chat-beta=, with
+  separate in-memory session stores.
+- Created one session in each store.
+- Checked =e-chat--chat-instances=, =e-harness-instance-default=, and
+  =e-chat--session-candidates=.
+
+Observed summary:
+
+#+begin_example
+:instances (:chat-alpha :chat-beta)
+:default :chat-alpha
+:candidates ((:chat-beta "beta-live") (:chat-alpha "alpha-live"))
+:labels ("Beta Target  Beta Live  [beta-live]"
+         "Alpha Target  Alpha Live  [alpha-live]")
+#+end_example
+
+Live shared-store probe after reload:
+
+- Registered two temporary chat instances with separate harnesses but the same
+  in-memory session store, matching the likely default-style second backend case
+  where both factories use =e-default-session-store=.
+- Created one session in the shared store.
+- Checked =e-chat--session-candidates=.
+
+Observed summary:
+
+#+begin_example
+:candidate-count 2
+:candidates ((:chat-beta "shared-session") (:chat-alpha "shared-session"))
+#+end_example
+
+That means one transcript is exposed as two target-owned candidates and can be
+opened through either configured target.
+
+* Findings
+
+** TODO High: shared session stores duplicate every session across all chat instances
+
+=e-chat--session-candidates= iterates over every registered chat instance,
+resolves each instance to a harness, then pushes every =e-harness-session-list=
+entry from that harness.  This assumes each chat instance has a disjoint session
+store.  The plan explicitly called out that current default harnesses share
+=e-default-session-store= and that metadata tagging may be needed to avoid
+ambiguity.
+
+The implemented config migration example encourages a second instance like:
+
+#+begin_src emacs-lisp
+(e-harness-instance-register
+ :id :chat-opus
+ :name "Opus 4.7"
+ :kind 'chat
+ :factory (lambda ()
+            (e-default-chat-harness-create
+             :provider 'local-go-llm-proxy-opus))
+ :metadata '(:model "claude-opus-4-7"))
+#+end_src
+
+Because =e-default-chat-harness-create= defaults =:sessions= to
+=e-default-session-store=, this second instance naturally shares the same store
+as =:chat-default=.  In that configuration, resume/context/overview will show
+all sessions under both targets.  Selecting the duplicate for the other target
+can continue the same transcript with a different provider/model than the one
+that originally owned it.
+
+Expected behavior should make session ownership explicit.  Possible fixes:
+
+- store an owning harness-instance id in session metadata when sessions are
+  created through an instance, then filter cross-instance candidate lists by that
+  owner;
+- or assign separate default session stores per configured instance;
+- or explicitly model shared-store sessions as provider-neutral and show them
+  only once, with a deliberate target selection step when continuing.
+
+Add regression coverage for at least:
+
+1. two chat instances backed by the same store do not produce duplicate resume
+   candidates for one session;
+2. a session created through =:chat-beta= is resumed/opened with =:chat-beta=
+   ownership, even when another instance shares the same store;
+3. overview rows and context picker use the same ownership rule as resume.
+
+** TODO Medium: new sessions do not persist their creating harness instance
+
+=e-chat-open :new-session t :instance-id ...= creates the session through
+=e-chat--create-session=, whose metadata currently includes only project root.
+The live buffer tracks =e-chat-harness-instance-id=, but the persisted session
+record does not remember which configured target created it.
+
+This is closely related to the shared-store bug.  Without persisted ownership, a
+future Emacs process or reloaded registry cannot distinguish which configured
+chat target a shared-store session belongs to.  If the chosen fix is metadata
+ownership, session creation should write that owner and older sessions should get
+an explicit compatibility policy.
+
+** TODO Low: stale =e-chat--context-session-picker= remains after the new candidate model
+
+=e-chat--context-session-picker= still implements the old single-harness session
+picker, but the context commands now use =e-chat--context-session-target=.  A
+repository grep found no source caller outside generated/.eldev artifacts and an
+old bug investigation note.
+
+This is not a behavior blocker, but removing the obsolete helper would reduce
+confusion and avoid future callers accidentally reintroducing single-harness
+context selection.
+
+** TODO Low: =e-chat-new= prefix semantics now combine target prompting and side-window display
+
+=e-chat-new= still documents the prefix argument as the pop display path, and it
+also passes that same prefix through to =e-chat--select-chat-instance= to force
+prompting.  This preserves the existing prefix-display behavior and satisfies
+the plan's "prefix prompts" direction, but it means there is no way to force a
+one-instance target prompt without also using pop display.
+
+This is acceptable for now if intentional, but the command docstring should make
+that combined behavior explicit or the prompt/display controls should be split.
+
+* Architecture review
+
+The catalog boundary is directionally sound: =e-harness-instances= owns
+configured-target metadata, the low-level registry still owns lazy live harness
+resolution, and =e-chat= owns chat-specific selection/presentation.  The core
+catalog does not depend on providers or UI buffers.
+
+The main design gap is session ownership.  The feature introduced configured
+runtime targets, but persisted chat sessions remain target-agnostic.  That is
+fine only if every instance has a separate store.  Because the default chat
+factory encourages a shared store, ownership needs to be modeled either in the
+session domain or in an explicit shared-store policy instead of being inferred by
+which harness happened to enumerate the same store.
+
+* Design self-check
+
+1. If this work stopped here, the project is better than before for users with
+   one instance or disjoint per-instance stores, but not safe enough to mark done
+   because shared default-style stores duplicate and mis-own sessions.
+2. This moves toward a generic configured runtime-target catalog that lets chat
+   commands work across backends without backend-specific UI commands.
+3. Stable decisions: configured chat targets need ids/names/kinds and lazy
+   harness resolution.  Uncertain decision: whether sessions belong to a target,
+   a provider-neutral store, or a per-instance store.  That uncertainty is not
+   yet local enough because candidate enumeration currently assumes disjoint
+   stores.
+4. =e-harness-instances= owns target catalog metadata.  =e-chat= owns chat
+   selection and presentation.  Session ownership likely belongs in the chat
+   session/session-store boundary or in a narrow chat target policy helper.
+5. Coupling is reduced for UI commands, but the missing ownership model couples
+   correctness to an unstated storage topology assumption.
+6. No dependency from core catalog policy to concrete providers or presentation
+   was found.
+7. Side effects remain in startup registration, harness resolution, session
+   creation, and shell commands.
+8. The configured-target abstraction is semantically real.  The session
+   candidate abstraction is not yet substitutable across shared-store and
+   per-instance-store implementations because it duplicates shared sessions.
 9. Compatibility keeps =e-chat-default-harness-id= and direct harness injection.
-10. No obsolete project code was removed. Personal backend-specific commands are
-    not part of this repository.
-11. Expected missing-target errors surface as =user-error= at command seams.
-    Unexpected registry/type errors are not swallowed.
-12. Tests cover registry behavior independently and chat behavior through real
-    fake harness/session stores.
+   Older sessions without target metadata need an explicit compatibility policy
+   if ownership metadata is added.
+10. =e-chat--context-session-picker= appears obsolete and can likely be removed.
+11. Expected missing-instance and missing-harness cases surface as =user-error=.
+   Shared-store ambiguity is currently not handled as an expected condition.
+12. Tests cover registry behavior and per-instance-store chat flows.  Missing
+   tests are shared-store ownership/deduplication and persisted target ownership
+   across restart/reload boundaries.
+
+* Unresolved
+
+- [ ] Define and implement a session ownership policy for multiple chat
+  instances sharing one session store.
+- [ ] Persist creating harness-instance ownership, or choose and document a
+  different explicit shared-store policy.
+- [ ] Add shared-store regression coverage for resume, context picker, and
+  overview rows.
+- [ ] Remove the obsolete =e-chat--context-session-picker= helper if no
+  compatibility caller exists.
+- [ ] Clarify =e-chat-new= prefix semantics around prompting vs side-window
+  display.

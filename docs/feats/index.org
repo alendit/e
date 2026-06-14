@@ -25,7 +25,7 @@ Status values for coding agents:
 | 12 | Done | 12-session-overview-shell/ | Session Overview Shell |
 | 13 | Done | 13-global-session-starter/ | Global Session Starter |
 | 14 | Done | 14-canvas-shell/ | Canvas Shell |
-| 15 | Done | 15-chat-harness-instances/ | Chat Harness Instances |
+| 15 | In-review | 15-chat-harness-instances/ | Chat Harness Instances |
 | 16 | Ready | 16-turn-finish-latency/ | Turn Finish Latency |
 | 17 | In-review | 17-org-canvas/ | Org Canvas |
 | 18 | In-review | 18-resource-coherence/ | Resource Coherence for Live Buffers and Files |
