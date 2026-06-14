@@ -1,0 +1,187 @@
+#+title: Investigation: Compaction Empty Summary
+#+startup: overview
+
+* Summary
+
+This appears to be a real robustness/diagnostics bug in the compaction path.
+The immediate guard is correct: =e= must not append an empty compaction summary.
+However, the current failure gives too little information and has no recovery
+path when the compaction backend request completes without assistant text.
+
+No fix was made as part of this report.
+
+* Source Inspection
+
+** Tool entry point
+
+The =compact_session= tool is registered in =lisp/layers/e-layer.el=.  Its
+handler calls =e-harness-compact-session= with =:allow-active-turn t= and returns
+an =:ok= tool result only when that call returns a compaction record.
+
+Relevant path:
+
+#+begin_example
+lisp/layers/e-layer.el
+  e-layer--compact-session-tool
+    e-harness-compact-session
+#+end_example
+
+** Summary generation and empty-summary guard
+
+In =lisp/core/e-harness.el=, =e-harness-compact-session= prepares compaction,
+starts a backend request using =e-compaction-summary-messages=, and collects only
+normalized backend items with type =assistant-message= or =assistant-delta=:
+
+#+begin_src elisp
+(e-backend-stream
+ (e-harness-backend harness)
+ :messages (e-compaction-summary-messages preparation)
+ :options (e-harness-turn-options harness session-id)
+ :on-request-start (lambda (value)
+                     (setq request value))
+ :on-item
+ (lambda (item)
+   (pcase (plist-get item :type)
+     ('assistant-message
+      (setq summary-message (plist-get item :content)))
+     ('assistant-delta
+      (push (or (plist-get item :content) "") summary-parts)))))
+#+end_src
+
+It then trims the collected text and fails if it is empty:
+
+#+begin_src elisp
+(let* ((summary (string-trim
+                 (or summary-message
+                     (string-join (nreverse summary-parts) ""))))
+       (metadata (plist-get preparation :metadata)))
+  (when (string-empty-p summary)
+    (signal 'e-compaction-error
+            (list "Compaction backend returned an empty summary"))))
+#+end_src
+
+The guard is necessary, but it collapses several distinct failure modes into the
+same low-information error:
+
+- the provider genuinely returned an empty assistant response;
+- the provider returned a non-text response shape that the backend adapter did
+  not normalize to =assistant-message= / =assistant-delta=;
+- an adapter/provider error was represented as a completed stream without a
+  normalized assistant message;
+- the compaction prompt/options caused a no-output response;
+- diagnostics exist in the backend request/response but are not surfaced in the
+  compaction error.
+
+** Summary prompt
+
+In =lisp/core/e-compaction.el=, =e-compaction-summary-messages= asks the backend
+to compact the transcript with a system message and a user message containing the
+summary input.  The prompt does not currently include an explicit non-empty
+output constraint or a fallback shape requirement.
+
+Potential prompt hardening:
+
+#+begin_quote
+Return a non-empty Markdown summary. If there is nothing substantive to
+preserve, return a one-sentence summary saying that no durable context was found.
+#+end_quote
+
+That would not replace backend diagnostics, but it may reduce accidental empty
+responses.
+
+* Live Inspection
+
+Live inspection was performed in the running Emacs chat buffer:
+
+#+begin_example
+*e-chat:The grimoire's projct lay...*
+#+end_example
+
+The buffer had an active harness and session id:
+
+#+begin_example
+20260610T212304-a04fe35d4ad9
+#+end_example
+
+Filtering activity events for compaction and =compact_session= showed this
+failed compaction sequence:
+
+#+begin_example
+(:event-type tool-started
+ :turn-id "01KTSRZYPJQCSXT1FHKH1F2XYG"
+ :created-at "2026-06-10T22:04:14Z"
+ :tool-name "compact_session")
+
+(:event-type compaction-started
+ :turn-id "01KTSRZYPJQCSXT1FHKH1F2XYG"
+ :created-at "2026-06-10T22:04:14Z")
+
+(:event-type compaction-prepared
+ :turn-id "01KTSRZYPJQCSXT1FHKH1F2XYG"
+ :created-at "2026-06-10T22:04:14Z")
+
+(:event-type compaction-summary-started
+ :turn-id "01KTSRZYPJQCSXT1FHKH1F2XYG"
+ :created-at "2026-06-10T22:04:14Z")
+
+(:event-type compaction-failed
+ :turn-id "01KTSRZYPJQCSXT1FHKH1F2XYG"
+ :created-at "2026-06-10T22:04:16Z")
+
+(:event-type tool-finished
+ :turn-id "01KTSRZYPJQCSXT1FHKH1F2XYG"
+ :created-at "2026-06-10T22:04:16Z"
+ :tool-name "compact_session"
+ :status error
+ :content "Context compaction failed: \"Compaction backend returned an empty summary\"")
+#+end_example
+
+This confirms that preparation reached the backend-summary stage and then failed
+because no usable summary text was collected.
+
+The same session also contained a later successful manual compaction sequence:
+
+#+begin_example
+(:event-type compaction-started
+ :turn-id "01KTSSEWQWJW2KSKEERV999SC8"
+ :created-at "2026-06-10T22:11:47Z")
+(:event-type compaction-prepared
+ :turn-id "01KTSSEWQWJW2KSKEERV999SC8"
+ :created-at "2026-06-10T22:11:47Z")
+(:event-type compaction-summary-started
+ :turn-id "01KTSSEWQWJW2KSKEERV999SC8"
+ :created-at "2026-06-10T22:11:47Z")
+(:event-type compaction-finished
+ :turn-id "01KTSSEWQWJW2KSKEERV999SC8"
+ :created-at "2026-06-10T22:12:13Z")
+#+end_example
+
+That suggests the empty-summary failure can be transient or dependent on the
+specific backend response/request shape, rather than a deterministic inability to
+compact the session.
+
+* Current Conclusion
+
+The compaction implementation correctly refuses to write an empty summary, but
+=e= should provide better handling around this state.  At minimum, the failure
+should preserve enough backend evidence to distinguish provider no-output from
+adapter-normalization bugs.  A bounded retry with a stricter non-empty summary
+prompt may also be appropriate.
+
+Likely next steps:
+
+1. Add a focused test for a backend stream that completes without any
+   =assistant-message= or =assistant-delta= items.
+2. Preserve/request diagnostics in the =compaction-failed= event, such as whether
+   a request was started, which normalized item types were seen, and any backend
+   error/finish metadata available without leaking sensitive payloads.
+3. Consider one retry for empty summaries with a stricter prompt requiring a
+   non-empty Markdown summary.
+4. Consider hardening =e-compaction-summary-messages= to explicitly require
+   non-empty output.
+5. If raw provider previews are available for normal failed turns, extend similar
+   diagnostics to compaction summary requests.
+
+* Fix Applied
+
+None.

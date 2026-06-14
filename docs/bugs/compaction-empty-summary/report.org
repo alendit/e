@@ -1,0 +1,45 @@
+#+title: Bug Report: Compaction Empty Summary
+#+startup: overview
+
+* Report
+
+A call to the =compact_session= tool failed after a successful grimoire layer
+migration/commit with this tool error:
+
+#+begin_example
+Context compaction failed: "Compaction backend returned an empty summary"
+#+end_example
+
+The user asked whether this is an =e= bug.  From the user perspective,
+compaction was expected to either compact the session or provide a diagnostic
+that explains why the backend produced no usable summary.  Instead, the tool
+failed after the compaction backend round trip produced no assistant text that
+=e= accepted as the durable summary.
+
+Expected behavior:
+
+- =compact_session= should not silently accept an empty summary, because that
+  could destroy useful context.
+- When the backend returns no text, =e= should surface actionable diagnostics,
+  retry with a stricter summary request when appropriate, or otherwise leave a
+  clear recoverable failure record that explains the provider/backend behavior.
+- Raw provider diagnostics or normalized backend item evidence should be
+  available for the failed compaction summary request when possible.
+
+Observed behavior:
+
+- Compaction preparation succeeded.
+- The compaction summary backend request started.
+- =e= raised =e-compaction-error= with only:
+
+  #+begin_example
+  Compaction backend returned an empty summary
+  #+end_example
+
+- The user-visible tool result did not explain whether the provider returned no
+  output, returned an output shape that the adapter did not translate, or failed
+  in a way that was swallowed before summary extraction.
+
+* Scope
+
+This report only files and investigates the bug.  No fix is applied here.
