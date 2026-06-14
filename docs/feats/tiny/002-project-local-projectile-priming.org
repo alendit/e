@@ -1,0 +1,20 @@
+#+title: Project-Local Projectile Priming
+#+startup: overview
+
+* Status
+
+Done
+
+* Summary
+
+Project-local layer files normally load when an =e= harness activates the
+=project-local= layer.  That is correct for harness-scoped tools/resources/shell
+manifests, but project shell files may also define useful global interactive
+commands.  Those commands were unavailable until the first =e= command happened
+to instantiate a harness.
+
+Add a small Projectile integration in =e-project-local=: when Projectile is
+loaded, hooks for project switching and Projectile file/directory entry prime
+trusted project-local extensions for the current project.  Priming only runs for
+projects with =.e/layers/= or =.e/capabilities/= and only when the root is already
+covered by =e-project-local-allowed-roots=.

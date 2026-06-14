@@ -64,3 +64,27 @@ layer.  Callers that have a harness should use:
 Global shell ids take precedence.  If a layer shell id collides with a global
 shell id, the layer shell is reported and skipped instead of replacing the
 built-in shell.
+
+* Projectile Priming
+
+Project-local layer loading normally happens when an =e= harness activates the
+built-in =project-local= layer.  For interactive commands supplied by
+presentation shell files, this can be too late: commands such as a project's
+=M-x my-project-new-topic= do not exist until the layer file has been loaded.
+
+When Projectile is present, =e-project-local= installs lightweight hooks on:
+
+- =projectile-after-switch-project-hook=
+- =projectile-find-file-hook=
+- =projectile-find-dir-hook=
+
+The hooks call =e-project-local-prime-projectile-project=, which finds the
+current Projectile root and calls =e-project-local-prime-project=.  Priming only
+runs for projects that contain =.e/layers/= or =.e/capabilities/= and are already
+trusted by =e-project-local-allowed-roots=.  It performs normal project-local
+discovery early so trusted shell files can define global interactive commands.
+It does not activate tools, resources, or layer-owned shell manifests in a
+harness; harness activation remains responsible for those model-facing effects.
+
+Set =e-project-local-projectile-prime-on-project-entry= to nil to disable this
+integration while keeping ordinary harness-driven discovery.

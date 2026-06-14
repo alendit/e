@@ -27,9 +27,12 @@
 (require 'e-capabilities)
 (require 'e-harness)
 (require 'e-layers)
+(require 'e-startup)
 (require 'e-skills)
 (require 'e-shells)
 (require 'subr-x)
+
+(declare-function projectile-project-root "ext:projectile")
 
 (defgroup e-project-local nil
   "Project-local capability discovery for e."
@@ -43,6 +46,17 @@ Each entry is a directory.  A discovered capability or layer is loaded only when
 its project root is at or below an allowed root.  Loading repo elisp runs with
 full Emacs privileges, so only add roots you trust."
   :type '(repeat directory)
+  :group 'e-project-local)
+
+(defcustom e-project-local-projectile-prime-on-project-entry t
+  "Whether Projectile project entry should prime project-local extensions.
+
+When non-nil and Projectile is loaded, `e' installs hooks that eagerly discover
+allowlisted project-local `.e/layers/' and `.e/capabilities/' packages for the
+current Projectile project.  This loads trusted presentation shell files early,
+so commands they define are available before an `e' harness is created.  Harness
+activation still owns model-facing tool/resource/shell registration."
+  :type 'boolean
   :group 'e-project-local)
 
 (defconst e-project-local-instructions
@@ -149,6 +163,73 @@ Outer ancestors come first so nearer directories win on id collision."
        (let ((allowed (file-truename (e-skills-normalize-directory root))))
          (string-prefix-p allowed target)))
      e-project-local-allowed-roots)))
+
+;;;; Eager project priming
+
+(defun e-project-local--project-has-extensions-p (directory)
+  "Return non-nil when DIRECTORY contains project-local extension roots."
+  (let ((root (e-skills-normalize-directory directory)))
+    (or (file-directory-p (expand-file-name e-project-local-layers-subdir root))
+        (file-directory-p (expand-file-name e-project-local-capabilities-subdir
+                                            root)))))
+
+(defun e-project-local-prime-project (&optional directory)
+  "Eagerly load allowlisted project-local extensions for DIRECTORY.
+
+This is a presentation convenience for project entry hooks: it runs normal
+project-local discovery early so trusted layer shell files can define their
+interactive commands before an `e' harness is created.  It returns the aggregate
+`project-local' layer when discovery is attempted, or nil when DIRECTORY has no
+project-local extension roots or is not allowlisted.
+
+The normal trust gate still applies: repository elisp is only loaded when
+DIRECTORY is at or below `e-project-local-allowed-roots'.  Harness activation
+continues to own model-facing tool, resource, and scoped shell registration."
+  (let ((root (e-skills-normalize-directory (or directory default-directory))))
+    (when (and (e-project-local--project-has-extensions-p root)
+               (e-project-local--root-allowed-p root))
+      (let ((default-directory root))
+        (e-project-local-layer-create root)))))
+
+(defun e-project-local--projectile-project-root ()
+  "Return the current Projectile project root, or nil."
+  (when (fboundp 'projectile-project-root)
+    (when-let ((root (ignore-errors (projectile-project-root))))
+      (e-skills-normalize-directory root))))
+
+(defun e-project-local-prime-projectile-project ()
+  "Prime project-local extensions for the current Projectile project.
+
+Intended for `projectile-after-switch-project-hook',
+`projectile-find-file-hook', and `projectile-find-dir-hook'."
+  (when e-project-local-projectile-prime-on-project-entry
+    (when-let ((root (e-project-local--projectile-project-root)))
+      (e-project-local-prime-project root))))
+
+(defun e-project-local-projectile-hooks-install ()
+  "Install Projectile hooks that prime project-local extensions on entry."
+  (add-hook 'projectile-after-switch-project-hook
+            #'e-project-local-prime-projectile-project)
+  (add-hook 'projectile-find-file-hook
+            #'e-project-local-prime-projectile-project)
+  (add-hook 'projectile-find-dir-hook
+            #'e-project-local-prime-projectile-project))
+
+(defun e-project-local-projectile-hooks-uninstall ()
+  "Remove Projectile hooks installed by `e-project-local'."
+  (remove-hook 'projectile-after-switch-project-hook
+               #'e-project-local-prime-projectile-project)
+  (remove-hook 'projectile-find-file-hook
+               #'e-project-local-prime-projectile-project)
+  (remove-hook 'projectile-find-dir-hook
+               #'e-project-local-prime-projectile-project))
+
+(defun e-project-local-startup ()
+  "Install optional integrations for project-local extension discovery."
+  (with-eval-after-load 'projectile
+    (e-project-local-projectile-hooks-install)))
+
+(add-hook 'e-startup-layer-hook #'e-project-local-startup)
 
 ;;;; Loading
 

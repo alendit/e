@@ -283,6 +283,81 @@ SOURCE overrides the default layer source."
                      (e-capability-instructions topic)))))
       (delete-directory outer t))))
 
+
+(ert-deftest e-project-local-test-prime-project-loads-allowed-extensions ()
+  "Priming eagerly runs normal discovery for trusted extension projects."
+  (let* ((project (make-temp-file "e-project-local-prime-" t))
+         (e-project-local-allowed-roots (list project)))
+    (unwind-protect
+        (progn
+          (e-project-local-test--make-layer project 'topic)
+          (let ((layer (e-project-local-prime-project project)))
+            (should layer)
+            (should (eq (e-layer-id layer) 'project-local))
+            (should (cl-find 'topic
+                             (e-layer-shells layer)
+                             :key #'e-shell-id))))
+      (delete-directory project t))))
+
+(ert-deftest e-project-local-test-prime-project-skips-untrusted-roots ()
+  "Priming does not execute repository elisp outside the allowlist."
+  (let ((project (make-temp-file "e-project-local-prime-gate-" t)))
+    (unwind-protect
+        (progn
+          (e-project-local-test--make-layer
+           project 'topic
+           (mapconcat #'identity
+                      '("(setq e-project-local-test--unexpected-prime-load t)"
+                        "(e-project-layer-register"
+                        " :id 'topic"
+                        " :factory (lambda (_dir)"
+                        "            (e-layer-create :id 'topic :name \"Topic\")))")
+                      "\n"))
+          (let ((e-project-local-allowed-roots nil)
+                (e-project-local-test--unexpected-prime-load nil))
+            (should-not (e-project-local-prime-project project))
+            (should-not e-project-local-test--unexpected-prime-load)))
+      (delete-directory project t))))
+
+(ert-deftest e-project-local-test-prime-project-skips-projects-without-extensions ()
+  "Priming is a no-op for projects without `.e' extension roots."
+  (let* ((project (make-temp-file "e-project-local-prime-empty-" t))
+         (e-project-local-allowed-roots (list project)))
+    (unwind-protect
+        (should-not (e-project-local-prime-project project))
+      (delete-directory project t))))
+
+(ert-deftest e-project-local-test-projectile-hooks-install-and-uninstall ()
+  "Projectile integration installs only the project-local priming hook."
+  (let ((old-after (and (boundp 'projectile-after-switch-project-hook)
+                        projectile-after-switch-project-hook))
+        (old-file (and (boundp 'projectile-find-file-hook)
+                       projectile-find-file-hook))
+        (old-dir (and (boundp 'projectile-find-dir-hook)
+                      projectile-find-dir-hook)))
+    (unwind-protect
+        (progn
+          (setq projectile-after-switch-project-hook nil
+                projectile-find-file-hook nil
+                projectile-find-dir-hook nil)
+          (e-project-local-projectile-hooks-install)
+          (should (memq #'e-project-local-prime-projectile-project
+                        projectile-after-switch-project-hook))
+          (should (memq #'e-project-local-prime-projectile-project
+                        projectile-find-file-hook))
+          (should (memq #'e-project-local-prime-projectile-project
+                        projectile-find-dir-hook))
+          (e-project-local-projectile-hooks-uninstall)
+          (should-not (memq #'e-project-local-prime-projectile-project
+                            projectile-after-switch-project-hook))
+          (should-not (memq #'e-project-local-prime-projectile-project
+                            projectile-find-file-hook))
+          (should-not (memq #'e-project-local-prime-projectile-project
+                            projectile-find-dir-hook)))
+      (setq projectile-after-switch-project-hook old-after
+            projectile-find-file-hook old-file
+            projectile-find-dir-hook old-dir))))
+
 (provide 'e-project-local-test)
 
 ;;; e-project-local-test.el ends here
