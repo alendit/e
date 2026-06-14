@@ -768,11 +768,15 @@ TURN-ID is passed to active capability context providers when present."
 (defun e-harness--cancel-active-request (entry)
   "Cancel ENTRY's active backend or tool request when one exists."
   (when-let ((request (plist-get entry :request)))
-    (cond
-     ((e-backend-request-p request)
-      (e-backend-cancel-request request))
-     ((e-tools-request-p request)
-      (e-tools-cancel-request request)))))
+    (condition-case err
+        (cond
+         ((e-backend-request-p request)
+          (e-backend-cancel-request request))
+         ((e-tools-request-p request)
+          (e-tools-cancel-request request)))
+      (error
+       (plist-put entry :cancel-error err)
+       nil))))
 
 (defun e-harness--cancelled-tool-result (tool-call)
   "Return a structured cancellation result for TOOL-CALL."

@@ -1,0 +1,12 @@
+#+title: Abort Url Network Process
+#+startup: overview
+
+On 2026-06-14, the user reported that aborting some active chat sessions can
+show this minibuffer error:
+
+#+begin_example
+Process chatgpt.com<1> is not a subprocess
+#+end_example
+
+The screenshot showed the error while aborting an active =e-chat= session whose
+backend request was connected to =chatgpt.com=.

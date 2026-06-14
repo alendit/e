@@ -1,0 +1,89 @@
+#+title: Abort Url Network Process Investigation
+#+startup: overview
+
+* Status
+
+Closed.
+
+* Investigation
+
+The abort command flows from =e-chat-abort= through =e-chat-session-abort= to
+=e-harness-abort=.  When the active turn has a backend request, the harness
+delegates to =e-harness--cancel-active-request=.
+
+For active OpenAI/Codex calls, the request handle comes from
+=e-openai-codex--http-request-start=.  Its cancellation path cleaned up the
+=url-retrieve= request buffer by getting the buffer process and calling
+=kill-process=.
+
+That is incorrect for url.el network processes.  A live url.el connection can
+have a process name such as =chatgpt.com<1>=, but it is a network process, not
+an OS subprocess.  Calling =kill-process= on that process raises:
+
+#+begin_example
+Process chatgpt.com is not a subprocess
+#+end_example
+
+The harness also assumed provider/tool cancellation callbacks would not raise.
+If a callback raised during abort, the turn could fail to settle as cancelled.
+
+* Fix
+
+The OpenAI request-buffer cleanup now checks the attached process type.  It uses
+=kill-process= for real subprocesses and pipes, and =delete-process= for network
+processes such as url.el connections.
+
+The harness abort path now treats cancellation callback failures as cancellation
+cleanup failures, not as a reason to leave the active turn unsettled.  It records
+the condition on the active entry as =:cancel-error= and continues to append
+cancelled tool results, set the status to =cancelled=, and emit
+=turn-cancelled=.
+
+* Verification
+
+Focused red tests were added before the fix:
+
+- =e-openai-test-backend-cancel-deletes-url-network-process= reproduced the
+  =Process chatgpt.com is not a subprocess= error with a real network process.
+- =e-harness-test-abort-settles-when-provider-cancel-errors= reproduced abort
+  failing to settle when the backend cancellation callback raised.
+
+After the fix:
+
+#+begin_example
+rtk eldev test -f test/e-openai-test.el e-openai-test-backend-cancel-deletes-url-network-process -f test/e-harness-test.el e-harness-test-abort-settles-when-provider-cancel-errors
+#+end_example
+
+passed 2 tests with 0 unexpected results.
+
+Adjacent abort/cancellation coverage:
+
+#+begin_example
+rtk eldev test -f test/e-openai-test.el e-openai-test-backend-default-request-is-cancellable e-openai-test-backend-cancel-deletes-url-network-process -f test/e-harness-test.el e-harness-test-abort-cancels-active-provider-request e-harness-test-abort-settles-when-provider-cancel-errors e-harness-test-abort-ignores-stale-provider-callbacks
+#+end_example
+
+passed 5 tests with 0 unexpected results.
+
+Full suite:
+
+#+begin_example
+rtk eldev test
+#+end_example
+
+passed 670 tests with 669 expected passes, 1 expected skip, and 0 unexpected
+results.
+
+The running Emacs was reloaded with:
+
+#+begin_example
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_example
+
+Live bounded probes after reload:
+
+- A temporary harness with a backend cancellation callback that raises settled as
+  =:status cancelled=, recorded =:cancel-error-type error=, and emitted
+  =turn-cancelled=.
+- A temporary buffer with a =chatgpt.com= network process was cleaned by
+  =e-openai-codex--kill-request-buffer= with =:cancel-result t=, =:error-type
+  nil=, =:process-live nil=, and =:buffer-live nil=.

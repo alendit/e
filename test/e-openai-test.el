@@ -917,6 +917,51 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
                          t)))
       (delete-file auth-file))))
 
+(ert-deftest e-openai-test-backend-cancel-deletes-url-network-process ()
+  "Cancelling a url-retrieve request deletes its network process."
+  (let* ((token (e-openai-test--jwt))
+         (auth-file (make-temp-file "e-auth" nil ".json"
+                                    (json-encode
+                                     (list :tokens
+                                           (list :access_token token
+                                                 :refresh_token "refresh")))))
+         (request nil)
+         (buffer nil)
+         (process nil)
+         (backend
+          (e-openai-codex-backend-create :auth-file auth-file)))
+    (unwind-protect
+        (cl-letf (((symbol-function 'url-retrieve)
+                   (lambda (_url _callback &rest _args)
+                     (setq buffer
+                           (generate-new-buffer " *e-openai-test-http*"))
+                     (setq process
+                           (make-network-process
+                            :name "chatgpt.com"
+                            :server t
+                            :service t
+                            :host 'local
+                            :buffer buffer))
+                     buffer)))
+          (e-backend-start backend
+                           :messages '((:role user :content "hello"))
+                           :options '(:model "gpt-test")
+                           :on-item #'ignore
+                           :on-done #'ignore
+                           :on-error #'ignore
+                           :on-request-start (lambda (handle)
+                                               (setq request handle)))
+          (should (e-backend-request-p request))
+          (should (process-live-p process))
+          (should (e-backend-cancel-request request))
+          (should-not (process-live-p process))
+          (should-not (buffer-live-p buffer)))
+      (when (process-live-p process)
+        (delete-process process))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (delete-file auth-file))))
+
 (ert-deftest e-openai-test-codex-harness-runs-minimal-prompt-flow ()
   "The Codex harness helper can run prompt to persisted assistant message."
   (let* ((token (e-openai-test--jwt))

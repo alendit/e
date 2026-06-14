@@ -493,7 +493,9 @@ profiles."
   (when (buffer-live-p buffer)
     (when-let ((process (get-buffer-process buffer)))
       (when (process-live-p process)
-        (kill-process process)))
+        (if (memq (process-type process) '(real pipe))
+            (kill-process process)
+          (delete-process process))))
     (kill-buffer buffer)))
 
 (cl-defun e-openai-codex--http-request-start
