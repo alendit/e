@@ -134,14 +134,40 @@
                       :options nil)
      :type 'wrong-type-argument)))
 
-(ert-deftest e-context-test-rejects-stale-provider-records ()
-  "One-off provider shape changes require rebuild instead of vector fallback."
+(ert-deftest e-context-test-stale-provider-records-default-to-stable-placement ()
+  "Provider records compiled before cache placement keep their build contract."
   (let ((stale-provider
-         (vector 'cl-struct-e-context-provider
+         (record 'e-context-provider
                  'legacy-provider
+                 200
                  (lambda (&rest _args) nil))))
-    (should-error (e-context-provider-priority stale-provider))
-    (should-error (e-context-provider-build stale-provider))))
+    (should (= (e-context-provider-priority stale-provider) 200))
+    (should (eq (e-context-provider-cache-placement stale-provider)
+                'stable-context))
+    (should-not (e-context-provider-build stale-provider))))
+
+(ert-deftest e-context-test-rejects-malformed-provider-records ()
+  "Provider records still need the legacy build slot to be callable."
+  (let ((malformed-provider
+         (record 'e-context-provider 'legacy-provider 200)))
+    (should-error (e-context-provider-build malformed-provider))))
+
+(ert-deftest e-context-test-provider-cache-placement-defaults-to-stable ()
+  "Context providers default to stable cache placement."
+  (let ((provider (e-context-provider-create
+                   :name 'provider
+                   :build #'ignore)))
+    (should (eq (e-context-provider-cache-placement provider)
+                'stable-context))))
+
+(ert-deftest e-context-test-rejects-invalid-provider-cache-placement ()
+  "Context provider cache placement is limited to known prompt regions."
+  (let ((provider (e-context-provider-create
+                   :name 'provider
+                   :cache-placement 'elsewhere
+                   :build #'ignore)))
+    (should-error (e-context-provider-cache-placement provider)
+                  :type 'wrong-type-argument)))
 
 (provide 'e-context-test)
 

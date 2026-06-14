@@ -1,0 +1,84 @@
+#+title: Review: Prompt Cache Friendly Context
+#+author: e implementation
+#+date: 2026-06-14
+#+startup: overview
+
+* Status
+
+Done.
+
+* Implemented
+
+- Added neutral context provider cache placement with =static-prefix=,
+  =stable-context=, and =dynamic-context= ordering.
+- Kept capability instructions in the static prefix, stable provider context
+  next, and dynamic live context after stable material.
+- Marked chat session attachments, Org Canvas context, and visible Emacs buffer
+  context as dynamic.
+- Added OpenAI Responses request mapping for =:prompt-cache-key= and
+  =:prompt-cache-retention= as =prompt_cache_key= and
+  =prompt_cache_retention=.
+- Opted the default chat harness into prompt cache defaults with a derived key
+  based on model, normalized project root, active layer ids, and a version
+  marker.
+- Preserved explicit session prompt cache keys and retention overrides through
+  session turn option normalization.
+- Treated provider records compiled before =:cache-placement= as stable context
+  so live reload and incremental bytecode do not require a full restart.
+
+* Verification
+
+- =rtk eldev test -f test/e-context-test.el -f test/e-capabilities-test.el -f test/e-openai-test.el -f test/e-defaults-test.el -f test/e-emacs-capabilities-test.el -f test/e-org-canvas-test.el=
+  - 134 tests run, 134 expected, 0 unexpected.
+- =rtk eldev test=
+  - 710 tests run, 709 expected, 1 expected skip, 0 unexpected.
+- =emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"=
+  - Reloaded the running Emacs from the project root.
+- Bounded live probe after reload:
+  - =(:key t :retention t :order t :old-provider t)=
+
+* Notes
+
+- Local verification proves request shape, cache-key derivation, live-context
+  placement, and compatibility with old provider records.
+- Real cached-token improvement requires repeated OpenAI calls and should be
+  read from existing =:cached-input-tokens= usage metadata when such calls are
+  intentionally run.
+
+* Design Review
+
+1. If this work package stopped here, would the project be better off than if it
+   had not been built?
+   Yes. Default chat and canvas requests now have more stable prefixes and can
+   opt into provider cache controls without changing shell behavior.
+2. What final direction does this move toward?
+   Provider-neutral context policy in core with provider-specific request fields
+   isolated in adapters.
+3. Which decisions are likely to change, uncertain, or stable?
+   The three placement buckets are stable enough to name. The cache-key version
+   keeps future key-shape changes local.
+4. What component owns this behavior, and why?
+   =e-context= owns provider metadata, =e-capabilities= owns ordering, the
+   harness owns default turn options, and OpenAI owns wire-field mapping.
+5. Does this change increase or reduce coupling?
+   It reduces adapter coupling by keeping OpenAI field names out of context
+   providers and shells.
+6. Did any dependency start pointing the wrong way?
+   No. Core exposes neutral options and metadata; the adapter translates them.
+7. Could any side effect be moved outward into an adapter or shell?
+   No new side effects were introduced. Cache-key derivation is pure.
+8. Are the abstractions semantically real?
+   Yes. Static, stable, and dynamic prompt regions affect cache reuse and have
+   concrete providers.
+9. What compatibility expectations apply?
+   Old provider records without cache placement default to stable context during
+   live reload or incremental bytecode use.
+10. What legacy code can we remove now?
+    None in this slice.
+11. Where are expected errors handled?
+    Invalid placement values surface as =wrong-type-argument=; unsupported
+    provider/model cache options surface at the provider request boundary.
+12. What tests prove the core behavior?
+    Context, capability ordering, OpenAI request, default harness, Emacs
+    provider, and Org Canvas provider tests cover the behavior independently of
+    a live OpenAI request.

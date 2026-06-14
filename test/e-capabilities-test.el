@@ -187,7 +187,7 @@
                      (:role system :content "provider:turn-1"))))))
 
 (ert-deftest e-capabilities-test-context-priority-orders_fragments ()
-  "Context aggregation orders provider and instruction fragments by priority."
+  "Context aggregation keeps static instructions before provider fragments."
   (let* ((early-provider
           (e-context-provider-create
            :name 'early
@@ -213,10 +213,38 @@
          (messages (e-capabilities-context-messages (list first second))))
     (should (equal (mapcar (lambda (message) (plist-get message :content))
                            messages)
-                   '("early provider"
-                     "first instructions"
+                   '("first instructions"
                      "second instructions"
+                     "early provider"
                      "late provider")))))
+
+(ert-deftest e-capabilities-test-context-cache-placement-orders_fragments ()
+  "Context aggregation keeps stable provider context before dynamic context."
+  (let* ((stable-provider
+          (e-context-provider-create
+           :name 'stable
+           :priority 300
+           :cache-placement 'stable-context
+           :build (lambda (&rest _)
+                    '((:role system :content "stable provider")))))
+         (dynamic-provider
+          (e-context-provider-create
+           :name 'dynamic
+           :priority 100
+           :cache-placement 'dynamic-context
+           :build (lambda (&rest _)
+                    '((:role system :content "dynamic provider")))))
+         (capability
+          (e-capability-create
+           :id 'context
+           :instructions "static instructions"
+           :context-providers (list dynamic-provider stable-provider)))
+         (messages (e-capabilities-context-messages (list capability))))
+    (should (equal (mapcar (lambda (message) (plist-get message :content))
+                           messages)
+                   '("static instructions"
+                     "stable provider"
+                     "dynamic provider")))))
 
 (ert-deftest e-capabilities-test-context-priority_preserves_tie_order ()
   "Equal priorities preserve capability traversal and provider message order."

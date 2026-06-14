@@ -33,6 +33,6 @@ Status values for coding agents:
 | 20 | Done | 20-org-canvas-context-status/ | Org Canvas Context Status and Compaction |
 | 21 | Done | 21-dev-profiling/ | Developer Profiling Traces |
 | 22 | Done | 22-project-shells/ | Project Shells |
-| 23 | Planned | 23-prompt-cache-context/ | Prompt Cache Friendly Context |
+| 23 | Done | 23-prompt-cache-context/ | Prompt Cache Friendly Context |
 | 24 | Done | 24-mcp-capability-wrapper/ | MCP Capability Wrapper |
 | 25 | Planned | 25-resource-glob-search/ | Resource Glob and Search Tools |

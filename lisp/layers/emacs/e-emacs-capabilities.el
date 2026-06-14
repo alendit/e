@@ -47,6 +47,7 @@ When editing a file that may be open in Emacs, prefer live buffer tools over dir
   (e-context-provider-create
    :name 'visible-buffers
    :priority 320
+   :cache-placement 'dynamic-context
    :build (cl-function
            (lambda (&key harness session-id turn-id)
              (ignore harness session-id turn-id)

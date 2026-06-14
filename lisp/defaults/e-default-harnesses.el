@@ -178,6 +178,10 @@ sets the root used by config-aware default layers."
                   :provider (or provider e-openai-default-provider)
                   :sessions (or sessions (e-default-session-store))))
         (root (or directory default-directory)))
+    (setf (e-harness-default-options harness)
+          (append (e-harness-default-options harness)
+                  (list :prompt-cache-default t
+                        :prompt-cache-retention "24h")))
     (e-harness-activate-layer
      harness
      (e-default-chat--chat-session-layer))

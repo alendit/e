@@ -135,6 +135,77 @@
         (should (eq seen-provider 'openai-compatible-gateway))
         (should (eq seen-sessions store))))))
 
+(ert-deftest e-defaults-test-chat-harness-derives-prompt-cache-options ()
+  "Default chat derives cache keys from model, project, and active layers."
+  (cl-letf (((symbol-function 'e-openai-create-harness)
+             (lambda (&rest args)
+               (e-harness-create
+                :backend (e-backend-fake-create :items nil)
+                :default-options '(:model "gpt-default")
+                :sessions (plist-get args :sessions)))))
+    (let ((e-default-chat-layer-ids nil))
+      (let ((harness (e-default-chat-harness-create
+                      :sessions (e-session-store-create))))
+        (e-harness-create-session
+         harness
+         :id "session-1"
+         :metadata (list :project-root "/tmp/e-cache-a"))
+        (let* ((options (e-harness-turn-options harness "session-1"))
+               (key (plist-get options :prompt-cache-key)))
+          (should (stringp key))
+          (should (equal (plist-get options :prompt-cache-retention) "24h"))
+          (should-not (plist-member options :prompt-cache-default))
+          (should (equal key
+                         (plist-get (e-harness-turn-options harness "session-1")
+                                    :prompt-cache-key)))
+          (e-harness-create-session
+           harness
+           :id "session-2"
+           :metadata (list :project-root "/tmp/e-cache-b"))
+          (should-not
+           (equal key
+                  (plist-get (e-harness-turn-options harness "session-2")
+                             :prompt-cache-key)))
+          (e-harness-create-session
+           harness
+           :id "session-3"
+           :metadata (list :project-root "/tmp/e-cache-a"))
+          (e-harness-set-session-model harness "session-3" "gpt-other")
+          (should-not
+           (equal key
+                  (plist-get (e-harness-turn-options harness "session-3")
+                             :prompt-cache-key)))
+          (e-harness-activate-layer
+           harness
+           (e-layer-create :id 'cache-extra :name "Cache Extra"))
+          (should-not
+           (equal key
+                  (plist-get (e-harness-turn-options harness "session-1")
+                             :prompt-cache-key))))))))
+
+(ert-deftest e-defaults-test-chat-harness-preserves-explicit-prompt-cache-key ()
+  "Session prompt cache keys override default chat key derivation."
+  (cl-letf (((symbol-function 'e-openai-create-harness)
+             (lambda (&rest args)
+               (e-harness-create
+                :backend (e-backend-fake-create :items nil)
+                :default-options '(:model "gpt-default")
+                :sessions (plist-get args :sessions)))))
+    (let ((e-default-chat-layer-ids nil))
+      (let ((harness (e-default-chat-harness-create
+                      :sessions (e-session-store-create))))
+        (e-harness-create-session
+         harness
+         :id "session-1"
+         :metadata (list :project-root "/tmp/e-cache-a"))
+        (e-session-set-turn-options
+         (e-harness-sessions harness)
+         "session-1"
+         '(:prompt-cache-key "manual-key"))
+        (should (equal (plist-get (e-harness-turn-options harness "session-1")
+                                  :prompt-cache-key)
+                       "manual-key"))))))
+
 (ert-deftest e-defaults-test-chat-harness-activates-chat-session-base-and-emacs ()
   "Default chat harness activation includes chat-session and configured layers."
   (cl-letf (((symbol-function 'e-openai-create-harness)
@@ -305,7 +376,10 @@
              (provider-names
               (mapcar #'e-context-provider--name
                       (e-capability-context-providers capability))))
-        (should (memq 'chat-session-attachments provider-names))))))
+        (should (memq 'chat-session-attachments provider-names))
+        (should (eq (e-context-provider-cache-placement
+                     (car (e-capability-context-providers capability)))
+                    'dynamic-context))))))
 
 (ert-deftest e-defaults-test-startup-repairs-shifted-chat-default-session-store ()
   "Startup sync repairs cached chat-default harnesses with shifted reload slots."

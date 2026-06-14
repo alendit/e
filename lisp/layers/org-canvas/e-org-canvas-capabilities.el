@@ -387,6 +387,7 @@ CONTEXT carries :harness and :session-id from the active turn."
    (list (e-context-provider-create
           :name 'org-canvas
           :priority 118
+          :cache-placement 'dynamic-context
           :build #'e-org-canvas-context-provider))
    :tools (list #'e-org-canvas-register-tools)))
 

@@ -237,6 +237,13 @@ HARNESS, SESSION-ID, and TURN-ID identify the active turn."
       (e-context-provider-priority provider)
     200))
 
+(defun e-capabilities--provider-cache-placement (provider)
+  "Return PROVIDER cache-placement rank."
+  (if (e-context-provider-p provider)
+      (e-context-cache-placement-rank
+       (e-context-provider-cache-placement provider))
+    (e-context-cache-placement-rank 'stable-context)))
+
 (cl-defun e-capabilities-context-messages
     (capabilities &key harness session-id turn-id)
   "Return backend-neutral context messages contributed by CAPABILITIES.
@@ -245,7 +252,9 @@ HARNESS, SESSION-ID, and TURN-ID are passed to context providers."
         (capability-index 0))
     (dolist (capability capabilities)
       (when (e-capability-instructions capability)
-        (push (list :priority (e-capability-instruction-priority capability)
+        (push (list :cache-placement
+                    (e-context-cache-placement-rank 'static-prefix)
+                    :priority (e-capability-instruction-priority capability)
                     :capability-index capability-index
                     :message-index 0
                     :message (list :role 'system
@@ -260,7 +269,9 @@ HARNESS, SESSION-ID, and TURN-ID are passed to context providers."
                               :harness harness
                               :session-id session-id
                               :turn-id turn-id))
-              (push (list :priority (e-capabilities--provider-priority provider)
+              (push (list :cache-placement
+                          (e-capabilities--provider-cache-placement provider)
+                          :priority (e-capabilities--provider-priority provider)
                           :capability-index capability-index
                           :provider-index provider-index
                           :message-index message-index
@@ -273,11 +284,13 @@ HARNESS, SESSION-ID, and TURN-ID are passed to context providers."
      (lambda (fragment) (plist-get fragment :message))
      (sort fragments
            (lambda (left right)
-             (let ((left-key (list (plist-get left :priority)
+             (let ((left-key (list (plist-get left :cache-placement)
+                                   (plist-get left :priority)
                                    (plist-get left :capability-index)
                                    (or (plist-get left :provider-index) -1)
                                    (plist-get left :message-index)))
-                   (right-key (list (plist-get right :priority)
+                   (right-key (list (plist-get right :cache-placement)
+                                    (plist-get right :priority)
                                     (plist-get right :capability-index)
                                     (or (plist-get right :provider-index) -1)
                                     (plist-get right :message-index))))

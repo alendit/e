@@ -309,6 +309,16 @@ When CODEX-HOME is nil, use the CODEX_HOME environment variable or
       (setq body (append body (list :tools (vconcat tools)))))
     (when reasoning
       (setq body (append body (list :reasoning reasoning))))
+    (when (plist-member options :prompt-cache-key)
+      (setq body
+            (append body
+                    (list :prompt_cache_key
+                          (plist-get options :prompt-cache-key)))))
+    (when (plist-member options :prompt-cache-retention)
+      (setq body
+            (append body
+                    (list :prompt_cache_retention
+                          (plist-get options :prompt-cache-retention)))))
     body))
 
 

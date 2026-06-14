@@ -46,6 +46,9 @@
     (should (= (e-context-provider-priority
                 (car (e-capability-context-providers capability)))
                320))
+    (should (eq (e-context-provider-cache-placement
+                 (car (e-capability-context-providers capability)))
+                'dynamic-context))
     (should (string-match-p "Visible Emacs buffers:"
                             (plist-get (cadr messages) :content)))))
 

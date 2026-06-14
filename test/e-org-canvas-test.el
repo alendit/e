@@ -393,6 +393,13 @@
                                       (or (plist-get message :content) ""))
                                     org "\n")))))))
 
+(ert-deftest e-org-canvas-test-context-provider-is-dynamic-cache-placement ()
+  "Org Canvas live buffer context is placed after stable cacheable context."
+  (let ((provider (car (e-capability-context-providers
+                        (e-org-canvas-capability-create)))))
+    (should (eq (e-context-provider-cache-placement provider)
+                'dynamic-context))))
+
 (ert-deftest e-org-canvas-test-document-context-uses-whole-document-scope ()
   "Document-scope context asks the model to consider the full Org document."
   (let ((harness (e-org-canvas-test--harness t)))

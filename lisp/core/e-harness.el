@@ -589,11 +589,57 @@ preview to avoid duplicating large outputs in session JSONL files."
       (cl-remf options :reasoning-effort))
     (e-harness--set-session-options harness session-id options)))
 
+(defconst e-harness-prompt-cache-key-version "pcctx1"
+  "Version marker for derived prompt cache keys.")
+
+(defun e-harness--prompt-cache-hash (value length)
+  "Return a deterministic LENGTH-character hash for VALUE."
+  (substring (secure-hash 'sha256 (format "%S" value)) 0 length))
+
+(defun e-harness--active-layer-ids (harness)
+  "Return active layer ids for HARNESS."
+  (mapcar #'e-layer-id (e-harness-active-layers harness)))
+
+(defun e-harness--derived-prompt-cache-key (harness session-id options)
+  "Return the default prompt cache key for HARNESS SESSION-ID OPTIONS."
+  (format "e:%s:%s:%s:%s"
+          e-harness-prompt-cache-key-version
+          (e-harness--prompt-cache-hash (plist-get options :model) 8)
+          (e-harness--prompt-cache-hash
+           (e-harness-project-root harness session-id)
+           16)
+          (e-harness--prompt-cache-hash
+           (e-harness--active-layer-ids harness)
+           16)))
+
+(defun e-harness--apply-prompt-cache-defaults (harness session-id options)
+  "Apply opt-in prompt cache defaults to OPTIONS."
+  (let ((options (copy-sequence options)))
+    (when (and (plist-member options :prompt-cache-key)
+               (null (plist-get options :prompt-cache-key)))
+      (cl-remf options :prompt-cache-key))
+    (when (and (plist-get options :prompt-cache-default)
+               (not (plist-member options :prompt-cache-key)))
+      (setq options
+            (plist-put options
+                       :prompt-cache-key
+                       (e-harness--derived-prompt-cache-key
+                        harness
+                        session-id
+                        options))))
+    (cl-remf options :prompt-cache-default)
+    (unless (plist-member options :prompt-cache-key)
+      (cl-remf options :prompt-cache-retention))
+    options))
+
 (defun e-harness-turn-options (harness session-id)
   "Return backend-neutral turn options for HARNESS and SESSION-ID."
-  (let ((options (e-harness--merge-turn-options
-                  (e-harness-default-options harness)
-                  (e-harness-session-options harness session-id)))
+  (let ((options (e-harness--apply-prompt-cache-defaults
+                  harness
+                  session-id
+                  (e-harness--merge-turn-options
+                   (e-harness-default-options harness)
+                   (e-harness-session-options harness session-id))))
         (tool-definitions
          (e-tools-definitions (e-harness-tools harness session-id))))
     (if tool-definitions

@@ -293,6 +293,7 @@ in the next turn's context."
    (list (e-context-provider-create
           :name 'chat-session-attachments
           :priority 120
+          :cache-placement 'dynamic-context
           :build #'e-chat-session-context-attachments-provider))
    :actions (list :submit #'e-chat-session-submit
                   :abort #'e-chat-session-abort

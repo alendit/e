@@ -103,8 +103,8 @@
     (should (equal (mapcar (lambda (message) (plist-get message :content))
                            captured-messages)
                    '("first instructions"
-                     "first context"
                      "second instructions"
+                     "first context"
                      "second context"
                      "hello")))))
 

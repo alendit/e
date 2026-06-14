@@ -112,6 +112,28 @@
       :parallel_tool_calls t
       :reasoning (:effort "low")))))
 
+(ert-deftest e-openai-test-request-body-maps-prompt-cache-options ()
+  "Backend-neutral prompt cache options map to Responses cache fields."
+  (should
+   (equal
+    (e-openai-codex-request-body
+     :messages '((:role user :content "hello"))
+     :options '(:model "gpt-test"
+                :prompt-cache-key "cache-key"
+                :prompt-cache-retention "24h"))
+    '(:model "gpt-test"
+      :store :json-false
+      :stream t
+      :instructions "You are a helpful assistant."
+      :input [(:type "message"
+               :role "user"
+               :content [(:type "input_text" :text "hello")])]
+      :tool_choice "auto"
+      :parallel_tool_calls t
+      :reasoning (:effort "high")
+      :prompt_cache_key "cache-key"
+      :prompt_cache_retention "24h"))))
+
 (ert-deftest e-openai-test-request-body-preserves-explicit-reasoning-option ()
   "Explicit provider reasoning options take precedence over default effort."
   (should

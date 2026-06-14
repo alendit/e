@@ -28,7 +28,8 @@
                (:conc-name e-context-provider--))
   name
   (priority 200)
-  build)
+  build
+  (cache-placement 'stable-context))
 
 (defun e-context-name (strategy)
   "Return STRATEGY name."
@@ -45,6 +46,28 @@
   (e-context-provider--priority provider))
 
 (put 'e-context-provider-priority 'compiler-macro nil)
+
+(defun e-context-cache-placement-rank (placement)
+  "Return cache-order rank for context PLACEMENT."
+  (pcase placement
+    ('static-prefix 0)
+    ('stable-context 1)
+    ('dynamic-context 2)
+    (_ (signal 'wrong-type-argument
+               (list '(member static-prefix stable-context dynamic-context)
+                     placement)))))
+
+(defun e-context-provider-cache-placement (provider)
+  "Return PROVIDER prompt-cache placement."
+  (unless (e-context-provider-p provider)
+    (signal 'wrong-type-argument (list 'e-context-provider-p provider)))
+  (let ((placement (if (>= (length provider) 5)
+                       (e-context-provider--cache-placement provider)
+                     'stable-context)))
+    (e-context-cache-placement-rank placement)
+    placement))
+
+(put 'e-context-provider-cache-placement 'compiler-macro nil)
 
 (defun e-context-provider--build-function (provider)
   "Return PROVIDER build function."

@@ -5,7 +5,7 @@
 
 * Status
 
-Planned.
+Done.
 
 * Goal
 
@@ -548,17 +548,34 @@ registries, full request bodies, or full document contents.
 
 1. Does the request prefix keep static instructions and project policy before
    per-turn live context?
+   yes
 2. Do default chat, canvas, and Org Canvas all use the same cache-friendly
    context pipeline?
+   yes
 3. Are provider-specific cache fields isolated in the OpenAI adapter?
+   yes
 4. Is the cache key stable for repeated traffic but sensitive to model, project,
    and active layer shape?
+   Yes. Default chat derives a compact key from the model, normalized project
+   root, and active layer ids.
 5. Does the model still receive all live context needed for correct canvas and
    Org Canvas edits?
+   yes
 6. Are cached token counts visible enough to verify the feature without adding a
    separate telemetry system?
+   Partially. Existing usage metadata exposes cached input tokens, but this
+   slice verified request shape and context ordering locally rather than running
+   repeated paid OpenAI calls.
 7. What compatibility expectations apply to live reload and stale in-memory
    provider structs?
+   Provider records compiled before =:cache-placement= default to
+   =stable-context= so live reload and incremental bytecode remain usable.
 8. Where do unsupported provider/model cache options surface?
+   in provider adapter
 9. What tests prove ordering independently of a real OpenAI request?
+   =e-capabilities-test-context-cache-placement-orders_fragments= proves static,
+   stable, and dynamic ordering without a real backend.
 10. What live evidence shows cached-token behavior improved?
+    The bounded live probe checks local key derivation and ordering. Actual
+    cached-token improvement should be confirmed from repeated real OpenAI usage
+    metadata when a paid live request is intentionally run.
