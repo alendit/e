@@ -5,129 +5,243 @@
 
 In-review.
 
-* Summary
+Review pass: <2026-06-14 Sun>.
 
-Implemented opt-in developer profiling traces for normal E usage. Developers can
-start a trace, use chat/harness/session paths normally, stop tracing, and inspect
-raw JSONL or an aggregate report.
+* Review summary
 
-Implemented pieces:
+Feature 21 adds a useful opt-in developer profiling workflow: traces are written
+as JSONL under ignored local storage, call sites can measure spans through a
+small dev-owned helper, and reports aggregate slowest events and totals.  The
+review verified the recorder and harness/session integration tests, plus a live
+probe in the running Emacs.
 
-- =lisp/dev/e-dev-profile.el= owns profiler state, JSONL writing, thunk/macro
-  measurement helpers, report aggregation, and interactive commands.
-- =e-dev-reload= reloads the profiler module.
-- =e.el= autoloads the developer profiling commands.
-- =.e/dev-profiles/= is ignored as generated local trace storage.
-- Session persistence records =session.append-record= and
-  =session.write-index= spans when profiling is enabled.
-- Harness records =harness.context= and =harness.tool-start= spans.
-- Chat records =chat.status= and =chat.activity-redraw= spans.
+The implementation is useful enough for performance investigations, but a few
+plan items remain incomplete before marking =Done=: prompt/turn lifecycle and
+some chat presentation spans are not instrumented, trace file names can collide
+when two traces start in the same second, and the report omits the wall-clock
+range promised by the plan.
 
-* Verification
+* Scope reviewed
 
-Focused profile/reload tests:
+Implementation surfaces inspected:
+
+- =lisp/dev/e-dev-profile.el=
+- =lisp/dev/e-dev.el=
+- =e.el= autoloads
+- =.gitignore=
+- =lisp/core/e-session.el=
+- =lisp/core/e-harness.el=
+- =lisp/shells/chat/e-chat.el=
+- =lisp/shells/e-context-status.el=
+- =test/e-dev-profile-test.el=
+- =test/e-dev-test.el=
+- =test/e-session-test.el=
+- =test/e-harness-test.el=
+- profiling-related parts of =test/e-chat-test.el= and
+  =test/e-context-status-test.el=
+
+Plan expectations checked:
+
+- Disabled profiling is cheap and does not write traces.
+- Enabled profiling writes compact scalar JSONL records outside source-tracked
+  docs.
+- Reports show aggregate timing and slowest events.
+- Session/harness/chat/context-status call sites record useful spans.
+- Disabled profiling preserves runtime behavior.
+- Trace payloads avoid prompt text, assistant text, and tool result bodies.
+
+* What looks good
+
+- =e-dev-profile.el= owns profiling state, JSONL writing, measurement,
+  report-data aggregation, report rendering, and interactive commands.
+- =e-dev-profile-record= records only scalar metadata supplied by call sites; the
+  tests explicitly assert that prompt/content/tool-result fields are not added by
+  the helper.
+- =e-dev-profile-measure-thunk= preserves return values, records durations, and
+  records error metadata before re-signaling unexpected errors.
+- Generated traces are ignored via =.e/dev-profiles/= in =.gitignore=.
+- Public developer entrypoints are autoloaded from =e.el=, and =e-dev-reload=
+  knows about =lisp/dev/e-dev-profile.el=.
+- Runtime modules avoid a hard load dependency by checking whether profiling
+  helpers are fbound and enabled before measuring.
+- Current instrumentation covers useful first boundaries:
+  - =session.append-record= and =session.write-index=;
+  - =harness.context= and =harness.tool-start=;
+  - =chat.status=, =chat.activity-redraw=, =chat.render-turn-transient=,
+    =chat.render-event=, =chat.insert-entry=, and
+    =chat.refresh-session-display=;
+  - =context-status.text=.
+
+* Verification performed during this review pass
+
+Focused dev/profile/harness/session tests:
 
 #+begin_src sh
-rtk eldev test -f test/e-dev-profile-test.el -f test/e-dev-test.el
+eldev test -f test/e-dev-profile-test.el -f test/e-dev-test.el -f test/e-session-test.el -f test/e-harness-test.el
 #+end_src
 
 Result:
 
 #+begin_example
-Ran 10 tests, 10 results as expected, 0 unexpected
+Ran 106 tests, 106 results as expected, 0 unexpected
 #+end_example
 
-Focused touched-surface tests:
+Attempted a larger touched-surface run including chat tests:
 
 #+begin_src sh
-rtk eldev test -f test/e-session-test.el -f test/e-harness-test.el -f test/e-chat-test.el -f test/e-dev-profile-test.el
+eldev test -f test/e-dev-profile-test.el -f test/e-dev-test.el -f test/e-session-test.el -f test/e-harness-test.el -f test/e-chat-test.el ...
 #+end_src
 
-Result:
+Result in the current worktree:
 
 #+begin_example
-Ran 258 tests, 257 results as expected, 0 unexpected, 1 skipped
-SKIPPED e-chat-test-assistant-markdown-renders-with-text-properties
+Invalid read syntax: ")", 3461, 41
+Failed step: loading test file ‘test/e-chat-test.el’
 #+end_example
 
-Aggregate tests:
+The current dirty worktree prevented rerunning chat tests in this pass.
 
-#+begin_src sh
-rtk eldev test
+Attempted live reload:
+
+#+begin_src emacs-lisp
+(progn (require 'e-dev) (e-dev-reload "/Users/dimitrivorona/projects/elisp/e"))
 #+end_src
 
-Result:
+Result in the current worktree:
 
 #+begin_example
-Ran 611 tests, 610 results as expected, 0 unexpected, 1 skipped
-SKIPPED e-chat-test-assistant-markdown-renders-with-text-properties
+Invalid read syntax: ")", 965, 13
 #+end_example
 
-Whitespace check:
+No Elisp behavior was changed by this review document edit.  Because reload was
+blocked by the dirty worktree, the live probe below used the code already loaded
+in the running Emacs.
 
-#+begin_src sh
-git diff --check
-#+end_src
+Live profiling probe:
 
-Result: no output, exit 0.
+- Created a temp trace directory.
+- Created a harness/session with a fake backend.
+- Started profiling.
+- Exercised context build, session append, and chat status update.
+- Stopped profiling and inspected report data.
 
-* Live verification
-
-Reloaded the running Emacs:
-
-#+begin_src sh
-emacsclient --timeout=5 --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
-#+end_src
-
-Result:
+Observed summary:
 
 #+begin_example
-"/Users/dimitrivorona/projects/elisp/e/"
+:count 4
+:events ("harness.context" "chat.status" "session.append-record" "session.write-index")
+:slowest ("harness.context" "chat.status" "session.append-record")
 #+end_example
 
-Ran a bounded live profile probe:
+* Findings
 
-#+begin_src sh
-emacsclient --timeout=5 --eval "(progn (require 'e-dev-profile) (require 'e-harness) (require 'e-backend) (require 'e-chat) (let* ((store (e-session-store-create)) (harness (e-harness-create :backend (e-backend-fake-create :items nil) :sessions store)) result) (e-harness-create-session harness :id \"profile-live\") (e-dev-profile-start) (e-harness-context harness \"profile-live\" \"turn-live\") (e-session-append-message store \"profile-live\" '(:role user :content \"hello\")) (with-temp-buffer (e-chat-mode) (setq e-chat-harness harness e-chat-session-id \"profile-live\") (e-chat--set-status \"profiling\")) (setq result (e-dev-profile-report-data (e-dev-profile-stop))) (prin1 (list :events (mapcar #'car (plist-get result :aggregates)) :count (plist-get result :event-count)))))"
-#+end_src
+** TODO Medium: prompt/turn lifecycle spans from the plan are not instrumented
 
-Result:
+The plan's first instrumentation set called out harness prompt/turn entrypoints,
+backend callback handling where local, message append, and durable activity
+append.  Current harness instrumentation covers =harness.context= and
+=harness.tool-start=, but not =e-harness-prompt-async=, =e-harness-prompt=,
+=e-harness--run-prompt-turn= / async turn start, provider callback handling, or
+harness-owned message/activity append boundaries.
+
+This is not required for the current probe to be useful, but it falls short of
+the stated feature scope.  Either add the missing spans with narrow tests or
+update the plan/review to explicitly defer them.
+
+** TODO Medium: chat instrumentation does not cover composer operations called out in the plan
+
+The plan specifically listed composer insert/delete/restore spans.  Current chat
+instrumentation covers status, activity redraw, render-event, transient render,
+insert-entry, and refresh-session-display, but not the composer
+insert/delete/restore helpers as distinct events.
+
+Add those spans/tests or document that composer profiling is deferred.
+
+** TODO Medium: starting two traces in the same second reuses the same file path
+
+=e-dev-profile--timestamp-file-name= formats names at one-second granularity.
+Starting two traces quickly can return the same path and append unrelated trace
+sessions into one file.
+
+Evidence from this review pass:
 
 #+begin_example
-(:events ("harness.context" "chat.status" "session.append-record" "session.write-index") :count 4)
+:same t
+:first  .../20260614-222105.jsonl
+:second .../20260614-222105.jsonl
 #+end_example
 
-* Review notes
+Expected behavior: trace file names should be unique per start call, e.g. by
+including subsecond time, a sequence, or a random suffix.  Add a regression test
+that two immediate starts produce distinct paths or deliberately rotate/close the
+previous trace according to a documented policy.
 
-- Current instrumentation intentionally covers the first useful normal-usage
-  boundaries, not every possible rendering or backend callback.
-- Core/session/chat modules avoid a hard runtime dependency on the dev module by
-  calling profiling helpers only when =e-dev-profile= is loaded and enabled.
-- Raw traces are generated under ignored local storage and are not part of
-  session transcript persistence.
+** TODO Low: report formatter omits wall-clock trace range
 
-* Architecture self-check
+The plan says reports should include the wall-clock trace range.  The report data
+records =:started-at= and =:finished-at=, but =e-dev-profile-format-report=
+prints only trace path, event count, aggregates, and slowest spans.
 
-1. If this work stopped here, E is better off because future performance work can
-   start from live trace evidence rather than one-off probes.
-2. This moves toward a snappier interactive runtime by making slow boundaries
-   observable during normal dev testing.
-3. Stable decisions: opt-in profiling, JSONL records, scalar metadata. Likely
-   changing decisions: exact event set and report formatting; both are local to
-   the dev profiler and call sites.
-4. The dev profiler owns trace policy, storage, and reporting. Harness, session,
-   and chat own only small boundary call sites.
-5. Coupling is limited by dynamic availability checks; normal runtime modules do
-   not require the dev profiler.
-6. Stable runtime policy does not depend on a concrete profiling adapter at load
-   time; instrumentation is inert unless the dev module is loaded and enabled.
-7. File writes and reporting side effects stay in =lisp/dev/e-dev-profile.el=.
-8. The profiling helper abstraction is real: call sites need only "measure this
-   thunk with scalar metadata".
-9. Compatibility expectation: disabled profiling preserves existing runtime
-   behavior and public APIs. No obsolete public paths were added.
+Add a compact range/duration line to the report and a test for it.
+
+** TODO Low: =e-dev-profile-stop= opens a report as a side effect
+
+=e-dev-profile-stop= disables profiling and then opens the report buffer when a
+trace file exists.  That may be fine for an interactive command, but the plan
+phrases stop as disabling/flushing and separately provides =e-dev-profile-report=.
+Consider splitting the implementation into a noninteractive stop helper and an
+interactive command that opens the report, so scripted probes can stop without
+presentation side effects.
+
+* Architecture review
+
+The architecture is sound for an opt-in dev facility:
+
+- Profiling policy, storage, JSONL shape, and reports are isolated in
+  =lisp/dev/e-dev-profile.el=.
+- Runtime call sites use dynamic availability checks and do not require the dev
+  module during normal operation.
+- Trace records contain bounded scalar metadata, not prompts, assistant content,
+  tool results, or whole context payloads.
+- File-writing side effects stay in the dev module.
+
+The main remaining design choice is scope: either complete the originally listed
+instrumentation set or explicitly declare this slice as a first useful subset.
+Do not expand the profiler into always-on telemetry or session transcript state.
+
+* Design self-check
+
+1. If this work stopped here, E is better off because developers can collect
+   real profiling traces during normal usage.
+2. This moves toward evidence-guided performance work for chat, harness, session,
+   and presentation paths.
+3. Stable decisions: opt-in profiling, JSONL traces, scalar metadata, local
+   ignored storage.  Likely-to-change decisions: exact event set and report
+   formatting; those are local to =e-dev-profile= and call sites.
+4. =e-dev-profile= owns tracing policy/storage/reporting.  Harness/session/chat
+   own only small measurement boundaries for their work.
+5. Coupling is limited by dynamic fbound/enabled checks and small call-site
+   wrappers.
+6. No stable runtime module depends on a concrete profiling adapter at load time.
+7. File writes and report buffers are dev-module side effects.
+8. The measurement helper abstraction is real: callers provide an event/options
+   plist and a thunk/body.
+9. Compatibility expectation: disabled profiling preserves behavior and public
+   APIs.  Existing runtime semantics are preserved in the passing focused tests.
 10. No legacy profiling code exists to remove.
-11. Expected report/no-event cases are handled. Unexpected errors in measured
+11. Expected empty/no-trace cases are handled.  Unexpected errors inside measured
     bodies are recorded and re-signaled.
-12. Tests prove recorder behavior independently and verify integration at
-    session, harness, and chat boundaries.
+12. Tests prove recorder behavior plus session/harness integration.  Remaining
+    narrow tests should cover unique trace names, report range formatting, and
+    any additional spans chosen from the original scope.
+
+* Unresolved
+
+- [ ] Instrument or explicitly defer prompt/turn/backend callback and
+  message/activity append boundaries from the plan.
+- [ ] Instrument or explicitly defer chat composer insert/delete/restore spans.
+- [ ] Make trace file names unique across rapid consecutive starts.
+- [ ] Include wall-clock trace range in formatted reports.
+- [ ] Consider separating noninteractive stop from interactive report display.
+- [ ] Rerun chat/touched-surface tests after the current dirty worktree parse
+  error is resolved.
