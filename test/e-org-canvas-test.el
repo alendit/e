@@ -104,6 +104,8 @@
               (insert "* Topic\nBody\n")
               (let ((chat-buffer (e-org-canvas-open-for-current-buffer)))
                 (should (buffer-live-p chat-buffer))
+                (should (eq (window-buffer (selected-window))
+                            (current-buffer)))
                 (should e-org-canvas-mode)
                 (should e-chat-context-mode-suppressed)
                 (with-current-buffer chat-buffer
@@ -818,13 +820,13 @@
             (should-not (string-match-p "Status:" (buffer-string)))
             (should-not (e-chat--composer-active-p))
             (should (string-match-p "✓ Done" (buffer-string)))
-            (should-not e-org-canvas-input--close-timer))
+            (should (timerp e-org-canvas-input--close-timer)))
           (should-not (memq subscription (e-harness-subscribers harness))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest e-org-canvas-test-input-pane_displays_final_message_until_q ()
-  "Assistant output remains in the input pane until q closes it."
+(ert-deftest e-org-canvas-test-input-pane_schedules_final_message_auto_close ()
+  "Assistant output remains briefly in the input pane before auto-close."
   (let* ((harness (e-org-canvas-test--harness))
          (target (get-buffer-create "org-canvas-result-target"))
          (buffer (e-org-canvas--input-buffer
@@ -864,7 +866,8 @@
           (with-current-buffer buffer
             (should (string-match-p "Here is the result." (buffer-string)))
             (should-not (string-match-p "✓ Done" (buffer-string)))
-            (should-not (e-chat--composer-active-p)))
+            (should-not (e-chat--composer-active-p))
+            (should (timerp e-org-canvas-input--close-timer)))
           (set-window-buffer (selected-window) buffer)
           (with-current-buffer buffer
             (call-interactively #'e-org-canvas-input-close-result))
@@ -1179,6 +1182,67 @@
                   "meeting-notes.org")))
       (delete-directory directory t))))
 
+(ert-deftest e-org-canvas-test-manual_file_selection_stays_in_target_folder ()
+  "Manual file fallback accepts only direct .org children of the target folder."
+  (let ((directory (file-name-as-directory
+                    (make-temp-file "e-org-canvas-target-" t)))
+        (outside (file-name-as-directory
+                  (make-temp-file "e-org-canvas-outside-" t))))
+    (unwind-protect
+        (progn
+          (should (equal (e-org-canvas--manual-target-file
+                          directory
+                          (expand-file-name "manual.org" directory))
+                         (expand-file-name "manual.org" directory)))
+          (should-error
+           (e-org-canvas--manual-target-file
+            directory
+            (expand-file-name "escape.org" outside))
+           :type 'user-error)
+          (should-error
+           (e-org-canvas--manual-target-file
+            directory
+            "../escape.org")
+           :type 'user-error)
+          (should-error
+           (e-org-canvas--manual-target-file
+            directory
+            "manual.txt")
+           :type 'user-error))
+      (delete-directory directory t)
+      (delete-directory outside t))))
+
+(ert-deftest e-org-canvas-test-first_prompt_rejects_unsafe_manual_file_fallback ()
+  "Unsafe model suggestions cannot fall back to arbitrary manual write paths."
+  (let ((directory (file-name-as-directory
+                    (make-temp-file "e-org-canvas-target-" t)))
+        (outside (file-name-as-directory
+                  (make-temp-file "e-org-canvas-outside-" t)))
+        (harness (e-org-canvas-test--harness)))
+    (unwind-protect
+        (with-temp-buffer
+          (rename-buffer "unsaved-org-canvas-unsafe-manual" t)
+          (org-mode)
+          (e-harness-create-session harness :id "session-1")
+          (e-org-canvas--mark-session
+           harness "session-1" (current-buffer)
+           :scope 'thread
+           :target-folder directory
+           :needs-file-name t)
+          (cl-letf (((symbol-function 'e-org-canvas--suggest-file-name)
+                     (lambda (_harness _session-id _prompt _buffer)
+                       "../escape"))
+                    ((symbol-function 'read-file-name)
+                     (lambda (&rest _args)
+                       (expand-file-name "escape.org" outside))))
+            (should-error
+             (e-org-canvas--maybe-save-new-buffer
+              harness "session-1" "save this")
+             :type 'user-error))
+          (should-not buffer-file-name))
+      (delete-directory directory t)
+      (delete-directory outside t))))
+
 (ert-deftest e-org-canvas-test-session_candidates_filter_by_file_and_project ()
   "Org Canvas session discovery can filter by file URI and project root."
   (let ((directory (make-temp-file "e-org-canvas-project-" t))
@@ -1220,6 +1284,7 @@
             (kill-buffer buffer))
           (let ((buffer (e-org-canvas-resume-session harness "session-1")))
             (should (buffer-live-p buffer))
+            (should (eq (window-buffer (selected-window)) buffer))
             (with-current-buffer buffer
               (should (derived-mode-p 'org-mode))
               (should e-org-canvas-mode))))
@@ -1252,6 +1317,37 @@
                         :arguments nil))))
           (should (string-match-p "Parent"
                                   (e-tools-result-content-text state))))))))
+
+(ert-deftest e-org-canvas-test-visibility_tools_accept_heading_path_targets ()
+  "Org visibility tools can target headings by path as well as point."
+  (let ((harness (e-org-canvas-test--harness t)))
+    (with-temp-buffer
+      (rename-buffer "org-canvas-heading-path-tools" t)
+      (org-mode)
+      (insert "* Parent\n** Child\nBody\n* Other\n")
+      (goto-char (point-min))
+      (e-harness-create-session harness :id "org")
+      (e-org-canvas--mark-session
+       harness "org" (current-buffer) :scope 'thread :target-folder nil)
+      (let ((tools (e-harness-tools harness "org" nil)))
+        (e-tools-execute
+         tools
+         '(:name "org_canvas_cycle_heading"
+           :arguments (:heading_path ("Parent" "Child")
+                       :operation "hide")))
+        (goto-char (point-min))
+        (re-search-forward "^\\*\\* Child")
+        (should (eq (get-char-property (line-end-position) 'invisible)
+                    'outline))
+        (let ((result
+               (e-tools-execute
+                tools
+                '(:name "org_canvas_show_context"
+                  :arguments (:heading_path ("Parent" "Child"))))))
+          (should (string-match-p
+                   "Revealed Org Canvas context"
+                   (e-tools-result-content-text result)))
+          (should-not (get-char-property (line-end-position) 'invisible)))))))
 
 (ert-deftest e-org-canvas-test-visibility_tools_fail_outside_org_canvas ()
   "Org visibility tools report explicit errors for ordinary chat sessions."

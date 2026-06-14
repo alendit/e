@@ -3,7 +3,7 @@
 
 * Status
 
-In-review.
+Done.
 
 Review pass: <2026-06-10 Wed>.
 
@@ -19,6 +19,15 @@ does not yet fully match =plan.org=.  The main gaps are user-facing layout
 semantics, missing input-pane auto-close, incomplete first-prompt file-name
 safety around user overrides, in-memory-only folder preferences, and missing
 coverage for the behaviors that would catch those issues.
+
+Follow-up resolution: the shell now restores the Org buffer as the selected
+working pane after open/resume paths, successful input/result panes schedule the
+existing close path after =e-org-canvas-input-auto-close-delay=, manual
+first-prompt save fallbacks are constrained to direct =.org= children of the
+target folder, and Org visibility tools accept =heading_path= targets in
+addition to point targets.  Durable target-folder preferences are explicitly
+deferred until a real project preference store exists; the current implementation
+continues to remember folders in-process only.
 
 * Findings
 
@@ -211,8 +220,8 @@ No Elisp behavior changed during this review document edit, so no live
   automatic model suggestions and one that validates user overrides.  Both
   should return a normalized target file or a clear reason to ask again.
 - Replace =e-org-canvas--project-folders= with the project's intended durable
-  preference/config mechanism, or store target-folder history in session/project
-  metadata with a documented fallback.
+  preference/config mechanism when that store exists.  Until then, folder
+  history remains an in-process shell preference.
 - Decide whether success panes should auto-close or remain manual-dismiss.  The
   code, tests, and plan should all say the same thing.
   + Decision: autoclose

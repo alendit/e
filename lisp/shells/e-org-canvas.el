@@ -451,6 +451,14 @@ Org Canvas status refreshes for the current buffer.")
     (unless (derived-mode-p 'org-mode)
       (user-error "Org Canvas requires an Org buffer"))))
 
+(defun e-org-canvas--select-org-buffer (buffer)
+  "Display BUFFER as the selected Org Canvas working buffer."
+  (when (buffer-live-p buffer)
+    (if-let ((window (get-buffer-window buffer t)))
+        (select-window window)
+      (switch-to-buffer buffer)))
+  buffer)
+
 (defun e-org-canvas--open-session-for-buffer
     (buffer &optional needs-file-name target-folder)
   "Create and open an Org Canvas session for BUFFER."
@@ -474,7 +482,7 @@ Org Canvas status refreshes for the current buffer.")
           buffer
           needs-file-name
           target-folder)
-    (switch-to-buffer buffer)))
+    (e-org-canvas--select-org-buffer buffer)))
 
 ;;;###autoload
 (defun e-org-canvas-open-for-current-buffer ()
@@ -486,15 +494,18 @@ Org Canvas status refreshes for the current buffer.")
                      (e-org-canvas--ensure-org-buffer source)
                      (e-org-canvas--buffer-session harness source))))
     (if existing
-        (progn
-          (with-current-buffer source
-            (setq-local e-org-canvas-harness harness)
-            (setq-local e-org-canvas-session-id existing)
-            (e-org-canvas-mode 1))
-          (message "Org Canvas resumed for %s; use s-i to prompt the current topic"
-                   (buffer-name source))
-          (e-chat-open :harness harness :session-id existing))
-      (e-org-canvas--open-session-for-buffer source))))
+        (prog1
+            (progn
+              (with-current-buffer source
+                (setq-local e-org-canvas-harness harness)
+                (setq-local e-org-canvas-session-id existing)
+                (e-org-canvas-mode 1))
+              (message "Org Canvas resumed for %s; use s-i to prompt the current topic"
+                       (buffer-name source))
+              (e-chat-open :harness harness :session-id existing))
+          (e-org-canvas--select-org-buffer source))
+      (prog1 (e-org-canvas--open-session-for-buffer source)
+        (e-org-canvas--select-org-buffer source)))))
 
 ;;;###autoload
 (defun e-org-canvas-new-file (file)
@@ -571,6 +582,23 @@ Org Canvas status refreshes for the current buffer.")
           (let ((file (expand-file-name (concat slug ".org") folder)))
             (unless (file-exists-p file)
               file)))))))
+
+(defun e-org-canvas--manual-target-file (folder file)
+  "Return validated manual Org Canvas FILE inside FOLDER.
+Signal `user-error' when FILE is outside FOLDER, not a direct child, or not an
+Org file."
+  (let* ((folder (e-org-canvas--normalize-directory folder))
+         (file (expand-file-name file folder))
+         (parent (file-name-as-directory (file-name-directory file)))
+         (basename (file-name-nondirectory file)))
+    (unless (equal parent folder)
+      (user-error "Org Canvas file must be directly inside %s" folder))
+    (when (or (string-empty-p basename)
+              (member basename '("." "..")))
+      (user-error "Org Canvas file name must not be empty"))
+    (unless (equal (downcase (or (file-name-extension basename) "")) "org")
+      (user-error "Org Canvas file must use a .org extension"))
+    file))
 
 (defun e-org-canvas--fallback-file-name-suggestion (buffer)
   "Return a local fallback file name suggestion from BUFFER."
@@ -657,14 +685,17 @@ Org Canvas status refreshes for the current buffer.")
                  (file (e-org-canvas--safe-suggested-file
                         folder suggestion)))
             (unless file
-              (setq file (read-file-name
-                          "Save Org Canvas as: "
-                          folder
-                          nil
-                          nil
-                          (and suggestion
-                               (concat (e-org-canvas--slugify suggestion)
-                                       ".org")))))
+              (setq file
+                    (e-org-canvas--manual-target-file
+                     folder
+                     (read-file-name
+                      "Save Org Canvas as: "
+                      folder
+                      nil
+                      nil
+                      (and suggestion
+                           (concat (e-org-canvas--slugify suggestion)
+                                   ".org"))))))
             (when (or (not (file-exists-p file))
                       (yes-or-no-p
                        (format "Overwrite %s? " file)))
@@ -739,6 +770,25 @@ Org Canvas status refreshes for the current buffer.")
     (e-harness-unsubscribe
      e-org-canvas-input--harness e-org-canvas-input--subscription)
     (setq-local e-org-canvas-input--subscription nil)))
+
+(defun e-org-canvas--input-close-buffer (buffer)
+  "Close Org Canvas input/result BUFFER when it is still live."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (e-org-canvas-input-close-result))))
+
+(defun e-org-canvas--input-schedule-auto-close (buffer)
+  "Schedule successful Org Canvas input/result BUFFER to close."
+  (when (and (buffer-live-p buffer)
+             (numberp e-org-canvas-input-auto-close-delay))
+    (with-current-buffer buffer
+      (when e-org-canvas-input--close-timer
+        (cancel-timer e-org-canvas-input--close-timer))
+      (setq-local e-org-canvas-input--close-timer
+                  (run-at-time e-org-canvas-input-auto-close-delay
+                               nil
+                               #'e-org-canvas--input-close-buffer
+                               buffer)))))
 
 (defun e-org-canvas--input-clear-source-selection ()
   "Clear the source region that opened the current Org Canvas input pane."
@@ -875,14 +925,17 @@ has no visible window."
        (if e-org-canvas-input--final-message-rendered-p
            (progn
              (e-org-canvas--input-clear-progress turn-id)
-             (e-org-canvas--input-select-result-buffer buffer))
+             (e-org-canvas--input-select-result-buffer buffer)
+             (e-org-canvas--input-schedule-auto-close buffer))
          (e-org-canvas--input-show-done turn-id)
-         (e-org-canvas--input-focus-target)))
+         (e-org-canvas--input-focus-target)
+         (e-org-canvas--input-schedule-auto-close buffer)))
       ('backend-empty-output
        (e-org-canvas--input-cleanup)
        (e-org-canvas--input-clear-source-selection)
        (e-org-canvas--input-show-done turn-id)
-       (e-org-canvas--input-focus-target))
+       (e-org-canvas--input-focus-target)
+       (e-org-canvas--input-schedule-auto-close buffer))
       ((or 'turn-failed 'turn-cancelled)
        (e-org-canvas--input-cleanup)
        (e-org-canvas--input-clear-source-selection)
@@ -1281,6 +1334,7 @@ has no visible window."
       (setq-local e-org-canvas-harness harness)
       (setq-local e-org-canvas-session-id session-id)
       (e-org-canvas-mode 1))
+    (e-org-canvas--select-org-buffer buffer)
     buffer))
 
 ;;;###autoload

@@ -228,6 +228,30 @@
   (let ((point (plist-get arguments :point)))
     (and (numberp point) point)))
 
+(defun e-org-canvas--tool-target-heading-path (arguments)
+  "Return optional heading path from tool ARGUMENTS."
+  (let ((path (or (plist-get arguments :heading_path)
+                  (plist-get arguments :heading-path))))
+    (cond
+     ((vectorp path)
+      (setq path (append path nil)))
+     ((stringp path)
+      (setq path (split-string path "/" t "[[:space:]\n]+"))))
+    (when (and (listp path)
+               (cl-every #'stringp path))
+      path)))
+
+(defun e-org-canvas--goto-heading-path (path)
+  "Move point to Org heading PATH or signal a user error."
+  (let ((target (mapcar #'string-trim path)))
+    (goto-char (point-min))
+    (catch 'found
+      (while (re-search-forward org-heading-regexp nil t)
+        (when (equal (e-org-canvas--heading-path) target)
+          (org-back-to-heading t)
+          (throw 'found (point))))
+      (user-error "No Org heading matches path: %s"
+                  (e-org-canvas--format-heading-path target)))))
 
 (defun e-org-canvas--show-all ()
   "Show all Org headings without hard dependency on one Org fold API version."
@@ -243,8 +267,10 @@
 
 (defun e-org-canvas--goto-tool-target (arguments)
   "Move point to the tool target described by ARGUMENTS."
-  (when-let ((point (e-org-canvas--tool-target-point arguments)))
-    (goto-char (max (point-min) (min (point-max) point)))))
+  (if-let ((path (e-org-canvas--tool-target-heading-path arguments)))
+      (e-org-canvas--goto-heading-path path)
+    (when-let ((point (e-org-canvas--tool-target-point arguments)))
+      (goto-char (max (point-min) (min (point-max) point))))))
 
 (defun e-org-canvas--visibility-state-tool (buffer _arguments)
   "Return visibility state for BUFFER."
@@ -319,17 +345,21 @@ CONTEXT carries :harness and :session-id from the active turn."
     (e-org-canvas--register-tool
      registry
      "org_canvas_show_context"
-     "Reveal ancestors and current subtree around an optional point."
+     "Reveal ancestors and current subtree around an optional point or heading path."
      '(:type "object"
-       :properties (:point (:type "number")))
+       :properties (:point (:type "number")
+                    :heading_path (:type "array"
+                                   :items (:type "string"))))
      harness session-id
      #'e-org-canvas--show-context-tool)
     (e-org-canvas--register-tool
      registry
      "org_canvas_cycle_heading"
-     "Cycle, show, hide, or reveal one Org heading or subtree."
+     "Cycle, show, hide, or reveal one Org heading or subtree by point or heading path."
      '(:type "object"
        :properties (:point (:type "number")
+                    :heading_path (:type "array"
+                                   :items (:type "string"))
                     :operation (:type "string")))
      harness session-id
      #'e-org-canvas--cycle-heading-tool)

@@ -32,9 +32,10 @@ errors, and reopening prior prompts when needed.
   session for it.
 - =e-org-canvas-new-buffer= asks for a target folder, creates a new Org-mode
   buffer, and starts an Org Canvas session for it.  The folder prompt should
-  default to the last Org Canvas folder used for the current project from project
-  preferences; when no project preference exists yet, default to the discovered
-  project root.
+  default to the last Org Canvas folder used for the current project in this
+  Emacs process; when no in-process preference exists yet, default to the
+  discovered project root.  Durable project preferences are deferred until the
+  project has a shared preference store.
 - When a new unsaved Org Canvas is created, the first interaction should ask the
   model to suggest an appropriate Org file name from the user's prompt/document
   intent and save the canvas under that name automatically when the suggestion is
@@ -478,10 +479,13 @@ keeping these boundaries explicit:
 ** Slice 5: New unsaved canvas naming flow
 
 - For =e-org-canvas-new-buffer=, determine the current project root, prompt for a
-  target folder with a default from project preferences or the project root, then
-  create an Org buffer and mark the session as needing an initial file name.
-- Persist the selected target folder in project preferences for that project so
-  future Org Canvas buffers default to the same folder.
+  target folder with a default from in-process preferences or the project root,
+  then create an Org buffer and mark the session as needing an initial file
+  name.
+- Remember the selected target folder in process-local project preferences so
+  future Org Canvas buffers in this Emacs process default to the same folder.
+  Durable project preferences are deferred until the project has a shared
+  preference store.
 - On first interaction, request or infer a suggested Org file name.  If the
   sanitized basename is safe and does not overwrite an existing file, save the
   buffer automatically into the chosen folder, update attachment/session
