@@ -35,3 +35,4 @@ Status values for coding agents:
 | 22 | In-review | 22-project-shells/ | Project Shells |
 | 23 | Planned | 23-prompt-cache-context/ | Prompt Cache Friendly Context |
 | 24 | In-review | 24-mcp-capability-wrapper/ | MCP Capability Wrapper |
+| 25 | Planned | 25-resource-glob-search/ | Resource Glob and Search Tools |

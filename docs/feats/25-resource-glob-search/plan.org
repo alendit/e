@@ -1,0 +1,544 @@
+#+title: Resource Glob and Search Tools
+#+startup: overview
+
+* Status
+
+Planned
+
+* Problem
+
+=e= has abstract resource operations for =read=, =write=, and =edit=.  Active
+capabilities register per-scheme resource methods, and the harness turns those
+methods into model-facing tools only when a session has matching capabilities.
+
+Agents still need to discover resources before reading them.  Today that
+discovery is fragmented:
+
+- workspace files can be found with shell commands such as =fd= and =rg=;
+- live Emacs buffers can be listed with the separate =list_buffers= tool;
+- =tmp://= session outputs are readable once a URI is known, but there is no
+  resource-native discovery tool;
+- =e://= capability resources can be read when a URI is already present in
+  guidance, but cannot be listed or searched through the resource operation
+  abstraction.
+
+This pushes agents toward ad hoc shell commands and scheme-specific tools even
+when they are working with URI-addressed resources.
+
+* Goal
+
+Add two generic resource operation tools:
+
+- =glob= :: list resources in an active URI scheme by URI root and name pattern.
+- =search= :: search text content in resources under an active URI scheme.
+
+These tools should be abstract in the same way =read=, =write=, and =edit= are
+abstract: =e-operations= owns the shared model-facing contract,
+=e-resources= dispatches by URI scheme and operation, capabilities register
+scheme-specific methods, and the harness generates model-facing tools from the
+active resource registry.
+
+The first feature slice must include implementations for:
+
+- =file://= workspace resources using =fd= for listing and =rg= for content
+  search;
+- =buffer://= live Emacs buffers using Emacs-native buffer enumeration and
+  buffer search;
+- =e://= in-memory capability resources using Emacs-native store enumeration and
+  string search;
+- =tmp://= session-scoped temporary resources using =fd= and =rg= inside the
+  session tmp root.
+
+* Non-goals
+
+- Do not add standalone =file_glob=, =grep=, =search_buffers=, or =search_tmp=
+  tools as the primary model-facing API.
+- Do not route =buffer://= or =e://= search through shell commands.
+- Do not make =e-harness= aware of filesystem, buffer, store, or tmp search
+  details beyond generic resource operation registration.
+- Do not search binary file contents in the first slice.
+- Do not add cross-scheme search that fans out across every active scheme in one
+  call.  The caller chooses a URI root such as =file://=, =buffer://=, =e://=,
+  or =tmp://=.
+- Do not implement replacement, indexing, async streaming search, TRAMP search,
+  or external search backends.
+
+* User-facing behavior
+
+When a session has file inspection active, the model sees =glob= and =search=
+with =file://= listed as an active scheme.  Example calls:
+
+#+begin_src elisp
+(:name "glob"
+ :arguments (:uri "file://"
+             :pattern "*.el"
+             :limit 50))
+
+(:name "search"
+ :arguments (:uri "file://lisp"
+             :query "e-resource-method-create"
+             :glob "*.el"
+             :limit 20))
+#+end_src
+
+When the Emacs layer is active, the same tools expose =buffer://=.  Example
+calls:
+
+#+begin_src elisp
+(:name "glob"
+ :arguments (:uri "buffer://"
+             :pattern "*e-*"
+             :limit 25))
+
+(:name "search"
+ :arguments (:uri "buffer://"
+             :query "e-chat-session-id"
+             :limit 20))
+#+end_src
+
+When harness-base session tmp resources are active, =tmp://= can be listed and
+searched:
+
+#+begin_src elisp
+(:name "glob"
+ :arguments (:uri "tmp://tool-results"
+             :pattern "*.txt"
+             :limit 50))
+
+(:name "search"
+ :arguments (:uri "tmp://"
+             :query "Command exited"
+             :glob "*.txt"
+             :limit 20))
+#+end_src
+
+When capability resources populate the in-memory store, =e://= can be listed and
+searched:
+
+#+begin_src elisp
+(:name "glob"
+ :arguments (:uri "e://"
+             :pattern "*/skills/*"
+             :limit 50))
+
+(:name "search"
+ :arguments (:uri "e://"
+             :query "frontmatter"
+             :glob "*/skills/*"
+             :limit 20))
+#+end_src
+
+Tool descriptions must enumerate active URI schemes and scheme-specific URI
+patterns just as =read=, =write=, and =edit= do.
+
+* Operation contracts
+
+Add two new standard operations in =lisp/core/e-operations.el=.
+
+** =glob=
+
+=glob= lists resource URIs under a URI root.  The result is a structured plist
+with a =:resources= vector/list of entries and a =:truncated= flag.
+
+Parameters:
+
+- =:uri=, required string.  A URI root or scope inside one scheme, for example
+  =file://=, =file://lisp=, =buffer://=, =e://base-guidance=, or
+  =tmp://tool-results=.
+- =:pattern=, optional string.  A resource-name glob applied relative to the
+  root.  Default is =*=.
+- =:limit=, optional positive number.  Default should be modest, initially 100.
+
+Result entry shape:
+
+#+begin_src elisp
+(:uri "file://lisp/core/e-resources.el"
+ :name "lisp/core/e-resources.el"
+ :kind file
+ :metadata (:bytes 4821))
+#+end_src
+
+Scheme methods may omit expensive metadata.  The shared contract should require
+=:uri= and =:name= only.
+
+** =search=
+
+=search= searches text content in resources under a URI root.  The result is a
+structured plist with =:matches= and =:truncated=.
+
+Parameters:
+
+- =:uri=, required string.  A URI root or scope inside one scheme.
+- =:query=, required string.  Search expression.
+- =:glob=, optional string.  Resource-name glob filter relative to the root.
+- =:literal=, optional boolean.  When non-nil, match =:query= as literal text.
+  Default nil means scheme methods may use regular expression semantics where
+  supported.
+- =:case-sensitive=, optional boolean.  Default nil means case-insensitive
+  search.
+- =:limit=, optional positive number.  Default should be modest, initially 100.
+
+Result match shape:
+
+#+begin_src elisp
+(:uri "file://lisp/core/e-resources.el"
+ :line 71
+ :column 1
+ :text "(defun e-resources-register (registry method-or-register)")
+#+end_src
+
+For non-line-oriented resources, =:line= and =:column= are best-effort.  Text
+schemes in this feature all support line and column reporting.
+
+* Architecture
+
+** Core operation layer
+
+Extend =e-operations-standard= to include =e-operation-glob= and
+=e-operation-search=.  Keep this as the only place that owns JSON schema,
+tool names, and the shared contract text.
+
+Add convenience dispatchers in =e-resources.el=:
+
+#+begin_src elisp
+(e-resources-glob registry uri pattern &optional limit)
+(e-resources-search registry uri query &optional options)
+#+end_src
+
+The dispatch should still flow through =e-resources-call= so unknown-scheme and
+unsupported-operation errors stay consistent with =read=, =write=, and =edit=.
+
+** Resource method metadata
+
+Reuse =e-resource-method= for the new operations.  Its existing =:description=,
+=:uri-patterns=, =:range-modes=, =:examples=, and =:metadata= fields are enough
+for tool descriptions.  Do not add a separate resource-discovery registry.
+
+Method descriptions should use these URI patterns:
+
+- =file://<path-or-directory>= for file glob/search.
+- =buffer://<optional-buffer-name-prefix>= for live buffer glob/search.
+- =e://<capability>/<path>= for store glob/search.
+- =tmp://<relative-path-or-directory>= for session tmp glob/search.
+
+** Harness-generated tools
+
+=e-harness--register-resource-operation-tools= should pick up the new operations
+automatically once methods are registered because it already iterates
+=e-resources-operations=.  Update tests to prove =glob= and =search= are
+generated and dispatch through active methods.
+
+Resource usage metadata for =glob= and =search= should use operation ids
+=glob= and =search=.  For =search=, include the searched URI root.  Do not try
+to record every matched resource in tool metadata in the first slice; the result
+already carries exact match URIs.
+
+* Scheme implementations
+
+** =file://= workspace resources
+
+Owner: =lisp/layers/base/e-base-tools.el= and
+=lisp/layers/base/e-file-capabilities.el=.
+
+Listing uses =fd=:
+
+- Resolve the URI address through =e-base-tools--resource-path= so all paths stay
+  inside the configured root.
+- Treat =file://= as the configured root.
+- Treat =file://dir= as a directory scope when it resolves to a directory.
+- For file roots, list that file when it matches the pattern.
+- Invoke =fd= without shell interpolation by using =process-file= or
+  =make-process= with an argv list.
+- Prefer =fd=, accept =fdfind= if that is the installed executable name.
+- Use =--glob=, =--color= =never=, =--strip-cwd-prefix=, and a bounded result
+  count.  Include hidden files only if a later config option asks for that; the
+  first slice should use =fd='s default visibility.
+
+Search uses =rg=:
+
+- Resolve the URI address to a directory or file scope inside the configured
+  root.
+- Invoke =rg= without shell interpolation.
+- Use =--json= and parse JSON result objects rather than parsing human text.
+- Use =--line-number=, =--column=, =--color= =never=, and =--glob= when a glob
+  filter is supplied.
+- Use =--fixed-strings= when =:literal= is non-nil.
+- Use =--ignore-case= by default and omit it when =:case-sensitive= is non-nil.
+- Treat exit code 1 as no matches; other non-zero exits are tool errors.
+- Return matched URIs as =file://= paths relative to the configured root.
+
+Missing =fd= or =rg= should fail clearly with an actionable error naming the
+missing executable.
+
+** =tmp://= session resources
+
+Owner: =lisp/layers/harness/e-session-tmp-resources.el=.
+
+Tmp listing/search should mirror =file://= behavior but root every command in
+the session tmp directory returned by =e-session-tmp-directory=.
+
+Path safety stays owned by =e-session-tmp--safe-relative-name= and
+=e-session-tmp--path=.  The methods must reject unsafe roots before invoking
+external commands.
+
+Returned URIs must be =tmp://<relative-path>=, never absolute filesystem paths.
+
+** =buffer://= live buffers
+
+Owner: =lisp/layers/emacs/e-emacs-tools.el= and
+=lisp/layers/emacs/e-emacs-capabilities.el=.
+
+Listing should use Emacs-native buffer enumeration:
+
+- enumerate =(buffer-list)=;
+- filter exact URI root/prefix when the caller passes =buffer://name-prefix=;
+- filter names with =string-match-p= against a glob translated with
+  =wildcard-to-regexp=;
+- return buffer metadata already available through
+  =e-emacs-tools--buffer-metadata= where useful.
+
+Search should use Emacs-native buffer search:
+
+- search only live buffers selected by the URI root and optional =:glob=;
+- use =re-search-forward= when =:literal= is nil;
+- use =search-forward= when =:literal= is non-nil;
+- bind =case-fold-search= based on =:case-sensitive=;
+- return =buffer://<buffer-name>=, line number, column, and the matched line text;
+- skip binary/special handling in the first slice, because Emacs buffers are text
+  objects for this resource contract.
+
+The existing =list_buffers= tool may remain for explicit Emacs awareness, but
+the model should be able to discover buffers through =glob= when =buffer://= is
+active.
+
+** =e://= in-memory resources
+
+Owner: =lisp/core/e-store.el=.
+
+Store resources already have =e-store-list= and =e-store-read=.  Add
+=e-store-glob-resource-method= and =e-store-search-resource-method=, or replace
+=e-store-resource-method= with a function that registers all read/glob/search
+methods.
+
+Listing:
+
+- iterate =e-store-list=;
+- filter by URI root and glob pattern;
+- return =e://= URIs and names relative to =e://=.
+
+Search:
+
+- read each matching entry with =e-store-read-entry=;
+- use Emacs-native string/buffer search;
+- pass nil range so dynamic readers provide full searchable content;
+- return =e://= URIs, line, column, and matched line text.
+
+Keep =e://= read-only for mutation.  This feature adds discovery/search only,
+not =write= or =edit=.
+
+* Implementation slices
+
+** Slice 1: Core operation contracts
+
+Files:
+
+- Modify =lisp/core/e-operations.el=.
+- Modify =lisp/core/e-resources.el=.
+- Modify =test/e-operations-test.el=.
+- Modify =test/e-resources-test.el=.
+- Modify =test/e-harness-test.el=.
+
+Work:
+
+1. Add =e-operation-glob= and =e-operation-search= with the parameter schemas
+   defined above.
+2. Add =e-resources-glob= and =e-resources-search= wrappers.
+3. Add resource registry tests proving multiple schemes can register glob/search
+   methods and unsupported operations still fail clearly.
+4. Add harness tests proving generated =glob= and =search= tools include active
+   method descriptions and dispatch through =e-resources-call=.
+
+Verification:
+
+#+begin_src sh
+rtk eldev test test/e-operations-test.el test/e-resources-test.el test/e-harness-test.el
+#+end_src
+
+** Slice 2: File scheme fd/rg methods
+
+Files:
+
+- Modify =lisp/layers/base/e-base-tools.el=.
+- Modify =lisp/layers/base/e-file-capabilities.el=.
+- Modify =test/e-base-tools-test.el=.
+- Modify =test/e-file-capabilities-test.el=.
+
+Work:
+
+1. Add small process helpers for command lookup and non-shell invocation of =fd=
+   and =rg=.
+2. Add =file://= glob/search resource methods.
+3. Register glob/search from =e-file-inspection-capability-create= and
+   =e-file-mutation-capability-create=.
+4. Test nested file listing, directory-scoped listing, glob filters, literal and
+   regex content search, no-match results, outside-root rejection, missing
+   executable errors, and generated capability method coverage.
+
+Verification:
+
+#+begin_src sh
+rtk eldev test test/e-base-tools-test.el test/e-file-capabilities-test.el
+#+end_src
+
+** Slice 3: Buffer and e-store native methods
+
+Files:
+
+- Modify =lisp/layers/emacs/e-emacs-tools.el=.
+- Modify =lisp/layers/emacs/e-emacs-capabilities.el=.
+- Modify =lisp/core/e-store.el=.
+- Modify =lisp/core/e-harness.el= if store method registration needs to register
+  several =e://= methods instead of one method object.
+- Modify =test/e-emacs-capabilities-test.el=.
+- Modify =test/e-emacs-tools-test.el=.
+- Modify =test/e-store-test.el=.
+
+Work:
+
+1. Add native =buffer://= glob/search methods.
+2. Register buffer glob/search from the read capability, not only the mutation
+   capability.
+3. Add =e://= glob/search methods over the harness store.
+4. Keep =e://= mutation unsupported.
+5. Test buffer prefix scopes, glob filters, literal and regex search, line and
+   column reporting, store listing, store search, and read-only mutation
+   behavior.
+
+Verification:
+
+#+begin_src sh
+rtk eldev test test/e-emacs-capabilities-test.el test/e-emacs-tools-test.el test/e-store-test.el
+#+end_src
+
+** Slice 4: Tmp scheme fd/rg methods
+
+Files:
+
+- Modify =lisp/layers/harness/e-session-tmp-resources.el=.
+- Modify =test/e-session-tmp-resources-test.el=.
+- Modify =test/e-harness-base-test.el=.
+
+Work:
+
+1. Add =tmp://= glob/search methods rooted at the active session tmp directory.
+2. Reuse or extract shared fd/rg helpers from the file implementation if doing
+   so avoids duplication without pulling tmp concerns into file capabilities.
+3. Preserve =tmp://= path safety and return only tmp URIs.
+4. Test nested tmp listing, tmp content search, glob filtering, no-match
+   results, unsafe path rejection, and harness-base activation.
+
+Verification:
+
+#+begin_src sh
+rtk eldev test test/e-session-tmp-resources-test.el test/e-harness-base-test.el
+#+end_src
+
+** Slice 5: Documentation, full verification, and live reload
+
+Files:
+
+- Modify =docs/architecture.md= if its resource operation section names only
+  =read=, =write=, and =edit=.
+- Modify =docs/mvp.md= or nearby user-facing docs only if they describe the
+  active tool set.
+- Modify =docs/feats/25-resource-glob-search/plan.org= only for factual status
+  updates discovered during implementation.
+- Modify =docs/feats/index.org= when moving from =Planned= to later statuses.
+
+Verification:
+
+#+begin_src sh
+rtk eldev test test/e-operations-test.el test/e-resources-test.el test/e-harness-test.el test/e-base-tools-test.el test/e-file-capabilities-test.el test/e-emacs-capabilities-test.el test/e-emacs-tools-test.el test/e-store-test.el test/e-session-tmp-resources-test.el test/e-harness-base-test.el
+rtk eldev test
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+After reload, run one bounded live probe in the running Emacs that:
+
+1. creates or uses a temporary harness session with file, Emacs, harness-base,
+   and at least one store-backed capability active;
+2. confirms the generated tool names include =glob= and =search=;
+3. calls =glob= for =file://=, =buffer://=, =tmp://=, and =e://= with tiny
+   limits;
+4. calls =search= for one known small match in each scheme;
+5. returns a small plist with counts and statuses only.
+
+Do not dump large buffer contents, full registries, or broad tool definitions in
+the live probe.
+
+* Acceptance criteria
+
+- =glob= and =search= are standard resource operations beside =read=, =write=,
+  and =edit=.
+- The harness generates =glob= and =search= tools only when at least one active
+  resource method supports each operation.
+- Tool descriptions list active URI schemes and scheme-specific patterns.
+- =file://= glob uses =fd= and =file://= search uses =rg=.
+- =tmp://= glob uses =fd= and =tmp://= search uses =rg= inside the session tmp
+  root.
+- =buffer://= glob/search uses Emacs-native live buffer enumeration/search.
+- =e://= glob/search uses Emacs-native store enumeration/search.
+- =e://= remains read-only for mutation.
+- Results are bounded by =:limit= and report truncation.
+- URI roots cannot escape configured file or tmp roots.
+- Missing =fd= or =rg= failures are explicit and actionable.
+- Focused tests, full tests, live reload, and one bounded live probe are
+  completed before marking implementation ready.
+
+* Risks and constraints
+
+- =fd= and =rg= availability varies by environment.  The feature should fail
+  clearly for missing executables rather than silently falling back to slower or
+  semantically different shell commands.
+- Regex semantics differ between =rg= and Emacs.  The shared contract should say
+  =:query= is scheme-native regex when =:literal= is nil, and exact cross-scheme
+  regex portability is not guaranteed.
+- Search result volume can grow quickly.  Keep the required =:limit= behavior
+  central in each method and include truncation metadata.
+- File/buffer coherence still matters.  =file://= search should search disk or
+  the filesystem view in the first slice; it should not try to merge unsaved live
+  buffer contents unless resource coherence grows a specific search policy later.
+- Tmp resources are session-scoped.  Methods must require harness/session
+  context and fail clearly if called without it.
+
+* Architecture self-check
+
+1. If this work stopped after the core operation slice, the project would still
+   be better off because resource discovery becomes a real extension point
+   instead of an ad hoc shell habit.
+2. This moves toward the final direction where capabilities expose resource
+   behavior through narrow contracts and the harness remains presentation- and
+   scheme-agnostic.
+3. Stable decisions: =glob= and =search= are resource operations.  Likely-to-
+   change decisions: exact result metadata and regex portability.  Those stay in
+   operation docs and scheme methods rather than in harness policy.
+4. =e-operations= owns model-facing contracts, =e-resources= owns dispatch,
+   scheme adapters own side effects, and capabilities own exposure.
+5. Coupling is reduced by replacing scheme-specific discovery tools with the
+   same resource-method registration path used by existing operations.
+6. Dependencies keep pointing from adapters/capabilities into core contracts,
+   not from the harness into fd, rg, buffers, tmp, or store internals.
+7. Side effects stay in scheme adapters: process execution for file/tmp and
+   buffer/store traversal for Emacs-native resources.
+8. The abstractions are semantically real because every listed scheme can list
+   resources and search content without weakening the contract.
+9. Existing read/write/edit compatibility remains intact.  =list_buffers= stays
+   available as an Emacs-specific awareness tool.
+10. No legacy code should be removed in the first slice.  A later cleanup may
+    remove redundant guidance that tells agents to shell out for discovery.
+11. Expected errors include unsupported scheme operation, unsafe roots, no
+    matches, and missing executables.  Unexpected process and parse failures
+    should surface as tool errors.
+12. Core tests prove operation dispatch independently of fd, rg, buffers, tmp,
+    or store.  Scheme tests prove each implementation without requiring
+    unrelated presentation shell rewrites.
