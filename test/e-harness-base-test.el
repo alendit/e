@@ -38,8 +38,8 @@
                      session-tmp-resources
                      tool-output-truncation)))))
 
-(ert-deftest e-harness-base-test-context-asks-for-reasoning-messages ()
-  "The harness-base layer asks models to surface reasoning messages."
+(ert-deftest e-harness-base-test-context-asks-for-novel-reasoning-messages ()
+  "The harness-base layer asks for reasoning messages only when they add value."
   (should (require 'e-harness-base nil t))
   (let* ((harness (e-harness-create
                    :backend (e-backend-fake-create :items nil)))
@@ -57,7 +57,9 @@
                       (string-match-p
                        "reasoning explicitly and concretely"
                        text)
-                      (string-match-p "reasoning messages" text)))
+                      (string-match-p "new decision" text)
+                      (string-match-p "otherwise continue without" text)
+                      (not (string-match-p "as you work" text))))
                system-texts)))))
 
 (ert-deftest e-harness-base-test-activation-adds-tmp-resource-and-hook ()
