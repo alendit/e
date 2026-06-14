@@ -32,6 +32,7 @@
 (require 'e-layers)
 (require 'e-harness)
 (require 'e-harness-registry)
+(require 'e-harness-instances)
 
 (defconst e-core-scaffold-state 'ready
   "Minimal state marker for the core runtime scaffold.")
@@ -58,7 +59,8 @@
         :loop t
         :layers t
         :harness t
-        :harness-registry t))
+        :harness-registry t
+        :harness-instances t))
 
 (provide 'e-core)
 

@@ -21,6 +21,7 @@
 (require 'e-context-inspection)
 (require 'e-context-status)
 (require 'e-harness)
+(require 'e-harness-instances)
 (require 'e-harness-registry)
 (require 'e-tools)
 (require 'e-session)
@@ -431,6 +432,9 @@ The mode line uses this presentation-owned table for context usage display."
 (defvar-local e-chat-harness nil
   "Harness used by the current chat buffer.")
 
+(defvar-local e-chat-harness-instance-id nil
+  "Configured harness instance id used by the current chat buffer.")
+
 (defvar-local e-chat-session-id nil
   "Session id used by the current chat buffer.")
 
@@ -792,6 +796,9 @@ This leaves the global minor mode enabled for every other buffer."
 (defvar-local e-chat-overview--subscription nil
   "Harness event subscription for this overview buffer.")
 
+(defvar-local e-chat-overview--subscriptions nil
+  "Harness event subscriptions for multi-instance overview buffers.")
+
 (defun e-chat--configure-evil-context-bindings ()
   "Configure Evil normal-state bindings for `e-chat-context-mode-map'."
   (cond
@@ -934,18 +941,74 @@ This leaves the global minor mode enabled for every other buffer."
         (mapcar #'e-capability-id
                 (e-harness-active-capabilities harness))))
 
+(defun e-chat--chat-instances ()
+  "Return configured chat harness instances."
+  (e-harness-instance-list :kind 'chat))
+
+(defun e-chat--default-chat-instance ()
+  "Return the configured default chat instance, or nil for legacy config."
+  (e-harness-instance-get e-chat-default-harness-id))
+
+(defun e-chat--harness-for-instance (instance)
+  "Return the live chat harness for INSTANCE."
+  (let* ((instance-id (e-harness-instance-id instance))
+         (harness
+          (condition-case err
+            (e-harness-instance-get-or-create instance-id)
+          ((e-harness-instance-missing e-harness-registry-missing)
+           (user-error "No e harness registered for %S"
+                       (cadr err))))))
+    (unless (e-chat--harness-has-capability-p harness 'chat-session)
+      (user-error "Harness instance %S does not provide chat-session capability"
+                  instance-id))
+    harness))
+
 (defun e-chat--default-harness ()
   "Return the configured default chat harness from the harness registry."
-  (let ((harness
-         (condition-case err
-             (e-harness-registry-get-or-create e-chat-default-harness-id)
-           (e-harness-registry-missing
-            (user-error "No e harness registered for %S"
-                        (cadr err))))))
+  (let* ((instance (e-chat--default-chat-instance))
+         (harness
+          (if instance
+              (e-chat--harness-for-instance instance)
+            (condition-case err
+                (e-harness-registry-get-or-create e-chat-default-harness-id)
+              (e-harness-registry-missing
+               (user-error "No e harness registered for %S"
+                           (cadr err)))))))
     (unless (e-chat--harness-has-capability-p harness 'chat-session)
       (user-error "Harness %S does not provide chat-session capability"
                   e-chat-default-harness-id))
     harness))
+
+(defun e-chat--instance-label (instance)
+  "Return a completion label for chat harness INSTANCE."
+  (format "%s  [%s]"
+          (e-harness-instance-name instance)
+          (e-harness-instance-id instance)))
+
+(defun e-chat--read-chat-instance (instances)
+  "Read and return one chat instance from INSTANCES."
+  (let* ((labels (mapcar #'e-chat--instance-label instances))
+         (selected (completing-read
+                    "New e chat target: "
+                    (e-chat--ordered-completion-table labels 'e-chat-instance)
+                    nil
+                    t))
+         (index (cl-position selected labels :test #'equal)))
+    (or (nth index instances)
+        (user-error "No e chat target selected"))))
+
+(defun e-chat--select-chat-instance (&optional prompt)
+  "Return the chat instance for a new command, prompting when needed.
+PROMPT forces completion even when only one/default instance exists."
+  (let* ((instances (e-chat--chat-instances))
+         (default (or (e-chat--default-chat-instance)
+                      (e-harness-instance-default :kind 'chat))))
+    (cond
+     ((null instances) nil)
+     ((or prompt (> (length instances) 1))
+      (e-chat--read-chat-instance instances))
+     (default)
+     (t (car instances)))))
 
 (defun e-chat--ensure-session (harness session-id)
   "Ensure SESSION-ID exists in HARNESS."
@@ -1004,14 +1067,19 @@ name."
           (or (ignore-errors (e-harness-session-title harness session-id))
               (e-chat--short-session-id session-id))))
 
-(defun e-chat--find-session-buffer (session-id)
-  "Return an existing chat buffer for SESSION-ID."
+(defun e-chat--find-session-buffer (session-id &optional harness instance-id)
+  "Return an existing chat buffer for SESSION-ID.
+When HARNESS or INSTANCE-ID is non-nil, require the buffer to match it."
   (catch 'buffer
     (dolist (buffer (buffer-list))
       (when (buffer-live-p buffer)
         (with-current-buffer buffer
           (when (and (derived-mode-p 'e-chat-mode)
-                     (equal e-chat-session-id session-id))
+                     (equal e-chat-session-id session-id)
+                     (or (not harness)
+                         (eq e-chat-harness harness))
+                     (or (not instance-id)
+                         (eq e-chat-harness-instance-id instance-id)))
             (throw 'buffer buffer)))))))
 
 (defun e-chat--rename-buffer-for-session ()
@@ -4367,22 +4435,33 @@ attached session's full transcript."
     (when turn-id
       (e-chat--render-replayed-terminal-event turn-id activity-events))))
 
-(cl-defun e-chat-open (&key harness session-id new-session)
+(cl-defun e-chat-open (&key harness session-id new-session instance-id)
   "Attach and return an e chat buffer.
 HARNESS, SESSION-ID, and NEW-SESSION are injectable for presentation tests and
 reload.  User-facing commands should call `e-chat-new' or `e-chat-resume'."
-  (let* ((chat-harness (or harness (e-chat--default-harness)))
+  (let* ((instance (and (not harness)
+                        instance-id
+                        (e-harness-instance-get instance-id)))
+         (chat-harness (or harness
+                           (and instance
+                                (e-chat--harness-for-instance instance))
+                           (e-chat--default-harness)))
+         (chat-instance-id (or instance-id
+                               (and instance
+                                    (e-harness-instance-id instance))))
          (session (when (or new-session (not session-id))
                     (e-chat--create-session chat-harness)))
          (chat-session-id (or session-id
                               (plist-get session :id)
                               e-chat-default-session-id))
-         (buffer (or (e-chat--find-session-buffer chat-session-id)
+         (buffer (or (e-chat--find-session-buffer
+                      chat-session-id chat-harness chat-instance-id)
                      (get-buffer-create
                       (e-chat--session-buffer-name
                        chat-harness
                        chat-session-id)))))
-    (e-chat--attach-buffer buffer chat-harness chat-session-id)
+    (e-chat--attach-buffer
+     buffer chat-harness chat-session-id chat-instance-id)
     buffer))
 
 (cl-defun e-chat-create-session (&key harness metadata id)
@@ -4530,14 +4609,16 @@ HARNESS are internal test seams."
        :metadata metadata)
       new-session-id)))
 
-(defun e-chat-open-session (harness session-id &optional display)
+(defun e-chat-open-session (harness session-id &optional display instance-id)
   "Open HARNESS SESSION-ID and display it when DISPLAY is non-nil."
-  (let ((buffer (e-chat-open :harness harness :session-id session-id)))
+  (let ((buffer (e-chat-open :harness harness
+                             :session-id session-id
+                             :instance-id instance-id)))
     (when display
       (e-chat--pop-to-buffer buffer))
     buffer))
 
-(defun e-chat--attach-buffer (buffer harness session-id)
+(defun e-chat--attach-buffer (buffer harness session-id &optional instance-id)
   "Attach BUFFER to HARNESS and SESSION-ID."
   (e-chat--ensure-session harness session-id)
   (with-current-buffer buffer
@@ -4550,6 +4631,7 @@ HARNESS are internal test seams."
     (e-chat--ensure-window-refresh-hook)
     (setq-local e-current-harness harness)
     (setq-local e-chat-harness harness)
+    (setq-local e-chat-harness-instance-id instance-id)
     (setq-local e-chat-session-id session-id)
     (e-chat--rename-buffer-for-session)
     (e-chat--clear)
@@ -4571,8 +4653,12 @@ HARNESS are internal test seams."
               (setq count (1+ count))
               (e-chat--attach-buffer
                buffer
-               (e-chat--default-harness)
-               session-id))))))
+               (if e-chat-harness-instance-id
+                   (e-chat--harness-for-instance
+                    (e-harness-instance-get e-chat-harness-instance-id))
+               (e-chat--default-harness))
+               session-id
+               e-chat-harness-instance-id))))))
     (when (called-interactively-p 'interactive)
       (message "Refreshed %d e chat buffer%s"
                count
@@ -4590,7 +4676,11 @@ HARNESS are internal test seams."
   "Create and open a new persisted e chat session.
 With prefix argument POP-TO-SIDE, use the pop display path."
   (interactive "P")
-  (let ((buffer (e-chat-open :new-session t)))
+  (let* ((instance (e-chat--select-chat-instance pop-to-side))
+         (buffer (e-chat-open
+                  :new-session t
+                  :instance-id (and instance
+                                    (e-harness-instance-id instance)))))
     (when (called-interactively-p 'interactive)
       (if pop-to-side
           (e-chat--pop-to-buffer buffer)
@@ -4713,6 +4803,117 @@ CATEGORY is exposed through completion metadata when non-nil."
                          harness sessions labels))
       (completing-read "Resume e session: " labels nil t))))
 
+(defun e-chat--session-candidate-label (candidate &optional show-instance)
+  "Return completion label for session CANDIDATE.
+When SHOW-INSTANCE is non-nil, prefix the owning target label."
+  (let ((session-label (e-chat--session-choice-label
+                        (plist-get candidate :session))))
+    (if (and show-instance
+             (plist-get candidate :instance))
+        (format "%s  %s"
+                (e-harness-instance-name (plist-get candidate :instance))
+                session-label)
+      session-label)))
+
+(defun e-chat--session-candidates ()
+  "Return chat session candidates across configured chat instances."
+  (let ((instances (e-chat--chat-instances))
+        candidates)
+    (if instances
+        (progn
+          (dolist (instance instances)
+            (let ((harness (e-chat--harness-for-instance instance)))
+              (dolist (session (e-harness-session-list harness))
+                (push (list :instance instance
+                            :instance-id (e-harness-instance-id instance)
+                            :harness harness
+                            :session session
+                            :session-id (plist-get session :id))
+                      candidates))))
+          (setq candidates
+                (sort candidates
+                      (lambda (left right)
+                        (> (or (plist-get
+                                (plist-get left :session) :updated-seq)
+                               0)
+                           (or (plist-get
+                                (plist-get right :session) :updated-seq)
+                               0))))))
+      (let ((harness (e-chat--default-harness)))
+        (setq candidates
+              (mapcar (lambda (session)
+                        (list :harness harness
+                              :session session
+                              :session-id (plist-get session :id)))
+                      (e-harness-session-list harness)))))
+    candidates))
+
+(defun e-chat--candidate-for-label (candidates labels label)
+  "Return session candidate from CANDIDATES matching LABELS LABEL."
+  (when-let ((index (cl-position label labels :test #'equal)))
+    (nth index candidates)))
+
+(defun e-chat--resume-candidate-preview-state (candidates labels)
+  "Return Consult preview state for resume CANDIDATES and LABELS."
+  (let (origin-window origin-buffer preview-buffer)
+    (cl-labels
+        ((ensure-origin ()
+           (unless (window-live-p origin-window)
+             (setq origin-window (e-chat--resume-preview-origin-window))
+             (setq origin-buffer (window-buffer origin-window))))
+         (restore-origin (&optional kill-preview)
+           (when (and (window-live-p origin-window)
+                      (buffer-live-p origin-buffer))
+             (with-selected-window origin-window
+               (switch-to-buffer origin-buffer 'norecord)))
+           (when (and kill-preview
+                      (buffer-live-p preview-buffer))
+             (kill-buffer preview-buffer)
+             (setq preview-buffer nil))))
+      (lambda (action candidate-label)
+        (pcase action
+          ('setup
+           (ensure-origin))
+          ('preview
+           (ensure-origin)
+           (if-let ((candidate (e-chat--candidate-for-label
+                                candidates labels candidate-label)))
+               (when (window-live-p origin-window)
+                 (setq preview-buffer
+                       (e-chat--render-resume-preview
+                        (plist-get candidate :harness)
+                        (plist-get candidate :session)))
+                 (with-selected-window origin-window
+                   (switch-to-buffer preview-buffer 'norecord)))
+             (restore-origin)))
+          ((or 'exit 'return)
+           (restore-origin t)))))))
+
+(defun e-chat--read-session-candidate (candidates &optional prompt)
+  "Read and return one session candidate from CANDIDATES."
+  (let* ((show-instance (> (length (e-chat--chat-instances)) 1))
+         (labels (mapcar (lambda (candidate)
+                           (e-chat--session-candidate-label
+                            candidate show-instance))
+                         candidates))
+         (selected
+          (if (e-chat--consult-read-available-p)
+              (funcall (symbol-function 'consult--read)
+                       labels
+                       :prompt (or prompt "Resume e session: ")
+                       :require-match t
+                       :sort nil
+                       :category 'e-chat-session
+                       :state (e-chat--resume-candidate-preview-state
+                               candidates labels))
+            (completing-read
+             (or prompt "Resume e session: ")
+             labels
+             nil
+             t))))
+    (or (e-chat--candidate-for-label candidates labels selected)
+        (user-error "No e chat session selected"))))
+
 (defun e-chat--latest-session-id (harness)
   "Return the latest session id in HARNESS, creating one when none exists."
   (or (plist-get (car (e-harness-session-list harness)) :id)
@@ -4736,10 +4937,49 @@ CATEGORY is exposed through completion metadata when non-nil."
           (user-error "No e chat session selected"))
         (plist-get (nth index sessions) :id)))))
 
-(defun e-chat--session-buffer-for-context (harness session-id)
+(defun e-chat--context-session-target ()
+  "Return a selected context insertion target across chat instances."
+  (let* ((default-instance (or (e-chat--default-chat-instance)
+                               (e-harness-instance-default :kind 'chat)))
+         (default-harness (if default-instance
+                              (e-chat--harness-for-instance default-instance)
+                            (e-chat--default-harness)))
+         (candidates (e-chat--session-candidates))
+         (new-target (list :harness default-harness
+                           :instance-id (and default-instance
+                                             (e-harness-instance-id
+                                              default-instance))))
+         (labels (cons e-chat--new-context-session-label
+                       (mapcar (lambda (candidate)
+                                 (e-chat--session-candidate-label
+                                  candidate
+                                  (> (length (e-chat--chat-instances)) 1)))
+                               candidates)))
+         (selected (completing-read "Add context to e session: "
+                                    (e-chat--ordered-completion-table
+                                     labels
+                                     'e-chat-session)
+                                    nil
+                                    t)))
+    (if (equal selected e-chat--new-context-session-label)
+        (let ((session (e-chat--create-session default-harness)))
+          (append new-target
+                  (list :session-id (plist-get session :id))))
+      (let ((candidate (e-chat--candidate-for-label
+                        candidates
+                        (cdr labels)
+                        selected)))
+        (unless candidate
+          (user-error "No e chat session selected"))
+        candidate))))
+
+(defun e-chat--session-buffer-for-context
+    (harness session-id &optional instance-id)
   "Return the chat buffer for HARNESS SESSION-ID, preserving drafts when live."
-  (or (e-chat--find-session-buffer session-id)
-      (e-chat-open :harness harness :session-id session-id)))
+  (or (e-chat--find-session-buffer session-id harness instance-id)
+      (e-chat-open :harness harness
+                   :session-id session-id
+                   :instance-id instance-id)))
 
 (defun e-chat--visible-session-buffer (harness)
   "Return a visible chat buffer for HARNESS, preferring selected window order."
@@ -4758,6 +4998,23 @@ CATEGORY is exposed through completion metadata when non-nil."
                          e-chat-session-id)
                 (throw 'buffer buffer)))))))))
 
+(defun e-chat--visible-chat-buffer ()
+  "Return a visible chat buffer, preferring selected window order."
+  (let* ((selected (selected-window))
+         (windows (window-list nil 'no-minibuf))
+         (windows (if (memq selected windows)
+                      (cons selected (delq selected windows))
+                    windows)))
+    (catch 'buffer
+      (dolist (window windows)
+        (let ((buffer (window-buffer window)))
+          (when (buffer-live-p buffer)
+            (with-current-buffer buffer
+              (when (and (derived-mode-p 'e-chat-mode)
+                         e-chat-harness
+                         e-chat-session-id)
+                (throw 'buffer buffer)))))))))
+
 (defun e-chat--default-context-session-id (harness)
   "Return visible chat session id in HARNESS, falling back to latest."
   (or (when-let ((buffer (e-chat--visible-session-buffer harness)))
@@ -4765,11 +5022,34 @@ CATEGORY is exposed through completion metadata when non-nil."
           e-chat-session-id))
       (e-chat--latest-session-id harness)))
 
+(defun e-chat--default-context-target ()
+  "Return visible or latest context target across chat instances."
+  (if-let ((buffer (e-chat--visible-chat-buffer)))
+      (with-current-buffer buffer
+        (list :harness e-chat-harness
+              :instance-id e-chat-harness-instance-id
+              :session-id e-chat-session-id))
+    (let* ((candidates (e-chat--session-candidates))
+           (candidate (car candidates)))
+      (if candidate
+          candidate
+        (let* ((instance (or (e-chat--default-chat-instance)
+                             (e-harness-instance-default :kind 'chat)))
+               (harness (if instance
+                            (e-chat--harness-for-instance instance)
+                          (e-chat--default-harness)))
+               (session (e-chat--create-session harness)))
+          (list :harness harness
+                :instance-id (and instance
+                                  (e-harness-instance-id instance))
+                :session-id (plist-get session :id)))))))
+
 (defun e-chat--add-context-reference-to-session
-    (reference harness session-id &optional display)
+    (reference harness session-id &optional display instance-id)
   "Insert REFERENCE into HARNESS SESSION-ID composer.
 When DISPLAY is non-nil, show the target chat buffer."
-  (let ((buffer (e-chat--session-buffer-for-context harness session-id)))
+  (let ((buffer (e-chat--session-buffer-for-context
+                 harness session-id instance-id)))
     (with-current-buffer buffer
       (e-chat--enter-composer-input-state)
       (e-chat--insert-context-reference reference)
@@ -4782,16 +5062,14 @@ When DISPLAY is non-nil, show the target chat buffer."
 (defun e-chat-resume ()
   "Resume a recent persisted e chat session."
   (interactive)
-  (let* ((harness (e-chat--default-harness))
-         (sessions (e-harness-session-list harness)))
-    (unless sessions
+  (let ((candidates (e-chat--session-candidates)))
+    (unless candidates
       (user-error "No e chat sessions to resume"))
-    (let* ((labels (mapcar #'e-chat--session-choice-label sessions))
-           (selected (e-chat--read-session-choice harness sessions labels))
-           (index (cl-position selected labels :test #'equal))
-           (session (nth index sessions))
-           (buffer (e-chat-open :harness harness
-                                :session-id (plist-get session :id))))
+    (let* ((candidate (e-chat--read-session-candidate candidates))
+           (buffer (e-chat-open
+                    :harness (plist-get candidate :harness)
+                    :session-id (plist-get candidate :session-id)
+                    :instance-id (plist-get candidate :instance-id))))
       (when (called-interactively-p 'interactive)
         (e-chat--pop-to-buffer buffer))
       buffer)))
@@ -4840,15 +5118,28 @@ When DISPLAY is non-nil, show the target chat buffer."
       (let ((coding-system-for-write 'utf-8))
         (insert (json-encode state))))))
 
-(defun e-chat-overview--read-marker (session-id &optional harness)
-  "Return the stored read marker for SESSION-ID in HARNESS."
-  (alist-get session-id (e-chat-overview--read-state harness)
-             nil nil #'equal))
+(defun e-chat-overview--state-session-id (session-id &optional instance-id)
+  "Return persisted overview key for SESSION-ID and INSTANCE-ID."
+  (if instance-id
+      (format "%s:%s" instance-id session-id)
+    session-id))
 
-(defun e-chat-overview--set-read-marker (session-id marker &optional harness)
+(defun e-chat-overview--read-marker
+    (session-id &optional harness instance-id)
+  "Return the stored read marker for SESSION-ID in HARNESS."
+  (alist-get
+   (e-chat-overview--state-session-id session-id instance-id)
+   (e-chat-overview--read-state harness)
+   nil nil #'equal))
+
+(defun e-chat-overview--set-read-marker
+    (session-id marker &optional harness instance-id)
   "Set SESSION-ID read marker to MARKER in HARNESS."
   (let ((state (e-chat-overview--read-state harness)))
-    (setf (alist-get session-id state nil nil #'equal) marker)
+    (setf (alist-get
+           (e-chat-overview--state-session-id session-id instance-id)
+           state nil nil #'equal)
+          marker)
     (e-chat-overview--write-state state harness)
     marker))
 
@@ -4864,18 +5155,25 @@ When DISPLAY is non-nil, show the target chat buffer."
                            (plist-get message :created-at)))))
       marker)))
 
-(defun e-chat-overview--session-unread-p (harness session)
+(defun e-chat-overview--session-unread-p (harness session &optional instance-id)
   "Return non-nil when SESSION has unread assistant output in HARNESS."
   (when-let ((marker (e-chat-overview--latest-assistant-marker harness session)))
     (not (equal marker
                 (e-chat-overview--read-marker
                  (plist-get session :id)
-                 harness)))))
+                 harness
+                 instance-id)))))
 
 (defun e-chat-overview--session-id-at-point ()
   "Return overview session id at point, or nil."
   (or (get-text-property (point) 'e-chat-session-id)
       (get-text-property (line-beginning-position) 'e-chat-session-id)))
+
+(defun e-chat-overview--instance-id-at-point ()
+  "Return overview harness instance id at point, or nil."
+  (or (get-text-property (point) 'e-chat-harness-instance-id)
+      (get-text-property (line-beginning-position)
+                         'e-chat-harness-instance-id)))
 
 (defun e-chat-overview--compact-row-text (text max-chars)
   "Return TEXT as a single overview row fragment capped at MAX-CHARS."
@@ -4927,9 +5225,14 @@ When DISPLAY is non-nil, show the target chat buffer."
              (and (not (string-empty-p prefix))
                   (string-prefix-p prefix summary))))))
 
-(defun e-chat-overview--insert-session-row (harness session)
-  "Insert one overview row for SESSION from HARNESS."
+(defun e-chat-overview--insert-session-row
+    (harness session &optional instance show-instance)
+  "Insert one overview row for SESSION from HARNESS.
+INSTANCE is the owning chat harness instance when available.  SHOW-INSTANCE
+adds its display name to the row."
   (let* ((session-id (plist-get session :id))
+         (instance-id (and instance
+                           (e-harness-instance-id instance)))
          (summary (e-chat-overview--compact-row-text
                    (plist-get session :summary)
                    72))
@@ -4954,12 +5257,17 @@ When DISPLAY is non-nil, show the target chat buffer."
                                 (e-chat-overview--compact-timestamp
                                  last-message-at)))
                     "  "))
-         (unread (e-chat-overview--session-unread-p harness session))
+         (unread (e-chat-overview--session-unread-p
+                  harness session instance-id))
          (start (point)))
     (e-chat-overview--insert-faced (if unread "! " "  ")
                                    (if unread
                                        'e-chat-overview-unread-face
                                      'e-chat-overview-meta-face))
+    (when (and show-instance instance)
+      (e-chat-overview--insert-faced
+       (format "%s  " (e-harness-instance-name instance))
+       'e-chat-overview-meta-face))
     (e-chat-overview--insert-faced title 'e-chat-overview-title-face)
     (insert "\n  ")
     (e-chat-overview--insert-faced metadata 'e-chat-overview-meta-face)
@@ -4971,30 +5279,46 @@ When DISPLAY is non-nil, show the target chat buffer."
     (insert "\n\n")
     (add-text-properties start (point)
                          `(e-chat-session-id ,session-id
+                           e-chat-harness-instance-id ,instance-id
                            help-echo "RET opens this e chat session"))))
 
 (defun e-chat-overview--render (&optional harness)
   "Render HARNESS sessions into the current overview buffer."
-  (let* ((harness (or harness
-                      e-chat-overview--harness
-                      (e-chat--default-harness)))
-         (sessions (e-harness-session-list harness))
+  (let* ((instances (and (not harness)
+                         (e-chat--chat-instances)))
+         (show-instance (> (length instances) 1))
+         (sessions (if instances
+                       (e-chat--session-candidates)
+                     (let ((target (or harness
+                                       e-chat-overview--harness
+                                       (e-chat--default-harness))))
+                       (setq harness target)
+                       (e-harness-session-list target))))
          (inhibit-read-only t))
     (setq-local e-chat-overview--harness harness)
     (erase-buffer)
     (if sessions
-        (dolist (session sessions)
-          (e-chat-overview--insert-session-row harness session))
+        (if instances
+            (dolist (candidate sessions)
+              (e-chat-overview--insert-session-row
+               (plist-get candidate :harness)
+               (plist-get candidate :session)
+               (plist-get candidate :instance)
+               show-instance))
+          (dolist (session sessions)
+            (e-chat-overview--insert-session-row harness session)))
       (insert "No e chat sessions\n"))
     (goto-char (point-min))))
 
-(defun e-chat-overview--mark-session-read (harness session)
+(defun e-chat-overview--mark-session-read
+    (harness session &optional instance-id)
   "Record SESSION's latest assistant message as read in HARNESS."
   (when-let ((marker (e-chat-overview--latest-assistant-marker harness session)))
     (e-chat-overview--set-read-marker
      (plist-get session :id)
      marker
-     harness)))
+     harness
+     instance-id)))
 
 (defun e-chat-overview--session-for-id (harness session-id)
   "Return HARNESS session metadata for SESSION-ID."
@@ -5003,17 +5327,42 @@ When DISPLAY is non-nil, show the target chat buffer."
            :key (lambda (session) (plist-get session :id))
            :test #'equal))
 
+(defun e-chat-overview--harness-for-instance-id (instance-id)
+  "Return live harness for INSTANCE-ID, or the overview/default harness."
+  (if instance-id
+      (e-chat--harness-for-instance
+       (or (e-harness-instance-get instance-id)
+           (signal 'e-harness-instance-missing (list instance-id))))
+    (or e-chat-overview--harness
+        (e-chat--default-harness))))
+
+(defun e-chat-overview--row-target-at-point ()
+  "Return overview row target at point."
+  (let* ((session-id (or (e-chat-overview--session-id-at-point)
+                         (user-error "No e chat session at point")))
+         (instance-id (e-chat-overview--instance-id-at-point))
+         (harness (e-chat-overview--harness-for-instance-id instance-id))
+         (session (or (e-chat-overview--session-for-id harness session-id)
+                      (user-error "No e chat session at point"))))
+    (list :harness harness
+          :session session
+          :session-id session-id
+          :instance-id instance-id)))
+
 (defun e-chat-overview--session-row-starts ()
-  "Return overview session row starts as (POSITION . SESSION-ID) pairs."
+  "Return overview session row starts as (POSITION . ROW-KEY) pairs."
   (let ((pos (point-min))
         (limit (point-max))
-        last-id
+        last-key
         rows)
     (while (< pos limit)
-      (let ((session-id (get-text-property pos 'e-chat-session-id)))
-        (when (and session-id (not (equal session-id last-id)))
-          (push (cons pos session-id) rows))
-        (setq last-id session-id)
+      (let* ((session-id (get-text-property pos 'e-chat-session-id))
+             (instance-id (get-text-property
+                           pos 'e-chat-harness-instance-id))
+             (key (and session-id (cons instance-id session-id))))
+        (when (and key (not (equal key last-key)))
+          (push (cons pos key) rows))
+        (setq last-key key)
         (setq pos (or (next-single-property-change
                        pos 'e-chat-session-id nil limit)
                       limit))))
@@ -5021,8 +5370,9 @@ When DISPLAY is non-nil, show the target chat buffer."
 
 (defun e-chat-overview--current-session-row-index (rows)
   "Return current session row index in ROWS."
-  (let ((session-id (e-chat-overview--session-id-at-point)))
-    (or (cl-position session-id rows
+  (let ((key (cons (e-chat-overview--instance-id-at-point)
+                   (e-chat-overview--session-id-at-point))))
+    (or (cl-position key rows
                      :key #'cdr
                      :test #'equal)
         (user-error "No e chat session at point"))))
@@ -5030,13 +5380,10 @@ When DISPLAY is non-nil, show the target chat buffer."
 (defun e-chat-overview--preview-session-at-point (&optional display)
   "Preview the overview session at point.
 When DISPLAY is non-nil, display the preview buffer."
-  (let* ((harness (or e-chat-overview--harness
-                      (e-chat--default-harness)))
-         (session-id (or (e-chat-overview--session-id-at-point)
-                         (user-error "No e chat session at point")))
-         (session (or (e-chat-overview--session-for-id harness session-id)
-                      (user-error "No e chat session at point")))
-         (buffer (e-chat--render-resume-preview harness session)))
+  (let* ((target (e-chat-overview--row-target-at-point))
+         (buffer (e-chat--render-resume-preview
+                  (plist-get target :harness)
+                  (plist-get target :session))))
     (when display
       (display-buffer buffer))
     buffer))
@@ -5071,17 +5418,19 @@ When DISPLAY is non-nil, display the preview buffer."
 (defun e-chat-overview-open-session ()
   "Open the overview session at point and mark assistant output read."
   (interactive)
-  (let* ((harness (or e-chat-overview--harness
-                      (e-chat--default-harness)))
-         (session-id (or (e-chat-overview--session-id-at-point)
-                         (user-error "No e chat session at point")))
-         (buffer (e-chat-open :harness harness :session-id session-id)))
+  (let* ((target (e-chat-overview--row-target-at-point))
+         (harness (plist-get target :harness))
+         (session-id (plist-get target :session-id))
+         (instance-id (plist-get target :instance-id))
+         (buffer (e-chat-open :harness harness
+                              :session-id session-id
+                              :instance-id instance-id)))
     (e-chat-overview--mark-session-read
      harness
-     (or (e-chat-overview--session-for-id harness session-id)
-         (user-error "No e chat session at point")))
+     (plist-get target :session)
+     instance-id)
     (when (derived-mode-p 'e-chat-overview-mode)
-      (e-chat-overview--render harness))
+      (e-chat-overview--render e-chat-overview--harness))
     (when (called-interactively-p 'interactive)
       (e-chat--pop-to-buffer buffer))
     buffer))
@@ -5103,7 +5452,13 @@ When DISPLAY is non-nil, display the preview buffer."
              e-chat-overview--subscription)
     (e-harness-unsubscribe e-chat-overview--harness
                            e-chat-overview--subscription)
-    (setq e-chat-overview--subscription nil)))
+    (setq e-chat-overview--subscription nil))
+  (dolist (entry e-chat-overview--subscriptions)
+    (let ((harness (car entry))
+          (subscription (cdr entry)))
+      (when (and harness subscription)
+        (e-harness-unsubscribe harness subscription))))
+  (setq e-chat-overview--subscriptions nil))
 
 (defun e-chat-overview--subscribe (buffer harness)
   "Subscribe BUFFER to HARNESS events for overview refreshes."
@@ -5119,6 +5474,27 @@ When DISPLAY is non-nil, display the preview buffer."
             (with-current-buffer target
               (when (derived-mode-p 'e-chat-overview-mode)
                 (e-chat-overview--render harness))))))))))
+
+(defun e-chat-overview--subscribe-instances (buffer instances)
+  "Subscribe BUFFER to overview refresh events from INSTANCES."
+  (with-current-buffer buffer
+    (e-chat-overview--unsubscribe)
+    (let ((target buffer))
+      (setq-local
+       e-chat-overview--subscriptions
+       (mapcar
+        (lambda (instance)
+          (let* ((harness (e-chat--harness-for-instance instance))
+                 (subscription
+                  (e-harness-subscribe
+                   harness
+                   (lambda (_event)
+                     (when (buffer-live-p target)
+                       (with-current-buffer target
+                         (when (derived-mode-p 'e-chat-overview-mode)
+                           (e-chat-overview--render))))))))
+            (cons harness subscription)))
+        instances)))))
 
 (defun e-chat-overview--display (buffer)
   "Display overview BUFFER as the chat session sidebar."
@@ -5138,13 +5514,17 @@ When DISPLAY is non-nil, display the preview buffer."
 (defun e-chat-overview ()
   "Open the e chat session overview sidebar."
   (interactive)
-  (let* ((harness (e-chat--default-harness))
+  (let* ((instances (e-chat--chat-instances))
+         (harness (and (not instances)
+                       (e-chat--default-harness)))
          (buffer (get-buffer-create e-chat-overview-buffer-name)))
     (with-current-buffer buffer
       (e-chat-overview-mode)
       (setq-local e-chat-overview--harness harness)
       (e-chat-overview--render harness)
-      (e-chat-overview--subscribe buffer harness))
+      (if instances
+          (e-chat-overview--subscribe-instances buffer instances)
+        (e-chat-overview--subscribe buffer harness)))
     (when (called-interactively-p 'interactive)
       (e-chat-overview--display buffer))
     buffer))
@@ -5174,26 +5554,26 @@ When DISPLAY is non-nil, display the preview buffer."
   "Add current point or region to a visible, or latest, e chat session."
   (interactive)
   (let* ((reference (e-chat--capture-context-reference-for-command))
-         (harness (e-chat--default-harness))
-         (session-id (e-chat--default-context-session-id harness)))
+         (target (e-chat--default-context-target)))
     (e-chat--add-context-reference-to-session
      reference
-     harness
-     session-id
-     (called-interactively-p 'interactive))))
+     (plist-get target :harness)
+     (plist-get target :session-id)
+     (called-interactively-p 'interactive)
+     (plist-get target :instance-id))))
 
 ;;;###autoload
 (defun e-chat-add-context-to-session ()
   "Add the current point or active region to a selected e chat session."
   (interactive)
   (let* ((reference (e-chat--capture-context-reference-for-command))
-         (harness (e-chat--default-harness))
-         (session-id (e-chat--context-session-picker harness)))
+         (target (e-chat--context-session-target)))
     (e-chat--add-context-reference-to-session
      reference
-     harness
-     session-id
-     (called-interactively-p 'interactive))))
+     (plist-get target :harness)
+     (plist-get target :session-id)
+     (called-interactively-p 'interactive)
+     (plist-get target :instance-id))))
 
 ;;;###autoload
 (defun e-chat-rename (name)

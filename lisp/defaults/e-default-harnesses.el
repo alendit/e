@@ -20,6 +20,7 @@
 (require 'cl-lib)
 (require 'e-default-layers)
 (require 'e-context)
+(require 'e-harness-instances)
 (require 'e-harness-registry)
 (require 'e-layers)
 (require 'e-session)
@@ -33,6 +34,9 @@
 
 (defcustom e-default-harness-specs
   '((:id :chat-default
+     :name "Default Chat"
+     :kind chat
+     :default t
      :factory e-default-chat-harness-create
      :sync e-default-chat-harness-sync))
   "Default harness specs registered during package startup."
@@ -176,9 +180,23 @@ sets the root used by config-aware default layers."
 When SPECS is nil, register `e-default-harness-specs'.  Registration is lazy:
 factories are recorded, but no harness is created."
   (dolist (spec (or specs e-default-harness-specs))
-    (e-harness-registry-register-factory
-     (plist-get spec :id)
-     (plist-get spec :factory)))
+    (let* ((id (plist-get spec :id))
+           (factory (plist-get spec :factory))
+           (legacy-chat-default-p (eq id :chat-default))
+           (kind (or (plist-get spec :kind)
+                     (and legacy-chat-default-p 'chat))))
+      (e-harness-registry-register-factory id factory)
+      (when kind
+        (e-harness-instance-register
+         :id id
+         :name (or (plist-get spec :name)
+                   (and legacy-chat-default-p "Default Chat"))
+         :kind kind
+         :factory factory
+         :harness-id id
+         :metadata (plist-get spec :metadata)
+         :default (or (plist-get spec :default)
+                      legacy-chat-default-p)))))
   (or specs e-default-harness-specs))
 
 (defun e-default-harnesses-sync-instances (&optional specs)

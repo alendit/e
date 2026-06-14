@@ -100,6 +100,7 @@
                   "lisp/core/e-loop.el"
                   "lisp/core/e-harness.el"
                   "lisp/core/e-harness-registry.el"
+                  "lisp/core/e-harness-instances.el"
                   "lisp/core/e-core.el"
                   "lisp/layers/e-layer-selection.el"
                   "lisp/layers/e-context-inspection.el"

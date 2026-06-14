@@ -1,0 +1,97 @@
+#+title: Review: Chat Harness Instances
+#+author: e implementation
+#+date: 2026-06-14
+#+startup: overview
+
+* Status
+
+Done. No unresolved review notes.
+
+* Issue review
+
+** Issue 1: Chat commands had no user-facing target catalog
+
+*** Problem
+
+=e-chat-new=, =e-chat-resume=, =e-chat-overview=, and context insertion commands
+only knew about =e-chat-default-harness-id=. A second backend therefore needed
+backend-specific commands or dynamic rebinding of the default harness id.
+
+*** Change
+
+Added =e-harness-instances= as a core catalog over the existing low-level
+=e-harness-registry=. A harness instance carries an id, display name, kind,
+factory/harness id, metadata, and default marker. The default startup spec now
+registers =:chat-default= as the default chat instance while preserving the
+legacy registry factory.
+
+*** Compatibility
+
+Existing direct =e-harness-registry= use still works. If no chat instances are
+registered, chat commands keep using =e-chat-default-harness-id= through the
+legacy registry path.
+
+** Issue 2: Chat UI commands needed instance ownership
+
+*** Problem
+
+Session ids alone are not enough once multiple configured chat targets exist.
+The overview and buffer reuse paths could otherwise open or reuse the wrong
+buffer when two targets contain the same session id.
+
+*** Change
+
+Chat buffers now track =e-chat-harness-instance-id= in addition to the live
+harness and session id. New chat prompts for a target when multiple chat
+instances exist. Resume and context selection build owned session candidates
+from all chat instances. The overview renders target labels when multiple chat
+instances exist and stores instance ids on rows so preview/open actions use the
+owning harness.
+
+*** Compatibility
+
+Direct =e-chat-open :harness ...= callers and tests still work without an
+instance id. Existing current-buffer commands continue to use the attached
+buffer-local harness/session.
+
+* Verification summary
+
+#+begin_src sh
+rtk eldev test -f test/e-harness-instances-test.el
+rtk eldev test -f test/e-chat-test.el
+rtk eldev test -f test/e-defaults-test.el
+rtk eldev test -f test/e-test.el e-test-exposes-core-harness-api e-test-requiring-e-registers-chat-default-factory
+rtk eldev test -f test/e-canvas-test.el -f test/e-org-canvas-test.el e-canvas-test-attach-current-buffer-to-selected-session e-canvas-test-new-file-uses-file-backed-buffer-as-canvas e-canvas-test-open-current-buffer-creates-canvas-session e-canvas-test-open-current-buffer-reveals-existing-canvas-session e-org-canvas-test-new-file-directory-starts-unsaved-folder-canvas e-org-canvas-test-open-current-buffer-creates-session-metadata e-org-canvas-test-open-reuses-session-by-file-uri e-org-canvas-test-prompt-scope-hides_visible_backing_chat_buffer
+rtk eldev test
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+emacsclient --eval "(progn (require 'e-harness-instances) (require 'e-chat) (let* ((instances (e-harness-instance-list :kind 'chat)) (default (e-harness-instance-default :kind 'chat))) (prin1 (list :chat-instance-count (length instances) :default-instance-id (and default (e-harness-instance-id default)) :selection-helper (fboundp 'e-chat--select-chat-instance) :candidate-helper (fboundp 'e-chat--session-candidates)))))"
+#+end_src
+
+The full suite passed with 678 expected results, 0 unexpected results, and 1
+pre-existing skipped markdown-rendering test. Live reload succeeded, and the
+bounded probe reported one default chat instance, =:chat-default=, with the
+selection and session-candidate helpers loaded. Eldev test commands must run
+serially because the project lock rejects parallel batch runs.
+
+* Architecture self-check
+
+1. The work leaves the project better off if it stops here because chat commands
+   can select configured targets without backend-specific command growth.
+2. It moves toward a generic runtime-target catalog over backend adapters.
+3. The uncertain naming is localized to =e-harness-instance= APIs and metadata;
+   live harness ownership stays in the existing registry.
+4. =e-harness-instances= owns catalog metadata. =e-chat= owns chat selection and
+   presentation behavior.
+5. Coupling is reduced by removing UI dependence on one default registry id for
+   all selection workflows.
+6. Core policy does not depend on concrete providers, UI buffers, or transport.
+7. Side effects stay in startup registration and chat shell commands.
+8. The abstraction is semantically real: configured targets all resolve to a
+   live harness through the same registry contract.
+9. Compatibility keeps =e-chat-default-harness-id= and direct harness injection.
+10. No obsolete project code was removed. Personal backend-specific commands are
+    not part of this repository.
+11. Expected missing-target errors surface as =user-error= at command seams.
+    Unexpected registry/type errors are not swallowed.
+12. Tests cover registry behavior independently and chat behavior through real
+    fake harness/session stores.

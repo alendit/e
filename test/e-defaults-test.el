@@ -19,6 +19,7 @@
 (require 'e-context)
 (require 'e-default-harnesses)
 (require 'e-harness)
+(require 'e-harness-instances)
 (require 'e-harness-registry)
 (require 'e-agents-std-context)
 (require 'e-layer-selection)
@@ -31,13 +32,18 @@
   "Run BODY with an isolated harness registry."
   (declare (indent 0) (debug t))
   `(let ((e-harness-registry--instances (make-hash-table :test 'equal))
-         (e-harness-registry--factories (make-hash-table :test 'equal)))
+         (e-harness-registry--factories (make-hash-table :test 'equal))
+         (e-harness-instance--instances (make-hash-table :test 'equal))
+         (e-harness-instance--defaults (make-hash-table :test 'equal)))
      ,@body))
 
 (ert-deftest e-defaults-test-startup-specs-only-include-chat-default ()
   "The startup default harness specs currently include only chat-default."
   (should (equal e-default-harness-specs
                  '((:id :chat-default
+                    :name "Default Chat"
+                    :kind chat
+                    :default t
                     :factory e-default-chat-harness-create
                     :sync e-default-chat-harness-sync)))))
 
@@ -46,7 +52,21 @@
   (e-defaults-test--with-empty-harness-registry
     (e-default-harnesses-register)
     (should (member :chat-default (e-harness-registry-list)))
+    (should (eq (e-harness-instance-id
+                 (e-harness-instance-default :kind 'chat))
+                :chat-default))
     (should-not (e-harness-registry-get :chat-default))))
+
+(ert-deftest e-defaults-test-registers-chat-instance-for-legacy-spec ()
+  "Legacy chat-default specs still register the default chat instance."
+  (e-defaults-test--with-empty-harness-registry
+    (e-default-harnesses-register
+     '((:id :chat-default
+        :factory e-default-chat-harness-create
+        :sync e-default-chat-harness-sync)))
+    (should (eq (e-harness-instance-id
+                 (e-harness-instance-default :kind 'chat))
+                :chat-default))))
 
 (ert-deftest e-defaults-test-layer-specs-include-dev-harness-base-and-os-base ()
   "Built-in layer specs include dev, harness, and OS base layer ids."

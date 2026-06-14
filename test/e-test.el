@@ -70,6 +70,7 @@
     e-loop
     e-layers
     e-harness
+    e-harness-instances
     e-harness-registry
     e-core)
   "Features expected after requiring the pure core runtime.")
@@ -370,6 +371,8 @@
   (should (fboundp 'e-harness-reset))
   (should (fboundp 'e-harness-state))
   (should (fboundp 'e-harness-messages))
+  (should (fboundp 'e-harness-instance-register))
+  (should (fboundp 'e-harness-instance-get-or-create))
   (should (fboundp 'e-harness-registry-register-factory))
   (should (fboundp 'e-harness-registry-get-or-create))
   (should (fboundp 'e-capability-create))
