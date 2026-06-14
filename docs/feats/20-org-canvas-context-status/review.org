@@ -1,64 +1,223 @@
-#+title: Review: Org Canvas Context Status and Compaction
+#+title: Org Canvas Context Status and Compaction Review
 #+startup: overview
 
-* Summary
+* Status
 
-Org Canvas now renders the same context-state indicator as chat and offers a
-compaction command, reusing shared background computation.
+In-review.
 
-* What changed
+Review pass: <2026-06-14 Sun>.
 
-- New shared module =lisp/shells/e-context-status.el= owns the background
-  context-state computation: token-usage lookup, compaction-aware staleness,
-  context-token estimate, model token-limit table, and compact formatter.  It is
-  parameterized on =(harness session-id)= plus a caller-owned estimate cache and
-  a display =prefix=; it never mutates buffer state.
-- =lisp/shells/chat/e-chat.el= delegates to the shared module.  Chat-internal
-  helper names and the =e-chat-*= customs are kept as thin forwarders so chat
-  behavior, the =e-chat= prefix, and existing tests are preserved.
-- =lisp/shells/e-org-canvas.el= renders the indicator in the Org Canvas
-  =mode-name= slot with an =Org Canvas= prefix, refreshes it on relevant harness
-  lifecycle/token-usage/compaction events for the canvas buffer, and adds
-  =e-org-canvas-compact= (=C-c C-m=, session-scoped shell command) delegating to
-  =e-chat-session-compact=.
-- =lisp/dev/e-dev.el= loads the new module during live reload.
+* Review summary
 
-* Verification
+Feature 20 implements the core user-facing goal: Org Canvas buffers show a
+context-state indicator, expose a compaction command, and reuse a shared
+=e-context-status= computation module instead of duplicating the chat mode-line
+logic.  Focused Org Canvas/context-status tests pass, and a live probe confirmed
+that an attached Org Canvas buffer renders model/effort/token status and that
+=C-c C-m= resolves to =e-org-canvas-compact=.
 
-- Batch: full suite run; only the pre-existing order-dependent failure
-  =e-test-autoloads-expose-chat-commands-at-startup= remains (reproduced on a
-  clean HEAD copy, passes in isolation; not introduced here).  New tests in
-  =test/e-context-status-test.el= and =test/e-org-canvas-test.el= pass; chat
-  mode-line tests still pass.
-- Live: reloaded into the running Emacs via =e-dev-reload=.  Confirmed the Org
-  Canvas indicator renders =Org Canvas <model>/<effort> <pct> (<used>/<max>
-  tok)= for a known model and falls back to =?%= for an unknown model, chat's
-  indicator still renders, =C-c C-m= is bound to =e-org-canvas-compact=, and the
-  shell manifest lists the =compact= command.
+The review found no evidence that the main happy path is broken.  Two follow-up
+notes remain before marking the feature =Done=: missing-session display behavior
+does not match the plan's self-check, and compaction-staleness behavior needs a
+narrow regression test.
 
-* Open notes
+* Scope reviewed
 
-- None.
+Implementation surfaces inspected:
 
-* Self-check answers
+- =lisp/shells/e-context-status.el=
+- =lisp/shells/chat/e-chat.el=
+- =lisp/shells/e-org-canvas.el=
+- =lisp/dev/e-dev.el=
+- =test/e-context-status-test.el=
+- =test/e-org-canvas-test.el=
+- relevant chat status delegation sites in =test/e-chat-test.el= / =e-chat.el=
 
-1. Yes: Org Canvas gains a real context indicator and compaction parity.
-2. Toward shell-agnostic presentation of harness/session context state.
-3. Stable contract =(harness session-id) -> text=; the prefix and render
-   surface are local/reversible; no speculative layers.
-4. =e-context-status= owns computation/formatting; each shell owns its render
-   surface and refresh policy.
-5. Reduces coupling via a narrow consumer-shaped =e-context-status-text=.
-6. No dependency points the wrong way; the module reads stable harness/session
-   APIs only.
-7. Buffer-local mode-name and estimate caches stay in the shells; the module is
-   pure given inputs plus a caller-owned cache cell.
-8. The formatter substitutes across shells via =prefix= with no narrowed
-   preconditions.
-9. Chat helper names/customs kept as delegations for compatibility; no obsolete
-   paths left.
-10. Removed the duplicated chat computation in favor of the shared module.
-11. Missing session yields the bare prefix; unexpected harness errors surface as
-    before.
-12. Shared computation/formatting is tested directly; chat wiring tests pass via
-    delegation.
+Plan expectations checked:
+
+- Extract reusable background context-state computation.
+- Keep chat helper/custom compatibility through delegation.
+- Render Org Canvas status in the major-mode slot.
+- Refresh on relevant harness/session events.
+- Add =e-org-canvas-compact= and shell command exposure.
+- Keep computation shell-agnostic and side-effect-free apart from caller-owned
+  cache mutation.
+
+* What looks good
+
+- =e-context-status.el= cleanly owns token-limit lookup, token formatting,
+  latest token-usage lookup, compaction-aware token-usage staleness checks,
+  context-token estimation, estimate caching, and final text formatting.
+- Chat delegates through compatibility helpers such as
+  =e-chat--format-token-count=, =e-chat--format-mode-line-status=,
+  =e-chat--model-context-token-limit=, and =e-chat--context-token-estimate=.
+  The chat prefix and chat customization surface are preserved.
+- Org Canvas stores a buffer-local estimate cache, writes the status into
+  =mode-name=, restores the prior mode-name state when disabled, and subscribes
+  to harness events only for the attached session.
+- =e-org-canvas-compact= delegates to =e-chat-session-compact=, so compaction
+  policy remains in the shared session/harness action rather than becoming an
+  Org Canvas-specific implementation.
+- The Org Canvas shell manifest exposes a session-scoped =compact= command and
+  the mode keymap binds =C-c C-m= to =e-org-canvas-compact=.
+- The shared module does not mutate presentation buffers; shells own rendering,
+  mode-line/mode-name state, subscriptions, and cache cells.
+
+* Verification performed during this review pass
+
+Focused context-status and Org Canvas tests:
+
+#+begin_src sh
+eldev test -f test/e-context-status-test.el -f test/e-org-canvas-test.el
+#+end_src
+
+Result:
+
+#+begin_example
+Ran 46 tests, 46 results as expected, 0 unexpected
+#+end_example
+
+Attempted a larger touched-surface run including chat tests:
+
+#+begin_src sh
+eldev test -f test/e-context-status-test.el -f test/e-org-canvas-test.el -f test/e-chat-test.el ...
+#+end_src
+
+Result in the current worktree:
+
+#+begin_example
+Invalid read syntax: ")", 3461, 41
+Failed step: loading test file ‘test/e-chat-test.el’
+#+end_example
+
+That parse failure comes from the currently dirty worktree and blocked rerunning
+chat tests in this review pass.  The focused new-module/Org Canvas tests above
+were still run successfully.
+
+Attempted live reload:
+
+#+begin_src emacs-lisp
+(progn (require 'e-dev) (e-dev-reload "/Users/dimitrivorona/projects/elisp/e"))
+#+end_src
+
+Result in the current worktree:
+
+#+begin_example
+Invalid read syntax: ")", 965, 13
+#+end_example
+
+No Elisp behavior was changed by this review document edit.  Because reload was
+blocked by the current dirty worktree, the live probe below used the code already
+loaded in the running Emacs.
+
+Live Org Canvas status/compact probe:
+
+- Created a temporary harness/session with model =gpt-5.5= and effort =high=.
+- Attached an Org buffer as an Org Canvas buffer.
+- Enabled =e-org-canvas-mode=.
+- Checked the rendered =mode-name=, key binding, and compact delegation.
+
+Observed summary:
+
+#+begin_example
+:mode-name "Org Canvas gpt-5.5/high ~65% (~65/100 tok)"
+:key e-org-canvas-compact
+:compact-result :compacted
+:compact-session-id "org-live"
+#+end_example
+
+* Findings
+
+** TODO Medium: missing-session status does not return the bare prefix promised by the plan
+
+The plan/self-check says missing session state should yield the bare prefix text.
+However, =e-context-status-text= currently enters the main formatting path when
+both =harness= and =session-id= are non-nil, even if the session id does not
+exist.  It then swallows context/option lookup failures with =ignore-errors= and
+formats unset model/effort text.
+
+Evidence from this review pass:
+
+#+begin_src emacs-lisp
+(e-context-status-text h "missing" :prefix "Org Canvas")
+#+end_src
+
+Observed:
+
+#+begin_example
+"Org Canvas model unset/effort unset"
+#+end_example
+
+Expected per plan/self-check:
+
+#+begin_example
+"Org Canvas"
+#+end_example
+
+This is not a happy-path blocker, but it can make a detached/deleted session
+look like a valid status line with missing options.  Add a test for a missing
+session id and either return the bare prefix or explicitly document a different
+fallback policy.
+
+** TODO Low: compaction-staleness behavior lacks direct regression coverage
+
+=e-context-status-text= contains compaction-aware logic that ignores token-usage
+events predating the latest valid compaction, but neither
+=test/e-context-status-test.el= nor =test/e-org-canvas-test.el= has a focused test
+for that branch.
+
+Add a narrow test that creates token usage, appends a later compaction, and
+asserts that status text falls back to an estimate instead of using stale
+pre-compaction token counts.
+
+* Architecture review
+
+The decomposition matches the feature direction well:
+
+- =e-context-status= owns shell-agnostic computation and formatting.
+- Chat and Org Canvas own presentation state, subscriptions, cache cells, and
+  commands.
+- Compaction remains a shared session/harness action reached through the chat
+  session capability.
+
+The dependency direction is acceptable: the shared presentation module depends on
+stable harness/session reads, not on chat or Org Canvas.  Shells depend inward on
+the shared formatter.  The only policy gap found is the missing-session fallback,
+which should be resolved inside =e-context-status= rather than papered over in a
+shell.
+
+* Design self-check
+
+1. If this work stopped here, E is better off: Org Canvas users now have context
+   usage visibility and compaction parity with chat.
+2. This moves toward shell-agnostic presentation of harness/session context
+   state.
+3. Stable decisions: status text is computed from =(harness session-id)= and
+   caller-owned cache/config.  Local/reversible decisions: exact mode-name
+   rendering and key binding.  Unsettled: missing-session fallback semantics.
+4. =e-context-status= owns computation/formatting; each shell owns its own
+   render surface and refresh policy.
+5. Coupling is reduced by replacing duplicated chat-specific computation with a
+   narrow formatter/text API.
+6. No dependency points from stable runtime policy toward concrete presentation
+   shells.
+7. Side effects stay in shells.  The shared module only mutates a caller-owned
+   cache cons when supplied.
+8. The abstraction is semantically real: multiple shells can use the same
+   formatter by supplying a prefix and cache.
+9. Chat compatibility helpers/customs are preserved.  No obsolete public path was
+   introduced.
+10. Duplicated chat computation was removed in favor of the shared module.
+11. Expected missing-session behavior needs tightening.  Unexpected harness
+    errors are otherwise allowed to surface or are explicitly ignored for status
+    fallback.
+12. Tests prove shared formatting/estimation and Org Canvas wiring.  Missing
+    narrow tests are missing-session fallback and post-compaction stale usage.
+
+* Unresolved
+
+- [ ] Fix or document missing-session fallback so it matches the intended
+  behavior.
+- [ ] Add direct regression coverage for token usage predating compaction.
+- [ ] Rerun chat/touched-surface tests after the current dirty worktree parse
+  error is resolved.
