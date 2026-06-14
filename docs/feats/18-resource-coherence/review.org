@@ -3,60 +3,258 @@
 
 * Status
 
-Ready for review.
+In-review.
 
-* Summary
+* Review summary
 
-Implemented resource coherence as a generic linked-resource model, with the
-local file/file-backed-buffer case as the first concrete provider.
+Feature 18 substantially improves the original file/buffer desynchronization
+problem.  The implementation now discovers live file-backed buffers, routes many
+=file://= writes/edits through a visiting buffer, rejects direct file mutation
+when a linked buffer has unsaved changes, exposes =resource_sync_status=, and
+adds a generic coherence model in =e-resource-coherence=.
 
-Generic model added in =e-resource-coherence=:
+The main happy paths are covered and work in tests/live probes.  However, the
+review found one blocking correctness issue: a stale but unmodified visiting
+buffer can still be treated as the source for =file://= edits, causing newer disk
+content to be overwritten by older buffer content.  That means the feature is not
+ready for =Done= yet.
 
-- coherence registries that dispatch to providers by URI scheme;
-- provider objects that return a coherence group for a URI;
-- arbitrary-size coherence groups containing any number of linked resource views;
-- view metadata for canonical URI, kind, role, status, modified/dirty state,
-  liveness, visibility, selected-window state, priority, and adapter metadata;
-- generic aggregate status, dirty-view conflict detection, preferred-view
-  selection, and view filtering helpers.
+* Scope reviewed
 
-The existing local file/buffer behavior now uses that generic model:
+Implementation surfaces inspected:
 
-- =file://= reads prefer a preferred live view from a coherence group;
-- =file://= writes/edits ask generic dirty-view policy before mutating;
-- modified visiting buffers remain explicit coherence conflicts;
-- unmodified visiting buffers are updated through the live buffer and saved;
-- other unmodified linked buffers are reverted after save instead of left stale;
-- =resource_sync_status= reports the generic group and still includes the
-  compatibility-oriented file/buffer fields that existing tests and agents use.
+- =lisp/core/e-resource-coherence.el=
+- =lisp/core/e-core.el=
+- =lisp/layers/base/e-base-tools.el=
+- =lisp/layers/base/e-file-capabilities.el=
+- =lisp/layers/emacs/e-emacs-capabilities.el=
+- =lisp/layers/emacs/e-emacs-tools.el=
+- =test/e-resource-coherence-test.el=
+- =test/e-base-tools-test.el=
+- =test/e-file-capabilities-test.el=
+- =test/e-base-test.el=
+- =test/e-emacs-tools-test.el=
 
-* Validation
+Relevant plan expectations checked:
 
-- =eldev test= passed: 654 expected, 0 unexpected, 1 skipped
-  (=e-chat-test-assistant-markdown-renders-with-text-properties=).
-- Focused tests passed:
-  - =test/e-resource-coherence-test.el=;
-  - =test/e-base-tools-test.el=;
-  - =test/e-file-capabilities-test.el=;
-  - =test/e-base-test.el=.
-- Earlier live smoke check in the running Emacs verified the concrete
-  file/buffer behavior after the first slice:
-  - writing =file://sample.txt= with a live visiting buffer routes through and
-    saves the buffer;
-  - a subsequent direct file write with unsaved buffer edits raises an explicit
-    coherence conflict;
-  - =resource_sync_status= reports =needs-save= for the modified linked buffer.
+- =file://= reads prefer live buffers.
+- =file://= writes/edits should not silently desynchronize live buffers.
+- Modified linked buffers should block direct file mutation.
+- Unmodified linked buffers should be updated/saved or reverted, not left stale.
+- Sync status should expose coherent/stale/needs-save/conflict-like states.
+- Buffer writes/edits for file-backed buffers should make persistence state clear.
 
-* Notes
+* What looks good
 
-- Canonical path comparison uses =file-truename= so macOS =/tmp= and
-  =/private/tmp= aliases resolve to the same live buffer.
-- The sync status tool is registered by both file inspection and file mutation
-  capabilities, so it is available even with read-only file access.
-- The generic model is deliberately provider-shaped rather than a persisted
-  global graph. It can represent any number of linked resource views for a
-  canonical entity while keeping concrete discovery/sync mechanics in adapters.
+- Live buffer discovery canonicalizes local paths with =file-truename=, which
+  handles common macOS aliases such as =/tmp= vs =/private/tmp=.
+- =file://= reads go through =e-base-tools--file-text= and prefer the selected /
+  visible / live buffer according to the generic preferred-view policy.
+- Direct =file://= writes and edits call the generic dirty-view policy before
+  mutation, so modified linked buffers produce explicit errors.
+- Writes/edits with an unmodified visiting buffer route through that buffer,
+  save it, and attempt to revert other unmodified linked buffers.
+- =resource_sync_status= is registered for both file inspection and file
+  mutation capabilities, so read-only file access still has coherence inspection.
+- The generic coherence model is provider-shaped rather than a persisted global
+  graph, keeping concrete discovery/sync mechanics in the base adapter.
+- Existing no-buffer file operations are preserved by the covered tests.
+
+* Verification performed during review
+
+Focused tests:
+
+#+begin_src sh
+eldev test -f test/e-resource-coherence-test.el -f test/e-base-tools-test.el -f test/e-file-capabilities-test.el -f test/e-base-test.el -f test/e-emacs-tools-test.el
+#+end_src
+
+Result:
+
+#+begin_example
+Ran 46 tests, 46 results as expected, 0 unexpected
+#+end_example
+
+Reloaded the running Emacs before live probes:
+
+#+begin_src emacs-lisp
+(progn (require 'e-dev) (e-dev-reload "/Users/dimitrivorona/projects/elisp/e"))
+#+end_src
+
+Result:
+
+#+begin_example
+"/Users/dimitrivorona/projects/elisp/e/"
+#+end_example
+
+Live happy-path probe after reload:
+
+- Created a temp file and opened it with =find-file-noselect=.
+- =write file://sample.txt= with the live buffer open returned =ok= and reported
+  routing through the live buffer.
+- =edit file://sample.txt= then also routed through the live buffer and saved it.
+- Adding unsaved buffer text and attempting another =file://= write returned an
+  error.
+- =resource_sync_status= reported =needs-save= for the modified linked buffer.
+
+Observed summary:
+
+#+begin_example
+:write-status ok
+:edit-status ok
+:buffer "new beta unsaved"
+:disk "new beta"
+:conflict-status error
+:sync-status needs-save
+#+end_example
+
+Live stale-buffer probe after reload:
+
+- Created a temp file containing =old disk=.
+- Opened a live visiting buffer and left it unmodified.
+- Changed the file on disk to =old external= behind Emacs.
+- =resource_sync_status= correctly reported =stale=.
+- =edit file://sample.txt= replacing =old disk= with =new agent= nevertheless
+  succeeded by editing the stale buffer and saving it.
+- Disk ended as =new agent=, so the newer external disk content was lost.
+
+Observed summary:
+
+#+begin_example
+:status-before stale
+:edit-status ok
+:buffer "new agent"
+:disk "new agent"
+#+end_example
+
+* Findings
+
+** TODO High: =file://= edits can overwrite newer disk content through a stale unmodified buffer
+
+=e-base-tools--edit-file-resource= computes the coherence group and checks only
+for dirty linked views.  A stale but unmodified visiting buffer is not dirty, so
+it passes the conflict check.  The edit then calls =e-base-tools--file-text=,
+which prefers the live buffer even when its coherence view is =stale=.  Finally,
+=e-base-tools--save-buffer-content-to-file= saves that stale edited buffer back
+to disk.
+
+That can lose newer disk content changed outside Emacs.  The live probe above
+reproduced this exact sequence.
+
+Expected behavior should be one of:
+
+- reject =file://= writes/edits when any linked buffer view is =stale= unless the
+  request explicitly targets that buffer;
+- or, for =file://= edits, apply the exact replacement against disk content and
+  then update/revert unmodified live buffers;
+- or make another explicit policy decision that prevents silent overwrite of the
+  newer representation.
+
+Add regression coverage for at least:
+
+1. stale unmodified visiting buffer + direct =file://= edit;
+2. stale unmodified visiting buffer + direct =file://= write, if the intended
+   policy is to reject stale linked views for all file mutations;
+3. =resource_sync_status= showing =stale= before the attempted mutation.
+
+** TODO Medium: aggregate coherence status lets =needs-save= mask =conflict=
+
+=e-resource-coherence-group-status= currently checks =needs-save= before
+=conflict=.  If a provider ever emits one view with =conflict= and another with
+=needs-save=, the group reports =needs-save= instead of =conflict=.
+
+Since conflict is the more severe/action-blocking state, it should dominate the
+aggregate status.  Add a generic test proving conflict precedence.
+
+** TODO Medium: buffer mutation results do not report enough file-backed persistence state
+
+The plan says buffer writes/edits for file-backed buffers should return whether
+the buffer is now modified and whether the file was saved.  The current
+=buffer://= resource write/edit paths in =e-emacs-tools.el= return =:saved nil=,
+but do not include =:modified=, =:file=, or =:file-backed=.
+
+That keeps existing semantics, but the result is still too weak for the feature's
+final-agent-note expectation.  Add result fields and tests for file-backed buffer
+write/edit outcomes, while preserving the rule that buffer mutation does not
+implicitly save.
+
+** TODO Low: conflict messages are wrapped/quoted when re-signaled through base tools
+
+The generic dirty-view conflict is re-signaled as =e-base-tools-coherence-conflict=.
+The resulting tool output observed live was shaped like:
+
+#+begin_example
+Base file resource conflicts with a live Emacs buffer: "Cannot edit file://..."
+#+end_example
+
+The important information is present, but the extra condition prefix and quoted
+nested message make it less clear than the plan's direct actionable example.
+Consider preserving the generic message directly in the base tool error text.
+
+** TODO Low: =resource_sync_status= uses =:disk-readable= for file existence
+
+=e-base-tools--sync-status-group->result= sets =:disk-readable= from
+=file-exists-p=.  That field name implies readability, but unreadable existing
+files would still report true while =:disk-error= carries the real read failure.
+Either rename it to =:disk-exists= or compute actual readability.
+
+* Architecture review
+
+The generic model is broader than the initial plan's "promote to generic only
+when more schemes need the same contract" wording, but the current shape is still
+reasonably contained:
+
+- The core model owns scheme/provider dispatch, view metadata, aggregate status,
+  dirty-view policy, preferred-view selection, and filtering.
+- The base adapter owns concrete file/buffer discovery, disk reads, buffer
+  mutation, save/revert behavior, and user-facing tool registration.
+- Presentation shells do not need to know about file/buffer coherence.
+
+The main architecture risk is not the provider shape itself; it is that the
+first concrete adapter currently treats =stale= as non-blocking for mutation.
+That is a policy gap in the owning adapter/generic dirty policy boundary, not a
+presentation concern.
+
+Future work should avoid expanding the generic model until a second real linked
+resource relation needs it.  For now, the needed change is a narrower conflict /
+stale-write policy and tests.
+
+* Design self-check
+
+1. If this work stopped here, the project is better than before for the common
+   modified-buffer conflict and live-buffer sync paths, but not safe enough to
+   mark done because stale unmodified buffers can overwrite newer disk content.
+2. This moves toward coherent resource operations where agents cannot silently
+   desynchronize live Emacs state and persisted files.
+3. Stable decisions: file-backed buffers are linked views of files; modified
+   buffers are conflicts; live reads are preferred.  Unsettled decision: how
+   stale unmodified buffers should be handled during mutation.  That uncertainty
+   is local to the base adapter/generic dirty policy.
+4. The resource/tool layer owns this behavior because it observes reads, writes,
+   edits, buffers, saves, and reverts.
+5. Coupling is mostly reduced by keeping presentation out of coherence policy;
+   the new generic core surface should remain narrow until another provider
+   needs it.
+6. No new dependency from stable policy to presentation was found.  The base
+   adapter depends on Emacs buffer APIs because it is the concrete live-buffer
+   provider.
+7. File and buffer side effects remain in adapter/tool code, not in the generic
+   model.
+8. The provider/view/group abstraction is semantically real, but conflict/status
+   precedence needs tightening to be safely substitutable across providers.
+9. Compatibility expectations mostly hold: no-buffer file operations still work,
+   and buffer writes still do not save implicitly.  The stale-buffer edit case is
+   the compatibility/safety gap.
+10. No legacy code was identified for removal in this slice.
+11. Expected modified-buffer conflicts surface clearly.  Stale-buffer mutation is
+    currently not handled as an expected error and should be.
+12. Existing tests prove happy paths and modified conflicts.  Missing tests are
+    stale mutation rejection/handling, conflict status precedence, and file-backed
+    buffer mutation result metadata.
 
 * Unresolved
 
-None.
+- [ ] Fix stale unmodified buffer handling for direct =file://= mutation.
+- [ ] Make aggregate =conflict= status dominate =needs-save=.
+- [ ] Include file-backed persistence metadata in =buffer://= write/edit results.
+- [ ] Clean up wrapped/quoted base coherence conflict messages.
+- [ ] Rename or correct =resource_sync_status= =:disk-readable=.
