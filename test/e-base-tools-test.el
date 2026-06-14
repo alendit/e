@@ -361,6 +361,69 @@ When READ-ONLY is non-nil, file resources only support reads."
         (kill-buffer buffer))
       (delete-directory directory t))))
 
+(ert-deftest e-base-tools-test-write-file-conflicts-with-stale-live-buffer ()
+  "Direct file writes fail when a visiting buffer is stale on disk."
+  (let* ((directory (make-temp-file "e-base-write-stale-" t))
+         (file (expand-file-name "sample.txt" directory))
+         (registry (e-base-tools-test--resource-tools directory))
+         (status-registry (e-tools-registry-create))
+         buffer)
+    (unwind-protect
+        (progn
+          (e-base-tools-register-resource-sync-status status-registry directory)
+          (write-region "disk" nil file nil 'silent)
+          (setq buffer (find-file-noselect file))
+          (with-current-buffer buffer
+            (set-buffer-modified-p nil))
+          (write-region "disk changed" nil file nil 'silent)
+          (let ((status (e-base-tools-test--execute
+                         status-registry "resource_sync_status"
+                         '(:uri "file://sample.txt"))))
+            (should (eq (plist-get (plist-get status :content) :status)
+                        'stale)))
+          (let ((result (e-base-tools-test--execute
+                         registry "write"
+                         '(:uri "file://sample.txt" :content "new"))))
+            (should (equal (plist-get result :status) 'error))
+            (should (string-match-p "stale"
+                                    (plist-get result :content)))
+            (should (equal (with-temp-buffer
+                             (insert-file-contents file)
+                             (buffer-string))
+                           "disk changed"))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (delete-directory directory t))))
+
+(ert-deftest e-base-tools-test-edit-file-conflicts-with-stale-live-buffer ()
+  "Direct file edits fail when a visiting buffer is stale on disk."
+  (let* ((directory (make-temp-file "e-base-edit-stale-" t))
+         (file (expand-file-name "sample.txt" directory))
+         (registry (e-base-tools-test--resource-tools directory))
+         buffer)
+    (unwind-protect
+        (progn
+          (write-region "disk" nil file nil 'silent)
+          (setq buffer (find-file-noselect file))
+          (with-current-buffer buffer
+            (set-buffer-modified-p nil))
+          (write-region "disk changed" nil file nil 'silent)
+          (let ((result (e-base-tools-test--execute
+                         registry "edit"
+                         '(:uri "file://sample.txt"
+                           :edits ((:oldText "disk"
+                                    :newText "new"))))))
+            (should (equal (plist-get result :status) 'error))
+            (should (string-match-p "stale"
+                                    (plist-get result :content)))
+            (should (equal (with-temp-buffer
+                             (insert-file-contents file)
+                             (buffer-string))
+                           "disk changed"))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (delete-directory directory t))))
+
 (ert-deftest e-base-tools-test-write-file-routes-through-unmodified-live-buffer ()
   "Direct file writes update and save a linked unmodified buffer."
   (let* ((directory (make-temp-file "e-base-write-live-" t))
@@ -414,7 +477,10 @@ When READ-ONLY is non-nil, file resources only support reads."
                          registry "resource_sync_status"
                          '(:uri "file://sample.txt"))))
             (should (eq (plist-get (plist-get result :content) :status)
-                        'stale))))
+                        'stale))
+            (should (plist-get (plist-get result :content) :disk-exists))
+            (should-not (plist-member (plist-get result :content)
+                                      :disk-readable))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer))
       (delete-directory directory t))))

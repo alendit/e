@@ -56,6 +56,18 @@
                               :status 'stale))))
               'stale)))
 
+(ert-deftest e-resource-coherence-test-conflict-status-dominates-needs-save ()
+  "Conflict is the highest-severity aggregate status."
+  (should (eq (e-resource-coherence-group-status
+               (e-resource-coherence-group-create
+                :views (list (e-resource-coherence-view-create
+                              :uri "demo://a"
+                              :status 'needs-save)
+                             (e-resource-coherence-view-create
+                              :uri "demo://b"
+                              :status 'conflict))))
+              'conflict)))
+
 (ert-deftest e-resource-coherence-test-preferred-view-uses-live-visibility ()
   "Preferred view selection is generic over view metadata."
   (let ((visible (e-resource-coherence-view-create

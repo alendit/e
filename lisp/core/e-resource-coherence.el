@@ -125,8 +125,8 @@ Expected keys are `:canonical-uri', `:subject-uri', `:views', and optional
   (let ((statuses (mapcar #'e-resource-coherence-view-status
                           (e-resource-coherence-group-views group))))
     (cond
-     ((memq 'needs-save statuses) 'needs-save)
      ((memq 'conflict statuses) 'conflict)
+     ((memq 'needs-save statuses) 'needs-save)
      ((memq 'stale statuses) 'stale)
      ((memq 'unknown statuses) 'unknown)
      ((memq 'missing statuses) 'missing)

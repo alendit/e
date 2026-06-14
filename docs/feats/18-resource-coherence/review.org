@@ -3,7 +3,7 @@
 
 * Status
 
-In-review.
+Done.
 
 * Review summary
 
@@ -253,8 +253,15 @@ stale-write policy and tests.
 
 * Unresolved
 
-- [ ] Fix stale unmodified buffer handling for direct =file://= mutation.
-- [ ] Make aggregate =conflict= status dominate =needs-save=.
-- [ ] Include file-backed persistence metadata in =buffer://= write/edit results.
-- [ ] Clean up wrapped/quoted base coherence conflict messages.
-- [ ] Rename or correct =resource_sync_status= =:disk-readable=.
+- [X] Fix stale unmodified buffer handling for direct =file://= mutation.
+- [X] Make aggregate =conflict= status dominate =needs-save=.
+- [X] Include file-backed persistence metadata in =buffer://= write/edit results.
+- [X] Clean up wrapped/quoted base coherence conflict messages.
+- [X] Rename or correct =resource_sync_status= =:disk-readable=.
+
+Follow-up resolution: direct =file://= write/edit now rejects stale linked
+buffers instead of applying edits through stale live content; aggregate
+coherence status now reports =conflict= before =needs-save=; =buffer://=
+write/edit results include =:modified=, =:file=, and =:file-backed= metadata;
+base coherence conflicts now surface the direct actionable message; and
+=resource_sync_status= reports =:disk-exists=.

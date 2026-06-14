@@ -396,7 +396,17 @@ TOTAL-LINES is the full file line count.  START-LINE is 1-based."
 
 (defun e-base-tools--signal-base-coherence-conflict (err)
   "Signal ERR as a base-tools coherence conflict for compatibility."
-  (signal 'e-base-tools-coherence-conflict (cdr err)))
+  (signal 'user-error (cdr err)))
+
+(defun e-base-tools--stale-buffer-views (group &optional except-uri)
+  "Return stale buffer views in GROUP, optionally excluding EXCEPT-URI."
+  (seq-filter
+   (lambda (view)
+     (and (eq (plist-get view :kind) 'buffer)
+          (eq (plist-get view :status) 'stale)
+          (not (equal (e-resource-coherence-view-uri view)
+                      except-uri))))
+   (e-resource-coherence-group-views group)))
 
 (defun e-base-tools--check-coherence-write-conflicts
     (group subject-uri action)
@@ -404,7 +414,19 @@ TOTAL-LINES is the full file line count.  START-LINE is 1-based."
   (condition-case err
       (e-resource-coherence-conflict-if-dirty group subject-uri action)
     (e-resource-coherence-conflict
-     (e-base-tools--signal-base-coherence-conflict err))))
+     (e-base-tools--signal-base-coherence-conflict err)))
+  (when-let ((stale (e-base-tools--stale-buffer-views group subject-uri)))
+    (signal
+     'user-error
+     (list
+      (format
+       "Cannot %s %s directly because linked buffer(s) %s are stale. Reload or sync the stale buffer before mutating the file."
+       (or action "edit")
+       (or subject-uri
+           (plist-get group :subject-uri)
+           (plist-get group :canonical-uri)
+           "resource")
+       (e-resource-coherence-view-labels stale))))))
 
 (defun e-base-tools--file-text (path)
   "Return coherent text contents of PATH.
@@ -575,7 +597,7 @@ through file:// reads."
            :views (e-resource-coherence-group-views group))
      (when-let ((file (plist-get (plist-get group :metadata) :file)))
        (list :file file
-             :disk-readable (file-exists-p file)
+             :disk-exists (file-exists-p file)
              :disk-error (plist-get (plist-get group :metadata) :disk-error)
              :buffers (mapcar (lambda (view)
                                 (append (copy-sequence

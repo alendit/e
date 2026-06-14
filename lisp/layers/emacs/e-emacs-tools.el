@@ -225,19 +225,22 @@ When VISIBLE-ONLY is non-nil, include only buffers visible in windows."
     (with-current-buffer (get-buffer-create name)
       (erase-buffer)
       (insert content)
-      (list :name name
-            :chars (length content)
-            :saved nil))))
+      (append
+       (list :chars (length content)
+             :saved nil)
+       (e-emacs-tools--buffer-metadata (current-buffer))))))
 
 (defun e-emacs-tools--edit-buffer-resource (uri edits)
   "Apply exact resource EDITS to parsed buffer URI."
   (let* ((name (e-emacs-tools--buffer-resource-name uri))
          (normalized-edits (e-emacs-tools--normalize-edits edits)))
     (with-current-buffer (e-emacs-tools--buffer name)
-      (list :name name
-            :replacements (e-emacs-tools--apply-edits-to-current-buffer
-                           normalized-edits)
-            :saved nil))))
+      (let ((replacements (e-emacs-tools--apply-edits-to-current-buffer
+                           normalized-edits)))
+        (append
+         (list :replacements replacements
+               :saved nil)
+         (e-emacs-tools--buffer-metadata (current-buffer)))))))
 
 (defun e-emacs-tools--buffer-read-method ()
   "Return a buffer read resource method."
