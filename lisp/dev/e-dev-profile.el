@@ -37,13 +37,19 @@
 (defvar e-dev-profile--latest-file nil
   "Most recent JSONL profiling trace file.")
 
+(defvar e-dev-profile--file-sequence 0
+  "Monotonic suffix used to keep trace file names unique.")
+
 (defun e-dev-profile-enabled-p ()
   "Return non-nil when developer profiling is enabled."
   e-dev-profile--enabled)
 
 (defun e-dev-profile--timestamp-file-name ()
   "Return a timestamped JSONL trace file name."
-  (format-time-string "%Y%m%d-%H%M%S.jsonl"))
+  (setq e-dev-profile--file-sequence (1+ e-dev-profile--file-sequence))
+  (format "%s-%06d.jsonl"
+          (format-time-string "%Y%m%d-%H%M%S")
+          e-dev-profile--file-sequence))
 
 (defun e-dev-profile--metadata-alist (metadata)
   "Return METADATA as an alist suitable for JSON encoding."
@@ -146,16 +152,22 @@ written with compact error metadata and the original error is re-signaled."
 (defun e-dev-profile-stop ()
   "Stop the active developer profiling trace and return the latest file path."
   (interactive)
-  (let ((file (or e-dev-profile--current-file e-dev-profile--latest-file)))
-    (setq e-dev-profile--enabled nil
-          e-dev-profile--current-file nil
-          e-dev-profile--latest-file file)
+  (let ((file (e-dev-profile-stop-trace)))
     (when (called-interactively-p 'interactive)
       (if file
           (message "Stopped e profile trace: %s" (abbreviate-file-name file))
         (message "No e profile trace was active"))
       (when file
         (e-dev-profile-report file)))
+    file))
+
+(defun e-dev-profile-stop-trace ()
+  "Stop trace recording without opening a report buffer.
+Return the latest trace file path, or nil when no trace has been recorded."
+  (let ((file (or e-dev-profile--current-file e-dev-profile--latest-file)))
+    (setq e-dev-profile--enabled nil
+          e-dev-profile--current-file nil
+          e-dev-profile--latest-file file)
     file))
 
 (defun e-dev-profile--read-json-lines (file)
@@ -214,10 +226,21 @@ When FILE is nil, use the latest trace file."
           :aggregates (e-dev-profile--aggregate-records records)
           :slowest slowest)))
 
+(defun e-dev-profile--format-timestamp (timestamp)
+  "Return TIMESTAMP as a compact local time string."
+  (if timestamp
+      (format-time-string "%Y-%m-%d %H:%M:%S" timestamp)
+    "-"))
+
 (defun e-dev-profile-format-report (report)
   "Return a human-readable string for profiling REPORT."
   (let ((lines (list (format "Trace: %s" (or (plist-get report :file) "<none>"))
                      (format "Events: %d" (plist-get report :event-count))
+                     (format "Range: %s -> %s"
+                             (e-dev-profile--format-timestamp
+                              (plist-get report :started-at))
+                             (e-dev-profile--format-timestamp
+                              (plist-get report :finished-at)))
                      ""
                      "Aggregates:")))
     (dolist (entry (plist-get report :aggregates))

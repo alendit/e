@@ -3,7 +3,7 @@
 
 * Status
 
-In-review.
+Done.
 
 Review pass: <2026-06-14 Sun>.
 
@@ -15,11 +15,11 @@ small dev-owned helper, and reports aggregate slowest events and totals.  The
 review verified the recorder and harness/session integration tests, plus a live
 probe in the running Emacs.
 
-The implementation is useful enough for performance investigations, but a few
-plan items remain incomplete before marking =Done=: prompt/turn lifecycle and
-some chat presentation spans are not instrumented, trace file names can collide
-when two traces start in the same second, and the report omits the wall-clock
-range promised by the plan.
+The implementation is useful enough for performance investigations, and the
+review follow-up resolved the remaining feature-scope gaps: prompt/turn,
+message/activity, and composer spans are instrumented; trace file names no
+longer collide during rapid starts; formatted reports include the wall-clock
+range; and scripted stops can disable tracing without opening a report.
 
 * Scope reviewed
 
@@ -135,7 +135,7 @@ Observed summary:
 
 * Findings
 
-** TODO Medium: prompt/turn lifecycle spans from the plan are not instrumented
+** DONE Medium: prompt/turn lifecycle spans from the plan are not instrumented
 
 The plan's first instrumentation set called out harness prompt/turn entrypoints,
 backend callback handling where local, message append, and durable activity
@@ -144,20 +144,24 @@ append.  Current harness instrumentation covers =harness.context= and
 =e-harness--run-prompt-turn= / async turn start, provider callback handling, or
 harness-owned message/activity append boundaries.
 
-This is not required for the current probe to be useful, but it falls short of
-the stated feature scope.  Either add the missing spans with narrow tests or
-update the plan/review to explicitly defer them.
+Resolved by adding scalar-only profiling spans for =harness.prompt=,
+=harness.prompt-async=, =harness.prompt-turn=,
+=harness.prompt-turn-async-start=, =harness.message-append=, and
+=harness.activity-append=.  Provider callback internals remain covered through
+the prompt-turn and emitted activity/message boundaries rather than separate
+callback events, keeping the first profiling slice bounded.
 
-** TODO Medium: chat instrumentation does not cover composer operations called out in the plan
+** DONE Medium: chat instrumentation does not cover composer operations called out in the plan
 
 The plan specifically listed composer insert/delete/restore spans.  Current chat
 instrumentation covers status, activity redraw, render-event, transient render,
 insert-entry, and refresh-session-display, but not the composer
 insert/delete/restore helpers as distinct events.
 
-Add those spans/tests or document that composer profiling is deferred.
+Resolved by adding =chat.composer-insert=, =chat.composer-delete=, and
+=chat.composer-restore= spans with only session, buffer, and boolean metadata.
 
-** TODO Medium: starting two traces in the same second reuses the same file path
+** DONE Medium: starting two traces in the same second reuses the same file path
 
 =e-dev-profile--timestamp-file-name= formats names at one-second granularity.
 Starting two traces quickly can return the same path and append unrelated trace
@@ -176,15 +180,19 @@ including subsecond time, a sequence, or a random suffix.  Add a regression test
 that two immediate starts produce distinct paths or deliberately rotate/close the
 previous trace according to a documented policy.
 
-** TODO Low: report formatter omits wall-clock trace range
+Resolved by adding a monotonic sequence suffix to trace file names and covering
+rapid consecutive starts in =e-dev-profile-test-rapid-starts-use-unique-files=.
+
+** DONE Low: report formatter omits wall-clock trace range
 
 The plan says reports should include the wall-clock trace range.  The report data
 records =:started-at= and =:finished-at=, but =e-dev-profile-format-report=
 prints only trace path, event count, aggregates, and slowest spans.
 
-Add a compact range/duration line to the report and a test for it.
+Resolved by adding a compact =Range:= line and
+=e-dev-profile-test-format-report-includes-range=.
 
-** TODO Low: =e-dev-profile-stop= opens a report as a side effect
+** DONE Low: =e-dev-profile-stop= opens a report as a side effect
 
 =e-dev-profile-stop= disables profiling and then opens the report buffer when a
 trace file exists.  That may be fine for an interactive command, but the plan
@@ -192,6 +200,10 @@ phrases stop as disabling/flushing and separately provides =e-dev-profile-report
 Consider splitting the implementation into a noninteractive stop helper and an
 interactive command that opens the report, so scripted probes can stop without
 presentation side effects.
+
+Resolved by adding =e-dev-profile-stop-trace= for scripted stop-only callers.
+The interactive =e-dev-profile-stop= command still opens the report for user
+convenience.
 
 * Architecture review
 
@@ -237,11 +249,11 @@ Do not expand the profiler into always-on telemetry or session transcript state.
 
 * Unresolved
 
-- [ ] Instrument or explicitly defer prompt/turn/backend callback and
+- [X] Instrument or explicitly defer prompt/turn/backend callback and
   message/activity append boundaries from the plan.
-- [ ] Instrument or explicitly defer chat composer insert/delete/restore spans.
-- [ ] Make trace file names unique across rapid consecutive starts.
-- [ ] Include wall-clock trace range in formatted reports.
-- [ ] Consider separating noninteractive stop from interactive report display.
-- [ ] Rerun chat/touched-surface tests after the current dirty worktree parse
+- [X] Instrument or explicitly defer chat composer insert/delete/restore spans.
+- [X] Make trace file names unique across rapid consecutive starts.
+- [X] Include wall-clock trace range in formatted reports.
+- [X] Consider separating noninteractive stop from interactive report display.
+- [X] Rerun chat/touched-surface tests after the current dirty worktree parse
   error is resolved.

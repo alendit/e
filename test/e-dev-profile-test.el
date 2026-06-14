@@ -35,7 +35,8 @@
           (e-dev-profile-directory directory)
           (e-dev-profile--enabled nil)
           (e-dev-profile--current-file nil)
-          (e-dev-profile--latest-file nil))
+          (e-dev-profile--latest-file nil)
+          (e-dev-profile--file-sequence 0))
      ,@body))
 
 (ert-deftest e-dev-profile-test-disabled-record-does-not-write ()
@@ -60,6 +61,16 @@
       (should-not e-dev-profile--current-file)
       (should (equal e-dev-profile--latest-file file))
       (should (equal (e-dev-profile-stop) file)))))
+
+(ert-deftest e-dev-profile-test-rapid-starts-use-unique-files ()
+  "Trace starts in the same second do not reuse file paths."
+  (e-dev-profile-test--with-temp-profile
+    (let ((first (e-dev-profile-start)))
+      (e-dev-profile-stop-trace)
+      (let ((second (e-dev-profile-start)))
+        (should-not (equal first second))
+        (should (string-match-p "-000001\\.jsonl\\'" first))
+        (should (string-match-p "-000002\\.jsonl\\'" second))))))
 
 (ert-deftest e-dev-profile-test-record-writes-compact-json ()
   "Enabled profiling writes one compact JSON object per line."
@@ -159,6 +170,32 @@
         (should (= (alist-get 'duration-ms (car slowest)) 7.0))
         (should (string-match-p "chat.status"
                                 (e-dev-profile-format-report report)))))))
+
+(ert-deftest e-dev-profile-test-format-report-includes-range ()
+  "Human-readable reports show the wall-clock trace range."
+  (let* ((report (list :file "/tmp/e-trace.jsonl"
+                       :event-count 2
+                       :started-at 1780000000.0
+                       :finished-at 1780000010.0
+                       :aggregates nil
+                       :slowest nil))
+         (formatted (e-dev-profile-format-report report)))
+    (should (string-match-p
+             (format "Range: %s -> %s"
+                     (e-dev-profile--format-timestamp 1780000000.0)
+                     (e-dev-profile--format-timestamp 1780000010.0))
+             formatted))))
+
+(ert-deftest e-dev-profile-test-stop-trace-does-not-open-report ()
+  "Scripted trace stops do not show presentation buffers."
+  (e-dev-profile-test--with-temp-profile
+    (let ((file (e-dev-profile-start))
+          (report-count 0))
+      (cl-letf (((symbol-function 'e-dev-profile-report)
+                 (lambda (&optional _file)
+                   (setq report-count (1+ report-count)))))
+        (should (equal (e-dev-profile-stop-trace) file))
+        (should (= report-count 0))))))
 
 (ert-deftest e-dev-profile-test-report-tolerates-empty-trace ()
   "Report data remains useful when a trace was started but wrote no events."

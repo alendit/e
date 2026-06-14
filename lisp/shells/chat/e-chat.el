@@ -1211,49 +1211,60 @@ FACE is applied when non-nil.  PROPERTIES are added with text properties."
 (defun e-chat--restore-composer-state (state)
   "Restore an editable composer from STATE.
 When STATE is nil, insert an empty composer."
-  (unless e-chat--composer-restore-inhibited
-    (if (not state)
-        (e-chat--insert-composer)
-      (let ((offset (plist-get state :point-offset)))
-        (e-chat--insert-composer (plist-get state :text) (not offset))
-        (if offset
-            (goto-char (min (point-max)
-                            (+ (marker-position e-chat--composer-start-marker)
-                               offset)))
-          (let ((point (plist-get state :point))
-                (window (plist-get state :window))
-                (window-point (plist-get state :window-point))
-                (window-start (plist-get state :window-start)))
-            (when point
-              (goto-char (min point (point-max))))
-            (when (window-live-p window)
-              (when window-start
-                (set-window-start window
-                                  (min window-start (point-max))
-                                  t))
-              (when window-point
-                (set-window-point window
-                                  (min window-point (point-max)))))))))))
+  (e-chat--profile-call
+   'chat.composer-restore
+   (list :session-id e-chat-session-id
+         :buffer-name (buffer-name)
+         :metadata (list :has-state (and state t)))
+   (lambda ()
+     (unless e-chat--composer-restore-inhibited
+       (if (not state)
+           (e-chat--insert-composer)
+         (let ((offset (plist-get state :point-offset)))
+           (e-chat--insert-composer (plist-get state :text) (not offset))
+           (if offset
+               (goto-char (min (point-max)
+                               (+ (marker-position e-chat--composer-start-marker)
+                                  offset)))
+             (let ((point (plist-get state :point))
+                   (window (plist-get state :window))
+                   (window-point (plist-get state :window-point))
+                   (window-start (plist-get state :window-start)))
+               (when point
+                 (goto-char (min point (point-max))))
+               (when (window-live-p window)
+                 (when window-start
+                   (set-window-start window
+                                     (min window-start (point-max))
+                                     t))
+                 (when window-point
+                   (set-window-point window
+                                     (min window-point (point-max)))))))))))))
 
 (defun e-chat--delete-composer ()
   "Delete the active composer from the current chat buffer.
 Return non-nil when a composer was removed."
-  (let ((start (or (and (markerp e-chat--composer-spacer-marker)
-                        (marker-position e-chat--composer-spacer-marker))
-                   (and (markerp e-chat--transcript-end-marker)
-                        (marker-position e-chat--transcript-end-marker))
-                   (and (markerp e-chat--composer-start-marker)
-                        (marker-position e-chat--composer-start-marker)))))
-    (when start
-      (let ((inhibit-read-only t))
-        (let ((e-chat--composer-scroll-suppressed t))
-          (delete-region start (point-max)))
-        (set-marker e-chat--transcript-end-marker nil)
-        (set-marker e-chat--composer-start-marker nil)
-        (when (markerp e-chat--composer-spacer-marker)
-          (set-marker e-chat--composer-spacer-marker nil))
-        (setq e-chat--composer-scroll-needed nil)
-        t))))
+  (e-chat--profile-call
+   'chat.composer-delete
+   (list :session-id e-chat-session-id
+         :buffer-name (buffer-name))
+   (lambda ()
+     (let ((start (or (and (markerp e-chat--composer-spacer-marker)
+                           (marker-position e-chat--composer-spacer-marker))
+                      (and (markerp e-chat--transcript-end-marker)
+                           (marker-position e-chat--transcript-end-marker))
+                      (and (markerp e-chat--composer-start-marker)
+                           (marker-position e-chat--composer-start-marker)))))
+       (when start
+         (let ((inhibit-read-only t))
+           (let ((e-chat--composer-scroll-suppressed t))
+             (delete-region start (point-max)))
+           (set-marker e-chat--transcript-end-marker nil)
+           (set-marker e-chat--composer-start-marker nil)
+           (when (markerp e-chat--composer-spacer-marker)
+             (set-marker e-chat--composer-spacer-marker nil))
+           (setq e-chat--composer-scroll-needed nil)
+           t))))))
 
 (defun e-chat--sanitize-composer-text (text)
   "Return TEXT without leaked transcript presentation properties."
@@ -1312,52 +1323,59 @@ Return non-nil when a composer was removed."
 (defun e-chat--insert-composer (&optional text preserve-focus)
   "Insert an editable composer at the end of the current chat buffer.
 When PRESERVE-FOCUS is non-nil, do not move point or window focus to it."
-  (e-chat--disable-completion)
-  (let ((saved-point (point))
-        (saved-window (e-chat--visible-window)))
-    (e-chat--delete-composer)
-    (let ((inhibit-read-only t)
-          (e-chat--composer-scroll-suppressed t))
-      (goto-char (point-max))
-      (unless (or (bobp) (bolp))
-        (insert "\n"))
-      (setq e-chat--composer-spacer-marker (point-marker))
-      (set-marker-insertion-type e-chat--composer-spacer-marker nil)
-      (e-chat--insert-protected
-       (concat e-chat--composer-separator "\n")
-       'e-chat-separator-face)
-      (e-chat--insert-protected
-       e-chat--composer-glyph
-       'e-chat-composer-face
-       '(e-chat-composer t))
-      (setq e-chat--composer-start-marker (point-marker))
-      (set-marker-insertion-type e-chat--composer-start-marker nil)
-      (when text
-        (insert (e-chat--sanitize-composer-text text)))
-      (let* ((transcript-lines
-              (save-excursion
-                (goto-char e-chat--composer-spacer-marker)
-                (e-chat--transcript-screen-lines)))
-             (composer-lines
-              (e-chat--screen-lines e-chat--composer-spacer-marker (point-max)))
-             (spacer-lines
-              (e-chat--composer-spacer-lines transcript-lines composer-lines)))
-        (goto-char e-chat--composer-spacer-marker)
-        (when (> spacer-lines 0)
-          (e-chat--insert-protected
-           (make-string spacer-lines ?\n)
-           'e-chat-separator-face)))
-      (setq e-chat--transcript-end-marker (point-marker))
-      (set-marker-insertion-type e-chat--transcript-end-marker nil)
-      (goto-char (point-max))
-      (setq e-chat--composer-scroll-needed nil)
-      (if preserve-focus
-          (progn
-            (goto-char (min saved-point (point-max)))
-            (when (window-live-p saved-window)
-              (set-window-point saved-window
-                                (min saved-point (point-max)))))
-        (e-chat--show-composer)))))
+  (e-chat--profile-call
+   'chat.composer-insert
+   (list :session-id e-chat-session-id
+         :buffer-name (buffer-name)
+         :metadata (list :has-text (and text t)
+                         :preserve-focus (and preserve-focus t)))
+   (lambda ()
+     (e-chat--disable-completion)
+     (let ((saved-point (point))
+           (saved-window (e-chat--visible-window)))
+       (e-chat--delete-composer)
+       (let ((inhibit-read-only t)
+             (e-chat--composer-scroll-suppressed t))
+         (goto-char (point-max))
+         (unless (or (bobp) (bolp))
+           (insert "\n"))
+         (setq e-chat--composer-spacer-marker (point-marker))
+         (set-marker-insertion-type e-chat--composer-spacer-marker nil)
+         (e-chat--insert-protected
+          (concat e-chat--composer-separator "\n")
+          'e-chat-separator-face)
+         (e-chat--insert-protected
+          e-chat--composer-glyph
+          'e-chat-composer-face
+          '(e-chat-composer t))
+         (setq e-chat--composer-start-marker (point-marker))
+         (set-marker-insertion-type e-chat--composer-start-marker nil)
+         (when text
+           (insert (e-chat--sanitize-composer-text text)))
+         (let* ((transcript-lines
+                 (save-excursion
+                   (goto-char e-chat--composer-spacer-marker)
+                   (e-chat--transcript-screen-lines)))
+                (composer-lines
+                 (e-chat--screen-lines e-chat--composer-spacer-marker (point-max)))
+                (spacer-lines
+                 (e-chat--composer-spacer-lines transcript-lines composer-lines)))
+           (goto-char e-chat--composer-spacer-marker)
+           (when (> spacer-lines 0)
+             (e-chat--insert-protected
+              (make-string spacer-lines ?\n)
+              'e-chat-separator-face)))
+         (setq e-chat--transcript-end-marker (point-marker))
+         (set-marker-insertion-type e-chat--transcript-end-marker nil)
+         (goto-char (point-max))
+         (setq e-chat--composer-scroll-needed nil)
+         (if preserve-focus
+             (progn
+               (goto-char (min saved-point (point-max)))
+               (when (window-live-p saved-window)
+                 (set-window-point saved-window
+                                   (min saved-point (point-max)))))
+           (e-chat--show-composer)))))))
 
 (defun e-chat--ensure-composer ()
   "Ensure the current chat buffer has an active composer."
