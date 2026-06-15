@@ -15,7 +15,11 @@
 (require 'e-layers)
 
 (defconst e-base-instructions
-  "Use OS base file and shell tools for workspace files and shell commands."
+  "Use OS base file and shell tools for workspace files and shell commands.
+
+## Gotchas
+
+- Do not run shell commands that traverse the whole filesystem, such as `find /`, `grep -r /`, or `ls -R /`. They are slow, flood output, and rarely answer the question. Scope searches to the working directory or a known subtree (for example `find . -name ...`)."
   "Default instructions contributed by the OS base guidance capability.")
 
 (defun e-base-layer-create (&optional directory)
