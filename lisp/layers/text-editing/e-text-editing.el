@@ -13,6 +13,7 @@
 
 ;;; Code:
 
+(require 'e-annotation-tools)
 (require 'e-capabilities)
 (require 'e-layers)
 (require 'e-skills)
@@ -79,7 +80,8 @@
    :id 'text-editing
    :name "Text Editing"
    :capabilities
-   (list (e-text-editing-annotations-capability-create))))
+   (list (e-text-editing-annotations-capability-create)
+         (e-annotation-tools-capability-create))))
 
 (provide 'e-text-editing)
 
