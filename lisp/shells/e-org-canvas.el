@@ -876,6 +876,12 @@ has no visible window."
                 (ignore-errors
                   (recenter -1))))))))))
 
+(defun e-org-canvas--input-follow-bottom-on-redraw (&optional _turn-id)
+  "Keep this input pane pinned to the bottom after a running-status redraw.
+Registered on `e-chat--running-status-rendered-hook' so timer-driven
+progress redraws follow output instead of staying pinned at the top."
+  (e-org-canvas--input-follow-bottom (current-buffer)))
+
 (defun e-org-canvas--input-enter-result-state ()
   "Switch the current input pane from editable composer to result display."
   (setq-local e-chat--composer-restore-inhibited t)
@@ -1069,6 +1075,8 @@ has no visible window."
         (erase-buffer)
         (e-org-canvas-input-mode)
         (add-hook 'kill-buffer-hook #'e-org-canvas--input-cleanup nil t)
+        (add-hook 'e-chat--running-status-rendered-hook
+                  #'e-org-canvas--input-follow-bottom-on-redraw nil t)
         (setq-local e-current-harness harness)
         (setq-local e-chat-harness harness)
         (setq-local e-chat-session-id session-id)

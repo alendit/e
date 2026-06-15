@@ -885,6 +885,57 @@
       (when (buffer-live-p target)
         (kill-buffer target)))))
 
+(ert-deftest e-org-canvas-test-input-pane_follows_bottom_on_timer_redraw ()
+  "Timer-driven running-status redraws keep the input pane pinned to output.
+Regression: progress redraws bypass harness event dispatch, so the pane
+relied on `e-chat--running-status-rendered-hook' to follow the bottom."
+  (let* ((harness (e-org-canvas-test--harness))
+         (target (get-buffer-create "org-canvas-follow-target"))
+         (buffer (e-org-canvas--input-buffer
+                  :harness harness
+                  :session-id "session-1"
+                  :scope 'thread
+                  :target-buffer target)))
+    (unwind-protect
+        (progn
+          ;; Hook is wired buffer-locally for the input pane.
+          (with-current-buffer buffer
+            (should (memq #'e-org-canvas--input-follow-bottom-on-redraw
+                          e-chat--running-status-rendered-hook)))
+          ;; Display the pane in a NON-selected window: only then does
+          ;; `window-point' stay decoupled from buffer point, so the test
+          ;; observes the follow hook rather than incidental point movement.
+          (let* ((root (selected-window))
+                 (window (split-window root nil 'below)))
+            (set-window-buffer window buffer)
+            (with-current-buffer buffer
+              ;; Result state: composer is gone and its reinsertion is
+              ;; inhibited, so only the follow hook can move the window.
+              (e-org-canvas--input-enter-result-state)
+              (setq-local e-org-canvas-input--active-turn-id "turn-1")
+              ;; Mark an active progress turn so the redraw emits a line.
+              (setq-local e-chat--progress-turn-id "turn-1")
+              (setq-local e-chat--progress-frame 0)
+              (let ((inhibit-read-only t))
+                (goto-char (point-max))
+                (insert (make-string 200 ?\n)))
+              ;; Park the window at the very top, away from the output tail.
+              (set-window-point window (point-min))
+              (set-window-start window (point-min))
+              (e-chat--render-running-status
+               "turn-1"
+               (e-chat--turn-record "turn-1"))
+              ;; Follow hook should have dragged the window to the last line.
+              (let ((bottom (save-excursion
+                              (goto-char (point-max))
+                              (skip-chars-backward "\n")
+                              (line-beginning-position))))
+                (should (>= (window-point window) bottom))))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (when (buffer-live-p target)
+        (kill-buffer target)))))
+
 (ert-deftest e-org-canvas-test-input-cancel-aborts-active-tool-request ()
   "Cancelling a submitted input pane aborts the active Org Canvas turn."
   (let* ((e-chat-submit-backend-delay 0)

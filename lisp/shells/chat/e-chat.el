@@ -554,6 +554,12 @@ mode-line refreshes for the current chat buffer.")
 (defvar-local e-chat--progress-next-tick-time nil
   "Expected `float-time' of the next assistant progress timer tick.")
 
+(defvar-local e-chat--running-status-rendered-hook nil
+  "Abnormal hook run after each running-status redraw.
+Each function is called with the active turn id.  Buffer-local so
+embedders (e.g. Org Canvas) can keep output visible on timer-driven
+progress redraws that never pass through harness event dispatch.")
+
 (defconst e-chat--user-glyph ">"
   "Glyph shown before user-authored chat blocks.")
 
@@ -2864,7 +2870,8 @@ When RECORD is nil, clear only buffer-local status markers."
                     (copy-marker (point) nil))))
           (e-chat--restore-composer-state composer-state))
       (e-chat--restore-composer-state composer-state))
-    (e-chat--restore-running-status-navigation-state navigation-state)))
+    (e-chat--restore-running-status-navigation-state navigation-state)
+    (run-hook-with-args 'e-chat--running-status-rendered-hook turn-id)))
 
 (defun e-chat--render-turn-transient (turn-id record)
   "Render RECORD's intermittent entries as a temporary block for TURN-ID."
