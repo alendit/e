@@ -24,7 +24,7 @@
 (require 'e-agents-std-context)
 (require 'e-layer-selection)
 (require 'e-layers)
-(require 'e-openai)
+(require 'e-anthropic)
 (require 'e-session)
 (require 'e-shells)
 
@@ -119,11 +119,11 @@
 
 (ert-deftest e-defaults-test-chat-harness-uses-provider-and-session-store ()
   "Default chat harness creation delegates provider setup outside presentation."
-  (let ((e-openai-default-provider 'openai-compatible-gateway)
+  (let ((e-anthropic-default-provider 'gateway)
         (store (e-session-store-create))
         seen-provider
         seen-sessions)
-    (cl-letf (((symbol-function 'e-openai-create-harness)
+    (cl-letf (((symbol-function 'e-anthropic-create-harness)
                (lambda (&rest args)
                  (setq seen-provider (plist-get args :provider))
                  (setq seen-sessions (plist-get args :sessions))
@@ -132,16 +132,16 @@
                   :sessions seen-sessions))))
       (let ((harness (e-default-chat-harness-create :sessions store)))
         (should (e-harness-p harness))
-        (should (eq seen-provider 'openai-compatible-gateway))
+        (should (eq seen-provider 'gateway))
         (should (eq seen-sessions store))))))
 
-(ert-deftest e-defaults-test-chat-harness-derives-prompt-cache-options ()
-  "Default chat derives cache keys from model, project, and active layers."
-  (cl-letf (((symbol-function 'e-openai-create-harness)
+(ert-deftest e-defaults-test-chat-harness-enables-anthropic-prompt-cache ()
+  "Default chat seeds Anthropic prompt-cache turn options."
+  (cl-letf (((symbol-function 'e-anthropic-create-harness)
              (lambda (&rest args)
                (e-harness-create
                 :backend (e-backend-fake-create :items nil)
-                :default-options '(:model "gpt-default")
+                :default-options '(:model "claude-default")
                 :sessions (plist-get args :sessions)))))
     (let ((e-default-chat-layer-ids nil))
       (let ((harness (e-default-chat-harness-create
@@ -150,65 +150,15 @@
          harness
          :id "session-1"
          :metadata (list :project-root "/tmp/e-cache-a"))
-        (let* ((options (e-harness-turn-options harness "session-1"))
-               (key (plist-get options :prompt-cache-key)))
-          (should (stringp key))
-          (should (equal (plist-get options :prompt-cache-retention) "24h"))
-          (should-not (plist-member options :prompt-cache-default))
-          (should (equal key
-                         (plist-get (e-harness-turn-options harness "session-1")
-                                    :prompt-cache-key)))
-          (e-harness-create-session
-           harness
-           :id "session-2"
-           :metadata (list :project-root "/tmp/e-cache-b"))
-          (should-not
-           (equal key
-                  (plist-get (e-harness-turn-options harness "session-2")
-                             :prompt-cache-key)))
-          (e-harness-create-session
-           harness
-           :id "session-3"
-           :metadata (list :project-root "/tmp/e-cache-a"))
-          (e-harness-set-session-model harness "session-3" "gpt-other")
-          (should-not
-           (equal key
-                  (plist-get (e-harness-turn-options harness "session-3")
-                             :prompt-cache-key)))
-          (e-harness-activate-layer
-           harness
-           (e-layer-create :id 'cache-extra :name "Cache Extra"))
-          (should-not
-           (equal key
-                  (plist-get (e-harness-turn-options harness "session-1")
-                             :prompt-cache-key))))))))
-
-(ert-deftest e-defaults-test-chat-harness-preserves-explicit-prompt-cache-key ()
-  "Session prompt cache keys override default chat key derivation."
-  (cl-letf (((symbol-function 'e-openai-create-harness)
-             (lambda (&rest args)
-               (e-harness-create
-                :backend (e-backend-fake-create :items nil)
-                :default-options '(:model "gpt-default")
-                :sessions (plist-get args :sessions)))))
-    (let ((e-default-chat-layer-ids nil))
-      (let ((harness (e-default-chat-harness-create
-                      :sessions (e-session-store-create))))
-        (e-harness-create-session
-         harness
-         :id "session-1"
-         :metadata (list :project-root "/tmp/e-cache-a"))
-        (e-session-set-turn-options
-         (e-harness-sessions harness)
-         "session-1"
-         '(:prompt-cache-key "manual-key"))
-        (should (equal (plist-get (e-harness-turn-options harness "session-1")
-                                  :prompt-cache-key)
-                       "manual-key"))))))
+        (let ((options (e-harness-turn-options harness "session-1")))
+          (should (eq (plist-get options :prompt-cache) t))
+          (should (equal (plist-get options :prompt-cache-ttl) "1h"))
+          ;; Anthropic caches by cache_control prefix, not a derived key.
+          (should-not (plist-member options :prompt-cache-key)))))))
 
 (ert-deftest e-defaults-test-chat-harness-activates-chat-session-base-and-emacs ()
   "Default chat harness activation includes chat-session and configured layers."
-  (cl-letf (((symbol-function 'e-openai-create-harness)
+  (cl-letf (((symbol-function 'e-anthropic-create-harness)
              (lambda (&rest _args)
                (e-harness-create
                 :backend (e-backend-fake-create :items nil)))))
@@ -235,7 +185,7 @@
 
 (ert-deftest e-defaults-test-chat-harness-enables-web-and-text-editing-by-default ()
   "Default chat harness activation includes web and text-editing layers."
-  (cl-letf (((symbol-function 'e-openai-create-harness)
+  (cl-letf (((symbol-function 'e-anthropic-create-harness)
              (lambda (&rest _args)
                (e-harness-create
                 :backend (e-backend-fake-create :items nil)))))
@@ -255,7 +205,7 @@
 
 (ert-deftest e-defaults-test-chat-harness-uses-layer-ids-as-source-of-truth ()
   "Default chat harness creation uses configured layer ids."
-  (cl-letf (((symbol-function 'e-openai-create-harness)
+  (cl-letf (((symbol-function 'e-anthropic-create-harness)
              (lambda (&rest _args)
                (e-harness-create
                 :backend (e-backend-fake-create :items nil)))))
@@ -290,7 +240,7 @@
            (expand-file-name ".dir-locals.el" project)
            nil
            'silent)
-          (cl-letf (((symbol-function 'e-openai-create-harness)
+          (cl-letf (((symbol-function 'e-anthropic-create-harness)
                      (lambda (&rest _args)
                        (e-harness-create
                         :backend (e-backend-fake-create :items nil)))))
@@ -316,7 +266,7 @@
 
 (ert-deftest e-defaults-test-default-chat-layer_changes-update-config ()
   "Layer changes on the default chat harness update configured layer ids."
-  (cl-letf (((symbol-function 'e-openai-create-harness)
+  (cl-letf (((symbol-function 'e-anthropic-create-harness)
              (lambda (&rest _args)
                (e-harness-create
                 :backend (e-backend-fake-create :items nil)))))
@@ -330,7 +280,7 @@
 (ert-deftest e-defaults-test-startup-syncs-existing-chat-default-instance ()
   "Startup reconciles existing default chat harness instances from config."
   (e-defaults-test--with-empty-harness-registry
-    (cl-letf (((symbol-function 'e-openai-create-harness)
+    (cl-letf (((symbol-function 'e-anthropic-create-harness)
                (lambda (&rest _args)
                  (e-harness-create
                   :backend (e-backend-fake-create :items nil)))))
@@ -384,7 +334,7 @@
 (ert-deftest e-defaults-test-startup-repairs-shifted-chat-default-session-store ()
   "Startup sync repairs cached chat-default harnesses with shifted reload slots."
   (e-defaults-test--with-empty-harness-registry
-    (cl-letf (((symbol-function 'e-openai-create-harness)
+    (cl-letf (((symbol-function 'e-anthropic-create-harness)
                (lambda (&rest _args)
                  (e-harness-create
                   :backend (e-backend-fake-create :items nil)))))

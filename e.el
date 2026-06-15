@@ -44,6 +44,7 @@
       "lisp/shells"
       "lisp/shells/chat"
       "lisp/adapters/openai"
+      "lisp/adapters/anthropic"
       "lisp/dev")
     "Source directories containing e libraries.")
   (defun e--add-source-directories (directory)

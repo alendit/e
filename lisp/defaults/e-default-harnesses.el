@@ -14,8 +14,8 @@
 ;;; Code:
 
 (declare-function e-chat-session-capability-create "e-chat-session")
-(declare-function e-openai-create-harness "e-openai")
-(defvar e-openai-default-provider)
+(declare-function e-anthropic-create-harness "e-anthropic")
+(defvar e-anthropic-default-provider)
 
 (require 'cl-lib)
 (require 'e-default-layers)
@@ -162,7 +162,7 @@ hold HARNESS."
 (cl-defun e-default-chat-harness-create
     (&key provider sessions layer-ids directory)
   "Create the default chat harness.
-PROVIDER selects the OpenAI-compatible provider.  SESSIONS supplies an existing
+PROVIDER selects the Anthropic Messages provider.  SESSIONS supplies an existing
 session store.  LAYER-IDS overrides `e-default-chat-layer-ids'.  DIRECTORY
 sets the root used by config-aware default layers."
   (require 'e-base)
@@ -172,16 +172,16 @@ sets the root used by config-aware default layers."
   (require 'e-layer-selection)
   (require 'e-layers)
   (require 'e-org-canvas-capabilities)
-  (require 'e-openai)
+  (require 'e-anthropic)
   (e-default-layers-register)
-  (let ((harness (e-openai-create-harness
-                  :provider (or provider e-openai-default-provider)
+  (let ((harness (e-anthropic-create-harness
+                  :provider (or provider e-anthropic-default-provider)
                   :sessions (or sessions (e-default-session-store))))
         (root (or directory default-directory)))
     (setf (e-harness-default-options harness)
           (append (e-harness-default-options harness)
-                  (list :prompt-cache-default t
-                        :prompt-cache-retention "24h")))
+                  (list :prompt-cache t
+                        :prompt-cache-ttl "1h")))
     (e-harness-activate-layer
      harness
      (e-default-chat--chat-session-layer))
