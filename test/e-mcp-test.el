@@ -157,11 +157,11 @@
       (e-capabilities-register-tools capability registry)
       (let* ((definitions (e-tools-definitions registry))
              (definition (car definitions))
-             (stored (gethash "mcp.fixture.echo"
+             (stored (gethash "mcp__fixture__echo"
                               (e-tools-registry-tools registry))))
         (should (equal (mapcar (lambda (item) (plist-get item :name))
                                definitions)
-                       '("mcp.fixture.echo")))
+                       '("mcp__fixture__echo")))
         (should (equal (plist-get definition :description)
                        "[MCP fixture] Echo text."))
         (should (equal (plist-get definition :parameters)
@@ -192,7 +192,7 @@
       (should (equal (mapcar #'e-mcp-tool-server-id tools)
                      '("one" "two")))
       (should (equal (mapcar #'e-mcp--generated-tool-name tools)
-                     '("mcp.one.echo" "mcp.two.echo"))))))
+                     '("mcp__one__echo" "mcp__two__echo"))))))
 
 (ert-deftest e-mcp-test-generated-tool-maps-text-and-structured-results ()
   "Generated MCP tools preserve text and structured JSON result content."
@@ -225,10 +225,10 @@
            (equal (e-tools-execute
                    registry
                    '(:id "call-1"
-                     :name "mcp.fixture.value"
+                     :name "mcp__fixture__value"
                      :arguments (:unused t)))
                   (list :tool-call-id "call-1"
-                        :name "mcp.fixture.value"
+                        :name "mcp__fixture__value"
                         :status 'ok
                         :content (list :content "summary"
                                        :structuredContent value)
@@ -259,10 +259,10 @@
       (should (equal (e-tools-execute
                       registry
                       '(:id "call-1"
-                        :name "mcp.fixture.fail"
+                        :name "mcp__fixture__fail"
                         :arguments nil))
                      '(:tool-call-id "call-1"
-                       :name "mcp.fixture.fail"
+                       :name "mcp__fixture__fail"
                        :status error
                        :content "denied"
                        :metadata (:kind mcp-tool
@@ -294,7 +294,7 @@
                       (e-tools-execute
                        registry
                        '(:id "call-1"
-                         :name "mcp.fixture.image"
+                         :name "mcp__fixture__image"
                          :arguments nil))
                       :content)
                      "[Unsupported MCP content block: image]")))))
@@ -323,7 +323,7 @@
       (should-error
        (e-tools-execute registry
                         '(:id "call-1"
-                          :name "mcp.fixture.boom"
+                          :name "mcp__fixture__boom"
                           :arguments nil))
        :type 'e-mcp-backend-error))))
 
@@ -389,12 +389,12 @@
         (should (equal (mapcar (lambda (definition)
                                  (plist-get definition :name))
                                (e-tools-definitions registry))
-                       '("mcp.fixture.echo")))
+                       '("mcp__fixture__echo")))
         (should (equal (plist-get
                         (e-tools-execute
                          registry
                          '(:id "call-1"
-                           :name "mcp.fixture.echo"
+                           :name "mcp__fixture__echo"
                            :arguments (:text "hello")))
                         :content)
                        "hello"))))))
@@ -499,6 +499,64 @@
                                  (e-mcp-list-tools (list server)))
                          '("once"))))
       (e-mcp-reset))))
+
+(defun e-mcp-test--start-http-fixture ()
+  "Start the stateful HTTP MCP fixture and return (PROCESS . URL).
+Blocks until the fixture prints its listening port."
+  (let* ((fixture (expand-file-name
+                   "test/fixtures/e-mcp-http-server.mjs"
+                   default-directory))
+         (buffer (generate-new-buffer " *e-mcp-http-fixture*"))
+         (process (make-process
+                   :name "e-mcp-http-fixture"
+                   :buffer buffer
+                   :command (list "node" fixture)
+                   :connection-type 'pipe
+                   :noquery t))
+         (deadline (+ (float-time) 5))
+         port)
+    (while (and (not port)
+                (process-live-p process)
+                (< (float-time) deadline))
+      (accept-process-output process 0.05)
+      (with-current-buffer buffer
+        (goto-char (point-min))
+        (when (re-search-forward "^\\([0-9]+\\)$" nil t)
+          (setq port (string-to-number (match-string 1))))))
+    (unless port
+      (kill-process process)
+      (kill-buffer buffer)
+      (error "HTTP MCP fixture did not report a port"))
+    (cons process (format "http://127.0.0.1:%d/mcp" port))))
+
+(ert-deftest e-mcp-test-http-transport-discovers-and-calls-stateful-server ()
+  "HTTP transport captures the session id and reuses it across requests.
+The fixture rejects any request that omits the `Mcp-Session-Id' header it
+issued during initialize, so success proves the session id is captured and
+echoed back on `tools/list' and `tools/call'."
+  (skip-unless (executable-find "node"))
+  (let* ((fixture (e-mcp-test--start-http-fixture))
+         (process (car fixture))
+         (url (cdr fixture))
+         (server (e-mcp-server-create :id "http-fixture" :url url)))
+    (unwind-protect
+        (progn
+          (e-mcp-reset)
+          (should (equal (mapcar #'e-mcp-tool-name
+                                 (e-mcp-list-tools (list server)))
+                         '("echo")))
+          (should (equal (e-mcp-call-tool
+                          (list server)
+                          "http-fixture"
+                          "echo"
+                          '(:text "over http"))
+                         '(:content [(:type "text" :text "over http")]
+                           :isError :json-false))))
+      (e-mcp-reset)
+      (when (process-live-p process)
+        (kill-process process))
+      (when (buffer-live-p (process-buffer process))
+        (kill-buffer (process-buffer process))))))
 
 (provide 'e-mcp-test)
 

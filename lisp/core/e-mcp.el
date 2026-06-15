@@ -18,6 +18,8 @@
 (require 'e-tools)
 (require 'json)
 (require 'subr-x)
+(require 'url)
+(require 'url-http)
 
 (define-error 'e-mcp-backend-error "MCP helper backend error")
 (define-error 'e-mcp-backend-timeout "MCP helper backend timeout"
@@ -42,11 +44,15 @@
 
 (cl-defstruct (e-mcp-server
                (:constructor e-mcp-server--create
-                             (&key id command env timeout)))
+                             (&key id command env timeout url http-headers)))
   id
   command
   env
-  timeout)
+  timeout
+  ;; HTTP (Streamable HTTP) transport fields.  When URL is set the server is
+  ;; reached over HTTP directly from Emacs and COMMAND/ENV are unused.
+  url
+  http-headers)
 
 (cl-defstruct (e-mcp-tool
                (:constructor e-mcp-tool--create
@@ -104,13 +110,25 @@ helper response plist.")
                     always (keywordp key)))))
 
 (defun e-mcp-server-create (&rest args)
-  "Create an MCP server spec from keyword ARGS."
+  "Create an MCP server spec from keyword ARGS.
+A server must specify either COMMAND (stdio transport) or URL (HTTP
+transport), but not both."
   (let* ((server (apply #'e-mcp-server--create args))
          (id (e-mcp-server-id server))
-         (command (e-mcp-server-command server)))
+         (command (e-mcp-server-command server))
+         (url (e-mcp-server-url server)))
     (e-mcp--non-empty-string id 'mcp-server-id)
-    (unless (e-mcp--valid-command-p command)
-      (signal 'wrong-type-argument (list 'mcp-server-command command)))
+    (cond
+     ((and url command)
+      (signal 'wrong-type-argument
+              (list 'mcp-server-transport
+                    "specify either :command or :url, not both")))
+     (url
+      (unless (and (stringp url) (not (string-empty-p url)))
+        (signal 'wrong-type-argument (list 'mcp-server-url url))))
+     (t
+      (unless (e-mcp--valid-command-p command)
+        (signal 'wrong-type-argument (list 'mcp-server-command command)))))
     server))
 
 (defun e-mcp-tool-create (&rest args)
@@ -172,6 +190,7 @@ helper response plist.")
   (setq e-mcp--helper-stderr nil)
   (setq e-mcp--helper-next-id 0)
   (setq e-mcp--latest-diagnostics nil)
+  (setq e-mcp--http-sessions nil)
   t)
 
 (defun e-mcp-diagnostics ()
@@ -241,10 +260,10 @@ helper response plist.")
   (list :name (car entry) :value (cdr entry)))
 
 (defun e-mcp--server-payload (server)
-  "Return helper JSON shape for SERVER."
+  "Return helper JSON shape for stdio SERVER."
   (append
    (list :id (e-mcp-server-id server)
-         :command (vconcat (e-mcp-server-command server))
+         :command (vconcat (or (e-mcp-server-command server) nil))
          :env (vconcat (mapcar #'e-mcp--env-entry
                                (or (e-mcp-server-env server) nil))))
    (when (e-mcp-server-timeout server)
@@ -313,44 +332,231 @@ helper response plist.")
                      (plist-get item :input-schema))
    :metadata (plist-get item :metadata)))
 
+
+;;; HTTP (Streamable HTTP) transport
+;;
+;; For servers with :url set, we talk MCP JSON-RPC directly from Emacs over
+;; HTTP POST.  No helper process needed.
+
+(defvar e-mcp--http-sessions nil
+  "Alist of (server-id . session-plist) for HTTP MCP sessions.
+Each session plist tracks :url, :headers, :session-id, :initialized.")
+
+(defun e-mcp--http-session (server)
+  "Return or create an HTTP session for SERVER."
+  (let* ((id (e-mcp-server-id server))
+         (existing (assoc id e-mcp--http-sessions)))
+    (if existing
+        (cdr existing)
+      (let ((session (list :url (e-mcp-server-url server)
+                           :headers (e-mcp-server-http-headers server)
+                           :session-id nil
+                           :initialized nil
+                           :next-id 0)))
+        (push (cons id session) e-mcp--http-sessions)
+        session))))
+
+(defun e-mcp--http-session-reset (server-id)
+  "Remove cached HTTP session for SERVER-ID."
+  (setq e-mcp--http-sessions
+        (assoc-delete-all server-id e-mcp--http-sessions)))
+
+(defun e-mcp--http-request-headers (session)
+  "Return HTTP request headers for SESSION."
+  (let ((headers (plist-get session :headers))
+        (session-id (plist-get session :session-id))
+        result)
+    (push '("Content-Type" . "application/json") result)
+    (push '("Accept" . "application/json, text/event-stream") result)
+    (when session-id
+      (push (cons "Mcp-Session-Id" session-id) result))
+    (dolist (entry headers)
+      (push entry result))
+    (nreverse result)))
+
+(defun e-mcp--http-next-id (session)
+  "Return and increment the next JSON-RPC id for SESSION."
+  (let ((id (1+ (plist-get session :next-id))))
+    (plist-put session :next-id id)
+    id))
+
+(defun e-mcp--http-response-body (buffer)
+  "Extract HTTP response body from BUFFER."
+  (with-current-buffer buffer
+    (goto-char (point-min))
+    (when (re-search-forward "\r?\n\r?\n" nil t)
+      (buffer-substring-no-properties (point) (point-max)))))
+
+(defun e-mcp--http-session-header (buffer)
+  "Return the Mcp-Session-Id response header value in BUFFER, or nil.
+Only the response header region (before the blank line that ends the
+headers) is searched."
+  (with-current-buffer buffer
+    (goto-char (point-min))
+    (let ((header-end (save-excursion
+                        (if (re-search-forward "\r?\n\r?\n" nil t)
+                            (point)
+                          (point-max))))
+          (case-fold-search t))
+      (when (re-search-forward
+             "^mcp-session\\(?:-id\\)?:[ \t]*\\(.+?\\)[ \t\r]*$"
+             header-end t)
+        (match-string 1)))))
+
+(defun e-mcp--http-post (session method params)
+  "Send a JSON-RPC METHOD call with PARAMS to the MCP HTTP server in SESSION.
+Return the parsed JSON-RPC result on success, signal on error."
+  (let* ((id (e-mcp--http-next-id session))
+         (url (plist-get session :url))
+         (timeout (or e-mcp-helper-timeout 10))
+         (payload (json-encode
+                   (list :jsonrpc "2.0"
+                         :id id
+                         :method method
+                         :params (or params (make-hash-table)))))
+         (url-request-method "POST")
+         (url-request-extra-headers (e-mcp--http-request-headers session))
+         (url-request-data (encode-coding-string payload 'utf-8))
+         (buffer (condition-case err
+                     (url-retrieve-synchronously url 'silent nil timeout)
+                   (error
+                    (signal 'e-mcp-backend-error
+                            (list (format "HTTP request to %s failed: %S" url err)))))))
+    (unwind-protect
+        (let* ((body (e-mcp--http-response-body buffer))
+               (_ (unless (and body (not (string-empty-p (string-trim body))))
+                    (signal 'e-mcp-backend-error
+                            (list (format "Empty response from MCP HTTP server %s" url)))))
+               (response (e-mcp--parse-json body))
+               ;; Capture Mcp-Session-Id header so follow-up requests stay on
+               ;; the same MCP session.
+               (resp-session-id (e-mcp--http-session-header buffer)))
+          (when resp-session-id
+            (plist-put session :session-id resp-session-id))
+          (when (plist-get response :error)
+            (let ((err-obj (plist-get response :error)))
+              (signal 'e-mcp-backend-error
+                      (list (or (plist-get err-obj :message)
+                                (format "%S" err-obj))))))
+          (plist-get response :result))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(defun e-mcp--http-notify (session method params)
+  "Send a JSON-RPC notification (no id, no response expected) to SESSION."
+  (let* ((url (plist-get session :url))
+         (payload (json-encode
+                   (list :jsonrpc "2.0"
+                         :method method
+                         :params (or params (make-hash-table)))))
+         (url-request-method "POST")
+         (url-request-extra-headers (e-mcp--http-request-headers session))
+         (url-request-data (encode-coding-string payload 'utf-8))
+         (buffer (ignore-errors
+                   (url-retrieve-synchronously url 'silent nil 5))))
+    (when (buffer-live-p buffer)
+      (kill-buffer buffer))))
+
+(defun e-mcp--http-initialize (session)
+  "Send MCP initialize and initialized notification for SESSION."
+  (unless (plist-get session :initialized)
+    (e-mcp--http-post session "initialize"
+                      (list :protocolVersion "2024-11-05"
+                            :capabilities nil
+                            :clientInfo (list :name "e-mcp" :version "0.1.0")))
+    (e-mcp--http-notify session "notifications/initialized" nil)
+    (plist-put session :initialized t)))
+
+(defun e-mcp--http-list-tools (server)
+  "Return MCP tools for HTTP SERVER."
+  (let ((session (e-mcp--http-session server)))
+    (e-mcp--http-initialize session)
+    (let ((result (e-mcp--http-post session "tools/list" nil)))
+      (mapcar
+       (lambda (item)
+         (e-mcp--tool-from-helper (e-mcp-server-id server) item))
+       (append (plist-get result :tools) nil)))))
+
+(defun e-mcp--http-call-tool (server tool-name arguments)
+  "Call TOOL-NAME with ARGUMENTS on HTTP SERVER."
+  (let ((session (e-mcp--http-session server)))
+    (e-mcp--http-initialize session)
+    (e-mcp--http-post session "tools/call"
+                      (list :name tool-name
+                            :arguments (or arguments nil)))))
+
+(defun e-mcp--http-refresh (server)
+  "Refresh tool catalog for HTTP SERVER."
+  (e-mcp--http-session-reset (e-mcp-server-id server))
+  (e-mcp--http-list-tools server))
+
+(defun e-mcp--server-http-p (server)
+  "Return non-nil when SERVER uses HTTP transport."
+  (and (e-mcp-server-url server) t))
+
 (defun e-mcp-list-tools (servers)
-  "Return discovered MCP tools for SERVERS."
-  (let* ((result (e-mcp--helper-request "list-tools" servers))
-         (fallback-server-id (when (= (length servers) 1)
-                               (e-mcp-server-id (car servers)))))
-    (mapcar
-     (lambda (item)
-       (let ((server-id (or (plist-get item :serverId)
-                            (plist-get item :server-id)
-                            fallback-server-id)))
-         (unless server-id
-           (signal 'e-mcp-protocol-error
-                   (list "MCP helper omitted server id from multi-server catalog"
-                         item)))
-         (e-mcp--tool-from-helper server-id item)))
-     (append (plist-get result :tools) nil))))
+  "Return discovered MCP tools for SERVERS.
+HTTP servers are handled in-process; stdio servers use the helper."
+  (let ((http-servers (cl-remove-if-not #'e-mcp--server-http-p servers))
+        (stdio-servers (cl-remove-if #'e-mcp--server-http-p servers))
+        tools)
+    ;; HTTP transport: direct Elisp
+    (dolist (server http-servers)
+      (setq tools (append tools (e-mcp--http-list-tools server))))
+    ;; stdio transport: Node helper
+    (when stdio-servers
+      (let* ((result (e-mcp--helper-request "list-tools" stdio-servers))
+             (fallback-server-id (when (= (length stdio-servers) 1)
+                                   (e-mcp-server-id (car stdio-servers)))))
+        (dolist (item (append (plist-get result :tools) nil))
+          (let ((server-id (or (plist-get item :serverId)
+                               (plist-get item :server-id)
+                               fallback-server-id)))
+            (unless server-id
+              (signal 'e-mcp-protocol-error
+                      (list "MCP helper omitted server id from multi-server catalog"
+                            item)))
+            (push (e-mcp--tool-from-helper server-id item) tools)))))
+    (nreverse tools)))
 
 (defun e-mcp-call-tool (servers server-id tool-name arguments)
   "Call TOOL-NAME on SERVER-ID through SERVERS with ARGUMENTS."
-  (e-mcp--helper-request "call-tool"
-                         servers
-                         :server server-id
-                         :tool tool-name
-                         :arguments arguments))
+  (let ((server (cl-find server-id servers
+                         :key #'e-mcp-server-id :test #'equal)))
+    (unless server
+      (signal 'e-mcp-backend-error
+              (list (format "Unknown MCP server: %s" server-id))))
+    (if (e-mcp--server-http-p server)
+        (e-mcp--http-call-tool server tool-name arguments)
+      (e-mcp--helper-request "call-tool"
+                             (cl-remove-if #'e-mcp--server-http-p servers)
+                             :server server-id
+                             :tool tool-name
+                             :arguments arguments))))
 
 (defun e-mcp-refresh (&optional servers)
-  "Ask the MCP helper to refresh tool catalogs for SERVERS.
+  "Refresh tool catalogs for SERVERS.
+HTTP servers are refreshed in-process; stdio servers use the helper.
 Interactively, refresh all servers seen during capability construction."
   (interactive)
   (let ((servers (or servers e-mcp--known-servers)))
     (unless servers
       (signal 'e-mcp-backend-error
               (list "No MCP servers are configured for refresh")))
-    (e-mcp--helper-request "refresh" servers)))
+    (let ((http-servers (cl-remove-if-not #'e-mcp--server-http-p servers))
+          (stdio-servers (cl-remove-if #'e-mcp--server-http-p servers)))
+      (dolist (server http-servers)
+        (e-mcp--http-refresh server))
+      (when stdio-servers
+        (e-mcp--helper-request "refresh" stdio-servers)))))
 
 (defun e-mcp--generated-tool-name (tool)
-  "Return the generated e tool name for MCP TOOL."
-  (format "mcp.%s.%s"
+  "Return the generated e tool name for MCP TOOL.
+Uses `__' separators (not dots) so the name satisfies provider tool-name
+constraints such as Anthropic/Bedrock's `[a-zA-Z0-9_-]+' pattern.  The name
+is only a dispatch key; MCP routing uses the tool metadata, never a parse of
+this string."
+  (format "mcp__%s__%s"
           (e-mcp-tool-server-id tool)
           (e-mcp-tool-name tool)))
 
