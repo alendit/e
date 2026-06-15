@@ -4867,6 +4867,23 @@ once.  Legacy sessions in unique stores stay under their store's instance."
   "Return non-nil when HARNESS shares its session store in STORE-COUNTS."
   (> (or (gethash (e-harness-sessions harness) store-counts) 0) 1))
 
+(defun e-chat--session-candidate-newer-p (left right)
+  "Return non-nil when session LEFT sorts before RIGHT (newest first).
+Order by most recent message, matching the harness session projection, and
+fall back to the touch sequence when two sessions share a last-message
+timestamp."
+  (let ((left-time (or (plist-get left :last-message-at)
+                       (plist-get left :created-at)
+                       ""))
+        (right-time (or (plist-get right :last-message-at)
+                        (plist-get right :created-at)
+                        ""))
+        (left-seq (or (plist-get left :updated-seq) 0))
+        (right-seq (or (plist-get right :updated-seq) 0)))
+    (or (string> left-time right-time)
+        (and (string= left-time right-time)
+             (> left-seq right-seq)))))
+
 (defun e-chat--session-candidates ()
   "Return chat session candidates across configured chat instances."
   (let ((instances (e-chat--chat-instances))
@@ -4904,12 +4921,9 @@ once.  Legacy sessions in unique stores stay under their store's instance."
           (setq candidates
                 (sort candidates
                       (lambda (left right)
-                        (> (or (plist-get
-                                (plist-get left :session) :updated-seq)
-                               0)
-                           (or (plist-get
-                                (plist-get right :session) :updated-seq)
-                               0))))))
+                        (e-chat--session-candidate-newer-p
+                         (plist-get left :session)
+                         (plist-get right :session))))))
       (let ((harness (e-chat--default-harness)))
         (setq candidates
               (mapcar (lambda (session)

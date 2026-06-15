@@ -3609,6 +3609,41 @@
                        :chat-alpha)))
             candidates)))))))
 
+(ert-deftest e-chat-test-session-candidates-order-newest-message-first ()
+  "Switch-session candidates list newest last message first."
+  (let* ((store (e-session-store-create))
+         (harness (e-chat-test--activate-chat-session
+                   (e-harness-create
+                    :backend (e-backend-fake-create :items nil)
+                    :sessions store))))
+    (e-chat-test--with-empty-harness-registry
+      (let ((e-chat-default-harness-id :chat-alpha))
+        (e-chat-test--register-chat-instance
+         :chat-alpha "Alpha Target" harness t)
+        ;; Create oldest-to-newest, but message recency is the reverse of
+        ;; creation order so a creation- or touch-only sort would disagree.
+        (e-session-create store :id "stale-session")
+        (e-session-create store :id "fresh-session")
+        (e-session-create store :id "middle-session")
+        ;; Append newest-message session first and oldest last, so the touch
+        ;; sequence runs opposite to message recency.  A sort keyed on
+        ;; :updated-seq would invert the list; the message-time sort must not.
+        (e-session-append-message
+         store "fresh-session"
+         '(:role user :content "new" :created-at "1970-01-01T01:00:00Z"))
+        (e-session-append-message
+         store "middle-session"
+         '(:role user :content "mid" :created-at "1970-01-01T00:05:00Z"))
+        (e-session-append-message
+         store "stale-session"
+         '(:role user :content "old" :created-at "1970-01-01T00:00:10Z"))
+        (let ((ids (mapcar (lambda (candidate)
+                             (plist-get candidate :session-id))
+                           (e-chat--session-candidates))))
+          (should (equal ids
+                         '("fresh-session" "middle-session"
+                           "stale-session"))))))))
+
 (ert-deftest e-chat-test-resume-preview-state-renders-selected-session ()
   "Resume completion preview renders the highlighted session in a preview buffer."
   (let* ((store (e-session-store-create))
