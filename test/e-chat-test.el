@@ -798,6 +798,16 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-overview-mode-disables-undo ()
+  "Overview mode disables undo so repeated re-renders do not accrue history."
+  (let ((buffer (get-buffer-create "*e-chat-overview-undo-test*")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat-overview-mode)
+          (should (eq buffer-undo-list t)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-evil-local-mode-hook-disables-reactivation ()
   "If Evil local mode is reactivated, chat mode turns it off again."
   (let ((buffer (e-chat-test--buffer nil "chat-evil-reactivation")))

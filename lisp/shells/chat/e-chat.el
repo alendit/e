@@ -885,6 +885,7 @@ This leaves the global minor mode enabled for every other buffer."
   (add-hook 'kill-buffer-hook #'e-chat-overview--unsubscribe nil t)
   (add-hook 'evil-local-mode-hook #'e-chat--enforce-modal-editing-policy nil t)
   (e-chat--disable-modal-editing)
+  (buffer-disable-undo)
   (setq-local truncate-lines t))
 
 ;;;###autoload
