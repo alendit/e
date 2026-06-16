@@ -426,6 +426,48 @@ preview to avoid duplicating large outputs in session JSONL files."
   :type 'integer
   :group 'e)
 
+(defcustom e-harness-retry-max-elapsed-seconds 60.0
+  "Total wall-clock budget for retrying a rate-limited backend turn.
+Retries of a turn that keeps failing with a retryable error (e.g. HTTP 429)
+stop once this much time has elapsed since the first attempt; the turn then
+settles as `turn-failed' as before.  Set to 0 to disable retrying."
+  :type 'number
+  :group 'e)
+
+(defcustom e-harness-retry-initial-backoff-seconds 2.0
+  "Initial delay before the first retry of a rate-limited backend turn."
+  :type 'number
+  :group 'e)
+
+(defcustom e-harness-retry-backoff-multiplier 2.0
+  "Multiplier applied to the retry backoff after each failed attempt."
+  :type 'number
+  :group 'e)
+
+(defcustom e-harness-retry-max-backoff-seconds 20.0
+  "Maximum delay between retries of a rate-limited backend turn."
+  :type 'number
+  :group 'e)
+
+(defun e-harness--retryable-error-p (message details)
+  "Return non-nil when a backend error (MESSAGE, DETAILS) should be retried.
+Currently this is rate limiting: HTTP 429 or an explicit rate-limit message."
+  (let ((text (downcase (or message ""))))
+    (or (string-match-p "\\(^\\|[^0-9]\\)429\\([^0-9]\\|$\\)" (or message ""))
+        (string-match-p "rate limit" text)
+        (string-match-p "too many requests" text)
+        (let ((status (and (listp details)
+                           (or (plist-get details :status)
+                               (plist-get details :status-code)
+                               (plist-get details :code)))))
+          (and (numberp status) (= status 429))))))
+
+(defun e-harness--retry-backoff-seconds (attempt)
+  "Return the backoff delay in seconds before retry ATTEMPT (1-based)."
+  (min e-harness-retry-max-backoff-seconds
+       (* e-harness-retry-initial-backoff-seconds
+          (expt e-harness-retry-backoff-multiplier (max 0 (1- attempt))))))
+
 (defun e-harness--durable-activity-event-p (type)
   "Return non-nil when TYPE should be stored as session activity."
   (memq type e-harness--durable-activity-event-types))
@@ -1061,17 +1103,42 @@ cancellation.  SESSION-ID identifies the session."
             (cancelled-p ()
               (or (plist-get entry :cancelled)
                   (not (active-entry-p))))
+            (maybe-retry-error
+             (message details)
+             ;; Schedule a backoff retry for a retryable error (e.g. 429)
+             ;; while inside the elapsed budget.  Return non-nil when a retry
+             ;; was scheduled so the caller skips settling the turn as failed.
+             (when (and (> e-harness-retry-max-elapsed-seconds 0)
+                        (e-harness--retryable-error-p message details))
+               (let* ((deadline (or (plist-get entry :retry-deadline)
+                                    (+ (float-time)
+                                       e-harness-retry-max-elapsed-seconds)))
+                      (attempt (1+ (or (plist-get entry :retry-attempt) 0)))
+                      (backoff (e-harness--retry-backoff-seconds attempt)))
+                 (plist-put entry :retry-deadline deadline)
+                 (when (< (+ (float-time) backoff) deadline)
+                   (plist-put entry :retry-attempt attempt)
+                   (e-harness--emit-turn-event
+                    harness session-id turn-id 'turn-retrying
+                    (list :error message
+                          :details details
+                          :attempt attempt
+                          :backoff-seconds backoff))
+                   (plist-put entry :timer
+                              (run-at-time backoff nil #'start-turn))
+                   t))))
             (finish-error
              (err)
              (when (and (active-entry-p) (not (plist-get entry :cancelled)))
                (let ((message (e-harness--backend-error-message err))
                      (details (e-harness--backend-error-details err)))
-                 (plist-put entry :status 'error)
-                 (plist-put entry :condition err)
-                 (plist-put entry :error message)
-                 (plist-put entry :error-details details)
-                 (e-harness--emit-turn-failed
-                  harness session-id turn-id message details))))
+                 (unless (maybe-retry-error message details)
+                   (plist-put entry :status 'error)
+                   (plist-put entry :condition err)
+                   (plist-put entry :error message)
+                   (plist-put entry :error-details details)
+                   (e-harness--emit-turn-failed
+                    harness session-id turn-id message details)))))
             (finish-done
              (result)
              (when (and (active-entry-p) (not (plist-get entry :cancelled)))
