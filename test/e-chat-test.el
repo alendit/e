@@ -5440,13 +5440,14 @@ side window\", which blocked opening new sessions."
         (kill-buffer chat)))))
 
 (ert-deftest e-chat-test-open-when-every-window-is-a-side-window ()
-  "Display reuses the side window in place when no normal window exists.
-Regression: a frame whose only windows are managed side popups (e.g. Doom's
-popup manager wrapping chat buffers) has nowhere to split, so display must
-reuse the side window via `set-window-buffer' rather than signalling \"Cannot
-split side window or parent of side window\".  An all-side-window frame cannot
-be built in batch (Emacs refuses to delete the last normal window), so the
-no-normal-window condition is stubbed."
+  "Display creates a normal window when every window is a side window.
+Regression: a frame whose only windows are side popups has nowhere to split,
+so display must split the frame root to make an ordinary window rather than
+signalling \"Cannot split side window or parent of side window\" -- and rather
+than commandeering the side window in place, which would leave the frame with
+no main window and break ordinary commands like \\[split-window-right].  An
+all-side-window frame cannot be built in batch (Emacs refuses to delete the
+last normal window), so the no-normal-window condition is stubbed."
   (let* ((chat (e-chat-test--buffer nil "chat-all-side"))
          (sidebar (get-buffer-create "*e-chat-test-only-side*"))
          (side-window
@@ -5456,9 +5457,13 @@ no-normal-window condition is stubbed."
           (should (window-live-p side-window))
           (select-window side-window)
           (should (e-chat--side-window-p))
-          ;; Must not error; reuses the side window in place.
+          ;; Must not error; must create a fresh normal (non-side) window.
           (e-chat--pop-to-buffer chat)
-          (should (eq (window-buffer side-window) chat)))
+          (let ((shown (get-buffer-window chat t)))
+            (should (window-live-p shown))
+            (should-not (window-parameter shown 'window-side))
+            ;; The side window keeps its own buffer; it was not commandeered.
+            (should (eq (window-buffer side-window) sidebar))))
       (when (window-live-p side-window)
         (delete-window side-window))
       (when (buffer-live-p sidebar)
