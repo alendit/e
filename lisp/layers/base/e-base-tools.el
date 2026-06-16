@@ -1160,7 +1160,7 @@ ON-REQUEST-START receives the cancellable process request."
   (e-tools-register
    registry
    :name "bash"
-   :description "Execute a shell command in the current working directory and return captured stdout and stderr."
+   :description "Execute a shell command in the current working directory and return captured stdout and stderr. Do not run commands that traverse the whole filesystem (e.g. `find /`, `grep -r /`, `ls -R /`); they are slow and flood output. Scope every search to the working directory or a known subtree, e.g. `find . -name ...`."
    :parameters '(:type "object"
                  :properties (:command (:type "string")
                               :timeout (:type "number"
