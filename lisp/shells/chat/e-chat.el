@@ -3960,14 +3960,41 @@ non-nil, is used by focused block activation."
     (e-chat--enter-composer-input-state))
   buffer)
 
+(defun e-chat--side-window-p (&optional window)
+  "Return non-nil when WINDOW (or the selected window) is a side window."
+  (window-parameter (or window (selected-window)) 'window-side))
+
+(defun e-chat--display-from-side-window (buffer)
+  "Display BUFFER from a side window without splitting it.
+A side window cannot host an ordinary buffer and cannot be split, so route
+the display to a normal window: reuse one if the buffer is already shown,
+otherwise reuse the main window or pop a new non-side window."
+  (display-buffer
+   buffer
+   '((display-buffer-reuse-window
+      display-buffer-use-some-window
+      display-buffer-pop-up-window)
+     (inhibit-same-window . t)
+     (some-window . mru))))
+
 (defun e-chat--switch-to-buffer (buffer)
-  "Display BUFFER in the selected window and restore chat-local editing invariants."
-  (switch-to-buffer buffer)
+  "Display BUFFER, restoring chat-local editing invariants.
+When the selected window is a side window it cannot show BUFFER, so route the
+display to a normal window and select it instead of erroring."
+  (if (e-chat--side-window-p)
+      (when-let ((window (e-chat--display-from-side-window buffer)))
+        (select-window window))
+    (switch-to-buffer buffer))
   (e-chat--after-display-buffer buffer))
 
 (defun e-chat--pop-to-buffer (buffer)
-  "Pop to BUFFER and restore chat-local editing invariants."
-  (pop-to-buffer buffer)
+  "Pop to BUFFER and restore chat-local editing invariants.
+From a side window, `pop-to-buffer' would try to split the side window and
+signal; route the display to a normal window in that case."
+  (if (e-chat--side-window-p)
+      (when-let ((window (e-chat--display-from-side-window buffer)))
+        (select-window window))
+    (pop-to-buffer buffer))
   (e-chat--after-display-buffer buffer))
 
 (defun e-chat--session-title ()

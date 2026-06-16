@@ -5406,6 +5406,39 @@ inherited base, so the blocks stay distinguishable in any theme."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-open-from-side-window-uses-normal-window ()
+  "Opening a session from a side window displays in a normal window.
+Regression: from the overview sidebar (a side window) `pop-to-buffer' tried
+to split the side window and signalled \"Cannot split side window or parent of
+side window\", which blocked opening new sessions."
+  (let* ((chat (e-chat-test--buffer nil "chat-side-window"))
+         (sidebar (get-buffer-create "*e-chat-test-sidebar*"))
+         (side-window
+          (display-buffer-in-side-window sidebar '((side . left) (slot . -1)))))
+    (unwind-protect
+        (progn
+          (should (window-live-p side-window))
+          (select-window side-window)
+          (should (e-chat--side-window-p))
+          ;; Must not error, and must not try to host the chat in the side
+          ;; window.
+          (e-chat--pop-to-buffer chat)
+          (let ((shown (get-buffer-window chat t)))
+            (should (window-live-p shown))
+            (should-not (window-parameter shown 'window-side)))
+          ;; The same-window path is side-window safe too.
+          (select-window side-window)
+          (e-chat--switch-to-buffer chat)
+          (let ((shown (get-buffer-window chat t)))
+            (should (window-live-p shown))
+            (should-not (window-parameter shown 'window-side))))
+      (when (window-live-p side-window)
+        (delete-window side-window))
+      (when (buffer-live-p sidebar)
+        (kill-buffer sidebar))
+      (when (buffer-live-p chat)
+        (kill-buffer chat)))))
+
 (provide 'e-chat-test)
 
 ;;; e-chat-test.el ends here
