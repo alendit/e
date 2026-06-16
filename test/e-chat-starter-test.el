@@ -452,18 +452,26 @@ its final value only when the turn settled."
         (kill-buffer popup)))))
 
 (ert-deftest e-chat-starter-test-dismiss-cleans-up-popup ()
-  "Dismissing the starter popup closes it and removes subscriptions."
+  "Dismissing the starter popup closes its window, buffer, and subscription."
   (let* ((state (e-chat-starter-test--answered-state
                  "*e-chat-starter-dismiss*"))
          (harness (e-chat-starter-state-harness state))
          (subscription (e-chat-starter-state-subscription state))
-         (popup (e-chat-starter-state-buffer state)))
+         (popup (e-chat-starter-state-buffer state))
+         popup-window)
     (unwind-protect
         (progn
+          (delete-other-windows)
+          (setq popup-window (display-buffer popup))
+          (should (window-live-p popup-window))
+          (setf (e-chat-starter-state-popup-window state) popup-window)
           (with-current-buffer popup
             (call-interactively #'e-chat-starter-dismiss))
           (should-not (buffer-live-p popup))
+          (should-not (window-live-p popup-window))
           (should-not (memq subscription (e-harness-subscribers harness))))
+      (when (window-live-p popup-window)
+        (delete-window popup-window))
       (when (buffer-live-p popup)
         (kill-buffer popup)))))
 

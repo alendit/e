@@ -534,15 +534,14 @@ popup buffer.  DELAY is forwarded to the chat session submit path for tests."
     answer))
 
 (defun e-chat-starter-dismiss ()
-  "Dismiss the starter popup and clean up subscriptions."
+  "Dismiss the starter popup, closing its window and cleaning up.
+Delegates to `e-chat-starter--close-state-buffer' so the popup window is
+deleted and source-window focus restored, matching the other exit commands."
   (interactive)
-  (let* ((state (e-chat-starter--current-state))
-         (buffer (or (e-chat-starter-state-buffer state)
-                     (current-buffer))))
-    (with-current-buffer buffer
-      (e-chat-starter--cleanup))
-    (when (buffer-live-p buffer)
-      (kill-buffer buffer))))
+  (let ((state (e-chat-starter--current-state)))
+    (unless (e-chat-starter-state-buffer state)
+      (setf (e-chat-starter-state-buffer state) (current-buffer)))
+    (e-chat-starter--close-state-buffer state)))
 
 ;;;###autoload
 (defun e-chat-starter-shell ()
