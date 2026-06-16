@@ -380,6 +380,110 @@
       (should (equal (plist-get payload :details)
                      '(:provider-error full))))))
 
+(ert-deftest e-harness-test-retryable-error-detection ()
+  "Rate-limit errors are classified as retryable; others are not."
+  (should (e-harness--retryable-error-p
+           "429: Rate limit exceeded for api_key: abc. Limit type: requests."
+           nil))
+  (should (e-harness--retryable-error-p "Rate limit exceeded" nil))
+  (should (e-harness--retryable-error-p "Too Many Requests" nil))
+  (should (e-harness--retryable-error-p "quota hit" '(:status 429)))
+  (should-not (e-harness--retryable-error-p "500: internal error" nil))
+  (should-not (e-harness--retryable-error-p "provider failed" nil))
+  ;; A bare 429 inside an unrelated number run must not false-positive.
+  (should-not (e-harness--retryable-error-p "served 14290 tokens" nil)))
+
+(ert-deftest e-harness-test-backoff-schedule-grows-and-caps ()
+  "Backoff grows by the multiplier and is capped."
+  (let ((e-harness-retry-initial-backoff-seconds 2.0)
+        (e-harness-retry-backoff-multiplier 2.0)
+        (e-harness-retry-max-backoff-seconds 20.0))
+    (should (= (e-harness--retry-backoff-seconds 1) 2.0))
+    (should (= (e-harness--retry-backoff-seconds 2) 4.0))
+    (should (= (e-harness--retry-backoff-seconds 3) 8.0))
+    (should (= (e-harness--retry-backoff-seconds 10) 20.0))))
+
+(defun e-harness-test--rate-limited-backend (failures)
+  "Return a backend that fails with HTTP 429 FAILURES times, then succeeds.
+Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
+  (let ((counter (list 0)))
+    (cons
+     (e-backend-create
+      :name "rate-limited"
+      :stream
+      (cl-function
+       (lambda (&key messages options on-item)
+         (ignore messages options)
+         (cl-incf (car counter))
+         (if (<= (car counter) failures)
+             (funcall on-item
+                      '(:type backend-error
+                        :content "429: Rate limit exceeded for api_key: abc"
+                        :payload (:status 429)))
+           (funcall on-item '(:type assistant-message :content "recovered"))
+           (funcall on-item '(:type done :reason stop))))))
+     counter)))
+
+(ert-deftest e-harness-test-rate-limited-turn-retries-then-succeeds ()
+  "A 429 backend turn retries with backoff and eventually settles done."
+  (let* ((e-harness-retry-initial-backoff-seconds 0.02)
+         (e-harness-retry-backoff-multiplier 1.0)
+         (e-harness-retry-max-backoff-seconds 0.02)
+         (e-harness-retry-max-elapsed-seconds 5.0)
+         (pair (e-harness-test--rate-limited-backend 2))
+         (backend (car pair))
+         (counter (cdr pair))
+         (harness (e-harness-create :backend backend))
+         (events nil))
+    (e-harness-subscribe harness (lambda (event) (push event events)))
+    (e-harness-create-session harness :id "session-1")
+    (e-harness-prompt-async harness "session-1" "question")
+    (let ((settled (e-harness-wait harness "session-1" 5.0)))
+      (should (equal (plist-get settled :status) 'done)))
+    ;; Two failures + one success.
+    (should (= (car counter) 3))
+    (let ((types (mapcar (lambda (e) (plist-get e :type)) events)))
+      (should (= 2 (seq-count (lambda (ty) (eq ty 'turn-retrying)) types)))
+      (should-not (memq 'turn-failed types)))))
+
+(ert-deftest e-harness-test-rate-limited-turn-fails-after-budget ()
+  "Retries stop once the elapsed budget is exhausted, settling turn-failed."
+  (let* ((e-harness-retry-initial-backoff-seconds 0.02)
+         (e-harness-retry-backoff-multiplier 1.0)
+         (e-harness-retry-max-backoff-seconds 0.02)
+         ;; Budget large enough for a couple retries, then give up.
+         (e-harness-retry-max-elapsed-seconds 0.08)
+         (pair (e-harness-test--rate-limited-backend 1000))
+         (backend (car pair))
+         (harness (e-harness-create :backend backend))
+         (events nil))
+    (e-harness-subscribe harness (lambda (event) (push event events)))
+    (e-harness-create-session harness :id "session-1")
+    (e-harness-prompt-async harness "session-1" "question")
+    (let ((settled (e-harness-wait harness "session-1" 5.0)))
+      (should (equal (plist-get settled :status) 'error))
+      (should (string-match-p "429" (plist-get settled :error))))
+    (should (member 'turn-failed
+                    (mapcar (lambda (e) (plist-get e :type)) events)))))
+
+(ert-deftest e-harness-test-non-retryable-error-fails-immediately ()
+  "A non-rate-limit backend error settles without any retry."
+  (let* ((e-harness-retry-max-elapsed-seconds 5.0)
+         (backend (e-backend-fake-create
+                   :items '((:type backend-error
+                              :content "500: internal error"
+                              :payload (:status 500)))))
+         (harness (e-harness-create :backend backend))
+         (events nil))
+    (e-harness-subscribe harness (lambda (event) (push event events)))
+    (e-harness-create-session harness :id "session-1")
+    (e-harness-prompt-async harness "session-1" "question")
+    (let ((settled (e-harness-wait harness "session-1" 1.0)))
+      (should (equal (plist-get settled :status) 'error)))
+    (let ((types (mapcar (lambda (e) (plist-get e :type)) events)))
+      (should (member 'turn-failed types))
+      (should-not (memq 'turn-retrying types)))))
+
 (ert-deftest e-harness-test-async-prompt-rejects-concurrent-session-turn ()
   "A session cannot start a second async turn while the first is running."
   (let* ((finish nil)

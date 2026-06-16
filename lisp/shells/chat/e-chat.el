@@ -4389,6 +4389,13 @@ When REFRESH-MODE-LINE is non-nil, also refresh context-aware mode-line text."
      (e-chat--stop-progress-indicator)
      (e-chat--set-status "idle")
      (e-chat--insert-entry "System" "Session reset" t))
+    ('turn-retrying
+     (let* ((payload (plist-get event :payload))
+            (attempt (plist-get payload :attempt))
+            (backoff (plist-get payload :backoff-seconds)))
+       (e-chat--set-status
+        (format "rate limited; retry %s in %.0fs"
+                (or attempt 1) (or backoff 0)))))
     (_
      (e-chat--insert-entry "System" (format "Event: %S" event) t))))))
 
