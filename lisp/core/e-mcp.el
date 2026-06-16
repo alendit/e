@@ -15,11 +15,20 @@
 
 (require 'cl-lib)
 (require 'e-capabilities)
+(require 'e-capability-config)
+(require 'e-context)
+(require 'e-store)
 (require 'e-tools)
 (require 'json)
 (require 'subr-x)
 (require 'url)
 (require 'url-http)
+
+(declare-function e-harness-sessions "e-harness" (harness))
+(declare-function e-harness-effective-capability-config "e-harness")
+(declare-function e-session-get "e-session" (store session-id))
+(declare-function e-session-set-metadata "e-session"
+                  (store session-id metadata))
 
 (define-error 'e-mcp-backend-error "MCP helper backend error")
 (define-error 'e-mcp-backend-timeout "MCP helper backend timeout"
@@ -666,6 +675,298 @@ this string."
       (setq e-mcp--known-servers
             (append e-mcp--known-servers (list server))))))
 
+(defun e-mcp--known-server (server-id)
+  "Return the remembered `e-mcp-server' for SERVER-ID, or nil."
+  (cl-find server-id e-mcp--known-servers
+           :key #'e-mcp-server-id :test #'equal))
+
+;;; Progressive disclosure (Tier 0/1/2)
+;;
+;; Eager mode (the default) registers every MCP tool's full schema into the
+;; per-turn tool set, paying its context cost on every turn.  Progressive mode
+;; splits "a tool family exists" from "the full contract for calling it":
+;;
+;;   Tier 0  one tiny capability card per server, injected into context.
+;;   Tier 1  full schemas as on-demand e:// resources, read not injected.
+;;   Tier 2  an mcp_activate meta-tool that returns schemas and promotes the
+;;           requested tools into the session's active tool set.
+;;
+;; The three tiers are coherent only together: cards without lazy tools double
+;; the cost, lazy tools without cards leave the model unable to discover the
+;; family.  They are therefore gated by one per-capability `:progressive' flag
+;; rather than three independent switches.  With the flag off, this module
+;; behaves exactly as it did before progressive disclosure existed.
+
+(defconst e-mcp--progressive-config-options
+  (list (e-capability-config-option-create
+         :key :progressive
+         :type 'boolean
+         :default nil
+         :documentation
+         "When non-nil, expose MCP tools through progressive disclosure: a tiny per-server capability card in context (Tier 0), full schemas as on-demand e:// resources (Tier 1), and an mcp_activate meta-tool that promotes tools into the active set (Tier 2).  When nil, every tool schema is injected eagerly."))
+  "Config option specs every MCP-wrapping capability owns.")
+
+(cl-defun e-mcp--config
+    (capability-id config-options &key harness session-id directory overrides)
+  "Resolve CAPABILITY-ID config against CONFIG-OPTIONS.
+HARNESS, when present, contributes session-scoped runtime config."
+  (if harness
+      (e-harness-effective-capability-config
+       harness capability-id config-options
+       :session-id session-id :directory directory :overrides overrides)
+    (e-capability-config-resolve
+     capability-id config-options :directory directory :overrides overrides)))
+
+(cl-defun e-mcp--progressive-p
+    (capability-id config-options &key harness session-id)
+  "Return non-nil when CAPABILITY-ID is configured for progressive disclosure."
+  (plist-get (e-mcp--config capability-id config-options
+                            :harness harness :session-id session-id)
+             :progressive))
+
+;;; Tier 2 — active tool set (persisted in session metadata)
+
+(defun e-mcp--active-set (harness session-id)
+  "Return the activated-MCP-tools alist for HARNESS SESSION-ID.
+Each entry is (SERVER-ID . TOOLS) where TOOLS is t (all tools) or a list of
+tool-name strings."
+  (when (and harness session-id)
+    (when-let ((session (ignore-errors
+                          (e-session-get (e-harness-sessions harness)
+                                         session-id))))
+      (plist-get (plist-get session :metadata) :mcp-active))))
+
+(defun e-mcp--tool-activated-p (active server-id tool-name)
+  "Return non-nil when TOOL-NAME of SERVER-ID is activated in ACTIVE."
+  (let ((tools (cdr (assoc server-id active))))
+    (or (eq tools t)
+        (and (listp tools) (member tool-name tools) t))))
+
+(defun e-mcp--merge-active-tools (existing tool-names)
+  "Merge TOOL-NAMES into EXISTING activation for one server.
+Nil or empty TOOL-NAMES means \"all tools\"."
+  (cond
+   ((eq existing t) t)
+   ((null tool-names) t)
+   (t (cl-remove-duplicates
+       (append (and (listp existing) existing) tool-names)
+       :test #'equal))))
+
+(defun e-mcp--activate (harness session-id server-id tool-names)
+  "Promote TOOL-NAMES of SERVER-ID into HARNESS SESSION-ID active set.
+TOOL-NAMES nil or empty activates the whole server.  Returns the merged value."
+  (let* ((store (e-harness-sessions harness))
+         (metadata (copy-sequence
+                    (plist-get (e-session-get store session-id) :metadata)))
+         (active (copy-alist (plist-get metadata :mcp-active)))
+         (existing (cdr (assoc server-id active)))
+         (merged (e-mcp--merge-active-tools existing (append tool-names nil))))
+    (setf (alist-get server-id active nil nil #'equal) merged)
+    (e-session-set-metadata store session-id
+                            (plist-put metadata :mcp-active active))
+    merged))
+
+;;; Tier 1 — schema text and on-demand resources
+
+(defun e-mcp--tool-schema-text (tool)
+  "Return the full on-demand schema document for TOOL.
+The callable tool name is the generated name the model invokes later."
+  (string-join
+   (list (format "# %s" (e-mcp--generated-tool-name tool))
+         (e-mcp-tool-description tool)
+         ""
+         "Input schema (JSON):"
+         (json-encode (e-mcp-tool-input-schema tool)))
+   "\n"))
+
+(defun e-mcp--family-index-text (server-id catalog)
+  "Return the Tier-1 family index document for SERVER-ID CATALOG."
+  (string-join
+   (cons
+    (format "# MCP %s — %d tools" server-id (length catalog))
+    (mapcar
+     (lambda (tool)
+       (format "- %s: %s"
+               (e-mcp-tool-name tool)
+               (e-mcp-tool-description tool)))
+     catalog))
+   "\n"))
+
+(defun e-mcp--register-resources (store capability servers)
+  "Register Tier-1 MCP schema resources for SERVERS in STORE under CAPABILITY."
+  (let ((capability-id (e-capability-id capability)))
+    (dolist (server servers)
+      (let* ((server-id (e-mcp-server-id server))
+             (catalog (e-mcp-list-tools (list server))))
+        (e-store-register
+         store capability-id
+         (format "mcp/%s/tools" server-id)
+         :description (format "MCP %s tool index." server-id)
+         :content (e-mcp--family-index-text server-id catalog)
+         :metadata (list :kind 'mcp-tool-index :server-id server-id))
+        (dolist (tool catalog)
+          (e-store-register
+           store capability-id
+           (format "mcp/%s/tools/%s" server-id (e-mcp-tool-name tool))
+           :description (format "MCP %s/%s full schema."
+                                server-id (e-mcp-tool-name tool))
+           :content (e-mcp--tool-schema-text tool)
+           :metadata (e-mcp--tool-metadata tool)))))))
+
+(defun e-mcp--resource-provider (servers capability-id all-options)
+  "Return a resource provider registering Tier-1 resources for SERVERS.
+Resources are registered only when CAPABILITY-ID resolves to progressive mode
+against ALL-OPTIONS."
+  (cl-function
+   (lambda (store capability &key harness session-id &allow-other-keys)
+     (when (e-mcp--progressive-p capability-id all-options
+                                 :harness harness :session-id session-id)
+       (e-mcp--register-resources store capability servers)))))
+
+;;; Tier 0 — capability cards
+
+(defun e-mcp--server-card-text (capability-id server catalog)
+  "Return the Tier-0 capability card for SERVER CATALOG under CAPABILITY-ID."
+  (let ((server-id (e-mcp-server-id server)))
+    (string-join
+     (list
+      (format "%s (MCP, %d tools)" server-id (length catalog))
+      (format "Load before use: read e://%s/mcp/%s/tools  (or call mcp_activate server=\"%s\")"
+              capability-id server-id server-id)
+      (format "Tools: %s"
+              (string-join (mapcar #'e-mcp-tool-name catalog) ", ")))
+     "\n")))
+
+(defun e-mcp--cards-message (capability-id servers)
+  "Return a single Tier-0 context message describing SERVERS for CAPABILITY-ID."
+  (let ((cards (mapcar
+                (lambda (server)
+                  (e-mcp--server-card-text
+                   capability-id server (e-mcp-list-tools (list server))))
+                servers)))
+    (when cards
+      (list
+       (list :role 'system
+             :content
+             (string-join
+              (cons
+               "MCP tool families available this session (schemas load on demand):"
+               cards)
+              "\n\n"))))))
+
+(defun e-mcp--context-provider (servers capability-id all-options)
+  "Return a Tier-0 card context provider for SERVERS.
+Cards are emitted only when CAPABILITY-ID resolves to progressive mode."
+  (e-context-provider-create
+   :name (intern (format "mcp-cards-%s" capability-id))
+   :priority 210
+   :cache-placement 'stable-context
+   :build
+   (cl-function
+    (lambda (&key harness session-id _turn-id)
+      (when (e-mcp--progressive-p capability-id all-options
+                                  :harness harness :session-id session-id)
+        (e-mcp--cards-message capability-id servers))))))
+
+;;; Tier 2 — mcp_activate meta-tool
+
+(defconst e-mcp--activate-tool-parameters
+  '(:type "object"
+    :properties (:server (:type "string"
+                          :description "MCP server id to activate.")
+                 :tools (:type "array"
+                         :items (:type "string")
+                         :description "Tool names to activate; omit for all.")
+                 :invoke (:type "object"
+                          :description "Optional single tool to call immediately."
+                          :properties (:tool (:type "string")
+                                       :arguments (:type "object"))))
+    :required ["server"])
+  "Schema for the always-present mcp_activate meta-tool.")
+
+(defun e-mcp--catalog-for-server (server-id)
+  "Return (SERVER . CATALOG) for SERVER-ID from remembered servers, or nil."
+  (when-let ((server (e-mcp--known-server server-id)))
+    (cons server (e-mcp-list-tools (list server)))))
+
+(defun e-mcp--select-tools (catalog tool-names)
+  "Return CATALOG entries whose names are in TOOL-NAMES, or all when empty."
+  (let ((names (append tool-names nil)))
+    (if (null names)
+        catalog
+      (cl-remove-if-not
+       (lambda (tool) (member (e-mcp-tool-name tool) names))
+       catalog))))
+
+(defun e-mcp--activate-handler (arguments)
+  "Handle an mcp_activate call described by ARGUMENTS."
+  (let* ((context (e-tools-current-context))
+         (call (plist-get context :tool-call))
+         (harness (plist-get context :harness))
+         (session-id (plist-get context :session-id))
+         (server-id (plist-get arguments :server))
+         (requested (plist-get arguments :tools))
+         (invoke (plist-get arguments :invoke))
+         (server+catalog (and server-id (e-mcp--catalog-for-server server-id))))
+    (unless server+catalog
+      (signal 'e-mcp-protocol-error
+              (list (format "Unknown MCP server: %s" server-id))))
+    (let* ((server (car server+catalog))
+           (catalog (cdr server+catalog))
+           (selected (e-mcp--select-tools catalog requested))
+           (schema-text (string-join
+                         (mapcar #'e-mcp--tool-schema-text selected)
+                         "\n\n"))
+           (sections (list schema-text)))
+      (when (and harness session-id)
+        (e-mcp--activate harness session-id server-id
+                         (mapcar #'e-mcp-tool-name selected))
+        (push "Activated for this session; the tools above are now callable."
+              sections))
+      (when invoke
+        (let* ((tool-name (plist-get invoke :tool))
+               (invoke-args (plist-get invoke :arguments))
+               (result (e-mcp-call-tool (list server) server-id
+                                        tool-name invoke-args)))
+          (push (format "Invoke %s result:\n%s"
+                        tool-name
+                        (e-tools-result-content-text
+                         (e-mcp--result-content result)))
+                sections)))
+      (let ((content (string-join (nreverse sections) "\n\n")))
+        (if call
+            (e-tools-result-create call 'ok content (list :kind 'mcp-activate))
+          content)))))
+
+(defun e-mcp--register-meta-tool (registry)
+  "Register the always-present mcp_activate meta-tool in REGISTRY."
+  (e-tools-register
+   registry
+   :name "mcp_activate"
+   :description
+   "Load full schemas for MCP tools and make them callable for the rest of the session. Pass `server' and optionally `tools' (omit for all). The result returns the full schemas; the named tools become callable on the next turn. Optionally pass `invoke' {tool, arguments} to also call one tool immediately."
+   :parameters e-mcp--activate-tool-parameters
+   :handler #'e-mcp--activate-handler
+   :metadata '(:kind mcp-activate)))
+
+(defun e-mcp--tools-provider (servers capability-id all-options)
+  "Return a tools provider for SERVERS.
+In eager mode it registers every tool.  In progressive mode it registers the
+mcp_activate meta-tool plus only the tools the session has activated."
+  (cl-function
+   (lambda (registry &key harness session-id &allow-other-keys)
+     (if (e-mcp--progressive-p capability-id all-options
+                               :harness harness :session-id session-id)
+         (progn
+           (e-mcp--register-meta-tool registry)
+           (let ((active (e-mcp--active-set harness session-id)))
+             (dolist (tool (e-mcp-list-tools servers))
+               (when (e-mcp--tool-activated-p
+                      active (e-mcp-tool-server-id tool) (e-mcp-tool-name tool))
+                 (e-mcp--register-tool registry servers tool)))))
+       (dolist (tool (e-mcp-list-tools servers))
+         (e-mcp--register-tool registry servers tool))))))
+
 (cl-defun e-capability-with-mcp-create
     (&key id name instructions mcp-servers tools resource-methods resources
           context-providers actions instruction-priority config-options config)
@@ -676,21 +977,27 @@ are registered as ordinary e tools under deterministic names."
     (unless (e-mcp-server-p server)
       (signal 'wrong-type-argument (list 'e-mcp-server-p server))))
   (e-mcp--remember-servers mcp-servers)
-  (let ((mcp-tools
-         (lambda (registry)
-           (dolist (tool (e-mcp-list-tools mcp-servers))
-             (e-mcp--register-tool registry mcp-servers tool)))))
+  (let* ((all-options (append e-mcp--progressive-config-options config-options))
+         (mcp-tools (when mcp-servers
+                      (e-mcp--tools-provider mcp-servers id all-options)))
+         (mcp-resources (when mcp-servers
+                          (e-mcp--resource-provider mcp-servers id all-options)))
+         (mcp-cards (when mcp-servers
+                      (e-mcp--context-provider mcp-servers id all-options))))
+    (when mcp-servers
+      (e-capability-config-register-options id all-options))
     (e-capability-create
      :id id
      :name name
      :instructions instructions
-     :tools (append tools (when mcp-servers (list mcp-tools)))
+     :tools (append tools (when mcp-tools (list mcp-tools)))
      :resource-methods resource-methods
-     :resources resources
-     :context-providers context-providers
+     :resources (append resources (when mcp-resources (list mcp-resources)))
+     :context-providers (append context-providers
+                                (when mcp-cards (list mcp-cards)))
      :instruction-priority instruction-priority
      :actions actions
-     :config-options config-options
+     :config-options all-options
      :config config)))
 
 (provide 'e-mcp)

@@ -47,15 +47,18 @@ the layer registry."
     (unless (e-mcp-server-p server)
       (signal 'wrong-type-argument (list 'e-mcp-server-p server))))
   (let* ((display-name (or name (symbol-name id)))
-         (capability-id (symbol-name id))
          (factory
           (lambda ()
             (e-layer-create
              :id id
              :name display-name
              :capabilities
+             ;; The capability shares ID's symbol so capability-config
+             ;; resolution (global, directory-local, and harness runtime
+             ;; config are all symbol-keyed) can reach it; a string id would
+             ;; silently never match and leave progressive disclosure off.
              (list (e-capability-with-mcp-create
-                    :id capability-id
+                    :id id
                     :name display-name
                     :mcp-servers servers))))))
     (prog1

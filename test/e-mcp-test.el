@@ -558,6 +558,175 @@ echoed back on `tools/list' and `tools/call'."
       (when (buffer-live-p (process-buffer process))
         (kill-buffer (process-buffer process))))))
 
+(defun e-mcp-test--progressive-transport ()
+  "Return a fake helper transport exposing two tools for progressive tests."
+  (lambda (request)
+    (pcase (plist-get request :op)
+      ("list-tools"
+       (list :ok t
+             :result (list :tools
+                           (vector (e-mcp-test--fake-tool
+                                    "echo" e-mcp-test--schema "Echo text.")
+                                   (e-mcp-test--fake-tool
+                                    "ping" '(:type "object") "Ping host.")))))
+      ("call-tool"
+       (list :ok t
+             :result (list :content
+                           (vector (list :type "text" :text "called"))
+                           :isError :json-false))))))
+
+(defmacro e-mcp-test--with-progressive-harness (harness-var &rest body)
+  "Bind HARNESS-VAR to a harness with a progressive MCP layer and run BODY."
+  (declare (indent 1))
+  `(e-mcp-test--with-transport (e-mcp-test--progressive-transport)
+     (let ((e-layer--registry (make-hash-table :test 'eq)))
+       (e-layer-register
+        (e-layer-spec-create
+         :id 'fixture-mcp
+         :name "Fixture MCP"
+         :factory
+         (lambda ()
+           (e-layer-create
+            :id 'fixture-mcp
+            :name "Fixture MCP"
+            :capabilities
+            (list (e-capability-with-mcp-create
+                   :id 'fixture-mcp
+                   :name "Fixture MCP"
+                   :mcp-servers (list (e-mcp-test--server))))))))
+       (let ((,harness-var
+              (e-harness-create
+               :backend (e-backend-fake-create :items nil)
+               :sessions (e-session-store-create))))
+         (e-harness-activate-layer
+          ,harness-var (e-layer-create-registered 'fixture-mcp))
+         ,@body))))
+
+(ert-deftest e-mcp-test-eager-mode-registers-every-tool ()
+  "With progressive disabled (the default), all tool schemas are registered."
+  (e-mcp-test--with-progressive-harness harness
+    (e-harness-create-session harness :id "s1")
+    (should (equal (sort (mapcar (lambda (d) (plist-get d :name))
+                                 (e-tools-definitions
+                                  (e-harness-tools harness "s1")))
+                         #'string<)
+                   '("mcp__fixture__echo" "mcp__fixture__ping")))))
+
+(ert-deftest e-mcp-test-progressive-mode-registers-only-meta-tool ()
+  "Progressive mode hides tool schemas behind mcp_activate until activated."
+  (e-mcp-test--with-progressive-harness harness
+    (e-harness-set-capability-config harness 'fixture-mcp '(:progressive t))
+    (e-harness-create-session harness :id "s1")
+    (let ((names (mapcar (lambda (d) (plist-get d :name))
+                         (e-tools-definitions
+                          (e-harness-tools harness "s1")))))
+      (should (member "mcp_activate" names))
+      (should-not (member "mcp__fixture__echo" names))
+      (should-not (member "mcp__fixture__ping" names)))))
+
+(ert-deftest e-mcp-test-progressive-mode-emits-capability-card ()
+  "Progressive mode injects a single Tier-0 card naming the server tools."
+  (e-mcp-test--with-progressive-harness harness
+    (e-harness-set-capability-config harness 'fixture-mcp '(:progressive t))
+    (e-harness-create-session harness :id "s1")
+    (let* ((messages (plist-get (e-harness-context harness "s1") :messages))
+           (card (cl-find-if
+                  (lambda (m)
+                    (and (stringp (plist-get m :content))
+                         (string-match-p "MCP tool families"
+                                         (plist-get m :content))))
+                  messages)))
+      (should card)
+      (should (string-match-p "echo" (plist-get card :content)))
+      (should (string-match-p "ping" (plist-get card :content))))))
+
+(ert-deftest e-mcp-test-progressive-mode-registers-schema-resources ()
+  "Progressive mode exposes per-tool schemas as on-demand e:// resources."
+  (e-mcp-test--with-progressive-harness harness
+    (e-harness-set-capability-config harness 'fixture-mcp '(:progressive t))
+    (e-harness-create-session harness :id "s1")
+    (let ((uris (mapcar #'e-store-entry-uri
+                        (e-store-list (e-harness-store harness "s1")))))
+      (should (member "e://fixture-mcp/mcp/fixture/tools" uris))
+      (should (member "e://fixture-mcp/mcp/fixture/tools/echo" uris))
+      (should (member "e://fixture-mcp/mcp/fixture/tools/ping" uris)))))
+
+(ert-deftest e-mcp-test-eager-mode-emits-no-card-or-resources ()
+  "Eager mode leaves context and resources free of progressive scaffolding."
+  (e-mcp-test--with-progressive-harness harness
+    (e-harness-create-session harness :id "s1")
+    (should-not
+     (cl-find-if
+      (lambda (m)
+        (and (stringp (plist-get m :content))
+             (string-match-p "MCP tool families" (plist-get m :content))))
+      (plist-get (e-harness-context harness "s1") :messages)))
+    (should-not (e-store-list (e-harness-store harness "s1")))))
+
+(ert-deftest e-mcp-test-activate-promotes-tool-into-active-set ()
+  "mcp_activate records the named tool and makes it callable next turn."
+  (e-mcp-test--with-progressive-harness harness
+    (e-harness-set-capability-config harness 'fixture-mcp '(:progressive t))
+    (e-harness-create-session harness :id "s1")
+    (let* ((registry (e-harness-tools harness "s1"))
+           (done nil)
+           (result nil))
+      (e-tools-start
+       registry
+       '(:id "c1" :name "mcp_activate"
+         :arguments (:server "fixture" :tools ["echo"]))
+       :context (list :harness harness :session-id "s1")
+       :on-done (lambda (value) (setq result value done t))
+       :on-error (lambda (err) (setq result err done t)))
+      (while (not done) (accept-process-output nil 0.01))
+      (should (eq (plist-get result :status) 'ok))
+      (should (string-match-p "# mcp__fixture__echo"
+                              (e-tools-result-content-text
+                               (plist-get result :content)))))
+    (should (equal (e-mcp--active-set harness "s1") '(("fixture" "echo"))))
+    (let ((names (mapcar (lambda (d) (plist-get d :name))
+                         (e-tools-definitions
+                          (e-harness-tools harness "s1")))))
+      (should (member "mcp__fixture__echo" names))
+      (should-not (member "mcp__fixture__ping" names)))))
+
+(ert-deftest e-mcp-test-activate-without-tools-activates-whole-server ()
+  "mcp_activate with no tool list activates every tool on the server."
+  (e-mcp-test--with-progressive-harness harness
+    (e-harness-set-capability-config harness 'fixture-mcp '(:progressive t))
+    (e-harness-create-session harness :id "s1")
+    (e-mcp--activate harness "s1" "fixture" nil)
+    (should (equal (e-mcp--active-set harness "s1") '(("fixture" . t))))
+    (should (equal (sort (mapcar (lambda (d) (plist-get d :name))
+                                 (cl-remove-if-not
+                                  (lambda (d)
+                                    (string-prefix-p "mcp__"
+                                                     (plist-get d :name)))
+                                  (e-tools-definitions
+                                   (e-harness-tools harness "s1"))))
+                         #'string<)
+                   '("mcp__fixture__echo" "mcp__fixture__ping")))))
+
+(ert-deftest e-mcp-test-list-tools-memoizes-catalog ()
+  "`e-mcp-list-tools' caches catalogs and `e-mcp-refresh' invalidates them."
+  (let ((calls 0))
+    (e-mcp-test--with-transport
+        (lambda (request)
+          (when (equal (plist-get request :op) "list-tools")
+            (setq calls (1+ calls)))
+          (list :ok t
+                :result (list :tools
+                              (vector (e-mcp-test--fake-tool
+                                       "echo" '(:type "object"))))))
+      (let ((servers (list (e-mcp-test--server))))
+        (e-mcp-list-tools servers)
+        (e-mcp-list-tools servers)
+        (should (= calls 1))
+        (e-mcp-refresh servers)
+        ;; Refresh invalidates the cache; the next list re-fetches once more.
+        (e-mcp-list-tools servers)
+        (should (= calls 2))))))
+
 (provide 'e-mcp-test)
 
 ;;; e-mcp-test.el ends here
