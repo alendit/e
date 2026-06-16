@@ -82,6 +82,14 @@
 (defvar e-mcp--latest-diagnostics nil
   "Most recent diagnostics returned by the MCP helper.")
 
+(defvar e-mcp--catalog-cache (make-hash-table :test 'equal)
+  "Memoized tools/list catalogs keyed by sorted server id list.
+Progressive disclosure touches each server catalog from several places per
+turn (Tier-0 card, Tier-1 resources, Tier-2 activation, lazy tool
+registration).  Memoizing the helper round trip keeps that fan-out from
+re-listing tools on every turn.  Invalidated by `e-mcp-reset' and
+`e-mcp-refresh'.")
+
 (defvar e-mcp-helper-transport-function nil
   "Optional fake helper transport function for tests.
 When non-nil, the function receives the helper request plist and returns a
@@ -191,7 +199,16 @@ transport), but not both."
   (setq e-mcp--helper-next-id 0)
   (setq e-mcp--latest-diagnostics nil)
   (setq e-mcp--http-sessions nil)
+  (clrhash e-mcp--catalog-cache)
   t)
+
+(defun e-mcp--catalog-key (servers)
+  "Return a stable cache key for SERVERS."
+  (sort (mapcar #'e-mcp-server-id servers) #'string<))
+
+(defun e-mcp--invalidate-catalog (servers)
+  "Drop any memoized catalog for SERVERS."
+  (remhash (e-mcp--catalog-key servers) e-mcp--catalog-cache))
 
 (defun e-mcp-diagnostics ()
   "Return diagnostics from the most recent MCP helper response."
@@ -494,8 +511,8 @@ Return the parsed JSON-RPC result on success, signal on error."
   "Return non-nil when SERVER uses HTTP transport."
   (and (e-mcp-server-url server) t))
 
-(defun e-mcp-list-tools (servers)
-  "Return discovered MCP tools for SERVERS.
+(defun e-mcp--list-tools-uncached (servers)
+  "Return freshly discovered MCP tools for SERVERS, bypassing the cache.
 HTTP servers are handled in-process; stdio servers use the helper."
   (let ((http-servers (cl-remove-if-not #'e-mcp--server-http-p servers))
         (stdio-servers (cl-remove-if #'e-mcp--server-http-p servers))
@@ -518,6 +535,15 @@ HTTP servers are handled in-process; stdio servers use the helper."
                             item)))
             (push (e-mcp--tool-from-helper server-id item) tools)))))
     (nreverse tools)))
+
+(defun e-mcp-list-tools (servers)
+  "Return discovered MCP tools for SERVERS.
+The catalog is memoized per server set; `e-mcp-refresh' or `e-mcp-reset'
+invalidate it."
+  (let ((key (e-mcp--catalog-key servers)))
+    (if-let ((cached (gethash key e-mcp--catalog-cache)))
+        cached
+      (puthash key (e-mcp--list-tools-uncached servers) e-mcp--catalog-cache))))
 
 (defun e-mcp-call-tool (servers server-id tool-name arguments)
   "Call TOOL-NAME on SERVER-ID through SERVERS with ARGUMENTS."
@@ -543,6 +569,7 @@ Interactively, refresh all servers seen during capability construction."
     (unless servers
       (signal 'e-mcp-backend-error
               (list "No MCP servers are configured for refresh")))
+    (e-mcp--invalidate-catalog servers)
     (let ((http-servers (cl-remove-if-not #'e-mcp--server-http-p servers))
           (stdio-servers (cl-remove-if #'e-mcp--server-http-p servers)))
       (dolist (server http-servers)
