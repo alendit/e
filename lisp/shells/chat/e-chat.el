@@ -151,36 +151,29 @@ The mode line uses this presentation-owned table for context usage display."
 (when (equal e-chat-progress-interval 0.35)
   (setq e-chat-progress-interval 0.6))
 
+;; Chat block faces inherit neutral theme faces rather than hardcoding a
+;; palette, so the chat buffer follows whatever theme (light or dark) the user
+;; has active.  `:extend t' lets a block colour fill to the window edge when the
+;; inherited face carries a background; with a background-less theme face it is
+;; harmless.
+
 (defface e-chat-user-face
-  '((t :inherit default
-       :foreground "#d7ecff"
-       :background "#243347"
-       :extend t))
+  '((t :inherit highlight :extend t))
   "Face used for user-authored chat blocks."
   :group 'e-chat)
 
 (defface e-chat-assistant-face
-  '((t :inherit default
-       :foreground "#e6f3d4"
-       :background "#2b3526"
-       :extend t))
+  '((t :inherit default :extend t))
   "Face used for assistant response chat blocks."
   :group 'e-chat)
 
 (defface e-chat-final-assistant-face
-  '((t :inherit e-chat-assistant-face
-       :foreground "#edf7df"
-       :background "#24301f"
-       :box nil
-       :extend t))
+  '((t :inherit e-chat-assistant-face :box nil :extend t))
   "Face used for settled assistant response chat blocks."
   :group 'e-chat)
 
 (defface e-chat-system-face
-  '((t :inherit default
-       :foreground "#ded2ec"
-       :background "#312b3c"
-       :extend t))
+  '((t :inherit shadow :extend t))
   "Face used for compact system chat blocks."
   :group 'e-chat)
 
@@ -190,59 +183,48 @@ The mode line uses this presentation-owned table for context usage display."
   :group 'e-chat)
 
 (defface e-chat-separator-face
-  '((t :inherit shadow
-       :foreground "#7f8a99"
-       :background "#202833"
-       :extend t))
+  '((t :inherit shadow :extend t))
   "Face used for the composer separator."
   :group 'e-chat)
 
 (defface e-chat-turn-separator-face
-  '((t :inherit shadow
-       :foreground "#7f8a99"
-       :background "#202833"
-       :box nil
-       :extend t))
+  '((t :inherit shadow :box nil :extend t))
   "Face used for separators between chat turns."
   :group 'e-chat)
 
 (defface e-chat-response-separator-face
-  '((t :inherit shadow
-       :foreground "#7f8a99"
-       :background "#202833"
-       :box nil
-       :extend t))
+  '((t :inherit shadow :box nil :extend t))
   "Face used for separators between user prompt and agent-side blocks."
   :group 'e-chat)
 
 (defface e-chat-activity-separator-face
-  '((t :inherit shadow
-       :foreground "#46505c"
-       :background "#312b3c"
-       :box nil
-       :extend t))
+  '((t :inherit shadow :box nil :extend t))
   "Face used for separators between intermittent activity rounds."
   :group 'e-chat)
 
 (defun e-chat--apply-owned-face-defaults ()
   "Apply face defaults that should update during live reload."
   (set-face-attribute 'e-chat-separator-face nil
-                      :foreground "#7f8a99"
-                      :background "#202833"
+                      :foreground 'unspecified
+                      :background 'unspecified
+                      :inherit 'shadow
                       :extend t)
   (set-face-attribute 'e-chat-turn-separator-face nil
-                      :foreground "#7f8a99"
-                      :background "#202833"
+                      :foreground 'unspecified
+                      :background 'unspecified
+                      :inherit 'shadow
                       :box nil
                       :extend t)
   (set-face-attribute 'e-chat-response-separator-face nil
-                      :foreground "#7f8a99"
-                      :background "#202833"
+                      :foreground 'unspecified
+                      :background 'unspecified
+                      :inherit 'shadow
                       :box nil
                       :extend t)
   (set-face-attribute 'e-chat-activity-separator-face nil
-                      :foreground "#46505c"
-                      :background "#312b3c"
+                      :foreground 'unspecified
+                      :background 'unspecified
+                      :inherit 'shadow
                       :box nil
                       :extend t))
 
@@ -254,10 +236,7 @@ The mode line uses this presentation-owned table for context usage display."
   :group 'e-chat)
 
 (defface e-chat-focused-turn-face
-  '((t :inherit nil
-       :background "#27313d"
-       :box nil
-       :extend t))
+  '((t :inherit region :box nil :extend t))
   "Face used for the focused turn in response navigation mode."
   :group 'e-chat)
 
@@ -272,17 +251,12 @@ The mode line uses this presentation-owned table for context usage display."
   :group 'e-chat)
 
 (defface e-chat-markdown-code-face
-  '((t :inherit fixed-pitch
-       :foreground "#f6d48f"
-       :background "#202833"))
+  '((t :inherit (font-lock-constant-face fixed-pitch)))
   "Face used for inline Markdown code in assistant messages."
   :group 'e-chat)
 
 (defface e-chat-markdown-code-block-face
-  '((t :inherit fixed-pitch
-       :foreground "#dbe7ef"
-       :background "#1c252f"
-       :extend t))
+  '((t :inherit fixed-pitch :extend t))
   "Face used for fenced Markdown code blocks in assistant messages."
   :group 'e-chat)
 
@@ -302,8 +276,7 @@ The mode line uses this presentation-owned table for context usage display."
   :group 'e-chat)
 
 (defface e-chat-context-reference-face
-  '((t :inherit font-lock-constant-face
-       :box (:line-width 1 :color "#5f8cc8")))
+  '((t :inherit (font-lock-constant-face highlight)))
   "Face used for inline context references in the composer."
   :group 'e-chat)
 
@@ -328,63 +301,35 @@ The mode line uses this presentation-owned table for context usage display."
   :group 'e-chat)
 
 (defconst e-chat--user-face-spec
-  '((t :inherit default
-       :foreground "#d7ecff"
-       :background "#243347"
-       :extend t))
+  '((t :inherit highlight :extend t))
   "Default face spec for user-authored chat blocks.")
 
 (defconst e-chat--assistant-face-spec
-  '((t :inherit default
-       :foreground "#e6f3d4"
-       :background "#2b3526"
-       :extend t))
+  '((t :inherit default :extend t))
   "Default face spec for assistant response chat blocks.")
 
 (defconst e-chat--final-assistant-face-spec
-  '((t :inherit e-chat-assistant-face
-       :foreground "#edf7df"
-       :background "#24301f"
-       :box nil
-       :extend t))
+  '((t :inherit e-chat-assistant-face :box nil :extend t))
   "Default face spec for settled assistant response chat blocks.")
 
 (defconst e-chat--system-face-spec
-  '((t :inherit default
-       :foreground "#ded2ec"
-       :background "#312b3c"
-       :extend t))
+  '((t :inherit shadow :extend t))
   "Default face spec for compact system chat blocks.")
 
 (defconst e-chat--focused-turn-face-spec
-  '((t :inherit nil
-       :background "#27313d"
-       :box nil
-       :extend t))
+  '((t :inherit region :box nil :extend t))
   "Default face spec for focused response-navigation blocks.")
 
 (defconst e-chat--turn-separator-face-spec
-  '((t :inherit shadow
-       :foreground "#7f8a99"
-       :background "#202833"
-       :box nil
-       :extend t))
+  '((t :inherit shadow :box nil :extend t))
   "Default face spec for separators between chat turns.")
 
 (defconst e-chat--response-separator-face-spec
-  '((t :inherit shadow
-       :foreground "#7f8a99"
-       :background "#202833"
-       :box nil
-       :extend t))
+  '((t :inherit shadow :box nil :extend t))
   "Default face spec for separators between prompt and response blocks.")
 
 (defconst e-chat--activity-separator-face-spec
-  '((t :inherit shadow
-       :foreground "#46505c"
-       :background "#312b3c"
-       :box nil
-       :extend t))
+  '((t :inherit shadow :box nil :extend t))
   "Default face spec for separators between intermittent activity rounds.")
 
 (defconst e-chat--overview-unread-face-spec

@@ -210,10 +210,10 @@
             (should (eq (get-text-property line-start 'font-lock-face)
                         'e-chat-separator-face))
             (should (get-text-property line-start 'read-only))
-            (should (equal (face-attribute 'e-chat-separator-face :foreground)
-                           "#7f8a99"))
-            (should (equal (face-attribute 'e-chat-separator-face :background)
-                           "#202833"))))
+            ;; The separator inherits a neutral theme face rather than a fixed
+            ;; palette, so it tracks the active theme.
+            (should (equal (face-attribute 'e-chat-separator-face :inherit)
+                           'shadow))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -355,19 +355,15 @@
                             :background 'unspecified
                             :box '(:line-width 1 :color "#ffffff"))
         (e-chat--refresh-face-specs)
-        (should (equal (face-attribute 'e-chat-turn-separator-face
-                                       :foreground)
-                       "#7f8a99"))
-        (should (equal (face-attribute 'e-chat-turn-separator-face
-                                       :background)
-                       "#202833"))
+        (should (equal (face-attribute 'e-chat-turn-separator-face :inherit)
+                       'shadow))
+        (should (eq (face-attribute 'e-chat-turn-separator-face :foreground)
+                    'unspecified))
+        (should (eq (face-attribute 'e-chat-turn-separator-face :background)
+                    'unspecified))
         (should-not (face-attribute 'e-chat-turn-separator-face :box))
-        (should (equal (face-attribute 'e-chat-response-separator-face
-                                       :foreground)
-                       "#7f8a99"))
-        (should (equal (face-attribute 'e-chat-response-separator-face
-                                       :background)
-                       "#202833"))
+        (should (equal (face-attribute 'e-chat-response-separator-face :inherit)
+                       'shadow))
         (should-not (face-attribute 'e-chat-response-separator-face :box)))
     (e-chat--refresh-face-specs)))
 
@@ -1043,24 +1039,24 @@
         (when (buffer-live-p buffer)
           (kill-buffer buffer))))))
 
-(ert-deftest e-chat-test-speaker-faces-are-visually-distinct ()
-  "User, assistant, and system entries use distinct background highlighting."
-  (should (equal (face-attribute 'e-chat-user-face :background)
-                 "#243347"))
-  (should (equal (face-attribute 'e-chat-assistant-face :background)
-                 "#2b3526"))
-  (should (equal (face-attribute 'e-chat-system-face :background)
-                 "#312b3c"))
-  (should-not (equal (face-attribute 'e-chat-user-face :background)
-                     (face-attribute 'e-chat-assistant-face :background)))
+(ert-deftest e-chat-test-speaker-faces-inherit-distinct-theme-faces ()
+  "User, assistant, and system entries inherit distinct neutral theme faces.
+No hardcoded palette: each face tracks the active theme through a different
+inherited base, so the blocks stay distinguishable in any theme."
+  (should (equal (face-attribute 'e-chat-user-face :inherit) 'highlight))
+  (should (equal (face-attribute 'e-chat-assistant-face :inherit) 'default))
+  (should (equal (face-attribute 'e-chat-system-face :inherit) 'shadow))
+  (should-not (equal (face-attribute 'e-chat-user-face :inherit)
+                     (face-attribute 'e-chat-assistant-face :inherit)))
+  (should (eq (face-attribute 'e-chat-user-face :background) 'unspecified))
   (should (eq (face-attribute 'e-chat-user-face :extend) t))
   (should (eq (face-attribute 'e-chat-assistant-face :extend) t))
   (should (eq (face-attribute 'e-chat-system-face :extend) t)))
 
 (ert-deftest e-chat-test-final-assistant-face-has-no-border ()
-  "Settled assistant entries use fill styling without a visible border."
-  (should (equal (face-attribute 'e-chat-final-assistant-face :background)
-                 "#24301f"))
+  "Settled assistant entries inherit the assistant face without a border."
+  (should (equal (face-attribute 'e-chat-final-assistant-face :inherit)
+                 'e-chat-assistant-face))
   (should-not (face-attribute 'e-chat-final-assistant-face :box))
   (should (eq (face-attribute 'e-chat-final-assistant-face :extend) t)))
 
@@ -1078,21 +1074,20 @@
                               :box '(:line-width 1 :color "#6f925a")
                               :extend nil)
           (e-chat--refresh-face-specs)
-          (should (equal (face-attribute 'e-chat-final-assistant-face :background)
-                         "#24301f"))
+          (should (equal (face-attribute 'e-chat-final-assistant-face :inherit)
+                         'e-chat-assistant-face))
           (should-not (face-attribute 'e-chat-final-assistant-face :box))
           (should (eq (face-attribute 'e-chat-final-assistant-face :extend) t)))
       (put 'e-chat-final-assistant-face 'face-defface-spec old-defface-spec)
       (e-chat--refresh-face-specs))))
 
 (ert-deftest e-chat-test-focused-turn-face-is-subtle ()
-  "Response navigation focus uses a subdued package-owned fill only."
-  (should (equal (face-attribute 'e-chat-focused-turn-face :background)
-                 "#27313d"))
+  "Response navigation focus inherits the theme region face without a border."
+  (should (equal (face-attribute 'e-chat-focused-turn-face :inherit) 'region))
+  (should (eq (face-attribute 'e-chat-focused-turn-face :background)
+              'unspecified))
   (should-not (face-attribute 'e-chat-focused-turn-face :box))
-  (should (eq (face-attribute 'e-chat-focused-turn-face :extend) t))
-  (should-not (eq (face-attribute 'e-chat-focused-turn-face :inherit)
-                  'highlight)))
+  (should (eq (face-attribute 'e-chat-focused-turn-face :extend) t)))
 
 (ert-deftest e-chat-test-face-refresh-clears-focused-turn-strong-decoration ()
   "Live reload removes older strong decorations from response focus."
@@ -1110,12 +1105,12 @@
                               :box '(:line-width 1 :color "#3b4b5c")
                               :extend nil)
           (e-chat--refresh-face-specs)
-          (should (equal (face-attribute 'e-chat-focused-turn-face :background)
-                         "#27313d"))
+          (should (equal (face-attribute 'e-chat-focused-turn-face :inherit)
+                         'region))
+          (should (eq (face-attribute 'e-chat-focused-turn-face :background)
+                      'unspecified))
           (should-not (face-attribute 'e-chat-focused-turn-face :box))
-          (should (eq (face-attribute 'e-chat-focused-turn-face :extend) t))
-          (should-not (eq (face-attribute 'e-chat-focused-turn-face :inherit)
-                          'highlight)))
+          (should (eq (face-attribute 'e-chat-focused-turn-face :extend) t)))
       (put 'e-chat-focused-turn-face 'face-defface-spec old-defface-spec)
       (e-chat--refresh-face-specs))))
 
@@ -1124,13 +1119,16 @@
   (unwind-protect
       (progn
         (set-face-attribute 'e-chat-separator-face nil
-                            :foreground 'unspecified
-                            :background 'unspecified)
+                            :inherit 'unspecified
+                            :foreground "#ffffff"
+                            :background "#000000")
         (e-chat--apply-owned-face-defaults)
-        (should (equal (face-attribute 'e-chat-separator-face :foreground)
-                       "#7f8a99"))
-        (should (equal (face-attribute 'e-chat-separator-face :background)
-                       "#202833")))
+        (should (equal (face-attribute 'e-chat-separator-face :inherit)
+                       'shadow))
+        (should (eq (face-attribute 'e-chat-separator-face :foreground)
+                    'unspecified))
+        (should (eq (face-attribute 'e-chat-separator-face :background)
+                    'unspecified)))
     (e-chat--apply-owned-face-defaults)))
 
 (ert-deftest e-chat-test-user-and-assistant-headings-are-glyph-only ()
