@@ -601,8 +601,11 @@ preview to avoid duplicating large outputs in session JSONL files."
   (mapcar #'e-layer-id (e-harness-active-layers harness)))
 
 (defun e-harness--derived-prompt-cache-key (harness session-id options)
-  "Return the default prompt cache key for HARNESS SESSION-ID OPTIONS."
-  (format "e:%s:%s:%s:%s"
+  "Return the default prompt cache key for HARNESS SESSION-ID OPTIONS.
+The active tool set participates in the key so mid-session tool activation
+\(e.g. MCP progressive disclosure) does not silently reuse a cache prefix
+built without those tools."
+  (format "e:%s:%s:%s:%s:%s"
           e-harness-prompt-cache-key-version
           (e-harness--prompt-cache-hash (plist-get options :model) 8)
           (e-harness--prompt-cache-hash
@@ -610,6 +613,12 @@ preview to avoid duplicating large outputs in session JSONL files."
            16)
           (e-harness--prompt-cache-hash
            (e-harness--active-layer-ids harness)
+           16)
+          (e-harness--prompt-cache-hash
+           (mapcar (lambda (tool) (plist-get tool :name))
+                   (or (plist-get options :tools)
+                       (e-tools-definitions
+                        (e-harness-tools harness session-id))))
            16)))
 
 (defun e-harness--apply-prompt-cache-defaults (harness session-id options)
@@ -633,18 +642,18 @@ preview to avoid duplicating large outputs in session JSONL files."
     options))
 
 (defun e-harness-turn-options (harness session-id)
-  "Return backend-neutral turn options for HARNESS and SESSION-ID."
-  (let ((options (e-harness--apply-prompt-cache-defaults
-                  harness
-                  session-id
-                  (e-harness--merge-turn-options
-                   (e-harness-default-options harness)
-                   (e-harness-session-options harness session-id))))
-        (tool-definitions
-         (e-tools-definitions (e-harness-tools harness session-id))))
-    (if tool-definitions
-        (plist-put options :tools tool-definitions)
-      options)))
+  "Return backend-neutral turn options for HARNESS and SESSION-ID.
+Tool definitions are attached before deriving the prompt cache key so the key
+reflects the active tool set."
+  (let* ((merged (e-harness--merge-turn-options
+                  (e-harness-default-options harness)
+                  (e-harness-session-options harness session-id)))
+         (tool-definitions
+          (e-tools-definitions (e-harness-tools harness session-id)))
+         (with-tools (if tool-definitions
+                         (plist-put merged :tools tool-definitions)
+                       merged)))
+    (e-harness--apply-prompt-cache-defaults harness session-id with-tools)))
 
 (defun e-harness--turn-options (harness session-id)
   "Return backend-neutral turn options for HARNESS and SESSION-ID."
