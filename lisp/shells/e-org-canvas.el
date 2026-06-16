@@ -452,11 +452,17 @@ Org Canvas status refreshes for the current buffer.")
       (user-error "Org Canvas requires an Org buffer"))))
 
 (defun e-org-canvas--select-org-buffer (buffer)
-  "Display BUFFER as the selected Org Canvas working buffer."
+  "Display BUFFER as the selected Org Canvas working buffer.
+Selecting from a side window (e.g. a Doom popup) must not split it, so route
+the display to a normal window when the selected window is a side window."
   (when (buffer-live-p buffer)
-    (if-let ((window (get-buffer-window buffer t)))
-        (select-window window)
-      (switch-to-buffer buffer)))
+    (cond
+     ((get-buffer-window buffer t)
+      (select-window (get-buffer-window buffer t)))
+     ((e-chat--side-window-p)
+      (when-let ((window (e-chat--display-from-side-window buffer)))
+        (select-window window)))
+     (t (switch-to-buffer buffer))))
   buffer)
 
 (defun e-org-canvas--open-session-for-buffer

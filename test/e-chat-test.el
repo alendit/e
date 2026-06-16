@@ -5439,6 +5439,33 @@ side window\", which blocked opening new sessions."
       (when (buffer-live-p chat)
         (kill-buffer chat)))))
 
+(ert-deftest e-chat-test-open-when-every-window-is-a-side-window ()
+  "Display reuses the side window in place when no normal window exists.
+Regression: a frame whose only windows are managed side popups (e.g. Doom's
+popup manager wrapping chat buffers) has nowhere to split, so display must
+reuse the side window via `set-window-buffer' rather than signalling \"Cannot
+split side window or parent of side window\".  An all-side-window frame cannot
+be built in batch (Emacs refuses to delete the last normal window), so the
+no-normal-window condition is stubbed."
+  (let* ((chat (e-chat-test--buffer nil "chat-all-side"))
+         (sidebar (get-buffer-create "*e-chat-test-only-side*"))
+         (side-window
+          (display-buffer-in-side-window sidebar '((side . left) (slot . -1)))))
+    (unwind-protect
+        (cl-letf (((symbol-function 'e-chat--non-side-window) (lambda (&rest _) nil)))
+          (should (window-live-p side-window))
+          (select-window side-window)
+          (should (e-chat--side-window-p))
+          ;; Must not error; reuses the side window in place.
+          (e-chat--pop-to-buffer chat)
+          (should (eq (window-buffer side-window) chat)))
+      (when (window-live-p side-window)
+        (delete-window side-window))
+      (when (buffer-live-p sidebar)
+        (kill-buffer sidebar))
+      (when (buffer-live-p chat)
+        (kill-buffer chat)))))
+
 (provide 'e-chat-test)
 
 ;;; e-chat-test.el ends here
