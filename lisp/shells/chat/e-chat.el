@@ -3964,18 +3964,31 @@ non-nil, is used by focused block activation."
   "Return non-nil when WINDOW (or the selected window) is a side window."
   (window-parameter (or window (selected-window)) 'window-side))
 
+(defun e-chat--non-side-window (&optional frame)
+  "Return a live non-side window on FRAME, or nil when every window is a side."
+  (cl-find-if-not (lambda (window) (window-parameter window 'window-side))
+                  (window-list frame 'no-minibuf)))
+
 (defun e-chat--display-from-side-window (buffer)
-  "Display BUFFER from a side window without splitting it.
-A side window cannot host an ordinary buffer and cannot be split, so route
-the display to a normal window: reuse one if the buffer is already shown,
-otherwise reuse the main window or pop a new non-side window."
-  (display-buffer
-   buffer
-   '((display-buffer-reuse-window
-      display-buffer-use-some-window
-      display-buffer-pop-up-window)
-     (inhibit-same-window . t)
-     (some-window . mru))))
+  "Display BUFFER when the selected window is a side window, and return it.
+A side window cannot host an ordinary buffer and cannot be split (nor can its
+parent), so splitting-based display actions signal \"Cannot split side window
+or parent of side window\".  Prefer an existing non-side window: reuse one that
+already shows BUFFER, else reuse/split a normal window.  When the frame has no
+normal window at all (every window is a managed side popup, e.g. Doom's popup
+manager), fall back to showing BUFFER in the current side window in place via
+`set-window-buffer', which side windows do allow."
+  (if (e-chat--non-side-window)
+      (display-buffer
+       buffer
+       '((display-buffer-reuse-window
+          display-buffer-use-some-window
+          display-buffer-pop-up-window)
+         (inhibit-same-window . t)
+         (some-window . mru)))
+    (let ((window (selected-window)))
+      (set-window-buffer window buffer)
+      window)))
 
 (defun e-chat--switch-to-buffer (buffer)
   "Display BUFFER, restoring chat-local editing invariants.
