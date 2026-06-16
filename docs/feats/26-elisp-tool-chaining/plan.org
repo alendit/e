@@ -1,0 +1,505 @@
+#+title: Elisp Tool Chaining
+#+startup: overview
+
+* Status
+
+Planned.
+
+* Problem
+
+The agent can call individual tools, and an operator layer can evaluate explicit
+Emacs Lisp through =run_elisp=.  Those two surfaces are still separate in the
+model-facing contract.  When a task needs several tool calls with conditional
+logic, iteration, reduction, or intermediate transformation, the model has to
+round-trip through the backend for every step instead of writing a small Elisp
+program that composes the active tools directly.
+
+The runtime already has most of the machinery:
+
+- =e-harness-tools= builds a fresh registry for the active harness/session/turn.
+- =e-tools-start= and =e-tools-execute= execute structured tool calls.
+- =e-tools-current-context= exposes the current tool execution context.
+- =e-harness-tool-lifecycle= passes =:harness=, =:session-id=, =:turn-id=,
+  active =:tools=, and active =:capabilities= while a tool runs.
+- =run_elisp= evaluates explicit Lisp when the =elisp-eval= capability is
+  active.
+
+What is missing is a small, documented, context-bound Elisp API that lets code
+running under =run_elisp= call the same active =e= tools in a consistent manner,
+plus model guidance that explains when and how to use that API.
+
+* Goal
+
+Allow an agent with =elisp-eval= enabled to extract multi-step tool orchestration
+into explicit Emacs Lisp that calls active =e= tools by name, while preserving
+the harness boundary, active capability policy, tool lifecycle hooks, visible
+activity events, and ordinary structured tool result shapes.
+
+* Non-goals
+
+- Do not add a separate planner, macro language, or provider-specific tool
+  chaining backend.
+- Do not expose tools that are not active for the current harness/session/turn.
+- Do not create a global tool registry for arbitrary Lisp code.
+- Do not make =run_elisp= available in layers where it is not already enabled.
+- Do not hide nested tool work from activity subscribers.
+- Do not append nested tool results as independent transcript messages in the
+  first slice.  The parent =run_elisp= result remains the model-visible tool
+  result for that provider turn.
+- Do not treat this as a security boundary stronger than =run_elisp= itself.
+  The feature only narrows which =e= tools are reachable from evaluated code.
+
+* Design Options
+
+** Recommended: context-bound Elisp API over active tools
+
+Expose a small API from =e-tools.el=:
+
+#+begin_src elisp
+(e-tools-available)
+(e-tools-call "tool_name" '(:arg value))
+(e-tools-call! "tool_name" '(:arg value))
+#+end_src
+
+The API reads =e-tools-current-context=, uses only the active =:tools= registry
+in that context, and delegates execution to a context-provided executor when the
+harness supplies one.  =e-tools-call= returns the normal structured tool result.
+=e-tools-call!= returns the =:content= for =ok= results and signals a clear
+nested-tool error for =error= results.
+
+This is the best fit because the user-facing behavior is literally "write
+Elisp that uses active tools", while the harness still owns the active registry,
+session, turn, hooks, and visible events.
+
+** Alternative: one =chain_tools= JSON DSL tool
+
+Add a new tool that accepts a JSON array of tool calls plus simple dataflow
+operators.  This would be easier to sandbox and easier to describe to non-Elisp
+models, but it would create a second orchestration language and would not use
+Emacs Lisp as the extension surface.  It also risks growing quickly into a weak
+programming language.
+
+** Alternative: backend-side automatic tool batching
+
+Teach the provider adapter or loop to collapse several model tool calls into one
+execution phase.  This might reduce some round trips, but it does not help when
+the model needs loops, conditionals, or local transformations.  It also pushes
+orchestration policy toward provider/loop code instead of keeping it in explicit
+agent-authored code.
+
+* User-facing Behavior
+
+When =elisp-eval= is active, the model sees concise instructions near the
+=run_elisp= capability telling it that evaluated code may call active =e= tools:
+
+#+begin_src elisp
+(e-tools-call! "read" '(:uri "buffer://*scratch*"))
+(e-tools-call! "search" '(:uri "file://" :query "e-tools-call" :literal t))
+#+end_src
+
+The guidance should tell the agent to prefer this pattern when:
+
+- several tool calls are needed only to compute one answer;
+- later calls depend on earlier results;
+- many similar resources need the same read/search/edit operation;
+- the result needs filtering, grouping, or summarizing before returning.
+
+The guidance should also tell the agent not to use nested tool calls when a
+single direct tool call is sufficient, when the user should see each individual
+decision before the next mutation, or when the workflow would be clearer as a
+normal top-level tool sequence.
+
+Nested calls should appear in activity as normal =tool-started= and
+=tool-finished= events with =:nested t= and =:parent-tool-call-id= metadata.
+They should not create extra transcript tool messages in the first slice.  The
+parent =run_elisp= result should contain the final structured value the model
+needs.
+
+Example result shape:
+
+#+begin_src elisp
+(let* ((matches (e-tools-call! "search"
+                               '(:uri "file://"
+                                 :query "e-tools-call"
+                                 :literal t
+                                 :limit 20)))
+       (uris (mapcar (lambda (match) (plist-get match :uri))
+                     (plist-get matches :matches))))
+  (mapcar (lambda (uri)
+            (list :uri uri
+                  :preview (e-tools-call! "read"
+                                          (list :uri uri
+                                                :range '(:unit "line"
+                                                         :start 1
+                                                         :limit 5)))))
+          uris))
+#+end_src
+
+* Architecture
+
+** Core API in =e-tools.el=
+
+=e-tools.el= owns the public Lisp-facing API because it already owns registries,
+tool definitions, tool execution, structured tool results, and the dynamic
+execution context.
+
+Add:
+
+- =e-tools-current-registry= :: Return the active registry from
+  =e-tools-current-context= or signal =e-tools-no-active-registry=.
+- =e-tools-current-tool-call= :: Return the parent call plist from context.
+- =e-tools-available= :: Return a compact list of active tool descriptors with
+  =:name=, =:description=, =:parameters=, and =:metadata=.
+- =e-tools-call= :: Execute one active tool by name with plist arguments and
+  return the normal structured result.
+- =e-tools-call!= :: Execute one active tool and return only =:content= for
+  successful results.  Signal =e-tools-nested-tool-error= for structured tool
+  errors.
+
+The public call shape should be:
+
+#+begin_src elisp
+(e-tools-call NAME ARGUMENTS &optional OPTIONS)
+(e-tools-call! NAME ARGUMENTS &optional OPTIONS)
+#+end_src
+
+where =NAME= is a string, =ARGUMENTS= is a keyword plist or nil, and =OPTIONS= is
+a plist supporting:
+
+- =:call-id= explicit nested call id;
+- =:allow-recursive= non-nil to allow calling the currently executing tool;
+- =:metadata= extra metadata merged into emitted nested event payloads.
+
+By default, =e-tools-call= must reject a nested call whose =NAME= equals the
+current parent tool call name.  This prevents accidental =run_elisp= recursion.
+
+When no context executor exists, =e-tools-call= may execute against the active
+registry directly with =e-tools-execute=.  That fallback is useful for focused
+unit tests and non-harness callers, but harness execution should supply an
+executor so hooks and events remain correct.
+
+** Harness-owned nested executor
+
+=e-harness.el= owns the nested executor because it owns active capabilities,
+hooks, session/turn identity, durable activity, and public event emission.
+
+Extend =e-harness--tool-hook-context= so the context passed to tools includes a
+small callback under a key such as =:tool-executor=.  =e-tools-call= should use
+that callback when present.
+
+The harness executor should:
+
+1. build a nested call plist with a stable generated id when the caller did not
+   supply =:call-id=;
+2. run =:pre-tool-call= hooks through =e-hooks-run-reduce=;
+3. emit =tool-started= with =:nested t= and =:parent-tool-call-id=;
+4. execute the target through =e-tools-start= using the same active registry and
+   context;
+5. run =:post-tool-call= hooks on the structured result;
+6. emit =tool-finished= with =:nested t=, =:parent-tool-call-id=, and compact
+   durable result handling through the existing activity compaction path;
+7. return the structured result to =e-tools-call=.
+
+This keeps dependencies flowing in the right direction: =e-tools.el= defines the
+generic API and optional executor contract, while =e-harness.el= provides the
+harness-specific executor without making core tool code depend on the harness.
+
+** Call budget
+
+Add a bounded nested-call budget to prevent accidental unbounded tool fan-out
+inside a single =run_elisp= call.  The budget only counts nested tool calls; it
+does not attempt to sandbox arbitrary Elisp CPU work.
+
+Initial behavior:
+
+- default maximum: 20 nested tool calls per parent tool execution;
+- context key: =:nested-tool-budget=;
+- error when exceeded: structured =e-tools-nested-tool-budget-exceeded=;
+- override path: harness/session option can be added later if users need a
+  higher budget, but the first slice should keep the default constant.
+
+** Model guidance
+
+The guidance belongs with the =elisp-eval= capability, not in every harness or
+backend adapter:
+
+- update =run_elisp= description to mention =e-tools-call= and =e-tools-call!=;
+- add =elisp-eval= capability instructions with the API signatures, a compact
+  example, and the decision rule for when to chain tools;
+- keep full active tool schemas in provider tool definitions instead of
+  duplicating them in context;
+- do not add provider-specific instructions in =e-openai.el=.
+
+This placement keeps the instructions active only when explicit Elisp
+evaluation is available.
+
+* Implementation Slices
+
+** Slice 1: Context-bound core API
+
+Files:
+
+- Modify =lisp/core/e-tools.el=.
+- Modify =test/e-tools-test.el=.
+
+Work:
+
+1. Define =e-tools-no-active-registry=, =e-tools-recursive-call=,
+   =e-tools-nested-tool-error=, and
+   =e-tools-nested-tool-budget-exceeded= error symbols.
+2. Add =e-tools-current-registry= and =e-tools-current-tool-call=.
+3. Add =e-tools-available= over the current registry order.
+4. Add nested call id generation that uses the parent call id when present:
+   =<parent-id>/nested-<n>=.
+5. Add =e-tools-call= and =e-tools-call!= with registry lookup, recursive-call
+   rejection, structured result return, and =!= content extraction.
+6. Add a dynamic nested-call counter that enforces the default budget.
+7. Unit-test:
+   - calling outside a tool context fails clearly;
+   - calling an active tool returns a normal structured result;
+   - =e-tools-call!= returns content for =ok=;
+   - =e-tools-call!= signals for structured =error=;
+   - unknown nested tools reuse the ordinary unknown-tool result shape;
+   - recursive self-call is rejected by default;
+   - =:allow-recursive t= allows a specifically tested harmless recursive name;
+   - the budget rejects the 21st nested call;
+   - nested calls receive the original =:harness=, =:session-id=, and =:turn-id=
+     context keys.
+
+Verification:
+
+#+begin_src sh
+rtk eldev test test/e-tools-test.el
+#+end_src
+
+** Slice 2: Harness executor, hooks, and visible activity
+
+Files:
+
+- Modify =lisp/core/e-harness.el=.
+- Modify =test/e-harness-test.el=.
+
+Work:
+
+1. Add a harness nested executor closure to =e-harness--tool-hook-context=.
+2. Have the executor run pre/post tool hooks around the nested call.
+3. Emit nested =tool-started= and =tool-finished= events through
+   =e-harness--emit-turn-event=.
+4. Include =:nested t=, =:parent-tool-call-id=, and =:depth= in nested payloads.
+5. Reuse existing durable activity compaction for nested =tool-finished=
+   results.
+6. Keep nested results out of the session transcript; only activity events and
+   parent =run_elisp= output should record them in the first slice.
+7. Unit-test:
+   - subscribers see nested start/finish events;
+   - durable activity stores compact nested finish payloads;
+   - pre/post hooks can transform a nested call/result;
+   - nested calls do not append extra transcript messages;
+   - active-entry open-tool state is not left stuck after nested calls;
+   - nested executor still returns the structured result to =e-tools-call=.
+
+Verification:
+
+#+begin_src sh
+rtk eldev test test/e-harness-test.el
+#+end_src
+
+** Slice 3: Elisp eval guidance
+
+Files:
+
+- Modify =lisp/layers/emacs/e-emacs-tools.el=.
+- Modify =lisp/layers/emacs/e-emacs-capabilities.el=.
+- Modify =test/e-emacs-tools-test.el=.
+- Modify =test/e-emacs-capabilities-test.el=.
+
+Work:
+
+1. Update the =run_elisp= tool description to name =e-tools-call= and
+   =e-tools-call!=.
+2. Add =elisp-eval= capability instructions that describe:
+   - the function signatures;
+   - when to use chained tool calls;
+   - when not to use chained tool calls;
+   - that only currently active tools are callable;
+   - that nested tool calls are visible as activity.
+3. Include one compact example that reads or searches with an active resource
+   tool and returns a final value from =run_elisp=.
+4. Test the generated =run_elisp= definition includes the API cue.
+5. Test =e-elisp-eval-capability-create= contributes the instructions and keeps
+   the capability opt-in to operator layers.
+
+Verification:
+
+#+begin_src sh
+rtk eldev test test/e-emacs-tools-test.el test/e-emacs-capabilities-test.el
+#+end_src
+
+** Slice 4: End-to-end chaining smoke path
+
+Files:
+
+- Modify =test/e-loop-test.el=.
+- Modify =test/e-harness-test.el=.
+- Modify =test/e-emacs-tools-test.el= if the integration helper belongs there.
+
+Work:
+
+1. Build a test harness with:
+   - =elisp-eval= active;
+   - one fake read-only tool;
+   - one fake transform or search-like tool.
+2. Use a fake backend response that calls =run_elisp= with code that performs
+   two nested tool calls and returns a combined value.
+3. Assert the parent =run_elisp= result is the only tool result appended to the
+   model transcript for the turn.
+4. Assert nested start/finish activity events exist with the parent call id.
+5. Assert the follow-up provider request receives the parent =run_elisp= result
+   and can finish the turn.
+6. Add one test where nested call failure is caught by Elisp code and returned as
+   data, proving the structured =e-tools-call= path supports conditional
+   recovery.
+
+Verification:
+
+#+begin_src sh
+rtk eldev test test/e-loop-test.el test/e-harness-test.el test/e-emacs-tools-test.el
+#+end_src
+
+** Slice 5: Documentation, full verification, and live reload
+
+Files:
+
+- Modify =docs/architecture.md= if its tool execution section needs the new
+  context-bound chaining boundary.
+- Modify =docs/feats/26-elisp-tool-chaining/plan.org= only for factual status
+  or scope corrections discovered during implementation.
+- Modify =docs/feats/index.org= when moving the feature between statuses.
+
+Verification:
+
+#+begin_src sh
+rtk eldev test test/e-tools-test.el test/e-harness-test.el test/e-emacs-tools-test.el test/e-emacs-capabilities-test.el test/e-loop-test.el
+rtk eldev test
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+After live reload, run a bounded probe in the user's Emacs that:
+
+1. creates a temporary harness/session with =elisp-eval= and one harmless fake
+   tool active;
+2. runs =run_elisp= code that calls the fake tool through =e-tools-call!= twice;
+3. returns a small plist containing only =:status=, =:nested-event-count=, and
+   =:result=;
+4. confirms no broad registries, buffer contents, or session internals are
+   dumped.
+
+* Acceptance Criteria
+
+- Code running under =run_elisp= can call active =e= tools by name using a
+  stable Elisp API.
+- The API works only from a current tool execution context unless a test supplies
+  explicit context.
+- Nested calls use the current harness/session/turn registry, not a global or
+  stale registry.
+- Recursive self-calls are rejected by default.
+- A default nested-call budget prevents accidental large fan-out.
+- Nested calls run through harness hooks when a harness context is present.
+- Nested calls emit visible and durable activity events with parent-call
+  metadata.
+- Nested calls do not append independent transcript tool messages in the first
+  slice.
+- =elisp-eval= context tells the agent when and how to write Elisp that chains
+  active tools.
+- Provider adapters do not need special-case changes for this feature.
+
+* Risks and Constraints
+
+- =run_elisp= is already powerful.  This feature should not pretend to add a new
+  security sandbox; it should make reachable =e= tools explicit and
+  context-bound.
+- Nested tool calls can make one visible model tool call do a lot of work.  The
+  activity events and budget are required so the work is visible and bounded.
+- Some tools are asynchronous.  The synchronous Elisp API must wait for async
+  tools in the same way =e-tools-execute= already does.
+- Mutating tools chained from Elisp can still make multiple changes before the
+  model responds.  Guidance should discourage chained mutation when the user
+  needs per-step approval.
+- Full tool schemas can be large.  The new context guidance should describe the
+  Lisp API, while normal provider tool definitions remain the source for each
+  tool's argument schema.
+
+* Test Plan
+
+- Focused pure tests for =e-tools.el= API shape, errors, budget, and result
+  handling.
+- Harness tests for nested executor hooks, subscriber events, durable activity,
+  and transcript non-duplication.
+- Emacs capability tests for =run_elisp= description and =elisp-eval=
+  instructions.
+- Loop integration tests proving a backend-requested =run_elisp= tool call can
+  perform nested calls and feed one parent result into the follow-up request.
+- Full serialized Eldev suite after implementation because tool execution,
+  context, harness events, and Emacs capability instructions are shared runtime
+  seams.
+- Live reload and one bounded live probe after Lisp behavior changes.
+
+* Architecture Self-check
+
+1. If this work package stopped here, would the project be better off than if it
+   had not been built?
+   - Yes.  The first complete slice creates an explicit, tested API for a
+     behavior the model could otherwise attempt through ad hoc registry access.
+2. What final direction does this move toward?
+   - Agents can use Emacs Lisp as the in-process orchestration language for
+     active capabilities, while the harness remains the owner of policy,
+     lifecycle, and visibility.
+3. Which decisions are likely to change, uncertain, or stable, and are
+   uncertain ones local and reversible instead of hidden behind speculative
+   abstraction? Are extension points tied to real variation instead of
+   hypothetical futures?
+   - Stable: active tools are context-bound.  Likely to change: budget defaults
+     and event presentation.  Uncertain decisions stay local to =e-tools.el= API
+     options and harness event metadata.
+4. What component owns this behavior, and why? Does it have one cohesive
+   responsibility and one primary reason to change?
+   - =e-tools.el= owns generic tool-call API.  =e-harness.el= owns harness
+     lifecycle and activity.  =e-emacs-capabilities.el= owns model guidance for
+     explicit Elisp evaluation.
+5. Does this change increase or reduce coupling? Are interfaces narrow,
+   consumer-shaped, and free of unused capabilities?
+   - It reduces coupling by replacing ad hoc registry access with a narrow API.
+     The optional executor callback prevents =e-tools.el= from depending on the
+     harness.
+6. Did any dependency start pointing the wrong way, especially from stable
+   policy toward concrete adapters, providers, UI, transport, persistence, or
+   tool clients?
+   - No provider or UI dependency is required.  Harness-specific behavior is
+     supplied as a callback in the execution context.
+7. Could any side effect be moved outward into an adapter or shell?
+   - Event emission and durable activity remain in the harness.  Core tool API
+     only builds calls and delegates execution.
+8. Are the abstractions and interfaces semantically real, and can
+   implementations substitute for each other without narrowed preconditions,
+   weakened behavior, ignored requirements, or unsupported-operation errors?
+   - The executor contract is semantically real: execute this active tool call
+     in the current context and return a structured result.  The direct registry
+     fallback has the same result contract without harness events.
+9. What compatibility expectations apply, and were obsolete paths removed unless
+   required?
+   - Existing top-level tool calls and =run_elisp= code continue to work.  No
+     obsolete path is introduced.
+10. What legacy code can we remove now?
+    - None in the planning slice.  During implementation, avoid adding a legacy
+      global registry or alternate chaining DSL.
+11. Where are expected errors handled, and where do unexpected errors surface?
+    - Expected nested tool errors return structured results through
+      =e-tools-call= or signal through =e-tools-call!=.  Unexpected
+      infrastructure errors continue to surface through the existing tool error
+      paths.
+12. What tests prove the core behavior independently of the full system? If the
+    design changed, would tests change narrowly, or would unrelated tests need
+    rewrites?
+    - =test/e-tools-test.el= proves the core API without the harness.  Harness
+      and loop tests prove integration separately, so design changes should stay
+      localized.

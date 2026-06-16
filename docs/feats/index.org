@@ -36,3 +36,4 @@ Status values for coding agents:
 | 23 | Done | 23-prompt-cache-context/ | Prompt Cache Friendly Context |
 | 24 | Done | 24-mcp-capability-wrapper/ | MCP Capability Wrapper |
 | 25 | Planned | 25-resource-glob-search/ | Resource Glob and Search Tools |
+| 26 | Planned | 26-elisp-tool-chaining/ | Elisp Tool Chaining |
