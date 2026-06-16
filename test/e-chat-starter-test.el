@@ -260,6 +260,65 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-starter-test-running-repaint-advances-elapsed-duration ()
+  "A timer repaint advances the running thinking duration between events.
+Regression: the popup re-rendered only on harness events, so the elapsed
+\"Thinking for\" duration stayed frozen during a long model turn and jumped to
+its final value only when the turn settled."
+  (let* ((buffer (get-buffer-create "*e-chat-starter-running-repaint*"))
+         (now 0.0)
+         (state (make-e-chat-starter-state
+                 :session-id "starter-session"
+                 :question "Explain"
+                 :source-reference '(:label "demo.el:1")
+                 :status 'running
+                 :buffer buffer)))
+    (unwind-protect
+        (cl-letf (((symbol-function 'e-chat--current-time-seconds)
+                   (lambda () now)))
+          (with-current-buffer buffer
+            (e-chat-starter-mode)
+            (setq-local e-chat-starter--state state)
+            (e-chat-starter--handle-event
+             state
+             (e-events-make :type 'turn-started
+                            :session-id "starter-session"
+                            :turn-id "turn-1"
+                            :created-at 0))
+            (e-chat-starter--handle-event
+             state
+             (e-events-make :type 'provider-request-started
+                            :session-id "starter-session"
+                            :turn-id "turn-1"
+                            :created-at 0))
+            ;; A live repaint timer is running while the turn is in flight.
+            (should (timerp (e-chat-starter-state-progress-timer state)))
+            (should (string-match-p "Thinking for 0min 0sec" (buffer-string)))
+            ;; Wall-clock advances with no new harness events; a timer-driven
+            ;; repaint must reflect the new elapsed duration.
+            (setq now 8.0)
+            (e-chat-starter--render-state-buffer state)
+            (should (string-match-p "Thinking for 0min 8sec" (buffer-string)))
+            ;; Settling stops the timer.
+            (e-chat-starter--handle-event
+             state
+             (e-events-make :type 'message-added
+                            :session-id "starter-session"
+                            :turn-id "turn-1"
+                            :created-at 9
+                            :payload '(:message (:role assistant
+                                                 :content "Done."))))
+            (e-chat-starter--handle-event
+             state
+             (e-events-make :type 'turn-finished
+                            :session-id "starter-session"
+                            :turn-id "turn-1"
+                            :created-at 9))
+            (should-not (e-chat-starter-state-progress-timer state))))
+      (e-chat-starter--stop-progress-timer state)
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-starter-test-settled-activity-uses-chat-summary ()
   "Starter answered activity renders the same settled summary as chat."
   (let* ((buffer (get-buffer-create "*e-chat-starter-settled-activity*"))

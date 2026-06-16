@@ -49,6 +49,14 @@
   :type 'integer
   :group 'e-chat-starter)
 
+(defcustom e-chat-starter-progress-interval 0.6
+  "Seconds between live repaints of the starter popup while a turn runs.
+The elapsed \"Thinking for ...\" duration advances on wall-clock time, so the
+popup needs its own repaint tick: harness events alone do not arrive often
+enough during a long model turn to keep the duration current."
+  :type 'number
+  :group 'e-chat-starter)
+
 (defcustom e-chat-starter-display-strategy 'window
   "Display strategy for the starter popup.
 The first implementation uses normal Emacs display windows.  The custom is kept
@@ -71,7 +79,8 @@ so a child-frame adapter can be added without changing controller logic."
   buffer
   popup-window
   progress
-  activity-events)
+  activity-events
+  progress-timer)
 
 (defun e-chat-starter--make-mode-map (&optional map)
   "Return MAP configured as the keymap for `e-chat-starter-mode'."
@@ -285,8 +294,9 @@ so a child-frame adapter can be added without changing controller logic."
     window))
 
 (defun e-chat-starter--cleanup ()
-  "Clean up the current starter popup subscription."
+  "Clean up the current starter popup subscription and repaint timer."
   (when-let ((state e-chat-starter--state))
+    (e-chat-starter--stop-progress-timer state)
     (when (and (e-chat-starter-state-harness state)
                (e-chat-starter-state-subscription state))
       (e-harness-unsubscribe
@@ -324,6 +334,31 @@ so a child-frame adapter can be added without changing controller logic."
       (with-current-buffer buffer
         (when (derived-mode-p 'e-chat-starter-mode)
           (e-chat-starter--render))))))
+
+(defun e-chat-starter--stop-progress-timer (state)
+  "Cancel STATE's live progress repaint timer when one is running."
+  (when-let ((timer (e-chat-starter-state-progress-timer state)))
+    (when (timerp timer)
+      (cancel-timer timer))
+    (setf (e-chat-starter-state-progress-timer state) nil)))
+
+(defun e-chat-starter--ensure-progress-timer (state)
+  "Start STATE's live progress repaint timer if it is not already running.
+The timer repaints the popup on `e-chat-starter-progress-interval' so the
+elapsed thinking duration advances between harness events.  It stops itself once
+the turn settles or the popup buffer dies."
+  (unless (or (e-chat-starter-state-progress-timer state)
+              (not (numberp e-chat-starter-progress-interval)))
+    (setf (e-chat-starter-state-progress-timer state)
+          (run-at-time
+           e-chat-starter-progress-interval
+           e-chat-starter-progress-interval
+           (lambda ()
+             (let ((buffer (e-chat-starter-state-buffer state)))
+               (if (and (eq (e-chat-starter-state-status state) 'running)
+                        (buffer-live-p buffer))
+                   (e-chat-starter--render-state-buffer state)
+                 (e-chat-starter--stop-progress-timer state))))))))
 
 (defun e-chat-starter--event-error-message (event)
   "Return a compact error message for EVENT."
@@ -375,6 +410,9 @@ so a child-frame adapter can be added without changing controller logic."
        (setf (e-chat-starter-state-status state) 'failed)
        (setf (e-chat-starter-state-error-message state)
              (e-chat-starter--event-error-message event))))
+    (if (eq (e-chat-starter-state-status state) 'running)
+        (e-chat-starter--ensure-progress-timer state)
+      (e-chat-starter--stop-progress-timer state))
     (e-chat-starter--render-state-buffer state))
   state)
 
