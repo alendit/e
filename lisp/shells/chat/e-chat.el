@@ -3969,15 +3969,25 @@ non-nil, is used by focused block activation."
   (cl-find-if-not (lambda (window) (window-parameter window 'window-side))
                   (window-list frame 'no-minibuf)))
 
+(defun e-chat--display-in-new-root-window (buffer)
+  "Show BUFFER in a fresh normal window split from the frame root, and return it.
+Used when every window on the frame is a side window: side windows (and their
+parents) cannot be split, but the frame root can, which yields an ordinary
+non-side window able to host BUFFER."
+  (let ((window (split-window (frame-root-window) nil 'below)))
+    (set-window-buffer window buffer)
+    window))
+
 (defun e-chat--display-from-side-window (buffer)
   "Display BUFFER when the selected window is a side window, and return it.
 A side window cannot host an ordinary buffer and cannot be split (nor can its
 parent), so splitting-based display actions signal \"Cannot split side window
 or parent of side window\".  Prefer an existing non-side window: reuse one that
 already shows BUFFER, else reuse/split a normal window.  When the frame has no
-normal window at all (every window is a managed side popup, e.g. Doom's popup
-manager), fall back to showing BUFFER in the current side window in place via
-`set-window-buffer', which side windows do allow."
+normal window at all (every window is a managed side popup, e.g. an aggressive
+display-buffer-alist or popup manager), split the frame root to create one
+rather than commandeering a side window -- the latter would leave the frame
+with no main window and break ordinary commands like \\[split-window-right]."
   (if (e-chat--non-side-window)
       (display-buffer
        buffer
@@ -3986,9 +3996,7 @@ manager), fall back to showing BUFFER in the current side window in place via
           display-buffer-pop-up-window)
          (inhibit-same-window . t)
          (some-window . mru)))
-    (let ((window (selected-window)))
-      (set-window-buffer window buffer)
-      window)))
+    (e-chat--display-in-new-root-window buffer)))
 
 (defun e-chat--switch-to-buffer (buffer)
   "Display BUFFER, restoring chat-local editing invariants.
