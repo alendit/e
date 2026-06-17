@@ -46,6 +46,22 @@
 (defconst e-annotation-tools-verdicts '("accepted" "rejected")
   "Verdict values accepted by `annotation_resolve'.")
 
+(defvar e-annotation-tools-resolve-functions nil
+  "Abnormal hook run after an annotation thread verdict is persisted.
+Each function is called with one plist argument describing the resolution:
+
+  (:file FILE :thread-id ID :verdict VERDICT :payload PAYLOAD)
+
+This is the extension point that lets a domain layer execute an accepted
+proposal automatically -- for example grimoire subscribes here to route the
+payload through its `agenda_apply' write primitive when the payload carries an
+org-id.  The annotation layer performs no domain mutation itself; verdict
+persistence has already happened before these functions run, so a handler must
+be idempotent on the domain side (a re-resolve will call it again).  Each
+handler's non-nil return value is collected and returned to the tool caller
+under :effects; a handler that signals is captured as an effect entry rather
+than aborting the already-persisted resolution.")
+
 ;; --- payload normalization --------------------------------------------------
 
 (defun e-annotation-tools--key-symbol (key)
@@ -231,10 +247,28 @@ the returned :payload (e.g. an :apply description) lets the caller do that."
        (unless found
          (user-error "No annotation thread with id: %s" thread-id))
        (simply-annotate--update-database file-key entries)
-       (list :thread-id thread-id
-             :file-key file-key
-             :verdict verdict
-             :payload payload)))))
+       (let ((result (list :thread-id thread-id
+                           :file-key file-key
+                           :verdict verdict
+                           :payload payload))
+             (effects (e-annotation-tools--run-resolve-hook
+                       file thread-id verdict payload)))
+         (if effects (append result (list :effects effects)) result))))))
+
+(defun e-annotation-tools--run-resolve-hook (file thread-id verdict payload)
+  "Run `e-annotation-tools-resolve-functions' for a persisted resolution.
+Returns the list of non-nil handler results (domain effects).  A handler that
+signals is captured as an (:error MESSAGE) effect rather than propagating, so a
+domain-side failure never rolls back the already-persisted verdict."
+  (let ((event (list :file file :thread-id thread-id
+                     :verdict verdict :payload payload))
+        (effects nil))
+    (dolist (fn e-annotation-tools-resolve-functions)
+      (condition-case err
+          (let ((effect (funcall fn event)))
+            (when effect (push effect effects)))
+        (error (push (list :error (error-message-string err)) effects))))
+    (nreverse effects)))
 
 ;; --- tool registration ------------------------------------------------------
 
