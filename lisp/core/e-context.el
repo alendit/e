@@ -118,9 +118,33 @@ backend-neutral messages that should appear before the session transcript."
       (plist-put copy :role 'system))
     copy))
 
+(defun e-context--resolved-tool-call-ids (messages)
+  "Return the set of tool-call ids that have a matching tool result in MESSAGES."
+  (let ((ids (make-hash-table :test 'equal)))
+    (dolist (message messages)
+      (when (eq (plist-get message :role) 'tool)
+        (when-let ((id (plist-get (plist-get message :content) :tool-call-id)))
+          (puthash id t ids))))
+    ids))
+
+(defun e-context--drop-orphan-tool-calls (messages)
+  "Return MESSAGES without tool-call entries lacking a matching tool result.
+A turn interrupted between a tool-call and its result (e.g. Emacs was killed
+mid-call) leaves an orphan `tool-call' in the transcript.  Providers reject a
+tool-use block with no corresponding tool-result, so the next turn would fail;
+drop the unpaired tool-call so the transcript stays valid."
+  (let ((resolved (e-context--resolved-tool-call-ids messages)))
+    (seq-remove
+     (lambda (message)
+       (and (eq (plist-get message :role) 'tool-call)
+            (let ((id (plist-get (plist-get message :content) :id)))
+              (not (and id (gethash id resolved))))))
+     messages)))
+
 (defun e-context--backend-messages (messages)
   "Return MESSAGES normalized for backend context."
-  (mapcar #'e-context--backend-message messages))
+  (mapcar #'e-context--backend-message
+          (e-context--drop-orphan-tool-calls messages)))
 
 (defun e-context--message-entry-message (entry)
   "Return backend-neutral message from session ENTRY."

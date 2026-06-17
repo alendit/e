@@ -169,6 +169,28 @@
     (should-error (e-context-provider-cache-placement provider)
                   :type 'wrong-type-argument)))
 
+(ert-deftest e-context-test-drops-orphan-tool-call-keeps-paired ()
+  "Backend messages drop tool-calls with no matching result, keep paired ones.
+Regression: a turn killed between a tool-call and its result left an orphan
+tool-use that providers reject (\"tool_use ids found without tool_result\")."
+  (let* ((messages
+          (list '(:role user :content "hi")
+                '(:role tool-call :content (:id "paired" :name "noop"))
+                '(:role tool :content (:tool-call-id "paired" :content "ok"))
+                '(:role assistant :content "done")
+                ;; Orphan: killed before its result was appended.
+                '(:role tool-call :content (:id "orphan" :name "noop"))))
+         (result (e-context--backend-messages messages))
+         (ids (delq nil
+                    (mapcar (lambda (m)
+                              (and (eq (plist-get m :role) 'tool-call)
+                                   (plist-get (plist-get m :content) :id)))
+                            result))))
+    (should (member "paired" ids))
+    (should-not (member "orphan" ids))
+    ;; Only the orphan tool-call is removed; everything else is kept.
+    (should (= 4 (length result)))))
+
 (provide 'e-context-test)
 
 ;;; e-context-test.el ends here
