@@ -701,6 +701,14 @@ reflects the active tool set."
   "Return backend-neutral turn options for HARNESS and SESSION-ID."
   (e-harness-turn-options harness session-id))
 
+(defun e-harness--options-without-tools (options)
+  "Return OPTIONS with any tool set removed.
+Used for backend requests that must produce plain text (e.g. context
+compaction) where exposing tools risks a tool-call instead of a reply."
+  (let ((copy (copy-sequence options)))
+    (setq copy (plist-put copy :tools nil))
+    copy))
+
 (defun e-harness--tool-hook-context (harness session-id turn-id tools)
   "Return the narrow hook context for a tool lifecycle in HARNESS."
   (list :harness harness
@@ -824,7 +832,12 @@ TURN-ID is passed to active capability context providers when present."
           (e-backend-stream
            (e-harness-backend harness)
            :messages (e-compaction-summary-messages preparation)
-           :options (e-harness-turn-options harness session-id)
+           ;; Summarization is a pure text task.  Strip the tool set from the
+           ;; options: with tools present the model may answer with a tool-call
+           ;; instead of an assistant message, yielding an empty summary and a
+           ;; spurious compaction failure.
+           :options (e-harness--options-without-tools
+                     (e-harness-turn-options harness session-id))
            :on-request-start (lambda (value)
                                (setq request value))
            :on-item
