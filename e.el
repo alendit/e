@@ -93,7 +93,8 @@
   (require 'e-chat)
   (require 'e-chat-starter)
   (require 'e-canvas)
-  (require 'e-org-canvas))
+  (require 'e-org-canvas)
+  (require 'e-background-session))
 (e-startup-run)
 
 (defgroup e nil
