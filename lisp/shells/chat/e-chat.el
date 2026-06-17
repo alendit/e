@@ -3094,6 +3094,14 @@ SOURCE identifies where the entry came from for duplicate suppression."
   (e-chat--set-turn-time turn-id :ended-at created-at)
   (e-chat--settle-open-thinking turn-id created-at 'failed)
   (e-chat--stop-progress-indicator turn-id)
+  ;; Drop the failed turn's live transient activity ("Thinking..."/"Thought
+  ;; for ...") and clear its running-status markers before inserting the
+  ;; failure entry.  Without this the transient block and its separators
+  ;; linger, and the next submitted prompt renders into the orphaned region
+  ;; and appears to vanish.
+  (when-let ((record (e-chat--existing-turn-record turn-id)))
+    (e-chat--delete-turn-transient record))
+  (e-chat--clear-running-status-markers)
   (let* ((record (e-chat--record-turn-failure turn-id payload))
          (error-message (or (plist-get payload :error) "Turn failed")))
     (e-chat--insert-entry
