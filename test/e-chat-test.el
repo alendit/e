@@ -1499,6 +1499,65 @@ inherited base, so the blocks stay distinguishable in any theme."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-failed-turn-clears-transient-before-next-prompt ()
+  "A failed turn drops its transient activity so the next prompt renders.
+Regression: after turn-failed the active \"Thinking...\"/\"Thought for ...\"
+block and its separators lingered, and the next submitted prompt rendered into
+the orphaned region and appeared to vanish."
+  (let ((buffer (e-chat-test--buffer nil "chat-failed-then-prompt")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (cl-letf (((symbol-function 'e-chat--current-time-seconds)
+                     (lambda (&optional _time) 8.0)))
+            (e-chat--render-event
+             (e-events-make :type 'turn-started
+                            :session-id e-chat-session-id
+                            :turn-id "turn-1" :created-at 0))
+            (e-chat--render-event
+             (e-events-make :type 'provider-request-started
+                            :session-id e-chat-session-id
+                            :turn-id "turn-1" :created-at 0
+                            :payload '(:status started)))
+            (e-chat-test--flush-pending-activity-redraw))
+          ;; The active thinking transient is on screen.
+          (should (string-match-p "Thinking for" (buffer-string)))
+          ;; Turn fails.
+          (e-chat--render-event
+           (e-events-make :type 'turn-failed
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1" :created-at 9
+                          :payload '(:error "boom")))
+          ;; The transient activity is gone; the failure entry is shown.
+          (let ((content (buffer-string)))
+            (should (string-match-p "Turn failed: boom" content))
+            (should-not (string-match-p "Thinking for" content))
+            (should-not (string-match-p "Thought for" content)))
+          ;; No dangling running-status markers survive the failure: a stale
+          ;; marker makes the next turn's running-status redraw delete a region
+          ;; that swallows freshly rendered content (the reported symptom).
+          (should-not (and (markerp e-chat--running-status-start-marker)
+                           (marker-position e-chat--running-status-start-marker)))
+          (should-not (and (markerp e-chat--progress-start-marker)
+                           (marker-position e-chat--progress-start-marker)))
+          (let ((record (e-chat--existing-turn-record "turn-1")))
+            (should-not (and record
+                             (markerp (plist-get record :transient-start-marker))
+                             (marker-position
+                              (plist-get record :transient-start-marker)))))
+          ;; A new prompt for a fresh turn renders and stays visible.
+          (e-chat--render-event
+           (e-events-make :type 'message-added
+                          :session-id e-chat-session-id
+                          :turn-id "turn-2" :created-at 10
+                          :payload '(:message (:role user
+                                               :content "retry please"))))
+          (let ((content (buffer-string)))
+            (should (string-match-p "retry please" content))
+            (should-not (string-match-p "Thinking for" content))
+            (should-not (string-match-p "Thought for" content))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-active-thinking-row-shows-spinner-and-duration ()
   "Active provider requests show a moving thinking row with current duration."
   (let ((buffer (e-chat-test--buffer nil "chat-active-thinking-duration")))
