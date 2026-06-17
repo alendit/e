@@ -346,6 +346,17 @@ When VISIBLE-ONLY is non-nil, include only buffers visible in windows."
    (lambda (arguments)
      (let* ((code (e-emacs-tools--argument-string arguments :code))
             (forms (e-emacs-tools--read-forms code))
+            ;; Never let agent code pop the interactive debugger.  This runs
+            ;; with no human to dismiss it, so an error (or agent code that
+            ;; sets `debug-on-error') would otherwise enter `debug', whose own
+            ;; buffer setup can re-signal and recurse, pinning Emacs at 100%
+            ;; CPU.  `inhibit-debugger' is the hard backstop honored by
+            ;; `debug' regardless of the debug-on-* flags.
+            (inhibit-debugger t)
+            (debug-on-error nil)
+            (debug-on-signal nil)
+            (debug-on-quit nil)
+            (eval-expression-debug-on-error nil)
             result)
        (dolist (form forms)
          (setq result (eval form t)))
