@@ -324,7 +324,11 @@ When VISIBLE-ONLY is non-nil, include only buffers visible in windows."
          (unless buffer-file-name
            (signal 'e-emacs-tools-save-invalid
                    (list (format "Buffer %s does not visit a file" name))))
-         (save-buffer)
+         ;; Save non-interactively: never prompt the user to choose a coding
+         ;; system.  With the selector disabled `save-buffer' uses the buffer's
+         ;; own coding directly instead of asking.
+         (let ((select-safe-coding-system-function nil))
+           (save-buffer))
          (list :name name
                :file buffer-file-name
                :saved t))))))

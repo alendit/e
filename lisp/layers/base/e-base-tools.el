@@ -263,11 +263,16 @@ When nil, `shell-command-switch' is used."
     (nreverse synced)))
 
 (defun e-base-tools--save-buffer-content-to-file (buffer content)
-  "Replace BUFFER contents with CONTENT and save its visited file."
+  "Replace BUFFER contents with CONTENT and save its visited file.
+Saving is non-interactive: the file is written as UTF-8 without prompting to
+choose a coding system, which `save-buffer' would otherwise do when the
+buffer's detected coding cannot encode CONTENT."
   (with-current-buffer buffer
     (let ((inhibit-read-only t)
           (require-final-newline nil)
-          (mode-require-final-newline nil))
+          (mode-require-final-newline nil)
+          (coding-system-for-write 'utf-8-unix)
+          (select-safe-coding-system-function nil))
       (erase-buffer)
       (insert content)
       (save-buffer)

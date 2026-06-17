@@ -705,7 +705,9 @@ Org file."
             (when (or (not (file-exists-p file))
                       (yes-or-no-p
                        (format "Overwrite %s? " file)))
-              (write-file file nil)))))
+              (let ((coding-system-for-write 'utf-8-unix)
+                    (select-safe-coding-system-function nil))
+                (write-file file nil))))))
       (when (buffer-file-name buffer)
         (e-org-canvas--mark-session
          harness session-id buffer
