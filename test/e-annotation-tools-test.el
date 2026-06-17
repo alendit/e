@@ -134,6 +134,62 @@ project-local `.simply-annotations.el' beside the file."
     (should-error (e-annotation-tools-add :file file :start 9 :end 2 :text "p")
                   :type 'user-error)))
 
+;; --- resolve-hook tests -----------------------------------------------------
+
+(ert-deftest e-annotation-tools-test-resolve-runs-resolve-hook ()
+  "Resolving runs `e-annotation-tools-resolve-functions' with the resolution."
+  (e-annotation-tools-test--with-project file
+    (let* ((seen nil)
+           (e-annotation-tools-resolve-functions
+            (list (lambda (event)
+                    (setq seen event)
+                    (list :did (plist-get event :verdict)))))
+           (thread-id (plist-get (e-annotation-tools-add
+                                  :file file :start 1 :end 11 :text "p"
+                                  :payload '(:org-id "id-h"))
+                                 :thread-id))
+           (resolved (e-annotation-tools-resolve
+                      :file file :thread-id thread-id :verdict "accepted")))
+      ;; The hook saw the full resolution event, keyed to the same thread.
+      (should (equal thread-id (plist-get seen :thread-id)))
+      (should (equal "accepted" (plist-get seen :verdict)))
+      (should (equal "id-h" (alist-get 'org-id (plist-get seen :payload))))
+      ;; Non-nil handler results are surfaced to the caller as :effects.
+      (should (equal '((:did "accepted")) (plist-get resolved :effects))))))
+
+(ert-deftest e-annotation-tools-test-resolve-hook-error-is-captured ()
+  "A signaling resolve handler is captured as an effect, not propagated.
+Verdict persistence has already happened, so a domain-side failure must not
+abort the resolution."
+  (e-annotation-tools-test--with-project file
+    (let* ((e-annotation-tools-resolve-functions
+            (list (lambda (_event) (error "boom"))))
+           (thread-id (plist-get (e-annotation-tools-add
+                                  :file file :start 1 :end 11 :text "p")
+                                 :thread-id))
+           (resolved (e-annotation-tools-resolve
+                      :file file :thread-id thread-id :verdict "rejected")))
+      (should (equal "rejected" (plist-get resolved :verdict)))
+      (let ((effect (car (plist-get resolved :effects))))
+        (should (string-match-p "boom" (plist-get effect :error))))
+      ;; The verdict still persisted despite the handler error.
+      (should (equal "rejected"
+                     (plist-get (car (plist-get (e-annotation-tools-list :file file)
+                                                :threads))
+                                :verdict))))))
+
+(ert-deftest e-annotation-tools-test-resolve-without-hook-omits-effects ()
+  "With no resolve handlers the result carries no :effects key."
+  (e-annotation-tools-test--with-project file
+    (let* ((e-annotation-tools-resolve-functions nil)
+           (thread-id (plist-get (e-annotation-tools-add
+                                  :file file :start 1 :end 11 :text "p")
+                                 :thread-id))
+           (resolved (e-annotation-tools-resolve
+                      :file file :thread-id thread-id :verdict "accepted")))
+      (should (equal "accepted" (plist-get resolved :verdict)))
+      (should-not (plist-member resolved :effects)))))
+
 ;; --- registered-tool tests --------------------------------------------------
 
 (ert-deftest e-annotation-tools-test-tools-roundtrip-through-registry ()
