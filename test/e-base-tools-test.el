@@ -335,6 +335,43 @@ When READ-ONLY is non-nil, file resources only support reads."
         (kill-buffer buffer))
       (delete-directory directory t))))
 
+(ert-deftest e-base-tools-test-write-file-through-live-buffer-never-prompts-coding ()
+  "Writing through a live buffer saves UTF-8 without a coding-system prompt.
+Regression: `save-buffer' would call `select-safe-coding-system' and prompt
+the user when the buffer's coding could not encode the new content."
+  (let* ((directory (make-temp-file "e-base-write-coding-" t))
+         (file (expand-file-name "sample.txt" directory))
+         (registry (e-base-tools-test--resource-tools directory))
+         buffer)
+    (unwind-protect
+        (progn
+          ;; Existing ASCII file, opened with an ASCII coding that cannot
+          ;; encode the non-ASCII content the agent is about to write.
+          (write-region "plain" nil file nil 'silent)
+          (let ((coding-system-for-read 'us-ascii))
+            (setq buffer (find-file-noselect file)))
+          (with-current-buffer buffer
+            (setq buffer-file-coding-system 'us-ascii))
+          ;; Fail loudly if anything tries to interactively choose a coding.
+          (let ((select-safe-coding-system-function
+                 (lambda (&rest _)
+                   (error "coding-system prompt should not happen"))))
+            (let ((result (e-base-tools-test--execute
+                           registry "write"
+                           '(:uri "file://sample.txt"
+                             :content "café — naïve ☕"))))
+              (should (memq (plist-get result :status) '(ok nil)))))
+          ;; Content landed on disk as UTF-8.
+          (should (equal (with-temp-buffer
+                           (let ((coding-system-for-read 'utf-8))
+                             (insert-file-contents file))
+                           (buffer-string))
+                         "café — naïve ☕")))
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer (set-buffer-modified-p nil))
+        (kill-buffer buffer))
+      (delete-directory directory t))))
+
 (ert-deftest e-base-tools-test-write-file-conflicts-with-modified-live-buffer ()
   "Direct file writes fail when a visiting buffer has unsaved changes."
   (let* ((directory (make-temp-file "e-base-write-conflict-" t))
