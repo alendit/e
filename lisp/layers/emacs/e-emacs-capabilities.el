@@ -21,7 +21,9 @@
 (defconst e-emacs-base-instructions
   "You are running inside Emacs. Use buffer tools for buffer inspection and live buffer edits. Buffer edits do not save files; call save_buffer when persistence is required.
 
-When editing a file that may be open in Emacs, prefer live buffer tools over direct file writes. If you write a file directly and a live file-backed buffer exists for it, sync or reload the buffer before reporting completion. If you edit a live file-backed buffer and the change should persist, save the buffer. Before finalizing, check visible buffers that correspond to modified resources."
+When editing a file that may be open in Emacs, prefer live buffer tools over direct file writes. If you write a file directly and a live file-backed buffer exists for it, sync or reload the buffer before reporting completion. A direct file write leaves the live buffer's visited-modtime stale even when the bytes happen to match, so Emacs will still force a revert; do not treat equal content as proof of coherence. The real coherence test is per buffer: compare the buffer's text to disk and check the visited-modtime, rather than trusting a status summary that compares content alone. If you edit a live file-backed buffer and the change should persist, save the buffer.
+
+Before finalizing, verify presentation, not just content. Confirm the resource you edited is the buffer actually displayed to the user -- another live buffer with a similar name may be the visible one, and a write to the right URI does not imply the right buffer is on screen. Check every visible buffer that corresponds to a modified resource for coherence; reload any that diverge."
   "Default instructions contributed by Emacs awareness capabilities.")
 
 (defun e-emacs-capabilities-visible-buffer-context ()
