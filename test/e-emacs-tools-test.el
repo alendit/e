@@ -274,6 +274,27 @@ When READ-ONLY is non-nil, buffer resources only support reads."
                     :status)
                    'error))))
 
+(ert-deftest e-emacs-tools-test-run-elisp-never-enters-debugger ()
+  "run_elisp surfaces errors as tool errors without popping the debugger.
+Regression: agent code that bound `debug-on-error' and signalled an error
+entered the interactive debugger, whose buffer setup re-signalled and recursed,
+pinning Emacs at 100% CPU.  The tool must inhibit the debugger so such code
+returns a normal tool error instead."
+  (let ((registry (e-tools-registry-create))
+        ;; Fail loudly if anything tries to enter the debugger.
+        (debugger (lambda (&rest _) (error "debugger must not be entered"))))
+    (e-emacs-tools-register-run-elisp registry)
+    ;; Agent code that turns the debugger on and then errors.
+    (let ((result (e-tools-execute
+                   registry
+                   '(:id "call-1"
+                     :name "run_elisp"
+                     :arguments (:code "(let ((debug-on-error t)) (error \"boom\"))")))))
+      (should (eq (plist-get result :status) 'error))
+      (should (string-match-p "boom" (format "%s" (plist-get result :content)))))
+    ;; The flags are restored after the call (not leaked globally).
+    (should-not debug-on-error)))
+
 (provide 'e-emacs-tools-test)
 
 ;;; e-emacs-tools-test.el ends here
