@@ -15,7 +15,15 @@
 (require 'e-layers)
 
 (defconst e-base-instructions
-  "Use OS base file and shell tools for workspace files and shell commands."
+  "Use OS base file and shell tools for workspace files and shell commands.
+
+Never run shell commands that search or traverse outside the current project. \
+This includes `find /`, `find ~`, `find $HOME`, `grep -r ~`, `ls -R /`, and any \
+recursive walk rooted at `/`, `~`, the home directory, or another broad ancestor. \
+They are slow, flood output, and almost never answer the question. Always scope a \
+search to the working directory or a known subdirectory, e.g. `find . -name ...` \
+or `grep -rn PATTERN lisp/`. When you do not know where something lives, search \
+the project root (`.`), not the filesystem or home directory."
   "Default instructions contributed by the OS base guidance capability.")
 
 (defun e-base-layer-create (&optional directory)
