@@ -1855,6 +1855,52 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
      :type 'user-error)
     (should-not (e-session-compactions store "session-1"))))
 
+(ert-deftest e-harness-test-compaction-strips-tools-from-summary-request ()
+  "Compaction omits the tool set so the model cannot answer with a tool-call.
+Regression: when tools were exposed the summary turn could come back as a
+tool-call with no assistant text, surfacing as \"Compaction backend returned
+an empty summary\"."
+  (let* ((seen-tools 'unset)
+         (capability
+          (e-capability-create
+           :id 'compaction-tool-capability
+           :tools (list (lambda (registry &rest _)
+                          (e-tools-register
+                           registry
+                           :name "noop_tool"
+                           :description "A tool that should not be offered to compaction."
+                           :handler (lambda (_arguments) "noop"))))))
+         (backend
+          (e-backend-create
+           :name 'tool-aware-summary
+           :stream
+           (cl-function
+            (lambda (&key messages options on-item)
+              (ignore messages)
+              (setq seen-tools (plist-get options :tools))
+              (if (plist-get options :tools)
+                  ;; Mirror the failure: with tools present, answer with a
+                  ;; tool-call and emit no assistant text.
+                  (funcall on-item '(:type tool-call :id "c1" :name "noop_tool"))
+                (funcall on-item
+                         '(:type assistant-message
+                           :content "Old exchange summary.")))))))
+         (harness (e-harness-create :backend backend))
+         (store (e-harness-sessions harness)))
+    (e-harness-activate-capability harness capability)
+    (e-harness-create-session harness :id "session-1")
+    (e-session-append-message store "session-1" '(:role user :content "old"))
+    (e-session-append-message store "session-1"
+                              '(:role assistant :content "old answer"))
+    (e-session-append-message store "session-1" '(:role user :content "new"))
+    ;; The harness really does have a tool registered.
+    (should (e-tools-definitions (e-harness-tools harness "session-1")))
+    (let ((record (e-harness-compact-session
+                   harness "session-1" :keep-recent-tokens 1)))
+      ;; Compaction succeeds because tools were stripped from the request.
+      (should (null seen-tools))
+      (should (equal (plist-get record :summary) "Old exchange summary.")))))
+
 (ert-deftest e-harness-test-compact-session-empty-summary-records-diagnostics ()
   "Empty compaction summaries record bounded backend diagnostics."
   (let* ((request (e-backend-request-create
