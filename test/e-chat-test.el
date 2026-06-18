@@ -4645,6 +4645,12 @@ the orphaned region and appeared to vanish."
   "Mode-line status includes model, effort, and estimated context usage."
   (should (equal (e-chat--model-context-token-limit "gpt-5.5")
                  258400))
+  ;; Anthropic models resolve a context limit too (Claude Opus/Sonnet/Fable are
+  ;; 1M, Haiku is 200K) so the mode line shows a denominator, not "?".
+  (should (equal (e-chat--model-context-token-limit "claude-opus-4-8")
+                 1000000))
+  (should (equal (e-chat--model-context-token-limit "claude-haiku-4-5")
+                 200000))
   (should
    (equal
     (e-chat--format-mode-line-status "gpt-5.5" "high" 18000 400000 t)

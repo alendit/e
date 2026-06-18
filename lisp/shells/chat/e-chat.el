@@ -137,7 +137,16 @@ When nil, read markers are stored in the active session store directory."
     ("gpt-5-mini" . 400000)
     ("gpt-5-nano" . 400000)
     ("gpt-5" . 400000)
-    ("gpt-5-chat-latest" . 128000))
+    ("gpt-5-chat-latest" . 128000)
+    ("claude-fable-5" . 1000000)
+    ("claude-mythos-5" . 1000000)
+    ("claude-opus-4-8" . 1000000)
+    ("claude-opus-4-7" . 1000000)
+    ("claude-opus-4-6" . 1000000)
+    ("claude-opus-4-5" . 1000000)
+    ("claude-sonnet-4-6" . 1000000)
+    ("claude-sonnet-4-5" . 200000)
+    ("claude-haiku-4-5" . 200000))
   "Alist mapping model names to maximum context tokens.
 The mode line uses this presentation-owned table for context usage display."
   :type '(alist :key-type string :value-type integer)
