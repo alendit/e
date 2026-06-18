@@ -4661,7 +4661,9 @@ the orphaned region and appeared to vanish."
     "e-chat gpt-5.5/high 15% (40k/258k tok)")))
 
 (ert-deftest e-chat-test-mode-line-status-uses-session-context ()
-  "Attached chat buffers show session model, effort, and token context."
+  "Attached chat buffers show session model, effort, and token context.
+The context-window denominator comes from the live provider lookup
+\(`e-chat--model-context-window'), which queries the gateway; stub it here."
   (let* ((store (e-session-store-create))
          (backend (e-backend-fake-create :items nil))
          (harness (e-harness-create
@@ -4669,19 +4671,42 @@ the orphaned region and appeared to vanish."
                    :sessions store
                    :default-options
                    '(:model "gpt-5.5" :reasoning-effort "high")))
-         (e-chat-model-context-token-limits '(("gpt-5.5" . 100)))
          (e-chat-context-token-estimate-bytes-per-token 1.0)
          (buffer (e-chat-open :harness harness :session-id "chat-mode-line")))
     (unwind-protect
-        (with-current-buffer buffer
-          (e-session-append-message
-           store
-           e-chat-session-id
-           '(:role user :content "context question"))
-          (e-chat--set-status "idle" t)
-          (should (string-match-p "gpt-5.5/high" mode-name))
-          (should (string-match-p "~[0-9]+%" mode-name))
-          (should (string-match-p "/100 tok" mode-name)))
+        (cl-letf (((symbol-function 'e-chat--model-context-window)
+                   (lambda (model) (and (equal model "gpt-5.5") 100))))
+          (with-current-buffer buffer
+            (e-session-append-message
+             store
+             e-chat-session-id
+             '(:role user :content "context question"))
+            (e-chat--set-status "idle" t)
+            (should (string-match-p "gpt-5.5/high" mode-name))
+            (should (string-match-p "~[0-9]+%" mode-name))
+            (should (string-match-p "/100 tok" mode-name))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-mode-line-status-unknown-window-shows-question-mark ()
+  "When the provider lookup returns nil, the mode line shows `?', no fallback."
+  (let* ((store (e-session-store-create))
+         (backend (e-backend-fake-create :items nil))
+         (harness (e-harness-create
+                   :backend backend
+                   :sessions store
+                   :default-options
+                   '(:model "gpt-5.5" :reasoning-effort "high")))
+         (buffer (e-chat-open :harness harness :session-id "chat-mode-line-unknown")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'e-chat--model-context-window)
+                   (lambda (_model) nil)))
+          (with-current-buffer buffer
+            (e-session-append-message
+             store e-chat-session-id '(:role user :content "q"))
+            (e-chat--set-status "idle" t)
+            (should (string-match-p "gpt-5.5/high" mode-name))
+            (should (string-match-p "/? tok" mode-name))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 

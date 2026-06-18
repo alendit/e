@@ -32,6 +32,7 @@
 (define-error 'e-anthropic-provider-invalid "Anthropic provider profile is invalid")
 (define-error 'e-anthropic-unsupported "Anthropic adapter feature is not supported")
 (define-error 'e-anthropic-request-timeout "Anthropic request timed out")
+(define-error 'e-anthropic-backend-error "Anthropic backend request failed")
 
 (defgroup e-anthropic nil
   "Anthropic Messages backend adapter for e."
@@ -75,6 +76,13 @@ Set this to nil to deliberately disable provider HTTP request timeouts."
   "Value sent in the `anthropic-version' request header."
   :type 'string
   :group 'e-anthropic)
+
+(defvar e-anthropic--context-window-cache (make-hash-table :test 'equal)
+  "In-memory cache of provider model context windows.
+Keyed by provider symbol; each value is a model-name -> max-input-tokens hash
+populated from the gateway's `/v1/model/info' (LiteLLM) catalog.  Cleared by
+`e-anthropic-reset-context-window-cache'.  There is no static fallback: when
+the gateway is unavailable, context-window lookups return nil.")
 
 (defcustom e-anthropic-model-providers
   '((gateway
@@ -135,6 +143,74 @@ When PROVIDER is nil, use `e-anthropic-default-provider'."
       (signal 'e-anthropic-auth-missing
               (list (format "Environment variable %s is missing" env-key))))
     token))
+
+(defun e-anthropic--model-info-url (base-url)
+  "Return the LiteLLM `/model/info' catalog URL for BASE-URL.
+The gateway exposes per-model deployment metadata (including the real context
+window) at `<base>/model/info', sibling to `/messages'."
+  (let ((normalized (string-remove-suffix "/" base-url)))
+    (concat normalized "/model/info")))
+
+(defun e-anthropic--http-get (url headers)
+  "GET URL with HEADERS and return the response body text, or signal.
+Synchronous; bounded by `e-anthropic-request-timeout-seconds'."
+  (let ((url-request-method "GET")
+        (url-request-extra-headers (e-anthropic--http-header-list headers))
+        (timeout e-anthropic-request-timeout-seconds))
+    (let ((buffer (url-retrieve-synchronously url t t timeout)))
+      (unless buffer
+        (signal 'e-anthropic-backend-error
+                (list (format "No response from %s" url))))
+      (unwind-protect
+          (e-anthropic--http-response-text buffer)
+        (e-anthropic--kill-request-buffer buffer)))))
+
+(defun e-anthropic--fetch-context-windows (provider)
+  "Fetch a model-name -> max-input-tokens hash for PROVIDER from the gateway.
+Queries `/model/info' and reads each entry's `model_info.max_input_tokens'.
+Signals on transport, auth, or parse failure -- callers decide how to degrade."
+  (let* ((profile (e-anthropic-provider-profile provider))
+         (base-url (e-anthropic--provider-base-url profile))
+         (headers (e-anthropic--headers profile))
+         (text (e-anthropic--http-get
+                (e-anthropic--model-info-url base-url) headers))
+         (payload (json-parse-string text :object-type 'alist
+                                     :array-type 'list :null-object nil))
+         (data (alist-get 'data payload))
+         (table (make-hash-table :test 'equal)))
+    (dolist (entry data)
+      (let ((name (alist-get 'model_name entry))
+            (limit (alist-get 'max_input_tokens (alist-get 'model_info entry))))
+        (when (and (stringp name) (integerp limit))
+          (puthash name limit table))))
+    table))
+
+(defun e-anthropic--context-window-table (provider)
+  "Return the cached context-window hash for PROVIDER, fetching once.
+Returns nil when the gateway query fails (no static fallback)."
+  (let ((key (or provider e-anthropic-default-provider)))
+    (or (gethash key e-anthropic--context-window-cache)
+        (when-let ((table (ignore-errors
+                            (e-anthropic--fetch-context-windows provider))))
+          (puthash key table e-anthropic--context-window-cache)
+          table))))
+
+;;;###autoload
+(defun e-anthropic-context-window (model &optional provider)
+  "Return PROVIDER's context window (max input tokens) for MODEL, or nil.
+The value comes from the gateway's live `/model/info' catalog, cached
+in-memory for the session.  Returns nil when the gateway is unavailable or
+does not list MODEL -- there is no static fallback."
+  (when (stringp model)
+    (when-let ((table (e-anthropic--context-window-table provider)))
+      (gethash model table))))
+
+;;;###autoload
+(defun e-anthropic-reset-context-window-cache ()
+  "Clear the in-memory provider context-window cache.
+The next `e-anthropic-context-window' call re-queries the gateway."
+  (interactive)
+  (clrhash e-anthropic--context-window-cache))
 
 (defun e-anthropic-messages-url (base-url)
   "Return the Messages endpoint URL for BASE-URL."
