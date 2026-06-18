@@ -1,0 +1,317 @@
+#+title: Debug Agent Session
+#+startup: overview
+
+* Status
+
+Planned.
+
+* Goal
+
+Provide an always-available "e debug agent" session whose purpose is to debug
+whatever just happened in =e= and in the surrounding Emacs.  It is a long-lived
+chat session that the user can ask, at any moment, "what went wrong here?",
+"why did that turn fail?", or "explain this buffer/state", and get a grounded
+answer without first assembling context by hand.
+
+Two affordances make it useful:
+
+- An =e-debug-here= command, callable from any buffer, that submits a prompt to
+  the debug session seeded with the currently open and visible state (point,
+  region, visible buffers, the chat session under inspection, recent failures).
+- A way to view and switch to the debug session that does not disturb the
+  current window layout, by default in a dedicated tab.
+
+The debug session is a normal chat session over the ordinary harness machinery,
+not a new core primitive.  It reuses the same turn/event/context flow a human
+chat would use, the same way =e-background-session= and =e-inspect-error= do.
+
+* User-facing behavior
+
+- A single always-on debug session exists per Emacs, lazily created on first
+  use and reused afterward.  Its identity is stable across reloads.
+- =e-debug-here= is bound to an easily reachable command and works from any
+  buffer (chat buffer, source file, org canvas, =*Messages*=, etc.).  It:
+  - captures the visible/active state at the call site,
+  - prompts the user for a short question (default question when left empty),
+  - submits prompt + captured state to the debug session,
+  - shows the debug session per the display policy below.
+- =e-debug= (no prompt) just opens/switches to the debug session.
+- Switching to the debug session must not break the current UI: by default it
+  opens in its own tab (=tab-bar=), so the current window configuration on the
+  starting tab is preserved.  Returning to the previous tab restores the prior
+  layout untouched.
+- The debug session carries enough standing context to debug recent activity:
+  recent e turns and failures, the active/most-recent chat session under work,
+  and live Emacs state (visible buffers, point/region at call time).
+- The debug session is read-oriented by default: it explains and proposes, and
+  must not mutate or retry the session under investigation unless the user
+  explicitly asks, mirroring the =e-inspect-error= prompt contract.
+
+* Non-goals (this feature)
+
+- Working on multiple debug issues at once / multiple concurrent debug sessions.
+  This is an explicit follow-up; the design must not foreclose it, but this
+  package ships exactly one standing debug session.
+- A new debug-specific core primitive, backend, or context strategy.
+- Automatic firing on failures (that is closer to =e-background-session=); here
+  the user drives every debug turn.
+
+* Current state and reuse
+
+** What already exists that we build on
+
+- =e-inspect-error= (=lisp/shells/chat/e-chat.el=) already creates a fresh chat
+  session seeded with a structured failure diagnostic and a read-only,
+  do-not-mutate prompt contract.  The debug agent generalizes this from
+  "newest failed turn, new session each time" to "standing session, any visible
+  state, on demand".
+- =e-chat-starter= (=lisp/shells/chat/e-chat-starter.el=) already captures
+  source context at point/region via =e-chat-capture-source-reference= and
+  submits a one-shot contextual question to a persisted session, then continues
+  it.  =e-debug-here= is the same shape pointed at the standing debug session.
+- =e-chat-capture-source-reference= / =e-chat-format-reference-prompt= /
+  =e-chat-reference-placeholder= produce the model-facing reference format.
+- =e-context-inspection-recent-failures= / =-failure-detail= produce the
+  recent-failure evidence the debug prompt should attach.
+- =e-emacs= awareness capability already contributes a visible-buffers context
+  provider, so a debug harness that activates =emacs-base= gets live Emacs
+  state in context for free.
+- =e-harness-instance-register= already models distinct user-facing runtime
+  targets by kind; the debug session is a new instance kind/target.
+- =e-chat-open= / =e-chat-open-session= already attach a buffer to a harness
+  session, subscribe, render, and reuse an existing session buffer.
+- =e-background-session= shows the "standing session, lazily created, stored
+  back, reused" pattern for a long-lived session id.
+
+** Gaps
+
+- No standing, named debug session or debug harness instance.
+- No command that submits the *current visible state from an arbitrary buffer*
+  to a fixed standing session.  =e-chat-starter= targets its own popup session;
+  =e-inspect-error= always starts a new session and only seeds failure detail.
+- No tab-based display path; all current display helpers operate within the
+  current frame's window tree (=e-chat--pop-to-buffer= etc.), which would
+  disturb the starting layout.
+
+* Design
+
+** Component ownership
+
+Three concerns, three owners, so each has one reason to change:
+
+1. Debug harness (runtime policy). A default harness spec/instance, registered
+   like the chat-default harness, that defines what the debug agent is: which
+   layers/tools it loads and its standing instructions. It does not know about
+   buffers, tabs, or capture. Owner: a defaults module
+   (=lisp/defaults/=, alongside =e-default-harnesses=).
+2. Debug context capture (presentation -> prompt). A small shell-side helper
+   that turns "the current call site" into a prompt + references: visible
+   state, source reference, the chat session under inspection, and recent
+   failures. Owner: a new debug shell module under =lisp/shells/=.
+3. Debug display (presentation). The tab-based open/switch policy that shows the
+   debug session buffer without disturbing the caller's layout. Owner: the same
+   debug shell module, using a narrow display function.
+
+The debug shell depends on stable contracts: =e-harness-instance-*=,
+=e-chat-open-session=, =e-chat-submit-session=, =e-chat-capture-source-reference=,
+=e-context-inspection-*=. It does not reach into chat buffer internals.
+
+** Debug harness instance
+
+Register a debug harness spec analogous to =:chat-default=:
+
+#+begin_src emacs-lisp
+(:id :debug-default
+ :name "Debug Agent"
+ :kind debug
+ :factory e-default-debug-harness-create
+ :sync e-default-debug-harness-sync)
+#+end_src
+
+- =kind debug= keeps it out of ordinary chat-instance selection while reusing
+  the instance catalog, default-by-kind lookup, and lazy factory machinery.
+- The factory builds on the same layer preset as chat (so the debug agent can
+  read buffers, files, run elisp, inspect context) and adds the
+  evidence/context-inspection capability explicitly, plus debug-oriented
+  standing instructions. Prefer reusing =e-default-chat-layer-ids= rather than
+  duplicating a list; if the debug agent needs extra capabilities, add them as
+  an explicit debug layer rather than forking the chat preset.
+- =sync= follows =e-default-harness-sync-from-factory= so live reload refreshes
+  backend closures while preserving the standing session and its buffer.
+
+Open question: whether the debug session should share the persistent session
+store with chat (so its history survives restarts) or use a dedicated store.
+Default proposal: shared persistent store, with a stable session id/metadata
+marker (=:source 'e-debug=) so it is discoverable and resumable. This keeps one
+session-store concern and makes the session inspectable like any other.
+
+** Standing debug session identity
+
+- The standing session id is resolved lazily and stored, mirroring
+  =e-background-session--ensure-session=: on first =e-debug=/=e-debug-here=,
+  create a session in the debug harness with metadata =(:name "Debug Agent"
+  :source e-debug)=, remember its id (buffer-independent, e.g. in a defvar or
+  harness/session metadata lookup), and reuse it thereafter.
+- Reload-stable: re-resolve the session by metadata marker when the in-memory id
+  is absent, so a reload does not orphan the conversation.
+- Single session only. Multiple concurrent debug sessions are the named
+  follow-up; the resolver returns exactly one id here, but is written so a
+  future key (per-issue) could select among several without changing callers.
+
+** =e-debug-here= capture contract
+
+On invocation from any buffer:
+
+1. Capture call-site state:
+   - source reference via =e-chat-capture-source-reference= (region or point
+     with line radius), unless the current buffer is not a meaningful source
+     (then skip the source reference but still note the buffer).
+   - the active chat session under inspection, if discoverable: if called from
+     an =e-chat-mode= buffer, its =e-chat-session-id= + harness; otherwise the
+     most-recent chat session / newest failure target via
+     =e-context-inspection-recent-failures=.
+   - recent failure detail (newest one or two) via
+     =e-context-inspection-recent-failures= + =-failure-detail=, attached as a
+     structured reference like =e-inspect-error= does.
+   - live Emacs state is already injected by the debug harness's visible-buffers
+     context provider; =e-debug-here= adds the *focused* call-site reference on
+     top, so the model knows where the user was looking.
+2. Read a short question via the minibuffer; empty input uses a default debug
+   prompt ("Debug what just happened here.").
+3. Build prompt = question + standing debug guidance + references, submit via
+   =e-chat-submit-session= to the standing session.
+4. Display the debug session per the tab policy.
+
+The prompt assembly reuses =e-chat-format-reference-prompt= and the
+=e-inspect-error= read-only/no-mutate guidance so the debug agent does not
+retry or edit the session under inspection.
+
+** Display policy: separate tab, layout-preserving
+
+Goal: switching to the debug session must not alter the window configuration of
+the tab the user was on.
+
+Proposal: a dedicated, named =tab-bar= tab (e.g. "e-debug").
+
+- =e-debug--show-buffer=: if =tab-bar= is available, select-or-create a tab
+  named =e-debug= (=tab-bar-select-tab-by-name= / =tab-bar-new-tab=), then show
+  the debug chat buffer in that tab via =e-chat-open-session=/normal display.
+  Because tab switching swaps the whole window configuration, the originating
+  tab's layout is untouched and restored on return.
+- Record the tab the call came from so =e-debug-here= can optionally bounce back
+  (configurable): some users want to stay on their work tab while the turn runs.
+  Default proposal: switch to the debug tab to show progress; make
+  "return to caller tab after submit" a customizable option rather than
+  hardcoding either behavior.
+- Fallback when =tab-bar= is unavailable or disabled: degrade to a
+  layout-preserving window display that does not commandeer the user's windows
+  -- reuse =e-chat='s side-window-aware display helpers
+  (=e-chat--display-from-side-window= style) or a dedicated pop-up window via
+  =display-buffer= with =inhibit-same-window=. This keeps a correct, if less
+  isolated, experience without =tab-bar=.
+
+Keep the strategy behind a small custom (=e-debug-display-strategy=: =tab= or
+=window=) so the uncertain UI choice stays local and reversible, matching the
+=e-chat-starter-display-strategy= precedent.
+
+** Commands and binding
+
+- =e-debug= (interactive): open/switch to the standing debug session via the
+  display policy; create it lazily if needed. No prompt.
+- =e-debug-here= (interactive): capture + prompt + submit + show, as above.
+- Expose both as autoloaded commands; document a suggested global binding in the
+  README/config rather than forcing a global keymap entry. =e-debug-here= must
+  be "easily available" -- propose a default binding and a shell command id in
+  a debug shell manifest so it is discoverable through =e-shell-list=.
+
+** Shell manifest
+
+Register an =e-debug= shell manifest (=e-shell-register=) advertising the
+=e-debug= and =e-debug-here= commands, required capabilities
+(=evidence-retrieval=, =emacs-awareness=), and metadata. This makes the feature
+discoverable through the same shell discovery path as chat/canvas shells.
+
+* Work packages
+
+Each package is a useful stopping point: after it, the project is better off.
+
+** WP1: Debug harness instance + standing session resolver
+
+- Add =e-default-debug-harness-create= / =-sync= and register a =:debug-default=
+  spec with =kind debug=, reusing the chat layer preset plus
+  evidence/context-inspection capability and debug standing instructions.
+- Add a standing-session resolver (lazy create, store, reload-stable via
+  metadata marker), mirroring =e-background-session--ensure-session=.
+- Verify: batch test that the resolver returns a stable id across calls and
+  re-resolves after the cached id is cleared; live-reload test that the session
+  survives =e-dev-reload=.
+- Value alone: a debuggable standing session exists and can be prompted
+  programmatically even before UI lands.
+
+** WP2: =e-debug= open/switch with tab display
+
+- New debug shell module: =e-debug= command + =e-debug--show-buffer= tab/window
+  display strategy with custom =e-debug-display-strategy=.
+- Register the =e-debug= shell manifest.
+- Verify live: from a multi-window layout, =M-x e-debug= opens the debug session
+  in a separate tab; returning to the original tab shows the original layout
+  intact. Confirm in the running Emacs via =emacsclient --eval= inspection of
+  =tab-bar-tabs= and window configs.
+- Value alone: user can reach an always-on debug session without disturbing UI.
+
+** WP3: =e-debug-here= capture + submit
+
+- Implement call-site capture (source reference + inspected-session detection +
+  recent-failure detail), prompt assembly reusing
+  =e-chat-format-reference-prompt= and the read-only guidance, submit to the
+  standing session, then show via WP2 display.
+- Verify: batch tests for prompt/reference assembly given a fake harness with a
+  failed turn and an active chat buffer; live test submitting from a source
+  buffer and from a chat buffer, inspecting the session messages/context in the
+  running Emacs.
+- Value alone: the headline workflow ("debug what just happened here") works.
+
+** WP4: Discoverability + docs
+
+- Suggested binding for =e-debug-here=, README section, and =docs/feats/index=
+  status update. Mention the multi-issue follow-up explicitly.
+
+* Follow-up: multiple concurrent debug issues
+
+Out of scope here, but the design leaves the seam: the session resolver takes an
+optional key, the display strategy can host more than one debug buffer, and the
+harness instance kind can back several sessions. A later feature can add
+per-issue debug sessions (selection UI, per-issue tabs) without changing the
+=e-debug-here= capture contract.
+
+* Required self-check (design-sensitive)
+
+1. Stop-here value: yes -- WP1 gives a debuggable standing session; WP2 a
+   non-disruptive way to reach it; WP3 the full workflow. Each is independently
+   useful.
+2. Final direction: live-configurable agents that inspect and explain Emacs and
+   e state; an always-on debug agent is a natural runtime affordance.
+3. Likely-to-change decisions kept local and reversible: display strategy
+   (=tab= vs =window=) behind a custom; session-store choice isolated in the
+   debug factory; multi-issue seam present but unbuilt. No speculative layers.
+4. Ownership: harness policy in defaults, capture+display in a debug shell,
+   evidence/context via existing capabilities -- each with one reason to change.
+5. Coupling: the debug shell depends only on stable harness/chat/inspection
+   contracts, not chat buffer internals; interfaces stay consumer-shaped.
+6. Dependency direction: presentation -> stable harness/inspection contracts;
+   no stable policy reaches toward concrete UI.
+7. Side effects (buffer/tab/window changes) live in the presentation shell, not
+   in the harness or capabilities.
+8. Abstractions are real: reuses existing instance/session/inspection seams;
+   no unsupported-operation stubs. The single-session resolver substitutes
+   cleanly for a future multi-session one.
+9. Compatibility: no legacy debug path exists; nothing to preserve. =tab-bar=
+   absence has an explicit window fallback rather than a hard dependency.
+10. Legacy to remove: none; =e-inspect-error= stays (different contract: new
+    session per failure) but should be cross-referenced, and we should evaluate
+    whether it can later delegate to the debug session capture helpers.
+11. Expected errors (no failures found, empty prompt, no tab-bar) handled at the
+    shell boundary with =user-error=/fallback; unexpected errors surface.
+12. Tests prove capture/prompt assembly and the session resolver independently
+    of UI via a fake harness; UI display verified live. Design changes would
+    touch narrow, owner-local tests.
