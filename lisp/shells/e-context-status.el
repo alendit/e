@@ -217,13 +217,17 @@ mutated in place.  BYTES-PER-TOKEN is forwarded to the estimator."
 (cl-defun e-context-status-text
     (harness session-id
              &key (prefix "e-context") prefer-token-usage estimate-cache
-             token-limits bytes-per-token (estimate-context t))
+             token-limits token-limit-function bytes-per-token
+             (estimate-context t))
   "Return context-state status text for SESSION-ID through HARNESS.
 PREFIX is the leading label.  When PREFER-TOKEN-USAGE is non-nil and fresh
 provider usage exists, skip the expensive context-token estimate.
 ESTIMATE-CACHE is an optional caller-owned cons cell (TOKENS . TIME) reused
 across calls.
-TOKEN-LIMITS and BYTES-PER-TOKEN override the configured defaults.
+TOKEN-LIMIT-FUNCTION, when non-nil, is called with the model id and should
+return its context window in tokens or nil; it takes precedence over the
+static TOKEN-LIMITS alias.  TOKEN-LIMITS and BYTES-PER-TOKEN override the
+configured defaults.
 When ESTIMATE-CONTEXT is nil, avoid building full model-facing context."
   (e-context-status--profile-call
    'context-status.text
@@ -258,7 +262,11 @@ When ESTIMATE-CONTEXT is nil, avoid building full model-facing context."
                         (e-context-status--cached-estimate
                          context estimate-cache bytes-per-token))))
                 (used-tokens (or usage-tokens estimated-tokens))
-                (max-tokens (e-context-status-model-token-limit model token-limits)))
+                (max-tokens (or (and token-limit-function
+                                     (ignore-errors
+                                       (funcall token-limit-function model)))
+                                (e-context-status-model-token-limit
+                                 model token-limits))))
            (e-context-status-format
             prefix model effort used-tokens max-tokens (not usage-tokens)))
        prefix))))

@@ -4107,6 +4107,14 @@ When OMIT-COMPOSER is non-nil, leave the buffer as transcript-only."
   (e-context-status-model-token-limit
    model e-chat-model-context-token-limits))
 
+(defun e-chat--model-context-window (model)
+  "Return MODEL's context window in tokens from the live provider, or nil.
+Queries the Anthropic gateway catalog (cached in-memory); there is no static
+fallback, so the mode line shows `?' when the gateway is unavailable or does
+not list MODEL.  Returns nil when no provider lookup is available."
+  (when (and (stringp model) (fboundp 'e-anthropic-context-window))
+    (e-anthropic-context-window model)))
+
 (defun e-chat--context-token-estimate (context)
   "Return approximate token count for model-facing CONTEXT."
   (e-context-status-context-token-estimate
@@ -4126,7 +4134,7 @@ expensive context-token estimate path."
      :prefer-token-usage prefer-token-usage
      :estimate-context (not prefer-token-usage)
      :estimate-cache e-chat--mode-line-context-estimate-cache
-     :token-limits e-chat-model-context-token-limits
+     :token-limit-function #'e-chat--model-context-window
      :bytes-per-token e-chat-context-token-estimate-bytes-per-token)))
 
 (defun e-chat--refresh-mode-line-status (&optional prefer-token-usage)

@@ -11,6 +11,7 @@
 
 ;;; Code:
 
+(require 'cl-lib)
 (require 'ert)
 (require 'json)
 (require 'e)
@@ -435,6 +436,59 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
                    (list :model "claude-default"
                          :max-tokens e-anthropic-default-max-tokens
                          :effort e-anthropic-default-effort)))))
+
+(defconst e-anthropic-test--model-info-json
+  (concat
+   "{\"data\":["
+   "{\"model_name\":\"claude-opus-4-8\","
+   "\"model_info\":{\"max_input_tokens\":1000000,\"max_output_tokens\":128000}},"
+   "{\"model_name\":\"claude-opus-4-5-20251101\","
+   "\"model_info\":{\"max_input_tokens\":200000,\"max_output_tokens\":64000}},"
+   "{\"model_name\":\"claude-haiku-4-5-20251001\","
+   "\"model_info\":{\"max_input_tokens\":200000}}"
+   "]}")
+  "A representative LiteLLM `/model/info' payload for tests.")
+
+(ert-deftest e-anthropic-test-context-window-reads-gateway-catalog ()
+  "Context-window lookup reads max-input-tokens from the gateway catalog."
+  (e-anthropic-reset-context-window-cache)
+  (let ((calls 0))
+    (cl-letf (((symbol-function 'e-anthropic--headers) (lambda (&rest _) nil))
+              ((symbol-function 'e-anthropic--http-get)
+               (lambda (&rest _) (cl-incf calls) e-anthropic-test--model-info-json)))
+      (should (equal (e-anthropic-context-window "claude-opus-4-8") 1000000))
+      ;; Gateway truth, not the public-docs number (which lists 4.5 as 1M).
+      (should (equal (e-anthropic-context-window "claude-opus-4-5-20251101")
+                     200000))
+      (should (equal (e-anthropic-context-window "claude-haiku-4-5-20251001")
+                     200000))
+      ;; Unknown model -> nil (no static fallback).
+      (should-not (e-anthropic-context-window "no-such-model"))
+      ;; The catalog is fetched once and cached in-memory for the session.
+      (should (= calls 1))))
+  (e-anthropic-reset-context-window-cache))
+
+(ert-deftest e-anthropic-test-context-window-nil-when-gateway-unavailable ()
+  "When the gateway query fails, context-window lookup returns nil (no fallback)."
+  (e-anthropic-reset-context-window-cache)
+  (cl-letf (((symbol-function 'e-anthropic--headers) (lambda (&rest _) nil))
+            ((symbol-function 'e-anthropic--http-get)
+             (lambda (&rest _) (signal 'e-anthropic-backend-error '("boom")))))
+    (should-not (e-anthropic-context-window "claude-opus-4-8")))
+  (e-anthropic-reset-context-window-cache))
+
+(ert-deftest e-anthropic-test-reset-context-window-cache-forces-refetch ()
+  "Resetting the cache makes the next lookup re-query the gateway."
+  (e-anthropic-reset-context-window-cache)
+  (let ((calls 0))
+    (cl-letf (((symbol-function 'e-anthropic--headers) (lambda (&rest _) nil))
+              ((symbol-function 'e-anthropic--http-get)
+               (lambda (&rest _) (cl-incf calls) e-anthropic-test--model-info-json)))
+      (e-anthropic-context-window "claude-opus-4-8")
+      (e-anthropic-reset-context-window-cache)
+      (e-anthropic-context-window "claude-opus-4-8")
+      (should (= calls 2))))
+  (e-anthropic-reset-context-window-cache))
 
 (provide 'e-anthropic-test)
 
