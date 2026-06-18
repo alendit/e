@@ -38,3 +38,4 @@ Status values for coding agents:
 | 25 | Planned | 25-resource-glob-search/ | Resource Glob and Search Tools |
 | 26 | Planned | 26-elisp-tool-chaining/ | Elisp Tool Chaining |
 | 27 | Planned | 27-debug-agent-session/ | Debug Agent Session |
+| 28 | Planned | 28-context-auto-compaction/ | Context Auto-Compaction |
