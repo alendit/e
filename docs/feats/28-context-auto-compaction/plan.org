@@ -1,0 +1,335 @@
+#+title: Plan: Context Auto-Compaction
+#+author: e planning
+#+date: 2026-06-18
+#+startup: overview
+
+* Goal
+Add threshold-triggered auto-compaction so long =e= sessions compact themselves
+before the next turn would overflow the model context window, instead of relying
+on the user to run =e-chat-compact-session= manually.
+
+This builds directly on feature 11 (=Context Compaction=), which already ships:
+
+- durable append-only =compaction= records keyed by entry id;
+- =e-compaction-prepare= / =e-compaction-summary-messages= boundary + prompt
+  construction;
+- =e-harness-compact-session= orchestration (prepare, summarize, append record,
+  emit =compaction-*= lifecycle events);
+- compacted context reconstruction in =e-context=.
+
+It also builds on feature 20 (=Org Canvas Context Status=) / =e-context-status=,
+which already computes a session's =used-tokens= (real provider usage or local
+estimate) and =max-tokens= (model context window) for the mode line.
+
+Auto-compaction is a *trigger policy* on top of the existing manual mechanism. It
+adds almost no new compaction machinery; it decides *when* to call the operation
+that already exists.
+
+* Non-goals
+- Re-implement compaction, boundary selection, summarization, or context
+  reconstruction. Feature 11 owns those.
+- Overflow-error recovery with automatic retry (the "context_length_exceeded ->
+  compact -> resend" loop). Tracked as an explicit follow-up below.
+- Split-turn compaction for a single turn larger than the keep budget.
+- Branch summarization or session-tree navigation.
+- Extension/hook points for custom auto-compaction policy.
+- A new telemetry system or perfect cross-provider token accounting.
+- Compacting concurrently with a running turn.
+
+* What Pi and Codex do, and the tricks worth copying
+
+** Pi (from docs/research/context_compaction.org)
+Pi's default settings:
+
+#+begin_src json
+{ "enabled": true, "reserveTokens": 16384, "keepRecentTokens": 20000 }
+#+end_src
+
+Auto-compaction triggers when:
+
+#+begin_example
+contextTokens > contextWindow - reserveTokens
+#+end_example
+
+Token accounting trick: prefer provider-reported usage from the most recent
+non-error assistant message as the base context size, estimate only the tail
+added since that measurement, and treat pre-compaction usage as stale until a
+fresh post-compaction assistant response supplies new usage. =e= already mirrors
+this in =e-context-status=: it ignores token-usage events that predate the latest
+valid compaction and falls back to a char/4 estimate.
+
+Pi also has overflow-recovery compaction (one retry on a context-overflow error)
+and split-turn compaction. Those are separate strategies; we defer both.
+
+** Codex
+Codex exposes manual thread compaction and compacts automatically as the thread
+approaches the window, but does not publish a keep-recent constant. So we keep
+Pi's documented numbers (reserve 16k, keep-recent 20k) rather than inventing a
+Codex-derived value, consistent with the feature 11 decision.
+
+** Tricks we adopt
+- Threshold = =window - reserve=, not =window=. Reserve leaves room for the next
+  answer plus the post-compaction summary + kept suffix.
+- Decide *before* sending the next turn, using the freshest usage signal
+  available, so we never knowingly start a turn that will overflow.
+- Prefer real provider usage over estimate; treat pre-compaction usage as stale.
+- One compaction attempt per trigger. Never loop compaction within a single
+  decision point.
+- Append-only: auto-compaction produces exactly the same durable record shape as
+  manual compaction. Nothing new is persisted that manual compaction does not
+  already persist, except a =:reason auto= marker in metadata.
+
+* The one real design question: who owns the context window number?
+The trigger needs two numbers: current context size and the model context
+window. =e= already has both, but they currently live in the *presentation*
+layer:
+
+- =e-context-status-model-token-limits= (defcustom in =lisp/shells/e-context-status.el=)
+  maps model id -> window tokens;
+- =e-context-status-text= computes =used-tokens= (provider usage or estimate) and
+  =max-tokens= for the mode line.
+
+Auto-compaction is a *harness/core policy*, not presentation. A trigger must not
+depend on a chat shell being attached. Per AGENTS.md (dependencies flow from
+unstable toward stable; core policy must not depend on UI), the model-window
+table and the size/limit computation must move to a core-owned contract; the
+presentation layer should consume it, not own it.
+
+Decision: introduce a small core module =lisp/core/e-context-budget.el= that owns:
+
+#+begin_src elisp
+;; Pure functions over a session, no UI dependency.
+(defun e-context-budget-model-window (model &optional limits) ...)   ; model -> window tokens or nil
+(defun e-context-budget-used-tokens (harness session-id) ...)        ; provider usage (post-compaction) or estimate
+(defun e-context-budget-status (harness session-id &key bytes-per-token) ...)
+;;   => (:model m :used-tokens u :window w :approximate bool)
+#+end_src
+
+This is a refactor-then-extend, not a parallel reimplementation:
+
+- Move the model-window table and the used/limit computation logic out of
+  =e-context-status= into =e-context-budget= (core).
+- =e-context-status= keeps presentation concerns only: formatting strings,
+  mode-line cache TTL, the =e-context-status-format-token-count= helpers, and the
+  =e-chat-*= aliases that shells call. It computes status text *by calling*
+  =e-context-budget= for the raw numbers.
+- The defcustom for the model-window table moves to core. Keep the old
+  =e-context-status-model-token-limits= name working as a thin
+  alias/obsolete-variable for one release if it is referenced by user config;
+  otherwise remove it and note the rename. Prefer removal per "remove obsolete
+  paths by default" unless a real config-compat need exists.
+
+If this refactor proves larger than expected, the fallback (documented here, not
+preferred) is to keep the numbers in presentation and have the harness call a
+*injected* budget function supplied at harness-create time. That keeps core
+free of presentation deps but adds a config seam. Choose the core module first;
+fall back only if the move touches too much.
+
+* Trigger placement
+Decide at the single queue entry point for a new prompt turn:
+=e-harness-prompt-async= in =lisp/core/e-harness.el=, just before the user
+message is appended and =start-turn= runs.
+
+Why there:
+- It is the one place every shell-driven turn flows through
+  (=e-chat-session-submit= -> =e-chat-session-submit= -> =e-harness-prompt-async=).
+- No turn is running yet at that point, so the existing manual-compaction
+  precondition (refuse during an active turn) is naturally satisfied.
+- We can compact, then proceed to append + start the turn, all before any
+  backend call.
+
+Flow inside =e-harness-prompt-async= (new, guarded by a defcustom):
+
+1. If auto-compaction disabled, behave exactly as today.
+2. Compute =e-context-budget-status=.
+3. If =window= unknown (no limit for this model), skip (cannot make a correct
+   decision; do not guess). Emit nothing.
+4. If =used-tokens > window - reserve-tokens=, call
+   =e-harness-compact-session= with =:reason auto= before appending the prompt.
+5. If compaction fails with an *expected* compaction error (too little context,
+   no safe cut point, current turn too large), do NOT block the user turn: log a
+   =compaction-failed= event (already emitted by the operation) and proceed with
+   the normal turn. Auto-compaction is best-effort; a failed compaction must not
+   swallow the user's prompt.
+6. Append user message and start the turn as today.
+
+* Preventing bad states
+The whole point of "decide on a reasonable first approach which prevents bad
+states" is here. The risks for an auto-trigger are: infinite/again-and-again
+compaction, compacting during a running turn, compaction that does not actually
+reduce size, and silently dropping the user's prompt on failure.
+
+Guards:
+
+1. *No turn running.* Trigger only at =e-harness-prompt-async= before a turn
+   exists; reuse the existing active-turn precondition. Never auto-compact from
+   inside a turn or a tool call.
+
+2. *At most one auto-compaction per submit.* Evaluate the threshold once per
+   prompt submission. Do not loop "compact, re-check, compact again". If a single
+   compaction does not get under threshold, proceed with the turn anyway (the
+   provider, not us, will reject a genuine overflow; overflow recovery is a
+   separate follow-up).
+
+3. *No-progress guard.* Skip auto-compaction when it cannot help:
+   - skip if there is no valid prior compaction *and* the session has too little
+     context to compact (mirror the manual "too little context" precondition);
+   - skip if the latest valid compaction's =first-kept-entry-id= is already at or
+     very near the current head, i.e. compacting again would summarize roughly
+     the same suffix. Concretely: skip when the estimated tokens of entries newer
+     than the last compaction boundary are below =keep-recent-tokens=, because a
+     new compaction could not move the boundary forward meaningfully. This is the
+     key guard against compaction churn when a single huge turn keeps usage above
+     threshold.
+
+4. *Stale-usage correctness.* Use =e-context-budget-used-tokens=, which ignores
+   provider usage recorded before the latest valid compaction (already
+   implemented in =e-context-status= and moving to =e-context-budget=). This
+   prevents re-triggering on a pre-compaction usage number that no longer
+   reflects the compacted context.
+
+5. *Unknown window => no action.* If the model has no configured window, do not
+   estimate a fake limit and do not compact. Surface nothing; the manual command
+   remains available. (Add the active model's window to the table as part of this
+   feature so the default model is covered.)
+
+6. *Failure never blocks the prompt.* Expected compaction errors are caught at
+   the trigger site and the user turn proceeds. Unexpected errors still surface
+   (do not wrap core in broad defensive handling beyond the known expected
+   compaction conditions).
+
+7. *Disabled by default? No.* Pi ships =enabled: true=. Ship enabled with a
+   conservative reserve, but keep =e-harness-auto-compaction-enabled= so it can be
+   turned off per the user's preference and for tests.
+
+* New configuration
+Add to =lisp/core/e-harness.el= (policy lives with the trigger):
+
+#+begin_src elisp
+(defcustom e-harness-auto-compaction-enabled t
+  "When non-nil, auto-compact a session before a turn that would near the window."
+  :type 'boolean)
+
+(defcustom e-harness-auto-compaction-reserve-tokens 16384
+  "Tokens to reserve below the model context window before auto-compacting.
+Auto-compaction triggers when estimated context exceeds WINDOW minus this."
+  :type 'integer)
+#+end_src
+
+Reuse existing knobs rather than adding parallel ones:
+- keep-recent suffix size: existing =e-compaction-keep-recent-tokens= (20000).
+- char/token estimate: existing presentation default migrates with the budget
+  module; keep one shared estimator.
+
+* Lifecycle events
+No new event types are strictly required: =e-harness-compact-session= already
+emits =compaction-started/prepared/summary-started/finished/failed=. Auto-runs
+carry =:reason auto= in started/record metadata so the chat shell can label them
+("Auto-compacted context") distinctly from manual ("Compacted context"). The
+chat shell change is a small label tweak in the existing =compaction-*= rendering
+path, not a new render branch.
+
+* Components and ownership
+| Component | Responsibility | Change |
+|-----------+----------------+--------|
+| =e-context-budget= (new, core) | Model window table + used/limit computation, UI-free | new module (moved logic) |
+| =e-context-status= (presentation) | Format status text, mode-line cache | consume budget module |
+| =e-harness= | Decide + invoke auto-compaction at submit; own enable/reserve config | trigger + guards |
+| =e-compaction= / =e-session= / =e-context= | Compaction mechanics | unchanged |
+| =e-chat= | Label auto vs manual compaction in activity | small label tweak |
+
+Dependency direction stays correct: presentation -> core budget; harness policy
+-> core compaction + core budget. No core -> presentation dependency is
+introduced.
+
+* Compatibility expectations
+- Existing sessions and durable compaction records remain valid; auto records use
+  the same shape with =:reason auto=.
+- Manual =e-chat-compact-session= is unchanged and remains the override.
+- Moving the model-window table to core may obsolete
+  =e-context-status-model-token-limits=. Provide a one-release obsolete alias
+  only if user config likely sets it; otherwise remove and document the rename.
+- No long-lived shims for in-memory struct layout; a defcustom/module move does
+  not require one.
+
+* Testing plan
+Core trigger logic must be testable without a real backend, using the fake
+backend (=e-backend-fake-create=) for the summary call.
+
+Focused tests:
+
+#+begin_src sh
+rtk eldev test -f test/e-context-budget-test.el
+rtk eldev test -f test/e-harness-test.el
+rtk eldev test -f test/e-compaction-test.el
+rtk eldev test -f test/e-context-test.el
+rtk eldev test -f test/e-chat-test.el
+#+end_src
+
+Cases to prove independently of any LLM:
+- below threshold => no compaction, turn runs unchanged;
+- above threshold + compactible => one compaction (=:reason auto=) then turn runs;
+- above threshold but no valid window => no compaction, no error;
+- above threshold but no-progress guard hit (suffix below keep-recent) => no
+  second compaction (churn guard);
+- expected compaction failure => prompt still appended and turn still starts;
+- auto-compaction disabled => identical to pre-feature behavior;
+- =e-context-budget-used-tokens= ignores pre-compaction provider usage.
+
+Aggregate before review:
+
+#+begin_src sh
+rtk eldev test
+#+end_src
+
+* Live verification
+After changing =lisp/*.el=, reload the running Emacs:
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Bounded live probes:
+- with a temporary low =e-harness-auto-compaction-reserve-tokens= and/or a small
+  configured window, submit a prompt in a session whose context exceeds the
+  threshold and confirm a single auto =compaction-finished= event fires before
+  the turn, with the chat showing an "Auto-compacted" label;
+- confirm mode-line context status still renders correctly after the budget
+  module move (used/window and percentage unchanged for a known session);
+- confirm a session with an unknown model window submits normally with no
+  compaction attempt.
+
+Use scalar probes only; do not dump full context bodies or session records.
+
+* Self-check (design-sensitive change)
+1. *Stops here better off?* Yes: long sessions stop dying at the window without
+   manual intervention, reusing shipped compaction.
+2. *Final direction?* Toward live-reloadable, self-managing agent sessions; sets
+   up later overflow-recovery and split-turn work behind a clean budget contract.
+3. *Likely-to-change vs stable?* Reserve/threshold values are likely to change ->
+   defcustoms. The budget contract is stable enough to name. No speculative hook
+   layer added.
+4. *Owning component?* Trigger policy + its config in =e-harness=; window/size
+   computation in =e-context-budget=. Each has one reason to change.
+5. *Coupling?* Reduced: presentation stops owning the window table; core owns it
+   and presentation consumes a narrow function.
+6. *Dependency direction?* Correct: presentation -> core; no core -> UI edge.
+7. *Side effects outward?* Compaction side effects stay in the existing harness
+   operation; the trigger only decides.
+8. *Substitutable abstractions?* Budget functions are pure over (harness,
+   session); no narrowed preconditions or unsupported-operation throwing.
+9. *Compatibility?* Records unchanged; obsolete table alias removed/aliased
+   explicitly.
+10. *Legacy removable now?* The presentation-owned window table once the budget
+    module lands.
+11. *Errors?* Expected compaction failures handled at the trigger so the prompt
+    proceeds; unexpected errors surface.
+12. *Tests prove core independently?* Yes, via fake backend and budget unit tests
+    with no LLM; a design change would touch trigger/budget tests narrowly.
+
+* Follow-ups (explicitly deferred)
+- Overflow-error recovery: on a provider context-overflow error, compact once and
+  resend (Pi's one-retry strategy). Needs provider-neutral overflow detection in
+  the backend adapters.
+- Split-turn compaction when a single turn exceeds the keep budget.
+- Extension/hook point for custom auto-compaction policy and summarizer model.
