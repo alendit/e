@@ -31,6 +31,19 @@
                     (e-harness-project-root harness session-id turn-id))))
     (e-file-capabilities--directory (or root fallback))))
 
+(defun e-file-capabilities--context-roots (fallback context)
+  "Return the active workspace roots for CONTEXT as a list.
+The first element is the primary project root (used for relative paths); the
+rest are configured extra workspace roots.  Falls back to FALLBACK as the sole
+root when no session roots are resolvable."
+  (let* ((harness (plist-get context :harness))
+         (session-id (plist-get context :session-id))
+         (turn-id (plist-get context :turn-id))
+         (roots (and (e-harness-p harness)
+                     session-id
+                     (e-harness-workspace-roots harness session-id turn-id))))
+    (or roots (list (e-file-capabilities--directory fallback)))))
+
 (cl-defun e-base-guidance-capability-create
     (instructions &key instruction-priority)
   "Create a base guidance capability carrying INSTRUCTIONS."
@@ -49,14 +62,14 @@
      :tools (list (lambda (registry &rest context)
                     (e-base-tools-register-resource-sync-status
                      registry
-                     (e-file-capabilities--context-directory root context))))
+                     (e-file-capabilities--context-roots root context))))
      :resource-methods
      (list (e-capability-resource-method-provider-create
             :handler
             (lambda (registry &rest context)
               (e-base-tools-register-file-read-resource
                registry
-               (e-file-capabilities--context-directory root context))))))))
+               (e-file-capabilities--context-roots root context))))))))
 
 (defun e-file-mutation-capability-create (&optional directory)
   "Create a file mutation capability rooted at DIRECTORY."
@@ -67,14 +80,14 @@
      :tools (list (lambda (registry &rest context)
                     (e-base-tools-register-resource-sync-status
                      registry
-                     (e-file-capabilities--context-directory root context))))
+                     (e-file-capabilities--context-roots root context))))
      :resource-methods
      (list (e-capability-resource-method-provider-create
             :handler
             (lambda (registry &rest context)
               (e-base-tools-register-file-resource
                registry
-               (e-file-capabilities--context-directory root context))))))))
+               (e-file-capabilities--context-roots root context))))))))
 
 (defun e-shell-process-capability-create (&optional directory)
   "Create a shell process capability rooted at DIRECTORY."
