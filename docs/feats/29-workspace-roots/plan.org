@@ -1,0 +1,100 @@
+#+title: Workspace Roots
+#+startup: overview
+
+* Status
+
+In-progress.
+
+* Goal
+
+Let a single chat session operate file tools across more than one project
+directory.  Today a session has exactly one =:project-root=; every base file
+tool (=read=/=write=/=edit=/=resource_sync_status=) is rooted there and
+=e-base-tools--resolve-path= rejects any path outside it ("Path escapes
+workspace root").  That makes cross-repo work impossible: a session opened in
+one project cannot read or edit a sibling project even when the user explicitly
+wants it.
+
+Add a notion of *workspace roots*: the session keeps one primary project root
+(still the bash working directory and the base for relative paths), but file
+tools accept paths under the primary root or any additional, user-configured
+root.  The extra roots are configurable per project.
+
+* User-facing behavior
+
+- A user maps a project root to additional workspace roots via
+  =e-workspace-roots-alist= (an alist of =(PROJECT-ROOT . EXTRA-ROOTS)=),
+  configured the same way and place as =e-project-local-allowed-roots=.
+- When a session's primary project root is at or below a configured key, the
+  key's extra roots become active for that session.
+- File resources (=file://...=) and =resource_sync_status= resolve against the
+  union of roots: a path is accepted when it resolves within any active root.
+  Absolute =file://= paths address secondary roots directly; relative paths
+  resolve against the primary root as before.
+- The =bash= tool keeps running in the primary project root; multi-root only
+  governs the file-resource trust gate, not the shell working directory.
+
+* Design
+
+** Configuration is a pure function of the primary root
+
+Extra roots are derived from =e-workspace-roots-alist= keyed by the primary
+project root, not stored on the session.  This keeps the change small: no
+session-metadata field, no chat/org-canvas creation wiring, and edits to the
+config take effect on the next turn without re-creating sessions.
+
+** Ownership
+
+- =e-harness= owns the root *policy*: the =e-workspace-roots-alist= defcustom,
+  the configured-extras lookup, and the =e-harness-workspace-roots= accessor
+  (primary root + extras, normalized and de-duplicated).  This sits next to the
+  existing =e-harness-project-root= accessor and =:project-root= normalization.
+- =e-base-tools= owns *resolution*: =e-base-tools--resolve-path= takes a root or
+  list of roots and accepts a path that resolves within any of them.  The file
+  resource methods, the coherence provider, and the sync-status tool thread the
+  root list; =bash= keeps the single primary directory.
+- =e-file-capabilities= bridges the two: the file-inspection and file-mutation
+  capabilities ask =e-harness-workspace-roots= for the active roots at use time;
+  the shell-process capability keeps asking for the single primary directory.
+
+** Why not store roots on the session or in a project file?
+
+Storing on the session would require creation-time wiring in every session
+entry point (chat, org-canvas, project shells) and would go stale when config
+changes.  A project-level file (e.g. =.e/workspace-roots=) is a heavier,
+new-format decision; the alist matches the existing trust-config pattern and is
+trivially reversible.  If a project-local declaration is wanted later, it can
+feed the same accessor without changing tool code.
+
+* Slices
+
+1. Core policy: =e-workspace-roots-alist=, =e-harness-configured-workspace-roots=,
+   =e-harness-workspace-roots=, with tests.
+2. Resolution: multi-root =e-base-tools--resolve-path= and threaded root lists in
+   the file resource methods, coherence provider, and sync-status, with tests.
+3. Bridge: =e-file-capabilities--context-roots= and the file capabilities asking
+   for workspace roots, with tests.
+
+* Self-check (design-sensitive change)
+
+1. Better off if stopped here? Yes - cross-root file access is usable end to end
+   after slice 3; earlier slices are independently tested.
+2. Final direction? A session whose file surface spans a configurable set of
+   trusted roots, with room for project-local declarations to feed the same
+   accessor.
+3. Likely-to-change decisions kept local: the *source* of extra roots is behind
+   one accessor (=e-harness-workspace-roots=) and one config lookup, so swapping
+   the alist for a project-local file later touches one function.
+4. Ownership: policy in =e-harness=, resolution in =e-base-tools=, bridging in
+   =e-file-capabilities= - each with one reason to change.
+5. Coupling: file tools depend on the harness root accessor (stable policy), not
+   on config shape; bash is unchanged.
+6. Dependency direction: unchanged - capabilities still depend on the harness
+   accessor, not the other way around.
+7. Side effects: none added to core; resolution stays pure, I/O stays in tools.
+8. Substitutability: =--resolve-path= accepts a directory or a list; single-root
+   callers and tests keep working without narrowed behavior.
+9/10. Legacy: no compatibility shims; the single-root signature becomes the
+   one-element case of the multi-root signature.
+11. Errors: an out-of-roots path still signals =e-base-tools-path-outside-root=.
+12. Tests: root policy and path resolution are tested without the full harness.
