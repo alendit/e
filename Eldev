@@ -7,3 +7,4 @@
 (setf eldev-test-framework 'ert)
 
 (eldev-use-package-archive 'melpa)
+(eldev-add-extra-dependencies 'test '(simply-annotate (2 3 0)))

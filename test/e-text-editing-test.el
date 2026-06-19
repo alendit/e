@@ -11,6 +11,7 @@
 
 ;;; Code:
 
+(require 'cl-lib)
 (require 'ert)
 (require 'e)
 (require 'e-capabilities)
@@ -42,6 +43,26 @@
       (should (string-match-p "Working with Simply Annotate annotations" content))
       (should (string-match-p "Add replies as additional comment alists" content))
       (should (string-match-p "Do not evaluate annotation database content as code" content)))))
+
+(ert-deftest e-text-editing-test-layer-omits-annotation-tools-without-backend ()
+  "The text-editing layer still loads when Simply Annotate is absent."
+  (cl-letf (((symbol-function 'e-annotation-tools-available-p)
+             (lambda () nil)))
+    (let ((capability-ids
+           (mapcar #'e-capability-id
+                   (e-layer-capabilities (e-text-editing-layer-create)))))
+      (should (member 'annotations capability-ids))
+      (should-not (member 'annotation-tools capability-ids)))))
+
+(ert-deftest e-text-editing-test-layer-includes-annotation-tools-with-backend ()
+  "The text-editing layer uses annotation tools when Simply Annotate is present."
+  (cl-letf (((symbol-function 'e-annotation-tools-available-p)
+             (lambda () t)))
+    (let ((capability-ids
+           (mapcar #'e-capability-id
+                   (e-layer-capabilities (e-text-editing-layer-create)))))
+      (should (member 'annotations capability-ids))
+      (should (member 'annotation-tools capability-ids)))))
 
 (provide 'e-text-editing-test)
 

@@ -152,12 +152,12 @@
   (require 'e)
   (should (string= e-version "0.1.0")))
 
-(ert-deftest e-test-declares-simply-annotate-dependency ()
-  "The package declares the Simply Annotate version needed by annotation tools."
+(ert-deftest e-test-does-not-declare-simply-annotate-dependency ()
+  "Simply Annotate is optional, not a hard package dependency."
   (with-temp-buffer
     (insert-file-contents (expand-file-name "e.el" default-directory))
-    (should (member '(simply-annotate "2.3.0")
-                    (read (lm-header "Package-Requires"))))))
+    (should-not (assq 'simply-annotate
+                      (read (lm-header "Package-Requires"))))))
 
 (ert-deftest e-test-adds-source-subdirectories-to-load-path ()
   "The package makes nested source directories available for require/autoload."
