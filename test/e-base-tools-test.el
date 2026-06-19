@@ -163,6 +163,34 @@ When READ-ONLY is non-nil, file resources only support reads."
                          "replacement")))
       (delete-directory directory t))))
 
+(ert-deftest e-base-tools-test-resolves-paths-in-secondary-root ()
+  "File resources accept absolute paths into a configured secondary root."
+  (let* ((primary (make-temp-file "e-base-primary-" t))
+         (secondary (make-temp-file "e-base-secondary-" t))
+         (outside (make-temp-file "e-base-outside-" t))
+         (sec-file (expand-file-name "note.txt" secondary))
+         (out-file (expand-file-name "note.txt" outside))
+         (registry (e-base-tools-test--resource-tools
+                    (list primary secondary))))
+    (unwind-protect
+        (progn
+          (write-region "secondary" nil sec-file nil 'silent)
+          (write-region "outside" nil out-file nil 'silent)
+          (let ((ok (e-base-tools-test--execute
+                     registry "read"
+                     (list :uri (concat "file://" sec-file)))))
+            (should (equal (plist-get ok :status) 'ok))
+            (should (string-match-p "secondary" (plist-get ok :content))))
+          (let ((rejected (e-base-tools-test--execute
+                           registry "read"
+                           (list :uri (concat "file://" out-file)))))
+            (should (equal (plist-get rejected :status) 'error))
+            (should (string-match-p "escapes workspace root"
+                                    (plist-get rejected :content)))))
+      (delete-directory primary t)
+      (delete-directory secondary t)
+      (delete-directory outside t))))
+
 (ert-deftest e-base-tools-test-write-file-rejects-paths-outside-root ()
   "The write tool does not create files outside its configured root."
   (let* ((parent (make-temp-file "e-base-write-root-" t))

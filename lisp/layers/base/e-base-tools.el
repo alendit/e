@@ -68,11 +68,24 @@ When nil, `shell-command-switch' is used."
         (signal 'wrong-type-argument (list 'positive-number-p key)))
       value)))
 
+(defun e-base-tools--root-list (directory)
+  "Return DIRECTORY as a normalized list of root directories.
+DIRECTORY may be a single directory string or a list of them; the first is the
+primary root used to resolve relative paths."
+  (mapcar (lambda (root) (file-name-as-directory (expand-file-name root)))
+          (if (listp directory) directory (list directory))))
+
 (defun e-base-tools--resolve-path (path directory)
-  "Resolve PATH against DIRECTORY."
-  (let* ((root (file-name-as-directory (expand-file-name directory)))
-         (absolute-path (expand-file-name path root)))
-    (unless (file-in-directory-p absolute-path root)
+  "Resolve PATH against DIRECTORY.
+DIRECTORY is the primary root or a list of workspace roots whose first element
+is the primary root.  PATH resolves against the primary root, but is accepted
+when it falls within any of the roots, so absolute paths into a secondary
+workspace root are allowed."
+  (let* ((roots (e-base-tools--root-list directory))
+         (primary (car roots))
+         (absolute-path (expand-file-name path primary)))
+    (unless (cl-some (lambda (root) (file-in-directory-p absolute-path root))
+                     roots)
       (signal 'e-base-tools-path-outside-root
               (list (format "Path escapes workspace root: %s" path))))
     absolute-path))
