@@ -29,6 +29,9 @@
 (require 'seq)
 (require 'subr-x)
 
+(declare-function e-annotation-tools-available-p "e-annotation-tools")
+(declare-function e-annotation-tools-list "e-annotation-tools")
+
 (defgroup e-org-canvas nil
   "Org Canvas shell for e."
   :group 'e
@@ -52,6 +55,20 @@
 (defcustom e-org-canvas-input-auto-close-delay 1
   "Seconds to keep a successful Org Canvas prompt pane visible."
   :type 'number
+  :group 'e-org-canvas)
+
+(defcustom e-org-canvas-respond-to-threads-instructions
+  (string-join
+   '("Open annotation threads on this document are awaiting your response."
+     "Review each thread listed below, address what it asks, and update the"
+     "document where appropriate."
+     "Record your reply on the thread with the annotation tools:"
+     "`annotation_list` to re-read the current threads, and `annotation_resolve`"
+     "to append a reply and set a verdict once a proposal is genuinely settled."
+     "Do not resolve a thread whose request you have not actually handled.")
+   " ")
+  "Prompt preamble seeded by `e-org-canvas-respond-to-threads'."
+  :type 'string
   :group 'e-org-canvas)
 
 (defconst e-org-canvas--file-name-suggestion-instructions
@@ -1315,6 +1332,61 @@ progress redraws follow output instead of staying pinned at the top."
         (insert (or (plist-get message :content) "")))
       (e-org-canvas--display-input-buffer input))))
 
+(defun e-org-canvas--thread-open-p (thread)
+  "Return non-nil when THREAD summary is still awaiting a response.
+A thread is open while it carries no accepted/rejected verdict and its status
+is not one of Simply Annotate's terminal states."
+  (and (null (plist-get thread :verdict))
+       (not (member (plist-get thread :status) '("resolved" "closed")))))
+
+(defun e-org-canvas--open-threads (file)
+  "Return open annotation thread summaries on FILE."
+  (unless (e-annotation-tools-available-p)
+    (user-error "Annotation tools are not available; install simply-annotate"))
+  (let ((threads (plist-get (e-annotation-tools-list :file file) :threads)))
+    (seq-filter #'e-org-canvas--thread-open-p threads)))
+
+(defun e-org-canvas--threads-prompt (file threads)
+  "Return the prompt text asking the agent to respond to THREADS on FILE."
+  (with-temp-buffer
+    (insert e-org-canvas-respond-to-threads-instructions "\n\n")
+    (insert (format "File: %s\n\n" file))
+    (insert (format "Open threads (%d):\n" (length threads)))
+    (dolist (thread threads)
+      (insert (format "- thread %s [chars %s..%s]: %s\n"
+                      (plist-get thread :thread-id)
+                      (plist-get thread :start)
+                      (plist-get thread :end)
+                      (or (plist-get thread :proposal) "(no text)"))))
+    (buffer-string)))
+
+;;;###autoload
+(defun e-org-canvas-respond-to-threads ()
+  "Prompt the agent to respond to open annotation threads on the current canvas.
+The current buffer must be a file-backed Org Canvas: annotation threads are
+keyed to a file, so an unsaved buffer has none to answer.  Collect the threads
+that still lack a verdict, open a document-scoped input pane seeded with a
+prompt enumerating them, and leave the draft for review before submission."
+  (interactive)
+  (pcase-let ((`(,harness ,session-id ,target)
+               (e-org-canvas--ensure-current-session)))
+    (let ((file (buffer-file-name target)))
+      (unless file
+        (user-error "Save the canvas to a file before responding to threads"))
+      (let ((threads (e-org-canvas--open-threads file)))
+        (unless threads
+          (user-error "No open annotation threads on %s"
+                      (file-name-nondirectory file)))
+        (let ((input (e-org-canvas--input-buffer
+                      :harness harness
+                      :session-id session-id
+                      :scope 'document
+                      :target-buffer target)))
+          (with-current-buffer input
+            (goto-char (point-max))
+            (insert (e-org-canvas--threads-prompt file threads)))
+          (e-org-canvas--display-input-buffer input))))))
+
 (defun e-org-canvas--session-choice-label (session)
   "Return completion label for Org Canvas SESSION."
   (let ((canvas (e-org-canvas--session-canvas session)))
@@ -1443,6 +1515,12 @@ progress redraws follow output instead of staying pinned at the top."
      :summary "Reopen the previous Org Canvas prompt."
      :interactive 'e-org-canvas-reopen-last-prompt
      :function 'e-org-canvas-reopen-last-prompt
+     :scope 'session)
+    (e-shell-command-create
+     :id 'respond-to-threads
+     :summary "Prompt the agent to respond to open annotation threads."
+     :interactive 'e-org-canvas-respond-to-threads
+     :function 'e-org-canvas-respond-to-threads
      :scope 'session)
     (e-shell-command-create
      :id 'compact
