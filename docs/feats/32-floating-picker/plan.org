@@ -1,0 +1,292 @@
+#+title: Plan: Floating Picker and Active Sessions Popup
+#+author: e planning
+#+date: 2026-06-19
+#+startup: overview
+
+* Goal
+Add a centered floating popup picker built on the =posframe= package, and use it
+to ship an "active sessions" overview that the user can summon from anywhere.
+The popup is anchored to the center of the whole Emacs frame (across all
+windows/splits), not the current window.
+
+Deliver two things:
+
+1. A reusable, presentation-owned picker primitive (=e-picker=) that other
+   shells — including grimoire's project-local layers — can build custom
+   pickers on (e.g. an "active topics" picker) without re-implementing the
+   posframe lifecycle, candidate rendering, preview pane, keymap, or
+   selection plumbing.
+2. A concrete consumer: =e-chat-active-sessions=, a floating picker showing the
+   currently active/recent chat sessions with a live preview, opening the
+   selected session's composer.
+
+This complements — does not replace — the existing =e-chat-switch-session=
+(minibuffer/Consult resume) and =e-chat-overview= (persistent sidebar). The
+floating picker is a third surface optimized for a fast, glanceable, mouse-or-
+keyboard center-screen overlay in the spirit of a Telescope/fuzzy-finder popup.
+
+* Non-goals
+- Replace =e-chat-switch-session= or =e-chat-overview=. They keep working
+  unchanged; the picker is additive.
+- Replace Consult/Vertico for general minibuffer completion. =e-picker= is a
+  bespoke popup surface, not a =completing-read= backend.
+- Add fuzzy/substring scoring beyond a simple case-insensitive filter in the
+  first cut. (A pluggable filter function is provided; richer matching is a
+  later refinement.)
+- Support terminal Emacs (=emacs -nw=) with a true floating overlay. Child
+  frames require a window system; see "Terminal / non-GUI fallback".
+- Change backend/provider behavior, model-facing context, or session storage.
+- Add session deletion, archiving, pinning, tagging, or grouping.
+- Aggregate sessions across multiple harness instances beyond what
+  =e-chat--session-candidates= already returns.
+- Multi-column / tree grouping of candidates in the first cut (flat list with
+  optional group headers is enough for active sessions; grimoire can layer
+  grouping later via the rendering hook).
+- Bundle or auto-install =posframe=. It is an external dependency the user's
+  Emacs already provides; e degrades gracefully when it is absent.
+
+* Current behavior
+Session selection today has two surfaces, both in =lisp/shells/chat/e-chat.el=:
+
+- =e-chat-switch-session= / =e-chat-resume= read a session via
+  =e-chat--read-session-candidate= (Consult =consult--read= with a preview state
+  when available, else =completing-read=). Candidates come from
+  =e-chat--session-candidates=, sorted newest-first by
+  =e-chat--session-candidate-newer-p=. Preview reuses
+  =e-chat--render-resume-preview= via =e-chat--resume-preview-state=.
+- =e-chat-overview= renders a persistent left side window
+  (=display-buffer-in-side-window=) listing sessions with unread indicators and
+  fast keyboard navigation (=e-chat-overview--render=,
+  =e-chat-overview-open-session=).
+
+Neither is a centered floating overlay. There is no posframe usage anywhere in
+e, and no reusable picker primitive: each surface hand-rolls its candidate
+construction, rendering, keymap, and selection. =posframe= is available in the
+user's Emacs (=.local/straight/build-30.2/posframe=) but is an external package,
+not a hard dependency of e.
+
+Relevant reusable pieces that already exist and should be leveraged rather than
+duplicated:
+
+- =e-chat--session-candidates= → list of plists =(:instance :instance-id
+  :harness :session :session-id)=, deduped per owning instance, sorted
+  newest-first.
+- =e-chat--render-resume-preview= → renders a session into the reusable resume
+  preview buffer (title/summary/tail messages), already used by the Consult
+  preview.
+- =e-context-status-text= → compact per-session status string (model, effort,
+  token usage) now backed by the live gateway context window.
+
+* Design overview
+Two layers, cleanly separated so the dependency direction stays
+presentation → primitive and never the reverse:
+
+1. =e-picker= (new file =lisp/shells/e-picker.el=): a provider-neutral,
+   session-agnostic floating picker primitive. Knows nothing about chat
+   sessions, grimoire topics, or any domain. Owns the posframe lifecycle,
+   input/filter/results/preview layout, keymap, and the select/cancel
+   protocol. Callers describe *what* to pick; =e-picker= owns *how* it floats
+   and behaves.
+
+2. =e-chat= active-sessions consumer (extend =lisp/shells/chat/e-chat.el=):
+   builds an =e-picker= spec from =e-chat--session-candidates=, wires preview to
+   =e-chat--render-resume-preview=, and opens the chosen session.
+
+grimoire (and any project-local layer) reuses =e-picker= directly — it is part
+of e's public shell surface — to build its own "active topics" picker with its
+own candidate source, rendering, and action.
+
+** Why posframe
+The popup must center over the entire frame regardless of which split is
+selected. =posframe= provides exactly this via
+=posframe-poshandler-frame-center=, manages a cached child frame per buffer, and
+handles borders, sizing, focus, and teardown. e uses =posframe= directly (no
+=vertico-posframe=) so the picker's interaction model is e's own and does not
+depend on Vertico/Consult being present.
+
+** e-picker primitive: shape
+A picker is described by a spec (a plist / cl-struct =e-picker-spec=) passed to a
+single entry point:
+
+#+begin_src elisp
+(e-picker-open
+ :name 'active-sessions                ; symbol; identifies the picker + its buffers
+ :title "Active sessions"              ; header line text
+ :candidates #'fn-or-list              ; () -> list of opaque candidate objects,
+                                       ;   or a literal list; called on (re)open
+ :candidate-line #'fn                  ; (candidate) -> propertized one-line string
+ :candidate-key #'fn                   ; (candidate) -> stable string for filter + dedup
+ :filter #'fn                          ; (input candidates) -> filtered list;
+                                       ;   default: case-insensitive substring on key
+ :preview #'fn                         ; (candidate buffer) -> void; render into preview
+                                       ;   buffer; nil disables the preview pane
+ :on-select #'fn                       ; (candidate) -> void; invoked after the popup
+                                       ;   closes (window state restored first)
+ :actions '((?d . fn) ...)             ; optional extra key -> (candidate) actions
+ :footer "RET open  C-g cancel"        ; optional hint line; default derived from keymap
+ :width 0.6 :height 0.5                ; fraction of frame, or integer cols/lines
+ :preview-ratio 0.5)                   ; preview pane share when preview is enabled
+#+end_src
+
+Candidates are *opaque* to =e-picker= — it never inspects their contents, only
+calls =candidate-line= / =candidate-key= / =preview= / =on-select= on them. This is
+what makes it reusable: chat passes session plists, grimoire passes topic
+plists, and =e-picker= treats both identically.
+
+** e-picker primitive: behavior
+- One posframe child frame (=:accept-focus t=) centered via
+  =posframe-poshandler-frame-center=, sized from =:width=/=:height=.
+- The popup buffer is a dedicated major mode (=e-picker-mode=, derived from
+  =special-mode= but with editable input) laid out as: header (title), an input
+  line, a results region, and — when =:preview= is set — a preview region.
+  First cut: input + results in the child frame; preview rendered into the same
+  frame below/right of results (single child frame, internal regions), so the
+  whole picker is one centered overlay matching the screenshot's single bordered
+  box. (A two-frame split preview is a later refinement, explicitly out of scope
+  here.)
+- Typing edits the input line; after each change the candidate list is
+  re-filtered (=:filter=) and the results region redrawn. A selection marker
+  tracks the current candidate.
+- Navigation keys move the selection; the preview re-renders for the selected
+  candidate (debounced, reusing the =e-context-status= estimate-cache pattern so
+  fast cursor movement does not thrash).
+- =RET= selects: the popup is hidden/closed, prior window configuration is
+  restored, then =:on-select= runs with the chosen candidate. Closing before
+  running the action avoids the side-window/popup display races already fixed
+  for the chat shells.
+- =C-g= / =escape= cancels: close, restore, no action.
+- Extra =:actions= keys run their fn on the current candidate; an action returns
+  non-nil to keep the picker open or nil to close (documented per action).
+- Lifecycle: reuse one cached child frame per picker =:name=; =posframe-hide= on
+  close, =posframe-delete= on a teardown command and on Emacs/theme reload.
+  =kill-buffer-hook= on the popup buffer deletes the frame.
+
+** Reusable sub-primitives (so consumers share more than the frame)
+- =e-picker-filter-substring= :: default case-insensitive substring filter over
+  =candidate-key=.
+- =e-picker-make-line= :: helper to build an aligned, faced candidate line from
+  columns (left label + right-aligned meta), so chat and grimoire get the same
+  visual rhythm without re-implementing column math. (Mirror
+  =e-chat-overview--insert-session-row= / =e-chat-overview--compact-row-text=
+  alignment so the popup and sidebar look consistent.)
+- Faces: =e-picker-title-face=, =e-picker-input-face=, =e-picker-selection-face=,
+  =e-picker-meta-face=, =e-picker-footer-face= — all inherit neutral theme faces
+  (no hardcoded palette), consistent with the chat-faces-follow-theme work.
+
+** Active sessions consumer
+=e-chat-active-sessions= (interactive, global scope):
+- =:candidates= → =e-chat--session-candidates= (reuse as-is).
+- =:candidate-key= → session title + short id (so the filter matches both).
+- =:candidate-line= → title (primary) + right-aligned compact meta: unread
+  indicator (reuse =e-chat-overview--session-unread-p=), last-message age
+  (=e-chat-overview--compact-timestamp=), and the =e-context-status= one-liner
+  (model/effort/usage). Reuse the overview's row helpers via the new
+  =e-picker-make-line= so the popup and sidebar render alike.
+- =:preview= → =e-chat--render-resume-preview= into the preview buffer (the exact
+  renderer the Consult preview already uses).
+- =:on-select= → =e-chat-open-session= on =(:harness :session-id :instance-id)=,
+  routed through the side-window-safe display helpers
+  (=e-chat--pop-to-buffer=) so it works from any layout.
+- =:actions= → optional =o= open-in-other-window; future: =k= would map to
+  abort/cleanup but session deletion is a non-goal here.
+
+Registered as an =e-shell-command= (=:id 'active-sessions=, =:scope 'global=) in
+the chat shell manifest alongside =new=/=resume=/=switch-session=, and bound by
+the user as they prefer.
+
+** grimoire "active topics" (illustrative; not built here)
+grimoire's topic shell builds its own picker by calling =e-picker-open= with:
+=:candidates= = its topic scan, =:candidate-line= = TODO state + heading + age,
+=:preview= = render the topic's Org subtree, =:on-select= = open the topic doc/
+canvas. It depends only on =e-picker= (e's public shell API), needs no posframe
+code of its own, and inherits the centered-over-frame behavior, faces, and
+keymap. This plan only ensures =e-picker= is shaped to make that trivial; the
+grimoire picker ships in grimoire.
+
+* Terminal / non-GUI fallback
+=posframe= cannot float in =emacs -nw= or before a window system exists
+(=(posframe-workable-p)= is nil). =e-picker-open= must:
+- Check =(featurep 'posframe)= and =(posframe-workable-p)= up front.
+- When unavailable, fall back to =e-chat--read-session-candidate=-style selection
+  (=completing-read=, or Consult when present) using =candidate-key= for the
+  completion table and =candidate-line= for annotation, then run =:on-select=.
+  This keeps every picker usable in the terminal, just without the overlay.
+- The fallback path is provided by =e-picker= itself so consumers get it for
+  free; they never branch on GUI vs terminal.
+
+posframe is loaded lazily (=require 'posframe nil t=) so e has no hard dependency
+and loads cleanly when posframe is absent (terminal/CI), exactly the
+=fboundp=-guard pattern used for the anthropic context-window lookup.
+
+* Files
+- New: =lisp/shells/e-picker.el= — the primitive (=e-picker-spec=,
+  =e-picker-open=, =e-picker-mode=, filter/line/face helpers, posframe lifecycle,
+  terminal fallback). Provides =e-picker=.
+- Edit: =lisp/shells/chat/e-chat.el= — add =e-chat-active-sessions= and its
+  =e-shell-command= registration; reuse existing candidate/preview/overview
+  helpers.
+- Edit: =lisp/defaults/e-default-layers.el= / shell registration as needed so
+  the new command is discoverable (only if the chat shell manifest is the
+  registration point; otherwise no change).
+- New tests: =test/e-picker-test.el= — primitive behavior (filter, candidate
+  line, select/cancel protocol, action dispatch, terminal fallback) driven
+  headlessly by stubbing posframe.
+- Edit: =test/e-chat-test.el= — =e-chat-active-sessions= builds the expected spec
+  from session candidates and selects/open the right session (posframe stubbed).
+- Docs: this plan; =docs/feats/index.org= row 32 as Planned.
+
+* Testing strategy
+Headless ERT, no real child frame (posframe needs a GUI). The primitive is
+designed so the *logic* is testable without a frame:
+
+- =e-picker= splits into pure functions (filter, candidate-line assembly,
+  selection-index math, action dispatch, spec validation) and a thin posframe
+  shell. Tests cover the pure functions directly.
+- =e-picker-open= takes the posframe entry points through indirection
+  (=funcall=/=symbol-function=) so tests stub =posframe-show=/=posframe-hide= and
+  assert: spec validated, candidates fetched, initial render produced expected
+  lines, =RET= path closes then calls =:on-select= with the highlighted
+  candidate, =C-g= path closes without calling =:on-select=, an action key
+  dispatches to its fn.
+- Terminal fallback: with =(posframe-workable-p)= stubbed to nil, =e-picker-open=
+  routes through =completing-read= (stubbed) and still calls =:on-select= with
+  the chosen candidate.
+- Active sessions: stub =e-chat--session-candidates= and the picker, assert the
+  spec wires =candidate-key=/=preview=/=on-select= to the right session helpers
+  and that selecting opens via =e-chat-open-session=.
+- Verify =require 'posframe nil t= keeps e loadable when posframe is absent (CI):
+  =e-picker= must byte-compile and load with no posframe present; only
+  =e-picker-open= needs it at call time.
+
+* Self-check for design-sensitive changes
+1. If this stopped here, better off? Yes — a reusable centered picker primitive
+   plus one real consumer (active sessions), with terminal fallback and no new
+   hard dependency.
+2. Final direction it moves toward? A shared presentation primitive layer so
+   chat, org-canvas, and project-local layers (grimoire) build consistent
+   pickers instead of hand-rolling each surface.
+3. Likely-to-change vs stable? Likely to change: candidate filtering/scoring,
+   preview layout, multi-frame preview — kept behind spec keys and helper
+   functions, local and replaceable. Stable: the opaque-candidate contract and
+   the open/select/cancel protocol — named directly.
+4. Owning component / one reason to change? =e-picker= owns floating-picker
+   presentation; chat owns session candidate/preview/open wiring. Each changes
+   for one reason.
+5. Coupling? Dependency flows presentation (e-chat, grimoire) → primitive
+   (e-picker) → posframe (soft, lazy). e-picker has no chat/session/grimoire
+   knowledge. Net coupling reduced versus per-surface re-implementation.
+6. Dependencies pointing the wrong way? No. e-picker must not require e-chat or
+   any domain shell.
+7. Side effects outward? The posframe lifecycle and window-config restore are
+   isolated in e-picker; consumers' =on-select= runs after restore.
+8. Substitutable abstractions? Any candidate type satisfies the picker via the
+   four candidate functions; no narrowed preconditions. The terminal fallback
+   honors the same =on-select= contract.
+9. Compatibility expectations? Additive. Existing switch-session/overview
+   untouched. No persisted state shape changes.
+10. Legacy to remove now? None. (Possible future: migrate the Consult resume
+    preview wiring to share more with e-picker, but not in this feature.)
+11. Errors? posframe-absent and =-nw= surface as the documented fallback, not
+    errors. A malformed spec signals a =user-error= at =e-picker-open=.
+12. Tests prove core independently? Yes — pure picker logic and the
+    open/select/cancel protocol are tested with posframe stubbed; no GUI needed.
