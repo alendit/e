@@ -83,11 +83,20 @@
   "Return tmp URI for RELATIVE-NAME."
   (format "tmp://%s" (e-session-tmp--safe-relative-name relative-name)))
 
+(defun e-session-tmp--write-file (path content)
+  "Write CONTENT to PATH as UTF-8 without a coding-system prompt.
+Content may contain eight-bit bytes that the buffer's detected coding cannot
+encode; without these bindings `write-region' would invoke
+`select-safe-coding-system' and block on the interactive coding-system picker."
+  (let ((coding-system-for-write 'utf-8-unix)
+        (select-safe-coding-system-function nil))
+    (write-region content nil path nil 'silent)))
+
 (defun e-session-tmp-write (harness session-id relative-name content)
   "Write CONTENT to RELATIVE-NAME in HARNESS SESSION-ID and return tmp URI."
   (let ((path (e-session-tmp--path harness session-id relative-name)))
     (make-directory (file-name-directory path) t)
-    (write-region (format "%s" content) nil path nil 'silent)
+    (e-session-tmp--write-file path (format "%s" content))
     (e-session-tmp--uri relative-name)))
 
 (defun e-session-tmp-file-path (harness session-id relative-name)
@@ -209,7 +218,7 @@ root and is suitable for streaming writes."
                         content
                         edits
                         (plist-get uri :uri))))
-                 (write-region new-content nil path nil 'silent)
+                 (e-session-tmp--write-file path new-content)
                  (e-session-tmp--uri relative-name)))))
   nil)
 
