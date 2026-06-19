@@ -1,0 +1,13 @@
+#+title: OpenAI Codex Prompt Cache Retention
+#+startup: overview
+
+* Report
+
+The user reported that =e-chat= prompts on the OpenAI backend fail with:
+
+#+begin_example
+Turn failed: Provider returned non-stream text instead of a Responses stream: {"detail":"Unsupported parameter: prompt_cache_retention"}
+#+end_example
+
+The failure appears when the ChatGPT-backed Codex/OpenAI backend receives a
+request containing =prompt_cache_retention=.

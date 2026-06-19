@@ -11,6 +11,7 @@ State values for coding agents:
 | Closed | abort-url-network-process/ | Abort Url Network Process |
 | Closed | compaction-empty-summary/ | Compaction Empty Summary |
 | Closed | backend-empty-output-masks-provider-html-error/ | Backend Empty Output Masks Provider HTML Error |
+| Closed | openai-codex-prompt-cache-retention/ | OpenAI Codex Prompt Cache Retention |
 | Closed | org-canvas-input-progress-bottom/ | Org Canvas Input Progress Bottom |
 | Closed | org-canvas-new-file-directory/ | Org Canvas New File Directory Selection Broke Folder Workflow |
 | Closed | empty-skill-description-crashes-context/ | Empty Skill Description Crashes Context |

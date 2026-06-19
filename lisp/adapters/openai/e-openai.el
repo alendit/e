@@ -76,7 +76,9 @@ Set this to nil to deliberately disable provider HTTP request timeouts."
 Each profile is plist data.  `:wire-api' supports `responses' and
 `chat-completion' (`chat-completions' is accepted as a compatibility alias).
 Profiles with `:requires-openai-auth' non-nil use Codex-managed ChatGPT auth.
-Profiles with `:requires-openai-auth' nil read a bearer token from `:env-key'."
+Profiles with `:requires-openai-auth' nil read a bearer token from `:env-key'.
+Profiles can set `:prompt-cache-retention' to nil to suppress that request
+field, or non-nil to force it on."
   :type '(alist :key-type symbol :value-type sexp)
   :group 'e-openai)
 
@@ -136,6 +138,12 @@ When PROVIDER is nil, use `e-openai-default-provider'."
     (if (eq wire-api 'chat-completions)
         'chat-completion
       wire-api)))
+
+(defun e-openai--profile-prompt-cache-retention-supported-p (profile)
+  "Return non-nil when PROFILE accepts `prompt_cache_retention'."
+  (if (plist-member profile :prompt-cache-retention)
+      (plist-get profile :prompt-cache-retention)
+    (not (plist-get profile :requires-openai-auth))))
 
 (defun e-openai--env-token (env-key)
   "Return bearer token from ENV-KEY or signal an auth error."
@@ -1013,6 +1021,11 @@ OpenAI request and backend-neutral context."
                     (plist-put effective-options
                                :model
                                (e-openai--provider-model profile model)))))
+         (_ (when (and (eq wire-api 'responses)
+                       (plist-member effective-options :prompt-cache-retention)
+                       (not (e-openai--profile-prompt-cache-retention-supported-p
+                             profile)))
+              (cl-remf effective-options :prompt-cache-retention)))
          (body (json-encode
                 (pcase wire-api
                   ('responses

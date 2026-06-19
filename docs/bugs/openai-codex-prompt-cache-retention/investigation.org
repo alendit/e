@@ -1,0 +1,78 @@
+#+title: Investigation: OpenAI Codex Prompt Cache Retention
+#+startup: overview
+
+* Investigation
+
+** Source inspection
+
+- =lisp/adapters/openai/e-openai.el= serialized backend-neutral
+  =:prompt-cache-retention= as the Responses request field
+  =prompt_cache_retention= whenever the option was present.
+- The built-in OpenAI provider profile is =codex=, which targets
+  =https://chatgpt.com/backend-api/codex/responses= with ChatGPT-managed auth.
+- The previous prompt-cache work intentionally added the request mapping, and
+  its review recorded a live probe where retention was present.
+- Current OpenAI public Responses API documentation and schema still list
+  =prompt_cache_retention= as a supported public API field, so the failure is
+  specific to the ChatGPT-backed Codex endpoint rather than the generic public
+  Responses API shape.
+
+** Root cause
+
+The adapter treated every Responses-profile backend as accepting
+=prompt_cache_retention=. The ChatGPT-backed Codex endpoint rejects that field
+even though public/token-auth OpenAI Responses profiles may support it.
+
+** Fix
+
+- Added provider-profile gating for =prompt_cache_retention=.
+- Profiles using Codex-managed ChatGPT auth now suppress
+  =:prompt-cache-retention= unless a profile explicitly forces support with
+  =:prompt-cache-retention= non-nil.
+- Token-auth Responses providers keep explicit retention by default, and can set
+  =:prompt-cache-retention= nil if a compatible gateway rejects the field.
+- =prompt_cache_key= is still sent to the Codex endpoint.
+
+** Verification
+
+- Added =e-openai-test-codex-provider-omits-prompt-cache-retention=.
+  - The test first failed because Codex request JSON still contained
+    =prompt_cache_retention=.
+  - It now passes and confirms =prompt_cache_key= remains while retention is
+    omitted.
+- Added =e-openai-test-token-provider-keeps-prompt-cache-retention= to prove the
+  public/token-auth profile path still forwards explicit retention.
+- Ran:
+
+  #+begin_src sh
+  rtk eldev test -f test/e-openai-test.el e-openai-test-codex-provider-omits-prompt-cache-retention e-openai-test-token-provider-keeps-prompt-cache-retention
+  #+end_src
+
+  Result: 2 tests, 2 expected, 0 unexpected.
+
+- Ran:
+
+  #+begin_src sh
+  rtk eldev test -f test/e-openai-test.el
+  #+end_src
+
+  Result: 45 tests, 45 expected, 0 unexpected.
+
+** Live Emacs inspection
+
+- Reloaded the running Emacs:
+
+  #+begin_src sh
+  emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+  #+end_src
+
+  Result: reloaded from the project root.
+
+- Ran a bounded live probe through the loaded Codex adapter with an injected
+  requester and no provider network call.
+
+  Result:
+
+  #+begin_src emacs-lisp
+  (:prompt-cache-key "cache-key" :retention-present nil)
+  #+end_src
