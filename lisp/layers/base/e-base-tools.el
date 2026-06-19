@@ -286,8 +286,20 @@ buffer's detected coding cannot encode CONTENT."
           (mode-require-final-newline nil)
           (coding-system-for-write 'utf-8-unix)
           (select-safe-coding-system-function nil))
-      (erase-buffer)
-      (insert content)
+      (let ((source (generate-new-buffer " *e-base-tools-content*" t)))
+        (unwind-protect
+            (progn
+              (with-current-buffer source (insert content))
+              ;; Diff-based replacement preserves overlays/markers anchored to
+              ;; surviving text; a plain erase+insert slides every overlay to
+              ;; position 1.  Minor modes that persist overlay regions on
+              ;; `before-save-hook' (e.g. Simply Annotate serializes annotation
+              ;; threads from their overlays) would otherwise write collapsed
+              ;; (1 . 1) regions to disk.  `replace-buffer-contents' only falls
+              ;; back to delete+insert past its time budget, never worse than
+              ;; the prior behavior.
+              (replace-buffer-contents source))
+          (kill-buffer source)))
       (save-buffer)
       (e-base-tools--buffer-link-state buffer))))
 
