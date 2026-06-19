@@ -254,6 +254,23 @@ SOURCE overrides the default layer source."
                              :key #'e-shell-id))))
       (delete-directory project t))))
 
+(ert-deftest e-project-local-test-project-layer-requires-are-aggregated ()
+  "A project layer's `requires' surface on the aggregate project-local layer."
+  (let* ((project (make-temp-file "e-project-local-layer-requires-" t))
+         (e-project-local-allowed-roots (list project)))
+    (unwind-protect
+        (progn
+          (e-project-local-test--make-layer
+           project 'topic
+           "(e-project-layer-register
+             :id 'topic
+             :factory (lambda (_dir)
+                        (e-layer-create :id 'topic :name \"Topic\"
+                                        :requires '(org-canvas))))")
+          (let ((layer (e-project-local-layer-create project)))
+            (should (memq 'org-canvas (e-layer-requires layer)))))
+      (delete-directory project t))))
+
 (ert-deftest e-project-local-test-project-layer-loading-is-allowlisted ()
   "Untrusted project layer roots are skipped before loading layer.el."
   (let ((project (make-temp-file "e-project-local-layer-gate-" t)))

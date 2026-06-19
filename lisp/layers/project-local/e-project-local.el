@@ -426,6 +426,20 @@ duplicate ids (nearer directory wins)."
    (apply #'append (mapcar #'e-layer-capabilities layers))
    legacy-capabilities))
 
+(defun e-project-local--aggregate-requires (layers)
+  "Return de-duplicated layer ids required by discovered project LAYERS.
+A project layer declares dependencies via its `requires' slot; the aggregate
+`project-local' layer carries their union so the harness activates each
+required built-in layer (loading its feature) before project capabilities and
+shells are used."
+  (let (requires seen)
+    (dolist (layer layers)
+      (dolist (id (e-layer-requires layer))
+        (unless (memq id seen)
+          (push id seen)
+          (push id requires))))
+    (nreverse requires)))
+
 (defun e-project-local--aggregate-shells (layers)
   "Return aggregate project-local shell manifests from LAYERS."
   (let (shells seen)
@@ -469,7 +483,8 @@ with only the guidance capability when no project extensions are discovered."
      :name "Project Local"
      :capabilities (e-project-local--aggregate-capabilities
                     layers capabilities)
-     :shells (e-project-local--aggregate-shells layers))))
+     :shells (e-project-local--aggregate-shells layers)
+     :requires (e-project-local--aggregate-requires layers))))
 
 (provide 'e-project-local)
 

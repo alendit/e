@@ -175,6 +175,73 @@
       (should (eq (e-harness-deactivate-layer harness 'topic-layer) layer))
       (should-not (e-shell-get-active 'topic harness)))))
 
+(ert-deftest e-layers-test-activate-pulls-in-required-layers ()
+  "Activating a layer activates declared `requires' first, from the registry."
+  (e-layers-test--with-empty-layer-registry
+    (let ((harness (e-harness-create
+                    :backend (e-backend-fake-create :items nil)))
+          (dep-created nil))
+      (e-layer-register
+       (e-layer-spec-create
+        :id 'dep :name "Dep"
+        :factory (lambda ()
+                   (setq dep-created t)
+                   (e-layer-create :id 'dep :name "Dep"))))
+      (e-layer-register
+       (e-layer-spec-create
+        :id 'consumer :name "Consumer"
+        :factory (lambda ()
+                   (e-layer-create :id 'consumer :name "Consumer"
+                                   :requires '(dep)))))
+      (e-harness-activate-layer harness (e-layer-create-registered 'consumer))
+      (should dep-created)
+      ;; Dependency precedes its consumer in activation order.
+      (should (equal (mapcar #'e-layer-id (e-harness-active-layers harness))
+                     '(dep consumer))))))
+
+(ert-deftest e-layers-test-activate-skips-already-active-requires ()
+  "A required layer already active is not re-created or duplicated."
+  (e-layers-test--with-empty-layer-registry
+    (let ((harness (e-harness-create
+                    :backend (e-backend-fake-create :items nil)))
+          (dep-calls 0))
+      (e-layer-register
+       (e-layer-spec-create
+        :id 'dep :name "Dep"
+        :factory (lambda ()
+                   (setq dep-calls (1+ dep-calls))
+                   (e-layer-create :id 'dep :name "Dep"))))
+      (e-layer-register
+       (e-layer-spec-create
+        :id 'consumer :name "Consumer"
+        :factory (lambda ()
+                   (e-layer-create :id 'consumer :name "Consumer"
+                                   :requires '(dep)))))
+      (e-harness-activate-layer harness (e-layer-create-registered 'dep))
+      (e-harness-activate-layer harness (e-layer-create-registered 'consumer))
+      (should (= dep-calls 1))
+      (should (equal (mapcar #'e-layer-id (e-harness-active-layers harness))
+                     '(dep consumer))))))
+
+(ert-deftest e-layers-test-activate-tolerates-requires-cycle ()
+  "Mutually dependent layers activate without infinite recursion."
+  (e-layers-test--with-empty-layer-registry
+    (let ((harness (e-harness-create
+                    :backend (e-backend-fake-create :items nil))))
+      (e-layer-register
+       (e-layer-spec-create
+        :id 'a :name "A"
+        :factory (lambda () (e-layer-create :id 'a :name "A" :requires '(b)))))
+      (e-layer-register
+       (e-layer-spec-create
+        :id 'b :name "B"
+        :factory (lambda () (e-layer-create :id 'b :name "B" :requires '(a)))))
+      (e-harness-activate-layer harness (e-layer-create-registered 'a))
+      (let ((ids (mapcar #'e-layer-id (e-harness-active-layers harness))))
+        (should (memq 'a ids))
+        (should (memq 'b ids))
+        (should (= (length ids) 2))))))
+
 (provide 'e-layers-test)
 
 ;;; e-layers-test.el ends here

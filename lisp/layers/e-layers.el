@@ -23,7 +23,12 @@
   name
   capabilities
   shells
-  defaults)
+  defaults
+  ;; Layer ids this layer depends on.  Activating this layer first ensures
+  ;; each required layer is active (created from the known layer registry,
+  ;; which loads its feature), so a layer can rely on another layer's code
+  ;; and runtime contributions without an explicit `require'.
+  requires)
 
 (cl-defstruct (e-layer-spec (:constructor e-layer-spec-create))
   id
