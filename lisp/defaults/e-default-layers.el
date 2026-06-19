@@ -59,7 +59,11 @@
     (:id org-canvas
      :name "Org Canvas"
      :summary "Org document canvas context and visibility tools."
-     :feature e-org-canvas-capabilities
+     ;; Load the shell feature, not just `e-org-canvas-capabilities': the shell
+     ;; requires capabilities transitively and additionally defines session
+     ;; marking (`e-org-canvas--mark-session') that layers depending on
+     ;; org-canvas rely on.
+     :feature e-org-canvas
      :factory e-org-canvas-layer-create)
     (:id project-local
      :name "Project Local"
