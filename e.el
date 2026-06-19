@@ -126,6 +126,11 @@
 ;;;###autoload
 (autoload 'e-dev-reload "e-dev" "Reload e package files during development." t)
 ;;;###autoload
+(autoload 'e-project-local-byte-compile-project
+  "e-project-local"
+  "Byte-compile allowlisted project-local Elisp under DIRECTORY."
+  t)
+;;;###autoload
 (autoload 'e-dev-profile-start "e-dev-profile" "Start an e developer profiling trace." t)
 ;;;###autoload
 (autoload 'e-dev-profile-stop "e-dev-profile" "Stop an e developer profiling trace." t)

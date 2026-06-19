@@ -23,6 +23,10 @@
 (require 'e-store)
 (require 'e-tools)
 
+(defvar projectile-after-switch-project-hook)
+(defvar projectile-find-dir-hook)
+(defvar projectile-find-file-hook)
+
 (defun e-project-local-test--write-file (path content)
   "Write CONTENT to PATH, creating parent directories."
   (make-directory (file-name-directory path) t)
@@ -289,6 +293,112 @@ SOURCE overrides the default layer source."
                                :key #'e-shell-id)))))
       (delete-directory project t))))
 
+(ert-deftest e-project-local-test-project-loaders-use-extensionless-loads ()
+  "Project-local loaders let Emacs choose `.elc' or `.el'."
+  (let* ((project (make-temp-file "e-project-local-load-base-" t))
+         (e-project-local-allowed-roots (list project))
+         loaded-files)
+    (unwind-protect
+        (progn
+          (e-project-local-test--make-capability project 'topic)
+          (e-project-local-test--make-layer project 'topic)
+          (cl-letf (((symbol-function 'load)
+                     (lambda (file &rest _args)
+                       (push file loaded-files)
+                       t)))
+            (e-project-local--load-capability-file
+             (expand-file-name ".e/capabilities/topic" project))
+            (e-project-local--load-layer-file
+             (expand-file-name ".e/layers/topic" project)))
+          (should loaded-files)
+          (dolist (file loaded-files)
+            (should-not (string-suffix-p ".el" file))))
+      (delete-directory project t))))
+
+(ert-deftest e-project-local-test-project-factories-use-extensionless-loads ()
+  "Project-local factory loads of sibling `.el' files can use fresh `.elc'."
+  (let* ((project (make-temp-file "e-project-local-factory-load-base-" t))
+         (layer-dir (expand-file-name ".e/layers/topic" project))
+         (helper-file (expand-file-name "helper.el" layer-dir))
+         (e-project-local-allowed-roots (list project))
+         (byte-compile-warnings nil))
+    (unwind-protect
+        (progn
+          (when (boundp 'e-project-local-test--factory-helper-loaded)
+            (makunbound 'e-project-local-test--factory-helper-loaded))
+          (e-project-local-test--write-file
+           helper-file
+           "(setq e-project-local-test--factory-helper-loaded 'compiled)")
+          (should (byte-compile-file helper-file))
+          (delete-file helper-file)
+          (e-project-local-test--make-layer
+           project 'topic
+           "(e-project-layer-register
+             :id 'topic
+             :factory (lambda (directory)
+                        (load (expand-file-name \"helper.el\" directory)
+                              nil 'nomessage)
+                        (e-layer-create :id 'topic :name \"Topic\")))")
+          (let ((layer (e-project-local-layer-create project)))
+            (should (eq (e-layer-id layer) 'project-local))
+            (should (eq (symbol-value
+                         'e-project-local-test--factory-helper-loaded)
+                        'compiled))))
+      (when (boundp 'e-project-local-test--factory-helper-loaded)
+        (makunbound 'e-project-local-test--factory-helper-loaded))
+      (delete-directory project t))))
+
+(ert-deftest e-project-local-test-extensionless-loads-use-elc-without-source ()
+  "Trusted project-local `.el' loads can resolve to `.elc' when source is gone."
+  (let* ((project (make-temp-file "e-project-local-elc-only-" t))
+         (layer-dir (expand-file-name ".e/layers/topic" project))
+         (helper-file (expand-file-name "helper.el" layer-dir))
+         (byte-compile-warnings nil))
+    (unwind-protect
+        (progn
+          (when (boundp 'e-project-local-test--elc-only-helper-loaded)
+            (makunbound 'e-project-local-test--elc-only-helper-loaded))
+          (e-project-local-test--write-file
+           helper-file
+           "(setq e-project-local-test--elc-only-helper-loaded 'compiled)")
+          (should (byte-compile-file helper-file))
+          (delete-file helper-file)
+          (e-project-local--with-extensionless-loads (list layer-dir)
+            (load helper-file nil 'nomessage))
+          (should (eq (symbol-value
+                       'e-project-local-test--elc-only-helper-loaded)
+                      'compiled)))
+      (when (boundp 'e-project-local-test--elc-only-helper-loaded)
+        (makunbound 'e-project-local-test--elc-only-helper-loaded))
+      (delete-directory project t))))
+
+(ert-deftest e-project-local-test-extensionless-loads-prefer-newer-source ()
+  "Trusted project-local loads prefer newer `.el' source over stale `.elc'."
+  (let* ((project (make-temp-file "e-project-local-prefer-newer-" t))
+         (layer-dir (expand-file-name ".e/layers/topic" project))
+         (helper-file (expand-file-name "helper.el" layer-dir))
+         (byte-compile-warnings nil))
+    (unwind-protect
+        (progn
+          (when (boundp 'e-project-local-test--prefer-newer-loaded)
+            (makunbound 'e-project-local-test--prefer-newer-loaded))
+          (e-project-local-test--write-file
+           helper-file
+           "(setq e-project-local-test--prefer-newer-loaded 'compiled)")
+          (should (byte-compile-file helper-file))
+          (e-project-local-test--write-file
+           helper-file
+           "(setq e-project-local-test--prefer-newer-loaded 'source)")
+          (set-file-times helper-file (time-add (current-time) 1))
+          (e-project-local--with-extensionless-loads (list layer-dir)
+            (load helper-file nil 'nomessage))
+          (should (eq (symbol-value
+                       'e-project-local-test--prefer-newer-loaded)
+                      'source)))
+      (when (boundp 'e-project-local-test--prefer-newer-loaded)
+        (makunbound 'e-project-local-test--prefer-newer-loaded))
+      (delete-directory project t))))
+
 (ert-deftest e-project-local-test-project-layer-bad-factory-result-signals ()
   "A project layer factory returning a mismatched id signals an error."
   (let* ((project (make-temp-file "e-project-local-layer-bad-" t))
@@ -338,6 +448,39 @@ SOURCE overrides the default layer source."
             (should (cl-find 'topic
                              (e-layer-shells layer)
                              :key #'e-shell-id))))
+      (delete-directory project t))))
+
+(ert-deftest e-project-local-test-byte-compile-project-local-files ()
+  "The byte-compile command compiles allowlisted project-local Elisp."
+  (let* ((project (make-temp-file "e-project-local-byte-compile-" t))
+         (layer-file (expand-file-name ".e/layers/topic/layer.el" project))
+         (e-project-local-allowed-roots (list project))
+         (byte-compile-warnings nil))
+    (unwind-protect
+        (progn
+          (e-project-local-test--make-layer project 'topic)
+          (should-not (file-exists-p (byte-compile-dest-file layer-file)))
+          (should (member (byte-compile-dest-file layer-file)
+                          (e-project-local-byte-compile-project project)))
+          (should (file-exists-p (byte-compile-dest-file layer-file))))
+      (delete-directory project t))))
+
+(ert-deftest e-project-local-test-prime-project-auto-recompile-is-opt-in ()
+  "Project priming byte-recompiles stale local files only when enabled."
+  (let* ((project (make-temp-file "e-project-local-auto-byte-" t))
+         (layer-file (expand-file-name ".e/layers/topic/layer.el" project))
+         (elc-file (byte-compile-dest-file layer-file))
+         (e-project-local-allowed-roots (list project))
+         (byte-compile-warnings nil))
+    (unwind-protect
+        (progn
+          (e-project-local-test--make-layer project 'topic)
+          (let ((e-project-local-auto-byte-recompile nil))
+            (should (e-project-local-prime-project project))
+            (should-not (file-exists-p elc-file)))
+          (let ((e-project-local-auto-byte-recompile t))
+            (should (e-project-local-prime-project project))
+            (should (file-exists-p elc-file))))
       (delete-directory project t))))
 
 (ert-deftest e-project-local-test-prime-project-skips-untrusted-roots ()
