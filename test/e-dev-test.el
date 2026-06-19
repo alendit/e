@@ -13,8 +13,10 @@
 
 (require 'ert)
 (require 'e)
+(require 'e-backend)
 (require 'e-default-harnesses)
 (require 'e-dev)
+(require 'e-harness)
 (require 'e-openai)
 
 (ert-deftest e-dev-test-reload-restores-mvp-entrypoints ()
@@ -94,7 +96,12 @@
            :feature e-emacs-base
            :factory e-emacs-base-layer-create)))
   (setq e-default-chat-layer-ids '(agents-std-context harness-base e os-base emacs-base))
-  (let ((e-startup-shell-hook
+  (let ((e-default-chat-harness-factory
+         (lambda (&rest args)
+           (e-harness-create
+            :backend (e-backend-fake-create :items nil)
+            :sessions (plist-get args :sessions))))
+        (e-startup-shell-hook
          (cons (lambda ()
                  (e-harness-registry-get-or-create :chat-default))
                e-startup-shell-hook)))

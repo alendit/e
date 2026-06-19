@@ -8,18 +8,17 @@
 ;;; Commentary:
 
 ;; Startup registration for named default harnesses.  This module registers
-;; lazy factories only; provider adapters and concrete layers are loaded by the
-;; factory when the corresponding harness is requested.
+;; lazy factories only; provider adapters are selected by user configuration.
 
 ;;; Code:
 
 (declare-function e-chat-session-capability-create "e-chat-session")
-(declare-function e-anthropic-create-harness "e-anthropic")
-(defvar e-anthropic-default-provider)
 
 (require 'cl-lib)
+(require 'e-backend)
 (require 'e-default-layers)
 (require 'e-context)
+(require 'e-harness)
 (require 'e-harness-instances)
 (require 'e-harness-registry)
 (require 'e-layers)
@@ -53,6 +52,22 @@ option when they operate on that harness, and existing default harness instances
 are reconciled from it during startup/reload."
   :type '(repeat symbol)
   :group 'e-defaults)
+
+(defcustom e-default-chat-harness-factory nil
+  "Configured factory used to create the default chat harness backend.
+
+When nil, e creates a default chat harness with an explicit unconfigured
+backend that reports a configuration error instead of choosing a provider.
+Configure this from config.el/config.org, or replace the `:chat-default' entry
+in `e-default-harness-specs'.  The function is called with keyword arguments
+`:sessions' and `:directory' and must return an `e-harness'.  Default chat then
+attaches the internal chat-session layer and `e-default-chat-layer-ids'."
+  :type '(choice (const :tag "Unconfigured" nil)
+                 function)
+  :group 'e-defaults)
+
+(defconst e-default-chat--unconfigured-backend-message
+  "Default chat backend is not configured; set e-default-chat-harness-factory or e-default-harness-specs in config.el/config.org")
 
 (defvar e-default--chat-sessions nil
   "Cached default persistent chat session store.")
@@ -153,35 +168,69 @@ hold HARNESS."
             (e-harness-context-strategy fresh))))
   harness)
 
+(defun e-default-chat--default-factory-spec-p (spec)
+  "Return non-nil when SPEC uses the built-in default chat factory."
+  (eq (plist-get spec :factory) 'e-default-chat-harness-create))
+
+(defun e-default-chat--sync-from-configured-factory-p (spec)
+  "Return non-nil when SPEC has a configured factory to refresh runtime fields."
+  (or (not (e-default-chat--default-factory-spec-p spec))
+      (functionp e-default-chat-harness-factory)))
+
+(defun e-default-chat--unconfigured-backend ()
+  "Return a backend that reports missing default chat configuration."
+  (e-backend-create
+   :name "Unconfigured default chat backend"
+   :stream (lambda (&rest _args)
+             (user-error e-default-chat--unconfigured-backend-message))))
+
+(defun e-default-chat--mark-unconfigured (harness)
+  "Mark HARNESS as an unconfigured default chat harness."
+  (setf (e-harness-backend harness)
+        (e-default-chat--unconfigured-backend))
+  (setf (e-harness-default-options harness) nil)
+  harness)
+
 (defun e-default-chat-harness-sync (harness spec)
   "Reconcile cached default chat HARNESS from SPEC."
-  (e-default-harness-sync-from-factory harness spec)
+  (if (e-default-chat--sync-from-configured-factory-p spec)
+      (e-default-harness-sync-from-factory harness spec)
+    (progn
+      (e-default-harness--repair-shifted-session-store harness)
+      (e-default-chat--mark-unconfigured harness)))
   (e-default-chat-sync-harness-layers harness)
   harness)
 
 (cl-defun e-default-chat-harness-create
     (&key provider sessions layer-ids directory)
   "Create the default chat harness.
-PROVIDER selects the Anthropic Messages provider.  SESSIONS supplies an existing
-session store.  LAYER-IDS overrides `e-default-chat-layer-ids'.  DIRECTORY
-sets the root used by config-aware default layers."
+The backend is created by `e-default-chat-harness-factory'.  PROVIDER is
+rejected because provider selection belongs in config.el/config.org.  SESSIONS
+supplies an existing session store.  LAYER-IDS overrides
+`e-default-chat-layer-ids'.  DIRECTORY sets the root used by config-aware
+default layers.  When `e-default-chat-harness-factory' is nil, create a harness
+with an explicit unconfigured backend and no provider."
+  (when provider
+    (user-error
+     "Default chat provider is configured by e-default-chat-harness-factory, not :provider"))
   (require 'e-base)
   (require 'e-emacs-base)
   (require 'e-harness-base)
-  (require 'e-harness)
   (require 'e-layer-selection)
   (require 'e-layers)
   (require 'e-org-canvas-capabilities)
-  (require 'e-anthropic)
   (e-default-layers-register)
-  (let ((harness (e-anthropic-create-harness
-                  :provider (or provider e-anthropic-default-provider)
-                  :sessions (or sessions (e-default-session-store))))
-        (root (or directory default-directory)))
-    (setf (e-harness-default-options harness)
-          (append (e-harness-default-options harness)
-                  (list :prompt-cache t
-                        :prompt-cache-ttl "1h")))
+  (let* ((root (or directory default-directory))
+         (store (or sessions (e-default-session-store)))
+         (harness (if (functionp e-default-chat-harness-factory)
+                      (funcall e-default-chat-harness-factory
+                               :sessions store
+                               :directory root)
+                    (e-harness-create
+                     :backend (e-default-chat--unconfigured-backend)
+                     :sessions store))))
+    (unless (e-harness-p harness)
+      (signal 'wrong-type-argument (list 'e-harness-p harness)))
     (e-harness-activate-layer
      harness
      (e-default-chat--chat-session-layer))

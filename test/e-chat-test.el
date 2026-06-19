@@ -3427,6 +3427,56 @@ the orphaned region and appeared to vanish."
         (kill-buffer buffer))
       (delete-directory directory t))))
 
+(ert-deftest e-chat-test-reload-buffers-preserves-current-harness-without-default ()
+  "Reloading chat buffers keeps their harness when no default is configured."
+  (let* ((harness (e-chat-test--activate-chat-session
+                   (e-harness-create
+                    :backend (e-backend-fake-create :items nil))))
+         (buffer (e-chat-open :harness harness :session-id "chat-local")))
+    (unwind-protect
+        (progn
+          (with-current-buffer buffer
+            (setq-local e-chat-harness-instance-id nil))
+          (e-chat-test--with-empty-harness-registry
+            (let ((e-chat-default-harness-id :missing-chat))
+              (should (>= (e-chat-reload-buffers) 1))))
+          (with-current-buffer buffer
+            (should (eq e-chat-harness harness))
+            (should (equal e-chat-session-id "chat-local"))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-reload-buffers-preserves-instance-harness-without-backend ()
+  "Instance-backed chat buffers keep their harness when factory creation fails."
+  (let* ((harness (e-chat-test--activate-chat-session
+                   (e-harness-create
+                    :backend (e-backend-fake-create :items nil))))
+         (buffer (e-chat-open :harness harness :session-id "chat-instance")))
+    (unwind-protect
+        (progn
+          (with-current-buffer buffer
+            (setq-local e-chat-harness-instance-id :chat-test))
+          (e-chat-test--with-empty-harness-registry
+            (e-harness-registry-register-factory
+             :chat-test
+             (lambda ()
+               (user-error "Configured backend unavailable")))
+            (e-harness-instance-register
+             :id :chat-test
+             :name "Chat Test"
+             :kind 'chat
+             :factory (lambda ()
+                        (user-error "Configured backend unavailable"))
+             :harness-id :chat-test
+             :default t)
+            (should (>= (e-chat-reload-buffers) 1)))
+          (with-current-buffer buffer
+            (should (eq e-chat-harness harness))
+            (should (eq e-chat-harness-instance-id :chat-test))
+            (should (equal e-chat-session-id "chat-instance"))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-default-harness-requests-configured-registry-id ()
   "Chat shell asks the harness registry for the configured default id."
   (e-chat-test--with-empty-harness-registry

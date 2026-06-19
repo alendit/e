@@ -1,0 +1,18 @@
+#+title: Default Chat Hardcoded Backend Provider
+#+startup: overview
+
+* Report
+
+The user reported that after fixing the OpenAI/Codex prompt-cache request, the
+next =e-chat= turn failed with:
+
+#+begin_example
+Turn failed: Anthropic auth is missing: "Environment variable ANTHROPIC_API_KEY is missing"
+#+end_example
+
+The user clarified the intended contract:
+
+#+begin_quote
+There should not be a default backend provider. That should be configured in
+config.el / config.org only.
+#+end_quote
