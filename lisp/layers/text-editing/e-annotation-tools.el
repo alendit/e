@@ -34,15 +34,9 @@
 
 (require 'cl-lib)
 (require 'subr-x)
+(require 'simply-annotate)
 (require 'e-capabilities)
 (require 'e-tools)
-
-(declare-function simply-annotate--add-reply "simply-annotate")
-(declare-function simply-annotate--create-thread "simply-annotate")
-(declare-function simply-annotate--file-key "simply-annotate")
-(declare-function simply-annotate--load-database "simply-annotate")
-(declare-function simply-annotate--make-context "simply-annotate")
-(declare-function simply-annotate--update-database "simply-annotate")
 
 (defcustom e-annotation-tools-author "Agent"
   "Default author name recorded on annotation threads created by e."
@@ -51,15 +45,6 @@
 
 (defconst e-annotation-tools-verdicts '("accepted" "rejected")
   "Verdict values accepted by `annotation_resolve'.")
-
-(defconst e-annotation-tools--backend-functions
-  '(simply-annotate--add-reply
-    simply-annotate--create-thread
-    simply-annotate--file-key
-    simply-annotate--load-database
-    simply-annotate--make-context
-    simply-annotate--update-database)
-  "Simply Annotate functions required by annotation tools.")
 
 (defvar e-annotation-tools-resolve-functions nil
   "Abnormal hook run after an annotation thread verdict is persisted.
@@ -110,22 +95,12 @@ Returns nil for nil or a non-list VALUE."
 
 ;; --- file-key and database access (headless) --------------------------------
 
-(defun e-annotation-tools--require-backend ()
-  "Require a Simply Annotate backend new enough for annotation tools."
-  (unless (require 'simply-annotate nil t)
-    (user-error "Install simply-annotate to use annotation tools"))
-  (dolist (function e-annotation-tools--backend-functions)
-    (unless (fboundp function)
-      (user-error "Update simply-annotate to use annotation tools: missing %S"
-                  function))))
-
 (defun e-annotation-tools--with-file-context (file body)
   "Call BODY in a buffer context bound to FILE for Simply Annotate db access.
 FILE's directory becomes `default-directory' so project-relative file keys and
 the database path resolve exactly as they would for a live buffer.  When FILE
 exists its contents are loaded so region text, hashes, and context can be
 computed.  BODY receives no arguments and runs with point at `point-min'."
-  (e-annotation-tools--require-backend)
   (let ((path (expand-file-name file)))
     (with-temp-buffer
       (setq buffer-file-name path)

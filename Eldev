@@ -5,3 +5,5 @@
 ;; tools, and package tarball from the repository and package headers.
 
 (setf eldev-test-framework 'ert)
+
+(eldev-use-package-archive 'melpa)

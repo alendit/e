@@ -4,7 +4,7 @@
 
 ;; Author: Dimitri Vorona
 ;; Version: 0.1.0
-;; Package-Requires: ((emacs "28.1"))
+;; Package-Requires: ((emacs "28.1") (simply-annotate "2.3.0"))
 ;; Keywords: tools
 ;; URL: https://github.com/dimitrivorona/e
 ;; SPDX-License-Identifier: MIT
