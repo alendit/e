@@ -20,6 +20,12 @@
 (require 'e-annotation-tools)
 (require 'e-text-editing)
 
+(defun e-annotation-tools-test--skip-unless-backend ()
+  "Skip the current test unless Simply Annotate support is usable."
+  (condition-case err
+      (e-annotation-tools--require-backend)
+    (user-error (ert-skip (error-message-string err)))))
+
 (defmacro e-annotation-tools-test--with-project (file-var &rest body)
   "Run BODY in a temp project with a sample Org FILE-VAR bound to its path.
 The annotation database strategy is forced to `project' so annotations land in a
@@ -34,6 +40,7 @@ project-local `.simply-annotations.el' beside the file."
                                           (cons 'transient dir)))))
      (unwind-protect
          (progn
+           (e-annotation-tools-test--skip-unless-backend)
            (write-region "* Task one\nBody of task one.\n* Task two\nBody two.\n"
                          nil ,file-var nil 'silent)
            ,@body)
@@ -133,6 +140,19 @@ project-local `.simply-annotations.el' beside the file."
                   :type 'user-error)
     (should-error (e-annotation-tools-add :file file :start 9 :end 2 :text "p")
                   :type 'user-error)))
+
+(ert-deftest e-annotation-tools-test-missing-backend-errors-when-used ()
+  "Missing Simply Annotate support is reported when tools are used."
+  (let ((original-require (symbol-function 'require)))
+    (cl-letf (((symbol-function 'require)
+               (lambda (feature &optional filename noerror)
+                 (if (eq feature 'simply-annotate)
+                     (progn
+                       (ignore filename noerror)
+                       nil)
+                   (funcall original-require feature filename noerror)))))
+      (should-error (e-annotation-tools--require-backend)
+                    :type 'user-error))))
 
 ;; --- resolve-hook tests -----------------------------------------------------
 
