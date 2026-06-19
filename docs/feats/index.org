@@ -41,3 +41,4 @@ Status values for coding agents:
 | 28 | Planned | 28-context-auto-compaction/ | Context Auto-Compaction |
 | 29 | In-progress | 29-workspace-roots/ | Workspace Roots |
 | 30 | Planned | 30-prompt-capabilities/ | Prompt Capabilities |
+| 31 | Planned | 31-composer-prefix-shortcuts/ | Composer Prefix Shortcuts |
