@@ -40,6 +40,31 @@
                     nil)
                    "full output"))))
 
+(ert-deftest e-session-tmp-test-write-does-not-prompt-for-coding ()
+  "Writing eight-bit content never invokes the coding-system selector.
+Regression: tmp:// writes left `coding-system-for-write' unbound, so bytes the
+buffer's coding could not encode triggered `select-safe-coding-system' and
+blocked on the interactive coding-system picker."
+  (should (require 'e-session-tmp-resources nil t))
+  (let* ((harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :active-layers
+                   (list (e-layer-create
+                          :id 'tmp-layer
+                          :name "Tmp Layer"
+                          :capabilities
+                          (list (e-session-tmp-capability-create))))))
+         ;; Eight-bit content the prefer-utf-8 default coding cannot encode;
+         ;; an unbound `coding-system-for-write' would route it through the
+         ;; selector.
+         (content (decode-coding-string (unibyte-string 200 201 202) 'binary))
+         (select-safe-coding-system-function
+          (lambda (&rest _)
+            (error "select-safe-coding-system must not run"))))
+    ;; Succeeds (returns the URI) without the selector ever running.
+    (should (equal (e-session-tmp-write harness "session-1" "raw.bin" content)
+                   "tmp://raw.bin"))))
+
 (ert-deftest e-session-tmp-test-resource-write-creates-parents ()
   "Model-facing tmp:// writes create missing parents inside the session root."
   (should (require 'e-session-tmp-resources nil t))

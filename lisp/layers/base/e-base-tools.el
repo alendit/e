@@ -303,6 +303,18 @@ buffer's detected coding cannot encode CONTENT."
       (save-buffer)
       (e-base-tools--buffer-link-state buffer))))
 
+(defmacro e-base-tools--with-utf8-write (&rest body)
+  "Run BODY writing files as UTF-8 without a coding-system prompt.
+Bash output and tmp-resource content may contain eight-bit bytes that the
+buffer's detected coding cannot encode; without these bindings `write-region'
+would invoke `select-safe-coding-system' and block on the interactive
+coding-system picker.  `utf-8-unix' round-trips eight-bit chars as raw bytes,
+and disabling the selector keeps writes non-interactive."
+  (declare (indent 0) (debug t))
+  `(let ((coding-system-for-write 'utf-8-unix)
+         (select-safe-coding-system-function nil))
+     ,@body))
+
 (defun e-base-tools--read-file-literally (path)
   "Return literal contents of PATH."
   (with-temp-buffer
@@ -910,7 +922,8 @@ through file:// reads."
   "Return a streaming bash output collector for CONTEXT."
   (let* ((target (e-base-tools--bash-output-target context))
          (output-file (plist-get target :output-file)))
-    (write-region "" nil output-file nil 'silent)
+    (e-base-tools--with-utf8-write
+      (write-region "" nil output-file nil 'silent))
     (e-base-tools--bash-collector-create
      :output-file output-file
      :output-uri (plist-get target :output-uri)
@@ -977,10 +990,11 @@ through file:// reads."
 (defun e-base-tools--bash-collector-append (collector chunk)
   "Append CHUNK to COLLECTOR's output file and bounded preview."
   (when (> (length chunk) 0)
-    (write-region chunk nil
-                  (e-base-tools--bash-collector-output-file collector)
-                  'append
-                  'silent)
+    (e-base-tools--with-utf8-write
+      (write-region chunk nil
+                    (e-base-tools--bash-collector-output-file collector)
+                    'append
+                    'silent))
     (e-base-tools--bash-collector-count-chunk collector chunk)
     (e-base-tools--bash-collector-add-preview collector chunk)))
 
@@ -1177,7 +1191,8 @@ ON-REQUEST-START receives the cancellable process request."
     (if (not (plist-get truncation :truncated))
         output
       (let ((full-output-path (make-temp-file "e-base-bash-" nil ".log")))
-        (write-region output nil full-output-path nil 'silent)
+        (e-base-tools--with-utf8-write
+          (write-region output nil full-output-path nil 'silent))
         (format "%s\n\n[Showing lines %d-%d of %d. Full output: %s]"
                 (plist-get truncation :content)
                 (plist-get truncation :start-line)

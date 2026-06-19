@@ -606,6 +606,28 @@ its text instead."
                                     (plist-get result :content)))))
       (delete-directory directory t))))
 
+(ert-deftest e-base-tools-test-bash-output-with-raw-bytes-does-not-prompt ()
+  "Bash output containing eight-bit bytes never invokes the coding selector.
+Regression: streaming bash output to its log file via `write-region' left
+`coding-system-for-write' unbound, so undecodable bytes triggered
+`select-safe-coding-system' and blocked on the interactive coding-system
+picker."
+  (let* ((directory (make-temp-file "e-base-bash-raw-" t))
+         (registry (e-tools-registry-create))
+         (select-safe-coding-system-function
+          (lambda (&rest _)
+            (error "select-safe-coding-system must not run"))))
+    (unwind-protect
+        (progn
+          (e-base-tools-register-bash registry directory)
+          (let ((result (e-base-tools-test--execute
+                         registry
+                         "bash"
+                         ;; \xC0\xC1 are invalid UTF-8 lead bytes.
+                         '(:command "printf '\\300\\301'"))))
+            (should (equal (plist-get result :status) 'ok))))
+      (delete-directory directory t))))
+
 (ert-deftest e-base-tools-test-bash-accepts-optional-resource-usage-metadata ()
   "Free tools can report high-value affected resources when supplied."
   (let* ((directory (make-temp-file "e-base-bash-usage-" t))
