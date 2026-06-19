@@ -1,0 +1,378 @@
+#+title: Prompt Capabilities
+#+startup: overview
+
+* Goal
+
+Let =e= capabilities contribute *prompts*: named, parameterized free-text
+templates that expand into a chat submission.  A prompt is "a free-text
+function with parameters": it declares a name, a description, an ordered set of
+typed parameters, and a body template.  Given argument values, it renders a
+concrete prompt string that the chat shell submits as the user's turn input.
+
+This feature is a prerequisite for composer prefix shortcuts (feat 31), where
+=/= will trigger autocompletion across built-in and capability-contributed
+prompts.  This plan delivers the prompt contract and discovery surface only; the
+composer =/= UI lives in feat 31.
+
+* Status
+
+Planned.
+
+* Background
+
+Capabilities are the runtime extension seam (=lisp/core/e-capabilities.el=).
+They already contribute instructions, model-facing tools, resource methods,
+in-memory resources, context providers, shell actions, and hooks.  Skills
+(=lisp/core/e-skills.el=) show the established pattern for a new contribution
+kind: a construction-time spec (=e-skill-spec=) plus a builder
+(=e-capability-with-skills-create=) that returns an ordinary =e-capability=.
+The harness stays unaware of the new kind beyond a generic aggregation
+accessor.
+
+The chat shell already serializes a submission as =:prompt= text plus inline
+=:references= (=e-chat--composer-submission= in
+=lisp/shells/chat/e-chat.el=).  A rendered prompt is just submission text, so
+prompts do not require any new submission channel.
+
+Prompts differ from tools: a tool is model-invoked during a turn; a prompt is
+user-invoked to *compose* a turn.  Prompts differ from skills: a skill is
+on-demand guidance the model reads; a prompt is a user-facing template that
+produces the user message.  Prompts are therefore a distinct, narrow
+contribution kind owned by capabilities and consumed by presentation shells.
+
+* Non-goals
+
+- Do not implement the composer =/= autocompletion UI; that is feat 31.
+- Do not add MCP prompts discovery in this slice; MCP prompts can map onto this
+  contract in a later slice.
+- Do not make prompts model-invocable as tools.  A prompt produces user-message
+  text, it is not a function the model calls.
+- Do not add prompt argument collection UI beyond a minimal, shell-agnostic
+  reader contract; rich per-parameter widgets are out of scope.
+- Do not dynamically mutate the active tool registry; prompts are not tools.
+
+* Design
+
+** Prompt spec
+
+Add =lisp/core/e-prompts.el= with a construction-time spec, mirroring the
+shape and validation style of =e-skill-spec=.
+
+#+begin_src elisp
+(cl-defstruct (e-prompt-spec
+               (:constructor e-prompt-spec--create
+                             (&key name description parameters renderer
+                                   metadata)))
+  name          ;; compact identifier, no slashes; used by `/name'
+  description   ;; one-line model/user-facing summary
+  parameters    ;; ordered list of e-prompt-parameter
+  renderer      ;; (lambda (prompt arguments) -> string)
+  metadata)     ;; opaque plist for origin info
+#+end_src
+
+A parameter is a small record:
+
+#+begin_src elisp
+(cl-defstruct (e-prompt-parameter
+               (:constructor e-prompt-parameter-create
+                             (&key name description required default type)))
+  name          ;; symbol or string key used in arguments alist
+  description   ;; one-line help for collection UI
+  (required t)  ;; whether a value must be supplied
+  default       ;; default value when not required
+  (type 'string)) ;; 'string | 'text | 'choice (choices in metadata) for now
+#+end_src
+
+Constructor =e-prompt-spec-create= validates that:
+
+- =name= is a non-empty string without slashes (parallels skill name rules);
+- =description= is a non-empty string;
+- =parameters= are all =e-prompt-parameter= values with unique names;
+- exactly one body source is given: either =template= (a string convenience
+  normalized into a renderer) or =renderer= (a function), never both, never
+  neither.
+
+The =template= convenience supports =${name}= placeholder substitution over the
+supplied arguments, with unknown placeholders signalling an error and missing
+required arguments signalling an error.  The renderer contract is
+=(renderer prompt arguments)= returning the final prompt string, where
+=arguments= is an alist of parameter-name to value.  This keeps the simple case
+declarative while leaving an escape hatch for dynamic bodies, matching the
+skill =content= vs =reader= split.
+
+** Rendering
+
+Add a pure rendering entry point:
+
+#+begin_src elisp
+(e-prompt-render prompt arguments) ;; -> string
+#+end_src
+
+=e-prompt-render= validates arguments against the spec's parameters (required
+present, defaults applied, unknown keys rejected), then calls the renderer.  It
+performs no I/O and no shell interaction, so it is testable in isolation.
+
+** Capability contribution
+
+Extend the capability record with a new =prompts= contribution kind, following
+exactly the slot-extension and stale-record-tolerant accessor convention
+already used for =resource-methods=, =resources=, =hooks=, =config-options=,
+and =config= in =lisp/core/e-capabilities.el=:
+
+- add a =prompts= slot to =e-capability= (defaulting to nil);
+- add =e-capability-prompts= with the same length-guarded accessor pattern as
+  the other late-added slots;
+- register =e-capability-prompts= in the =compiler-macro=/=side-effect-free=/
+  =gv-expander= suppression list;
+- thread =:prompts= through =e-capability-create= keyword construction.
+
+Prompt contributions are plain =e-prompt-spec= values (data, not registration
+closures), because prompts have no per-turn registry to mutate.  This keeps the
+contract narrow and consumer-shaped: a capability declares prompts; a shell
+reads them.
+
+Add a convenience builder paralleling =e-capability-with-skills-create=:
+
+#+begin_src elisp
+(e-capability-with-prompts-create
+ :id "review-prompts"
+ :name "Review Prompts"
+ :prompts (list (e-prompt-spec-create
+                 :name "explain"
+                 :description "Explain the selected code."
+                 :parameters (list (e-prompt-parameter-create
+                                    :name "focus"
+                                    :description "What to focus on."
+                                    :required nil
+                                    :default "overall behavior"))
+                 :template "Explain this code, focusing on ${focus}.")))
+#+end_src
+
+The builder validates each prompt and returns an ordinary =e-capability= with
+the =prompts= slot populated and all other contributions passed through, so
+prompts compose with instructions, tools, skills, and resources on the same
+capability.
+
+** Harness discovery surface
+
+Add a generic aggregation accessor on the harness, mirroring
+=e-harness-active-capabilities= and =e-harness-tools=:
+
+#+begin_src elisp
+(defun e-harness-prompts (harness)
+  "Return prompt specs contributed by HARNESS active capabilities.")
+#+end_src
+
+It walks =e-harness-active-capabilities= and appends each capability's
+=e-capability-prompts=.  Prompts are turn-independent, so this accessor takes no
+=session-id=/=turn-id=, unlike tools and resources.
+
+Name collisions across capabilities are reported, not silently merged: the
+accessor returns prompts in capability order and a helper
+=e-harness-prompt-by-name= returns the first match while a diagnostics helper
+can surface duplicates.  This follows the project-local convention of reporting
+id collisions rather than overriding.
+
+** Ownership and boundaries
+
+- =lisp/core/e-prompts.el= owns the prompt spec, parameter record, validation,
+  and pure rendering.  No shell or backend knowledge.
+- =lisp/core/e-capabilities.el= owns the =prompts= contribution slot and
+  accessor only; it does not render or collect arguments.
+- =lisp/core/e-harness.el= owns aggregation across active capabilities.
+- Argument collection and submission are presentation concerns and live in the
+  consuming shell (feat 31 for chat).  Core provides only data + pure render.
+
+This keeps the dependency direction correct: stable core declares the contract,
+unstable shells consume it.  Side effects (argument prompting, submission) stay
+in the shell.
+
+* Implementation Plan
+
+** Task 1: Prompt spec, parameters, and validation
+
+Files:
+
+- Add =lisp/core/e-prompts.el=.
+- Add =test/e-prompts-test.el=.
+
+Steps:
+
+1. Define =e-prompt-parameter= and =e-prompt-spec= records.
+2. Implement =e-prompt-parameter-create= and =e-prompt-spec-create= with
+   validation: non-empty slash-free name, non-empty description, unique
+   parameter names, exactly one of =template= or =renderer=.
+3. Normalize a =template= string into a renderer that performs =${name}=
+   substitution.
+4. Test construction success and each validation failure mode.
+
+Verification:
+
+#+begin_src sh
+rtk eldev test -f e-prompts-test
+#+end_src
+
+** Task 2: Pure rendering
+
+Files:
+
+- Modify =lisp/core/e-prompts.el=.
+- Modify =test/e-prompts-test.el=.
+
+Steps:
+
+1. Implement =e-prompt-render= validating arguments (required present, defaults
+   applied, unknown keys rejected) and calling the renderer.
+2. Test: template substitution, default application, missing-required error,
+   unknown-argument error, and a custom renderer function.
+
+Verification:
+
+#+begin_src sh
+rtk eldev test -f e-prompts-test
+#+end_src
+
+** Task 3: Capability prompts slot and builder
+
+Files:
+
+- Modify =lisp/core/e-capabilities.el=.
+- Add =lisp/core/e-prompts.el= builder (or keep builder in =e-prompts.el=).
+- Modify =test/e-capabilities-test.el= and =test/e-prompts-test.el=.
+
+Steps:
+
+1. Add the =prompts= slot to =e-capability= with the late-slot accessor pattern
+   and keyword construction support.
+2. Register =e-capability-prompts= in the optimization-suppression dolist.
+3. Implement =e-capability-with-prompts-create= validating prompt specs and
+   passing through all other contributions.
+4. Test: builder returns a capability whose =e-capability-prompts= are the given
+   specs; stale-record tolerance for the new accessor; prompts compose with
+   instructions and tools on one capability.
+
+Verification:
+
+#+begin_src sh
+rtk eldev test -f e-prompts-test -f e-capabilities-test
+#+end_src
+
+** Task 4: Harness aggregation and lookup
+
+Files:
+
+- Modify =lisp/core/e-harness.el=.
+- Modify =test/e-harness-test.el=.
+
+Steps:
+
+1. Implement =e-harness-prompts= aggregating active-capability prompts in
+   capability order.
+2. Implement =e-harness-prompt-by-name= and a duplicate-name diagnostics helper
+   that reports collisions rather than overriding.
+3. Test: a harness with two prompt-contributing capabilities returns all
+   prompts; lookup by name resolves; duplicate names are reported.
+
+Verification:
+
+#+begin_src sh
+rtk eldev test -f e-harness-test -f e-prompts-test
+#+end_src
+
+** Task 5: Default opt-in prompt and smoke path
+
+Files:
+
+- Modify =lisp/defaults/e-default-layers.el= only if a small built-in prompt set
+  is desired; otherwise keep prompts opt-in and add a test-only capability.
+- Modify =test/e-defaults-test.el= or =test/e-harness-test.el=.
+
+Steps:
+
+1. Decide whether to ship a tiny built-in prompt capability (for example a
+   "summarize" prompt) so feat 31 has live =/= content out of the box, or keep
+   prompts entirely opt-in for the first slice.  Default recommendation: ship
+   one or two small built-in prompts so the =/= shortcut demonstrates value
+   immediately.
+2. Add a test asserting the built-in or fixture prompt is visible through
+   =e-harness-prompts= for a default chat harness.
+3. Render the prompt through =e-prompt-render= and assert the output.
+
+Verification:
+
+#+begin_src sh
+rtk eldev test -f e-prompts-test -f e-harness-test -f e-defaults-test
+#+end_src
+
+* Acceptance Criteria
+
+- A capability can declare prompts via =e-capability-with-prompts-create= using
+  either a =template= string or a custom renderer.
+- =e-prompt-render= validates arguments, applies defaults, rejects unknown
+  arguments, errors on missing required arguments, and returns final text.
+- =e-capability-prompts= returns a capability's prompts and tolerates
+  stale records compiled before the slot existed.
+- =e-harness-prompts= aggregates prompts across active capabilities in
+  capability order; lookup by name works; duplicate names are reported.
+- Core prompt code performs no shell interaction or submission and is fully
+  testable in isolation.
+- The harness and existing capability contracts stay otherwise unchanged;
+  prompts are additive and opt-in.
+
+* Test Plan
+
+Focused tests during development:
+
+#+begin_src sh
+rtk eldev test -f e-prompts-test
+#+end_src
+
+Integration-adjacent tests after capability and harness wiring:
+
+#+begin_src sh
+rtk eldev test -f e-prompts-test -f e-capabilities-test -f e-harness-test
+#+end_src
+
+After changing loaded Elisp files, reload the user's running Emacs from the repo
+root:
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Then inspect a live default chat harness and confirm =e-harness-prompts= returns
+the expected specs if a running Emacs server is available.
+
+* Architecture Review Questions
+
+1. If this work package stopped here, would the project be better off than if it
+   had not been built?  Yes: a reusable, tested prompt contract exists and feat
+   31 can build the =/= UI on top, but even without 31 a shell could expose
+   prompts.
+2. What final direction does this move toward?  Live-configurable,
+   capability-owned user-facing prompt templates feeding chat submissions.
+3. Which decisions are likely to change, uncertain, or stable?  The spec/render
+   contract is stable; parameter typing and collection UI are uncertain and kept
+   local (type is a small enum in core; collection lives in shells).
+4. What component owns this behavior, and why?  =e-prompts.el= owns the spec and
+   pure rendering (one reason to change: prompt semantics).  Capabilities own
+   declaration; the harness owns aggregation.
+5. Does this change increase or reduce coupling?  Neutral-to-reducing: prompts
+   are plain data with a pure render function; shells depend on a narrow
+   accessor.
+6. Did any dependency start pointing the wrong way?  No: core declares the
+   contract; shells (unstable) consume it.
+7. Could any side effect be moved outward?  Yes, and it is: all argument
+   collection and submission stay in the shell, not in core.
+8. Are the abstractions semantically real?  Yes: a prompt is genuinely a
+   parameterized text function; template and renderer are substitutable bodies.
+9. What compatibility expectations apply?  The new capability slot uses the
+   established late-slot tolerant accessor; older compiled records degrade to nil
+   prompts.
+10. What legacy code can we remove now?  None; this is additive.
+11. Where are expected errors handled, and where do unexpected errors surface?
+    Argument validation errors are signalled by =e-prompt-render= for the shell
+    to handle; unexpected renderer errors surface to the top.
+12. What tests prove the core behavior independently of the full system?
+    =test/e-prompts-test.el= covers spec validation and rendering without any
+    shell or harness.
