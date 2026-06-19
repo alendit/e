@@ -91,6 +91,10 @@
 (defvar e-mcp--latest-diagnostics nil
   "Most recent diagnostics returned by the MCP helper.")
 
+(defvar e-mcp--http-sessions nil
+  "Alist of (server-id . session-plist) for HTTP MCP sessions.
+Each session plist tracks :url, :headers, :session-id, :initialized.")
+
 (defvar e-mcp--catalog-cache (make-hash-table :test 'equal)
   "Memoized tools/list catalogs keyed by sorted server id list.
 Progressive disclosure touches each server catalog from several places per
@@ -363,10 +367,6 @@ transport), but not both."
 ;;
 ;; For servers with :url set, we talk MCP JSON-RPC directly from Emacs over
 ;; HTTP POST.  No helper process needed.
-
-(defvar e-mcp--http-sessions nil
-  "Alist of (server-id . session-plist) for HTTP MCP sessions.
-Each session plist tracks :url, :headers, :session-id, :initialized.")
 
 (defun e-mcp--http-session (server)
   "Return or create an HTTP session for SERVER."
