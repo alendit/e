@@ -50,6 +50,27 @@ The compatibility layout remains supported:
 Use =.e/layers/= for new project packages.  Keep =.e/capabilities/= for existing
 capability-only packages that do not need shell manifests.
 
+* Byte Compilation
+
+Project-local loaders call =load= with extensionless file names and
+=load-prefer-newer= enabled.  This lets Emacs choose newer source over stale
+=.elc=, or a fresh =.elc= when one is available.  The same policy is scoped
+around trusted project layer and capability factories, so helper code inside a
+project layer can write ordinary loads and still get fresh byte-code when
+present.
+
+Use =M-x e-project-local-byte-compile-project= from a trusted project root to
+byte-compile allowlisted project-local files under =.e/layers/= and
+=.e/capabilities/=.  The command writes =.elc= files next to the source files
+only when the =.elc= file is missing or older than the corresponding =.el=
+source.  With a prefix argument, it recompiles every project-local =.el= file.
+
+Automatic byte recompilation on project entry is off by default.  Set
+=e-project-local-auto-byte-recompile= non-nil to make Projectile priming call
+the byte-compile command before loading an allowlisted project-local layer.
+Keep it disabled for projects where writing =.elc= files into the repository is
+undesirable.
+
 * Shell Discovery
 
 Built-in shells are still registered globally with =e-shell-register= and read

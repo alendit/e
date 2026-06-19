@@ -59,6 +59,16 @@ activation still owns model-facing tool/resource/shell registration."
   :type 'boolean
   :group 'e-project-local)
 
+(defcustom e-project-local-auto-byte-recompile nil
+  "Whether project entry should byte-recompile stale project-local Elisp.
+
+When non-nil, `e-project-local-prime-project' byte-compiles allowlisted
+project-local `.e/' extension files whose `.elc' files are missing or older
+than their `.el' sources before loading the project-local layer.  This is off
+by default because byte compilation writes `.elc' files into the project."
+  :type 'boolean
+  :group 'e-project-local)
+
 (defconst e-project-local-instructions
   "Project-local capabilities discovered from this repository are active. Their tools, resources, and skills behave like built-in capabilities for this turn."
   "Instructions contributed when project-local capabilities are active.")
@@ -88,6 +98,9 @@ Bound dynamically around each load; a registration outside a load is an error.")
   "Path of the `layer.el' currently being loaded, or nil.
 Dynamically bound by `e-project-local--load-layer-file' so registration calls
 can detect they are running inside a sanctioned project layer load.")
+
+(defvar e-project-local--extensionless-load-roots nil
+  "Trusted project-local roots whose explicit `.el' loads should be extensionless.")
 
 (cl-defstruct (e-project-local-registration
                (:constructor e-project-local-registration-create))
@@ -189,6 +202,8 @@ continues to own model-facing tool, resource, and scoped shell registration."
     (when (and (e-project-local--project-has-extensions-p root)
                (e-project-local--root-allowed-p root))
       (let ((default-directory root))
+        (when e-project-local-auto-byte-recompile
+          (e-project-local-byte-compile-project root))
         (e-project-local-layer-create root)))))
 
 (defun e-project-local--projectile-project-root ()
@@ -233,6 +248,54 @@ Intended for `projectile-after-switch-project-hook',
 
 ;;;; Loading
 
+(defun e-project-local--under-extensionless-load-root-p (file)
+  "Return non-nil when FILE is below a trusted extensionless-load root."
+  (let* ((expanded (expand-file-name file))
+         (target (concat (file-truename (file-name-directory expanded))
+                         (file-name-nondirectory expanded))))
+    (cl-some
+     (lambda (root)
+       (string-prefix-p
+        (file-truename (e-skills-normalize-directory root))
+        target))
+     e-project-local--extensionless-load-roots)))
+
+(defun e-project-local--extensionless-load-advice (original file &rest args)
+  "Call ORIGINAL `load', stripping `.el' from trusted project-local FILE loads."
+  (let ((load-file
+         (if (and (stringp file)
+                  (string-suffix-p ".el" file)
+                  (e-project-local--under-extensionless-load-root-p file))
+             (let ((elc-file (byte-compile-dest-file file)))
+               (if (and (not (file-exists-p file))
+                        (file-exists-p elc-file))
+                   elc-file
+                 (file-name-sans-extension file)))
+           file)))
+    (let ((load-prefer-newer t))
+      (apply original load-file args))))
+
+(defmacro e-project-local--with-extensionless-loads (roots &rest body)
+  "Run BODY with explicit `.el' loads under ROOTS converted to base names."
+  (declare (indent 1))
+  `(let* ((e-project-local--extensionless-load-roots
+           (append ,roots e-project-local--extensionless-load-roots))
+          (install-advice
+           (not (advice-member-p #'e-project-local--extensionless-load-advice
+                                 'load))))
+     (when install-advice
+       (advice-add 'load :around #'e-project-local--extensionless-load-advice))
+     (unwind-protect
+         (progn ,@body)
+       (when install-advice
+         (advice-remove 'load
+                        #'e-project-local--extensionless-load-advice)))))
+
+(defun e-project-local--load-project-file (file)
+  "Load project-local Elisp FILE while letting Emacs prefer `.elc' when fresh."
+  (let ((load-prefer-newer t))
+    (load (file-name-sans-extension file) nil 'nomessage)))
+
 (defun e-project-local--load-capability-file (capability-directory)
   "Load `capability.el' in CAPABILITY-DIRECTORY and return its registrations.
 Returns a list of `e-project-local-registration' values in registration order.
@@ -241,7 +304,8 @@ Returns nil when no `capability.el' exists."
     (when (e-skills-readable-file-p file)
       (let ((e-project-local--loading file)
             (e-project-local--registrations nil))
-        (load file nil 'nomessage)
+        (e-project-local--with-extensionless-loads (list capability-directory)
+          (e-project-local--load-project-file file))
         (nreverse e-project-local--registrations)))))
 
 (defun e-project-local--load-layer-file (layer-directory)
@@ -252,14 +316,63 @@ order.  Returns nil when no `layer.el' exists."
     (when (e-skills-readable-file-p file)
       (let ((e-project-local--layer-loading file)
             (e-project-local--layer-registrations nil))
-        (load file nil 'nomessage)
+        (e-project-local--with-extensionless-loads (list layer-directory)
+          (e-project-local--load-project-file file))
         (nreverse e-project-local--layer-registrations)))))
+
+(defun e-project-local--trusted-extension-directories (directory)
+  "Return allowlisted project-local extension directories for DIRECTORY."
+  (cl-remove-if-not
+   #'e-project-local--root-allowed-p
+   (append (e-project-local--layer-directories directory)
+           (e-project-local--capability-directories directory))))
+
+(defun e-project-local--elisp-files (directory)
+  "Return project-local Elisp files under allowlisted extensions for DIRECTORY."
+  (let (files)
+    (dolist (extension-directory
+             (e-project-local--trusted-extension-directories directory))
+      (dolist (file (directory-files-recursively extension-directory "\\.el\\'"))
+        (push file files)))
+    (sort (delete-dups files) #'string<)))
+
+(defun e-project-local--byte-compile-needed-p (file)
+  "Return non-nil when FILE's `.elc' is missing or older than FILE."
+  (let ((elc-file (byte-compile-dest-file file)))
+    (or (not (file-exists-p elc-file))
+        (file-newer-than-file-p file elc-file))))
+
+;;;###autoload
+(defun e-project-local-byte-compile-project (&optional directory force)
+  "Byte-compile allowlisted project-local Elisp under DIRECTORY.
+
+Only files under trusted `.e/layers/' and `.e/capabilities/' extension roots
+are compiled.  By default, compile files whose `.elc' outputs are missing or
+older than the source.  With interactive prefix argument FORCE, compile every
+project-local `.el' file."
+  (interactive (list default-directory current-prefix-arg))
+  (let ((compiled-files nil))
+    (dolist (file (e-project-local--elisp-files
+                   (e-skills-normalize-directory directory)))
+      (when (or force (e-project-local--byte-compile-needed-p file))
+        (pcase (byte-compile-file file)
+          ('no-byte-compile nil)
+          ('nil (error "Failed to byte-compile `%s'" file))
+          (_ (push (byte-compile-dest-file file) compiled-files)))))
+    (setq compiled-files (nreverse compiled-files))
+    (when (called-interactively-p 'interactive)
+      (message "Byte-compiled %d project-local file%s"
+               (length compiled-files)
+               (if (= (length compiled-files) 1) "" "s")))
+    compiled-files))
 
 (defun e-project-local--instantiate-registration (registration directory)
   "Return the capability built by REGISTRATION for DIRECTORY.
 Signals when the factory does not return an `e-capability' with matching id."
-  (let ((capability (funcall (e-project-local-registration-factory registration)
-                             directory)))
+  (let ((capability
+         (e-project-local--with-extensionless-loads (list directory)
+           (funcall (e-project-local-registration-factory registration)
+                    directory))))
     (unless (e-capability-p capability)
       (signal 'wrong-type-argument (list 'e-capability-p capability)))
     (unless (eq (e-capability-id capability)
@@ -277,9 +390,11 @@ Signals when the factory does not return an `e-capability' with matching id."
 (defun e-project-local--instantiate-layer-registration (registration directory)
   "Return the layer built by REGISTRATION for DIRECTORY.
 Signals when the factory does not return an `e-layer' with matching id."
-  (let ((layer (funcall (e-project-local-layer-registration-factory
-                        registration)
-                        directory)))
+  (let ((layer
+         (e-project-local--with-extensionless-loads (list directory)
+           (funcall (e-project-local-layer-registration-factory
+                     registration)
+                    directory))))
     (unless (e-layer-p layer)
       (signal 'wrong-type-argument (list 'e-layer-p layer)))
     (unless (eq (e-layer-id layer)
