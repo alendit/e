@@ -516,6 +516,39 @@ the user when the buffer's coding could not encode the new content."
         (kill-buffer buffer))
       (delete-directory directory t))))
 
+(ert-deftest e-base-tools-test-edit-through-live-buffer-preserves-overlays ()
+  "Editing through a live buffer keeps overlays anchored to surviving text.
+Regression: erase-buffer+insert collapsed every overlay to position 1, which
+corrupted minor-mode state persisted from overlays (e.g. Simply Annotate
+annotation regions).  `replace-buffer-contents' must relocate the overlay with
+its text instead."
+  (let* ((directory (make-temp-file "e-base-edit-overlay-" t))
+         (file (expand-file-name "sample.txt" directory))
+         (registry (e-base-tools-test--resource-tools directory))
+         buffer overlay)
+    (unwind-protect
+        (progn
+          (write-region "line one\nANCHOR\nline three\n" nil file nil 'silent)
+          (setq buffer (find-file-noselect file))
+          (with-current-buffer buffer
+            (goto-char (point-min))
+            (search-forward "ANCHOR")
+            (setq overlay (make-overlay (match-beginning 0) (match-end 0)))
+            (overlay-put overlay 'test-marker t))
+          (e-base-tools-test--execute
+           registry "edit"
+           '(:uri "file://sample.txt"
+             :edits [(:oldText "line one\n" :newText "preamble\nline one\n")]))
+          (should (overlay-buffer overlay))
+          (should (equal (with-current-buffer buffer
+                           (buffer-substring-no-properties
+                            (overlay-start overlay) (overlay-end overlay)))
+                         "ANCHOR"))
+          (should (> (overlay-start overlay) 1)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (delete-directory directory t))))
+
 (ert-deftest e-base-tools-test-resource-sync-status-reports-needs-save-and-stale ()
   "The resource_sync_status tool reports linked buffer coherence states."
   (let* ((directory (make-temp-file "e-base-sync-status-" t))
