@@ -1943,6 +1943,61 @@ an empty summary\"."
       (should (equal (plist-get details :summary-source)
                      'none)))))
 
+(ert-deftest e-harness-test-workspace-roots-default-to-primary-only ()
+  "Without configured extras, workspace roots are just the primary root."
+  (let* ((primary (file-name-as-directory (make-temp-file "e-ws-primary-" t)))
+         (store (e-session-store-create))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :sessions store))
+         (e-workspace-roots-alist nil))
+    (unwind-protect
+        (progn
+          (e-harness-create-session
+           harness :id "s1" :metadata (list :project-root primary))
+          (should (equal (e-harness-workspace-roots harness "s1")
+                         (list primary))))
+      (delete-directory primary t))))
+
+(ert-deftest e-harness-test-workspace-roots-include-configured-extras ()
+  "Configured extras for an ancestor key widen a session's workspace roots."
+  (let* ((primary (file-name-as-directory (make-temp-file "e-ws-primary-" t)))
+         (extra (file-name-as-directory (make-temp-file "e-ws-extra-" t)))
+         (store (e-session-store-create))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :sessions store))
+         (e-workspace-roots-alist (list (cons primary (list extra)))))
+    (unwind-protect
+        (progn
+          (e-harness-create-session
+           harness :id "s1" :metadata (list :project-root primary))
+          (should (equal (e-harness-workspace-roots harness "s1")
+                         (list primary extra))))
+      (delete-directory primary t)
+      (delete-directory extra t))))
+
+(ert-deftest e-harness-test-workspace-roots-match-descendant-primary ()
+  "An alist key that is an ancestor of the primary root still contributes."
+  (let* ((parent (file-name-as-directory (make-temp-file "e-ws-parent-" t)))
+         (primary (file-name-as-directory
+                   (expand-file-name "child/" parent)))
+         (extra (file-name-as-directory (make-temp-file "e-ws-extra-" t)))
+         (store (e-session-store-create))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :sessions store))
+         (e-workspace-roots-alist (list (cons parent (list extra)))))
+    (unwind-protect
+        (progn
+          (make-directory primary t)
+          (e-harness-create-session
+           harness :id "s1" :metadata (list :project-root primary))
+          (should (member extra
+                          (e-harness-workspace-roots harness "s1"))))
+      (delete-directory parent t)
+      (delete-directory extra t))))
+
 (provide 'e-harness-test)
 
 ;;; e-harness-test.el ends here

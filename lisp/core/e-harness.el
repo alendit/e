@@ -317,8 +317,29 @@ When FUNCTION is nil, clear any existing callback."
     :capabilities (list capability)))
   capability)
 
+(defvar e-harness--activating-layer-ids nil
+  "Layer ids whose activation is in progress, to break dependency cycles.")
+
+(defun e-harness--activate-layer-requires (harness layer)
+  "Ensure each layer id in LAYER's `requires' is active in HARNESS.
+Missing required layers are created from the known layer registry (which loads
+their feature) and activated first, so a layer can depend on another layer's
+code and runtime contributions declaratively rather than via explicit
+`require' calls in consumer code."
+  (dolist (required-id (e-layer-requires layer))
+    (unless (or (e-harness-layer-active-p harness required-id)
+                (memq required-id e-harness--activating-layer-ids))
+      (e-harness-activate-layer
+       harness
+       (e-layer-create-registered
+        required-id (e-harness-default-project-root harness))))))
+
 (defun e-harness-activate-layer (harness layer)
-  "Activate LAYER in HARNESS."
+  "Activate LAYER in HARNESS.
+Required layers declared in LAYER's `requires' are activated first."
+  (let ((e-harness--activating-layer-ids
+         (cons (e-layer-id layer) e-harness--activating-layer-ids)))
+    (e-harness--activate-layer-requires harness layer))
   (setf (e-harness-active-layers harness)
         (append (e-harness-active-layers harness) (list layer)))
   (when (e-layer-shells layer)
@@ -375,6 +396,48 @@ after this accessor returns nil."
        (e-harness--normalize-project-root
         (plist-get (plist-get session :metadata) :project-root))))
    (e-harness-default-project-root harness)))
+
+(defcustom e-workspace-roots-alist nil
+  "Extra workspace roots keyed by primary project root.
+
+Each entry is (PROJECT-ROOT . EXTRA-ROOTS): when a session's primary project
+root is at or below PROJECT-ROOT, EXTRA-ROOTS additionally become valid roots
+for that session's file resources.  Directories are normalized before
+comparison.  This only widens the file-resource trust gate; the bash tool still
+runs in the primary project root.  Configure it alongside
+`e-project-local-allowed-roots'."
+  :type '(alist :key-type directory :value-type (repeat directory))
+  :group 'e)
+
+(defun e-harness--root-at-or-below-p (target root)
+  "Return non-nil when normalized TARGET is at or below normalized ROOT."
+  (when-let ((target (e-harness--normalize-project-root target))
+             (root (e-harness--normalize-project-root root)))
+    (string-prefix-p (file-truename root) (file-truename target))))
+
+(defun e-harness-configured-workspace-roots (primary-root)
+  "Return configured extra workspace roots active for PRIMARY-ROOT.
+Collects EXTRA-ROOTS from `e-workspace-roots-alist' entries whose key is an
+ancestor of (or equal to) PRIMARY-ROOT.  Returns a normalized, de-duplicated
+list, excluding PRIMARY-ROOT itself."
+  (when-let ((primary (e-harness--normalize-project-root primary-root)))
+    (let (roots)
+      (dolist (entry e-workspace-roots-alist)
+        (when (e-harness--root-at-or-below-p primary (car entry))
+          (dolist (extra (cdr entry))
+            (when-let ((extra (e-harness--normalize-project-root extra)))
+              (unless (or (equal extra primary) (member extra roots))
+                (push extra roots))))))
+      (nreverse roots))))
+
+(defun e-harness-workspace-roots (harness &optional session-id turn-id)
+  "Return active workspace roots for HARNESS SESSION-ID as a normalized list.
+The first element is the primary project root (the base for relative paths and
+the bash working directory); the rest are configured extra roots from
+`e-workspace-roots-alist'.  Returns nil when no primary root is resolvable."
+  (when-let ((primary (e-harness--normalize-project-root
+                       (e-harness-project-root harness session-id turn-id))))
+    (cons primary (e-harness-configured-workspace-roots primary))))
 
 (cl-defun e-harness-subscribe (harness subscriber &key session-id)
   "Register SUBSCRIBER for core events from HARNESS.
