@@ -1,0 +1,418 @@
+#+title: Composer Prefix Shortcuts
+#+startup: overview
+
+* Goal
+
+Add prefix-triggered shortcuts to the =e= chat composer so the user can compose
+turns faster:
+
+- =!= at the start of composer input runs a shell command and inserts its
+  output into the chat context as an inline reference.
+- =@= triggers autocompletion across files in the current project and inserts a
+  chosen file as an inline file reference.
+- =/= triggers autocompletion across available prompts (built-in and
+  capability-contributed) and expands the chosen prompt, collecting any
+  parameters, into composer text.
+
+All three reuse the composer's existing inline reference and submission
+machinery; none introduces a new submission channel.
+
+* Status
+
+Planned.
+
+* Background
+
+The composer lives in =lisp/shells/chat/e-chat.el=.  Relevant existing pieces:
+
+- The composer is an editable region delimited by
+  =e-chat--composer-start-marker=; =e-chat--composer-active-p= and
+  =e-chat--point-in-composer-p= gate composer editing.
+- Inline *context references* already exist: =e-chat--insert-context-reference=
+  inserts a read-only atom carrying an =e-chat-context-reference= plist
+  (=:uri :label :text ...=); =e-chat--composer-document= walks the composer and
+  emits =:text= plus ordered =:references=; =e-chat--composer-submission=
+  formats them via =e-chat-format-reference-prompt=; =e-chat-submit= sends them.
+- The composer deliberately disables completion frameworks
+  (=e-chat--disable-completion= turns off company/corfu/capf), so prefix
+  completion must be implemented as explicit, self-contained UI rather than
+  relying on =completion-at-point=.
+- Project root resolution already exists: =e-chat--project-root= (projectile,
+  then =project.el=, then git root, then directory).
+- The keymap is built in =e-chat--make-mode-map=; =RET= is =newline=,
+  =C-c C-c= is =e-chat-submit=, and =self-insert-command= is in
+  =e-chat--composer-edit-commands=.
+- Prompts are provided by feat 30 (=e-harness-prompts=, =e-prompt-render=).
+
+The =@= file-reference idea is a natural sibling of the existing buffer-context
+reference (=e-chat-add-context-to-latest=), reusing the same inline atom; the
+=!= command output is also just another inline reference whose body is captured
+output; =/= produces composer text via the prompt renderer.
+
+* Prerequisite
+
+Feat 30 (Prompt Capabilities) must be implemented first.  The =/= shortcut
+depends on =e-harness-prompts=, =e-harness-prompt-by-name=, and
+=e-prompt-render=.  The =!= and =@= shortcuts have no dependency on feat 30 and
+could ship first if desired, but this plan assumes 30 is available so all three
+shortcuts land coherently.
+
+* Non-goals
+
+- Do not replace the composer with a =completion-at-point= / corfu / company
+  integration.  Prefix completion is explicit and self-contained to keep the
+  composer's deliberate completion-disabled policy intact.
+- Do not add a general persistent terminal/REPL inside the chat buffer; =!= runs
+  a one-shot command and captures output.
+- Do not allow =!= to mutate the user's buffers or run interactive programs;
+  it captures stdout/stderr of a non-interactive command.
+- Do not stream long-running =!= command output incrementally in the first
+  slice; run to completion with a timeout and truncation.
+- Do not index the whole filesystem for =@=; scope to the chat session's
+  project root (and workspace roots when available).
+- Do not change the model-facing submission format beyond appending references,
+  which already exists.
+
+* Design
+
+** Trigger model
+
+The three prefixes are *context-sensitive self-insert overrides*, not global
+rebindings of =!=, =@=, =/=.  A prefix triggers only when:
+
+- point is inside the active composer, and
+- for =!=: the character is the first non-whitespace character of the composer
+  input (a leading =!= means "run command"); elsewhere =!= is literal;
+- for =@= and =/=: the character is typed at a word boundary (start of input or
+  preceded by whitespace), so mid-word =@= and =/= (emails, paths, fractions)
+  stay literal.
+
+Implement by binding =!=, =@=, =/= in =e-chat-mode-map= to small commands
+(=e-chat-composer-bang=, =e-chat-composer-at=, =e-chat-composer-slash=) that
+check the trigger condition; when it does not hold they fall back to
+=self-insert-command= so normal typing is unaffected.  Each remains listed as a
+composer edit command so editing invariants are maintained.
+
+** Completion UI
+
+Because the composer disables =completion-at-point=, =@= and =/= use an explicit
+=completing-read= based picker invoked from the trigger command.  This is
+self-contained, works without external completion packages, and respects the
+user's =completing-read= backend (vertico, ido, default) without the composer
+enabling buffer-local completion.
+
+Flow for =@= and =/=:
+
+1. The trigger command runs (it does not insert the prefix character).
+2. It gathers candidates (project files for =@=, prompt names for =/=).
+3. It calls =completing-read= with those candidates.
+4. On selection it inserts the appropriate inline atom or expands the prompt.
+5. On =C-g=/empty it inserts the literal prefix character so the keystroke is
+   not lost.
+
+A later slice may add inline, in-buffer popup completion; the first slice keeps
+the picker in the minibuffer to avoid fighting the composer's completion policy.
+
+** =!= command output as context
+
+=e-chat-composer-bang= (triggered only as the leading char) reads a shell
+command via =read-shell-command=, then:
+
+1. Runs the command non-interactively with =default-directory= bound to the
+   session project root, capturing combined stdout/stderr and exit code.  Use a
+   bounded synchronous run with a configurable timeout
+   (=e-chat-command-output-timeout=, default e.g. 30s) and output truncation
+   (=e-chat-command-output-max-bytes=).
+2. Builds a context reference plist with:
+   - =:uri= like =command://<cmd>= (or a =shell:= scheme) for help-echo/origin;
+   - =:label= a compact form such as =$ <cmd> (exit N)=;
+   - =:text= the captured, truncated output, including the command line and exit
+     status header so the model sees what was run.
+3. Inserts it via =e-chat--insert-context-reference= so it becomes a normal
+   inline atom that serializes through =e-chat--composer-document= and submits
+   through the existing reference path.
+
+Command execution is a side effect and lives in a small shell helper
+(=e-chat--run-shell-command=) in the chat shell, not in core.  Errors
+(non-zero exit, timeout) are captured as output text plus an exit/timeout marker
+rather than aborting composition: the user explicitly asked to put command
+output in context, so a failing command's output is still useful context.  A
+helper-process or Emacs-internal failure (cannot start process) surfaces as a
+normal Emacs error.
+
+** =@= project file references
+
+=e-chat-composer-at= gathers candidate files relative to the session project
+root:
+
+1. Resolve the root via =e-chat--project-root= for the buffer's
+   =default-directory=.  When workspace roots (feat 29) are available for the
+   session, union their file lists; otherwise use the single project root.
+2. Enumerate files using the project's own listing when possible
+   (=project-files= via =project-current=, or =projectile-current-project-files=)
+   and fall back to a bounded recursive scan that honors =.gitignore= via
+   =git ls-files= when inside a git tree.  Cache the candidate list per
+   composer interaction; do not re-scan on every keystroke.
+3. =completing-read= over project-relative paths.
+4. On selection, build a file reference plist:
+   - =:uri= = =file://<abs-path>= ;
+   - =:label= = project-relative path;
+   - =:text= = file contents, read on demand and truncated to a configurable
+     size (=e-chat-file-reference-max-bytes=);
+   - optionally =:start-line=/=:end-line= when a later slice supports
+     =@path:line= ranges (out of scope for the first slice).
+5. Insert via =e-chat--insert-context-reference=.
+
+Reading file contents reuses the same reference-body path as existing
+references, so no new serialization is needed.  Large files are truncated with a
+visible truncation marker in =:text=.
+
+** =/= prompt expansion
+
+=e-chat-composer-slash= drives prompts from feat 30:
+
+1. Resolve the buffer's harness (=e-chat-harness=) and call =e-harness-prompts=
+   to get available prompt specs.
+2. =completing-read= over prompt names, annotated with their descriptions.
+3. On selection, collect parameter values for the chosen
+   =e-prompt-spec=: for each =e-prompt-parameter=, prompt with
+   =read-string= (or =completing-read= for =choice= types), applying defaults
+   and skipping optional empties.  Collection lives in a chat shell helper
+   (=e-chat--collect-prompt-arguments=), keeping core prompt code I/O-free.
+4. Call =e-prompt-render= with the collected arguments to get the final text.
+5. Insert the rendered text into the composer at point as ordinary editable
+   text (not a read-only atom), so the user can review and edit before
+   submitting.
+
+Rendering errors (missing required, unknown argument) signalled by
+=e-prompt-render= are reported via =user-error= and abort the expansion without
+inserting partial text.
+
+** Ownership and boundaries
+
+- All three shortcuts are presentation concerns owned by the chat shell
+  (=lisp/shells/chat/e-chat.el=).  They reuse existing composer primitives
+  (=e-chat--insert-context-reference=, =e-chat--composer-document=,
+  =e-chat-submit=) and existing project resolution (=e-chat--project-root=).
+- =!= command execution (=e-chat--run-shell-command=) is an isolated shell-side
+  side effect; it returns data (output, exit, truncation flag) consumed by the
+  reference builder.
+- =@= file enumeration (=e-chat--project-file-candidates=) is an isolated
+  shell-side helper returning candidate paths.
+- =/= depends only on the feat 30 core contract (=e-harness-prompts=,
+  =e-prompt-render=); argument collection stays in the shell.
+
+No core file changes are required by this feature beyond what feat 30 already
+landed; this keeps the dependency direction from unstable shell toward stable
+core.
+
+** Discoverability
+
+Add a brief mention of the three prefixes to the composer chrome help or
+docstring, and ensure the empty-composer hint (if any) lists =!=, =@=, =/=.
+Keep this minimal; full keybinding docs are out of scope.
+
+* Implementation Plan
+
+** Task 1: Trigger plumbing
+
+Files:
+
+- Modify =lisp/shells/chat/e-chat.el=.
+- Modify =test/e-chat-test.el=.
+
+Steps:
+
+1. Add =e-chat-composer-bang=, =e-chat-composer-at=, =e-chat-composer-slash=
+   commands with the trigger conditions (leading-char for =!=, word-boundary for
+   =@=/=/=), each falling back to =self-insert-command= when the condition fails.
+2. Bind =!=, =@=, =/= in =e-chat--make-mode-map= and add them to
+   =e-chat--composer-edit-commands=.
+3. Test the trigger predicate: leading =!= triggers, mid-line =!= is literal;
+   =@=/=/= at word boundary trigger, mid-word are literal; triggers do nothing
+   outside the composer.
+
+Verification:
+
+#+begin_src sh
+rtk eldev test -f e-chat-test
+#+end_src
+
+** Task 2: =!= command output reference
+
+Files:
+
+- Modify =lisp/shells/chat/e-chat.el=.
+- Modify =test/e-chat-test.el=.
+
+Steps:
+
+1. Add =e-chat--run-shell-command= running a bounded synchronous command in the
+   session project root, returning =(:output :exit :truncated :timed-out)= with
+   timeout and byte-cap defcustoms.
+2. Build a command-output reference plist (=:uri :label :text=) and insert it
+   via =e-chat--insert-context-reference=.
+3. Test (stubbing execution): successful command yields a reference whose
+   submission text contains the command, exit status, and output; non-zero exit
+   and timeout are captured as text, not raised; truncation marker appears for
+   oversized output.
+
+Verification:
+
+#+begin_src sh
+rtk eldev test -f e-chat-test
+#+end_src
+
+** Task 3: =@= project file references
+
+Files:
+
+- Modify =lisp/shells/chat/e-chat.el=.
+- Modify =test/e-chat-test.el=.
+
+Steps:
+
+1. Add =e-chat--project-file-candidates= using =project-files=/projectile/
+   =git ls-files= with a bounded fallback scan, scoped to the session project
+   root (and workspace roots when available).
+2. Add =e-chat--insert-file-reference= reading file contents on demand,
+   truncating to =e-chat-file-reference-max-bytes=, and inserting an inline
+   reference (=:uri file://..= , =:label= relative path, =:text= contents).
+3. Wire =e-chat-composer-at= to gather candidates, =completing-read=, and insert
+   the chosen file reference; literal =@= on cancel.
+4. Test (with a temp project dir): candidate listing returns project files;
+   selecting a file inserts a reference whose submission text includes file
+   contents; oversized files are truncated with a marker.
+
+Verification:
+
+#+begin_src sh
+rtk eldev test -f e-chat-test
+#+end_src
+
+** Task 4: =/= prompt expansion
+
+Files:
+
+- Modify =lisp/shells/chat/e-chat.el=.
+- Modify =test/e-chat-test.el=.
+
+Steps:
+
+1. Add =e-chat--collect-prompt-arguments= prompting per parameter
+   (=read-string=/=completing-read=), applying defaults and skipping optional
+   empties.
+2. Wire =e-chat-composer-slash= to call =e-harness-prompts= on the buffer
+   harness, =completing-read= the prompt, collect arguments, call
+   =e-prompt-render=, and insert the rendered text as editable composer text.
+3. Report =e-prompt-render= validation errors via =user-error= without inserting
+   partial text; literal =/= on cancel.
+4. Test (with a fixture prompt-contributing harness and stubbed argument
+   collection): selecting a prompt inserts rendered text; defaults apply;
+   render errors abort cleanly.
+
+Verification:
+
+#+begin_src sh
+rtk eldev test -f e-chat-test -f e-prompts-test
+#+end_src
+
+** Task 5: Discoverability and live verification
+
+Files:
+
+- Modify =lisp/shells/chat/e-chat.el= (composer hint/docstring only).
+- Modify =test/e-chat-test.el= if the hint is asserted.
+
+Steps:
+
+1. Add a concise composer hint mentioning =!=, =@=, =/=.
+2. Reload the running Emacs and verify each shortcut live in a scratch chat
+   session: =!= captures a trivial command (=echo hi=), =@= inserts a known
+   project file, =/= expands a built-in/fixture prompt.
+
+Verification:
+
+#+begin_src sh
+rtk eldev test -f e-chat-test
+#+end_src
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+* Acceptance Criteria
+
+- Leading =!= in the composer prompts for a shell command, runs it in the
+  session project root with timeout and truncation, and inserts the output as an
+  inline reference that submits with the turn; mid-line =!= stays literal.
+- =@= at a word boundary offers project file completion and inserts the chosen
+  file as an inline reference whose body is the (truncated) file contents;
+  mid-word =@= stays literal.
+- =/= at a word boundary offers prompt completion over =e-harness-prompts=,
+  collects parameters, renders via =e-prompt-render=, and inserts editable
+  composer text; mid-word =/= stays literal.
+- All three reuse existing composer reference/submission machinery; no new
+  submission channel is added.
+- The composer's completion-disabled policy is preserved; completion is explicit
+  =completing-read=.
+- Cancelling any picker leaves the literal prefix character so no keystroke is
+  lost.
+- Core files are unchanged beyond the feat 30 contract; shortcuts live in the
+  chat shell.
+
+* Test Plan
+
+Focused tests during development:
+
+#+begin_src sh
+rtk eldev test -f e-chat-test
+#+end_src
+
+Cross-feature tests once =/= is wired:
+
+#+begin_src sh
+rtk eldev test -f e-chat-test -f e-prompts-test -f e-harness-test
+#+end_src
+
+After changing loaded Elisp files, reload the running Emacs from the repo root
+and verify all three shortcuts live:
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+* Architecture Review Questions
+
+1. If this work package stopped here, would the project be better off?  Yes:
+   three independent, useful composer accelerators land on top of existing
+   primitives.
+2. What final direction does this move toward?  A fast, live-configurable
+   composer where users pull context (commands, files) and reusable prompts into
+   a turn with one keystroke.
+3. Which decisions are likely to change, uncertain, or stable?  The inline
+   reference contract and submission path are stable; the completion UI
+   (minibuffer now, possible inline popup later) is uncertain and kept local to
+   the trigger commands.
+4. What component owns this behavior, and why?  The chat shell owns it: these
+   are presentation/interaction concerns with real side effects (process run,
+   file read, minibuffer).
+5. Does this change increase or reduce coupling?  Low coupling: shortcuts depend
+   on narrow existing primitives and the feat 30 prompt contract.
+6. Did any dependency start pointing the wrong way?  No: the shell depends on
+   stable core (prompts, references), not the reverse.
+7. Could any side effect be moved outward?  Side effects (exec, file read,
+   minibuffer) already live at the shell edge in small helpers.
+8. Are the abstractions semantically real?  Yes: =!= output, =@= file, and
+   buffer context are all genuine "inline reference" instances; =/= reuses the
+   prompt-render function.
+9. What compatibility expectations apply?  Composer typing behavior is preserved
+   via word-boundary/leading-char triggers and self-insert fallback.
+10. What legacy code can we remove now?  None; additive.
+11. Where are expected errors handled, and where do unexpected errors surface?
+    Command failures/timeouts and render-validation errors are handled in the
+    shell; process-start and unexpected errors surface as Emacs errors.
+12. What tests prove the core behavior independently of the full system?
+    Trigger predicates, command-output reference building, file-candidate
+    listing, and prompt argument collection are testable with stubs in
+    =test/e-chat-test.el=, plus feat 30's =test/e-prompts-test.el=.
