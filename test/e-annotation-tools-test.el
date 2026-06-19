@@ -19,6 +19,7 @@
 (require 'e-tools)
 (require 'e-annotation-tools)
 (require 'e-text-editing)
+(require 'simply-annotate)
 
 (defmacro e-annotation-tools-test--with-project (file-var &rest body)
   "Run BODY in a temp project with a sample Org FILE-VAR bound to its path.

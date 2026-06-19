@@ -80,8 +80,10 @@
    :id 'text-editing
    :name "Text Editing"
    :capabilities
-   (list (e-text-editing-annotations-capability-create)
-         (e-annotation-tools-capability-create))))
+   (append
+    (list (e-text-editing-annotations-capability-create))
+    (when (e-annotation-tools-available-p)
+      (list (e-annotation-tools-capability-create))))))
 
 (provide 'e-text-editing)
 
