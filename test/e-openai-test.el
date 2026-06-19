@@ -247,6 +247,67 @@
     (should-not (assoc "originator" (plist-get captured :headers)))
     (should-not (assoc "OpenAI-Beta" (plist-get captured :headers)))))
 
+(ert-deftest e-openai-test-codex-provider-omits-prompt-cache-retention ()
+  "The ChatGPT-backed Codex endpoint keeps cache keys but omits retention."
+  (let* ((token (e-openai-test--jwt))
+         (auth-file (make-temp-file "e-auth" nil ".json"
+                                    (json-encode
+                                     (list :tokens
+                                           (list :access_token token
+                                                 :refresh_token "refresh")))))
+         (captured nil)
+         (backend
+          (e-openai-codex-backend-create
+           :auth-file auth-file
+           :request-function
+           (cl-function
+            (lambda (&key url headers body)
+              (ignore url headers)
+              (setq captured (json-read-from-string body))
+              "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")))))
+    (unwind-protect
+        (progn
+          (e-backend-stream backend
+                            :messages '((:role user :content "hello"))
+                            :options '(:model "gpt-test"
+                                       :prompt-cache-key "cache-key"
+                                       :prompt-cache-retention "24h")
+                            :on-item #'ignore)
+          (should (equal (alist-get 'prompt_cache_key captured)
+                         "cache-key"))
+          (should-not (assq 'prompt_cache_retention captured)))
+      (delete-file auth-file))))
+
+(ert-deftest e-openai-test-token-provider-keeps-prompt-cache-retention ()
+  "Token-auth Responses providers keep explicit prompt-cache retention."
+  (let* ((process-environment
+          (cons "OPENAI_GATEWAY_API_KEY=test-gateway-token" process-environment))
+         (e-openai-model-providers
+          '((openai-compatible-gateway
+             :name "OpenAI-Compatible Gateway"
+             :base-url "https://gateway.example.test"
+             :env-key "OPENAI_GATEWAY_API_KEY"
+             :wire-api responses
+             :requires-openai-auth nil)))
+         (captured nil)
+         (backend
+          (e-openai-backend-create
+           :provider 'openai-compatible-gateway
+           :request-function
+           (cl-function
+            (lambda (&key url headers body)
+              (ignore url headers)
+              (setq captured (json-read-from-string body))
+              "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")))))
+    (e-backend-stream backend
+                      :messages '((:role user :content "hello"))
+                      :options '(:model "gateway-model"
+                                 :prompt-cache-key "cache-key"
+                                 :prompt-cache-retention "24h")
+                      :on-item #'ignore)
+    (should (equal (alist-get 'prompt_cache_key captured) "cache-key"))
+    (should (equal (alist-get 'prompt_cache_retention captured) "24h"))))
+
 (ert-deftest e-openai-test-backend-captures-default-provider-at-create-time ()
   "Backends created from the default provider do not follow later default changes."
   (let* ((process-environment
