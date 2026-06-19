@@ -27,6 +27,15 @@
 (define-error 'e-web-unsupported-url "Web URL is unsupported")
 (define-error 'e-web-unsupported-content "Web response content is unsupported")
 
+(defcustom e-web-search-backend 'bx
+  "Active web search backend used by `web_search'.
+`bx' shells out to the Brave-backed bx CLI; `ddgr' shells out to the
+DuckDuckGo ddgr CLI.  Override this to switch the single active backend;
+there is no automatic fallback."
+  :type '(choice (const :tag "bx (Brave CLI)" bx)
+                 (const :tag "ddgr (DuckDuckGo CLI)" ddgr))
+  :group 'e)
+
 (defcustom e-web-bx-program "bx"
   "Program used for the bx web search backend."
   :type 'string
@@ -34,6 +43,16 @@
 
 (defcustom e-web-bx-timeout 30
   "Default timeout in seconds for bx web search calls."
+  :type 'number
+  :group 'e)
+
+(defcustom e-web-ddgr-program "ddgr"
+  "Program used for the ddgr web search backend."
+  :type 'string
+  :group 'e)
+
+(defcustom e-web-ddgr-timeout 30
+  "Default timeout in seconds for ddgr web search calls."
   :type 'number
   :group 'e)
 
@@ -122,10 +141,12 @@ LABEL describes the executable in error messages."
         (buffer-string))
     ""))
 
-(defun e-web-tools--run-process (program args timeout)
-  "Run PROGRAM with ARGS and TIMEOUT, returning stdout text."
+(defun e-web-tools--run-process (program args timeout &optional label)
+  "Run PROGRAM with ARGS and TIMEOUT, returning stdout text.
+LABEL names the backend in error messages and defaults to \"backend\"."
   (let ((stdout (generate-new-buffer " *e-web-stdout*"))
         (stderr (generate-new-buffer " *e-web-stderr*"))
+        (label (or label "backend"))
         (done nil)
         (exit-code nil)
         process)
@@ -155,14 +176,16 @@ LABEL describes the executable in error messages."
             (when (process-live-p process)
               (kill-process process))
             (signal 'e-web-backend-timeout
-                    (list (format "bx backend timed out after %s seconds"
+                    (list (format "%s timed out after %s seconds"
+                                  label
                                   timeout))))
           (let ((out (e-web-tools--buffer-string stdout))
                 (err (string-trim (e-web-tools--buffer-string stderr))))
             (unless (zerop exit-code)
               (signal 'e-web-backend-error
                       (list (string-trim
-                             (format "bx backend exited with exit code %s%s"
+                             (format "%s exited with exit code %s%s"
+                                     label
                                      exit-code
                                      (if (string-empty-p err)
                                          ""
@@ -224,6 +247,54 @@ LABEL describes the executable in error messages."
       (push (e-web-tools--normalize-search-result result rank) results))
     (nreverse results)))
 
+(defun e-web-tools--normalize-ddgr-result (result rank)
+  "Normalize ddgr RESULT at one-based RANK."
+  (let ((normalized (list :rank rank
+                          :title (plist-get result :title)
+                          :url (plist-get result :url))))
+    (e-web-tools--put-when normalized :snippet (plist-get result :abstract))))
+
+(defun e-web-tools--normalize-ddgr-results (payload)
+  "Return normalized web search results from ddgr PAYLOAD.
+PAYLOAD is the flat result list ddgr emits with --json."
+  (let ((rank 0)
+        results)
+    (dolist (result payload)
+      (setq rank (1+ rank))
+      (push (e-web-tools--normalize-ddgr-result result rank) results))
+    (nreverse results)))
+
+(defun e-web-tools--ddgr-freshness (freshness)
+  "Map a bx-style FRESHNESS token to ddgr's -t span (d/w/m/y), else nil."
+  (pcase freshness
+    ((or "pd" "d" "day") "d")
+    ((or "pw" "w" "week") "w")
+    ((or "pm" "m" "month") "m")
+    ((or "py" "y" "year") "y")
+    (_ nil)))
+
+(defun e-web-tools--ddgr-argv (arguments)
+  "Return ddgr argv for model-facing ARGUMENTS.
+Site include/exclude is expressed as DuckDuckGo `site:'/`-site:' query
+operators because ddgr's --site accepts only a single domain."
+  (let* ((query (e-web-tools--argument-string arguments :query))
+         (terms (list query)))
+    (dolist (site (e-web-tools--string-list arguments :include_site))
+      (unless (stringp site)
+        (signal 'wrong-type-argument (list 'stringp site)))
+      (setq terms (append terms (list (concat "site:" site)))))
+    (dolist (site (e-web-tools--string-list arguments :exclude_site))
+      (unless (stringp site)
+        (signal 'wrong-type-argument (list 'stringp site)))
+      (setq terms (append terms (list (concat "-site:" site)))))
+    (let ((argv (list "--json" "--noprompt")))
+      (when-let ((count (e-web-tools--optional-number arguments :count)))
+        (setq argv (append argv (list "--num" (number-to-string count)))))
+      (when-let* ((freshness (e-web-tools--optional-string arguments :freshness))
+                  (span (e-web-tools--ddgr-freshness freshness)))
+        (setq argv (append argv (list "--time" span))))
+      (append argv terms))))
+
 (defun e-web-tools--search-argv (arguments)
   "Return bx web argv for model-facing ARGUMENTS."
   (let ((argv (list "web" (e-web-tools--argument-string arguments :query))))
@@ -241,23 +312,46 @@ LABEL describes the executable in error messages."
       (setq argv (append argv (list "--exclude-site" site))))
     argv))
 
-(defun e-web-tools--search (arguments)
-  "Run web search for ARGUMENTS."
-  (let* ((query (e-web-tools--argument-string arguments :query))
-         (program (e-web-tools--executable-path e-web-bx-program
-                                                "bx backend"))
+(defun e-web-tools--search-bx (arguments)
+  "Run a bx web search for ARGUMENTS, returning (PAYLOAD . RESULTS)."
+  (let* ((program (e-web-tools--executable-path e-web-bx-program "bx backend"))
          (payload (e-web-tools--parse-json
                    (e-web-tools--run-process
                     program
                     (e-web-tools--search-argv arguments)
-                    e-web-bx-timeout)))
+                    e-web-bx-timeout
+                    "bx backend"))))
+    (cons payload (e-web-tools--normalize-search-results payload))))
+
+(defun e-web-tools--search-ddgr (arguments)
+  "Run a ddgr web search for ARGUMENTS, returning (PAYLOAD . RESULTS)."
+  (let* ((program (e-web-tools--executable-path e-web-ddgr-program "ddgr backend"))
+         (payload (e-web-tools--parse-json
+                   (e-web-tools--run-process
+                    program
+                    (e-web-tools--ddgr-argv arguments)
+                    e-web-ddgr-timeout
+                    "ddgr backend"))))
+    (cons payload (e-web-tools--normalize-ddgr-results payload))))
+
+(defun e-web-tools--search (arguments)
+  "Run web search for ARGUMENTS using `e-web-search-backend'."
+  (let* ((query (e-web-tools--argument-string arguments :query))
+         (backend e-web-search-backend)
+         (run (pcase backend
+                ('bx #'e-web-tools--search-bx)
+                ('ddgr #'e-web-tools--search-ddgr)
+                (_ (signal 'e-web-backend-unavailable
+                           (list (format "Unknown web search backend: %s"
+                                         backend))))))
+         (payload-results (funcall run arguments))
          (content (list :capability "web.search"
-                        :backend "bx"
+                        :backend (symbol-name backend)
                         :query query
-                        :results (e-web-tools--normalize-search-results payload)
+                        :results (cdr payload-results)
                         :diagnostics nil)))
     (when (e-web-tools--truthy-p (plist-get arguments :include_raw))
-      (setq content (append content (list :raw payload))))
+      (setq content (append content (list :raw (car payload-results)))))
     content))
 
 (defun e-web-tools--url-scheme (url)
@@ -708,7 +802,7 @@ LABEL describes the executable in error messages."
   (e-tools-register
    registry
    :name "web_search"
-   :description "Search the web using the configured bx backend."
+   :description "Search the web using the configured backend (e-web-search-backend: bx or ddgr)."
    :parameters '(:type "object"
                  :properties (:query (:type "string")
                               :count (:type "number")

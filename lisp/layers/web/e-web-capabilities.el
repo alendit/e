@@ -29,7 +29,7 @@ Use `web_search` for search queries, `web_fetch` for passive HTTP reads, and `we
      "Web search reference"
      "# Web search
 
-Use `web_search` for query discovery. It calls the configured bx web backend directly and returns normalized results with rank, title, URL, snippet, source, and date when available.")
+Use `web_search` for query discovery. It calls the configured web search backend (`e-web-search-backend': `bx', the Brave-backed bx CLI, or `ddgr', the DuckDuckGo CLI) and returns normalized results with rank, title, URL, snippet, and (bx only) source and date when available. The backend is single-select; there is no automatic fallback.")
     ("refs/fetch.md"
      "Web fetch reference"
      "# Web fetch
