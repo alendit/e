@@ -13,8 +13,12 @@
 
 (require 'ert)
 (require 'e)
+(require 'e-backend)
+(require 'e-capabilities)
 (require 'e-file-capabilities)
+(require 'e-harness)
 (require 'e-resources)
+(require 'e-session)
 (require 'e-tools)
 
 (defun e-file-capabilities-test--tool-names (capability)
@@ -82,6 +86,36 @@
   (should (equal (e-file-capabilities-test--tool-names
                   (e-shell-process-capability-create default-directory))
                  '("bash"))))
+
+(ert-deftest e-file-capabilities-test-mutation-resolves-secondary-workspace-root ()
+  "File mutation resolves absolute paths into a configured secondary root.
+The capability asks `e-harness-workspace-roots' at registration time, so a
+session whose primary root has configured extras can edit files in those
+extras."
+  (let* ((primary (file-name-as-directory (make-temp-file "e-fc-primary-" t)))
+         (secondary (file-name-as-directory (make-temp-file "e-fc-secondary-" t)))
+         (sec-file (expand-file-name "note.txt" secondary))
+         (store (e-session-store-create))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :sessions store))
+         (e-workspace-roots-alist (list (cons primary (list secondary))))
+         (resources (e-resources-registry-create)))
+    (unwind-protect
+        (progn
+          (e-harness-create-session
+           harness :id "s1" :metadata (list :project-root primary))
+          (e-capabilities-register-resource-methods
+           (e-file-mutation-capability-create primary)
+           resources
+           :harness harness :session-id "s1")
+          (e-resources-write resources (concat "file://" sec-file) "hello")
+          (should (equal (with-temp-buffer
+                           (insert-file-contents sec-file)
+                           (buffer-string))
+                         "hello")))
+      (delete-directory primary t)
+      (delete-directory secondary t))))
 
 (provide 'e-file-capabilities-test)
 
