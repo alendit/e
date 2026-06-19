@@ -84,6 +84,7 @@
                     e-org-canvas-prompt-document
                     e-org-canvas-prompt
                     e-org-canvas-reopen-last-prompt
+                    e-org-canvas-respond-to-threads
                     e-org-canvas-list-sessions
                     e-org-canvas-list-project-sessions
                     e-org-canvas-resume
@@ -1438,11 +1439,80 @@ relied on `e-chat--running-status-rendered-hook' to follow the bottom."
                           prompt-document
                           prompt
                           reopen-last-prompt
+                          respond-to-threads
                           list-sessions
                           list-project-sessions
                           resume))
       (should (memq command-id command-ids))))
   (should (eq (e-shell-id (e-shell-get 'org-canvas)) 'org-canvas)))
+
+(ert-deftest e-org-canvas-test-open-threads-filters-resolved ()
+  "Only threads lacking a verdict and terminal status are treated as open."
+  (should (e-org-canvas--thread-open-p '(:thread-id "a" :verdict nil
+                                         :status "open")))
+  (should (e-org-canvas--thread-open-p '(:thread-id "b" :verdict nil
+                                         :status "in-progress")))
+  (should-not (e-org-canvas--thread-open-p '(:thread-id "c"
+                                             :verdict "accepted"
+                                             :status "open")))
+  (should-not (e-org-canvas--thread-open-p '(:thread-id "d" :verdict nil
+                                             :status "resolved")))
+  (should-not (e-org-canvas--thread-open-p '(:thread-id "e" :verdict nil
+                                             :status "closed"))))
+
+(ert-deftest e-org-canvas-test-threads-prompt-enumerates-open-threads ()
+  "The seeded prompt lists each open thread with its id, region, and text."
+  (let ((prompt (e-org-canvas--threads-prompt
+                 "/tmp/notes.org"
+                 '((:thread-id "t-1" :start 5 :end 9 :proposal "tighten intro")
+                   (:thread-id "t-2" :start 20 :end 30 :proposal nil)))))
+    (should (string-match-p "Open threads (2)" prompt))
+    (should (string-match-p "thread t-1 \\[chars 5\\.\\.9\\]: tighten intro"
+                            prompt))
+    (should (string-match-p "thread t-2 \\[chars 20\\.\\.30\\]: (no text)"
+                            prompt))
+    (should (string-match-p "annotation_resolve" prompt))))
+
+(ert-deftest e-org-canvas-test-respond-to-threads-seeds-document-prompt ()
+  "Responding to threads opens a document-scoped pane listing open threads."
+  (let ((harness (e-org-canvas-test--harness))
+        input)
+    (e-harness-create-session harness :id "session-1")
+    (with-temp-buffer
+      (org-mode)
+      (setq buffer-file-name "/tmp/e-org-canvas-threads.org")
+      (let ((target (current-buffer)))
+        (cl-letf (((symbol-function 'e-org-canvas--ensure-current-session)
+                   (lambda () (list harness "session-1" target)))
+                  ((symbol-function 'e-org-canvas--open-threads)
+                   (lambda (_file)
+                     '((:thread-id "t-1" :start 1 :end 4
+                        :proposal "clarify scope"))))
+                  ((symbol-function 'display-buffer)
+                   (lambda (buffer &rest _args)
+                     (setq input buffer)
+                     (set-window-buffer (selected-window) buffer)
+                     (selected-window))))
+          (e-org-canvas-respond-to-threads))))
+    (unwind-protect
+        (with-current-buffer input
+          (should (derived-mode-p 'e-org-canvas-input-mode))
+          (should (equal e-org-canvas-input--scope 'document))
+          (should (string-match-p "clarify scope" (e-chat--composer-text))))
+      (when (buffer-live-p input)
+        (kill-buffer input)))))
+
+(ert-deftest e-org-canvas-test-respond-to-threads-requires-saved-file ()
+  "An unsaved canvas has no file-keyed threads to answer."
+  (let ((harness (e-org-canvas-test--harness)))
+    (e-harness-create-session harness :id "session-1")
+    (with-temp-buffer
+      (org-mode)
+      (let ((target (current-buffer)))
+        (cl-letf (((symbol-function 'e-org-canvas--ensure-current-session)
+                   (lambda () (list harness "session-1" target))))
+          (should-error (e-org-canvas-respond-to-threads)
+                        :type 'user-error))))))
 
 (provide 'e-org-canvas-test)
 

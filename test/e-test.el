@@ -40,6 +40,7 @@
     e-org-canvas-prompt-document
     e-org-canvas-prompt
     e-org-canvas-reopen-last-prompt
+    e-org-canvas-respond-to-threads
     e-org-canvas-list-sessions
     e-org-canvas-list-project-sessions
     e-org-canvas-resume
