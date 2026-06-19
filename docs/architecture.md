@@ -242,13 +242,83 @@ Important source paths:
 Layers are stateless presets over capabilities. `lisp/layers/e-layers.el` owns
 known layer specs and factory resolution. `lisp/defaults/e-default-layers.el`
 registers built-in specs for `e`, `e-dev`, `agents-std-context`, `harness-base`,
-`os-base`, `emacs-base`, `web`, and `text-editing`.
+`os-base`, `emacs-base`, `web`, `text-editing`, `org-canvas`, and
+`project-local`. Each registered spec is a lazy `(:id :name :summary :feature
+:factory)` record; the layer's concrete feature module is required only when the
+layer is actually created.
 
 `lisp/defaults/e-default-harnesses.el` registers the lazy `:chat-default` harness
-factory. The default chat harness uses the OpenAI-like provider path, persistent
-sessions, the `chat-session` capability, and default layer ids from
-`e-default-chat-layer-ids`. Runtime layer enable/disable operations update that
-custom option through the default harness sync path.
+factory. The default chat harness uses the Anthropic Messages provider path,
+persistent sessions, an internal `chat-session` capability, and default layer
+ids from `e-default-chat-layer-ids`. Runtime layer enable/disable operations
+update that custom option through the default harness sync path.
+
+#### Default Chat Layer Set
+
+`e-default-chat-layer-ids` is the source-of-truth preset attached to the default
+chat harness. It activates these registered layers in order:
+
+```
+agents-std-context  harness-base  e  os-base  emacs-base
+web  text-editing  org-canvas  project-local
+```
+
+The default chat harness additionally activates one non-registered internal
+layer, `chat-session` (the `chat-session` capability), which is always recreated
+by the factory and is excluded from the recorded `e-default-chat-layer-ids`.
+
+#### Registered Layers And Their Capabilities
+
+| Layer (`:id`) | Name | In default chat set | Capabilities defined (`:id`) |
+| --- | --- | --- | --- |
+| `e` | e | yes | `e-runtime-context`, `layer-selection`, `context-inspection`, `session-compaction` |
+| `e-dev` | e Dev | no | `context-inspection` |
+| `agents-std-context` | Agents Std Context | yes | `agents-std-context` |
+| `harness-base` | Harness Base | yes | `harness-base-context`, `session-tmp-resources`, `tool-output-truncation` |
+| `os-base` | OS Base | yes | `base-guidance`, `file-handling`, `shell-process` |
+| `emacs-base` | Emacs Base | yes | `emacs-awareness`, `buffer-read`, `selection-context`, `buffer-edit`, `elisp-eval` |
+| `web` | Web | yes | `web` (Web Access) |
+| `text-editing` | Text Editing | yes | `annotations`, plus `annotation-tools` when the annotation backend is available |
+| `org-canvas` | Org Canvas | yes | `org-canvas` |
+| `project-local` | Project Local | yes | aggregate: discovered project `.e/layers/` capabilities plus a project guidance capability (varies per repository) |
+| `chat-session` | Chat Session | internal only | `chat-session` |
+
+The `e` layer is where runtime self-management lives: layer selection, context
+inspection, runtime context, and the `compact_session` tool. `harness-base`
+supplies harness-owned support (the `tmp://` resources and tool-output
+truncation guards) and is not optional user-facing behavior. `os-base` and
+`emacs-base` are the execution surfaces (workspace files/shell and live Emacs
+buffers/elisp). `project-local` is an aggregate layer whose capabilities are
+discovered from the project root, so its concrete capability set is
+repository-dependent rather than fixed.
+
+#### Capabilities In `harness-base`, `os-base`, And `emacs-base`
+
+The three support/execution layers above are defined in
+`lisp/layers/harness/e-harness-base.el`, `lisp/layers/base/e-base.el`, and
+`lisp/layers/emacs/e-emacs-base.el`. What each of their capabilities actually
+contributes:
+
+| Layer | Capability (`:id`) | Contributes |
+| --- | --- | --- |
+| `harness-base` | `harness-base-context` | Instructions only (priority 240): the reasoning-message guidance. No tools/resources. |
+| `harness-base` | `session-tmp-resources` | Resource methods for the `tmp://` scheme (session-scoped read/write/edit of temporary text resources). |
+| `harness-base` | `tool-output-truncation` | A `:post-tool-call` hook (`50-tool-output-truncation`) that replaces oversized tool output with a bounded preview plus metadata. |
+| `os-base` | `base-guidance` | Instructions only (priority 230): use workspace file/shell tools; never traverse outside the project. No tools/resources. |
+| `os-base` | `file-handling` | `resource_sync_status` tool + read/write/edit `file://` resource methods, scoped to workspace roots. |
+| `os-base` | `shell-process` | The `bash` tool, rooted at the workspace directory. |
+| `emacs-base` | `emacs-awareness` | Instructions (priority 300) + a context provider injecting visible-buffer context. No tools. |
+| `emacs-base` | `buffer-read` | `list_buffers` tool + read-only `buffer://` resource method. |
+| `emacs-base` | `selection-context` | Nothing yet — placeholder capability reserved for future selection context. |
+| `emacs-base` | `buffer-edit` | `save_buffer` tool + writable `buffer://` resource method (live buffer mutation). |
+| `emacs-base` | `elisp-eval` | The `run_elisp` tool for explicit Emacs Lisp evaluation. |
+
+The contribution shape is consistent across the three layers: `*-context` /
+`*-guidance` / `*-awareness` capabilities carry only instructions or a read-only
+context provider; the remaining capabilities each own one cohesive
+tool-and/or-resource surface (file I/O, shell, buffer I/O, elisp). `harness-base`
+is the only one of the three that contributes a lifecycle hook, and
+`selection-context` is an intentional empty placeholder.
 
 The layer-selection capability and shell provide operator commands for enabling,
 disabling, and toggling registered layers without making the chat shell own
@@ -289,7 +359,7 @@ the chat shell, session store, or harness lifecycle policy.
 ### Execution Capabilities
 
 The base OS capabilities live under `lisp/layers/base/`. `os-base` packages
-`base-guidance`, `file-inspection`, `file-mutation`, and `shell-process`.
+`base-guidance`, `file-handling`, and `shell-process`.
 `file://` read/write/edit methods enforce the resource operation contracts.
 The `bash` tool runs process commands and streams output through a file-backed
 collector so large output can be represented by bounded previews plus `tmp://`

@@ -53,30 +53,15 @@ root when no session roots are resolvable."
    :instruction-priority instruction-priority
    :instructions instructions))
 
-(defun e-file-inspection-capability-create (&optional directory)
-  "Create a read-only file inspection capability rooted at DIRECTORY."
-  (let ((root (e-file-capabilities--directory directory)))
-    (e-capability-create
-     :id 'file-inspection
-     :name "File Inspection"
-     :tools (list (lambda (registry &rest context)
-                    (e-base-tools-register-resource-sync-status
-                     registry
-                     (e-file-capabilities--context-roots root context))))
-     :resource-methods
-     (list (e-capability-resource-method-provider-create
-            :handler
-            (lambda (registry &rest context)
-              (e-base-tools-register-file-read-resource
-               registry
-               (e-file-capabilities--context-roots root context))))))))
+(defun e-file-handling-capability-create (&optional directory)
+  "Create a file handling capability rooted at DIRECTORY.
 
-(defun e-file-mutation-capability-create (&optional directory)
-  "Create a file mutation capability rooted at DIRECTORY."
+Registers read/write/edit `file://' resource methods plus the
+`resource_sync_status' tool, scoped to the workspace roots."
   (let ((root (e-file-capabilities--directory directory)))
     (e-capability-create
-     :id 'file-mutation
-     :name "File Mutation"
+     :id 'file-handling
+     :name "File Handling"
      :tools (list (lambda (registry &rest context)
                     (e-base-tools-register-resource-sync-status
                      registry

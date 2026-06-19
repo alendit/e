@@ -36,8 +36,7 @@ the project root (`.`), not the filesystem or home directory."
      :capabilities (list (e-base-guidance-capability-create
                           e-base-instructions
                           :instruction-priority 230)
-                         (e-file-inspection-capability-create root)
-                         (e-file-mutation-capability-create root)
+                         (e-file-handling-capability-create root)
                          (e-shell-process-capability-create root)))))
 
 (provide 'e-base)
