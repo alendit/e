@@ -12,6 +12,7 @@ State values for coding agents:
 | Closed | compaction-empty-summary/ | Compaction Empty Summary |
 | Closed | backend-empty-output-masks-provider-html-error/ | Backend Empty Output Masks Provider HTML Error |
 | Closed | openai-codex-prompt-cache-retention/ | OpenAI Codex Prompt Cache Retention |
+| Closed | default-chat-hardcoded-backend-provider/ | Default Chat Hardcoded Backend Provider |
 | Closed | org-canvas-input-progress-bottom/ | Org Canvas Input Progress Bottom |
 | Closed | org-canvas-new-file-directory/ | Org Canvas New File Directory Selection Broke Folder Workflow |
 | Closed | empty-skill-description-crashes-context/ | Empty Skill Description Crashes Context |

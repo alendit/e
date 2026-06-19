@@ -1,0 +1,113 @@
+#+title: Investigation: Default Chat Hardcoded Backend Provider
+#+startup: overview
+
+* Investigation
+
+** Source inspection
+
+- =lisp/defaults/e-default-harnesses.el= hardcoded the default chat harness to
+  require =e-anthropic=, call =e-anthropic-create-harness=, and fall back to
+  =e-anthropic-default-provider=.
+- The same factory appended Anthropic-specific prompt-cache defaults to the
+  harness default options.
+- =e-default-harnesses-startup= syncs cached default instances from their
+  factories after reload, so a live reload could replace a previously configured
+  default chat backend with the package's Anthropic factory result.
+
+** Root cause
+
+The package default chat factory selected a concrete backend provider. That
+violated the provider-neutral harness contract and made reload capable of
+overwriting a user-configured backend with Anthropic.
+
+** Fix
+
+- Added =e-default-chat-harness-factory= as an explicit user-configuration
+  variable. Its default is nil.
+- =e-default-chat-harness-create= now creates an explicit unconfigured backend
+  when no factory is configured from config.el/config.org and the user has not
+  replaced =:chat-default= in =e-default-harness-specs=.
+- The =:provider= argument is rejected so provider selection cannot slip back
+  into package defaults.
+- Default chat creation no longer requires =e-anthropic= and no longer adds
+  provider-specific prompt-cache defaults.
+- Startup sync refreshes backend/default option/runtime fields only when a
+  configured factory or custom default spec exists. Without a configured default
+  chat factory, startup still repairs shifted session slots and reconciles
+  layers, but replaces cached backend/default options with an explicit
+  unconfigured backend.
+
+** Verification
+
+- Added focused defaults tests for:
+  - unconfigured default chat backend without a configured factory;
+  - rejected =:provider= argument;
+  - configured factory/session-store delegation;
+  - provider-specific option preservation;
+  - startup replacing a cached backend with an explicit unconfigured backend
+    when no configured factory exists.
+- Added =e-chat-test-reload-buffers-preserves-current-harness-without-default=
+  so startup/reload preserves a live chat buffer's current harness when default
+  chat backend configuration is absent.
+- Added
+  =e-chat-test-reload-buffers-preserves-instance-harness-without-backend= for
+  instance-backed buffers whose configured factory cannot create a backend.
+- Updated =e-dev-test-reload-refreshes-defaults= to install a configured fake
+  chat backend before it deliberately forces default harness creation.
+- Ran:
+
+  #+begin_src sh
+  rtk eldev test -f test/e-defaults-test.el e-defaults-test-chat-harness-uses-unconfigured-backend-without-factory e-defaults-test-startup-marks-chat-backend-unconfigured-without-config-factory
+  #+end_src
+
+  Result: 2 tests, 2 expected, 0 unexpected.
+
+- Ran:
+
+  #+begin_src sh
+  rtk eldev test -f test/e-defaults-test.el
+  #+end_src
+
+  Result: 23 tests, 23 expected, 0 unexpected.
+
+- Ran:
+
+  #+begin_src sh
+  rtk eldev test -f test/e-chat-test.el e-chat-test-reload-buffers-refreshes-existing-chat-harness e-chat-test-reload-buffers-preserves-current-harness-without-default e-chat-test-reload-buffers-preserves-instance-harness-without-backend
+  rtk eldev test -f test/e-dev-test.el e-dev-test-reload-refreshes-defaults
+  rtk eldev test -f test/e-test.el e-test-startup-loads-shell-providers e-test-startup-refreshes-chat-shell-keymaps e-test-autoloads-expose-chat-commands-at-startup e-test-symlinked-package-load-resolves-real-source-directory
+  #+end_src
+
+  Result: all selected tests passed.
+
+- Ran:
+
+  #+begin_src sh
+  rtk eldev test
+  #+end_src
+
+  Result: 815 tests, 814 expected, 0 unexpected, 1 skipped.
+
+** Live Emacs inspection
+
+- Reloaded the running Emacs:
+
+  #+begin_src sh
+  emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+  #+end_src
+
+  Result: reloaded from the project root.
+
+- Ran a bounded live probe of the default chat factory, registry backend, and
+  open chat buffers.
+
+  Result:
+
+  #+begin_src emacs-lisp
+  (:factory-configured nil
+   :registry-backend "Unconfigured default chat backend"
+   :registry-default-options nil
+   :chat-buffers (("Unconfigured default chat backend")
+                  ("Unconfigured default chat backend")
+                  ("Unconfigured default chat backend")))
+  #+end_src

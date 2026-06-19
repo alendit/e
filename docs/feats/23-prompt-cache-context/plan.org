@@ -53,8 +53,9 @@ consistently for repeated traffic with common prefixes, optionally use
 - =e-default-chat-layer-ids= activates =agents-std-context=, =harness-base=,
   =e=, =os-base=, =emacs-base=, =web=, =text-editing=, =org-canvas=, and
   =project-local= by default.
-- =e-default-chat-harness-create= creates an OpenAI harness, attaches the
-  internal =chat-session= layer, then activates configured layers.
+- =e-default-chat-harness-create= delegates backend creation to configured
+  user code, attaches the internal =chat-session= layer, then activates
+  configured layers.
 - =e-harness-context= asks capabilities for context messages, then passes those
   messages as =:prefix-messages= to =e-context-build=.
 - =e-context-transcript-stack-create= returns transcript messages, optionally

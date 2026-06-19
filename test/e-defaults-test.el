@@ -24,7 +24,6 @@
 (require 'e-agents-std-context)
 (require 'e-layer-selection)
 (require 'e-layers)
-(require 'e-anthropic)
 (require 'e-session)
 (require 'e-shells)
 
@@ -35,6 +34,16 @@
          (e-harness-registry--factories (make-hash-table :test 'equal))
          (e-harness-instance--instances (make-hash-table :test 'equal))
          (e-harness-instance--defaults (make-hash-table :test 'equal)))
+     ,@body))
+
+(defmacro e-defaults-test--with-configured-chat-factory (&rest body)
+  "Run BODY with a configured fake default chat backend factory."
+  (declare (indent 0) (debug t))
+  `(let ((e-default-chat-harness-factory
+          (lambda (&rest args)
+            (e-harness-create
+             :backend (e-backend-fake-create :items nil)
+             :sessions (plist-get args :sessions)))))
      ,@body))
 
 (ert-deftest e-defaults-test-startup-specs-only-include-chat-default ()
@@ -117,51 +126,74 @@
                            (e-session-store-directory first)))))
       (delete-directory directory t))))
 
-(ert-deftest e-defaults-test-chat-harness-uses-provider-and-session-store ()
-  "Default chat harness creation delegates provider setup outside presentation."
-  (let ((e-anthropic-default-provider 'gateway)
-        (store (e-session-store-create))
-        seen-provider
-        seen-sessions)
-    (cl-letf (((symbol-function 'e-anthropic-create-harness)
-               (lambda (&rest args)
-                 (setq seen-provider (plist-get args :provider))
-                 (setq seen-sessions (plist-get args :sessions))
-                 (e-harness-create
-                  :backend (e-backend-fake-create :items nil)
-                  :sessions seen-sessions))))
-      (let ((harness (e-default-chat-harness-create :sessions store)))
-        (should (e-harness-p harness))
-        (should (eq seen-provider 'gateway))
-        (should (eq seen-sessions store))))))
+(ert-deftest e-defaults-test-chat-harness-uses-unconfigured-backend-without-factory ()
+  "Default chat creates no provider-backed harness without user configuration."
+  (let ((e-default-chat-harness-factory nil)
+        (e-default-chat-layer-ids nil))
+    (let ((harness (e-default-chat-harness-create
+                    :sessions (e-session-store-create))))
+      (should (e-harness-p harness))
+      (should (equal (e-backend--name (e-harness-backend harness))
+                     "Unconfigured default chat backend"))
+      (should-not (e-harness-default-options harness))
+      (should-error
+       (e-backend-stream
+        (e-harness-backend harness)
+        :messages nil
+        :options nil
+        :on-item #'ignore)
+       :type 'user-error))))
 
-(ert-deftest e-defaults-test-chat-harness-enables-anthropic-prompt-cache ()
-  "Default chat seeds Anthropic prompt-cache turn options."
-  (cl-letf (((symbol-function 'e-anthropic-create-harness)
-             (lambda (&rest args)
-               (e-harness-create
-                :backend (e-backend-fake-create :items nil)
-                :default-options '(:model "claude-default")
-                :sessions (plist-get args :sessions)))))
+(ert-deftest e-defaults-test-chat-harness-rejects-provider-argument ()
+  "Default chat provider selection belongs in user configuration."
+  (e-defaults-test--with-configured-chat-factory
+    (let ((e-default-chat-layer-ids nil))
+      (should-error
+       (e-default-chat-harness-create :provider 'gateway)
+       :type 'user-error))))
+
+(ert-deftest e-defaults-test-chat-harness-uses-configured-factory-and-session-store ()
+  "Default chat harness creation delegates backend setup to configuration."
+  (let ((store (e-session-store-create))
+        (directory "/tmp/e-configured-chat/")
+        seen-directory
+        seen-sessions)
+    (let ((e-default-chat-harness-factory
+           (lambda (&rest args)
+             (setq seen-directory (plist-get args :directory))
+             (setq seen-sessions (plist-get args :sessions))
+             (e-harness-create
+              :backend (e-backend-fake-create :items nil)
+              :sessions seen-sessions))))
+      (let ((e-default-chat-layer-ids nil))
+        (let ((harness (e-default-chat-harness-create
+                        :sessions store
+                        :directory directory)))
+          (should (e-harness-p harness))
+          (should (eq seen-sessions store))
+          (should (equal seen-directory directory)))))))
+
+(ert-deftest e-defaults-test-chat-harness-preserves-configured-default-options ()
+  "Default chat does not add provider-specific turn options."
+  (let ((e-default-chat-harness-factory
+         (lambda (&rest args)
+           (e-harness-create
+            :backend (e-backend-fake-create :items nil)
+            :default-options '(:model "configured")
+            :sessions (plist-get args :sessions)))))
     (let ((e-default-chat-layer-ids nil))
       (let ((harness (e-default-chat-harness-create
                       :sessions (e-session-store-create))))
-        (e-harness-create-session
-         harness
-         :id "session-1"
-         :metadata (list :project-root "/tmp/e-cache-a"))
-        (let ((options (e-harness-turn-options harness "session-1")))
-          (should (eq (plist-get options :prompt-cache) t))
-          (should (equal (plist-get options :prompt-cache-ttl) "1h"))
-          ;; Anthropic caches by cache_control prefix, not a derived key.
-          (should-not (plist-member options :prompt-cache-key)))))))
+        (should (equal (e-harness-default-options harness)
+                       '(:model "configured")))
+        (should-not (plist-member (e-harness-default-options harness)
+                                  :prompt-cache))
+        (should-not (plist-member (e-harness-default-options harness)
+                                  :prompt-cache-ttl))))))
 
 (ert-deftest e-defaults-test-chat-harness-activates-chat-session-base-and-emacs ()
   "Default chat harness activation includes chat-session and configured layers."
-  (cl-letf (((symbol-function 'e-anthropic-create-harness)
-             (lambda (&rest _args)
-               (e-harness-create
-                :backend (e-backend-fake-create :items nil)))))
+  (e-defaults-test--with-configured-chat-factory
     (let ((e-default-chat-layer-ids '(agents-std-context harness-base e os-base emacs-base)))
       (let ((harness (e-default-chat-harness-create)))
         (should (equal (mapcar #'e-layer-id
@@ -185,10 +217,7 @@
 
 (ert-deftest e-defaults-test-chat-harness-enables-web-and-text-editing-by-default ()
   "Default chat harness activation includes web and text-editing layers."
-  (cl-letf (((symbol-function 'e-anthropic-create-harness)
-             (lambda (&rest _args)
-               (e-harness-create
-                :backend (e-backend-fake-create :items nil)))))
+  (e-defaults-test--with-configured-chat-factory
     (let ((harness (e-default-chat-harness-create)))
       (should (memq 'web
                     (mapcar #'e-layer-id
@@ -205,10 +234,7 @@
 
 (ert-deftest e-defaults-test-chat-harness-uses-layer-ids-as-source-of-truth ()
   "Default chat harness creation uses configured layer ids."
-  (cl-letf (((symbol-function 'e-anthropic-create-harness)
-             (lambda (&rest _args)
-               (e-harness-create
-                :backend (e-backend-fake-create :items nil)))))
+  (e-defaults-test--with-configured-chat-factory
     (let ((e-default-chat-layer-ids '(e os-base web)))
       (let ((harness (e-default-chat-harness-create)))
         (should (equal (mapcar #'e-layer-id
@@ -240,16 +266,15 @@
            (expand-file-name ".dir-locals.el" project)
            nil
            'silent)
-          (cl-letf (((symbol-function 'e-anthropic-create-harness)
-                     (lambda (&rest _args)
-                       (e-harness-create
-                        :backend (e-backend-fake-create :items nil)))))
+          (e-defaults-test--with-configured-chat-factory
             (let ((e-default-chat-layer-ids '(agents-std-context))
                   (e-agents-std-context-global-agents-files nil)
                   (e-agents-std-context-global-skills-directory
                    (expand-file-name ".agents/skills/global" project)))
               (let* ((harness
-                      (e-default-chat-harness-create :directory project))
+                      (e-default-chat-harness-create
+                       :directory project
+                       :sessions (e-session-store-create)))
                      (_session
                       (e-harness-create-session harness :id "session-1"))
                      (content
@@ -266,10 +291,7 @@
 
 (ert-deftest e-defaults-test-default-chat-layer_changes-update-config ()
   "Layer changes on the default chat harness update configured layer ids."
-  (cl-letf (((symbol-function 'e-anthropic-create-harness)
-             (lambda (&rest _args)
-               (e-harness-create
-                :backend (e-backend-fake-create :items nil)))))
+  (e-defaults-test--with-configured-chat-factory
     (let ((e-default-chat-layer-ids '(e os-base)))
       (let ((harness (e-default-chat-harness-create)))
         (e-layer-selection-enable harness 'web)
@@ -280,10 +302,7 @@
 (ert-deftest e-defaults-test-startup-syncs-existing-chat-default-instance ()
   "Startup reconciles existing default chat harness instances from config."
   (e-defaults-test--with-empty-harness-registry
-    (cl-letf (((symbol-function 'e-anthropic-create-harness)
-               (lambda (&rest _args)
-                 (e-harness-create
-                  :backend (e-backend-fake-create :items nil)))))
+    (e-defaults-test--with-configured-chat-factory
       (let ((e-default-chat-layer-ids '(e os-base)))
         (e-default-harnesses-register)
         (let ((harness (e-harness-registry-get-or-create :chat-default)))
@@ -331,32 +350,52 @@
                      (car (e-capability-context-providers capability)))
                     'dynamic-context))))))
 
+(ert-deftest e-defaults-test-startup-marks-chat-backend-unconfigured-without-config-factory ()
+  "Startup removes cached chat backend providers when no config factory exists."
+  (e-defaults-test--with-empty-harness-registry
+    (let* ((backend (e-backend-fake-create :name "configured" :items nil))
+           (harness (e-harness-create :backend backend))
+           (sessions (e-harness-sessions harness)))
+      (e-harness-registry-register :chat-default harness)
+      (let ((e-default-chat-harness-factory nil)
+            (e-default-chat-layer-ids nil))
+        (e-default-harnesses-startup))
+      (should (eq (e-harness-registry-get :chat-default) harness))
+      (should-not (eq (e-harness-backend harness) backend))
+      (should (equal (e-backend--name (e-harness-backend harness))
+                     "Unconfigured default chat backend"))
+      (should (eq (e-harness-sessions harness) sessions))
+      (should-error
+       (e-backend-stream
+        (e-harness-backend harness)
+        :messages nil
+        :options nil
+        :on-item #'ignore)
+       :type 'user-error))))
+
 (ert-deftest e-defaults-test-startup-repairs-shifted-chat-default-session-store ()
   "Startup sync repairs cached chat-default harnesses with shifted reload slots."
   (e-defaults-test--with-empty-harness-registry
-    (cl-letf (((symbol-function 'e-anthropic-create-harness)
-               (lambda (&rest _args)
-                 (e-harness-create
-                  :backend (e-backend-fake-create :items nil)))))
-      (let* ((store (e-session-store-create))
-             (bad-session-slot
-              (list (e-layer-create :id 'chat-session
-                                    :name "Old Chat Session")))
-             (harness (e-harness-create
-                       :backend (e-backend-fake-create :items nil))))
-        (setf (e-harness-runtime-capability-config harness) store)
-        (setf (e-harness-sessions harness) bad-session-slot)
-        (e-harness-registry-register :chat-default harness)
-        (let ((e-default-chat-layer-ids nil))
-          (e-default-harnesses-startup))
-        (should (eq (e-harness-registry-get :chat-default) harness))
-        (should (eq (e-harness-sessions harness) store))
-        (should (e-session-store-p (e-harness-sessions harness)))
-        (should-not (e-session-store-p
-                     (e-harness-runtime-capability-config harness)))
-        (should (equal (mapcar #'e-layer-id
-                               (e-harness-active-layers harness))
-                       '(chat-session)))))))
+    (let* ((store (e-session-store-create))
+           (bad-session-slot
+            (list (e-layer-create :id 'chat-session
+                                  :name "Old Chat Session")))
+           (harness (e-harness-create
+                     :backend (e-backend-fake-create :items nil))))
+      (setf (e-harness-runtime-capability-config harness) store)
+      (setf (e-harness-sessions harness) bad-session-slot)
+      (e-harness-registry-register :chat-default harness)
+      (let ((e-default-chat-harness-factory nil)
+            (e-default-chat-layer-ids nil))
+        (e-default-harnesses-startup))
+      (should (eq (e-harness-registry-get :chat-default) harness))
+      (should (eq (e-harness-sessions harness) store))
+      (should (e-session-store-p (e-harness-sessions harness)))
+      (should-not (e-session-store-p
+                   (e-harness-runtime-capability-config harness)))
+      (should (equal (mapcar #'e-layer-id
+                             (e-harness-active-layers harness))
+                     '(chat-session))))))
 
 (ert-deftest e-defaults-test-sync-clears-stale-layer-owned-shells ()
   "Default harness layer sync removes old layer-owned shell registrations."

@@ -4704,14 +4704,21 @@ HARNESS are internal test seams."
         (with-current-buffer buffer
           (when (derived-mode-p 'e-chat-mode)
             (let ((session-id (or e-chat-session-id
-                                  e-chat-default-session-id)))
+                                  e-chat-default-session-id))
+                  (harness
+                   (condition-case err
+                       (if e-chat-harness-instance-id
+                           (e-chat--harness-for-instance
+                            (e-harness-instance-get e-chat-harness-instance-id))
+                         (e-chat--default-harness))
+                     (user-error
+                      (if (e-harness-p e-chat-harness)
+                          e-chat-harness
+                        (signal (car err) (cdr err)))))))
               (setq count (1+ count))
               (e-chat--attach-buffer
                buffer
-               (if e-chat-harness-instance-id
-                   (e-chat--harness-for-instance
-                    (e-harness-instance-get e-chat-harness-instance-id))
-               (e-chat--default-harness))
+               harness
                session-id
                e-chat-harness-instance-id))))))
     (when (called-interactively-p 'interactive)
