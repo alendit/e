@@ -40,8 +40,7 @@
     (should (equal (mapcar #'e-capability-id
                            (e-layer-capabilities layer))
                    '(base-guidance
-                     file-inspection
-                     file-mutation
+                     file-handling
                      shell-process)))))
 
 (ert-deftest e-base-test-guidance-stays-os-focused ()

@@ -35,31 +35,17 @@
     (e-capabilities-register-resource-methods capability registry)
     registry))
 
-(ert-deftest e-file-capabilities-test-file-inspection-registers-read-only ()
-  "The file-inspection capability registers read-only file resources."
-  (let* ((directory (make-temp-file "e-file-cap-read-" t))
+(ert-deftest e-file-capabilities-test-file-handling-registers-read-write-edit ()
+  "The file-handling capability registers read/write/edit file resources."
+  (let* ((directory (make-temp-file "e-file-cap-" t))
          (file (expand-file-name "sample.txt" directory))
          (resources (e-file-capabilities-test--resources
-                     (e-file-inspection-capability-create directory))))
-    (unwind-protect
-        (progn
-          (write-region "content" nil file nil 'silent)
-          (should (equal (e-resources-read resources "file://sample.txt")
-                         "content"))
-          (should-error
-           (e-resources-write resources "file://sample.txt" "new")
-           :type 'e-resources-unsupported-operation))
-      (delete-directory directory t))))
-
-(ert-deftest e-file-capabilities-test-file-mutation-registers-write-and-edit ()
-  "The file-mutation capability registers writable file resources."
-  (let* ((directory (make-temp-file "e-file-cap-write-" t))
-         (file (expand-file-name "sample.txt" directory))
-         (resources (e-file-capabilities-test--resources
-                     (e-file-mutation-capability-create directory))))
+                     (e-file-handling-capability-create directory))))
     (unwind-protect
         (progn
           (e-resources-write resources "file://sample.txt" "old")
+          (should (equal (e-resources-read resources "file://sample.txt")
+                         "old"))
           (e-resources-edit resources
                             "file://sample.txt"
                             '((:oldText "old" :newText "new")))
@@ -69,16 +55,10 @@
                          "new")))
       (delete-directory directory t))))
 
-(ert-deftest e-file-capabilities-test-file-inspection-registers-sync-status-tool ()
-  "File inspection exposes a resource coherence status tool."
+(ert-deftest e-file-capabilities-test-file-handling-registers-sync-status-tool ()
+  "File handling exposes a resource coherence status tool."
   (should (equal (e-file-capabilities-test--tool-names
-                  (e-file-inspection-capability-create default-directory))
-                 '("resource_sync_status"))))
-
-(ert-deftest e-file-capabilities-test-file-mutation-registers-sync-status-tool ()
-  "File mutation also exposes resource coherence status."
-  (should (equal (e-file-capabilities-test--tool-names
-                  (e-file-mutation-capability-create default-directory))
+                  (e-file-handling-capability-create default-directory))
                  '("resource_sync_status"))))
 
 (ert-deftest e-file-capabilities-test-shell-process-registers-bash-only ()
@@ -87,8 +67,8 @@
                   (e-shell-process-capability-create default-directory))
                  '("bash"))))
 
-(ert-deftest e-file-capabilities-test-mutation-resolves-secondary-workspace-root ()
-  "File mutation resolves absolute paths into a configured secondary root.
+(ert-deftest e-file-capabilities-test-handling-resolves-secondary-workspace-root ()
+  "File handling resolves absolute paths into a configured secondary root.
 The capability asks `e-harness-workspace-roots' at registration time, so a
 session whose primary root has configured extras can edit files in those
 extras."
@@ -106,7 +86,7 @@ extras."
           (e-harness-create-session
            harness :id "s1" :metadata (list :project-root primary))
           (e-capabilities-register-resource-methods
-           (e-file-mutation-capability-create primary)
+           (e-file-handling-capability-create primary)
            resources
            :harness harness :session-id "s1")
           (e-resources-write resources (concat "file://" sec-file) "hello")
