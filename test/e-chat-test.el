@@ -5809,7 +5809,7 @@ The context-window denominator comes from the live provider lookup
                                  :session session-b
                                  :session-id "beta-session"
                                  :instance-id :beta)))
-         spec opened)
+         spec preview-text opened)
     (cl-letf (((symbol-function 'e-chat--session-candidates)
                (lambda () candidates))
               ((symbol-function 'e-context-status-text)
@@ -5836,7 +5836,10 @@ The context-window denominator comes from the live provider lookup
                "ctx model/effort"
                (funcall (plist-get spec :candidate-line)
                         (cadr candidates))))
-      (should-not (plist-get spec :preview))
+      (with-temp-buffer
+        (funcall (plist-get spec :preview) (car candidates) (current-buffer))
+        (setq preview-text (buffer-string)))
+      (should (string-match-p "Alpha Session" preview-text))
       (funcall (plist-get spec :on-select) (cadr candidates))
       (should (eq (plist-get opened :harness) harness-b))
       (should (equal (plist-get opened :session-id) "beta-session"))

@@ -84,6 +84,18 @@
 (defvar-local e-picker--frame nil
   "Child frame displaying the current picker buffer, when known.")
 
+(defvar-local e-picker--candidate-row-starts nil
+  "List of buffer positions for rendered candidate rows.")
+
+(defvar-local e-picker--selection-overlay nil
+  "Overlay highlighting the selected picker row.")
+
+(defvar-local e-picker--preview-start nil
+  "Marker at the start of the rendered preview section.")
+
+(defvar-local e-picker--preview-end nil
+  "Marker at the end of the rendered preview section.")
+
 (defvar-local e-picker--closed nil
   "Non-nil when this picker was closed.")
 
@@ -244,6 +256,74 @@ WIDTH defaults to the current window body width."
       (funcall preview candidate (current-buffer))
       (buffer-string))))
 
+(defun e-picker--insert-preview-section ()
+  "Insert the preview section for the current selected candidate."
+  (when-let ((preview-text (e-picker--render-preview
+                            (e-picker--selected-candidate))))
+    (insert "\n")
+    (e-picker--insert-line "Preview" 'e-picker-title-face)
+    (insert preview-text)
+    (unless (bolp)
+      (insert "\n"))))
+
+(defun e-picker--ensure-selection-overlay ()
+  "Return the overlay used for the selected picker row."
+  (or (and (overlayp e-picker--selection-overlay)
+           e-picker--selection-overlay)
+      (setq-local e-picker--selection-overlay
+                  (let ((overlay (make-overlay (point-min) (point-min)
+                                               (current-buffer)
+                                               nil t)))
+                    (overlay-put overlay 'face 'e-picker-selection-face)
+                    (overlay-put overlay 'priority 100)
+                    (overlay-put overlay 'evaporate t)
+                    overlay))))
+
+(defun e-picker--candidate-row-start (index)
+  "Return rendered row start for candidate INDEX, or nil."
+  (nth index e-picker--candidate-row-starts))
+
+(defun e-picker--set-candidate-prefix (index selected)
+  "Set candidate INDEX prefix according to SELECTED."
+  (when-let ((start (e-picker--candidate-row-start index)))
+    (save-excursion
+      (goto-char start)
+      (let ((inhibit-read-only t))
+        (delete-char 2)
+        (insert (if selected "> " "  "))))))
+
+(defun e-picker--move-selection-overlay ()
+  "Move selection overlay and point to the selected candidate row."
+  (if-let ((start (e-picker--candidate-row-start e-picker--selection)))
+      (let ((overlay (e-picker--ensure-selection-overlay)))
+        (save-excursion
+          (goto-char start)
+          (move-overlay overlay start (line-beginning-position 2)
+                        (current-buffer)))
+        (goto-char start))
+    (when (overlayp e-picker--selection-overlay)
+      (delete-overlay e-picker--selection-overlay))))
+
+(defun e-picker--update-preview-section ()
+  "Refresh the preview section for the current selected candidate."
+  (when (and (markerp e-picker--preview-start)
+             (markerp e-picker--preview-end))
+    (let ((inhibit-read-only t))
+      (save-excursion
+        (goto-char e-picker--preview-start)
+        (delete-region e-picker--preview-start e-picker--preview-end)
+        (e-picker--insert-preview-section)
+        (set-marker e-picker--preview-end (point))))))
+
+(defun e-picker--refresh-selection-display (&optional old-selection)
+  "Refresh displayed selection after moving away from OLD-SELECTION."
+  (when (and old-selection
+             (/= old-selection e-picker--selection))
+    (e-picker--set-candidate-prefix old-selection nil))
+  (e-picker--set-candidate-prefix e-picker--selection t)
+  (e-picker--move-selection-overlay)
+  (e-picker--update-preview-section))
+
 (defun e-picker--insert-line (text &optional face)
   "Insert TEXT and newline, optionally applying FACE."
   (let ((start (point)))
@@ -258,8 +338,8 @@ WIDTH defaults to the current window body width."
         (title (or (plist-get e-picker--spec :title)
                    (symbol-name (plist-get e-picker--spec :name))))
         (footer (or (plist-get e-picker--spec :footer)
-                    "RET open  C-g cancel"))
-        selected-position)
+                    "RET open  C-g cancel")))
+    (setq-local e-picker--candidate-row-starts nil)
     (erase-buffer)
     (e-picker--insert-line title 'e-picker-title-face)
     (e-picker--insert-line (format "> %s" e-picker--input)
@@ -271,24 +351,19 @@ WIDTH defaults to the current window body width."
          for index from 0
          do (let* ((line (funcall candidate-line candidate))
                    (start (point)))
+              (push start e-picker--candidate-row-starts)
               (insert (if (= index e-picker--selection) "> " "  ")
                       line
-                      "\n")
-              (when (= index e-picker--selection)
-                (setq selected-position start)
-                (add-text-properties start (point)
-                                     '(font-lock-face e-picker-selection-face)))))
+                      "\n")))
       (e-picker--insert-line "No matches" 'e-picker-meta-face))
-    (when-let ((preview-text (e-picker--render-preview
-                              (e-picker--selected-candidate))))
-      (insert "\n")
-      (e-picker--insert-line "Preview" 'e-picker-title-face)
-      (insert preview-text)
-      (unless (bolp)
-        (insert "\n")))
+    (setq-local e-picker--candidate-row-starts
+                (nreverse e-picker--candidate-row-starts))
+    (setq-local e-picker--preview-start (point-marker))
+    (e-picker--insert-preview-section)
+    (setq-local e-picker--preview-end (point-marker))
     (insert "\n")
     (e-picker--insert-line footer 'e-picker-footer-face)
-    (goto-char (or selected-position (point-min)))))
+    (e-picker--move-selection-overlay)))
 
 (defun e-picker--show-posframe (buffer spec)
   "Show BUFFER as a posframe for SPEC."
@@ -364,17 +439,21 @@ When SELECTED is non-nil, run ACTION after closing."
   "Move to the next picker candidate."
   (interactive)
   (when e-picker--filtered-candidates
-    (setq e-picker--selection
-          (min (1- (length e-picker--filtered-candidates))
-               (1+ e-picker--selection)))
-    (e-picker--render)))
+    (let ((old-selection e-picker--selection))
+      (setq e-picker--selection
+            (min (1- (length e-picker--filtered-candidates))
+                 (1+ e-picker--selection)))
+      (unless (= old-selection e-picker--selection)
+        (e-picker--refresh-selection-display old-selection)))))
 
 (defun e-picker-previous ()
   "Move to the previous picker candidate."
   (interactive)
   (when e-picker--filtered-candidates
-    (setq e-picker--selection (max 0 (1- e-picker--selection)))
-    (e-picker--render)))
+    (let ((old-selection e-picker--selection))
+      (setq e-picker--selection (max 0 (1- e-picker--selection)))
+      (unless (= old-selection e-picker--selection)
+        (e-picker--refresh-selection-display old-selection)))))
 
 (defun e-picker-select ()
   "Select the current picker candidate."

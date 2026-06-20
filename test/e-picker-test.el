@@ -141,6 +141,64 @@
           (when (buffer-live-p buffer)
             (kill-buffer buffer)))))))
 
+(ert-deftest e-picker-test-navigation-does-not-recompute-candidate-lines ()
+  "Moving with j/k updates selection without rebuilding every candidate row."
+  (let ((line-calls 0))
+    (cl-letf (((symbol-function 'e-picker--posframe-available-p)
+               (lambda () t))
+              ((symbol-function 'posframe-show)
+               (lambda (_buffer &rest _args) 'picker-frame))
+              ((symbol-function 'e-picker--focus-frame)
+               (lambda (_frame) nil)))
+      (let ((buffer (e-picker-open
+                     :name 'test-navigation-no-rerender
+                     :title "Pick"
+                     :candidates '("alpha" "beta" "gamma")
+                     :candidate-key #'identity
+                     :candidate-line (lambda (candidate)
+                                       (setq line-calls (1+ line-calls))
+                                       candidate)
+                     :on-select #'ignore)))
+        (unwind-protect
+            (with-current-buffer buffer
+              (should (= line-calls 3))
+              (setq line-calls 0)
+              (e-picker-next)
+              (should (= line-calls 0))
+              (should (looking-at-p "> beta")))
+          (when (buffer-live-p buffer)
+            (kill-buffer buffer)))))))
+
+(ert-deftest e-picker-test-navigation-boundary-does-not-refresh-preview ()
+  "Pressing j/k at a list boundary does not rerender the preview."
+  (let ((preview-calls 0))
+    (cl-letf (((symbol-function 'e-picker--posframe-available-p)
+               (lambda () t))
+              ((symbol-function 'posframe-show)
+               (lambda (_buffer &rest _args) 'picker-frame))
+              ((symbol-function 'e-picker--focus-frame)
+               (lambda (_frame) nil)))
+      (let ((buffer (e-picker-open
+                     :name 'test-navigation-boundary
+                     :title "Pick"
+                     :candidates '("alpha")
+                     :candidate-key #'identity
+                     :candidate-line #'identity
+                     :preview (lambda (candidate buffer)
+                                (setq preview-calls (1+ preview-calls))
+                                (with-current-buffer buffer
+                                  (insert candidate)))
+                     :on-select #'ignore)))
+        (unwind-protect
+            (with-current-buffer buffer
+              (should (= preview-calls 1))
+              (setq preview-calls 0)
+              (e-picker-next)
+              (should (= preview-calls 0))
+              (should (looking-at-p "> alpha")))
+          (when (buffer-live-p buffer)
+            (kill-buffer buffer)))))))
+
 (ert-deftest e-picker-test-open-renders-posframe-focuses-it-and-selects-current-candidate ()
   "Opening with posframe focuses the picker so navigation keys reach its map."
   (let (shown focused hidden selected)

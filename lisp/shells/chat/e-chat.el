@@ -5771,6 +5771,15 @@ adds its display name to the row."
                 "  ")))
     (e-picker-make-line title meta 96)))
 
+(defun e-chat--active-session-preview (candidate buffer)
+  "Render active session CANDIDATE into preview BUFFER."
+  (let ((preview (e-chat--render-resume-preview
+                  (plist-get candidate :harness)
+                  (plist-get candidate :session))))
+    (with-current-buffer buffer
+      (insert (with-current-buffer preview
+                (buffer-string))))))
+
 (defun e-chat--active-session-open (candidate)
   "Open selected active session CANDIDATE."
   (e-chat-open-session
@@ -5791,6 +5800,7 @@ adds its display name to the row."
      :candidates (lambda () candidates)
      :candidate-key #'e-chat--active-session-candidate-key
      :candidate-line #'e-chat--active-session-line
+     :preview #'e-chat--active-session-preview
      :on-select #'e-chat--active-session-open
      :footer "RET open  C-g cancel"
      :width 0.72
