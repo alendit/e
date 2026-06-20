@@ -35,8 +35,8 @@
     (e-capabilities-register-resource-methods capability registry)
     registry))
 
-(ert-deftest e-file-capabilities-test-file-handling-registers-read-write-edit ()
-  "The file-handling capability registers read/write/edit file resources."
+(ert-deftest e-file-capabilities-test-file-handling-registers-file-resources ()
+  "The file-handling capability registers file resource operations."
   (let* ((directory (make-temp-file "e-file-cap-" t))
          (file (expand-file-name "sample.txt" directory))
          (resources (e-file-capabilities-test--resources
@@ -52,7 +52,10 @@
           (should (equal (with-temp-buffer
                            (insert-file-contents file)
                            (buffer-string))
-                         "new")))
+                         "new"))
+          (should (equal (mapcar #'e-operation-id
+                                 (e-resources-operations resources))
+                         '(read write edit glob search))))
       (delete-directory directory t))))
 
 (ert-deftest e-file-capabilities-test-file-handling-registers-sync-status-tool ()

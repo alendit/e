@@ -12,6 +12,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'json)
 (require 'seq)
 (require 'subr-x)
 (require 'e-capabilities)
@@ -46,6 +47,10 @@ When nil, `shell-command-switch' is used."
   "Base file resource conflicts with a live Emacs buffer"
   'e-resource-coherence-conflict)
 (define-error 'e-base-tools-bash-invalid "Base bash tool input is invalid")
+(define-error 'e-base-tools-missing-command
+  "Base file discovery command is not available")
+(define-error 'e-base-tools-process-failed
+  "Base file discovery command failed")
 
 (defconst e-base-tools--max-lines 2000
   "Maximum text lines returned by base tools before truncation.")
@@ -555,6 +560,156 @@ through file:// reads."
   "Resolve parsed file URI against DIRECTORY."
   (e-base-tools--resolve-path (plist-get uri :address) directory))
 
+(defun e-base-tools--primary-root (directory)
+  "Return primary root from DIRECTORY."
+  (car (e-base-tools--root-list directory)))
+
+(defun e-base-tools--relative-to-root (path directory)
+  "Return PATH relative to DIRECTORY primary root."
+  (file-relative-name path (e-base-tools--primary-root directory)))
+
+(defun e-base-tools--file-resource-uri (path directory)
+  "Return file:// URI for PATH relative to DIRECTORY primary root."
+  (concat "file://" (e-base-tools--relative-to-root path directory)))
+
+(defun e-base-tools--clean-relative-path (path)
+  "Return PATH without fd's defensive leading ./ prefix."
+  (if (string-prefix-p "./" path)
+      (substring path 2)
+    path))
+
+(defun e-base-tools--file-discovery-limit (limit)
+  "Return normalized discovery LIMIT."
+  (cond
+   ((null limit) 100)
+   ((and (numberp limit) (> limit 0)) (truncate limit))
+   (t (signal 'wrong-type-argument (list 'positive-number-p limit)))))
+
+(defun e-base-tools--find-executable (name &optional alternates)
+  "Return executable NAME or one of ALTERNATES, or signal a clear error."
+  (or (executable-find name)
+      (cl-some #'executable-find alternates)
+      (signal 'e-base-tools-missing-command
+              (list (format "Missing executable: %s" name)))))
+
+(defun e-base-tools--process-lines (program directory args &optional ok-statuses)
+  "Run PROGRAM in DIRECTORY with ARGS and return output lines.
+OK-STATUSES defaults to only zero."
+  (let ((default-directory directory)
+        (accepted (or ok-statuses '(0))))
+    (with-temp-buffer
+      (let ((status (apply #'process-file program nil (list t t) nil args)))
+        (unless (member status accepted)
+          (signal 'e-base-tools-process-failed
+                  (list (format "%s failed with exit status %s: %s"
+                                program
+                                status
+                                (string-trim (buffer-string)))))))
+      (split-string (buffer-string) "\n" t))))
+
+(defun e-base-tools--file-scope-relative-path (uri directory)
+  "Return file URI scope as a path relative to DIRECTORY primary root."
+  (let ((relative (e-base-tools--relative-to-root
+                   (e-base-tools--resource-path uri directory)
+                   directory)))
+    (if (string= relative ".") "." relative)))
+
+(defun e-base-tools--file-result-name (path scope)
+  "Return display name for PATH relative to SCOPE when possible."
+  (if (and (file-directory-p scope)
+           (file-in-directory-p path scope))
+      (file-relative-name path scope)
+    (file-name-nondirectory path)))
+
+(defun e-base-tools--file-glob-resource (uri pattern limit directory)
+  "List file resources under parsed URI with PATTERN and LIMIT."
+  (let* ((fd (e-base-tools--find-executable "fd" '("fdfind")))
+         (primary (e-base-tools--primary-root directory))
+         (scope (e-base-tools--resource-path uri directory))
+         (scope-relative (e-base-tools--file-scope-relative-path uri directory))
+         (actual-pattern (or pattern "*"))
+         (actual-limit (e-base-tools--file-discovery-limit limit))
+         (lines (e-base-tools--process-lines
+                 fd
+                 primary
+                 (list "--glob"
+                       "--color" "never"
+                       "--base-directory" primary
+                       "--search-path" scope-relative
+                       "--type" "file"
+                       "--max-results" (number-to-string (1+ actual-limit))
+                       actual-pattern)))
+         (truncated (> (length lines) actual-limit))
+         (selected (seq-take lines actual-limit)))
+    (list :resources
+          (vconcat
+           (mapcar
+            (lambda (relative)
+              (let* ((relative (e-base-tools--clean-relative-path relative))
+                     (absolute (expand-file-name relative primary))
+                     (attributes (file-attributes absolute)))
+                (list :uri (concat "file://" relative)
+                      :name (e-base-tools--file-result-name absolute scope)
+                      :kind 'file
+                      :metadata (list :bytes (file-attribute-size attributes)))))
+            selected))
+          :truncated truncated)))
+
+(defun e-base-tools--rg-json-text (object)
+  "Return text value from rg JSON OBJECT."
+  (or (plist-get object :text)
+      (when-let ((bytes (plist-get object :bytes)))
+        (base64-decode-string bytes))))
+
+(defun e-base-tools--search-match-from-rg-json (line directory)
+  "Return a search match plist for rg JSON LINE, or nil."
+  (let* ((object (json-parse-string line :object-type 'plist :array-type 'list))
+         (type (plist-get object :type)))
+    (when (equal type "match")
+      (let* ((data (plist-get object :data))
+             (path (e-base-tools--rg-json-text (plist-get data :path)))
+             (line-text (string-remove-suffix
+                         "\n"
+                         (or (e-base-tools--rg-json-text
+                              (plist-get data :lines))
+                             "")))
+             (submatches (plist-get data :submatches))
+             (first-match (car submatches))
+             (start (or (plist-get first-match :start) 0))
+             (absolute (expand-file-name path (e-base-tools--primary-root directory))))
+        (list :uri (e-base-tools--file-resource-uri absolute directory)
+              :line (plist-get data :line_number)
+              :column (1+ start)
+              :text line-text)))))
+
+(defun e-base-tools--file-search-resource (uri query options directory)
+  "Search file resources under parsed URI for QUERY with OPTIONS."
+  (let* ((rg (e-base-tools--find-executable "rg"))
+         (primary (e-base-tools--primary-root directory))
+         (scope-relative (e-base-tools--file-scope-relative-path uri directory))
+         (actual-limit (e-base-tools--file-discovery-limit
+                        (plist-get options :limit)))
+         (args (append
+                (list "--json"
+                      "--line-number"
+                      "--column"
+                      "--color" "never")
+                (unless (plist-get options :case-sensitive)
+                  (list "--ignore-case"))
+                (when (plist-get options :literal)
+                  (list "--fixed-strings"))
+                (when-let ((glob (plist-get options :glob)))
+                  (list "--glob" glob))
+                (list "-e" query scope-relative)))
+         (lines (e-base-tools--process-lines rg primary args '(0 1)))
+         matches)
+    (dolist (line lines)
+      (when-let ((match (e-base-tools--search-match-from-rg-json line directory)))
+        (push match matches)))
+    (setq matches (nreverse matches))
+    (list :matches (vconcat (seq-take matches actual-limit))
+          :truncated (> (length matches) actual-limit))))
+
 (defun e-base-tools--write-file-resource (uri content directory)
   "Write CONTENT to parsed file URI in DIRECTORY."
   (let* ((path (plist-get uri :address))
@@ -709,17 +864,42 @@ through file:// reads."
    :handler (lambda (uri edits)
               (e-base-tools--edit-file-resource uri edits directory))))
 
+(defun e-base-tools--file-glob-method (directory)
+  "Return a file glob resource method rooted at DIRECTORY."
+  (e-resource-method-create
+   :scheme "file"
+   :operation e-operation-glob
+   :description "Workspace text files and directories."
+   :uri-patterns '("file://<path-or-directory>")
+   :handler (lambda (uri pattern limit)
+              (e-base-tools--file-glob-resource
+               uri pattern limit directory))))
+
+(defun e-base-tools--file-search-method (directory)
+  "Return a file search resource method rooted at DIRECTORY."
+  (e-resource-method-create
+   :scheme "file"
+   :operation e-operation-search
+   :description "Workspace text file content."
+   :uri-patterns '("file://<path-or-directory>")
+   :handler (lambda (uri query options)
+              (e-base-tools--file-search-resource
+               uri query options directory))))
+
 (defun e-base-tools-register-file-read-resource (registry directory)
   "Register read-only file resource methods in REGISTRY rooted at DIRECTORY."
-  (e-resources-register
-   registry
-   (e-base-tools--file-read-method directory)))
+  (dolist (method (list (e-base-tools--file-read-method directory)
+                        (e-base-tools--file-glob-method directory)
+                        (e-base-tools--file-search-method directory)))
+    (e-resources-register registry method)))
 
 (defun e-base-tools-register-file-resource (registry directory)
-  "Register read/write/edit file resource methods in REGISTRY rooted at DIRECTORY."
+  "Register file resource methods in REGISTRY rooted at DIRECTORY."
   (dolist (method (list (e-base-tools--file-read-method directory)
                         (e-base-tools--file-write-method directory)
-                        (e-base-tools--file-edit-method directory)))
+                        (e-base-tools--file-edit-method directory)
+                        (e-base-tools--file-glob-method directory)
+                        (e-base-tools--file-search-method directory)))
     (e-resources-register registry method)))
 
 (defun e-base-tools--line-ending (content)

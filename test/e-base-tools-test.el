@@ -91,6 +91,153 @@ When READ-ONLY is non-nil, file resources only support reads."
                                     :operation read))))))))
       (delete-directory directory t))))
 
+(ert-deftest e-base-tools-test-glob-file-resources ()
+  "The glob tool lists file:// resources under roots and patterns."
+  (let* ((directory (make-temp-file "e-base-glob-" t))
+         (nested (expand-file-name "lisp/core" directory))
+         (registry (e-base-tools-test--resource-tools directory)))
+    (unwind-protect
+        (progn
+          (make-directory nested t)
+          (write-region "alpha\n" nil
+                        (expand-file-name "README.md" directory)
+                        nil 'silent)
+          (write-region "beta\n" nil
+                        (expand-file-name "e-resources.el" nested)
+                        nil 'silent)
+          (write-region "gamma\n" nil
+                        (expand-file-name "notes.txt" nested)
+                        nil 'silent)
+          (write-region "delta\n" nil
+                        (expand-file-name "more.txt" nested)
+                        nil 'silent)
+          (should
+           (equal (plist-get
+                   (e-base-tools-test--execute
+                    registry
+                    "glob"
+                    '(:uri "file://lisp" :pattern "*.el" :limit 5))
+                   :content)
+                  '(:resources [(:uri "file://lisp/core/e-resources.el"
+                                  :name "core/e-resources.el"
+                                  :kind file
+                                  :metadata (:bytes 5))]
+                    :truncated nil)))
+          (let* ((content (plist-get
+                           (e-base-tools-test--execute
+                            registry
+                            "glob"
+                            '(:uri "file://" :pattern "*.txt" :limit 1))
+                           :content))
+                 (resources (plist-get content :resources)))
+            (should (equal (length resources) 1))
+            (should (member (plist-get (elt resources 0) :uri)
+                            '("file://lisp/core/more.txt"
+                              "file://lisp/core/notes.txt")))
+            (should (equal (plist-get content :truncated) t))))
+      (delete-directory directory t))))
+
+(ert-deftest e-base-tools-test-search-file-resources ()
+  "The search tool searches file:// resources with rg-backed options."
+  (let* ((directory (make-temp-file "e-base-search-" t))
+         (nested (expand-file-name "src" directory))
+         (registry (e-base-tools-test--resource-tools directory)))
+    (unwind-protect
+        (progn
+          (make-directory nested t)
+          (write-region "Alpha needle\nbeta\n" nil
+                        (expand-file-name "one.el" nested)
+                        nil 'silent)
+          (write-region "alpha NEEDLE\nneedle again\n" nil
+                        (expand-file-name "two.txt" nested)
+                        nil 'silent)
+          (should
+           (equal (plist-get
+                   (e-base-tools-test--execute
+                    registry
+                    "search"
+                    '(:uri "file://src"
+                      :query "needle"
+                      :glob "*.el"
+                      :literal t
+                      :limit 5))
+                   :content)
+                  '(:matches [(:uri "file://src/one.el"
+                                :line 1
+                                :column 7
+                                :text "Alpha needle")]
+                    :truncated nil)))
+          (should
+           (equal (plist-get
+                   (e-base-tools-test--execute
+                    registry
+                    "search"
+                    '(:uri "file://src"
+                      :query "n.e+"
+                      :glob "*.txt"
+                      :case-sensitive t
+                      :limit 5))
+                   :content)
+                  '(:matches [(:uri "file://src/two.txt"
+                                :line 2
+                                :column 1
+                                :text "needle again")]
+                    :truncated nil)))
+          (should
+           (equal (plist-get
+                   (e-base-tools-test--execute
+                    registry
+                    "search"
+                    '(:uri "file://src"
+                      :query "missing"
+                      :literal t))
+                   :content)
+                  '(:matches [] :truncated nil))))
+      (delete-directory directory t))))
+
+(ert-deftest e-base-tools-test-file-discovery-rejects-outside-root ()
+  "File glob/search reject roots outside the configured workspace root."
+  (let* ((directory (make-temp-file "e-base-discovery-root-" t))
+         (registry (e-base-tools-test--resource-tools directory)))
+    (unwind-protect
+        (let ((glob (e-base-tools-test--execute
+                     registry "glob" '(:uri "file://../outside.txt")))
+              (search (e-base-tools-test--execute
+                       registry
+                       "search"
+                       '(:uri "file://../outside.txt" :query "needle"))))
+          (should (equal (plist-get glob :status) 'error))
+          (should (string-match-p "escapes workspace root"
+                                  (plist-get glob :content)))
+          (should (equal (plist-get search :status) 'error))
+          (should (string-match-p "escapes workspace root"
+                                  (plist-get search :content))))
+      (delete-directory directory t))))
+
+(ert-deftest e-base-tools-test-file-discovery-reports-missing-commands ()
+  "File glob/search report missing fd and rg commands clearly."
+  (let* ((directory (make-temp-file "e-base-discovery-missing-" t))
+         (registry (e-base-tools-test--resource-tools directory))
+         (original-executable-find (symbol-function 'executable-find)))
+    (unwind-protect
+        (cl-letf (((symbol-function 'executable-find)
+                   (lambda (command)
+                     (unless (member command '("fd" "fdfind" "rg"))
+                       (funcall original-executable-find command)))))
+          (let ((glob (e-base-tools-test--execute
+                       registry "glob" '(:uri "file://")))
+                (search (e-base-tools-test--execute
+                         registry
+                         "search"
+                         '(:uri "file://" :query "needle"))))
+            (should (equal (plist-get glob :status) 'error))
+            (should (string-match-p "Missing executable: fd"
+                                    (plist-get glob :content)))
+            (should (equal (plist-get search :status) 'error))
+            (should (string-match-p "Missing executable: rg"
+                                    (plist-get search :content)))))
+      (delete-directory directory t))))
+
 (ert-deftest e-base-tools-test-read-file-errors-for-missing-and-binary ()
   "The read tool fails clearly for missing and binary files."
   (let* ((directory (make-temp-file "e-base-read-errors-" t))
