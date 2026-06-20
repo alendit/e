@@ -414,6 +414,20 @@ The mode line uses this presentation-owned table for context usage display."
 (defvar-local e-chat-session-id nil
   "Session id used by the current chat buffer.")
 
+(defun e-chat--mark-current-session-read-if-focused ()
+  "Mark the current chat session read when this buffer is selected."
+  (when (and e-chat-harness
+             e-chat-session-id
+             (eq (current-buffer) (window-buffer (selected-window))))
+    (when-let ((session (ignore-errors
+                          (e-chat-overview--session-for-id
+                           e-chat-harness
+                           e-chat-session-id))))
+      (e-chat-overview--mark-session-read
+       e-chat-harness
+       session
+       e-chat-harness-instance-id))))
+
 (defvar-local e-chat--transcript-end-marker nil
   "Marker at the end of the protected transcript region.")
 
@@ -838,7 +852,9 @@ and / expands available prompts."
   (add-hook 'after-change-functions
             #'e-chat--mark-composer-scroll-needed nil t)
   (add-hook 'pre-command-hook #'e-chat--pre-command nil t)
-  (add-hook 'post-command-hook #'e-chat--post-command nil t))
+  (add-hook 'post-command-hook #'e-chat--post-command nil t)
+  (add-hook 'post-command-hook
+            #'e-chat--mark-current-session-read-if-focused nil t))
 
 (define-minor-mode e-chat-response-navigation-mode
   "Navigate rendered turn blocks in an e chat buffer."
@@ -4753,7 +4769,8 @@ When REFRESH-MODE-LINE is non-nil, also refresh context-aware mode-line text."
         (format "rate limited; retry %s in %.0fs"
                 (or attempt 1) (or backoff 0)))))
     (_
-     (e-chat--insert-entry "System" (format "Event: %S" event) t))))))
+     (e-chat--insert-entry "System" (format "Event: %S" event) t)))
+     (e-chat--mark-current-session-read-if-focused))))
 
 (defun e-chat--tail-messages (messages limit)
   "Return at most LIMIT trailing MESSAGES."
@@ -5757,21 +5774,47 @@ adds its display name to the row."
           (and (stringp summary)
                (not (string-empty-p (string-trim summary))))))))
 
+(defun e-chat--active-session-active-p (harness session-id)
+  "Return non-nil when SESSION-ID has an active turn in HARNESS."
+  (and harness
+       session-id
+       (ignore-errors
+         (gethash session-id (e-harness-active-turns harness)))))
+
+(defun e-chat--active-session-state (candidate)
+  "Return read state for active-session CANDIDATE."
+  (let* ((harness (plist-get candidate :harness))
+         (session (plist-get candidate :session))
+         (session-id (plist-get candidate :session-id))
+         (instance-id (plist-get candidate :instance-id)))
+    (cond
+     ((e-chat--active-session-active-p harness session-id) 'active)
+     ((ignore-errors
+        (e-chat-overview--session-unread-p harness session instance-id))
+      'unread)
+     (t 'read))))
+
+(defun e-chat--active-session-indicator (state)
+  "Return the left indicator for active-session STATE."
+  (pcase state
+    ('active
+     (propertize "◆ "
+                 'font-lock-face
+                 'e-chat-overview-unread-face))
+    ('unread
+     (propertize "● "
+                 'font-lock-face
+                 'e-chat-overview-unread-face))
+    (_ "  ")))
+
 (defun e-chat--active-session-line (candidate)
   "Return picker row text for active session CANDIDATE."
   (let* ((harness (plist-get candidate :harness))
          (session (plist-get candidate :session))
          (session-id (plist-get candidate :session-id))
-         (instance-id (plist-get candidate :instance-id))
          (instance (plist-get candidate :instance))
-         (unread (ignore-errors
-                   (e-chat-overview--session-unread-p
-                    harness session instance-id)))
-         (title (concat (if unread
-                            (propertize "● "
-                                        'font-lock-face
-                                        'e-chat-overview-unread-face)
-                          "  ")
+         (state (e-chat--active-session-state candidate))
+         (title (concat (e-chat--active-session-indicator state)
                         (e-chat--active-session-title session)))
          (message-count (or (plist-get session :message-count) 0))
          (timestamp (or (plist-get session :last-message-at)
@@ -5854,6 +5897,11 @@ face properties so the preview still reflects chat rendering."
          (t
           (e-chat--insert-protected "No prompts yet")))
         (e-chat--active-session-sanitize-preview-properties)
+        (ignore-errors
+          (e-chat-overview--mark-session-read
+           harness
+           session
+           (plist-get candidate :instance-id)))
         (goto-char (point-min))))))
 
 (defun e-chat--active-session-open (candidate)
@@ -5879,6 +5927,7 @@ face properties so the preview still reflects chat rendering."
      :candidate-key #'e-chat--active-session-candidate-key
      :candidate-line #'e-chat--active-session-line
      :preview #'e-chat--active-session-preview
+     :refresh-candidate-after-preview t
      :on-select #'e-chat--active-session-open
      :footer "RET open  C-g cancel"
      :width 0.72

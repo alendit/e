@@ -266,6 +266,40 @@
         (when (buffer-live-p buffer)
           (kill-buffer buffer))))))
 
+(ert-deftest e-picker-test-selection-overlay-stays-in-left-pane ()
+  "The selection overlay highlights only the candidate cell, not preview text."
+  (cl-letf (((symbol-function 'e-picker--posframe-available-p)
+             (lambda () t))
+            ((symbol-function 'posframe-show)
+             (lambda (_buffer &rest _args) 'picker-frame))
+            ((symbol-function 'e-picker--focus-frame)
+             (lambda (_frame) nil)))
+    (let ((buffer (e-picker-open
+                   :name 'test-left-overlay
+                   :title "Pick"
+                   :candidates '("alpha" "beta")
+                   :candidate-key #'identity
+                   :candidate-line #'identity
+                   :preview (lambda (candidate buffer)
+                              (with-current-buffer buffer
+                                (insert "Preview for " candidate)))
+                   :on-select #'ignore)))
+      (unwind-protect
+          (with-current-buffer buffer
+            (let ((highlighted (buffer-substring
+                                (overlay-start e-picker--selection-overlay)
+                                (overlay-end e-picker--selection-overlay))))
+              (should (string-match-p "> alpha" highlighted))
+              (should-not (string-match-p "Preview for alpha" highlighted)))
+            (e-picker-next)
+            (let ((highlighted (buffer-substring
+                                (overlay-start e-picker--selection-overlay)
+                                (overlay-end e-picker--selection-overlay))))
+              (should (string-match-p "> beta" highlighted))
+              (should-not (string-match-p "Preview for beta" highlighted))))
+        (when (buffer-live-p buffer)
+          (kill-buffer buffer))))))
+
 (ert-deftest e-picker-test-open-renders-posframe-focuses-it-and-selects-current-candidate ()
   "Opening with posframe focuses the picker so navigation keys reach its map."
   (let (shown focused hidden selected)

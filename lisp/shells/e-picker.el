@@ -99,6 +99,9 @@
 (defvar-local e-picker--preview-text-column nil
   "Column where right-side preview text starts.")
 
+(defvar-local e-picker--left-width nil
+  "Width of the left candidate cell when a preview pane is rendered.")
+
 (defvar-local e-picker--preview-width nil
   "Width of the right-side preview pane.")
 
@@ -334,11 +337,40 @@ WIDTH defaults to the current window body width."
       (let ((overlay (e-picker--ensure-selection-overlay)))
         (save-excursion
           (goto-char start)
-          (move-overlay overlay start (line-beginning-position 2)
-                        (current-buffer)))
+          (move-overlay
+           overlay
+           start
+           (if (and e-picker--preview-text-column e-picker--left-width)
+               (progn
+                 (move-to-column e-picker--left-width t)
+                 (point))
+             (line-beginning-position 2))
+           (current-buffer)))
         (goto-char start))
     (when (overlayp e-picker--selection-overlay)
       (delete-overlay e-picker--selection-overlay))))
+
+(defun e-picker--refresh-candidate-line (index)
+  "Refresh the rendered left cell for candidate INDEX."
+  (when-let* ((start (e-picker--candidate-row-start index))
+              (candidate (nth index e-picker--filtered-candidates))
+              (candidate-line (plist-get e-picker--spec :candidate-line)))
+    (save-excursion
+      (goto-char start)
+      (let* ((inhibit-read-only t)
+             (line (funcall candidate-line candidate))
+             (left (concat (if (= index e-picker--selection) "> " "  ")
+                           line)))
+        (if (and e-picker--preview-text-column e-picker--left-width)
+            (let ((end (progn
+                         (move-to-column e-picker--left-width t)
+                         (point))))
+              (delete-region start end)
+              (goto-char start)
+              (insert (e-picker--format-cell left e-picker--left-width)))
+          (delete-region start (line-beginning-position 2))
+          (goto-char start)
+          (insert left "\n"))))))
 
 (defun e-picker--update-preview-section ()
   "Refresh the right-side preview for the current selected candidate."
@@ -363,8 +395,10 @@ WIDTH defaults to the current window body width."
              (/= old-selection e-picker--selection))
     (e-picker--set-candidate-prefix old-selection nil))
   (e-picker--set-candidate-prefix e-picker--selection t)
-  (e-picker--move-selection-overlay)
-  (e-picker--update-preview-section))
+  (e-picker--update-preview-section)
+  (when (plist-get e-picker--spec :refresh-candidate-after-preview)
+    (e-picker--refresh-candidate-line e-picker--selection))
+  (e-picker--move-selection-overlay))
 
 (defun e-picker--insert-line (text &optional face)
   "Insert TEXT and newline, optionally applying FACE."
@@ -396,6 +430,7 @@ WIDTH defaults to the current window body width."
          (preview-lines (and preview-enabled
                              (e-picker--preview-lines preview-width))))
     (e-picker--clear-candidate-row-starts)
+    (setq-local e-picker--left-width left-width)
     (setq-local e-picker--preview-width preview-width)
     (setq-local e-picker--preview-text-column
                 (and preview-enabled (+ left-width separator-width)))

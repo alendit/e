@@ -5822,6 +5822,8 @@ The context-window denominator comes from the live provider lookup
                                  :session-id "beta-session"
                                  :instance-id :beta)))
          spec preview-text opened)
+    (puthash "alpha-session" 'active
+             (e-harness-active-turns harness-a))
     (cl-letf (((symbol-function 'e-chat--session-candidates)
                (lambda () candidates))
               ((symbol-function 'e-context-status-text)
@@ -5851,6 +5853,10 @@ The context-window denominator comes from the live provider lookup
                "ctx model/effort"
                (funcall (plist-get spec :candidate-line)
                         (cadr candidates))))
+      (should (string-prefix-p
+               "◆ Alpha Session"
+               (funcall (plist-get spec :candidate-line)
+                        (car candidates))))
       (should (string-prefix-p
                "● Beta Session"
                (funcall (plist-get spec :candidate-line)
@@ -5958,6 +5964,83 @@ The context-window denominator comes from the live provider lookup
           (should-not (string-match-p "first response" text))
           (should (string-match-p "last prompt" text))
           (should (string-match-p "last response" text)))))))
+
+(ert-deftest e-chat-test-active-session-preview-marks-session-read ()
+  "Showing a session in the active-session preview records its latest response."
+  (let* ((store (e-session-store-create))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :sessions store))
+         (state-file (make-temp-file "e-chat-overview-state"))
+         candidate)
+    (delete-file state-file)
+    (let ((e-chat-overview-state-file state-file))
+      (unwind-protect
+          (progn
+            (e-session-create store :id "preview-read"
+                              :metadata '(:name "Preview read"))
+            (e-session-append-message
+             store "preview-read"
+             '(:id "msg-1" :role user :content "prompt"))
+            (e-session-append-message
+             store "preview-read"
+             '(:id "msg-2" :role assistant :content "response"))
+            (setq candidate
+                  (list :harness harness
+                        :session (car (e-harness-session-list harness))
+                        :session-id "preview-read"))
+            (should (e-chat-overview--session-unread-p
+                     harness
+                     (plist-get candidate :session)))
+            (with-temp-buffer
+              (e-chat--active-session-preview candidate (current-buffer)))
+            (should-not (e-chat-overview--session-unread-p
+                         harness
+                         (plist-get candidate :session))))
+        (when (file-exists-p state-file)
+          (delete-file state-file))))))
+
+(ert-deftest e-chat-test-focused-chat-buffer-marks-session-read ()
+  "Focusing a chat buffer records the latest assistant response as read."
+  (let* ((store (e-session-store-create))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :sessions store))
+         (state-file (make-temp-file "e-chat-overview-state"))
+         (buffer (generate-new-buffer " *e-chat-focus-read-test*")))
+    (delete-file state-file)
+    (let ((e-chat-overview-state-file state-file))
+      (unwind-protect
+          (progn
+            (e-session-create store :id "focus-read"
+                              :metadata '(:name "Focus read"))
+            (e-session-append-message
+             store "focus-read"
+             '(:id "msg-1" :role user :content "prompt"))
+            (e-session-append-message
+             store "focus-read"
+             '(:id "msg-2" :role assistant :content "response"))
+            (should (e-chat-overview--session-unread-p
+                     harness
+                     (car (e-harness-session-list harness))))
+            (with-current-buffer buffer
+              (e-chat-mode)
+              (setq-local e-chat-harness harness)
+              (setq-local e-chat-session-id "focus-read")
+              (e-chat--mark-current-session-read-if-focused))
+            (should (e-chat-overview--session-unread-p
+                     harness
+                     (car (e-harness-session-list harness))))
+            (switch-to-buffer buffer)
+            (with-current-buffer buffer
+              (e-chat--mark-current-session-read-if-focused))
+            (should-not (e-chat-overview--session-unread-p
+                         harness
+                         (car (e-harness-session-list harness))))
+        (when (buffer-live-p buffer)
+          (kill-buffer buffer))
+        (when (file-exists-p state-file)
+          (delete-file state-file)))))))
 
 (ert-deftest e-chat-test-active-sessions-errors-without-candidates ()
   "The active sessions command reports an empty session list."
