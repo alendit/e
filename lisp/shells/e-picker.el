@@ -78,6 +78,12 @@
 (defvar-local e-picker--filtered-candidates nil
   "Filtered candidates for the current picker buffer.")
 
+(defvar-local e-picker--render-limit nil
+  "Maximum number of filtered candidates currently rendered, or nil for all.")
+
+(defvar-local e-picker--rendered-count 0
+  "Number of filtered candidates rendered in the current buffer.")
+
 (defvar-local e-picker--selection 0
   "Current selected candidate index.")
 
@@ -241,6 +247,49 @@ WIDTH defaults to the current window body width."
     (if (functionp source)
         (funcall source)
       source)))
+
+(defun e-picker--initial-render-limit ()
+  "Return the configured initial candidate render limit, or nil."
+  (let ((limit (plist-get e-picker--spec :initial-candidate-limit)))
+    (and (integerp limit)
+         (> limit 0)
+         limit)))
+
+(defun e-picker--candidate-limit-step ()
+  "Return the configured candidate render expansion step."
+  (let ((step (plist-get e-picker--spec :candidate-limit-step)))
+    (if (and (integerp step)
+             (> step 0))
+        step
+      (or (e-picker--initial-render-limit) 15))))
+
+(defun e-picker--reset-render-limit ()
+  "Reset the rendered candidate window to the configured initial size."
+  (setq-local e-picker--render-limit (e-picker--initial-render-limit)))
+
+(defun e-picker--visible-candidates ()
+  "Return filtered candidates that should be rendered now."
+  (let* ((count (if e-picker--render-limit
+                    (min e-picker--render-limit
+                         (length e-picker--filtered-candidates))
+                  (length e-picker--filtered-candidates))))
+    (setq-local e-picker--rendered-count count)
+    (if (= count (length e-picker--filtered-candidates))
+        e-picker--filtered-candidates
+      (cl-subseq e-picker--filtered-candidates 0 count))))
+
+(defun e-picker--expand-render-limit-for-selection ()
+  "Expand rendered candidates when selection reaches the current bottom.
+Return non-nil when the picker needs a full rerender."
+  (when (and e-picker--render-limit
+             (< e-picker--render-limit
+                (length e-picker--filtered-candidates))
+             (>= e-picker--selection e-picker--render-limit))
+    (setq-local e-picker--render-limit
+                (min (length e-picker--filtered-candidates)
+                     (+ e-picker--render-limit
+                        (e-picker--candidate-limit-step))))
+    t))
 
 (defun e-picker--filter-candidates ()
   "Update current buffer filtered candidates from current input."
@@ -427,6 +476,7 @@ WIDTH defaults to the current window body width."
                          (max 30 (- render-width preview-width
                                     separator-width))
                        render-width))
+         (visible-candidates (e-picker--visible-candidates))
          (preview-lines (and preview-enabled
                              (e-picker--preview-lines preview-width))))
     (e-picker--clear-candidate-row-starts)
@@ -439,9 +489,9 @@ WIDTH defaults to the current window body width."
     (e-picker--insert-line (format "> %s" e-picker--input)
                            'e-picker-input-face)
     (insert "\n")
-    (if e-picker--filtered-candidates
+    (if visible-candidates
         (cl-loop
-         for candidate in e-picker--filtered-candidates
+         for candidate in visible-candidates
          for index from 0
          do (let* ((line (funcall candidate-line candidate))
                    (start (point))
@@ -544,7 +594,9 @@ When SELECTED is non-nil, run ACTION after closing."
             (min (1- (length e-picker--filtered-candidates))
                  (1+ e-picker--selection)))
       (unless (= old-selection e-picker--selection)
-        (e-picker--refresh-selection-display old-selection)))))
+        (if (e-picker--expand-render-limit-for-selection)
+            (e-picker--render)
+          (e-picker--refresh-selection-display old-selection))))))
 
 (defun e-picker-previous ()
   "Move to the previous picker candidate."
@@ -573,6 +625,7 @@ When SELECTED is non-nil, run ACTION after closing."
   (setq e-picker--input
         (concat e-picker--input (string last-command-event)))
   (setq e-picker--selection 0)
+  (e-picker--reset-render-limit)
   (e-picker--filter-candidates)
   (e-picker--render))
 
@@ -583,6 +636,7 @@ When SELECTED is non-nil, run ACTION after closing."
     (setq e-picker--input
           (substring e-picker--input 0 (1- (length e-picker--input))))
     (setq e-picker--selection 0)
+    (e-picker--reset-render-limit)
     (e-picker--filter-candidates)
     (e-picker--render)))
 
@@ -648,6 +702,7 @@ handles selection synchronously."
           (setq-local e-picker--filtered-candidates candidates)
           (setq-local e-picker--selection 0)
           (setq-local e-picker--input "")
+          (e-picker--reset-render-limit)
           (setq-local e-picker--closed nil)
           (setq-local e-picker--window-configuration
                       (current-window-configuration))

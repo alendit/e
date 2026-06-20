@@ -5844,6 +5844,8 @@ The context-window denominator comes from the live provider lookup
                              :instance-id instance-id)))))
       (e-chat-active-sessions)
       (should (eq (plist-get spec :name) 'active-sessions))
+      (should (= (plist-get spec :initial-candidate-limit) 15))
+      (should (= (plist-get spec :candidate-limit-step) 15))
       (should (equal (funcall (plist-get spec :candidates)) candidates))
       (should (string-match-p
                "Beta Session"

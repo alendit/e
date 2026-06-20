@@ -5928,6 +5928,8 @@ face properties so the preview still reflects chat rendering."
      :candidate-line #'e-chat--active-session-line
      :preview #'e-chat--active-session-preview
      :refresh-candidate-after-preview t
+     :initial-candidate-limit 15
+     :candidate-limit-step 15
      :on-select #'e-chat--active-session-open
      :footer "RET open  C-g cancel"
      :width 0.72

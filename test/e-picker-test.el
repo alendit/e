@@ -175,6 +175,41 @@
           (when (buffer-live-p buffer)
             (kill-buffer buffer)))))))
 
+(ert-deftest e-picker-test-initial-candidate-limit-defers-row-rendering ()
+  "A picker can render only an initial row window and expand at the bottom."
+  (let ((line-calls 0)
+        (candidates (number-sequence 1 40)))
+    (cl-letf (((symbol-function 'e-picker--posframe-available-p)
+               (lambda () t))
+              ((symbol-function 'posframe-show)
+               (lambda (_buffer &rest _args) 'picker-frame))
+              ((symbol-function 'e-picker--focus-frame)
+               (lambda (_frame) nil)))
+      (let ((buffer (e-picker-open
+                     :name 'test-limited-initial-render
+                     :title "Pick"
+                     :candidates candidates
+                     :candidate-key #'number-to-string
+                     :candidate-line (lambda (candidate)
+                                       (setq line-calls (1+ line-calls))
+                                       (format "candidate %02d" candidate))
+                     :on-select #'ignore
+                     :initial-candidate-limit 15
+                     :candidate-limit-step 15)))
+        (unwind-protect
+            (with-current-buffer buffer
+              (should (= line-calls 15))
+              (should (string-match-p "candidate 15" (buffer-string)))
+              (should-not (string-match-p "candidate 16" (buffer-string)))
+              (setq line-calls 0)
+              (dotimes (_ 15)
+                (e-picker-next))
+              (should (= e-picker--selection 15))
+              (should (= line-calls 30))
+              (should (string-match-p "^> candidate 16" (buffer-string))))
+          (when (buffer-live-p buffer)
+            (kill-buffer buffer)))))))
+
 (ert-deftest e-picker-test-navigation-boundary-does-not-refresh-preview ()
   "Pressing j/k at a list boundary does not rerender the preview."
   (let ((preview-calls 0))
