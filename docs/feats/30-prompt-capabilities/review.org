@@ -1,0 +1,79 @@
+#+title: Review: Prompt Capabilities
+#+author: e implementation
+#+date: 2026-06-20
+#+startup: overview
+
+* Status
+
+In-review.
+
+* Review loop
+
+No review findings required code changes.
+
+* Final review
+
+Subagent review reported no new suggestions after the implementation pass.
+
+#+begin_example
+No new suggestions.
+#+end_example
+
+* Verification
+
+Focused feature verification:
+
+#+begin_src sh
+rtk eldev test test/e-prompts-test.el test/e-capabilities-test.el test/e-harness-test.el test/e-defaults-test.el
+#+end_src
+
+Result:
+
+#+begin_example
+121 tests, 121 expected, 0 unexpected
+#+end_example
+
+Full suite:
+
+#+begin_src sh
+rtk eldev test
+#+end_src
+
+Result:
+
+#+begin_example
+879 tests, 878 expected, 0 unexpected, 1 skipped
+#+end_example
+
+Whitespace:
+
+#+begin_src sh
+git diff --check
+#+end_src
+
+Result: clean.
+
+* Live reload
+
+The running Emacs was reloaded with:
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Result:
+
+#+begin_example
+"/Users/dimitrivorona/projects/elisp/e/"
+#+end_example
+
+A bounded live probe constructed a default chat harness with a fake backend and
+confirmed the built-in prompt names, rendered prompt text, and duplicate-name
+diagnostics.
+
+#+begin_example
+(:prompt-names ("summarize" "review")
+ :summarize-render "Summarize the current context clearly and concisely."
+ :review-render "Review the selected code for bugs, regressions, and missing tests."
+ :collisions nil)
+#+end_example
