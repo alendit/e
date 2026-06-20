@@ -5642,6 +5642,7 @@ The context-window denominator comes from the live provider lookup
     (dolist (command-id '(new
                           resume
                           switch-session
+                          active-sessions
                           overview
                           sidebar-toggle
                           overview-close
@@ -5780,6 +5781,76 @@ The context-window denominator comes from the live provider lookup
   (should (eq (e-shell-command-interactive
                (e-shell-command-by-id (e-shell-get 'chat) 'new))
               'e-chat-new)))
+
+(ert-deftest e-chat-test-active-sessions-builds-picker-spec ()
+  "The active sessions command uses e-picker with chat session callbacks."
+  (let* ((harness-a (e-harness-create
+                     :backend (e-backend-fake-create :items nil)
+                     :sessions (e-session-store-create)))
+         (harness-b (e-harness-create
+                     :backend (e-backend-fake-create :items nil)
+                     :sessions (e-session-store-create)))
+         (session-a '(:id "alpha-session"
+                      :title "Alpha Session"
+                      :summary "Alpha summary"
+                      :message-count 1
+                      :created-at "2026-06-20T10:00:00Z"
+                      :loaded nil))
+         (session-b '(:id "beta-session"
+                      :title "Beta Session"
+                      :summary "Beta summary"
+                      :message-count 2
+                      :created-at "2026-06-20T11:00:00Z"
+                      :loaded nil))
+         (candidates (list (list :harness harness-a
+                                 :session session-a
+                                 :session-id "alpha-session")
+                           (list :harness harness-b
+                                 :session session-b
+                                 :session-id "beta-session"
+                                 :instance-id :beta)))
+         spec preview-text opened)
+    (cl-letf (((symbol-function 'e-chat--session-candidates)
+               (lambda () candidates))
+              ((symbol-function 'e-context-status-text)
+               (lambda (&rest _args) "ctx model/effort 10%"))
+              ((symbol-function 'e-picker-open)
+               (lambda (&rest args)
+                 (setq spec args)
+                 nil))
+              ((symbol-function 'e-chat-open-session)
+               (lambda (harness session-id display &optional instance-id)
+                 (setq opened
+                       (list :harness harness
+                             :session-id session-id
+                             :display display
+                             :instance-id instance-id)))))
+      (e-chat-active-sessions)
+      (should (eq (plist-get spec :name) 'active-sessions))
+      (should (equal (funcall (plist-get spec :candidates)) candidates))
+      (should (string-match-p
+               "Beta Session"
+               (funcall (plist-get spec :candidate-key)
+                        (cadr candidates))))
+      (should (string-match-p
+               "ctx model/effort"
+               (funcall (plist-get spec :candidate-line)
+                        (cadr candidates))))
+      (with-temp-buffer
+        (funcall (plist-get spec :preview) (car candidates) (current-buffer))
+        (setq preview-text (buffer-string)))
+      (should (string-match-p "Alpha Session" preview-text))
+      (funcall (plist-get spec :on-select) (cadr candidates))
+      (should (eq (plist-get opened :harness) harness-b))
+      (should (equal (plist-get opened :session-id) "beta-session"))
+      (should (eq (plist-get opened :display) t))
+      (should (eq (plist-get opened :instance-id) :beta)))))
+
+(ert-deftest e-chat-test-active-sessions-errors-without-candidates ()
+  "The active sessions command reports an empty session list."
+  (cl-letf (((symbol-function 'e-chat--session-candidates)
+             (lambda () nil)))
+    (should-error (e-chat-active-sessions) :type 'user-error)))
 
 (ert-deftest e-chat-test-reset-clears-rendered-session ()
   "Reset clears the rendered chat buffer and harness session transcript."

@@ -91,6 +91,7 @@
   (require 'e-shells)
   (require 'e-layers-shell)
   (require 'e-context-status)
+  (require 'e-picker)
   (require 'e-chat)
   (require 'e-chat-starter)
   (require 'e-canvas)

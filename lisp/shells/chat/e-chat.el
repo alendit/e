@@ -25,6 +25,7 @@
 (require 'e-harness-registry)
 (require 'e-prompts)
 (require 'e-tools)
+(require 'e-picker)
 (require 'e-session)
 (require 'e-shells)
 (require 'e-startup)
@@ -5714,6 +5715,97 @@ adds its display name to the row."
                            e-chat-harness-instance-id ,instance-id
                            help-echo "RET opens this e chat session"))))
 
+(defun e-chat--active-session-title (session)
+  "Return display title for active SESSION."
+  (or (e-chat-overview--compact-row-text (plist-get session :title) 52)
+      (e-chat-overview--compact-row-text (plist-get session :summary) 52)
+      (plist-get session :id)))
+
+(defun e-chat--active-session-candidate-key (candidate)
+  "Return filter key for active session CANDIDATE."
+  (let* ((session (plist-get candidate :session))
+         (instance (plist-get candidate :instance)))
+    (string-join
+     (delq nil
+           (list (plist-get session :title)
+                 (plist-get session :summary)
+                 (plist-get session :id)
+                 (and instance
+                      (e-harness-instance-name instance))))
+     " ")))
+
+(defun e-chat--active-session-line (candidate)
+  "Return picker row text for active session CANDIDATE."
+  (let* ((harness (plist-get candidate :harness))
+         (session (plist-get candidate :session))
+         (session-id (plist-get candidate :session-id))
+         (instance-id (plist-get candidate :instance-id))
+         (instance (plist-get candidate :instance))
+         (title (e-chat--active-session-title session))
+         (message-count (or (plist-get session :message-count) 0))
+         (timestamp (or (plist-get session :last-message-at)
+                        (plist-get session :created-at)))
+         (status (ignore-errors
+                   (e-context-status-text
+                    harness
+                    session-id
+                    :prefix "ctx"
+                    :prefer-token-usage t
+                    :estimate-context nil)))
+         (meta (string-join
+                (delq nil
+                      (list (when (ignore-errors
+                                    (e-chat-overview--session-unread-p
+                                     harness session instance-id))
+                              "!")
+                            (and instance
+                                 (e-harness-instance-name instance))
+                            (when (> message-count 0)
+                              (format "%d %s"
+                                      message-count
+                                      (if (= message-count 1)
+                                          "msg"
+                                        "msgs")))
+                            (e-chat-overview--compact-timestamp timestamp)
+                            status))
+                "  ")))
+    (e-picker-make-line title meta 96)))
+
+(defun e-chat--active-session-preview (candidate buffer)
+  "Render active session CANDIDATE into preview BUFFER."
+  (let ((preview (e-chat--render-resume-preview
+                  (plist-get candidate :harness)
+                  (plist-get candidate :session))))
+    (with-current-buffer buffer
+      (insert (with-current-buffer preview
+                (buffer-string))))))
+
+(defun e-chat--active-session-open (candidate)
+  "Open selected active session CANDIDATE."
+  (e-chat-open-session
+   (plist-get candidate :harness)
+   (plist-get candidate :session-id)
+   t
+   (plist-get candidate :instance-id)))
+
+(defun e-chat-active-sessions ()
+  "Open a floating picker of active or recent chat sessions."
+  (interactive)
+  (let ((candidates (e-chat--session-candidates)))
+    (unless candidates
+      (user-error "No e chat sessions to show"))
+    (e-picker-open
+     :name 'active-sessions
+     :title "Active sessions"
+     :candidates (lambda () candidates)
+     :candidate-key #'e-chat--active-session-candidate-key
+     :candidate-line #'e-chat--active-session-line
+     :preview #'e-chat--active-session-preview
+     :on-select #'e-chat--active-session-open
+     :footer "RET open  C-g cancel"
+     :width 0.72
+     :height 0.68)))
+
 (defun e-chat-overview--render (&optional harness)
   "Render HARNESS sessions into the current overview buffer."
   (let* ((instances (and (not harness)
@@ -6152,6 +6244,12 @@ When DISPLAY is non-nil, display the preview buffer."
      :summary "Switch to a recent persisted chat session."
      :interactive 'e-chat-switch-session
      :function 'e-chat-switch-session
+     :scope 'global)
+    (e-shell-command-create
+     :id 'active-sessions
+     :summary "Open a floating active chat sessions picker."
+     :interactive 'e-chat-active-sessions
+     :function 'e-chat-active-sessions
      :scope 'global)
     (e-shell-command-create
      :id 'overview
