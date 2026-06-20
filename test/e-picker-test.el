@@ -58,6 +58,10 @@
   (should (eq (lookup-key e-picker-mode-map (kbd "<return>"))
               #'e-picker-select)))
 
+(ert-deftest e-picker-test-mode-map-binds-q-to-cancel ()
+  "The picker exits when q is pressed."
+  (should (eq (lookup-key e-picker-mode-map (kbd "q")) #'e-picker-cancel)))
+
 (ert-deftest e-picker-test-mode-neutralizes-evil ()
   "Picker buffers keep Evil from intercepting j/k/RET navigation keys."
   (let ((buffer (get-buffer-create "*e-picker-evil-test*")))

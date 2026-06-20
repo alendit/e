@@ -157,6 +157,7 @@
     (define-key map (kbd "p") nil)
     (define-key map (kbd "RET") #'e-picker-select)
     (define-key map (kbd "<return>") #'e-picker-select)
+    (define-key map (kbd "q") #'e-picker-cancel)
     (define-key map (kbd "C-g") #'e-picker-cancel)
     (define-key map (kbd "<escape>") #'e-picker-cancel)
     (define-key map (kbd "DEL") #'e-picker-backspace)
