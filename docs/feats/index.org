@@ -37,7 +37,7 @@ Status values for coding agents:
 | 24 | Done | 24-mcp-capability-wrapper/ | MCP Capability Wrapper |
 | 25 | In-review | 25-resource-glob-search/ | Resource Glob and Search Tools |
 | 26 | In-review | 26-elisp-tool-chaining/ | Elisp Tool Chaining |
-| 27 | Ready | 27-debug-agent-session/ | Debug Agent Session |
+| 27 | In-progress | 27-debug-agent-session/ | Debug Agent Session |
 | 28 | Ready | 28-context-auto-compaction/ | Context Auto-Compaction |
 | 29 | In-progress | 29-workspace-roots/ | Workspace Roots |
 | 30 | Ready | 30-prompt-capabilities/ | Prompt Capabilities |

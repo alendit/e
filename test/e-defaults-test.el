@@ -46,15 +46,21 @@
              :sessions (plist-get args :sessions)))))
      ,@body))
 
-(ert-deftest e-defaults-test-startup-specs-only-include-chat-default ()
-  "The startup default harness specs currently include only chat-default."
+(ert-deftest e-defaults-test-startup-specs-include-chat-and-debug-defaults ()
+  "The startup default harness specs include chat and debug defaults."
   (should (equal e-default-harness-specs
                  '((:id :chat-default
                     :name "Default Chat"
                     :kind chat
                     :default t
                     :factory e-default-chat-harness-create
-                    :sync e-default-chat-harness-sync)))))
+                    :sync e-default-chat-harness-sync)
+                   (:id :debug-default
+                    :name "Debug Agent"
+                    :kind debug
+                    :default t
+                    :factory e-default-debug-harness-create
+                    :sync e-default-debug-harness-sync)))))
 
 (ert-deftest e-defaults-test-registers-chat-default-factory ()
   "Startup default registration adds a lazy chat-default factory."
@@ -65,6 +71,16 @@
                  (e-harness-instance-default :kind 'chat))
                 :chat-default))
     (should-not (e-harness-registry-get :chat-default))))
+
+(ert-deftest e-defaults-test-registers-debug-default-factory ()
+  "Startup default registration adds a lazy debug-default factory."
+  (e-defaults-test--with-empty-harness-registry
+    (e-default-harnesses-register)
+    (should (member :debug-default (e-harness-registry-list)))
+    (should (eq (e-harness-instance-id
+                 (e-harness-instance-default :kind 'debug))
+                :debug-default))
+    (should-not (e-harness-registry-get :debug-default))))
 
 (ert-deftest e-defaults-test-registers-chat-instance-for-legacy-spec ()
   "Legacy chat-default specs still register the default chat instance."
@@ -214,6 +230,25 @@
         (should (memq 'layer-selection
                       (mapcar #'e-capability-id
                               (e-harness-active-capabilities harness))))))))
+
+(ert-deftest e-defaults-test-debug-harness-uses-chat-preset-and-debug-guidance ()
+  "Default debug harness activation includes chat layers plus debug guidance."
+  (e-defaults-test--with-configured-chat-factory
+    (let ((e-default-chat-layer-ids '(agents-std-context harness-base e)))
+      (let ((harness (e-default-debug-harness-create)))
+        (should (equal (mapcar #'e-layer-id
+                               (e-harness-active-layers harness))
+                       '(chat-session agents-std-context harness-base e debug-agent)))
+        (should (memq 'chat-session
+                      (mapcar #'e-capability-id
+                              (e-harness-active-capabilities harness))))
+        (should (memq 'context-inspection
+                      (mapcar #'e-capability-id
+                              (e-harness-active-capabilities harness))))
+        (should (memq 'debug-agent
+                      (mapcar #'e-capability-id
+                              (e-harness-active-capabilities harness))))
+        (should-not (e-harness-layer-change-function harness))))))
 
 (ert-deftest e-defaults-test-chat-harness-enables-web-and-text-editing-by-default ()
   "Default chat harness activation includes web and text-editing layers."

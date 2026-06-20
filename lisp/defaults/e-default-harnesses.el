@@ -16,8 +16,10 @@
 
 (require 'cl-lib)
 (require 'e-backend)
+(require 'e-capabilities)
 (require 'e-default-layers)
 (require 'e-context)
+(require 'e-context-inspection)
 (require 'e-harness)
 (require 'e-harness-instances)
 (require 'e-harness-registry)
@@ -37,7 +39,13 @@
      :kind chat
      :default t
      :factory e-default-chat-harness-create
-     :sync e-default-chat-harness-sync))
+     :sync e-default-chat-harness-sync)
+    (:id :debug-default
+     :name "Debug Agent"
+     :kind debug
+     :default t
+     :factory e-default-debug-harness-create
+     :sync e-default-debug-harness-sync))
   "Default harness specs registered during package startup."
   :type '(repeat sexp)
   :group 'e-defaults)
@@ -68,6 +76,10 @@ attaches the internal chat-session layer and `e-default-chat-layer-ids'."
 
 (defconst e-default-chat--unconfigured-backend-message
   "Default chat backend is not configured; set e-default-chat-harness-factory or e-default-harness-specs in config.el/config.org")
+
+(defconst e-default-debug-instructions
+  "You are the standing e debug agent. Diagnose the current e runtime state from evidence before recommending a fix. Prefer reading exported context, recent failures, session metadata, buffers, and relevant source over guessing. Do not mutate buffers, retry provider calls, or change configuration unless the user explicitly asks for that action. When proposing remediation, name the owning component and the smallest safe change."
+  "System guidance attached to the default debug harness.")
 
 (defvar e-default--chat-sessions nil
   "Cached default persistent chat session store.")
@@ -113,6 +125,17 @@ DIRECTORY is passed to config-aware layer factories."
    :id 'chat-session
    :name "Chat Session"
    :capabilities (list (e-chat-session-capability-create))))
+
+(defun e-default-debug--debug-layer ()
+  "Return a fresh internal debug guidance layer."
+  (e-layer-create
+   :id 'debug-agent
+   :name "Debug Agent"
+   :capabilities (list (e-capability-create
+                        :id 'debug-agent
+                        :name "Debug Agent"
+                        :instructions e-default-debug-instructions)
+                       (e-context-inspection-capability-create))))
 
 (defun e-default-chat-sync-harness-layers
     (harness &optional layer-ids directory)
@@ -201,6 +224,25 @@ hold HARNESS."
   (e-default-chat-sync-harness-layers harness)
   harness)
 
+(defun e-default-debug-sync-harness-layers
+    (harness &optional layer-ids directory)
+  "Reconcile default debug HARNESS layers from chat defaults and debug guidance."
+  (e-harness-set-layer-change-function harness nil)
+  (e-default-chat-sync-harness-layers harness layer-ids directory)
+  (e-harness-activate-layer harness (e-default-debug--debug-layer))
+  (e-harness-set-layer-change-function harness nil)
+  harness)
+
+(defun e-default-debug-harness-sync (harness spec)
+  "Reconcile cached default debug HARNESS from SPEC."
+  (if (e-default-chat--sync-from-configured-factory-p spec)
+      (e-default-harness-sync-from-factory harness spec)
+    (progn
+      (e-default-harness--repair-shifted-session-store harness)
+      (e-default-chat--mark-unconfigured harness)))
+  (e-default-debug-sync-harness-layers harness)
+  harness)
+
 (cl-defun e-default-chat-harness-create
     (&key provider sessions layer-ids directory)
   "Create the default chat harness.
@@ -237,6 +279,21 @@ with an explicit unconfigured backend and no provider."
     (e-default-chat--activate-configured-layers harness layer-ids root)
     (e-harness-set-layer-change-function
      harness #'e-default-chat--record-layer-ids)
+    harness))
+
+(cl-defun e-default-debug-harness-create
+    (&key provider sessions layer-ids directory)
+  "Create the default standing debug harness.
+The debug harness shares the default chat backend/session-store configuration
+but keeps layer selection changes local to chat harnesses."
+  (let ((harness (e-default-chat-harness-create
+                  :provider provider
+                  :sessions sessions
+                  :layer-ids layer-ids
+                  :directory directory)))
+    (e-harness-set-layer-change-function harness nil)
+    (e-harness-activate-layer harness (e-default-debug--debug-layer))
+    (e-harness-set-layer-change-function harness nil)
     harness))
 
 (defun e-default-harnesses-register (&optional specs)

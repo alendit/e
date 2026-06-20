@@ -3,7 +3,7 @@
 
 * Status
 
-Planned.
+In-progress.
 
 * Goal
 
@@ -258,6 +258,11 @@ Each package is a useful stopping point: after it, the project is better off.
   survives =e-dev-reload=.
 - Value alone: a debuggable standing session exists and can be prompted
   programmatically even before UI lands.
+- Implemented: =:debug-default=, =e-default-debug-harness-create= / =-sync=,
+  the =debug-agent= guidance layer, and the reload-stable standing-session
+  resolver in =e-debug--ensure-session=. Verified with focused batch tests,
+  package/reload tests, =git diff --check=, =e-dev-reload=, and a bounded live
+  resolver probe.
 
 ** WP2: =e-debug= open/switch with tab display
 
