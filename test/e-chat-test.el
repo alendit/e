@@ -24,6 +24,7 @@
 (require 'e-harness-instances)
 (require 'e-harness-registry)
 (require 'e-layer)
+(require 'e-prompts)
 (require 'e-tools)
 
 (defun e-chat-test--buffer (&optional items session-id)
@@ -1038,6 +1039,303 @@
               (should (equal corfu-mode-argument -1))))
         (when (buffer-live-p buffer)
           (kill-buffer buffer))))))
+
+(ert-deftest e-chat-test-composer-prefix-shortcuts-fall-back-literally ()
+  "Prefix shortcuts self-insert when they do not meet trigger conditions."
+  (let (buffer)
+    (unwind-protect
+        (progn
+          (setq buffer (e-chat-test--buffer nil "chat-prefix-literal"))
+          (with-current-buffer buffer
+            (insert "hello")
+            (let ((last-command-event ?!))
+              (e-chat-composer-bang))
+            (insert "user")
+            (let ((last-command-event ?@))
+              (e-chat-composer-at))
+            (insert "path")
+            (let ((last-command-event ?/))
+              (e-chat-composer-slash))
+            (should (equal (e-chat--composer-text)
+                           "hello!user@path/"))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-composer-prefix-shortcuts-no-op-outside-composer ()
+  "Prefix shortcut commands do nothing outside an active composer."
+  (with-temp-buffer
+    (e-chat-mode)
+    (let ((before (buffer-string)))
+      (should-not (e-chat-composer-bang))
+      (should-not (e-chat-composer-at))
+      (should-not (e-chat-composer-slash))
+      (should (equal (buffer-string) before)))))
+
+(ert-deftest e-chat-test-composer-bang-inserts-command-output-reference ()
+  "Leading ! inserts captured command output as an inline context reference."
+  (let (buffer)
+    (unwind-protect
+        (progn
+          (setq buffer (e-chat-test--buffer nil "chat-prefix-bang"))
+          (with-current-buffer buffer
+            (cl-letf (((symbol-function 'read-shell-command)
+                       (lambda (&rest _args) "printf hi"))
+                      ((symbol-function 'e-chat--run-shell-command)
+                       (lambda (command directory)
+                         (should (equal command "printf hi"))
+                         (should (file-directory-p directory))
+                         (list :output "hi\n" :exit 0))))
+              (e-chat-composer-bang))
+            (let* ((document (e-chat--composer-document))
+                   (references (plist-get document :references))
+                   (submission (plist-get (e-chat--composer-submission)
+                                          :prompt)))
+              (should (= (length references) 1))
+              (should (string-match-p
+                       (regexp-quote "<reference id=\"ref-1\" label=\"$ printf hi (exit 0)\">")
+                       (plist-get document :text)))
+              (should (string-match-p (regexp-quote "$ printf hi") submission))
+              (should (string-match-p (regexp-quote "Status: exit 0") submission))
+              (should (string-match-p (regexp-quote "hi") submission)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-composer-bang-captures-nonzero-timeout-and-truncation ()
+  "Command references preserve failure, timeout, and truncation state as text."
+  (let* ((e-chat-command-output-timeout 7)
+         (reference (e-chat--command-output-reference
+                     "broken"
+                     (list :output "stderr\n"
+                           :exit 2
+                           :truncated t)))
+         (timeout-reference (e-chat--command-output-reference
+                             "slow"
+                             (list :output "partial\n"
+                                   :timed-out t))))
+    (should (string-match-p (regexp-quote "$ broken (exit 2)")
+                            (plist-get reference :label)))
+    (should (string-match-p (regexp-quote "Status: exit 2")
+                            (plist-get reference :text)))
+    (should (string-match-p (regexp-quote "Output was truncated.")
+                            (plist-get reference :text)))
+    (should (string-match-p (regexp-quote "stderr")
+                            (plist-get reference :text)))
+    (should (string-match-p (regexp-quote "$ slow (timed out after 7s)")
+                            (plist-get timeout-reference :label)))
+    (should (string-match-p (regexp-quote "Status: timed out after 7s")
+                            (plist-get timeout-reference :text)))))
+
+(ert-deftest e-chat-test-composer-bang-truncates-real-command-output ()
+  "Shell command capture caps oversized output with a visible marker."
+  (let ((e-chat-command-output-max-bytes 5)
+        (e-chat-command-output-timeout 5))
+    (let ((result (e-chat--run-shell-command "printf 0123456789" temporary-file-directory)))
+      (should (equal (plist-get result :exit) 0))
+      (should (plist-get result :truncated))
+      (should (string-prefix-p "01234" (plist-get result :output)))
+      (should (string-match-p (regexp-quote "[Command output truncated]")
+                              (plist-get result :output))))))
+
+(ert-deftest e-chat-test-composer-prefix-cancel-keeps-literal-character ()
+  "Cancelling a prefix picker leaves the typed prefix in the composer."
+  (let (buffer)
+    (unwind-protect
+        (progn
+          (setq buffer (e-chat-test--buffer nil "chat-prefix-cancel"))
+          (with-current-buffer buffer
+            (cl-letf (((symbol-function 'read-shell-command)
+                       (lambda (&rest _args) (signal 'quit nil))))
+              (e-chat-composer-bang))
+            (insert " ")
+            (cl-letf (((symbol-function 'completing-read)
+                       (lambda (&rest _args) (signal 'quit nil)))
+                      ((symbol-function 'e-chat--project-file-candidates)
+                       (lambda () (list (list :label "a.txt" :path "/tmp/a.txt")))))
+              (e-chat-composer-at))
+            (insert " ")
+            (cl-letf (((symbol-function 'completing-read)
+                       (lambda (&rest _args) (signal 'quit nil)))
+                      ((symbol-function 'e-chat--prompt-candidates)
+                       (lambda () (list (list :label "review" :prompt 'prompt)))))
+              (e-chat-composer-slash))
+            (should (equal (e-chat--composer-text) "! @ /"))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-composer-empty-prefix-candidates-keep-literal-character ()
+  "Empty file and prompt candidate sets leave the typed prefix literal."
+  (let (buffer picker-called)
+    (unwind-protect
+        (progn
+          (setq buffer (e-chat-test--buffer nil "chat-prefix-empty"))
+          (with-current-buffer buffer
+            (cl-letf (((symbol-function 'completing-read)
+                       (lambda (&rest _args)
+                         (setq picker-called t)
+                         ""))
+                      ((symbol-function 'e-chat--project-file-candidates)
+                       (lambda () nil))
+                      ((symbol-function 'e-chat--prompt-candidates)
+                       (lambda () nil)))
+              (e-chat-composer-at)
+              (insert " ")
+              (e-chat-composer-slash))
+            (should-not picker-called)
+            (should (equal (e-chat--composer-text) "@ /"))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-composer-at-lists-git-project-files ()
+  "Project file candidates come from git and honor exclude-standard rules."
+  (let ((directory (make-temp-file "e-chat-prefix-files-" t)))
+    (unwind-protect
+        (progn
+          (process-file "git" nil nil nil "-C" directory "init")
+          (with-temp-file (expand-file-name ".gitignore" directory)
+            (insert "ignored.txt\n"))
+          (with-temp-file (expand-file-name "keep.txt" directory)
+            (insert "keep\n"))
+          (make-directory (expand-file-name "sub" directory))
+          (with-temp-file (expand-file-name "sub/nested.el" directory)
+            (insert "(message \"nested\")\n"))
+          (with-temp-file (expand-file-name "ignored.txt" directory)
+            (insert "ignored\n"))
+          (cl-letf (((symbol-function 'e-chat--workspace-roots)
+                     (lambda () (list directory))))
+            (let ((labels (mapcar (lambda (candidate)
+                                    (plist-get candidate :label))
+                                  (e-chat--project-file-candidates))))
+              (should (member "keep.txt" labels))
+              (should (member "sub/nested.el" labels))
+              (should-not (member "ignored.txt" labels)))))
+      (delete-directory directory t))))
+
+(ert-deftest e-chat-test-composer-at-does-not-fallback-in-ignored-only-git-root ()
+  "Git-backed candidate listing does not expose ignored files by fallback scan."
+  (let ((directory (make-temp-file "e-chat-prefix-ignored-" t)))
+    (unwind-protect
+        (progn
+          (process-file "git" nil nil nil "-C" directory "init")
+          (with-temp-file (expand-file-name ".gitignore" directory)
+            (insert "*\n"))
+          (with-temp-file (expand-file-name "ignored.txt" directory)
+            (insert "ignored\n"))
+          (cl-letf (((symbol-function 'e-chat--workspace-roots)
+                     (lambda () (list directory))))
+            (let ((labels (mapcar (lambda (candidate)
+                                    (plist-get candidate :label))
+                                  (e-chat--project-file-candidates))))
+              (should-not (member "ignored.txt" labels)))))
+      (delete-directory directory t))))
+
+(ert-deftest e-chat-test-composer-at-inserts-file-reference ()
+  "Word-boundary @ inserts a selected project file as an inline reference."
+  (let (buffer)
+    (unwind-protect
+        (progn
+          (setq buffer (e-chat-test--buffer nil "chat-prefix-at"))
+          (with-current-buffer buffer
+            (insert "see ")
+            (cl-letf (((symbol-function 'e-chat--project-file-candidates)
+                       (lambda ()
+                         (list (list :label "src/example.el"
+                                     :path "/tmp/example.el"))))
+                      ((symbol-function 'completing-read)
+                       (lambda (&rest _args) "src/example.el"))
+                      ((symbol-function 'e-chat--read-file-reference-text)
+                       (lambda (path)
+                         (should (equal path "/tmp/example.el"))
+                         "(message \"hi\")\n")))
+              (e-chat-composer-at))
+            (let* ((document (e-chat--composer-document))
+                   (references (plist-get document :references))
+                   (submission (plist-get (e-chat--composer-submission)
+                                          :prompt)))
+              (should (= (length references) 1))
+              (should (string-match-p (regexp-quote "src/example.el")
+                                      (plist-get document :text)))
+              (should (string-match-p (regexp-quote "file:///tmp/example.el")
+                                      submission))
+              (should (string-match-p (regexp-quote "(message \"hi\")")
+                                      submission)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-composer-at-truncates-file-reference-text ()
+  "File reference text is capped with a visible truncation marker."
+  (let ((e-chat-file-reference-max-bytes 5)
+        (path (make-temp-file "e-chat-file-reference")))
+    (unwind-protect
+        (progn
+          (with-temp-file path
+            (insert "0123456789"))
+          (let ((text (e-chat--read-file-reference-text path)))
+            (should (string-prefix-p "01234" text))
+            (should (string-match-p (regexp-quote "[File reference truncated]")
+                                    text))))
+      (when (file-exists-p path)
+        (delete-file path)))))
+
+(ert-deftest e-chat-test-composer-slash-expands-selected-prompt ()
+  "Word-boundary / expands the selected prompt as editable composer text."
+  (let (buffer)
+    (unwind-protect
+        (progn
+          (setq buffer (e-chat-test--buffer nil "chat-prefix-slash"))
+          (with-current-buffer buffer
+            (let* ((prompt (e-prompt-spec-create
+                            :name "review"
+                            :description "Review code."
+                            :parameters
+                            (list (e-prompt-parameter-create
+                                   :name "focus"
+                                   :description "Focus."))
+                            :template "Review ${focus}."))
+                   (capability (e-capability-with-prompts-create
+                                :id 'review-prompts
+                                :name "Review Prompts"
+                                :instructions "Use review prompts."
+                                :prompts (list prompt))))
+              (e-harness-activate-capability e-chat-harness capability)
+              (insert "please ")
+              (cl-letf (((symbol-function 'completing-read)
+                         (lambda (&rest _args) "review"))
+                        ((symbol-function 'e-chat--collect-prompt-arguments)
+                         (lambda (selected)
+                           (should (eq selected prompt))
+                           '(("focus" . "regressions")))))
+                (e-chat-composer-slash)))
+            (should (equal (e-chat--composer-text)
+                           "please Review regressions."))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-composer-slash-render-error-does-not-insert ()
+  "Prompt render errors surface as user errors without partial insertion."
+  (let (buffer)
+    (unwind-protect
+        (progn
+          (setq buffer (e-chat-test--buffer nil "chat-prefix-slash-error"))
+          (with-current-buffer buffer
+            (let ((prompt (e-prompt-spec-create
+                           :name "needs-topic"
+                           :description "Needs topic."
+                           :parameters
+                           (list (e-prompt-parameter-create
+                                  :name "topic"
+                                  :description "Topic."))
+                           :template "Topic ${topic}.")))
+              (cl-letf (((symbol-function 'e-chat--prompt-candidates)
+                         (lambda () (list (list :label "needs-topic"
+                                                :prompt prompt))))
+                        ((symbol-function 'completing-read)
+                         (lambda (&rest _args) "needs-topic"))
+                        ((symbol-function 'e-chat--collect-prompt-arguments)
+                         (lambda (_prompt) nil)))
+                (should-error (e-chat-composer-slash) :type 'user-error)
+                (should (string-empty-p (e-chat--composer-text)))))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
 
 (ert-deftest e-chat-test-speaker-faces-inherit-distinct-theme-faces ()
   "User, assistant, and system entries inherit distinct neutral theme faces.

@@ -23,6 +23,7 @@
 (require 'e-harness)
 (require 'e-harness-instances)
 (require 'e-harness-registry)
+(require 'e-prompts)
 (require 'e-tools)
 (require 'e-session)
 (require 'e-shells)
@@ -155,6 +156,26 @@ The mode line uses this presentation-owned table for context usage display."
 (defcustom e-chat-context-token-estimate-bytes-per-token 4.0
   "Approximate UTF-8 bytes per token for mode-line context estimates."
   :type 'number
+  :group 'e-chat)
+
+(defcustom e-chat-command-output-timeout 30
+  "Seconds to wait for composer ! commands before capturing a timeout."
+  :type 'number
+  :group 'e-chat)
+
+(defcustom e-chat-command-output-max-bytes 24000
+  "Maximum UTF-8 bytes captured from a composer ! command."
+  :type 'integer
+  :group 'e-chat)
+
+(defcustom e-chat-file-reference-max-bytes 64000
+  "Maximum UTF-8 bytes read for composer @ file references."
+  :type 'integer
+  :group 'e-chat)
+
+(defcustom e-chat-project-file-candidate-limit 2000
+  "Maximum number of files offered by composer @ completion."
+  :type 'integer
   :group 'e-chat)
 
 (when (equal e-chat-progress-interval 0.35)
@@ -594,6 +615,9 @@ progress redraws that never pass through harness event dispatch.")
 
 (defconst e-chat--composer-edit-commands
   '(self-insert-command
+    e-chat-composer-bang
+    e-chat-composer-at
+    e-chat-composer-slash
     newline
     yank
     yank-pop
@@ -694,6 +718,9 @@ progress redraws that never pass through harness event dispatch.")
     (define-key map (kbd "M-y") #'e-chat-copy-latest-response)
     (define-key map (kbd "C-c C-c") #'e-chat-submit)
     (define-key map (kbd "RET") #'newline)
+    (define-key map (kbd "!") #'e-chat-composer-bang)
+    (define-key map (kbd "@") #'e-chat-composer-at)
+    (define-key map (kbd "/") #'e-chat-composer-slash)
     (define-key map [remap delete-backward-char]
                 #'e-chat-delete-backward-char)
     (define-key map [remap backward-delete-char-untabify]
@@ -801,7 +828,9 @@ This leaves the global minor mode enabled for every other buffer."
   (setq e-chat-mode-map (e-chat--make-mode-map e-chat-mode-map)))
 
 (define-derived-mode e-chat-mode text-mode "e-chat"
-  "Major mode for e chat buffers."
+  "Major mode for e chat buffers.
+In the composer, leading ! captures command output, @ inserts file context,
+and / expands available prompts."
   (add-hook 'kill-buffer-hook #'e-chat--unsubscribe nil t)
   (add-hook 'kill-buffer-hook #'e-chat--stop-progress-indicator nil t)
   (add-hook 'evil-local-mode-hook #'e-chat--enforce-modal-editing-policy nil t)
@@ -1411,6 +1440,276 @@ Keep point inside the composer when movement starts there."
   (string-trim
    (buffer-substring-no-properties e-chat--composer-start-marker
                                    (point-max))))
+
+(defun e-chat--composer-text-before-point ()
+  "Return composer text from its start through point."
+  (buffer-substring-no-properties e-chat--composer-start-marker (point)))
+
+(defun e-chat--composer-leading-prefix-p ()
+  "Return non-nil when point is at the first non-whitespace composer input."
+  (and (e-chat--point-in-composer-p)
+       (string-match-p "\\`[[:space:]]*\\'"
+                       (e-chat--composer-text-before-point))))
+
+(defun e-chat--composer-word-boundary-prefix-p ()
+  "Return non-nil when point is at a composer prefix word boundary."
+  (and (e-chat--point-in-composer-p)
+       (let ((start (marker-position e-chat--composer-start-marker)))
+         (or (= (point) start)
+             (eq (char-syntax (char-before)) ?\s)))))
+
+(defun e-chat--insert-literal-prefix (prefix)
+  "Insert literal PREFIX in the composer when possible."
+  (when (e-chat--point-in-composer-p)
+    (insert prefix)))
+
+(defun e-chat--self-insert-prefix ()
+  "Fallback to ordinary self insertion for a non-triggering prefix command."
+  (if (e-chat--point-in-composer-p)
+      (call-interactively #'self-insert-command)
+    nil))
+
+(defun e-chat--command-uri (command)
+  "Return a compact command URI for COMMAND."
+  (concat "command://"
+          (replace-regexp-in-string "[\n\r\t ]+" " " command)))
+
+(defun e-chat--run-shell-command (command directory)
+  "Run shell COMMAND in DIRECTORY and return captured output metadata."
+  (let ((directory (file-name-as-directory (expand-file-name directory)))
+        (deadline (+ (float-time) e-chat-command-output-timeout))
+        process
+        timed-out)
+    (with-temp-buffer
+      (let ((default-directory directory))
+        (setq process
+              (make-process
+               :name "e-chat-command-output"
+               :buffer (current-buffer)
+               :stderr (current-buffer)
+               :command (list shell-file-name shell-command-switch command)
+               :connection-type 'pipe
+               :noquery t))
+        (while (and (process-live-p process)
+                    (< (float-time) deadline))
+          (accept-process-output process 0.05)))
+      (when (process-live-p process)
+        (setq timed-out t)
+        (delete-process process)
+        (accept-process-output process 0.05))
+      (let* ((output (buffer-string))
+             (truncated (> (string-bytes output)
+                           e-chat-command-output-max-bytes))
+             (output (if truncated
+                         (concat
+                          (e-chat--string-byte-prefix
+                           output
+                           e-chat-command-output-max-bytes)
+                          "\n[Command output truncated]\n")
+                       output)))
+        (list :output output
+              :exit (unless timed-out (process-exit-status process))
+              :truncated truncated
+              :timed-out timed-out)))))
+
+(defun e-chat--command-output-reference (command result)
+  "Return a context reference for shell COMMAND RESULT."
+  (let* ((timed-out (plist-get result :timed-out))
+         (exit (plist-get result :exit))
+         (status (if timed-out
+                     (format "timed out after %ss"
+                             e-chat-command-output-timeout)
+                   (format "exit %s" exit)))
+         (output (plist-get result :output)))
+    (list :uri (e-chat--command-uri command)
+          :label (format "$ %s (%s)" command status)
+          :text (string-join
+                 (delq nil
+                       (list (format "$ %s" command)
+                             (format "Status: %s" status)
+                             (when (plist-get result :truncated)
+                               "Output was truncated.")
+                             ""
+                             output))
+                 "\n"))))
+
+(defun e-chat--workspace-roots ()
+  "Return active chat workspace roots, falling back to the project root."
+  (or (and e-chat-harness
+           e-chat-session-id
+           (e-harness-workspace-roots e-chat-harness e-chat-session-id))
+      (list (e-chat--project-root))))
+
+(defun e-chat--git-file-candidates (root limit)
+  "Return git-tracked and untracked file paths under ROOT, or nil.
+When ROOT is inside a git repository with no eligible files, return
+`:e-chat-git-empty' so callers do not fall through to an ignore-blind recursive
+scan."
+  (when (executable-find "git")
+    (with-temp-buffer
+      (let ((status (process-file
+                     "git"
+                     nil
+                     (list t nil)
+                     nil
+                     "-C"
+                     root
+                     "ls-files"
+                     "-co"
+                     "--exclude-standard")))
+        (when (zerop status)
+          (let (files)
+            (dolist (line (split-string (buffer-string) "\n" t))
+              (when (< (length files) limit)
+                (push (expand-file-name line root) files)))
+            (or (nreverse files) :e-chat-git-empty)))))))
+
+(defun e-chat--fallback-file-candidates (root limit)
+  "Return at most LIMIT regular file paths under ROOT."
+  (let (files)
+    (catch 'done
+      (cl-labels ((walk
+                   (directory)
+                   (dolist (path (directory-files
+                                  directory
+                                  t
+                                  directory-files-no-dot-files-regexp))
+                     (cond
+                      ((and (file-directory-p path)
+                            (not (member (file-name-nondirectory path)
+                                         '(".git" ".hg" ".svn"))))
+                       (walk path))
+                      ((file-regular-p path)
+                       (push path files)
+                       (when (>= (length files) limit)
+                         (throw 'done nil)))))))
+        (walk root)))
+    (nreverse files)))
+
+(defun e-chat--project-file-candidates ()
+  "Return project file completion candidates for the active chat session."
+  (let ((remaining e-chat-project-file-candidate-limit)
+        candidates)
+    (dolist (root (e-chat--workspace-roots))
+      (when (> remaining 0)
+        (let* ((root (file-name-as-directory (expand-file-name root)))
+               (files (e-chat--git-file-candidates root remaining))
+               (files (cond
+                       ((eq files :e-chat-git-empty) nil)
+                       (files files)
+                       (t (e-chat--fallback-file-candidates root remaining)))))
+          (dolist (file files)
+            (let ((label (file-relative-name file root)))
+              (push (list :label label :path file :root root) candidates)))
+          (setq remaining (- remaining (length files))))))
+    (nreverse candidates)))
+
+(defun e-chat--read-file-reference-text (path)
+  "Return reference text for PATH, truncated when necessary."
+  (with-temp-buffer
+    (insert-file-contents-literally path)
+    (let* ((content (buffer-string))
+           (truncated (> (string-bytes content)
+                         e-chat-file-reference-max-bytes)))
+      (if truncated
+          (concat
+           (e-chat--string-byte-prefix content e-chat-file-reference-max-bytes)
+           "\n[File reference truncated]\n")
+        content))))
+
+(defun e-chat--insert-file-reference (candidate)
+  "Insert CANDIDATE as an inline file reference."
+  (let* ((path (plist-get candidate :path))
+         (label (plist-get candidate :label))
+         (reference (list :uri (concat "file://" (expand-file-name path))
+                          :label label
+                          :text (e-chat--read-file-reference-text path))))
+    (e-chat--insert-context-reference reference)))
+
+(defun e-chat--prompt-candidates ()
+  "Return prompt completion candidates for the active chat harness."
+  (when e-chat-harness
+    (mapcar (lambda (prompt)
+              (list :label (e-prompt-spec-name prompt)
+                    :prompt prompt))
+            (e-harness-prompts e-chat-harness))))
+
+(defun e-chat--collect-prompt-arguments (prompt)
+  "Read arguments for PROMPT and return an alist."
+  (let (arguments)
+    (dolist (parameter (e-prompt-spec-parameters prompt))
+      (let* ((name (e-prompt-parameter-name parameter))
+             (default (e-prompt-parameter-default parameter))
+             (description (e-prompt-parameter-description parameter))
+             (value (read-string
+                     (if default
+                         (format "%s (%s): " description default)
+                       (format "%s: " description))
+                     nil
+                     nil
+                     default)))
+        (unless (and (not (e-prompt-parameter-required parameter))
+                     (string-empty-p value))
+          (push (cons name value) arguments))))
+    (nreverse arguments)))
+
+(defun e-chat--completion-select (prompt candidates)
+  "Read PROMPT from CANDIDATES and return the selected plist."
+  (when candidates
+    (let* ((labels (mapcar (lambda (candidate)
+                             (plist-get candidate :label))
+                           candidates))
+           (selection (completing-read prompt labels nil t)))
+      (unless (string-empty-p selection)
+        (cl-find selection candidates
+                 :key (lambda (candidate) (plist-get candidate :label))
+                 :test #'equal)))))
+
+(defun e-chat-composer-bang ()
+  "Run a leading composer ! command and insert its output as context."
+  (interactive)
+  (if (not (e-chat--composer-leading-prefix-p))
+      (e-chat--self-insert-prefix)
+    (condition-case nil
+        (let ((command (read-shell-command "! ")))
+          (if (string-empty-p (string-trim command))
+              (e-chat--insert-literal-prefix "!")
+            (e-chat--insert-context-reference
+             (e-chat--command-output-reference
+              command
+              (e-chat--run-shell-command command (e-chat--project-root))))))
+      (quit (e-chat--insert-literal-prefix "!")))))
+
+(defun e-chat-composer-at ()
+  "Insert a project file reference from a composer @ prefix."
+  (interactive)
+  (if (not (e-chat--composer-word-boundary-prefix-p))
+      (e-chat--self-insert-prefix)
+    (condition-case nil
+        (if-let ((candidate (e-chat--completion-select
+                             "@ file: "
+                             (e-chat--project-file-candidates))))
+            (e-chat--insert-file-reference candidate)
+          (e-chat--insert-literal-prefix "@"))
+      (quit (e-chat--insert-literal-prefix "@")))))
+
+(defun e-chat-composer-slash ()
+  "Expand a capability prompt from a composer / prefix."
+  (interactive)
+  (if (not (e-chat--composer-word-boundary-prefix-p))
+      (e-chat--self-insert-prefix)
+    (condition-case nil
+        (if-let* ((candidate (e-chat--completion-select
+                              "/ prompt: "
+                              (e-chat--prompt-candidates)))
+                  (prompt (plist-get candidate :prompt)))
+            (condition-case err
+                (insert (e-prompt-render
+                         prompt
+                         (e-chat--collect-prompt-arguments prompt)))
+              (error (user-error "%s" (error-message-string err))))
+          (e-chat--insert-literal-prefix "/"))
+      (quit (e-chat--insert-literal-prefix "/")))))
 
 (defun e-chat--active-region-p ()
   "Return non-nil when the current buffer has a meaningful active region."
