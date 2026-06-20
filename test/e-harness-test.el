@@ -2333,10 +2333,14 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
            (store (e-harness-sessions harness))
            (e-context-budget-model-token-limits '(("auto-model" . 100)))
            (e-harness-auto-compaction-reserve-tokens 10)
-           (e-compaction-keep-recent-tokens 1000))
+           (e-compaction-keep-recent-tokens 1000)
+           events)
+      (e-harness-subscribe harness (lambda (event) (push event events)))
       (e-harness-create-session harness :id "session-1")
       (e-session-append-message store "session-1"
-                                '(:id "kept" :role user :content "kept suffix"))
+                                (list :id "kept"
+                                      :role 'user
+                                      :content (make-string 5000 ?k)))
       (e-session-append-compaction store "session-1" "Summary"
                                    :first-kept-entry-id "kept")
       (e-session-append-activity-event
@@ -2347,6 +2351,10 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
                                 :status)
                      'done))
       (should (= calls 1))
+      (should-not (seq-find
+                   (lambda (event)
+                     (eq (plist-get event :type) 'compaction-failed))
+                   events))
       (should (= (length (e-session-compactions store "session-1")) 1)))))
 
 (ert-deftest e-harness-test-auto-compaction_expected_failure_keeps_prompt ()

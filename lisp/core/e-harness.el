@@ -1058,10 +1058,10 @@ TURN-ID is passed to active capability context providers when present."
   "Return estimated current suffix tokens since COMPACTION."
   (let* ((boundary-id (plist-get compaction :first-kept-entry-id))
          (entries (and boundary-id
-                       (e-session-entries-from
-                        (e-harness-sessions harness)
-                        session-id
-                        boundary-id))))
+                       (cdr (e-session-entries-from
+                             (e-harness-sessions harness)
+                             session-id
+                             boundary-id)))))
     (when entries
       (apply #'+ (mapcar #'e-compaction-entry-token-estimate entries)))))
 
