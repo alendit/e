@@ -59,6 +59,19 @@
    segment
    ""))
 
+(defun e-resource-pattern--glob-segment-fd-glob (segment)
+  "Return fd glob syntax for one non-** facade glob SEGMENT."
+  (mapconcat
+   (lambda (char)
+     (let ((text (char-to-string char)))
+       (cond
+        ((= char ?*) "*")
+        ((member text '("\\" "?" "[" "]" "{" "}" "!"))
+         (concat "\\" text))
+        (t text))))
+   segment
+   ""))
+
 (defun e-resource-pattern-compile-glob (pattern)
   "Compile facade glob PATTERN to an Emacs regexp."
   (let* ((segments (e-resource-pattern--glob-segments pattern))
@@ -78,6 +91,16 @@
        parts)
       (setq index (1+ index)))
     (concat "\\`" (apply #'concat (nreverse parts)) "\\'")))
+
+(defun e-resource-pattern-glob-fd-pattern (pattern)
+  "Translate facade glob PATTERN to fd --glob syntax."
+  (mapconcat
+   (lambda (segment)
+     (if (string= segment "**")
+         "**"
+       (e-resource-pattern--glob-segment-fd-glob segment)))
+   (e-resource-pattern--glob-segments pattern)
+   "/"))
 
 (defun e-resource-pattern-glob-match-p (pattern name &optional case-sensitive)
   "Return non-nil when facade glob PATTERN matches resource NAME.

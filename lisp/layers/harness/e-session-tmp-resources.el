@@ -167,6 +167,7 @@ OK-STATUSES defaults to only zero."
          (scope (e-session-tmp--scope-path harness session-id uri))
          (scope-relative (e-session-tmp--scope-relative-name uri))
          (actual-pattern (or pattern "*"))
+         (fd-pattern (e-resource-pattern-glob-fd-pattern actual-pattern))
          (actual-limit (e-session-tmp--discovery-limit limit))
          (actual-case-sensitive (if (null case-sensitive) t case-sensitive)))
     (e-resource-pattern-compile-glob actual-pattern)
@@ -188,11 +189,12 @@ OK-STATUSES defaults to only zero."
                             "--color" "never"
                             "--base-directory" root
                             "--search-path" scope-relative
-                            "--type" "file")
+                            "--type" "file"
+                            "--max-results" (number-to-string (1+ actual-limit)))
                       (list (if actual-case-sensitive
                                 "--case-sensitive"
                               "--ignore-case"))
-                      (list "*"))))
+                      (list fd-pattern))))
              (filtered
               (seq-filter
                (lambda (relative)

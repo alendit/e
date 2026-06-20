@@ -32,6 +32,8 @@
                                            "docs/feats/25/plan.org"))
   (should-not (e-resource-pattern-glob-match-p "docs/*.org"
                                                "docs/feats/plan.org"))
+  (should (equal (e-resource-pattern-glob-fd-pattern "literal[abc].txt")
+                 "literal\\[abc\\].txt"))
   (should-error (e-resource-pattern-compile-glob "/absolute/*")
                 :type 'e-resource-pattern-invalid)
   (should-error (e-resource-pattern-compile-glob "foo**bar")
