@@ -349,7 +349,7 @@ Return non-nil when the picker needs a full rerender."
           (setq chunk (substring text 0 1)))
         (push chunk chunks)
         (setq text (substring text (length chunk)))))
-    (or (nreverse chunks) '(""))))
+    (or (nreverse chunks) (list ""))))
 
 (defun e-picker--preview-lines (width)
   "Return selected candidate preview lines wrapped to WIDTH."

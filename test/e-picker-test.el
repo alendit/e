@@ -319,6 +319,24 @@
     (should (equal (e-picker--preview-lines 10)
                    '("0123456789" "abcdef")))))
 
+(ert-deftest e-picker-test-preview-lines-preserve-blank-lines ()
+  "Preview wrapping preserves repeated blank lines without circular lists."
+  (with-temp-buffer
+    (e-picker-mode)
+    (setq-local e-picker--spec
+                (list :name 'test-preview-blank-lines
+                      :candidate-key #'identity
+                      :candidate-line #'identity
+                      :on-select #'ignore
+                      :preview
+                      (lambda (_candidate buffer)
+                        (with-current-buffer buffer
+                          (insert "alpha\n\nbeta\n\ngamma")))))
+    (setq-local e-picker--filtered-candidates '("candidate"))
+    (setq-local e-picker--selection 0)
+    (should (equal (e-picker--preview-lines 10)
+                   '("alpha" "" "beta" "" "gamma")))))
+
 (ert-deftest e-picker-test-selection-overlay-stays-in-left-pane ()
   "The selection overlay highlights only the candidate cell, not preview text."
   (cl-letf (((symbol-function 'e-picker--posframe-available-p)
