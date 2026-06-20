@@ -306,6 +306,13 @@ WIDTH defaults to the current window body width."
   "Return rendered row start for candidate INDEX, or nil."
   (nth index e-picker--candidate-row-starts))
 
+(defun e-picker--clear-candidate-row-starts ()
+  "Detach markers used for rendered candidate row starts."
+  (dolist (start e-picker--candidate-row-starts)
+    (when (markerp start)
+      (set-marker start nil)))
+  (setq-local e-picker--candidate-row-starts nil))
+
 (defun e-picker--set-candidate-prefix (index selected)
   "Set candidate INDEX prefix according to SELECTED."
   (when-let ((start (e-picker--candidate-row-start index)))
@@ -340,7 +347,9 @@ WIDTH defaults to the current window body width."
             (goto-char start)
             (move-to-column e-picker--preview-text-column t)
             (delete-region (point) (line-end-position))
-            (insert (or (nth index preview-lines) "")))))))
+            (insert (e-picker--format-cell
+                     (or (nth index preview-lines) "")
+                     e-picker--preview-width)))))))
 
 (defun e-picker--refresh-selection-display (&optional old-selection)
   "Refresh displayed selection after moving away from OLD-SELECTION."
@@ -380,7 +389,7 @@ WIDTH defaults to the current window body width."
                        render-width))
          (preview-lines (and preview-enabled
                              (e-picker--preview-lines preview-width))))
-    (setq-local e-picker--candidate-row-starts nil)
+    (e-picker--clear-candidate-row-starts)
     (setq-local e-picker--preview-width preview-width)
     (setq-local e-picker--preview-text-column
                 (and preview-enabled (+ left-width separator-width)))
@@ -399,11 +408,13 @@ WIDTH defaults to the current window body width."
                                      "> "
                                    "  ")
                                  line)))
-              (push start e-picker--candidate-row-starts)
+              (push (copy-marker start) e-picker--candidate-row-starts)
               (if preview-enabled
                   (insert (e-picker--format-cell left left-width)
                           " | "
-                          (or (nth index preview-lines) "")
+                          (e-picker--format-cell
+                           (or (nth index preview-lines) "")
+                           preview-width)
                           "\n")
                 (insert left "\n"))))
       (e-picker--insert-line "No matches" 'e-picker-meta-face))

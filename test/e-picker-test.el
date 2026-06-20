@@ -205,6 +205,39 @@
           (when (buffer-live-p buffer)
             (kill-buffer buffer)))))))
 
+(ert-deftest e-picker-test-preview-update-keeps-row-starts-stable ()
+  "Preview updates with different text lengths do not corrupt row prefixes."
+  (cl-letf (((symbol-function 'e-picker--posframe-available-p)
+             (lambda () t))
+            ((symbol-function 'posframe-show)
+             (lambda (_buffer &rest _args) 'picker-frame))
+            ((symbol-function 'e-picker--focus-frame)
+             (lambda (_frame) nil)))
+    (let ((buffer (e-picker-open
+                   :name 'test-preview-stable-row-starts
+                   :title "Pick"
+                   :candidates '("alpha" "beta" "gamma")
+                   :candidate-key #'identity
+                   :candidate-line (lambda (candidate)
+                                     (format "%s Default Chat" candidate))
+                   :preview (lambda (candidate buffer)
+                              (with-current-buffer buffer
+                                (pcase candidate
+                                  ("alpha" (insert "A much longer preview"))
+                                  ("beta" (insert "B"))
+                                  ("gamma" (insert "Gamma preview")))))
+                   :on-select #'ignore)))
+      (unwind-protect
+          (with-current-buffer buffer
+            (e-picker-next)
+            (e-picker-next)
+            (goto-char (point-min))
+            (should (re-search-forward "^> gamma Default Chat" nil t))
+            (should-not (string-match-p "Default > Chat" (buffer-string)))
+            (should-not (string-match-p "\\sw> \\sw" (buffer-string))))
+        (when (buffer-live-p buffer)
+          (kill-buffer buffer))))))
+
 (ert-deftest e-picker-test-preview-renders-in-right-pane ()
   "Picker previews render in the right side of the candidate rows."
   (cl-letf (((symbol-function 'e-picker--posframe-available-p)
@@ -228,7 +261,7 @@
             (should-not (string-match-p "^Preview$" (buffer-string)))
             (goto-char (point-min))
             (should (re-search-forward
-                     "^> alpha[^\n]* | Preview for alpha$"
+                     "^> alpha[^\n]* | Preview for alpha *$"
                      nil t)))
         (when (buffer-live-p buffer)
           (kill-buffer buffer))))))
