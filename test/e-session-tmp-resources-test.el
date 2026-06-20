@@ -115,6 +115,94 @@ blocked on the interactive coding-system picker."
                    '((:oldText "x" :newText "y")))
                   :type 'file-missing)))
 
+(ert-deftest e-session-tmp-test-glob-and-search-resources ()
+  "tmp:// glob and search inspect files inside the session tmp root."
+  (should (require 'e-session-tmp-resources nil t))
+  (let* ((harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :active-layers
+                   (list (e-layer-create
+                          :id 'tmp-layer
+                          :name "Tmp Layer"
+                          :capabilities
+                          (list (e-session-tmp-capability-create))))))
+         (resources (e-harness-resources harness "session-1" "turn-1")))
+    (e-resources-write resources "tmp://notes/one.txt" "Alpha needle\n")
+    (e-resources-write resources "tmp://notes/two.log" "other\n")
+    (e-resources-write resources "tmp://tool-results/out.txt" "needle again\n")
+    (should
+     (equal (e-resources-glob resources "tmp://notes" "*.txt" 5)
+            '(:resources [(:uri "tmp://notes/one.txt"
+                            :name "one.txt"
+                            :kind file
+                            :metadata (:bytes 13))]
+              :truncated nil)))
+    (should
+     (equal (e-resources-search
+             resources
+             "tmp://"
+             "needle"
+             '(:glob "tool-results/*.txt" :literal t :limit 5))
+            '(:matches [(:uri "tmp://tool-results/out.txt"
+                          :line 1
+                          :column 1
+                          :text "needle again")]
+              :truncated nil)))
+    (should
+     (equal (e-resources-search
+             resources
+             "tmp://"
+             "missing"
+             '(:literal t))
+            '(:matches [] :truncated nil)))))
+
+(ert-deftest e-session-tmp-test-discovery-rejects-unsafe-paths ()
+  "tmp:// glob/search roots stay inside the session tmp root."
+  (should (require 'e-session-tmp-resources nil t))
+  (let* ((harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :active-layers
+                   (list (e-layer-create
+                          :id 'tmp-layer
+                          :name "Tmp Layer"
+                          :capabilities
+                          (list (e-session-tmp-capability-create))))))
+         (resources (e-harness-resources harness "session-1" "turn-1")))
+    (should-error (e-resources-glob resources "tmp://../escape" "*.txt" 5)
+                  :type 'e-session-tmp-resources-invalid-path)
+    (should-error (e-resources-search
+                   resources
+                   "tmp://../escape"
+                   "needle"
+                   '(:literal t))
+                  :type 'e-session-tmp-resources-invalid-path)))
+
+(ert-deftest e-session-tmp-test-discovery-reports-missing-commands ()
+  "tmp:// glob/search report missing fd and rg commands clearly."
+  (should (require 'e-session-tmp-resources nil t))
+  (let* ((harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :active-layers
+                   (list (e-layer-create
+                          :id 'tmp-layer
+                          :name "Tmp Layer"
+                          :capabilities
+                          (list (e-session-tmp-capability-create))))))
+         (resources (e-harness-resources harness "session-1" "turn-1"))
+         (original-executable-find (symbol-function 'executable-find)))
+    (cl-letf (((symbol-function 'executable-find)
+               (lambda (command)
+                 (unless (member command '("fd" "fdfind" "rg"))
+                   (funcall original-executable-find command)))))
+      (should-error (e-resources-glob resources "tmp://" "*.txt" 5)
+                    :type 'e-session-tmp-resources-missing-command)
+      (should-error (e-resources-search
+                     resources
+                     "tmp://"
+                     "needle"
+                     '(:literal t))
+                    :type 'e-session-tmp-resources-missing-command))))
+
 (ert-deftest e-session-tmp-test-rejects-unsafe-paths ()
   "tmp:// resource paths stay inside the session root."
   (should (require 'e-session-tmp-resources nil t))

@@ -13,6 +13,7 @@
 
 (require 'cl-lib)
 (require 'ert)
+(require 'seq)
 (require 'e)
 (require 'e-backend)
 (require 'e-harness)
@@ -25,6 +26,14 @@
   (cl-some (lambda (method)
              (equal (e-resource-method-scheme method) "tmp"))
            (e-resources-methods-for-operation resources e-operation-read)))
+
+(defun e-harness-base-test--tmp-operation-ids (resources)
+  "Return tmp:// operation ids in RESOURCES."
+  (mapcar #'e-operation-id
+          (seq-filter
+           (lambda (operation)
+             (e-resources-methods-for-operation resources operation))
+           (e-resources-operations resources))))
 
 (ert-deftest e-harness-base-test-require-and-create-layer ()
   "The harness-base layer bundles harness-owned support capabilities."
@@ -71,6 +80,9 @@
     (e-harness-activate-layer harness layer)
     (should (e-harness-base-test--tmp-read-method-p
              (e-harness-resources harness "session-1" "turn-1")))
+    (should (equal (e-harness-base-test--tmp-operation-ids
+                    (e-harness-resources harness "session-1" "turn-1"))
+                   '(read write edit glob search)))
     (should (equal (mapcar #'e-hook-id
                            (e-hooks-for-point
                             (e-harness-hooks harness)

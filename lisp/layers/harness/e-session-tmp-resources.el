@@ -13,6 +13,8 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'json)
+(require 'seq)
 (require 'subr-x)
 (require 'e-capabilities)
 (require 'e-operations)
@@ -24,6 +26,10 @@
   "tmp:// resource access requires a harness session")
 (define-error 'e-session-tmp-resources-edit-mismatch
   "tmp:// edit replacement does not match exactly")
+(define-error 'e-session-tmp-resources-missing-command
+  "tmp:// discovery command is not available")
+(define-error 'e-session-tmp-resources-process-failed
+  "tmp:// discovery command failed")
 
 (defvar e-session-tmp--roots (make-hash-table :test 'eq)
   "Session tmp root tables keyed by harness object.")
@@ -82,6 +88,153 @@
 (defun e-session-tmp--uri (relative-name)
   "Return tmp URI for RELATIVE-NAME."
   (format "tmp://%s" (e-session-tmp--safe-relative-name relative-name)))
+
+(defun e-session-tmp--clean-relative-path (path)
+  "Return PATH without fd's defensive leading ./ prefix."
+  (if (string-prefix-p "./" path)
+      (substring path 2)
+    path))
+
+(defun e-session-tmp--discovery-limit (limit)
+  "Return normalized discovery LIMIT."
+  (cond
+   ((null limit) 100)
+   ((and (numberp limit) (> limit 0)) (truncate limit))
+   (t (signal 'wrong-type-argument (list 'positive-number-p limit)))))
+
+(defun e-session-tmp--find-executable (name &optional alternates)
+  "Return executable NAME or one of ALTERNATES, or signal a clear error."
+  (or (executable-find name)
+      (cl-some #'executable-find alternates)
+      (signal 'e-session-tmp-resources-missing-command
+              (list (format "Missing executable: %s" name)))))
+
+(defun e-session-tmp--process-lines (program directory args &optional ok-statuses)
+  "Run PROGRAM in DIRECTORY with ARGS and return output lines.
+OK-STATUSES defaults to only zero."
+  (let ((default-directory directory)
+        (accepted (or ok-statuses '(0))))
+    (with-temp-buffer
+      (let ((status (apply #'process-file program nil (list t t) nil args)))
+        (unless (member status accepted)
+          (signal 'e-session-tmp-resources-process-failed
+                  (list (format "%s failed with exit status %s: %s"
+                                program
+                                status
+                                (string-trim (buffer-string)))))))
+      (split-string (buffer-string) "\n" t))))
+
+(defun e-session-tmp--scope-relative-name (uri)
+  "Return discovery scope name for parsed tmp URI."
+  (let ((address (plist-get uri :address)))
+    (if (string-empty-p address)
+        "."
+      (e-session-tmp--safe-relative-name address))))
+
+(defun e-session-tmp--scope-path (harness session-id uri)
+  "Return absolute discovery scope path for parsed tmp URI."
+  (let ((address (plist-get uri :address)))
+    (if (string-empty-p address)
+        (e-session-tmp-directory harness session-id)
+      (e-session-tmp--path harness session-id address))))
+
+(defun e-session-tmp--result-name (path scope)
+  "Return display name for PATH relative to SCOPE when possible."
+  (if (and (file-directory-p scope)
+           (file-in-directory-p path scope))
+      (file-relative-name path scope)
+    (file-name-nondirectory path)))
+
+(defun e-session-tmp--glob-resource (harness session-id uri pattern limit)
+  "List tmp resources under parsed URI with PATTERN and LIMIT."
+  (let* ((fd (e-session-tmp--find-executable "fd" '("fdfind")))
+         (root (e-session-tmp-directory harness session-id))
+         (scope (e-session-tmp--scope-path harness session-id uri))
+         (scope-relative (e-session-tmp--scope-relative-name uri))
+         (actual-pattern (or pattern "*"))
+         (actual-limit (e-session-tmp--discovery-limit limit))
+         (lines (e-session-tmp--process-lines
+                 fd
+                 root
+                 (list "--glob"
+                       "--color" "never"
+                       "--base-directory" root
+                       "--search-path" scope-relative
+                       "--type" "file"
+                       "--max-results" (number-to-string (1+ actual-limit))
+                       actual-pattern)))
+         (truncated (> (length lines) actual-limit))
+         (selected (seq-take lines actual-limit)))
+    (list :resources
+          (vconcat
+           (mapcar
+            (lambda (relative)
+              (let* ((relative (e-session-tmp--clean-relative-path relative))
+                     (absolute (expand-file-name relative root))
+                     (attributes (file-attributes absolute)))
+                (list :uri (concat "tmp://" relative)
+                      :name (e-session-tmp--result-name absolute scope)
+                      :kind 'file
+                      :metadata (list :bytes (file-attribute-size attributes)))))
+            selected))
+          :truncated truncated)))
+
+(defun e-session-tmp--rg-json-text (object)
+  "Return text value from rg JSON OBJECT."
+  (or (plist-get object :text)
+      (when-let ((bytes (plist-get object :bytes)))
+        (base64-decode-string bytes))))
+
+(defun e-session-tmp--search-match-from-rg-json (line root)
+  "Return a search match plist for rg JSON LINE under ROOT, or nil."
+  (let* ((object (json-parse-string line :object-type 'plist :array-type 'list))
+         (type (plist-get object :type)))
+    (when (equal type "match")
+      (let* ((data (plist-get object :data))
+             (path (e-session-tmp--rg-json-text (plist-get data :path)))
+             (line-text (string-remove-suffix
+                         "\n"
+                         (or (e-session-tmp--rg-json-text
+                              (plist-get data :lines))
+                             "")))
+             (submatches (plist-get data :submatches))
+             (first-match (car submatches))
+             (start (or (plist-get first-match :start) 0))
+             (absolute (expand-file-name path root))
+             (relative (file-relative-name absolute root)))
+        (list :uri (concat "tmp://" relative)
+              :line (plist-get data :line_number)
+              :column (1+ start)
+              :text line-text)))))
+
+(defun e-session-tmp--search-resource (harness session-id uri query options)
+  "Search tmp resources under parsed URI for QUERY with OPTIONS."
+  (let* ((rg (e-session-tmp--find-executable "rg"))
+         (root (e-session-tmp-directory harness session-id))
+         (_scope (e-session-tmp--scope-path harness session-id uri))
+         (scope-relative (e-session-tmp--scope-relative-name uri))
+         (actual-limit (e-session-tmp--discovery-limit
+                        (plist-get options :limit)))
+         (args (append
+                (list "--json"
+                      "--line-number"
+                      "--column"
+                      "--color" "never")
+                (unless (plist-get options :case-sensitive)
+                  (list "--ignore-case"))
+                (when (plist-get options :literal)
+                  (list "--fixed-strings"))
+                (when-let ((glob (plist-get options :glob)))
+                  (list "--glob" glob))
+                (list "-e" query scope-relative)))
+         (lines (e-session-tmp--process-lines rg root args '(0 1)))
+         matches)
+    (dolist (line lines)
+      (when-let ((match (e-session-tmp--search-match-from-rg-json line root)))
+        (push match matches)))
+    (setq matches (nreverse matches))
+    (list :matches (vconcat (seq-take matches actual-limit))
+          :truncated (> (length matches) actual-limit))))
 
 (defun e-session-tmp--write-file (path content)
   "Write CONTENT to PATH as UTF-8 without a coding-system prompt.
@@ -220,6 +373,36 @@ root and is suitable for streaming writes."
                         (plist-get uri :uri))))
                  (e-session-tmp--write-file path new-content)
                  (e-session-tmp--uri relative-name)))))
+  (e-resources-register
+   registry
+   (e-resource-method-create
+    :scheme "tmp"
+    :operation e-operation-glob
+    :description "List ephemeral session-scoped temporary text resources."
+    :uri-patterns '("tmp://<relative-path-or-directory>"
+                    "tmp://")
+    :handler (lambda (uri pattern limit)
+               (e-session-tmp--glob-resource
+                harness
+                session-id
+                uri
+                pattern
+                limit))))
+  (e-resources-register
+   registry
+   (e-resource-method-create
+    :scheme "tmp"
+    :operation e-operation-search
+    :description "Search ephemeral session-scoped temporary text resources."
+    :uri-patterns '("tmp://<relative-path-or-directory>"
+                    "tmp://")
+    :handler (lambda (uri query options)
+               (e-session-tmp--search-resource
+                harness
+                session-id
+                uri
+                query
+                options))))
   nil)
 
 (defun e-session-tmp-capability-create ()
