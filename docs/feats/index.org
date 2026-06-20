@@ -29,18 +29,18 @@ Status values for coding agents:
 | 16 | Ready | 16-turn-finish-latency/ | Turn Finish Latency |
 | 17 | Done | 17-org-canvas/ | Org Canvas |
 | 18 | Done | 18-resource-coherence/ | Resource Coherence for Live Buffers and Files |
-| 19 | In-progress | 19-project-local-capabilities/ | Project-Local Capabilities |
+| 19 | Done | 19-project-local-capabilities/ | Project-Local Capabilities |
 | 20 | Done | 20-org-canvas-context-status/ | Org Canvas Context Status and Compaction |
 | 21 | Done | 21-dev-profiling/ | Developer Profiling Traces |
 | 22 | Done | 22-project-shells/ | Project Shells |
 | 23 | Done | 23-prompt-cache-context/ | Prompt Cache Friendly Context |
 | 24 | Done | 24-mcp-capability-wrapper/ | MCP Capability Wrapper |
-| 25 | Planned | 25-resource-glob-search/ | Resource Glob and Search Tools |
-| 26 | Planned | 26-elisp-tool-chaining/ | Elisp Tool Chaining |
-| 27 | Planned | 27-debug-agent-session/ | Debug Agent Session |
-| 28 | Planned | 28-context-auto-compaction/ | Context Auto-Compaction |
+| 25 | Ready | 25-resource-glob-search/ | Resource Glob and Search Tools |
+| 26 | Ready | 26-elisp-tool-chaining/ | Elisp Tool Chaining |
+| 27 | Ready | 27-debug-agent-session/ | Debug Agent Session |
+| 28 | Ready | 28-context-auto-compaction/ | Context Auto-Compaction |
 | 29 | In-progress | 29-workspace-roots/ | Workspace Roots |
-| 30 | Planned | 30-prompt-capabilities/ | Prompt Capabilities |
-| 31 | Planned | 31-composer-prefix-shortcuts/ | Composer Prefix Shortcuts |
-| 32 | Planned | 32-floating-picker/ | Floating Picker and Active Sessions Popup |
+| 30 | Ready | 30-prompt-capabilities/ | Prompt Capabilities |
+| 31 | Ready | 31-composer-prefix-shortcuts/ | Composer Prefix Shortcuts |
+| 32 | Ready | 32-floating-picker/ | Floating Picker and Active Sessions Popup |
 | 33 | Planned | 33-workspace-awareness/ | Workspace Awareness |

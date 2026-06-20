@@ -37,15 +37,23 @@ chat would use, the same way =e-background-session= and =e-inspect-error= do.
   - shows the debug session per the display policy below.
 - =e-debug= (no prompt) just opens/switches to the debug session.
 - Switching to the debug session must not break the current UI: by default it
-  opens in its own tab (=tab-bar=), so the current window configuration on the
-  starting tab is preserved.  Returning to the previous tab restores the prior
-  layout untouched.
+  opens in its own =tab-bar= workspace tab, so the current window configuration
+  on the starting workspace tab is preserved.  Returning to the previous
+  workspace tab restores the prior layout untouched.  Here, "tab" means an
+  Emacs =tab-bar= workspace (a saved window configuration), not a new window,
+  frame, browser-style tab, or generic "new tab" UI affordance.
 - The debug session carries enough standing context to debug recent activity:
   recent e turns and failures, the active/most-recent chat session under work,
   and live Emacs state (visible buffers, point/region at call time).
-- The debug session is read-oriented by default: it explains and proposes, and
-  must not mutate or retry the session under investigation unless the user
-  explicitly asks, mirroring the =e-inspect-error= prompt contract.
+- The debug session is diagnostic-first by default: it explains, proposes, and
+
+  does not mutate or retry the session under investigation unless the user
+  explicitly asks, mirroring the safe default of the =e-inspect-error= prompt
+  contract.
+- Remediation is in scope when explicitly requested: the debug agent may apply
+  fixes through ordinary tools, and when the issue is too broad or should be
+  saved for later, it can file a bug report under =docs/bugs/= following the
+  project convention.
 
 * Non-goals (this feature)
 
@@ -64,7 +72,8 @@ chat would use, the same way =e-background-session= and =e-inspect-error= do.
   session seeded with a structured failure diagnostic and a read-only,
   do-not-mutate prompt contract.  The debug agent generalizes this from
   "newest failed turn, new session each time" to "standing session, any visible
-  state, on demand".
+  state, on demand", and extends the contract so explicit user requests can
+  lead to remediation or bug-report filing.
 - =e-chat-starter= (=lisp/shells/chat/e-chat-starter.el=) already captures
   source context at point/region via =e-chat-capture-source-reference= and
   submits a one-shot contextual question to a persisted session, then continues
@@ -182,16 +191,18 @@ On invocation from any buffer:
    =e-chat-submit-session= to the standing session.
 4. Display the debug session per the tab policy.
 
-The prompt assembly reuses =e-chat-format-reference-prompt= and the
-=e-inspect-error= read-only/no-mutate guidance so the debug agent does not
-retry or edit the session under inspection.
+The prompt assembly reuses =e-chat-format-reference-prompt= and adapts the
+=e-inspect-error= safety guidance: diagnose first, do not retry or edit the
+session under inspection by default, but if the user explicitly asks for
+remediation, use ordinary tools to fix the issue or file a bug report when the
+work is too broad or should be saved for later.
 
 ** Display policy: separate tab, layout-preserving
 
 Goal: switching to the debug session must not alter the window configuration of
-the tab the user was on.
+the =tab-bar= workspace tab the user was on.
 
-Proposal: a dedicated, named =tab-bar= tab (e.g. "e-debug").
+Proposal: a dedicated, named =tab-bar= workspace tab (e.g. "e-debug").
 
 - =e-debug--show-buffer=: if =tab-bar= is available, select-or-create a tab
   named =e-debug= (=tab-bar-select-tab-by-name= / =tab-bar-new-tab=), then show
@@ -263,8 +274,8 @@ Each package is a useful stopping point: after it, the project is better off.
 
 - Implement call-site capture (source reference + inspected-session detection +
   recent-failure detail), prompt assembly reusing
-  =e-chat-format-reference-prompt= and the read-only guidance, submit to the
-  standing session, then show via WP2 display.
+  =e-chat-format-reference-prompt= and the safety/remediation guidance, submit
+  to the standing session, then show via WP2 display.
 - Verify: batch tests for prompt/reference assembly given a fake harness with a
   failed turn and an active chat buffer; live test submitting from a source
   buffer and from a chat buffer, inspecting the session messages/context in the
