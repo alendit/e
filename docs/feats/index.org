@@ -43,3 +43,4 @@ Status values for coding agents:
 | 30 | Planned | 30-prompt-capabilities/ | Prompt Capabilities |
 | 31 | Planned | 31-composer-prefix-shortcuts/ | Composer Prefix Shortcuts |
 | 32 | Planned | 32-floating-picker/ | Floating Picker and Active Sessions Popup |
+| 33 | Planned | 33-workspace-awareness/ | Workspace Awareness |

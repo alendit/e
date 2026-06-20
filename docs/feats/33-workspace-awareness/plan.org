@@ -1,0 +1,713 @@
+#+title: Workspace Awareness
+#+startup: overview
+
+* Status
+
+Planned.
+
+* Goal
+
+Teach =e= to respect editor workspaces as a first-class interaction boundary,
+with one Org canvas per workspace as a supported workflow.
+
+The immediate failures to address are:
+
+- Org canvas chat/input/result buffers sometimes appear in the wrong workspace
+  for the wrong canvas.
+- When an agent focuses a buffer, it can open or select that buffer in another
+  workspace, especially when that other workspace is currently selected or when
+  a display helper reuses a window globally.
+- The model often manipulates windows through arbitrary =run_elisp= calls, so a
+  solution that relies only on the model remembering a custom display tool will
+  be unreliable.
+
+Deliver a =workspace-awareness= capability plus supporting presentation/runtime
+APIs so sessions have workspace affinity, =e='s own shells route displays to the
+right workspace, and arbitrary agent Elisp runs under a workspace guard without
+requiring a separate hook or context insertion for every possible visibility
+call.
+
+* Research notes
+
+** Emacs display-buffer gives useful but incomplete primitives
+
+The Emacs Lisp manual documents =display-buffer= action alist entries that can
+limit where a buffer is shown:
+
+- =reusable-frames= controls which frames are searched when reusing a window
+  that already displays the buffer.  =nil= means the selected frame, while =t=
+  means all frames and is rarely the right default.
+- =lru-frames= similarly scopes which frames are searched when using some
+  existing window.
+- =frame-predicate= can restrict frame candidates.
+- =inhibit-switch-frame= prevents raising/selecting another frame when display
+  chooses one.
+
+This is valuable for =display-buffer=, =pop-to-buffer=, and presentation helpers
+that can be routed through =display-buffer=.  It is not a complete solution
+because agent Elisp can call =switch-to-buffer=, =select-window=,
+=set-window-buffer=, or package-specific workspace/window functions directly.
+
+Source: GNU Emacs Lisp Reference Manual, "Action Alists for Buffer Display" and
+"Action Functions for Buffer Display".
+
+** Doom workspaces are adapter-friendly
+
+Doom's =:ui workspaces= module is powered by =persp-mode= and documents a
+workspace API such as =+workspace-current=, =+workspace-current-name=,
+=+workspace-switch=, =+workspace-buffer-list=, and =+workspace-exists-p=.  It
+also notes that with =persp-mode= active, workspace buffer lists are restricted,
+which matches the desired mental model for canvas-specific buffers.
+
+This suggests =e= should not hardcode Doom, but it can support Doom well through
+an adapter.  The same adapter contract can later support builtin =tab-bar=,
+=perspective.el=, =tabspaces=, or a single-workspace fallback.
+
+Source: Doom Emacs =:ui workspaces= module documentation.
+
+* Current behavior and likely failure points
+
+Relevant existing surfaces:
+
+- =lisp/shells/e-org-canvas.el= creates and displays Org canvas sessions and
+  input/result panes.  It has several direct display/focus calls:
+  =switch-to-buffer=, =pop-to-buffer=, =display-buffer=, =set-window-buffer=,
+  and =select-window=.
+- =lisp/shells/chat/e-chat.el= wraps some chat display operations with
+  =e-chat--switch-to-buffer= and =e-chat--pop-to-buffer=, but those helpers are
+  side-window aware, not workspace aware.
+- =lisp/layers/emacs/e-emacs-tools.el= exposes =run_elisp=.  The evaluated code
+  currently has no session workspace guard; if it focuses a buffer, Emacs and
+  the user's workspace package decide where it appears.
+- =lisp/layers/org-canvas/e-org-canvas-capabilities.el= contributes strong
+  canvas-specific context and visibility tools, but no workspace context.
+
+The bug is therefore not one thing.  It is a mix of shell display routing,
+session/canvas identity, and arbitrary Elisp side effects during agent turns.
+
+* Options considered
+
+** Option A: Static guidance in context only
+
+Add instructions such as "respect the current workspace; do not display buffers
+in another workspace" to an Emacs or Org Canvas context provider.
+
+Pros:
+
+- Very cheap and easy to ship.
+- No new tools and no runtime coupling to workspace packages.
+- Helps when the model writes explicit Elisp and remembers the instruction.
+
+Cons:
+
+- Too weak for a first-class workflow.  The model can miss it, especially when
+  using standard functions it assumes are harmless.
+- Does not fix =e='s own presentation shell display calls.
+- Does not protect direct =run_elisp= calls that use =switch-to-buffer= or
+  =pop-to-buffer= out of habit.
+
+Verdict: useful as one layer, insufficient alone.
+
+** Option B: Documentation/skill for standard window functions
+
+Add a skill or reference documenting workspace-safe usage of
+=display-buffer=, =pop-to-buffer=, =switch-to-buffer=, =set-window-buffer=, and
+workspace-manager APIs.
+
+Pros:
+
+- Better detail than a short system instruction.
+- Can explain pitfalls like =reusable-frames t= and cross-frame/window reuse.
+- Useful for design/debugging tasks.
+
+Cons:
+
+- Still pull-based.  The model may not read it before a quick focus action.
+- The model may assume standard Emacs functions need no special docs.
+- Does not correct =e='s own shell behavior.
+
+Verdict: valuable supporting material, not the reliability mechanism.
+
+** Option C: Window manipulation capability with dedicated tools
+
+Expose model-facing tools such as =workspace_state=, =workspace_focus_buffer=,
+=workspace_show_session=, and perhaps =workspace_display_buffer= that wrap
+standard window functions and run hooks/adapters.
+
+Pros:
+
+- Most reliable when used: the tool can inspect the session workspace, switch or
+  validate the workspace, add buffers to the right workspace, and report what it
+  did.
+- Keeps workspace policy in one component instead of scattered Elisp snippets.
+- Good user-facing affordance: the model has an obvious way to focus/show
+  things.
+
+Cons:
+
+- Risk of tool explosion if every window operation gets a tool.
+- Extra tool round trips can slow interaction.
+- The model may still bypass the tools with =run_elisp= for familiar functions.
+- Needs gradual discoverability and naming discipline.
+
+Verdict: include a very small high-value tool set, but do not rely on tools as
+  the only guardrail.
+
+** Option D: Presentation-side workspace affinity
+
+Capture a workspace token when a chat or Org canvas session is created, store it
+in session metadata and buffer-local state, and make =e='s own shell display
+helpers route buffers through a workspace-aware display service.
+
+Pros:
+
+- Fixes the highest-value first-party bugs without model cooperation.
+- Gives a durable identity: session X belongs to workspace Y; canvas buffer and
+  input/result buffers inherit that affinity.
+- Keeps presentation behavior in presentation shells rather than harness core.
+- Can preserve the user's current workspace when passive rendering occurs.
+
+Cons:
+
+- Does not constrain arbitrary =run_elisp= unless combined with another layer.
+- Requires careful adapter design for multiple workspace packages.
+- Existing direct =pop-to-buffer= / =switch-to-buffer= / =set-window-buffer=
+  calls must be migrated.
+
+Verdict: required core slice.
+
+** Option E: Ambient workspace guard around agent Elisp/tools
+
+When a session has workspace affinity, run agent-controlled Elisp under a guard
+that captures the intended workspace, temporarily constrains buffer display to
+that workspace/frame where possible, restores the previous workspace when
+appropriate, and reports or warns about cross-workspace presentation changes.
+
+The guard can combine:
+
+- A dynamic variable describing the active =e= workspace context.
+- A session-aware wrapper around =run_elisp= (or a new around-tool hook point)
+  so all agent Elisp sees the same ambient policy without requiring the model to
+  call a special tool.
+- A =display-buffer-overriding-action= / action-alist policy for code that uses
+  =display-buffer=.
+- Narrow dynamic advice during the tool execution for high-risk functions such
+  as =switch-to-buffer=, =pop-to-buffer=, and perhaps =set-window-buffer= /
+  =select-window=, routing them through the workspace display service or warning
+  when they target a window outside the session workspace.
+- Post-tool verification that the selected workspace and visible =e= buffers
+  still match the session affinity.
+
+Pros:
+
+- Addresses the user's exact concern: visibility manipulation happens inside
+  arbitrary Elisp, but we do not add a separate hook/context insert for every
+  possible Elisp call.
+- Low model burden: the policy is ambient while the capability is active.
+- Can be implemented narrowly around agent tool execution, not as global Emacs
+  advice all the time.
+
+Cons:
+
+- More complex and potentially surprising; dynamic advice must be tightly scoped
+  and well tested.
+- Cannot perfectly constrain every possible window mutation; raw
+  =set-window-configuration= or workspace-package internals may still bypass it.
+- Needs clear escape hatches for tasks that intentionally operate across
+  workspaces.
+
+Verdict: best reliability layer for arbitrary agent focus operations, but ship
+  after the presentation/service foundation and keep the first guard conservative.
+
+** Option F: Global display-buffer-alist policy only
+
+Install =display-buffer-alist= rules for =e= chat/canvas buffers so they prefer
+or require the current workspace/frame.
+
+Pros:
+
+- Uses standard Emacs display mechanisms.
+- Helps with any package code that uses =display-buffer=.
+- Can prevent obvious cross-frame reuse by controlling =reusable-frames= and
+  =lru-frames=.
+
+Cons:
+
+- Global display rules can fight user configuration and popup managers.
+- Does not cover =switch-to-buffer=, =select-window=, or direct
+  =set-window-buffer=.
+- Workspace semantics differ across Doom/persp/tab-bar; =display-buffer= knows
+  frames and windows, not perspectives.
+
+Verdict: use as an implementation detail inside =e-workspace-display-buffer= and
+  the ambient guard, not as the whole feature.
+
+* Chosen design
+
+Use a layered approach:
+
+1. Add a workspace backend abstraction and a small =workspace-awareness=
+   capability.
+2. Make chat and Org canvas sessions record workspace affinity.
+3. Route =e='s own display/focus operations through a workspace-aware display
+   service.
+4. Contribute concise dynamic context and a tiny model-facing tool set.
+5. Add an ambient guard for =run_elisp= / agent tool execution so arbitrary
+   focus Elisp is constrained without requiring a dedicated window tool for
+   every operation.
+
+This avoids relying solely on model compliance while avoiding a large
+window-tool surface.
+
+* User-facing behavior
+
+- Opening a chat or Org canvas session captures the current workspace as that
+  session's workspace affinity.
+- Reopening the session from another workspace either:
+  - switches to the session workspace and shows it there, or
+  - when a command explicitly requests "show here", rebinds the session to the
+    current workspace after confirmation/configuration.
+- Org canvas input/result buffers appear in the same workspace and adjacent to
+  their target canvas window when possible.
+- If one workspace per canvas is used, =e= keeps each canvas, its transient input
+  pane, and its backing chat/session buffer associated with that workspace.
+- During an agent turn, focus/display operations prefer the session workspace.
+  If an operation would show a buffer in another workspace, =e= either routes it
+  back, switches to the right workspace first, or reports a warning in the tool
+  result/context depending on the operation and configuration.
+- Users can disable the guard or allow cross-workspace operations when they are
+  intentionally doing workspace management.
+
+* Architecture
+
+** Workspace backend contract
+
+Add a new presentation/runtime support module, tentatively
+=lisp/shells/e-workspaces.el= or =lisp/layers/emacs/e-workspace-awareness.el=,
+with a narrow adapter contract:
+
+#+begin_src elisp
+(cl-defstruct e-workspace-token
+  backend       ;; 'doom | 'persp | 'tab-bar | 'single | ...
+  id            ;; stable value when available
+  name          ;; readable workspace name
+  frame)        ;; frame this token was captured on, when relevant
+
+(defun e-workspace-current (&optional frame) ...)
+(defun e-workspace-equal-p (a b) ...)
+(defun e-workspace-live-p (token) ...)
+(defun e-workspace-switch (token) ...)
+(defun e-workspace-buffer-member-p (buffer token) ...)
+(defun e-workspace-add-buffer (buffer token) ...)
+(defun e-workspace-visible-window (buffer token) ...)
+#+end_src
+
+Backends, in priority order:
+
+1. Doom workspaces when =+workspace-current= / related APIs are available.
+2. =persp-mode= directly when Doom wrappers are unavailable.
+3. Builtin =tab-bar= tabs.
+4. Single-workspace fallback, where all operations are no-ops and every buffer
+   belongs to the one implicit workspace.
+
+The contract is intentionally small.  It does not try to model every workspace
+package feature; it only answers what =e= needs: current workspace, switch/show,
+buffer membership, and visibility.
+
+** Session and buffer affinity
+
+Store workspace metadata in session metadata:
+
+#+begin_src elisp
+:workspace (:backend doom :id ... :name "research" :frame ...)
+#+end_src
+
+For Org canvas sessions, keep this alongside existing =:org-canvas= metadata and
+also set buffer-local affinity on:
+
+- the Org canvas buffer,
+- the e chat buffer attached to the session,
+- transient =*e-org-canvas-input:...*= buffers,
+- any future canvas-specific helper buffers.
+
+Add helpers:
+
+#+begin_src elisp
+(e-session-workspace harness session-id)
+(e-session-set-workspace harness session-id token)
+(e-buffer-workspace buffer)
+(e-buffer-set-workspace buffer token)
+#+end_src
+
+Ownership: session affinity belongs to the harness/session service; buffer-local
+affinity belongs to presentation shells.  Backend package details stay in the
+workspace adapter module.
+
+** Workspace-aware display service
+
+Introduce a small set of internal helpers for presentation code:
+
+#+begin_src elisp
+(e-workspace-display-buffer buffer &key workspace action select side-window-ok)
+(e-workspace-pop-to-buffer buffer &key workspace)
+(e-workspace-switch-to-buffer buffer &key workspace)
+(e-workspace-select-buffer-window buffer &key workspace)
+#+end_src
+
+Behavior:
+
+- If BUFFER is already visible in WORKSPACE, select/reuse that window.
+- Otherwise ensure BUFFER is a member of WORKSPACE when the backend supports
+  membership, switch to WORKSPACE if necessary, and display it on the selected
+  frame/window using =display-buffer= with action entries that avoid unrelated
+  frames (=reusable-frames nil=, =lru-frames nil=, =inhibit-switch-frame t=,
+  and a =frame-predicate= where applicable).
+- Preserve side-window handling already present in =e-chat--display-from-side-window=.
+- Keep user display customization in play where safe, but do not let it move
+  =e= canvas/chat buffers to another workspace.
+
+Migrate direct first-party display/focus calls in =e-chat.el= and
+=e-org-canvas.el= onto these helpers.
+
+** Capability context
+
+Add =e-workspace-awareness-capability-create= contributing dynamic context when
+workspace support is active:
+
+- current workspace token/name,
+- session workspace token/name,
+- whether the selected workspace matches the session workspace,
+- visible =e= chat/canvas/input buffers grouped by workspace when the backend
+  can answer that,
+- concise instruction: prefer workspace tools/display helpers over raw
+  =switch-to-buffer=; if writing Elisp that changes visibility, use
+  =e-workspace-with-session= or the workspace tool.
+
+This is a signal, not the only enforcement mechanism.
+
+** Small model-facing tool set
+
+Avoid a tool for every window primitive.  Add only high-value tools:
+
+1. =workspace_state= :: report current/session workspace, visible =e= buffers,
+   and mismatches.
+2. =workspace_focus_buffer= :: focus a named buffer in the session workspace,
+   optionally adding it to that workspace.
+3. =workspace_show_session= :: show the current chat/canvas/session buffers in
+   their session workspace.
+
+These tools are discoverable, reliable, and should cover the common "focus
+something" use case without exploding the surface area.
+
+** Ambient guard for run_elisp
+
+Add a workspace guard used by =run_elisp= when the active harness/session has the
+workspace-awareness capability enabled:
+
+#+begin_src elisp
+(e-workspace-with-session harness session-id
+  :mode 'guarded
+  BODY...)
+#+end_src
+
+Guard responsibilities:
+
+- Determine the intended workspace from session metadata, falling back to the
+  current workspace and recording it if none exists.
+- Bind a dynamic variable (for example =e-workspace-current-context=) so helper
+  functions and advice know the intended workspace.
+- Bind =display-buffer-overriding-action= or merge a display action that keeps
+  display-buffer operations on the selected/intended frame/workspace.
+- Dynamically advise a narrow list of high-risk functions only while the agent
+  tool is running:
+  - =switch-to-buffer= -> workspace-aware switch helper;
+  - =pop-to-buffer= -> workspace-aware pop helper;
+  - =display-buffer= -> workspace-aware display wrapper when no explicit
+    workspace-safe action is supplied;
+  - optionally =set-window-buffer= and =select-window= in warning/validation
+    mode first, routing only after tests prove it is safe.
+- Restore the user's previously selected workspace/window where appropriate when
+  the tool was not explicitly a focus/show action.
+- Return a structured warning in tool metadata when a cross-workspace display
+  was corrected or blocked.
+
+Do not globally advise Emacs.  The guard is active only during agent-controlled
+Elisp/tool execution.
+
+This is the answer to the "we don't want a hook/context insert for every Elisp
+call" concern: arbitrary Elisp gets one ambient workspace context for the whole
+agent tool execution, while high-value explicit tools remain available for
+common operations.
+
+* Configuration
+
+Add defcustoms under a new =e-workspace= group:
+
+- =e-workspace-awareness-enabled= (default t when the capability is active).
+- =e-workspace-awareness-backend-priority= (default Doom, persp, tab-bar,
+  single).
+- =e-workspace-display-cross-workspace-policy=:
+  - =switch= (default for explicit open/focus commands),
+  - =route= (show in session workspace without permanently changing affinity),
+  - =warn=,
+  - =allow=.
+- =e-workspace-elisp-guard-enabled= (default t).
+- =e-workspace-elisp-guard-strict-functions= (initially conservative: display,
+  pop, switch; validation-only for low-level setters).
+- =e-workspace-rebind-session-on-open= (default nil; explicit command can rebind).
+
+* Implementation plan
+
+** Task 1: Workspace backend abstraction
+
+Files:
+
+- Add =lisp/shells/e-workspaces.el= or =lisp/layers/emacs/e-workspaces.el=.
+- Add =test/e-workspaces-test.el=.
+
+Steps:
+
+1. Define =e-workspace-token= and token comparison/formatting helpers.
+2. Implement the single-workspace fallback.
+3. Implement backend detection and adapter dispatch.
+4. Add Doom/persp adapter functions guarded by =fboundp= / =featurep= checks.
+5. Add tab-bar adapter functions guarded by =fboundp= checks.
+6. Test fallback behavior and adapter dispatch by stubbing Doom/persp/tab-bar
+   functions.
+
+Verification:
+
+#+begin_src sh
+rtk eldev test -f e-workspaces-test
+#+end_src
+
+** Task 2: Session and buffer workspace affinity
+
+Files:
+
+- Modify =lisp/core/e-harness.el= or =lisp/core/e-session.el= for session
+  metadata helpers if they belong in core.
+- Modify =lisp/shells/chat/e-chat.el=.
+- Modify =lisp/shells/e-org-canvas.el=.
+- Add/modify tests in =test/e-chat-test.el= and =test/e-org-canvas-test.el=.
+
+Steps:
+
+1. Capture =e-workspace-current= at chat/session creation and store it in
+   session metadata.
+2. Mark chat buffers, Org canvas buffers, and Org canvas input/result buffers
+   with buffer-local workspace affinity.
+3. Preserve existing workspace metadata when Org canvas metadata is refreshed.
+4. Add a command/helper to explicitly rebind a session to the current workspace.
+5. Test that creating/resuming Org canvas sessions stores and preserves the
+   expected token.
+
+Verification:
+
+#+begin_src sh
+rtk eldev test -f e-chat-test -f e-org-canvas-test -f e-workspaces-test
+#+end_src
+
+** Task 3: Workspace-aware display service and shell migration
+
+Files:
+
+- Modify =lisp/shells/e-workspaces.el=.
+- Modify =lisp/shells/chat/e-chat.el=.
+- Modify =lisp/shells/e-org-canvas.el=.
+- Modify =test/e-chat-test.el= and =test/e-org-canvas-test.el=.
+
+Steps:
+
+1. Implement =e-workspace-display-buffer=, =e-workspace-pop-to-buffer=,
+   =e-workspace-switch-to-buffer=, and =e-workspace-select-buffer-window=.
+2. Route chat display helpers through these functions.
+3. Route Org canvas buffer selection, input pane display, input focus return,
+   and backing-chat hiding through workspace-aware helpers.
+4. Ensure side-window-safe behavior is preserved.
+5. Test: with a stub backend, opening canvas A while workspace B is selected
+   switches/routes to A's workspace instead of showing A in B; two visible
+   canvases keep their input panes below their own canvas windows.
+
+Verification:
+
+#+begin_src sh
+rtk eldev test -f e-chat-test -f e-org-canvas-test -f e-workspaces-test
+#+end_src
+
+** Task 4: Workspace-awareness capability context and tools
+
+Files:
+
+- Add =lisp/layers/emacs/e-workspace-capabilities.el= or extend
+  =e-emacs-capabilities.el= if kept small.
+- Modify =lisp/layers/emacs/e-emacs-base.el= or add a separate layer spec in
+  =lisp/defaults/e-default-layers.el=.
+- Add tests.
+
+Steps:
+
+1. Add context provider with current/session workspace and mismatch summary.
+2. Register tools =workspace_state=, =workspace_focus_buffer=, and
+   =workspace_show_session=.
+3. Add the capability to =emacs-base= or a new default layer
+   =workspace-awareness=.  Prefer a separate capability id even if packaged in
+   =emacs-base= so users can configure/disable it.
+4. Test model-facing context and tool behavior with stubbed backends.
+
+Verification:
+
+#+begin_src sh
+rtk eldev test -f e-workspaces-test -f e-chat-test -f e-org-canvas-test
+#+end_src
+
+** Task 5: Ambient guard for agent Elisp
+
+Files:
+
+- Modify =lisp/layers/emacs/e-emacs-tools.el=.
+- Modify =lisp/core/e-hooks.el= / =e-harness.el= only if a generic around-tool
+  hook is chosen instead of a tool-local wrapper.
+- Add tests in =test/e-emacs-base-test.el= or =test/e-workspaces-test.el=.
+
+Steps:
+
+1. Implement =e-workspace-with-session= guard.
+2. Make =run_elisp= execute forms inside the guard when workspace awareness is
+   active and harness/session context is available.
+3. Bind =display-buffer= action constraints for same frame/workspace.
+4. Add narrow dynamic advice for =switch-to-buffer= and =pop-to-buffer=.
+5. Start with validation/warning for =set-window-buffer= and =select-window=;
+   upgrade to routing only with tests proving common cases are safe.
+6. Return warnings in tool result metadata/content when a cross-workspace action
+   was corrected.
+7. Add an opt-out variable and documented escape hatch for intentional
+   cross-workspace administration.
+
+Verification:
+
+#+begin_src sh
+rtk eldev test -f e-emacs-base-test -f e-workspaces-test
+#+end_src
+
+** Task 6: Live verification in running Emacs
+
+Steps:
+
+1. Reload changed Elisp:
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+2. In Doom workspaces, create two workspaces with one Org canvas each.
+3. Start one prompt from each canvas and confirm the transient input/result pane
+   appears with its own canvas.
+4. From workspace B, resume/focus workspace A's canvas session and confirm =e=
+   switches/routes to A instead of showing A's buffers in B.
+5. Ask the agent to focus a known buffer using Elisp and confirm the guard keeps
+   the focus/display inside the session workspace or reports a correction.
+
+* Acceptance criteria
+
+- Chat and Org canvas sessions record workspace affinity at creation.
+- Org canvas buffers, input/result buffers, and backing chat buffers retain the
+  same workspace affinity.
+- First-party =e= display/focus calls route through workspace-aware helpers; the
+  known wrong-workspace canvas/chat display bug is covered by tests.
+- =workspace-awareness= context tells the model the current/session workspace
+  and warns on mismatch.
+- A small tool set lets the model inspect workspace state and focus buffers in
+  the session workspace without using raw Elisp.
+- =run_elisp= executes under an ambient workspace guard when the capability is
+  active, so common =display-buffer= / =pop-to-buffer= / =switch-to-buffer=
+  snippets do not leak buffers into the wrong workspace.
+- Doom/persp and tab-bar support are adapter-based and optional; Emacs without a
+  workspace package falls back to a no-op single workspace.
+- The guard is scoped to agent tool execution and can be disabled or relaxed for
+  intentional cross-workspace work.
+
+* Risks and mitigations
+
+- *Workspace package APIs differ.*  Keep the adapter contract tiny and test with
+  stubbed backends.
+- *Dynamic advice around display functions is risky.*  Use advice only inside
+  =e-workspace-with-session=, start with a minimal function list, and keep
+  low-level setters in warning mode until proven safe.
+- *User display-buffer customization may conflict.*  Route only =e=-owned
+  buffers strictly; for arbitrary buffers prefer same-workspace display but
+  report when user configuration overrode it.
+- *Switching workspaces as a side effect can be surprising.*  Distinguish
+  explicit focus/open commands (allowed to switch) from passive rendering
+  (should route/preserve).  Make policy configurable.
+- *Session moved intentionally to another workspace.*  Provide explicit rebind
+  command and do not silently rewrite affinity on every open.
+
+* Test plan
+
+Focused unit tests:
+
+#+begin_src sh
+rtk eldev test -f e-workspaces-test
+#+end_src
+
+Shell integration tests:
+
+#+begin_src sh
+rtk eldev test -f e-chat-test -f e-org-canvas-test -f e-workspaces-test
+#+end_src
+
+Elisp guard tests:
+
+#+begin_src sh
+rtk eldev test -f e-emacs-base-test -f e-workspaces-test
+#+end_src
+
+Full relevant suite before review:
+
+#+begin_src sh
+rtk eldev test -f e-chat-test -f e-org-canvas-test -f e-emacs-base-test -f e-workspaces-test
+#+end_src
+
+Live verification is required because workspace/window behavior depends on the
+running Emacs, Doom/persp/tab-bar state, and actual windows.
+
+* Architecture review questions
+
+1. If this work package stopped here, would the project be better off than if it
+   had not been built?  Yes: one-canvas-per-workspace becomes a supported,
+   tested interaction path instead of accidental behavior.
+2. What final direction does this move toward?  =e= as an Emacs-native agent
+   that understands editor presentation state, not only files and buffers.
+3. Which decisions are likely to change, uncertain, or stable?  Stable: sessions
+   need workspace affinity and first-party displays should respect it.
+   Likely-to-change: exact backend APIs and guard strictness; both are local to
+   adapters/config.
+4. What component owns this behavior, and why?  Workspace adapters own package
+   integration; shells own buffer display; the capability owns model context and
+   tools; the Elisp tool owns applying the ambient guard to agent code.
+5. Does this change increase or reduce coupling?  It reduces scattered coupling
+   by routing display through one workspace service; adapters isolate Doom/persp
+   and tab-bar details.
+6. Did any dependency start pointing the wrong way?  The plan keeps workspace
+   package dependencies at the presentation/Emacs edge, not in backend/provider
+   core.
+7. Could any side effect be moved outward into an adapter or shell?  Yes, and
+   the plan does that: switching/showing workspaces is adapter/shell behavior;
+   core stores only metadata if needed.
+8. Are the abstractions semantically real?  Yes: current workspace, session
+   workspace, buffer membership, and display-in-workspace are real operations
+   shared across Doom/persp/tab-bar even though implementation details differ.
+9. What compatibility expectations apply?  Existing no-workspace Emacs must keep
+   working through the single-workspace fallback.  Existing sessions without
+   workspace metadata use current workspace and can be backfilled lazily.
+10. What legacy code can we remove now?  After migration, direct =e=-owned
+    =pop-to-buffer= / =switch-to-buffer= helpers that only handle side windows
+    can be folded into the workspace display service.
+11. Where are expected errors handled, and where do unexpected errors surface?
+    Missing workspace package support falls back to single workspace; missing or
+    deleted workspace tokens become user-visible warnings.  Unexpected adapter
+    errors surface during tests/live verification rather than being swallowed.
+12. What tests prove the core behavior independently of the full system?
+    Stubbed backend tests prove token comparison, membership, display routing,
+    and guard behavior without relying on a real Doom/persp/tab-bar session.
