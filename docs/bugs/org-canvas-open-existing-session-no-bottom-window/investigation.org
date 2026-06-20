@@ -1,0 +1,98 @@
+#+title: Org Canvas Open Existing Session No Bottom Window Investigation
+#+startup: overview
+
+* Source inspected
+
+- =lisp/shells/e-org-canvas.el=: =e-org-canvas-open-for-current-buffer= finds an
+  existing Org Canvas session with =e-org-canvas--buffer-session=, enables
+  =e-org-canvas-mode= in the source buffer, calls =e-chat-open=, and then calls
+  =e-org-canvas--select-org-buffer=.
+- =lisp/shells/chat/e-chat.el=: =e-chat-open= only attaches and returns a chat
+  buffer. It does not display that buffer. Display is handled by callers such as
+  =e-chat-new= and =e-chat-open-session= via =e-chat--switch-to-buffer= or
+  =e-chat--pop-to-buffer=.
+- =test/e-org-canvas-test.el=: current tests assert that opening an Org Canvas
+  session returns a live chat buffer and keeps the selected window on the Org
+  source buffer, but they do not assert a bottom-window display for the backing
+  chat.
+
+* Live inspection
+
+Initial read-only probe of the running Emacs found one visible Org buffer:
+
+#+begin_src emacs-lisp
+(:selected-buffer "plan.org<6>"
+ :major-mode org-mode
+ :e-org-canvas-mode nil
+ :e-org-canvas-session-id nil
+ :windows ((:buffer "plan.org<6>" :major-mode org-mode :side nil :height 63)))
+#+end_src
+
+Running =e-org-canvas-open-for-current-buffer= against the selected window's
+buffer reproduced the display symptom:
+
+#+begin_src emacs-lisp
+(:source "plan.org<6>"
+ :returned-buffer "*e-chat:Org Canvas: plan.org*"
+ :returned-mode e-chat-mode
+ :returned-session-id "20260620T092253-204dcbbe06d9"
+ :message-count 0
+ :window-showing-returned nil
+ :selected-buffer "plan.org<6>"
+ :before ((:buffer "plan.org<6>" :mode org-mode :side nil :height 63))
+ :after ((:buffer "plan.org<6>" :mode org-mode :side nil :height 63)))
+#+end_src
+
+This confirms that the command returned an attached chat buffer, but no window
+displayed it and the window layout remained unchanged.
+
+After that probe, the only visible Emacs window was a different =plan.org<7>=
+buffer, and it did not match an Org Canvas session:
+
+#+begin_src emacs-lisp
+(:source "plan.org<7>"
+ :uri "file:///Users/dimitrivorona/projects/elisp/e/docs/feats/31-composer-prefix-shortcuts/plan.org"
+ :buffer-session nil
+ :matching nil
+ :all-org-canvas-count 5)
+#+end_src
+
+The originally reported live existing-session case was therefore no longer
+available for direct inspection by the time session-candidate enumeration ran.
+
+* Controlled reproduction
+
+A controlled live probe used an isolated fake harness, a temporary Org buffer,
+and an existing Org Canvas session containing durable user and assistant
+messages.
+
+Result:
+
+#+begin_src emacs-lisp
+(:open-returned "*e-chat:Org Canvas: e-org-canvas-controlled.org*"
+ :open-displayed nil
+ :open-selected "e-org-canvas-controlled.org"
+ :open-windows ("e-org-canvas-controlled.org")
+ :open-chat-has-history t)
+#+end_src
+
+This reproduced the display failure even when the existing session had
+renderable history. =e-chat-open= rendered the session into the returned buffer,
+but the buffer was not displayed.
+
+* Conclusion
+
+The direct root cause for the missing bottom window is that
+=e-org-canvas-open-for-current-buffer= calls =e-chat-open=, whose contract is
+attach-and-return, not display. The Org Canvas caller then explicitly reselects
+the source buffer, so no bottom chat window is created.
+
+The current tests encode the return-buffer and source-selection behavior but do
+not cover the user's expected bottom-window behavior.
+
+* Next step
+
+Add a regression around reopening an existing Org Canvas session from a visible
+Org buffer. The test should assert that the backing chat is displayed in a
+bottom window, not merely returned, and should clarify whether this applies to
+new sessions, existing sessions, or both.
