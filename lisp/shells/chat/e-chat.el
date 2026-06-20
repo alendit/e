@@ -5798,49 +5798,63 @@ adds its display name to the row."
                 "  ")))
     (e-picker-make-line title meta 96)))
 
-(defun e-chat--active-session-preview-label (message)
-  "Return preview label for MESSAGE."
-  (pcase (plist-get message :role)
-    ('user "User")
-    ('assistant "Assistant")
-    (_ "Message")))
+(defun e-chat--active-session-preview-messages (harness session)
+  "Return messages to render for active-session preview of SESSION."
+  (or (plist-get session :messages)
+      (when (plist-get session :loaded)
+        (ignore-errors
+          (e-harness-messages harness (plist-get session :id))))))
 
-(defun e-chat--active-session-preview-line (message)
-  "Return one compact preview line for MESSAGE."
-  (format "%s: %s"
-          (e-chat--active-session-preview-label message)
-          (or (e-chat-overview--compact-row-text
-               (plist-get message :content)
-               96)
-              "")))
-
-(defun e-chat--active-session-preview-lines (session)
-  "Return fast preview lines for active SESSION."
-  (let ((messages (cl-remove-if-not
-                   #'e-chat--active-session-preview-message-p
-                   (plist-get session :messages))))
-    (cond
-     (messages
-      (mapcar #'e-chat--active-session-preview-line
-              (e-chat--tail-messages
-               messages
-               e-chat-resume-preview-message-limit)))
-     ((plist-get session :summary)
-      (list (format "User: %s"
-                    (or (e-chat-overview--compact-row-text
-                         (plist-get session :summary)
-                         96)
-                        ""))))
-     (t
-      (list "No prompts yet")))))
+(defun e-chat--active-session-sanitize-preview-properties ()
+  "Strip chat buffer structural properties from the active-session preview.
+The picker owns row layout and selection state, so it must not inherit
+`e-chat-mode' field, read-only, sticky, or block-navigation properties.  Keep
+face properties so the preview still reflects chat rendering."
+  (let ((position (point-min))
+        next face font-lock-face)
+    (while (< position (point-max))
+      (setq next (next-property-change position nil (point-max)))
+      (setq face (get-text-property position 'face))
+      (setq font-lock-face (get-text-property position 'font-lock-face))
+      (set-text-properties position next nil)
+      (when face
+        (put-text-property position next 'face face))
+      (when font-lock-face
+        (put-text-property position next 'font-lock-face font-lock-face))
+      (setq position next))))
 
 (defun e-chat--active-session-preview (candidate buffer)
   "Render active session CANDIDATE into preview BUFFER."
-  (with-current-buffer buffer
-    (insert (string-join
-             (e-chat--active-session-preview-lines
-              (plist-get candidate :session))
-             "\n"))))
+  (let* ((harness (plist-get candidate :harness))
+         (session (plist-get candidate :session))
+         (session-id (plist-get candidate :session-id))
+         (messages (cl-remove-if-not
+                    #'e-chat--active-session-preview-message-p
+                    (e-chat--active-session-preview-messages
+                     harness session))))
+    (with-current-buffer buffer
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (e-chat-mode)
+        (e-chat--disable-modal-editing)
+        (e-chat--disable-completion)
+        (setq-local e-chat-harness harness)
+        (setq-local e-chat-session-id session-id)
+        (setq-local cursor-type nil)
+        (e-chat--clear t)
+        (erase-buffer)
+        (cond
+         (messages
+          (e-chat--render-session
+           (e-chat--tail-messages
+            messages
+            e-chat-resume-preview-message-limit)))
+         ((plist-get session :summary)
+          (e-chat--insert-entry "You" (plist-get session :summary) nil))
+         (t
+          (e-chat--insert-protected "No prompts yet")))
+        (e-chat--active-session-sanitize-preview-properties)
+        (goto-char (point-min))))))
 
 (defun e-chat--active-session-open (candidate)
   "Open selected active session CANDIDATE."

@@ -5861,9 +5861,18 @@ The context-window denominator comes from the live provider lookup
                             (cadr candidates))))
       (with-temp-buffer
         (funcall (plist-get spec :preview) (car candidates) (current-buffer))
-        (setq preview-text (buffer-string)))
-      (should (string-match-p "User: Alpha prompt" preview-text))
-      (should (string-match-p "Assistant: Alpha final response" preview-text))
+        (setq preview-text (buffer-string))
+        (should (string-match-p "Alpha prompt" preview-text))
+        (should (string-match-p "Alpha final response" preview-text))
+        (goto-char (point-min))
+        (should (re-search-forward "Alpha final response" nil t))
+        (should (memq 'e-chat-final-assistant-face
+                      (ensure-list (get-text-property
+                                    (match-beginning 0)
+                                    'face))))
+        (should-not (get-text-property (match-beginning 0) 'read-only))
+        (should-not (get-text-property (match-beginning 0) 'field))
+        (should-not (get-text-property (match-beginning 0) 'e-chat-block-id)))
       (funcall (plist-get spec :on-select) (cadr candidates))
       (should (eq (plist-get opened :harness) harness-b))
       (should (equal (plist-get opened :session-id) "beta-session"))
@@ -5915,6 +5924,40 @@ The context-window denominator comes from the live provider lookup
                                (plist-get candidate :session-id))
                              (funcall (plist-get spec :candidates)))
                      '("prompted-session"))))))
+
+(ert-deftest e-chat-test-active-session-preview-renders-index-session-tail ()
+  "Active-session preview renders a loaded index session through the chat path."
+  (let* ((store (e-session-store-create))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :sessions store))
+         candidate)
+    (e-session-create store :id "indexed-active"
+                      :metadata '(:name "Indexed active"))
+    (e-session-append-message
+     store "indexed-active"
+     '(:id "msg-1" :role user :content "first prompt"))
+    (e-session-append-message
+     store "indexed-active"
+     '(:id "msg-2" :role assistant :content "first response"))
+    (e-session-append-message
+     store "indexed-active"
+     '(:id "msg-3" :role user :content "last prompt"))
+    (e-session-append-message
+     store "indexed-active"
+     '(:id "msg-4" :role assistant :content "last response"))
+    (setq candidate
+          (list :harness harness
+                :session (car (e-harness-session-list harness))
+                :session-id "indexed-active"))
+    (let ((e-chat-resume-preview-message-limit 2))
+      (with-temp-buffer
+        (e-chat--active-session-preview candidate (current-buffer))
+        (let ((text (buffer-string)))
+          (should-not (string-match-p "first prompt" text))
+          (should-not (string-match-p "first response" text))
+          (should (string-match-p "last prompt" text))
+          (should (string-match-p "last response" text)))))))
 
 (ert-deftest e-chat-test-active-sessions-errors-without-candidates ()
   "The active sessions command reports an empty session list."
