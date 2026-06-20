@@ -1072,6 +1072,127 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
       (should (equal (plist-get (plist-get tool-result :content) :content)
                      "prepared-post")))))
 
+(ert-deftest e-harness-test-nested-tool-calls-use-harness-lifecycle ()
+  "Nested tool calls run hooks, emit activity, and do not append messages."
+  (should (require 'e-hooks nil t))
+  (let* ((events nil)
+         (harness nil)
+         (tools-capability
+          (e-capability-create
+           :id 'nested-tools
+           :tools
+           (list
+            (lambda (registry)
+              (e-tools-register
+               registry
+               :name "outer"
+               :description "Call inner."
+               :handler (lambda (_arguments)
+                          (e-tools-call "inner" '(:text "raw"))))
+              (e-tools-register
+               registry
+               :name "inner"
+               :description "Return text."
+               :handler (lambda (arguments)
+                          (plist-get arguments :text)))))))
+         (hooks-capability
+          (e-capability-create
+           :id 'nested-hooks
+           :hooks
+           (list
+            (e-hook-create
+             :id "10-nested-prepare"
+             :point :pre-tool-call
+             :handler
+             (lambda (tool-call context)
+               (should (eq (plist-get context :harness) harness))
+               (if (equal (plist-get tool-call :name) "inner")
+                   (plist-put (copy-sequence tool-call)
+                              :arguments '(:text "prepared"))
+                 tool-call)))
+            (e-hook-create
+             :id "50-nested-result"
+             :point :post-tool-call
+             :handler
+             (lambda (result context)
+               (should (equal (plist-get context :turn-id) "turn-1"))
+               (if (equal (plist-get result :name) "inner")
+                   (plist-put (copy-sequence result)
+                              :content
+                              (concat (plist-get result :content) "-post"))
+                 result))))))
+         result
+         failure)
+    (setq harness
+          (e-harness-create
+           :backend (e-backend-fake-create :items nil)
+           :active-layers
+           (list (e-layer-create
+                  :id 'nested-layer
+                  :name "Nested Layer"
+                  :capabilities (list tools-capability
+                                      hooks-capability)))))
+    (e-harness-create-session harness :id "session-1")
+    (e-harness-subscribe harness (lambda (event) (push event events)))
+    (e-tool-lifecycle-start-call
+     (e-harness-tool-lifecycle harness "session-1" "turn-1")
+     '(:id "outer-1" :name "outer" :arguments nil)
+     :on-done (lambda (value) (setq result value))
+     :on-error (lambda (err) (setq failure err)))
+    (let ((deadline (+ (float-time) 1.0)))
+      (while (and (not (or result failure))
+                  (< (float-time) deadline))
+        (accept-process-output nil 0.01)))
+    (should (or result failure))
+    (when failure
+      (signal (car failure) (cdr failure)))
+    (should
+     (equal result
+            '(:tool-call-id "outer-1"
+              :name "outer"
+              :status ok
+              :content (:tool-call-id "outer-1/nested-1"
+                        :name "inner"
+                        :status ok
+                        :content "prepared-post"
+                        :metadata nil)
+              :metadata nil)))
+    (let* ((ordered-events (nreverse events))
+           (started (cl-find 'tool-started ordered-events
+                             :key (lambda (event)
+                                    (plist-get event :type))))
+           (finished (cl-find 'tool-finished ordered-events
+                              :key (lambda (event)
+                                     (plist-get event :type))))
+           (started-payload (plist-get started :payload))
+           (finished-payload (plist-get finished :payload)))
+      (should (equal (mapcar (lambda (event) (plist-get event :type))
+                             ordered-events)
+                     '(tool-started tool-finished)))
+      (should (equal (plist-get started-payload :nested) t))
+      (should (equal (plist-get started-payload :parent-tool-call-id)
+                     "outer-1"))
+      (should (equal (plist-get started-payload :depth) 1))
+      (should (equal (plist-get (plist-get started-payload :tool-call)
+                                :arguments)
+                     '(:text "prepared")))
+      (should (equal (plist-get finished-payload :nested) t))
+      (should (equal (plist-get finished-payload :parent-tool-call-id)
+                     "outer-1"))
+      (should (equal (plist-get (plist-get finished-payload :result)
+                                :content)
+                     "prepared-post")))
+    (let* ((activity (e-harness-session-activity-events harness "session-1"))
+           (nested-finished
+            (cl-find 'tool-finished activity
+                     :key (lambda (event)
+                            (plist-get event :event-type)))))
+      (should nested-finished)
+      (should (equal (plist-get (plist-get nested-finished :payload)
+                                :nested)
+                     t)))
+    (should (equal (e-harness-messages harness "session-1") nil))))
+
 (ert-deftest e-harness-test-profile-records-tool-start ()
   "Enabled dev profiling records harness tool start spans."
   (let* ((profile-directory (make-temp-file "e-harness-profile-" t))

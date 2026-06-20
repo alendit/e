@@ -772,13 +772,85 @@ compaction) where exposing tools risks a tool-call instead of a reply."
     (setq copy (plist-put copy :tools nil))
     copy))
 
-(defun e-harness--tool-hook-context (harness session-id turn-id tools)
+(defun e-harness--nested-tool-payload
+    (tool-call parent-tool-call depth &rest extra)
+  "Return nested tool event payload for TOOL-CALL under PARENT-TOOL-CALL."
+  (append
+   (list :tool-call tool-call
+         :nested t
+         :parent-tool-call-id (plist-get parent-tool-call :id)
+         :depth depth)
+   extra))
+
+(defun e-harness--execute-nested-tool
+    (harness session-id turn-id tools tool-call _options parent-context)
+  "Execute nested TOOL-CALL for HARNESS and return a structured result."
+  (let* ((hooks (e-harness-hooks harness))
+         (parent-tool-call (plist-get parent-context :tool-call))
+         (depth (1+ (or (plist-get parent-context :depth) 0)))
+         (context (e-harness--tool-hook-context
+                   harness session-id turn-id tools parent-context depth))
+         (prepared
+          (e-hooks-run-reduce hooks :pre-tool-call tool-call context))
+         result
+         failure)
+    (e-harness--emit-turn-event
+     harness
+     session-id
+     turn-id
+     'tool-started
+     (e-harness--nested-tool-payload
+      prepared parent-tool-call depth))
+    (e-tools-start
+     tools
+     prepared
+     :context context
+     :on-done (lambda (value) (setq result value))
+     :on-error (lambda (err) (setq failure err)))
+    (while (not (or result failure))
+      (accept-process-output nil 0.01))
+    (when failure
+      (signal (car failure) (cdr failure)))
+    (setq result
+          (e-hooks-run-reduce hooks :post-tool-call result context))
+    (e-harness--emit-turn-event
+     harness
+     session-id
+     turn-id
+     'tool-finished
+     (e-harness--nested-tool-payload
+      prepared parent-tool-call depth :result result))
+    result))
+
+(defun e-harness--tool-hook-context
+    (harness session-id turn-id tools &optional parent-context depth)
   "Return the narrow hook context for a tool lifecycle in HARNESS."
-  (list :harness harness
-        :session-id session-id
-        :turn-id turn-id
-        :tools tools
-        :capabilities (e-harness-active-capabilities harness)))
+  (let ((context
+         (list :harness harness
+               :session-id session-id
+               :turn-id turn-id
+               :tools tools
+               :capabilities (e-harness-active-capabilities harness)
+               :tool-executor
+               (lambda (tool-call options current-context)
+                 (e-harness--execute-nested-tool
+                  harness
+                  session-id
+                  turn-id
+                  tools
+                  tool-call
+                  options
+                  current-context)))))
+    (when parent-context
+      (setq context
+            (append
+             (list :nested t
+                   :parent-tool-call (plist-get parent-context :tool-call)
+                   :parent-tool-call-id
+                   (plist-get (plist-get parent-context :tool-call) :id)
+                   :depth depth)
+             context)))
+    context))
 
 (defun e-harness-tool-lifecycle (harness session-id turn-id)
   "Return a harness-owned tool lifecycle for SESSION-ID and TURN-ID."
