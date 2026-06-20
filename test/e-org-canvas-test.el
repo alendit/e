@@ -92,8 +92,8 @@
                     e-org-canvas-input-mode))
     (should (commandp symbol))))
 
-(ert-deftest e-org-canvas-test-open-current-buffer-creates-session-metadata ()
-  "Opening an Org buffer creates a canvas attachment and Org Canvas metadata."
+(ert-deftest e-org-canvas-test-open-current-buffer-creates-session-metadata-and-displays-chat ()
+  "Opening an Org buffer creates Org Canvas metadata and displays chat."
   (let ((harness (e-org-canvas-test--harness)))
     (unwind-protect
         (e-org-canvas-test--with-empty-harness-registry
@@ -107,6 +107,12 @@
                 (should (buffer-live-p chat-buffer))
                 (should (eq (window-buffer (selected-window))
                             (current-buffer)))
+                (let ((source-window (get-buffer-window (current-buffer) t))
+                      (chat-window (get-buffer-window chat-buffer t)))
+                  (should (window-live-p source-window))
+                  (should (window-live-p chat-window))
+                  (should (> (nth 1 (window-edges chat-window))
+                             (nth 1 (window-edges source-window)))))
                 (should e-org-canvas-mode)
                 (should e-chat-context-mode-suppressed)
                 (with-current-buffer chat-buffer

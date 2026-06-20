@@ -119,3 +119,56 @@ rtk eldev test -f test/e-org-canvas-test.el
 
 The focused regression passed, and the full Org Canvas test file passed with 49
 expected results and 0 unexpected results.
+
+* Follow-up: initial session creation
+
+The same display contract also applies when =e-org-canvas-open-for-current-buffer=
+creates a new Org Canvas session. A live probe on
+=docs/feats/32-floating-picker/plan.org= showed the reported state:
+
+#+begin_src emacs-lisp
+(:selected-buffer "plan.org"
+ :file "/Users/dimitrivorona/projects/elisp/e/docs/feats/32-floating-picker/plan.org"
+ :mode org-mode
+ :org-canvas-mode t
+ :org-canvas-session-id "20260620T174507-0deb78fc2070"
+ :windows ("plan.org"))
+#+end_src
+
+The buffer had Org Canvas enabled and a session id, but the backing chat was not
+visible. The remaining root cause was that the new-session branch of
+=e-org-canvas-open-for-current-buffer= still used
+=e-org-canvas--open-session-for-buffer= directly. That helper creates and
+attaches the backing chat, but does not display it.
+
+Added
+=e-org-canvas-test-open-current-buffer-creates-session-metadata-and-displays-chat=
+to cover first-open behavior. The test creates a new Org Canvas session from an
+Org buffer and asserts that the backing chat is visible below the source while
+the source remains selected.
+
+Moved first-open creation through
+=e-org-canvas--open-session-for-buffer-and-display= and made that helper display
+the returned chat before restoring the Org source selection. This keeps new-file,
+new-buffer, and current-buffer creation on the same display path.
+
+After reloading the running Emacs, invoking =e-org-canvas-open-for-current-buffer=
+against the selected =plan.org= buffer produced:
+
+#+begin_src emacs-lisp
+(:source "plan.org"
+ :returned "*e-chat:Org Canvas: plan.org*"
+ :selected "plan.org"
+ :returned-visible t
+ :windows ((:buffer "plan.org" :edges (0 1 215 32))
+           (:buffer "*e-chat:Org Canvas: plan.org*" :edges (0 32 215 64))))
+#+end_src
+
+Validation:
+
+#+begin_src sh
+rtk eldev test -f test/e-org-canvas-test.el e-org-canvas-test-open-current-buffer-creates-session-metadata-and-displays-chat
+rtk eldev test -f test/e-org-canvas-test.el
+git diff --check -- lisp/shells/e-org-canvas.el test/e-org-canvas-test.el
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src

@@ -514,10 +514,12 @@ the display to a normal window when the selected window is a side window."
 (defun e-org-canvas--open-session-for-buffer-and-display
     (buffer &optional needs-file-name target-folder)
   "Create an Org Canvas session for BUFFER, display BUFFER, and return chat."
-  (prog1 (e-org-canvas--open-session-for-buffer
-          buffer
-          needs-file-name
-          target-folder)
+  (prog1 (let ((chat-buffer (e-org-canvas--open-session-for-buffer
+                             buffer
+                             needs-file-name
+                             target-folder)))
+           (e-org-canvas--display-chat-buffer chat-buffer)
+           chat-buffer)
     (e-org-canvas--select-org-buffer buffer)))
 
 ;;;###autoload
@@ -542,8 +544,7 @@ the display to a normal window when the selected window is a side window."
                 (e-org-canvas--display-chat-buffer chat-buffer)
                 chat-buffer))
           (e-org-canvas--select-org-buffer source))
-      (prog1 (e-org-canvas--open-session-for-buffer source)
-        (e-org-canvas--select-org-buffer source)))))
+      (e-org-canvas--open-session-for-buffer-and-display source))))
 
 ;;;###autoload
 (defun e-org-canvas-new-file (file)
