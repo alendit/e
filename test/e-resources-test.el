@@ -70,6 +70,55 @@
                      (:edit (:scheme "test" :address "target" :uri "test://target")
                             ((:oldText "a" :newText "b"))))))))
 
+(ert-deftest e-resources-test-dispatches-glob-and-search-methods ()
+  "Resource discovery operations dispatch through registered methods."
+  (let ((registry (e-resources-registry-create))
+        (calls nil))
+    (dolist (method
+             (list
+              (e-resource-method-create
+               :scheme "test"
+               :operation e-operation-glob
+               :description "Glob test resources."
+               :handler (lambda (uri pattern limit)
+                          (push (list :glob uri pattern limit) calls)
+                          '(:resources [(:uri "test://one" :name "one")]
+                            :truncated nil)))
+              (e-resource-method-create
+               :scheme "other"
+               :operation e-operation-search
+               :description "Search other resources."
+               :handler (lambda (uri query options)
+                          (push (list :search uri query options) calls)
+                          '(:matches [(:uri "other://one"
+                                       :line 1
+                                       :column 1
+                                       :text "needle")]
+                            :truncated nil)))))
+      (e-resources-register registry method))
+    (should (equal (e-resources-glob registry "test://root" "*.el" 3)
+                   '(:resources [(:uri "test://one" :name "one")]
+                     :truncated nil)))
+    (should (equal (e-resources-search
+                    registry
+                    "other://root"
+                    "needle"
+                    '(:glob "*.el" :literal t :limit 4))
+                   '(:matches [(:uri "other://one"
+                                :line 1
+                                :column 1
+                                :text "needle")]
+                     :truncated nil)))
+    (should (equal (nreverse calls)
+                   '((:glob (:scheme "test" :address "root" :uri "test://root")
+                            "*.el" 3)
+                     (:search (:scheme "other" :address "root" :uri "other://root")
+                              "needle"
+                              (:glob "*.el" :literal t :limit 4)))))
+    (should (equal (mapcar #'e-operation-id
+                           (e-resources-operations registry))
+                   '(glob search)))))
+
 (ert-deftest e-resources-test-errors-for-unknown-and-unsupported-resources ()
   "The registry reports missing schemes and unsupported operations clearly."
   (let ((registry (e-resources-registry-create)))

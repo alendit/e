@@ -133,6 +133,14 @@ registers one or more methods in REGISTRY."
   "Apply EDITS to URI through REGISTRY."
   (e-resources-call registry e-operation-edit uri edits))
 
+(defun e-resources-glob (registry uri &optional pattern limit)
+  "List resources under URI through REGISTRY with optional PATTERN and LIMIT."
+  (e-resources-call registry e-operation-glob uri pattern limit))
+
+(defun e-resources-search (registry uri query &optional options)
+  "Search URI through REGISTRY for QUERY with optional OPTIONS."
+  (e-resources-call registry e-operation-search uri query options))
+
 (defun e-resources-operations (registry)
   "Return operations implemented by REGISTRY."
   (copy-sequence (e-resources-registry-operations registry)))

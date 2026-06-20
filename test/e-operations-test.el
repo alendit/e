@@ -35,7 +35,15 @@
   (should (eq (e-operation-id e-operation-write) 'write))
   (should (equal (e-operation-tool-name e-operation-write) "write"))
   (should (eq (e-operation-id e-operation-edit) 'edit))
-  (should (equal (e-operation-tool-name e-operation-edit) "edit")))
+  (should (equal (e-operation-tool-name e-operation-edit) "edit"))
+  (should (eq (e-operation-id e-operation-glob) 'glob))
+  (should (equal (e-operation-tool-name e-operation-glob) "glob"))
+  (should (equal (plist-get (e-operation-parameters e-operation-glob) :required)
+                 ["uri"]))
+  (should (eq (e-operation-id e-operation-search) 'search))
+  (should (equal (e-operation-tool-name e-operation-search) "search"))
+  (should (equal (plist-get (e-operation-parameters e-operation-search) :required)
+                 ["uri" "query"])))
 
 (ert-deftest e-operations-test-dispatchers-normalize-tool-arguments ()
   "Operation dispatchers adapt model tool arguments to resource calls."
@@ -49,10 +57,27 @@
     (funcall (e-operation-dispatch e-operation-edit)
              (lambda (&rest args) (push args calls) "edit-result")
              '(:uri "test://edit" :edits ((:oldText "a" :newText "b"))))
+    (funcall (e-operation-dispatch e-operation-glob)
+             (lambda (&rest args) (push args calls) "glob-result")
+             '(:uri "test://glob" :pattern "*.el" :limit 5))
+    (funcall (e-operation-dispatch e-operation-search)
+             (lambda (&rest args) (push args calls) "search-result")
+             '(:uri "test://search"
+               :query "needle"
+               :glob "*.el"
+               :literal t
+               :case-sensitive t
+               :limit 7))
     (should (equal (nreverse calls)
                    '(("test://read" (:unit "line" :start 1 :end 2))
                      ("test://write" "content")
-                     ("test://edit" ((:oldText "a" :newText "b"))))))))
+                     ("test://edit" ((:oldText "a" :newText "b")))
+                     ("test://glob" "*.el" 5)
+                     ("test://search" "needle"
+                      (:glob "*.el"
+                       :literal t
+                       :case-sensitive t
+                       :limit 7)))))))
 
 (provide 'e-operations-test)
 

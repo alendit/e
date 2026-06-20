@@ -29,6 +29,14 @@
       (signal 'wrong-type-argument (list 'stringp key)))
     value))
 
+(defun e-operations--present-options (arguments keys)
+  "Return plist from ARGUMENTS containing only present KEYS."
+  (let (options)
+    (dolist (key keys (nreverse options))
+      (when (plist-member arguments key)
+        (setq options (cons (plist-get arguments key)
+                            (cons key options)))))))
+
 (defconst e-operation-read
   (e-operation-create
    :id 'read
@@ -95,8 +103,58 @@
                         (e-operations--argument-string arguments :uri)
                         (plist-get arguments :edits)))))
 
+(defconst e-operation-glob
+  (e-operation-create
+   :id 'glob
+   :tool-name "glob"
+   :description "List URI-addressed resources matching an optional glob pattern."
+   :parameters '(:type "object"
+                 :properties (:uri (:type "string"
+                                    :description "Resource URI root to list, such as file://lisp/ or buffer://.")
+                              :pattern (:type "string"
+                                        :description "Optional glob pattern to match beneath the resource root, such as *.el.")
+                              :limit (:type "number"
+                                      :description "Maximum number of resources to return."))
+                 :required ["uri"])
+   :dispatch (lambda (call arguments)
+               (funcall call
+                        (e-operations--argument-string arguments :uri)
+                        (plist-get arguments :pattern)
+                        (plist-get arguments :limit)))))
+
+(defconst e-operation-search
+  (e-operation-create
+   :id 'search
+   :tool-name "search"
+   :description "Search URI-addressed resources for text matches."
+   :parameters '(:type "object"
+                 :properties (:uri (:type "string"
+                                    :description "Resource URI root to search, such as file://lisp/ or buffer://.")
+                              :query (:type "string"
+                                      :description "Text to search for.")
+                              :glob (:type "string"
+                                     :description "Optional glob pattern limiting resources to search.")
+                              :literal (:type "boolean"
+                                        :description "When non-nil, treat query as literal text instead of a pattern.")
+                              :case-sensitive (:type "boolean"
+                                               :description "When non-nil, match query case-sensitively.")
+                              :limit (:type "number"
+                                      :description "Maximum number of matches to return."))
+                 :required ["uri" "query"])
+   :dispatch (lambda (call arguments)
+               (funcall call
+                        (e-operations--argument-string arguments :uri)
+                        (e-operations--argument-string arguments :query)
+                        (e-operations--present-options
+                         arguments
+                         '(:glob :literal :case-sensitive :limit))))))
+
 (defconst e-operations-standard
-  (list e-operation-read e-operation-write e-operation-edit)
+  (list e-operation-read
+        e-operation-write
+        e-operation-edit
+        e-operation-glob
+        e-operation-search)
   "Standard resource operation contracts exposed by the harness when active.")
 
 (defun e-operation-id-of (operation)

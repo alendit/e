@@ -1244,7 +1244,29 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
                               :uri-patterns '("test://<value>")
                               :handler (lambda (uri edits)
                                          (push (list :edit uri edits) calls)
-                                         "edit-result"))))
+                                         "edit-result"))
+                             (e-resource-method-create
+                              :scheme "test"
+                              :operation e-operation-glob
+                              :description "Glob test resources."
+                              :uri-patterns '("test://<root>")
+                              :handler (lambda (uri pattern limit)
+                                         (push (list :glob uri pattern limit) calls)
+                                         '(:resources [(:uri "test://value"
+                                                       :name "value")]
+                                           :truncated nil)))
+                             (e-resource-method-create
+                              :scheme "test"
+                              :operation e-operation-search
+                              :description "Search test resources."
+                              :uri-patterns '("test://<root>")
+                              :handler (lambda (uri query options)
+                                         (push (list :search uri query options) calls)
+                                         '(:matches [(:uri "test://value"
+                                                     :line 1
+                                                     :column 1
+                                                     :text "needle")]
+                                           :truncated nil)))))
                      (e-resources-register registry method))))))
          (layer (e-layer-create
                  :id 'resource-tool-layer
@@ -1280,13 +1302,45 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
                                    :edits ((:oldText "a" :newText "b")))))
                     :content)
                    "edit-result"))
+    (should (equal (plist-get
+                    (e-tools-execute
+                     tools
+                     '(:id "call-4"
+                       :name "glob"
+                       :arguments (:uri "test://"
+                                   :pattern "*.el"
+                                   :limit 5)))
+                    :content)
+                   '(:resources [(:uri "test://value" :name "value")]
+                     :truncated nil)))
+    (should (equal (plist-get
+                    (e-tools-execute
+                     tools
+                     '(:id "call-5"
+                       :name "search"
+                       :arguments (:uri "test://"
+                                   :query "needle"
+                                   :glob "*.el"
+                                   :literal t
+                                   :limit 6)))
+                    :content)
+                   '(:matches [(:uri "test://value"
+                                :line 1
+                                :column 1
+                                :text "needle")]
+                     :truncated nil)))
     (should (equal (nreverse calls)
                    '((:read (:scheme "test" :address "value" :uri "test://value")
                             (:unit "line" :start 1 :end 2))
                      (:write (:scheme "test" :address "value" :uri "test://value")
                              "content")
                      (:edit (:scheme "test" :address "value" :uri "test://value")
-                            ((:oldText "a" :newText "b"))))))))
+                            ((:oldText "a" :newText "b")))
+                     (:glob (:scheme "test" :address "" :uri "test://")
+                            "*.el" 5)
+                     (:search (:scheme "test" :address "" :uri "test://")
+                              "needle"
+                              (:glob "*.el" :literal t :limit 6)))))))
 
 (ert-deftest e-harness-test-resource-tool-descriptions-include-active-methods ()
   "Generated operation tool descriptions include active URI scheme metadata."
