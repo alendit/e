@@ -50,6 +50,14 @@ Do not rely on the implementation summary alone.  A useful review names the
 actual plan slice, source/test evidence, or live behavior that supports each
 claim.
 
+Derive review use cases from =plan.org= first, but do not stop there when the
+implemented surface clearly has additional user journeys.  Add use cases for
+entrypoints, resume/reopen flows, cancellation, error states, empty states,
+large or slow inputs, repeated use, keyboard-only operation, and any shell,
+buffer, or tool interaction that a user would naturally try.  These extra use
+cases belong in the review whenever they expose UX, correctness, or performance
+risk that the plan did not spell out.
+
 * Common Shapes
 
 Existing feature reviews use two stable shapes.  Choose the smallest one that
@@ -83,7 +91,14 @@ only say "looks fine".
 
 * Verification performed during this review pass
 
-Commands and live checks with exact results.
+Commands, live checks, visual playthroughs, and performance checks with exact
+results.
+
+* UX and performance playthrough
+
+Use cases exercised through the running Emacs and attached app surface, with
+notes on visual result, responsiveness, confusing states, and any profiling
+evidence.
 
 * Findings
 
@@ -151,6 +166,11 @@ remaining decision.
 
 Focused tests, broader tests, and whitespace checks with exact result snippets.
 
+* UX and performance playthrough
+
+Short list of user journeys played through, visual inspection result, and
+whether profiling was needed.
+
 * Live reload
 
 Reload command and result, plus the bounded live probe result when runtime
@@ -185,6 +205,55 @@ Each finding should include:
 - the smallest useful fix direction;
 - the verification that proves resolution, once fixed.
 
+Treat poor UX and avoidable slowness as review findings, not polish.  If a
+screen, buffer, transient, picker, or command technically works but feels
+confusing, jumps unexpectedly, hides important status, blocks repeated work, or
+gets noticeably slower under realistic input, record the issue with the same
+severity discipline as functional findings.
+
+* Live UX Playthrough
+
+For user-facing or runtime-visible features, the review must play through the
+important use cases in the running Emacs.  Batch tests prove invariants; they do
+not prove that the user experience is coherent, visually legible, or responsive.
+
+Use =emacsclient --eval= from the repo root to set up and inspect scenarios.
+Prefer direct, bounded expressions.  Inspect the actual selected window when
+the visual state matters, for example =(window-buffer (selected-window))=,
+rather than assuming the server's current buffer is the user's visible buffer.
+
+When an app surface is attached to the Codex session, use it to visually inspect
+the result after driving Emacs.  Check the real buffer/window/app state, not
+only returned Elisp values.  Capture what was visible and whether it matched the
+intended workflow: selected pane, point location, transient state, status text,
+messages, overlays, result panes, error display, and cleanup after completion.
+
+For each important use case, record:
+
+- the use case and why it matters;
+- the command, key path, or tool path exercised;
+- the visual result in Emacs and, when available, the attached app;
+- whether the interaction felt direct, understandable, and recoverable;
+- whether it remained responsive under realistic input size or repeated use;
+- any issue found, linked to a finding or explicitly marked acceptable.
+
+Add use cases beyond =plan.org= when needed.  Common additions include:
+
+- first use with no prior state;
+- reopening or resuming existing state;
+- switching buffers, projects, sessions, shells, or harness instances;
+- cancelling or aborting midway;
+- successful completion and cleanup;
+- error display and recovery;
+- empty, missing, stale, or conflicting data;
+- keyboard-only flow and default focus;
+- repeated use without restarting Emacs;
+- large transcript, many candidates, many resources, or slow provider/tool
+  response.
+
+Keep live checks bounded.  Avoid broad dumps of locals, registries, session
+stores, or raw buffers unless the specific issue requires them.
+
 * Evidence Rules
 
 Capture exact commands in =sh= blocks and exact results in =example= blocks.
@@ -197,10 +266,19 @@ For Emacs Lisp runtime changes, include:
 - broader affected test files or full suite when warranted;
 - =git diff --check= or equivalent whitespace validation for doc/code edits;
 - =emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"= result;
-- one bounded live probe when the behavior is observable in the running Emacs.
+- one bounded live probe when the behavior is observable in the running Emacs;
+- one visual playthrough summary for each user-facing flow that could regress
+  UX, focus, window layout, transient display, status reporting, or cleanup.
 
 Keep live probes narrow and scalar.  Avoid broad dumps of registries,
 buffer-locals, or session state.
+
+Use profiling when interaction feels slow, when a plan promises performance
+improvement, when review use cases involve large inputs, or when repeated
+redraw/status/tool activity could hide hot paths.  Prefer targeted profiling
+around the suspected command or workflow instead of whole-session profiling.
+Record the profiling command or helper, the scenario size, the observed hot
+path, and whether the evidence justifies a finding or a follow-up.
 
 * Status And Completion
 
