@@ -1,0 +1,125 @@
+#+title: Review: Context Auto-Compaction
+#+author: e implementation
+#+date: 2026-06-20
+#+startup: overview
+
+* Status
+
+In-review.
+
+* Review loop
+
+** Finding 1: auto-compaction could retry without moving the boundary
+
+*** Problem
+
+The no-progress suffix check counted the latest compaction boundary entry as
+newer context.  If that boundary entry was itself large enough to exceed
+=e-compaction-keep-recent-tokens=, a later submit could attempt auto-compaction
+again even though there were no newer entries that allowed the cut point to move
+forward meaningfully.
+
+*** Change
+
+=e-harness--auto-compaction-suffix-tokens= now excludes the previous
+=first-kept-entry-id= when measuring entries newer than the last valid
+compaction boundary.  The churn guard therefore measures only the suffix that
+could actually let a new compaction advance the boundary.
+
+*** Evidence
+
+#+begin_src sh
+rtk eldev test test/e-context-budget-test.el test/e-context-status-test.el test/e-harness-test.el test/e-chat-test.el
+#+end_src
+
+Result:
+
+#+begin_example
+268 tests, 267 expected, 0 unexpected, 1 skipped
+#+end_example
+
+The bounded live no-progress probe returned:
+
+#+begin_example
+(:status done :calls 1 :compactions 1 :failed-events 0)
+#+end_example
+
+* Final review
+
+Subagent review reported no new suggestions after the no-progress guard fix.
+
+#+begin_example
+No new suggestions.
+#+end_example
+
+* Verification
+
+Focused feature verification:
+
+#+begin_src sh
+rtk eldev test test/e-context-budget-test.el test/e-context-status-test.el test/e-harness-test.el test/e-chat-test.el
+#+end_src
+
+Result:
+
+#+begin_example
+268 tests, 267 expected, 0 unexpected, 1 skipped
+#+end_example
+
+Adjacent verification:
+
+#+begin_src sh
+rtk eldev test test/e-context-budget-test.el test/e-context-status-test.el test/e-harness-test.el test/e-chat-test.el test/e-compaction-test.el test/e-context-test.el
+#+end_src
+
+Result:
+
+#+begin_example
+346 tests, 345 expected, 0 unexpected, 1 skipped
+#+end_example
+
+Full suite:
+
+#+begin_src sh
+rtk eldev test
+#+end_src
+
+Result:
+
+#+begin_example
+870 tests, 869 expected, 0 unexpected, 1 skipped
+#+end_example
+
+Whitespace:
+
+#+begin_src sh
+git diff --check
+#+end_src
+
+Result: clean.
+
+* Live reload
+
+The running Emacs was reloaded with:
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Result:
+
+#+begin_example
+"/Users/dimitrivorona/projects/elisp/e/"
+#+end_example
+
+Bounded live probes returned:
+
+#+begin_example
+(:status done :calls 2 :compactions 1 :auto-start-label t :auto-finish-label t)
+(:status done :calls 1 :compactions 0)
+(:mode-name "e-chat gpt-5.5/high 78% (203k/258k tok)" :matches t)
+(:status done :calls 1 :compactions 1 :failed-events 0)
+#+end_example
+
+These cover the auto trigger, unknown-window skip, mode-line context status, and
+no-progress guard behavior.
