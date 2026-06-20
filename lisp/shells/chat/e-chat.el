@@ -1586,6 +1586,26 @@ scan."
         (walk root)))
     (nreverse files)))
 
+(defun e-chat--disambiguate-file-candidates (candidates)
+  "Return CANDIDATES with duplicate labels qualified by root."
+  (let ((counts (make-hash-table :test 'equal)))
+    (dolist (candidate candidates)
+      (let ((label (plist-get candidate :label)))
+        (puthash label (1+ (gethash label counts 0)) counts)))
+    (mapcar
+     (lambda (candidate)
+       (let ((label (plist-get candidate :label)))
+         (if (> (gethash label counts 0) 1)
+             (plist-put (copy-sequence candidate)
+                        :label
+                        (format "%s (%s)"
+                                label
+                                (abbreviate-file-name
+                                 (directory-file-name
+                                  (plist-get candidate :root)))))
+           candidate)))
+     candidates)))
+
 (defun e-chat--project-file-candidates ()
   "Return project file completion candidates for the active chat session."
   (let ((remaining e-chat-project-file-candidate-limit)
@@ -1602,7 +1622,7 @@ scan."
             (let ((label (file-relative-name file root)))
               (push (list :label label :path file :root root) candidates)))
           (setq remaining (- remaining (length files))))))
-    (nreverse candidates)))
+    (e-chat--disambiguate-file-candidates (nreverse candidates))))
 
 (defun e-chat--read-file-reference-text (path)
   "Return reference text for PATH, truncated when necessary."

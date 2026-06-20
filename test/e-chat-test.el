@@ -1261,6 +1261,50 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-composer-at-disambiguates-duplicate-workspace-files ()
+  "Duplicate relative file labels remain selectable across workspace roots."
+  (let ((primary (file-name-as-directory
+                  (make-temp-file "e-chat-prefix-primary-" t)))
+        (secondary (file-name-as-directory
+                    (make-temp-file "e-chat-prefix-secondary-" t)))
+        buffer)
+    (unwind-protect
+        (progn
+          (with-temp-file (expand-file-name "same.txt" primary)
+            (insert "primary\n"))
+          (with-temp-file (expand-file-name "same.txt" secondary)
+            (insert "secondary\n"))
+          (setq buffer (e-chat-test--buffer nil "chat-prefix-duplicate-files"))
+          (with-current-buffer buffer
+            (cl-letf (((symbol-function 'e-chat--workspace-roots)
+                       (lambda () (list primary secondary))))
+              (let* ((candidates (e-chat--project-file-candidates))
+                     (secondary-path (expand-file-name "same.txt" secondary))
+                     (secondary-candidate
+                      (cl-find secondary-path candidates
+                               :key (lambda (candidate)
+                                      (plist-get candidate :path))
+                               :test #'equal))
+                     (secondary-label (plist-get secondary-candidate :label)))
+                (should secondary-candidate)
+                (should-not (equal secondary-label "same.txt"))
+                (cl-letf (((symbol-function 'e-chat--project-file-candidates)
+                           (lambda () candidates))
+                          ((symbol-function 'completing-read)
+                           (lambda (&rest _args) secondary-label)))
+                  (e-chat-composer-at))
+                (let ((submission (plist-get (e-chat--composer-submission)
+                                             :prompt)))
+                  (should (string-match-p
+                           (regexp-quote (concat "file://" secondary-path))
+                           submission))
+                  (should (string-match-p (regexp-quote "secondary")
+                                          submission)))))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (delete-directory primary t)
+      (delete-directory secondary t))))
+
 (ert-deftest e-chat-test-composer-at-truncates-file-reference-text ()
   "File reference text is capped with a visible truncation marker."
   (let ((e-chat-file-reference-max-bytes 5)
