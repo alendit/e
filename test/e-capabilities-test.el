@@ -15,6 +15,7 @@
 (require 'e)
 (require 'e-capabilities)
 (require 'e-operations)
+(require 'e-prompts)
 (require 'e-resources)
 (require 'e-store)
 
@@ -32,6 +33,10 @@
           :hooks (list #'ignore)
           :config-options '(:option-specs)
           :config '(:option "value")
+          :prompts (list (e-prompt-spec-create
+                          :name "explain"
+                          :description "Explain."
+                          :template "Explain this."))
           :actions '(:read-buffer ignore))))
     (should (eq (e-capability-id capability) 'buffer-read))
     (should (equal (e-capability-name capability) "Buffer Read"))
@@ -42,6 +47,7 @@
     (should (= (length (e-capability-hooks capability)) 1))
     (should (equal (e-capability-config-options capability) '(:option-specs)))
     (should (equal (e-capability-config capability) '(:option "value")))
+    (should (= (length (e-capability-prompts capability)) 1))
     (should (plist-member (e-capability-actions capability) :read-buffer))))
 
 (ert-deftest e-capabilities-test-register-tools ()
@@ -108,6 +114,7 @@
     (should-not (e-capability-hooks legacy))
     (should-not (e-capability-config-options legacy))
     (should-not (e-capability-config legacy))
+    (should-not (e-capability-prompts legacy))
     (should (equal (e-capability-actions legacy)
                    '(:legacy ignore)))))
 
@@ -136,7 +143,8 @@
                    e-capability-hooks
                    e-capability-instruction-priority
                    e-capability-config-options
-                   e-capability-config)))
+                   e-capability-config
+                   e-capability-prompts)))
     (dolist (symbol symbols)
       (put symbol 'compiler-macro 'stale)
       (put symbol 'side-effect-free 'stale)

@@ -22,6 +22,7 @@
 (require 'e-layers)
 (require 'e-loop)
 (require 'e-operations)
+(require 'e-prompts)
 (require 'e-resources)
 (require 'e-session)
 (require 'e-shells)
@@ -202,6 +203,39 @@ runtime config, then explicit OVERRIDES."
        :session-id session-id
        :turn-id turn-id))
     registry))
+
+(defun e-harness-prompts (harness)
+  "Return prompt specs contributed by HARNESS active capabilities."
+  (let (prompts)
+    (dolist (capability (e-harness-active-capabilities harness))
+      (setq prompts
+            (append prompts
+                    (copy-sequence (or (e-capability-prompts capability)
+                                       nil)))))
+    prompts))
+
+(defun e-harness-prompt-by-name (harness name)
+  "Return the first active prompt named NAME in HARNESS, or nil."
+  (let ((name (e-prompts--normalize-name name 'prompt-name)))
+    (cl-find name
+             (e-harness-prompts harness)
+             :key #'e-prompt-spec-name
+             :test #'equal)))
+
+(defun e-harness-prompt-name-collisions (harness)
+  "Return duplicate prompt-name diagnostics for HARNESS.
+Each diagnostic is (:name NAME :prompts PROMPTS), preserving active capability
+order for PROMPTS."
+  (let ((table (make-hash-table :test 'equal))
+        collisions)
+    (dolist (prompt (e-harness-prompts harness))
+      (push prompt (gethash (e-prompt-spec-name prompt) table)))
+    (maphash (lambda (name prompts)
+               (let ((prompts (nreverse prompts)))
+                 (when (> (length prompts) 1)
+                   (push (list :name name :prompts prompts) collisions))))
+             table)
+    (nreverse collisions)))
 
 (defun e-harness-hooks (harness)
   "Return a fresh hook registry view over HARNESS active layers."

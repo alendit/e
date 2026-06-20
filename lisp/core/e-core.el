@@ -23,6 +23,7 @@
 (require 'e-store)
 (require 'e-capability-config)
 (require 'e-capabilities)
+(require 'e-prompts)
 (require 'e-hooks)
 (require 'e-mcp)
 (require 'e-skills)
@@ -44,6 +45,7 @@
         :backends t
         :compaction t
         :capabilities t
+        :prompts t
         :hooks t
         :mcp t
         :context t

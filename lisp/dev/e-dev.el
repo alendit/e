@@ -95,6 +95,7 @@
                   "lisp/core/e-hooks.el"
                   "lisp/core/e-capability-config.el"
                   "lisp/core/e-capabilities.el"
+                  "lisp/core/e-prompts.el"
                   "lisp/core/e-skills.el"
                   "lisp/core/e-mcp.el"
                   "lisp/core/e-startup.el"

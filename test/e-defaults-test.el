@@ -24,6 +24,7 @@
 (require 'e-agents-std-context)
 (require 'e-layer-selection)
 (require 'e-layers)
+(require 'e-prompts)
 (require 'e-session)
 (require 'e-shells)
 
@@ -246,7 +247,13 @@
                               (e-harness-active-capabilities harness))))
         (should (memq 'layer-selection
                       (mapcar #'e-capability-id
-                              (e-harness-active-capabilities harness))))))))
+                              (e-harness-active-capabilities harness))))
+        (should (e-harness-prompt-by-name harness "summarize"))
+        (should (string-match-p
+                 "Summarize"
+                 (e-prompt-render
+                  (e-harness-prompt-by-name harness "summarize")
+                  nil)))))))
 
 (ert-deftest e-defaults-test-debug-harness-uses-chat-preset-and-debug-guidance ()
   "Default debug harness activation includes chat layers plus debug guidance."

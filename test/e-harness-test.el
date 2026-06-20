@@ -24,6 +24,7 @@
 (require 'e-harness)
 (require 'e-layers)
 (require 'e-operations)
+(require 'e-prompts)
 (require 'e-resources)
 (require 'e-skills)
 (require 'e-store)
@@ -964,6 +965,50 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
                        :arguments nil))
                     :content)
                    "derived"))))
+
+(ert-deftest e-harness-test-prompts-are-derived-from-active-layers ()
+  "Prompts are aggregated from active capability prompts in layer order."
+  (let* ((first (e-prompt-spec-create
+                 :name "explain"
+                 :description "Explain."
+                 :template "Explain this."))
+         (second (e-prompt-spec-create
+                  :name "review"
+                  :description "Review."
+                  :template "Review this."))
+         (duplicate (e-prompt-spec-create
+                     :name "explain"
+                     :description "Explain differently."
+                     :template "Explain this differently."))
+         (harness (e-harness-create :backend (e-backend-fake-create :items nil))))
+    (e-harness-activate-layer
+     harness
+     (e-layer-create
+      :id 'one
+      :name "One"
+      :capabilities
+      (list (e-capability-with-prompts-create
+             :id 'prompt-one
+             :name "Prompt One"
+             :prompts (list first second)))))
+    (e-harness-activate-layer
+     harness
+     (e-layer-create
+      :id 'two
+      :name "Two"
+      :capabilities
+      (list (e-capability-with-prompts-create
+             :id 'prompt-two
+             :name "Prompt Two"
+             :prompts (list duplicate)))))
+    (should (equal (e-harness-prompts harness)
+                   (list first second duplicate)))
+    (should (eq (e-harness-prompt-by-name harness "explain") first))
+    (should (equal (mapcar (lambda (collision)
+                             (list (plist-get collision :name)
+                                   (length (plist-get collision :prompts))))
+                           (e-harness-prompt-name-collisions harness))
+                   '(("explain" 2))))))
 
 (ert-deftest e-harness-test-hooks-are-derived-from-active-layers ()
   "Harness hook registries are derived from active capability layers."

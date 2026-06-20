@@ -24,6 +24,7 @@
 (require 'e-harness-instances)
 (require 'e-harness-registry)
 (require 'e-layers)
+(require 'e-prompts)
 (require 'e-session)
 (require 'e-shells)
 (require 'e-startup)
@@ -93,6 +94,35 @@ attaches the internal chat-session layer and `e-default-chat-layer-ids'."
 (defvar e-default--chat-sessions nil
   "Cached default persistent chat session store.")
 
+(defun e-default-chat--prompt-capability ()
+  "Return built-in prompt templates for default chat harnesses."
+  (e-capability-with-prompts-create
+   :id 'chat-prompts
+   :name "Chat Prompts"
+   :prompts
+   (list
+    (e-prompt-spec-create
+     :name "summarize"
+     :description "Summarize the current context."
+     :parameters
+     (list (e-prompt-parameter-create
+            :name "focus"
+            :description "What the summary should focus on."
+            :required nil
+            :default "the current context"))
+     :template "Summarize ${focus} clearly and concisely.")
+    (e-prompt-spec-create
+     :name "review"
+     :description "Review for bugs, risks, and missing tests."
+     :parameters
+     (list (e-prompt-parameter-create
+            :name "focus"
+            :description "What the review should focus on."
+            :required nil
+            :default "the current context"))
+     :template
+     "Review ${focus} for bugs, regressions, and missing tests."))))
+
 (defun e-default-session-store ()
   "Return the default persistent session store."
   (let ((directory (file-name-as-directory
@@ -133,7 +163,8 @@ DIRECTORY is passed to config-aware layer factories."
   (e-layer-create
    :id 'chat-session
    :name "Chat Session"
-   :capabilities (list (e-chat-session-capability-create))))
+   :capabilities (list (e-chat-session-capability-create)
+                       (e-default-chat--prompt-capability))))
 
 (defun e-default-debug--debug-layer ()
   "Return a fresh internal debug guidance layer."

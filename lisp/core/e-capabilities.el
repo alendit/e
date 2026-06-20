@@ -9,8 +9,8 @@
 
 ;; Capabilities are semantic behavior bundles.  They contribute instructions,
 ;; model-facing tools, resource methods, in-memory resources, context providers,
-;; and shell-facing actions while layers remain packaging presets over those
-;; capabilities.
+;; prompts, and shell-facing actions while layers remain packaging presets over
+;; those capabilities.
 
 ;;; Code:
 
@@ -25,7 +25,8 @@
                              (&key id name instructions tools
                                    resource-methods resources
                                    context-providers actions hooks
-                                   instruction-priority config-options config))
+                                   instruction-priority config-options config
+                                   prompts))
                (:conc-name e-capability--))
   id
   name
@@ -38,7 +39,8 @@
   hooks
   (instruction-priority 200)
   config-options
-  config)
+  config
+  prompts)
 
 (defun e-capability-id (capability)
   "Return CAPABILITY id."
@@ -142,6 +144,14 @@ slot existed."
       (e-capability--config capability)
     nil))
 
+(defun e-capability-prompts (capability)
+  "Return CAPABILITY prompt specs.
+This accessor tolerates stale capability records compiled before the `prompts'
+slot existed."
+  (if (>= (length capability) 14)
+      (e-capability--prompts capability)
+    nil))
+
 (dolist (symbol '(e-capability-id
                   e-capability-name
                   e-capability-instructions
@@ -153,7 +163,8 @@ slot existed."
                   e-capability-hooks
                   e-capability-instruction-priority
                   e-capability-config-options
-                  e-capability-config))
+                  e-capability-config
+                  e-capability-prompts))
   (put symbol 'compiler-macro nil)
   (put symbol 'side-effect-free nil)
   (put symbol 'gv-expander nil))
