@@ -1,0 +1,131 @@
+#+title: Review: Elisp Tool Chaining
+#+author: e implementation
+#+date: 2026-06-20
+#+startup: overview
+
+* Status
+
+In-review.
+
+* Review loop
+
+** Finding 1: Nested call metadata was not emitted on activity payloads
+
+*** Problem
+
+=e-tools-call= accepted =:metadata= in its options and copied it onto the
+nested call plist, but the harness nested executor did not expose that metadata
+on the emitted =tool-started= and =tool-finished= payloads.  That missed the
+plan requirement that nested-call metadata is merged into visible activity.
+
+*** Change
+
+=e-harness--nested-tool-payload= now appends metadata from the nested tool call
+to the event payload.  The nested lifecycle test now passes
+=:metadata (:purpose "chain-test")= through =e-tools-call= and asserts both the
+started and finished nested payloads expose =:purpose=.
+
+*** Evidence
+
+#+begin_src sh
+rtk eldev test test/e-harness-test.el test/e-emacs-capabilities-test.el
+#+end_src
+
+Result:
+
+#+begin_example
+77 expected, 0 unexpected
+#+end_example
+
+The live probe returned four nested events and four metadata-bearing nested
+events.
+
+** Finding 2: Elisp eval guidance omitted the required compact example
+
+*** Problem
+
+The =elisp-eval= capability guidance documented the API signatures and decision
+rules, but it did not include the compact =search= and =read= example required
+by Slice 3.
+
+*** Change
+
+=e-elisp-eval-instructions= now includes a short =e-tools-call!= example that
+uses =search= to collect file hits and =read= to fetch each matching resource.
+The capability test now checks that the guidance includes both example calls.
+
+*** Evidence
+
+#+begin_src sh
+rtk eldev test test/e-harness-test.el test/e-emacs-capabilities-test.el
+#+end_src
+
+Result:
+
+#+begin_example
+77 expected, 0 unexpected
+#+end_example
+
+* Final review
+
+Subagent review reported no new suggestions after the metadata and guidance
+fixes.
+
+#+begin_example
+No new suggestions.
+#+end_example
+
+* Verification
+
+Focused feature verification:
+
+#+begin_src sh
+rtk eldev test test/e-tools-test.el test/e-harness-test.el test/e-emacs-tools-test.el test/e-emacs-capabilities-test.el test/e-loop-test.el
+#+end_src
+
+Result:
+
+#+begin_example
+128 expected, 0 unexpected
+#+end_example
+
+Full suite:
+
+#+begin_src sh
+rtk eldev test
+#+end_src
+
+Result:
+
+#+begin_example
+849 tests, 848 expected, 0 unexpected, 1 skipped
+#+end_example
+
+Whitespace:
+
+#+begin_src sh
+git diff --check
+#+end_src
+
+Result: clean.
+
+* Live reload
+
+The running Emacs was reloaded with:
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Result:
+
+#+begin_example
+"/Users/dimitrivorona/projects/elisp/e/"
+#+end_example
+
+The bounded live probe returned:
+
+#+begin_example
+(:status ok :nested-event-count 4 :metadata-event-count 4 :result
+         (:result "(:first \"ONE\" :second \"TWO\")"))
+#+end_example
