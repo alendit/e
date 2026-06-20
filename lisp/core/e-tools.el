@@ -30,9 +30,66 @@
 (defvar e-tools--current-context nil
   "Context dynamically visible while a tool implementation starts.")
 
+(define-error 'e-tools-no-active-registry
+  "No active tool registry is available")
+(define-error 'e-tools-recursive-call
+  "Recursive nested tool call rejected")
+(define-error 'e-tools-nested-tool-error
+  "Nested tool returned a structured error")
+(define-error 'e-tools-nested-tool-budget-exceeded
+  "Nested tool call budget exceeded")
+
+(defconst e-tools-nested-tool-default-budget 20
+  "Default maximum number of nested tool calls per parent tool execution.")
+
 (defun e-tools-current-context ()
   "Return the current tool start context, or nil."
   e-tools--current-context)
+
+(defun e-tools-current-registry ()
+  "Return the active tool registry from `e-tools-current-context'."
+  (let ((registry (plist-get (e-tools-current-context) :tools)))
+    (unless (e-tools-registry-p registry)
+      (signal 'e-tools-no-active-registry
+              (list "No active tool registry is available")))
+    registry))
+
+(defun e-tools-current-tool-call ()
+  "Return the current parent tool call from `e-tools-current-context'."
+  (plist-get (e-tools-current-context) :tool-call))
+
+(defun e-tools--current-nested-state ()
+  "Return the mutable nested tool state for the current context."
+  (or (plist-get (e-tools-current-context) :nested-tool-state)
+      (signal 'e-tools-no-active-registry
+              (list "No active tool execution context is available"))))
+
+(defun e-tools--next-nested-call-id (options)
+  "Return the next nested call id using OPTIONS when supplied."
+  (or (plist-get options :call-id)
+      (let* ((parent (e-tools-current-tool-call))
+             (parent-id (or (plist-get parent :id) "tool-call"))
+             (state (e-tools--current-nested-state))
+             (next (1+ (or (plist-get state :sequence) 0))))
+        (plist-put state :sequence next)
+        (format "%s/nested-%d" parent-id next))))
+
+(defun e-tools--check-nested-budget ()
+  "Increment and enforce the current nested tool call budget."
+  (let* ((context (e-tools-current-context))
+         (state (e-tools--current-nested-state))
+         (budget (or (plist-get context :nested-tool-budget)
+                     e-tools-nested-tool-default-budget))
+         (count (1+ (or (plist-get state :count) 0))))
+    (when (> count budget)
+      (signal 'e-tools-nested-tool-budget-exceeded
+              (list "Nested tool call budget exceeded")))
+    (plist-put state :count count)
+    count))
+
+(defun e-tools--nested-context (context)
+  "Return CONTEXT for a nested tool call."
+  context)
 
 (defun e-tools-cancel-request (request)
   "Cancel REQUEST when it has a tool cancellation function."
@@ -140,6 +197,15 @@ implementation."
       (error
        (prin1-to-string content)))))
 
+(defun e-tools--condition-message (err)
+  "Return a concise message for condition ERR."
+  (if (and (memq (car err) '(e-tools-recursive-call
+                             e-tools-nested-tool-budget-exceeded
+                             e-tools-no-active-registry))
+           (stringp (cadr err)))
+      (cadr err)
+    (error-message-string err)))
+
 (defun e-tool-lifecycle-prepare-call (lifecycle tool-call)
   "Return TOOL-CALL after LIFECYCLE preparation."
   (if-let ((prepare (and (e-tool-lifecycle-p lifecycle)
@@ -180,6 +246,20 @@ implementation."
                     :strict :json-false)
               definitions)))
     (nreverse definitions)))
+
+(defun e-tools-available ()
+  "Return compact active tool descriptors from the current registry."
+  (let ((registry (e-tools-current-registry))
+        descriptors)
+    (dolist (name (e-tools-registry-order registry))
+      (let ((tool (gethash name (e-tools-registry-tools registry))))
+        (push (list :name (plist-get tool :name)
+                    :description (plist-get tool :description)
+                    :parameters (or (plist-get tool :parameters)
+                                    '(:type "object" :properties nil))
+                    :metadata (plist-get tool :metadata))
+              descriptors)))
+    (nreverse descriptors)))
 
 (defun e-tools-result-create (call status content &optional metadata)
   "Return a structured tool result for CALL with STATUS, CONTENT, and METADATA."
@@ -286,6 +366,66 @@ SUMMARY is optional and should stay compact and high value."
       (signal (car failure) (cdr failure)))
     result))
 
+(defun e-tools--execute-with-context (registry call context)
+  "Execute CALL against REGISTRY with CONTEXT and return a structured result."
+  (let ((done nil)
+        (result nil)
+        (failure nil))
+    (e-tools-start
+     registry
+     call
+     :context context
+     :on-done (lambda (value)
+                (setq result value)
+                (setq done t))
+     :on-error (lambda (err)
+                 (setq failure err)
+                 (setq done t)))
+    (while (not done)
+      (accept-process-output nil 0.01))
+    (when failure
+      (signal (car failure) (cdr failure)))
+    result))
+
+(defun e-tools--reject-recursive-call (name options)
+  "Signal when NAME recursively calls the current tool without OPTIONS opt-in."
+  (let ((parent-name (plist-get (e-tools-current-tool-call) :name)))
+    (when (and (equal parent-name name)
+               (not (plist-get options :allow-recursive)))
+      (signal 'e-tools-recursive-call
+              (list (format "Recursive nested tool call rejected: %s" name))))))
+
+(defun e-tools-call (name arguments &optional options)
+  "Execute active tool NAME with ARGUMENTS and return a structured result.
+OPTIONS is a plist.  Supported keys are `:call-id', `:allow-recursive', and
+`:metadata'."
+  (let* ((options (or options nil))
+         (registry (e-tools-current-registry))
+         (context (e-tools-current-context)))
+    (e-tools--reject-recursive-call name options)
+    (e-tools--check-nested-budget)
+    (let* ((call (list :id (e-tools--next-nested-call-id options)
+                       :name name
+                       :arguments arguments))
+           (metadata (plist-get options :metadata))
+           (executor (plist-get context :tool-executor)))
+      (when metadata
+        (setq call (plist-put call :metadata metadata)))
+      (if executor
+          (funcall executor call options context)
+        (e-tools--execute-with-context
+         registry
+         call
+         (e-tools--nested-context context))))))
+
+(defun e-tools-call! (name arguments &optional options)
+  "Execute active tool NAME with ARGUMENTS and return successful content.
+Signal `e-tools-nested-tool-error' when the structured result is an error."
+  (let ((result (e-tools-call name arguments options)))
+    (if (eq (plist-get result :status) 'ok)
+        (plist-get result :content)
+      (signal 'e-tools-nested-tool-error (list result)))))
+
 (cl-defun e-tools-start
     (registry call &key on-done on-error on-request-start context)
   "Start CALL against REGISTRY and report a structured result asynchronously.
@@ -294,7 +434,12 @@ condition lists.  ON-REQUEST-START receives an optional `e-tools-request'.
 CONTEXT is dynamically visible to tool start functions through
 `e-tools-current-context'."
   (let* ((name (plist-get call :name))
-         (tool-context (append (list :tool-call call) context))
+         (nested-state (or (plist-get context :nested-tool-state)
+                           (list :count 0 :sequence 0)))
+         (tool-context (append (list :tool-call call
+                                     :tools registry
+                                     :nested-tool-state nested-state)
+                               context))
          (tool (gethash name (e-tools-registry-tools registry))))
     (if (not tool)
         (let ((result (e-tools--result
@@ -338,7 +483,7 @@ CONTEXT is dynamically visible to tool start functions through
                            (e-tools--result
                             call
                             'error
-                            (error-message-string err)
+                            (e-tools--condition-message err)
                             (list :error (car err)))))))
              (publish-request
               (request)

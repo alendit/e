@@ -25,6 +25,20 @@
       (accept-process-output nil 0.01))
     value))
 
+(defun e-tools-test--execute-with-context (registry call context)
+  "Execute CALL against REGISTRY with CONTEXT and return the structured result."
+  (let (result failure)
+    (e-tools-start
+     registry
+     call
+     :context context
+     :on-done (lambda (value) (setq result value))
+     :on-error (lambda (err) (setq failure err)))
+    (should (e-tools-test--wait-until (lambda () (or result failure))))
+    (when failure
+      (signal (car failure) (cdr failure)))
+    result))
+
 (ert-deftest e-tools-test-register-and-execute ()
   "Registered tools execute through structured calls."
   (let ((registry (e-tools-registry-create)))
@@ -262,6 +276,204 @@
                      :status error
                      :content "Quit"
                      :metadata (:error quit))))))
+
+(ert-deftest e-tools-test-current-registry-requires-tool-context ()
+  "Nested tool APIs fail clearly outside an active tool context."
+  (should-error (e-tools-current-registry)
+                :type 'e-tools-no-active-registry)
+  (should-error (e-tools-call "missing" nil)
+                :type 'e-tools-no-active-registry))
+
+(ert-deftest e-tools-test-available-lists-active-tools-from-context ()
+  "Nested tool code can inspect compact active tool descriptors."
+  (let ((registry (e-tools-registry-create)))
+    (e-tools-register registry
+                      :name "outer"
+                      :description "Return available tools."
+                      :metadata '(:capability test)
+                      :handler (lambda (_arguments)
+                                 (e-tools-available)))
+    (e-tools-register registry
+                      :name "inner"
+                      :description "Inner tool."
+                      :parameters '(:type "object"
+                                    :properties (:text (:type "string")))
+                      :metadata '(:capability nested)
+                      :handler (lambda (_arguments)
+                                 "inner"))
+    (should
+     (equal (plist-get
+             (e-tools-test--execute-with-context
+              registry
+              '(:id "outer-1" :name "outer" :arguments nil)
+              (list :tools registry))
+             :content)
+            '((:name "outer"
+               :description "Return available tools."
+               :parameters (:type "object" :properties nil)
+               :metadata (:capability test))
+              (:name "inner"
+               :description "Inner tool."
+               :parameters (:type "object"
+                            :properties (:text (:type "string")))
+               :metadata (:capability nested)))))))
+
+(ert-deftest e-tools-test-call-executes-active-tool-from-context ()
+  "Nested tool code can call another active tool and receive its result."
+  (let ((registry (e-tools-registry-create)))
+    (e-tools-register registry
+                      :name "outer"
+                      :description "Call inner."
+                      :handler (lambda (_arguments)
+                                 (e-tools-call "inner" '(:text "hi"))))
+    (e-tools-register registry
+                      :name "inner"
+                      :description "Return text."
+                      :handler (lambda (arguments)
+                                 (upcase (plist-get arguments :text))))
+    (should
+     (equal (plist-get
+             (e-tools-test--execute-with-context
+              registry
+              '(:id "outer-1" :name "outer" :arguments nil)
+              (list :tools registry))
+             :content)
+            '(:tool-call-id "outer-1/nested-1"
+              :name "inner"
+              :status ok
+              :content "HI"
+              :metadata nil)))))
+
+(ert-deftest e-tools-test-call-bang-returns-content-or-signals-tool-error ()
+  "The bang variant unwraps ok content and signals structured tool errors."
+  (let ((registry (e-tools-registry-create)))
+    (e-tools-register registry
+                      :name "outer"
+                      :description "Call inner."
+                      :handler
+                      (lambda (_arguments)
+                        (list :ok (e-tools-call! "inner" '(:text "hi"))
+                              :error (condition-case err
+                                         (e-tools-call! "missing" nil)
+                                       (e-tools-nested-tool-error
+                                        (cadr err))))))
+    (e-tools-register registry
+                      :name "inner"
+                      :description "Return text."
+                      :handler (lambda (arguments)
+                                 (plist-get arguments :text)))
+    (should
+     (equal (plist-get
+             (e-tools-test--execute-with-context
+              registry
+              '(:id "outer-1" :name "outer" :arguments nil)
+              (list :tools registry))
+             :content)
+            '(:ok "hi"
+              :error (:tool-call-id "outer-1/nested-2"
+                      :name "missing"
+                      :status error
+                      :content "Unknown tool: missing"
+                      :metadata (:error e-tool-missing)))))))
+
+(ert-deftest e-tools-test-call-rejects-recursive-self-call-by-default ()
+  "Nested calls reject accidental recursion into the current tool."
+  (let ((registry (e-tools-registry-create)))
+    (e-tools-register registry
+                      :name "outer"
+                      :description "Call itself."
+                      :handler (lambda (_arguments)
+                                 (e-tools-call "outer" nil)))
+    (should
+     (equal (e-tools-test--execute-with-context
+             registry
+             '(:id "outer-1" :name "outer" :arguments nil)
+             (list :tools registry))
+            '(:tool-call-id "outer-1"
+              :name "outer"
+              :status error
+              :content "Recursive nested tool call rejected: outer"
+              :metadata (:error e-tools-recursive-call))))))
+
+(ert-deftest e-tools-test-call-can-explicitly-allow-recursive-name ()
+  "Callers can opt into a same-name nested call for deliberate cases."
+  (let ((registry (e-tools-registry-create)))
+    (e-tools-register registry
+                      :name "outer"
+                      :description "Call itself when requested."
+                      :handler
+                      (lambda (arguments)
+                        (if (plist-get arguments :inner)
+                            "inner"
+                          (e-tools-call "outer"
+                                        '(:inner t)
+                                        '(:allow-recursive t)))))
+    (should
+     (equal (plist-get
+             (e-tools-test--execute-with-context
+              registry
+              '(:id "outer-1" :name "outer" :arguments nil)
+              (list :tools registry))
+             :content)
+            '(:tool-call-id "outer-1/nested-1"
+              :name "outer"
+              :status ok
+              :content "inner"
+              :metadata nil)))))
+
+(ert-deftest e-tools-test-call-enforces-default-nested-budget ()
+  "Nested tool calls are bounded by the context budget."
+  (let ((registry (e-tools-registry-create)))
+    (e-tools-register registry
+                      :name "outer"
+                      :description "Call many tools."
+                      :handler (lambda (_arguments)
+                                 (dotimes (_ 21)
+                                   (e-tools-call! "inner" nil))
+                                 "unreached"))
+    (e-tools-register registry
+                      :name "inner"
+                      :description "Return ok."
+                      :handler (lambda (_arguments) "ok"))
+    (should
+     (equal (e-tools-test--execute-with-context
+             registry
+             '(:id "outer-1" :name "outer" :arguments nil)
+             (list :tools registry))
+            '(:tool-call-id "outer-1"
+              :name "outer"
+              :status error
+              :content "Nested tool call budget exceeded"
+              :metadata (:error e-tools-nested-tool-budget-exceeded))))))
+
+(ert-deftest e-tools-test-call-preserves-harness-session-turn-context ()
+  "Nested calls receive the original harness, session, and turn context."
+  (let ((registry (e-tools-registry-create))
+        inner-context)
+    (e-tools-register registry
+                      :name "outer"
+                      :description "Call inner."
+                      :handler (lambda (_arguments)
+                                 (e-tools-call! "inner" nil)))
+    (e-tools-register registry
+                      :name "inner"
+                      :description "Capture context."
+                      :handler (lambda (_arguments)
+                                 (setq inner-context
+                                       (e-tools-current-context))
+                                 "ok"))
+    (e-tools-test--execute-with-context
+     registry
+     '(:id "outer-1" :name "outer" :arguments nil)
+     (list :tools registry
+           :harness 'harness
+           :session-id "session-1"
+           :turn-id "turn-1"))
+    (should (equal (plist-get inner-context :harness) 'harness))
+    (should (equal (plist-get inner-context :session-id) "session-1"))
+    (should (equal (plist-get inner-context :turn-id) "turn-1"))
+    (should (equal (plist-get (plist-get inner-context :tool-call) :id)
+                   "outer-1/nested-1"))))
 
 (provide 'e-tools-test)
 
