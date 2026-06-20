@@ -13,6 +13,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'seq)
 (require 'subr-x)
 (require 'e-operations)
 (require 'e-resources)
@@ -206,6 +207,95 @@ When VISIBLE-ONLY is non-nil, include only buffers visible in windows."
   "Return buffer name addressed by parsed buffer URI."
   (plist-get uri :address))
 
+(defun e-emacs-tools--discovery-limit (limit)
+  "Return normalized discovery LIMIT."
+  (cond
+   ((null limit) 100)
+   ((and (numberp limit) (> limit 0)) (truncate limit))
+   (t (signal 'wrong-type-argument (list 'positive-number-p limit)))))
+
+(defun e-emacs-tools--internal-buffer-p (name)
+  "Return non-nil when NAME is an internal buffer name."
+  (string-prefix-p " " name))
+
+(defun e-emacs-tools--glob-regexp (pattern)
+  "Return regexp for glob PATTERN."
+  (wildcard-to-regexp (or pattern "*")))
+
+(defun e-emacs-tools--buffer-resource-candidates (uri &optional pattern)
+  "Return live buffers matching parsed URI and optional glob PATTERN."
+  (let* ((prefix (e-emacs-tools--buffer-resource-name uri))
+         (glob (e-emacs-tools--glob-regexp pattern))
+         buffers)
+    (dolist (buffer (buffer-list) (nreverse buffers))
+      (let ((name (buffer-name buffer)))
+        (when (and (string-prefix-p prefix name)
+                   (string-match-p glob name)
+                   (or (not (e-emacs-tools--internal-buffer-p name))
+                       (string= prefix name)
+                       pattern))
+          (push buffer buffers))))))
+
+(defun e-emacs-tools--buffer-glob-resource (uri pattern limit)
+  "List live buffer resources under parsed URI with PATTERN and LIMIT."
+  (let* ((actual-limit (e-emacs-tools--discovery-limit limit))
+         (buffers (e-emacs-tools--buffer-resource-candidates uri pattern))
+         (truncated (> (length buffers) actual-limit)))
+    (list :resources
+          (vconcat
+           (mapcar
+            (lambda (buffer)
+              (let ((name (buffer-name buffer)))
+                (list :uri (concat "buffer://" name)
+                      :name name
+                      :kind 'buffer
+                      :metadata (e-emacs-tools--buffer-metadata buffer))))
+            (seq-take buffers actual-limit)))
+          :truncated truncated)))
+
+(defun e-emacs-tools--current-line-text ()
+  "Return current line text without properties."
+  (buffer-substring-no-properties
+   (line-beginning-position)
+   (line-end-position)))
+
+(defun e-emacs-tools--buffer-search-one (buffer query options)
+  "Return search matches for BUFFER and QUERY with OPTIONS."
+  (let ((case-fold-search (not (plist-get options :case-sensitive)))
+        matches)
+    (with-current-buffer buffer
+      (save-excursion
+        (goto-char (point-min))
+        (while (if (plist-get options :literal)
+                   (search-forward query nil t)
+                 (re-search-forward query nil t))
+          (let ((start (match-beginning 0))
+                (end (match-end 0)))
+            (push (list :uri (concat "buffer://" (buffer-name buffer))
+                        :line (line-number-at-pos start)
+                        :column (1+ (- start (line-beginning-position)))
+                        :text (e-emacs-tools--current-line-text))
+                  matches)
+            (when (= start end)
+              (forward-char 1))))))
+    (nreverse matches)))
+
+(defun e-emacs-tools--buffer-search-resource (uri query options)
+  "Search live buffer resources under parsed URI for QUERY with OPTIONS."
+  (let* ((actual-limit (e-emacs-tools--discovery-limit
+                        (plist-get options :limit)))
+         (buffers (e-emacs-tools--buffer-resource-candidates
+                   uri
+                   (plist-get options :glob)))
+         matches)
+    (dolist (buffer buffers)
+      (setq matches
+            (append matches
+                    (e-emacs-tools--buffer-search-one
+                     buffer query options))))
+    (list :matches (vconcat (seq-take matches actual-limit))
+          :truncated (> (length matches) actual-limit))))
+
 (defun e-emacs-tools--read-buffer-resource (uri range)
   "Read parsed buffer URI with structured RANGE."
   (let ((name (e-emacs-tools--buffer-resource-name uri)))
@@ -270,15 +360,38 @@ When VISIBLE-ONLY is non-nil, include only buffers visible in windows."
    :uri-patterns '("buffer://<buffer-name>")
    :handler #'e-emacs-tools--edit-buffer-resource))
 
+(defun e-emacs-tools--buffer-glob-method ()
+  "Return a buffer glob resource method."
+  (e-resource-method-create
+   :scheme "buffer"
+   :operation e-operation-glob
+   :description "Live Emacs buffers by name prefix and glob pattern."
+   :uri-patterns '("buffer://<optional-buffer-name-prefix>")
+   :handler #'e-emacs-tools--buffer-glob-resource))
+
+(defun e-emacs-tools--buffer-search-method ()
+  "Return a buffer search resource method."
+  (e-resource-method-create
+   :scheme "buffer"
+   :operation e-operation-search
+   :description "Live Emacs buffer content searched natively."
+   :uri-patterns '("buffer://<optional-buffer-name-prefix>")
+   :handler #'e-emacs-tools--buffer-search-resource))
+
 (defun e-emacs-tools-register-buffer-read-resource (registry)
   "Register read-only buffer resource methods in REGISTRY."
-  (e-resources-register registry (e-emacs-tools--buffer-read-method)))
+  (dolist (method (list (e-emacs-tools--buffer-read-method)
+                        (e-emacs-tools--buffer-glob-method)
+                        (e-emacs-tools--buffer-search-method)))
+    (e-resources-register registry method)))
 
 (defun e-emacs-tools-register-buffer-resource (registry)
-  "Register read/write/edit buffer resource methods in REGISTRY."
+  "Register buffer resource methods in REGISTRY."
   (dolist (method (list (e-emacs-tools--buffer-read-method)
                         (e-emacs-tools--buffer-write-method)
-                        (e-emacs-tools--buffer-edit-method)))
+                        (e-emacs-tools--buffer-edit-method)
+                        (e-emacs-tools--buffer-glob-method)
+                        (e-emacs-tools--buffer-search-method)))
     (e-resources-register registry method)))
 
 (defun e-emacs-tools--read-forms (code)

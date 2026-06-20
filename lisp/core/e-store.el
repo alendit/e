@@ -15,6 +15,7 @@
 (require 'cl-lib)
 (require 'e-operations)
 (require 'e-resources)
+(require 'seq)
 (require 'subr-x)
 
 (define-error 'e-store-invalid-uri "e store URI is invalid")
@@ -135,6 +136,113 @@ and optional range."
               (list (format "Unknown e store URI: %s" uri))))
     (e-store-read-entry entry range)))
 
+(defun e-store--root-address (uri)
+  "Return e:// root address from parsed resource URI."
+  (plist-get uri :address))
+
+(defun e-store--entry-under-root-p (entry root-address)
+  "Return non-nil when ENTRY is under ROOT-ADDRESS."
+  (let ((address (concat (e-store-entry-capability entry)
+                         "/"
+                         (e-store-entry-path entry))))
+    (or (string-empty-p root-address)
+        (string= address root-address)
+        (string-prefix-p (concat root-address "/") address))))
+
+(defun e-store--entry-name (entry root-address)
+  "Return ENTRY display name relative to ROOT-ADDRESS."
+  (let ((address (concat (e-store-entry-capability entry)
+                         "/"
+                         (e-store-entry-path entry))))
+    (cond
+     ((string-empty-p root-address) address)
+     ((string= address root-address) (e-store-entry-path entry))
+     ((string-prefix-p (concat root-address "/") address)
+      (substring address (1+ (length root-address))))
+     (t address))))
+
+(defun e-store--glob-regexp (pattern)
+  "Return regexp for glob PATTERN."
+  (wildcard-to-regexp (or pattern "*")))
+
+(defun e-store--matching-entries (store uri &optional pattern)
+  "Return STORE entries under parsed URI matching optional glob PATTERN."
+  (let* ((root-address (e-store--root-address uri))
+         (glob (e-store--glob-regexp pattern))
+         entries)
+    (dolist (entry (e-store-list store) (nreverse entries))
+      (let ((name (e-store--entry-name entry root-address)))
+        (when (and (e-store--entry-under-root-p entry root-address)
+                   (string-match-p glob name))
+          (push entry entries))))))
+
+(defun e-store--discovery-limit (limit)
+  "Return normalized discovery LIMIT."
+  (cond
+   ((null limit) 100)
+   ((and (numberp limit) (> limit 0)) (truncate limit))
+   (t (signal 'wrong-type-argument (list 'positive-number-p limit)))))
+
+(defun e-store-glob (store uri pattern limit)
+  "List STORE resources under parsed URI with PATTERN and LIMIT."
+  (let* ((root-address (e-store--root-address uri))
+         (actual-limit (e-store--discovery-limit limit))
+         (entries (e-store--matching-entries store uri pattern))
+         (truncated (> (length entries) actual-limit)))
+    (list :resources
+          (vconcat
+           (mapcar
+            (lambda (entry)
+              (list :uri (e-store-entry-uri entry)
+                    :name (e-store--entry-name entry root-address)
+                    :kind 'resource))
+            (seq-take entries actual-limit)))
+          :truncated truncated)))
+
+(defun e-store--current-line-text ()
+  "Return current line text without properties."
+  (buffer-substring-no-properties
+   (line-beginning-position)
+   (line-end-position)))
+
+(defun e-store--search-entry (entry query options)
+  "Return search matches for ENTRY and QUERY with OPTIONS."
+  (let ((content (e-store-read-entry entry nil))
+        (case-fold-search (not (plist-get options :case-sensitive)))
+        matches)
+    (with-temp-buffer
+      (insert content)
+      (goto-char (point-min))
+      (while (if (plist-get options :literal)
+                 (search-forward query nil t)
+               (re-search-forward query nil t))
+        (let ((start (match-beginning 0))
+              (end (match-end 0)))
+          (push (list :uri (e-store-entry-uri entry)
+                      :line (line-number-at-pos start)
+                      :column (1+ (- start (line-beginning-position)))
+                      :text (e-store--current-line-text))
+                matches)
+          (when (= start end)
+            (forward-char 1)))))
+    (nreverse matches)))
+
+(defun e-store-search (store uri query options)
+  "Search STORE resources under parsed URI for QUERY with OPTIONS."
+  (let* ((actual-limit (e-store--discovery-limit
+                        (plist-get options :limit)))
+         (entries (e-store--matching-entries
+                   store
+                   uri
+                   (plist-get options :glob)))
+         matches)
+    (dolist (entry entries)
+      (setq matches
+            (append matches
+                    (e-store--search-entry entry query options))))
+    (list :matches (vconcat (seq-take matches actual-limit))
+          :truncated (> (length matches) actual-limit))))
+
 (defun e-store-resource-method (store)
   "Return a read-only e:// resource method backed by STORE."
   (e-resource-method-create
@@ -150,6 +258,38 @@ and optional range."
                    "e://<capability>/<path>")
    :handler (lambda (uri range)
               (e-store-read store (plist-get uri :uri) range))))
+
+(defun e-store-glob-resource-method (store)
+  "Return a glob e:// resource method backed by STORE."
+  (e-resource-method-create
+   :scheme "e"
+   :operation e-operation-glob
+   :description "List capability-contributed in-memory resources."
+   :uri-patterns '("e://<capability>"
+                   "e://<capability>/<path>"
+                   "e://")
+   :handler (lambda (uri pattern limit)
+              (e-store-glob store uri pattern limit))))
+
+(defun e-store-search-resource-method (store)
+  "Return a search e:// resource method backed by STORE."
+  (e-resource-method-create
+   :scheme "e"
+   :operation e-operation-search
+   :description "Search capability-contributed in-memory resources."
+   :uri-patterns '("e://<capability>"
+                   "e://<capability>/<path>"
+                   "e://")
+   :handler (lambda (uri query options)
+              (e-store-search store uri query options))))
+
+(defun e-store-resource-methods (store)
+  "Return a registration function for read-only e:// STORE methods."
+  (lambda (registry)
+    (dolist (method (list (e-store-resource-method store)
+                          (e-store-glob-resource-method store)
+                          (e-store-search-resource-method store)))
+      (e-resources-register registry method))))
 
 (provide 'e-store)
 

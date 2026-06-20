@@ -70,6 +70,9 @@
                            (concat "buffer://" (buffer-name buffer)))
                           :content)
                          "content"))
+          (should (equal (mapcar #'e-operation-id
+                                 (e-resources-operations resources))
+                         '(read glob search)))
           (should-error
            (e-resources-write
             resources
@@ -97,7 +100,10 @@
            (concat "buffer://" (buffer-name buffer))
            '((:oldText "old" :newText "new")))
           (should (equal (with-current-buffer buffer (buffer-string))
-                         "new")))
+                         "new"))
+          (should (equal (mapcar #'e-operation-id
+                                 (e-resources-operations resources))
+                         '(read write edit glob search))))
       (kill-buffer buffer))))
 
 (ert-deftest e-emacs-capabilities-test-elisp-eval-registers-run-elisp ()

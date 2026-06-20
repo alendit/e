@@ -74,6 +74,80 @@ When READ-ONLY is non-nil, buffer resources only support reads."
                   '(:name " *e-test-read*" :content "bcd" :start 2 :end 4))))
       (kill-buffer buffer))))
 
+(ert-deftest e-emacs-tools-test-glob-buffer-resources ()
+  "The glob tool lists live buffer:// resources by prefix and pattern."
+  (let ((registry (e-emacs-tools-test--resource-tools t))
+        (alpha (generate-new-buffer "e-test-glob-alpha"))
+        (beta (generate-new-buffer "e-test-glob-beta")))
+    (unwind-protect
+        (let* ((content (plist-get
+                         (e-tools-execute
+                          registry
+                          `(:id "call-1"
+                            :name "glob"
+                            :arguments (:uri "buffer://e-test-glob-"
+                                        :pattern "*alpha*"
+                                        :limit 5)))
+                         :content))
+               (resources (append (plist-get content :resources) nil)))
+          (should (equal (plist-get content :truncated) nil))
+          (should (equal (mapcar (lambda (entry)
+                                   (plist-get entry :uri))
+                                 resources)
+                         (list (concat "buffer://" (buffer-name alpha)))))
+          (should (equal (plist-get (car resources) :name)
+                         (buffer-name alpha))))
+      (kill-buffer alpha)
+      (kill-buffer beta))))
+
+(ert-deftest e-emacs-tools-test-search-buffer-resources ()
+  "The search tool searches live buffer:// resources natively."
+  (let ((registry (e-emacs-tools-test--resource-tools t))
+        (alpha (generate-new-buffer "e-test-search-alpha"))
+        (beta (generate-new-buffer "e-test-search-beta")))
+    (unwind-protect
+        (progn
+          (with-current-buffer alpha
+            (insert "Alpha needle\nbeta\n"))
+          (with-current-buffer beta
+            (insert "alpha NEEDLE\nneedle again\n"))
+          (should
+           (equal (plist-get
+                   (e-tools-execute
+                    registry
+                    `(:id "call-1"
+                      :name "search"
+                      :arguments (:uri "buffer://e-test-search-"
+                                  :query "needle"
+                                  :glob "*alpha*"
+                                  :literal t
+                                  :limit 5)))
+                   :content)
+                  `(:matches [(:uri ,(concat "buffer://" (buffer-name alpha))
+                                :line 1
+                                :column 7
+                                :text "Alpha needle")]
+                    :truncated nil)))
+          (should
+           (equal (plist-get
+                   (e-tools-execute
+                    registry
+                    `(:id "call-2"
+                      :name "search"
+                      :arguments (:uri "buffer://e-test-search-"
+                                  :query "n.e+"
+                                  :glob "*beta*"
+                                  :case-sensitive t
+                                  :limit 5)))
+                   :content)
+                  `(:matches [(:uri ,(concat "buffer://" (buffer-name beta))
+                                :line 2
+                                :column 1
+                                :text "needle again")]
+                    :truncated nil))))
+      (kill-buffer alpha)
+      (kill-buffer beta))))
+
 (ert-deftest e-emacs-tools-test-write-buffer-mutates-without-saving ()
   "The write tool replaces live buffer text without saving."
   (let ((registry (e-emacs-tools-test--resource-tools))

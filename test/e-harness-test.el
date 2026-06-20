@@ -1554,6 +1554,58 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
       (should (equal (plist-get result :content)
                      "Reference guide content.")))))
 
+(ert-deftest e-harness-test-store-resources-expose-glob-and-search ()
+  "Capability e:// store resources expose generated glob and search tools."
+  (let* ((capability
+          (e-capability-create
+           :id 'reference-capability
+           :resources
+           (list (lambda (store capability)
+                   (e-store-register
+                    store
+                    (e-capability-id capability)
+                    "refs/guide.md"
+                    :description "Reference guide."
+                    :content "Reference guide needle")))))
+         (layer (e-layer-create
+                 :id 'reference-layer
+                 :name "Reference Layer"
+                 :capabilities (list capability)))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil))))
+    (e-harness-activate-layer harness layer)
+    (should
+     (equal (plist-get
+             (e-tools-execute
+              (e-harness-tools harness)
+              '(:id "call-1"
+                :name "glob"
+                :arguments (:uri "e://reference-capability"
+                            :pattern "refs/*"
+                            :limit 5)))
+             :content)
+            '(:resources [(:uri "e://reference-capability/refs/guide.md"
+                            :name "refs/guide.md"
+                            :kind resource)]
+              :truncated nil)))
+    (should
+     (equal (plist-get
+             (e-tools-execute
+              (e-harness-tools harness)
+              '(:id "call-2"
+                :name "search"
+                :arguments (:uri "e://reference-capability"
+                            :query "needle"
+                            :glob "refs/*"
+                            :literal t
+                            :limit 5)))
+             :content)
+            '(:matches [(:uri "e://reference-capability/refs/guide.md"
+                          :line 1
+                          :column 17
+                          :text "Reference guide needle")]
+              :truncated nil)))))
+
 (ert-deftest e-harness-test-skill-resources-do-not-support-write-or-edit ()
   "Skill resources are read-only even when advertised through resource tools."
   (let* ((capability
