@@ -14,10 +14,25 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'e-chat)
 (require 'e-default-harnesses)
 (require 'e-harness)
 (require 'e-harness-instances)
 (require 'e-session)
+(require 'e-shells)
+(require 'e-startup)
+
+(defgroup e-debug nil
+  "Standing debug agent shell."
+  :group 'e
+  :prefix "e-debug-")
+
+(defcustom e-debug-display-strategy 'tab
+  "Display strategy used by `e-debug'."
+  :type '(choice (const :tag "Open in a new tab" tab)
+                 (const :tag "Pop to another window" window)
+                 (const :tag "Use current window" current-window))
+  :group 'e-debug)
 
 (defvar e-debug--session-id nil
   "Cached standing debug session id.")
@@ -69,6 +84,53 @@
               harness
               :metadata (e-debug--session-metadata))
              :id))))))
+
+(defun e-debug--show-buffer (buffer)
+  "Show debug session BUFFER according to `e-debug-display-strategy'."
+  (pcase e-debug-display-strategy
+    ('tab
+     (when (fboundp 'tab-bar-new-tab)
+       (tab-bar-new-tab))
+     (e-chat--pop-to-buffer buffer))
+    ('window
+     (e-chat--pop-to-buffer buffer))
+    ('current-window
+     (e-chat--switch-to-buffer buffer))
+    (_
+     (user-error "Unknown e debug display strategy: %S"
+                 e-debug-display-strategy))))
+
+;;;###autoload
+(defun e-debug ()
+  "Open the standing debug agent session."
+  (interactive)
+  (let* ((harness (e-debug--default-harness))
+         (session-id (e-debug--ensure-session harness))
+         (buffer (e-chat-open-session harness session-id nil)))
+    (e-debug--show-buffer buffer)
+    buffer))
+
+(defun e-debug-shell ()
+  "Return the standing debug shell manifest."
+  (e-shell-create
+   :id 'debug
+   :name "Debug"
+   :summary "Standing debug agent session."
+   :required-capabilities '(chat-session debug-agent)
+   :commands
+   (list
+    (e-shell-command-create
+     :id 'open
+     :summary "Open the standing debug agent session."
+     :interactive 'e-debug
+     :function 'e-debug
+     :scope 'global))))
+
+(defun e-debug-startup ()
+  "Register the standing debug shell manifest."
+  (e-shell-register (e-debug-shell)))
+
+(add-hook 'e-startup-shell-hook #'e-debug-startup)
 
 (provide 'e-debug)
 

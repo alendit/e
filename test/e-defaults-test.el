@@ -82,6 +82,23 @@
                 :debug-default))
     (should-not (e-harness-registry-get :debug-default))))
 
+(ert-deftest e-defaults-test-registers-debug-default-with-custom-chat-specs ()
+  "Custom chat specs still receive the built-in debug default."
+  (e-defaults-test--with-empty-harness-registry
+    (let ((e-default-harness-specs
+           '((:id :chat-default
+              :name "Configured Chat"
+              :kind chat
+              :default t
+              :factory e-default-chat-harness-create
+              :sync e-default-chat-harness-sync))))
+      (e-default-harnesses-register)
+      (should (member :chat-default (e-harness-registry-list)))
+      (should (member :debug-default (e-harness-registry-list)))
+      (should (eq (e-harness-instance-id
+                   (e-harness-instance-default :kind 'debug))
+                  :debug-default)))))
+
 (ert-deftest e-defaults-test-registers-chat-instance-for-legacy-spec ()
   "Legacy chat-default specs still register the default chat instance."
   (e-defaults-test--with-empty-harness-registry

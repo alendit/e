@@ -15,11 +15,13 @@
 (require 'ert)
 (require 'e)
 (require 'e-backend)
+(require 'e-chat)
 (require 'e-debug)
 (require 'e-harness)
 (require 'e-harness-instances)
 (require 'e-harness-registry)
 (require 'e-session)
+(require 'e-shells)
 
 (defmacro e-debug-test--with-empty-harness-registry (&rest body)
   "Run BODY with an isolated harness registry."
@@ -64,6 +66,54 @@
           (setq e-debug--session-id nil)
           (should (equal (e-debug--ensure-session) created))
           (should (= (length (e-harness-session-list harness)) 1)))))))
+
+(ert-deftest e-debug-test-command-opens-and-shows-standing-session ()
+  "The `e-debug' command opens the standing debug session through chat UI."
+  (e-debug-test--with-empty-harness-registry
+    (let ((harness (e-harness-create
+                    :backend (e-backend-fake-create :items nil)
+                    :sessions (e-session-store-create)))
+          shown-buffer
+          (e-debug--session-id nil))
+      (cl-letf (((symbol-function 'e-debug--default-harness)
+                 (lambda () harness))
+                ((symbol-function 'e-debug--show-buffer)
+                 (lambda (buffer)
+                   (setq shown-buffer buffer))))
+        (let ((buffer (e-debug)))
+          (should (eq shown-buffer buffer))
+          (with-current-buffer buffer
+            (should (derived-mode-p 'e-chat-mode))
+            (should (eq e-chat-harness harness))
+            (should (equal e-chat-session-id e-debug--session-id))))))))
+
+(ert-deftest e-debug-test-tab-display-strategy-opens-tab-before-buffer ()
+  "The tab display strategy opens a tab before showing the chat buffer."
+  (let ((buffer (generate-new-buffer " *e-debug-test*"))
+        (e-debug-display-strategy 'tab)
+        events)
+    (unwind-protect
+        (cl-letf (((symbol-function 'tab-bar-new-tab)
+                   (lambda (&rest _args)
+                     (push 'tab events)))
+                  ((symbol-function 'e-chat--pop-to-buffer)
+                   (lambda (shown)
+                     (push (list 'show shown) events))))
+          (e-debug--show-buffer buffer)
+          (should (equal (nreverse events)
+                         (list 'tab (list 'show buffer)))))
+      (kill-buffer buffer))))
+
+(ert-deftest e-debug-test-shell-manifest-exposes-debug-command ()
+  "The debug shell exposes the standing debug command."
+  (let* ((shell (e-debug-shell))
+         (command (e-shell-command-by-id shell 'open)))
+    (should (eq (e-shell-id shell) 'debug))
+    (should (equal (e-shell-required-capabilities shell)
+                   '(chat-session debug-agent)))
+    (should command)
+    (should (eq (e-shell-command-interactive command) 'e-debug))
+    (should (commandp (e-shell-command-interactive command)))))
 
 (provide 'e-debug-test)
 

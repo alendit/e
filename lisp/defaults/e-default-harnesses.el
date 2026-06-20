@@ -50,6 +50,15 @@
   :type '(repeat sexp)
   :group 'e-defaults)
 
+(defconst e-default-debug-harness-spec
+  '(:id :debug-default
+    :name "Debug Agent"
+    :kind debug
+    :default t
+    :factory e-default-debug-harness-create
+    :sync e-default-debug-harness-sync)
+  "Built-in debug harness spec appended to chat-only custom defaults.")
+
 (defcustom e-default-chat-layer-ids
   '(agents-std-context harness-base e os-base emacs-base web text-editing org-canvas project-local)
   "Layer ids activated by default chat harnesses.
@@ -136,6 +145,20 @@ DIRECTORY is passed to config-aware layer factories."
                         :name "Debug Agent"
                         :instructions e-default-debug-instructions)
                        (e-context-inspection-capability-create))))
+
+(defun e-default-harness--debug-spec-p (spec)
+  "Return non-nil when SPEC provides a debug default harness."
+  (or (eq (plist-get spec :id) :debug-default)
+      (eq (plist-get spec :kind) 'debug)))
+
+(defun e-default-harness--effective-specs (&optional specs)
+  "Return harness SPECS, appending the built-in debug spec to implicit defaults."
+  (if specs
+      specs
+    (if (cl-some #'e-default-harness--debug-spec-p e-default-harness-specs)
+        e-default-harness-specs
+      (append e-default-harness-specs
+              (list e-default-debug-harness-spec)))))
 
 (defun e-default-chat-sync-harness-layers
     (harness &optional layer-ids directory)
@@ -300,7 +323,7 @@ but keeps layer selection changes local to chat harnesses."
   "Register default harness SPECS with `e-harness-registry'.
 When SPECS is nil, register `e-default-harness-specs'.  Registration is lazy:
 factories are recorded, but no harness is created."
-  (dolist (spec (or specs e-default-harness-specs))
+  (dolist (spec (e-default-harness--effective-specs specs))
     (let* ((id (plist-get spec :id))
            (factory (plist-get spec :factory))
            (legacy-chat-default-p (eq id :chat-default))
@@ -318,12 +341,12 @@ factories are recorded, but no harness is created."
          :metadata (plist-get spec :metadata)
          :default (or (plist-get spec :default)
                       legacy-chat-default-p)))))
-  (or specs e-default-harness-specs))
+  (e-default-harness--effective-specs specs))
 
 (defun e-default-harnesses-sync-instances (&optional specs)
   "Reconcile cached default harness instances with current config.
 Only existing instances are touched; lazy factories are left lazy."
-  (dolist (spec (or specs e-default-harness-specs))
+  (dolist (spec (e-default-harness--effective-specs specs))
     (when-let ((harness (e-harness-registry-get (plist-get spec :id))))
       (funcall (or (plist-get spec :sync)
                    #'e-default-harness-sync-from-factory)
@@ -333,7 +356,7 @@ Only existing instances are touched; lazy factories are left lazy."
 (defun e-default-harnesses-clear-instances (&optional specs)
   "Clear cached instances for default harness SPECS.
 Factories remain registered so the next lookup recreates fresh harnesses."
-  (dolist (spec (or specs e-default-harness-specs))
+  (dolist (spec (e-default-harness--effective-specs specs))
     (e-harness-registry-clear-instance (plist-get spec :id)))
   nil)
 

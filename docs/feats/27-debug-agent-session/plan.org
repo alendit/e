@@ -274,6 +274,11 @@ Each package is a useful stopping point: after it, the project is better off.
   intact. Confirm in the running Emacs via =emacsclient --eval= inspection of
   =tab-bar-tabs= and window configs.
 - Value alone: user can reach an always-on debug session without disturbing UI.
+- Implemented: =e-debug= opens the standing session through the chat
+  presentation, =e-debug-display-strategy= defaults to tab display, and the
+  debug shell manifest registers an =open= command. Verified with focused debug
+  tests, adjacent chat/shell/package tests, =git diff --check=, =e-dev-reload=,
+  and a bounded live tab probe that opened and then closed the created tab.
 
 ** WP3: =e-debug-here= capture + submit
 
