@@ -113,6 +113,8 @@
                                     :description "Resource URI root to list, such as file://lisp/ or buffer://.")
                               :pattern (:type "string"
                                         :description "Optional glob pattern to match beneath the resource root, such as *.el.")
+                              :case-sensitive (:type "boolean"
+                                               :description "When non-nil or omitted, match the glob pattern case-sensitively.")
                               :limit (:type "number"
                                       :description "Maximum number of resources to return."))
                  :required ["uri"])
@@ -120,7 +122,8 @@
                (funcall call
                         (e-operations--argument-string arguments :uri)
                         (plist-get arguments :pattern)
-                        (plist-get arguments :limit)))))
+                        (plist-get arguments :limit)
+                        (plist-get arguments :case-sensitive)))))
 
 (defconst e-operation-search
   (e-operation-create
@@ -131,13 +134,15 @@
                  :properties (:uri (:type "string"
                                     :description "Resource URI root to search, such as file://lisp/ or buffer://.")
                               :query (:type "string"
-                                      :description "Text to search for.")
+                                      :description "Facade search query. Literal characters match literally; * is a non-whitespace wildcard.")
                               :glob (:type "string"
                                      :description "Optional glob pattern limiting resources to search.")
-                              :literal (:type "boolean"
-                                        :description "When non-nil, treat query as literal text instead of a pattern.")
                               :case-sensitive (:type "boolean"
                                                :description "When non-nil, match query case-sensitively.")
+                              :whole-word (:type "boolean"
+                                           :description "When non-nil, matches must start and end at word boundaries around the full query.")
+                              :multiline (:type "boolean"
+                                          :description "When non-nil, whitespace gaps may cross line boundaries.")
                               :limit (:type "number"
                                       :description "Maximum number of matches to return."))
                  :required ["uri" "query"])
@@ -147,7 +152,8 @@
                         (e-operations--argument-string arguments :query)
                         (e-operations--present-options
                          arguments
-                         '(:glob :literal :case-sensitive :limit))))))
+                         '(:glob :case-sensitive :whole-word
+                           :multiline :limit))))))
 
 (defconst e-operations-standard
   (list e-operation-read

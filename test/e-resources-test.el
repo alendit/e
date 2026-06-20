@@ -80,8 +80,9 @@
                :scheme "test"
                :operation e-operation-glob
                :description "Glob test resources."
-               :handler (lambda (uri pattern limit)
-                          (push (list :glob uri pattern limit) calls)
+               :handler (lambda (uri pattern limit case-sensitive)
+                          (push (list :glob uri pattern limit case-sensitive)
+                                calls)
                           '(:resources [(:uri "test://one" :name "one")]
                             :truncated nil)))
               (e-resource-method-create
@@ -103,7 +104,7 @@
                     registry
                     "other://root"
                     "needle"
-                    '(:glob "*.el" :literal t :limit 4))
+                    '(:glob "*.el" :case-sensitive t :limit 4))
                    '(:matches [(:uri "other://one"
                                 :line 1
                                 :column 1
@@ -111,10 +112,10 @@
                      :truncated nil)))
     (should (equal (nreverse calls)
                    '((:glob (:scheme "test" :address "root" :uri "test://root")
-                            "*.el" 3)
+                            "*.el" 3 nil)
                      (:search (:scheme "other" :address "root" :uri "other://root")
                               "needle"
-                              (:glob "*.el" :literal t :limit 4)))))
+                              (:glob "*.el" :case-sensitive t :limit 4)))))
     (should (equal (mapcar #'e-operation-id
                            (e-resources-operations registry))
                    '(glob search)))))

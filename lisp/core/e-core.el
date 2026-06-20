@@ -17,6 +17,7 @@
 (require 'e-context)
 (require 'e-events)
 (require 'e-operations)
+(require 'e-resource-patterns)
 (require 'e-resources)
 (require 'e-resource-coherence)
 (require 'e-store)

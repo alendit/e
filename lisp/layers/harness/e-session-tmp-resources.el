@@ -18,6 +18,7 @@
 (require 'subr-x)
 (require 'e-capabilities)
 (require 'e-operations)
+(require 'e-resource-patterns)
 (require 'e-resources)
 
 (define-error 'e-session-tmp-resources-invalid-path
@@ -145,45 +146,67 @@ OK-STATUSES defaults to only zero."
       (file-relative-name path scope)
     (file-name-nondirectory path)))
 
-(defun e-session-tmp--glob-pattern-matches-file-p (pattern relative)
-  "Return non-nil when PATTERN matches RELATIVE or its file name."
-  (let ((regexp (wildcard-to-regexp pattern)))
-    (or (string-match-p regexp relative)
-        (string-match-p regexp (file-name-nondirectory relative)))))
-
-(defun e-session-tmp--glob-single-result (scope scope-relative pattern)
+(defun e-session-tmp--glob-single-result
+    (scope scope-relative pattern case-sensitive)
   "Return a single tmp glob result for SCOPE, or nil if it does not match."
   (when (and (file-regular-p scope)
-             (e-session-tmp--glob-pattern-matches-file-p pattern scope-relative))
+             (e-resource-pattern-glob-match-p
+              pattern
+              (file-name-nondirectory scope-relative)
+              case-sensitive))
     (let ((attributes (file-attributes scope)))
       (list :uri (concat "tmp://" scope-relative)
             :name (file-name-nondirectory scope)
             :kind 'file
             :metadata (list :bytes (file-attribute-size attributes))))))
 
-(defun e-session-tmp--glob-resource (harness session-id uri pattern limit)
+(defun e-session-tmp--glob-resource
+    (harness session-id uri pattern limit case-sensitive)
   "List tmp resources under parsed URI with PATTERN and LIMIT."
-  (let* ((fd (e-session-tmp--find-executable "fd" '("fdfind")))
-         (root (e-session-tmp-directory harness session-id))
+  (let* ((root (e-session-tmp-directory harness session-id))
          (scope (e-session-tmp--scope-path harness session-id uri))
          (scope-relative (e-session-tmp--scope-relative-name uri))
          (actual-pattern (or pattern "*"))
-         (actual-limit (e-session-tmp--discovery-limit limit)))
-    (if-let ((single (e-session-tmp--glob-single-result
-                      scope scope-relative actual-pattern)))
-        (list :resources (vector single) :truncated nil)
+         (actual-limit (e-session-tmp--discovery-limit limit))
+         (actual-case-sensitive (if (null case-sensitive) t case-sensitive)))
+    (e-resource-pattern-compile-glob actual-pattern)
+    (if (file-regular-p scope)
+        (list :resources
+              (if-let ((single (e-session-tmp--glob-single-result
+                                scope
+                                scope-relative
+                                actual-pattern
+                                actual-case-sensitive)))
+                  (vector single)
+                [])
+              :truncated nil)
       (let* ((lines (e-session-tmp--process-lines
-                     fd
+                     (e-session-tmp--find-executable "fd" '("fdfind"))
                      root
-                     (list "--glob"
-                           "--color" "never"
-                           "--base-directory" root
-                           "--search-path" scope-relative
-                           "--type" "file"
-                           "--max-results" (number-to-string (1+ actual-limit))
-                           actual-pattern)))
-             (truncated (> (length lines) actual-limit))
-             (selected (seq-take lines actual-limit)))
+                     (append
+                      (list "--glob"
+                            "--color" "never"
+                            "--base-directory" root
+                            "--search-path" scope-relative
+                            "--type" "file"
+                            "--max-results" (number-to-string (1+ actual-limit)))
+                      (list (if actual-case-sensitive
+                                "--case-sensitive"
+                              "--ignore-case"))
+                      (list actual-pattern))))
+             (filtered
+              (seq-filter
+               (lambda (relative)
+                 (let* ((relative (e-session-tmp--clean-relative-path relative))
+                        (absolute (expand-file-name relative root))
+                        (name (e-session-tmp--result-name absolute scope)))
+                   (e-resource-pattern-glob-match-p
+                    actual-pattern
+                    name
+                    actual-case-sensitive)))
+               lines))
+             (truncated (> (length filtered) actual-limit))
+             (selected (seq-take filtered actual-limit)))
         (list :resources
               (vconcat
                (mapcar
@@ -204,7 +227,8 @@ OK-STATUSES defaults to only zero."
       (when-let ((bytes (plist-get object :bytes)))
         (base64-decode-string bytes))))
 
-(defun e-session-tmp--search-match-from-rg-json (line root)
+(defun e-session-tmp--search-match-from-rg-json
+    (line root scope glob-pattern)
   "Return a search match plist for rg JSON LINE under ROOT, or nil."
   (let* ((object (json-parse-string line :object-type 'plist :array-type 'list))
          (type (plist-get object :type)))
@@ -221,17 +245,23 @@ OK-STATUSES defaults to only zero."
              (start (or (plist-get first-match :start) 0))
              (absolute (expand-file-name path root))
              (relative (file-relative-name absolute root)))
-        (list :uri (concat "tmp://" relative)
-              :line (plist-get data :line_number)
-              :column (1+ start)
-              :text line-text)))))
+        (when (or (null glob-pattern)
+                  (e-resource-pattern-glob-match-p
+                   glob-pattern
+                   (e-session-tmp--result-name absolute scope)
+                   t))
+          (list :uri (concat "tmp://" relative)
+                :line (plist-get data :line_number)
+                :column (1+ start)
+                :text line-text))))))
 
 (defun e-session-tmp--search-resource (harness session-id uri query options)
   "Search tmp resources under parsed URI for QUERY with OPTIONS."
-  (let* ((rg (e-session-tmp--find-executable "rg"))
-         (root (e-session-tmp-directory harness session-id))
-         (_scope (e-session-tmp--scope-path harness session-id uri))
+  (let* ((root (e-session-tmp-directory harness session-id))
+         (scope (e-session-tmp--scope-path harness session-id uri))
          (scope-relative (e-session-tmp--scope-relative-name uri))
+         (glob-pattern (plist-get options :glob))
+         (query-regexp (e-resource-pattern-search-rg-regexp query options))
          (actual-limit (e-session-tmp--discovery-limit
                         (plist-get options :limit)))
          (args (append
@@ -241,19 +271,27 @@ OK-STATUSES defaults to only zero."
                       "--color" "never")
                 (unless (plist-get options :case-sensitive)
                   (list "--ignore-case"))
-                (when (plist-get options :literal)
-                  (list "--fixed-strings"))
-                (when-let ((glob (plist-get options :glob)))
-                  (list "--glob" glob))
-                (list "-e" query scope-relative)))
-         (lines (e-session-tmp--process-lines rg root args '(0 1)))
-         matches)
-    (dolist (line lines)
-      (when-let ((match (e-session-tmp--search-match-from-rg-json line root)))
-        (push match matches)))
-    (setq matches (nreverse matches))
-    (list :matches (vconcat (seq-take matches actual-limit))
-          :truncated (> (length matches) actual-limit))))
+                (when (plist-get options :multiline)
+                  (list "--multiline"))
+                (list "-e" query-regexp scope-relative))))
+    (when glob-pattern
+      (e-resource-pattern-compile-glob glob-pattern))
+    (let ((lines (e-session-tmp--process-lines
+                  (e-session-tmp--find-executable "rg")
+                  root
+                  args
+                  '(0 1)))
+          matches)
+      (dolist (line lines)
+        (when-let ((match (e-session-tmp--search-match-from-rg-json
+                           line
+                           root
+                           scope
+                           glob-pattern)))
+          (push match matches)))
+      (setq matches (nreverse matches))
+      (list :matches (vconcat (seq-take matches actual-limit))
+            :truncated (> (length matches) actual-limit)))))
 
 (defun e-session-tmp--write-file (path content)
   "Write CONTENT to PATH as UTF-8 without a coding-system prompt.
@@ -400,13 +438,14 @@ root and is suitable for streaming writes."
     :description "List ephemeral session-scoped temporary text resources."
     :uri-patterns '("tmp://<relative-path-or-directory>"
                     "tmp://")
-    :handler (lambda (uri pattern limit)
+    :handler (lambda (uri pattern limit case-sensitive)
                (e-session-tmp--glob-resource
                 harness
                 session-id
                 uri
                 pattern
-                limit))))
+                limit
+                case-sensitive))))
   (e-resources-register
    registry
    (e-resource-method-create

@@ -146,7 +146,10 @@ Parameters:
   =file://=, =file://lisp=, =buffer://=, =e://base-guidance=, or
   =tmp://tool-results=.
 - =:pattern=, optional string.  A resource-name glob applied relative to the
-  root.  Default is =*=.
+  root using the portable facade glob syntax from =addendum.org=.  Default is
+  =*=.
+- =:case-sensitive=, optional boolean.  Default t means case-sensitive glob
+  matching.
 - =:limit=, optional positive number.  Default should be modest, initially 100.
 
 Result entry shape:
@@ -169,13 +172,15 @@ structured plist with =:matches= and =:truncated=.
 Parameters:
 
 - =:uri=, required string.  A URI root or scope inside one scheme.
-- =:query=, required string.  Search expression.
-- =:glob=, optional string.  Resource-name glob filter relative to the root.
-- =:literal=, optional boolean.  When non-nil, match =:query= as literal text.
-  Default nil means scheme methods may use regular expression semantics where
-  supported.
+- =:query=, required string.  Facade search query.  Literal characters match
+  literally; =*= inside a query part is the first-slice wildcard.
+- =:glob=, optional string.  Resource-name facade glob filter relative to the
+  root.
 - =:case-sensitive=, optional boolean.  Default nil means case-insensitive
   search.
+- =:whole-word=, optional boolean.  Default nil.
+- =:multiline=, optional boolean.  Default nil; when non-nil whitespace gaps may
+  cross line boundaries.
 - =:limit=, optional positive number.  Default should be modest, initially 100.
 
 Result match shape:
@@ -201,7 +206,7 @@ tool names, and the shared contract text.
 Add convenience dispatchers in =e-resources.el=:
 
 #+begin_src elisp
-(e-resources-glob registry uri pattern &optional limit)
+(e-resources-glob registry uri pattern &optional limit case-sensitive)
 (e-resources-search registry uri query &optional options)
 #+end_src
 
@@ -250,9 +255,12 @@ Listing uses =fd=:
 - Invoke =fd= without shell interpolation by using =process-file= or
   =make-process= with an argv list.
 - Prefer =fd=, accept =fdfind= if that is the installed executable name.
-- Use =--glob=, =--color= =never=, =--strip-cwd-prefix=, and a bounded result
-  count.  Include hidden files only if a later config option asks for that; the
-  first slice should use =fd='s default visibility.
+- Validate the facade glob pattern before invoking external commands.
+- Use =fd= as an implementation engine, then post-filter names with the shared
+  facade glob matcher so backend glob extensions do not leak into the contract.
+- Use =--glob=, =--color= =never=, and a bounded result count.  Include hidden
+  files only if a later config option asks for that; the first slice should use
+  =fd='s default visibility.
 
 Search uses =rg=:
 
@@ -260,9 +268,11 @@ Search uses =rg=:
   root.
 - Invoke =rg= without shell interpolation.
 - Use =--json= and parse JSON result objects rather than parsing human text.
-- Use =--line-number=, =--column=, =--color= =never=, and =--glob= when a glob
-  filter is supplied.
-- Use =--fixed-strings= when =:literal= is non-nil.
+- Compile the facade query to an =rg=-compatible regexp and escape all backend
+  regexp metacharacters from literal query text.
+- Validate any facade =:glob= filter before invoking =rg= and post-filter
+  matches by resource name.
+- Use =--line-number=, =--column=, and =--color= =never=.
 - Use =--ignore-case= by default and omit it when =:case-sensitive= is non-nil.
 - Treat exit code 1 as no matches; other non-zero exits are tool errors.
 - Return matched URIs as =file://= paths relative to the configured root.
@@ -292,16 +302,14 @@ Listing should use Emacs-native buffer enumeration:
 
 - enumerate =(buffer-list)=;
 - filter exact URI root/prefix when the caller passes =buffer://name-prefix=;
-- filter names with =string-match-p= against a glob translated with
-  =wildcard-to-regexp=;
+- filter names relative to the URI root with the shared facade glob matcher;
 - return buffer metadata already available through
   =e-emacs-tools--buffer-metadata= where useful.
 
 Search should use Emacs-native buffer search:
 
-- search only live buffers selected by the URI root and optional =:glob=;
-- use =re-search-forward= when =:literal= is nil;
-- use =search-forward= when =:literal= is non-nil;
+- search only live buffers selected by the URI root and optional facade =:glob=;
+- compile the facade query to an Emacs regexp before using =re-search-forward=;
 - bind =case-fold-search= based on =:case-sensitive=;
 - return =buffer://<buffer-name>=, line number, column, and the matched line text;
 - skip binary/special handling in the first slice, because Emacs buffers are text
@@ -380,9 +388,10 @@ Work:
 2. Add =file://= glob/search resource methods.
 3. Register glob/search from =e-file-inspection-capability-create= and
    =e-file-mutation-capability-create=.
-4. Test nested file listing, directory-scoped listing, glob filters, literal and
-   regex content search, no-match results, outside-root rejection, missing
-   executable errors, and generated capability method coverage.
+4. Test nested file listing with =**=, directory-scoped listing, facade glob
+   filters, facade query search, no-match results, outside-root rejection,
+   invalid pattern validation before process execution, missing executable
+   errors, and generated capability method coverage.
 
 Verification:
 
@@ -410,7 +419,7 @@ Work:
    capability.
 3. Add =e://= glob/search methods over the harness store.
 4. Keep =e://= mutation unsupported.
-5. Test buffer prefix scopes, glob filters, literal and regex search, line and
+5. Test buffer prefix scopes, facade glob filters, facade query search, line and
    column reporting, store listing, store search, and read-only mutation
    behavior.
 
@@ -500,9 +509,9 @@ the live probe.
 - =fd= and =rg= availability varies by environment.  The feature should fail
   clearly for missing executables rather than silently falling back to slower or
   semantically different shell commands.
-- Regex semantics differ between =rg= and Emacs.  The shared contract should say
-  =:query= is scheme-native regex when =:literal= is nil, and exact cross-scheme
-  regex portability is not guaranteed.
+- Facade pattern compilation is now a compatibility boundary.  The shared helper
+  must reject unsupported public syntax and compile only facade wildcards,
+  whitespace gaps, and mode options into backend-specific regexps.
 - Search result volume can grow quickly.  Keep the required =:limit= behavior
   central in each method and include truncation metadata.
 - File/buffer coherence still matters.  =file://= search should search disk or
@@ -519,9 +528,10 @@ the live probe.
 2. This moves toward the final direction where capabilities expose resource
    behavior through narrow contracts and the harness remains presentation- and
    scheme-agnostic.
-3. Stable decisions: =glob= and =search= are resource operations.  Likely-to-
-   change decisions: exact result metadata and regex portability.  Those stay in
-   operation docs and scheme methods rather than in harness policy.
+3. Stable decisions: =glob= and =search= are resource operations with a portable
+   facade pattern language.  Likely-to-change decisions: exact result metadata
+   and future pattern-language extensions.  Those stay in operation docs and the
+   shared pattern helper rather than in harness policy.
 4. =e-operations= owns model-facing contracts, =e-resources= owns dispatch,
    scheme adapters own side effects, and capabilities own exposure.
 5. Coupling is reduced by replacing scheme-specific discovery tools with the

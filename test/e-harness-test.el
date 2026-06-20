@@ -1250,8 +1250,9 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
                               :operation e-operation-glob
                               :description "Glob test resources."
                               :uri-patterns '("test://<root>")
-                              :handler (lambda (uri pattern limit)
-                                         (push (list :glob uri pattern limit) calls)
+                              :handler (lambda (uri pattern limit case-sensitive)
+                                         (push (list :glob uri pattern limit case-sensitive)
+                                               calls)
                                          '(:resources [(:uri "test://value"
                                                        :name "value")]
                                            :truncated nil)))
@@ -1321,7 +1322,6 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
                        :arguments (:uri "test://"
                                    :query "needle"
                                    :glob "*.el"
-                                   :literal t
                                    :limit 6)))
                     :content)
                    '(:matches [(:uri "test://value"
@@ -1337,10 +1337,10 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
                      (:edit (:scheme "test" :address "value" :uri "test://value")
                             ((:oldText "a" :newText "b")))
                      (:glob (:scheme "test" :address "" :uri "test://")
-                            "*.el" 5)
+                            "*.el" 5 nil)
                      (:search (:scheme "test" :address "" :uri "test://")
                               "needle"
-                              (:glob "*.el" :literal t :limit 6)))))))
+                              (:glob "*.el" :limit 6)))))))
 
 (ert-deftest e-harness-test-resource-tool-descriptions-include-active-methods ()
   "Generated operation tool descriptions include active URI scheme metadata."
@@ -1597,7 +1597,6 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
                 :arguments (:uri "e://reference-capability"
                             :query "needle"
                             :glob "refs/*"
-                            :literal t
                             :limit 5)))
              :content)
             '(:matches [(:uri "e://reference-capability/refs/guide.md"

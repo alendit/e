@@ -88,6 +88,7 @@
                   "lisp/core/e-context.el"
                   "lisp/core/e-tools.el"
                   "lisp/core/e-operations.el"
+                  "lisp/core/e-resource-patterns.el"
                   "lisp/core/e-resources.el"
                   "lisp/core/e-store.el"
                   "lisp/core/e-hooks.el"

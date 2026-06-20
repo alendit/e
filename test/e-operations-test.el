@@ -59,24 +59,29 @@
              '(:uri "test://edit" :edits ((:oldText "a" :newText "b"))))
     (funcall (e-operation-dispatch e-operation-glob)
              (lambda (&rest args) (push args calls) "glob-result")
-             '(:uri "test://glob" :pattern "*.el" :limit 5))
+             '(:uri "test://glob"
+               :pattern "*.el"
+               :limit 5
+               :case-sensitive nil))
     (funcall (e-operation-dispatch e-operation-search)
              (lambda (&rest args) (push args calls) "search-result")
              '(:uri "test://search"
                :query "needle"
                :glob "*.el"
-               :literal t
                :case-sensitive t
+               :whole-word t
+               :multiline t
                :limit 7))
     (should (equal (nreverse calls)
                    '(("test://read" (:unit "line" :start 1 :end 2))
                      ("test://write" "content")
                      ("test://edit" ((:oldText "a" :newText "b")))
-                     ("test://glob" "*.el" 5)
+                     ("test://glob" "*.el" 5 nil)
                      ("test://search" "needle"
                       (:glob "*.el"
-                       :literal t
                        :case-sensitive t
+                       :whole-word t
+                       :multiline t
                        :limit 7)))))))
 
 (provide 'e-operations-test)

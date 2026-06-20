@@ -145,11 +145,14 @@ blocked on the interactive coding-system picker."
                             :metadata (:bytes 13))]
               :truncated nil)))
     (should
+     (equal (e-resources-glob resources "tmp://notes/one.txt" "*.md" 5)
+            '(:resources [] :truncated nil)))
+    (should
      (equal (e-resources-search
              resources
              "tmp://"
              "needle"
-             '(:glob "tool-results/*.txt" :literal t :limit 5))
+             '(:glob "tool-results/*.txt" :limit 5))
             '(:matches [(:uri "tmp://tool-results/out.txt"
                           :line 1
                           :column 1
@@ -160,7 +163,7 @@ blocked on the interactive coding-system picker."
              resources
              "tmp://"
              "missing"
-             '(:literal t))
+             nil)
             '(:matches [] :truncated nil)))))
 
 (ert-deftest e-session-tmp-test-discovery-rejects-unsafe-paths ()
@@ -181,7 +184,7 @@ blocked on the interactive coding-system picker."
                    resources
                    "tmp://../escape"
                    "needle"
-                   '(:literal t))
+                   nil)
                   :type 'e-session-tmp-resources-invalid-path)))
 
 (ert-deftest e-session-tmp-test-discovery-reports-missing-commands ()
@@ -203,11 +206,19 @@ blocked on the interactive coding-system picker."
                    (funcall original-executable-find command)))))
       (should-error (e-resources-glob resources "tmp://" "*.txt" 5)
                     :type 'e-session-tmp-resources-missing-command)
+      (should-error (e-resources-glob resources "tmp://" "foo**bar" 5)
+                    :type 'e-resource-pattern-invalid)
       (should-error (e-resources-search
                      resources
                      "tmp://"
                      "needle"
-                     '(:literal t))
+                     '(:glob "foo**bar"))
+                    :type 'e-resource-pattern-invalid)
+      (should-error (e-resources-search
+                     resources
+                     "tmp://"
+                     "needle"
+                     nil)
                     :type 'e-session-tmp-resources-missing-command))))
 
 (ert-deftest e-session-tmp-test-rejects-unsafe-paths ()

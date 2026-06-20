@@ -105,7 +105,7 @@
              resources
              "e://"
              "needle"
-             '(:glob "*/refs/*" :literal t :limit 5))
+             '(:glob "*/refs/*" :limit 5))
             '(:matches [(:uri "e://dynamic/refs/log.md"
                           :line 1
                           :column 9

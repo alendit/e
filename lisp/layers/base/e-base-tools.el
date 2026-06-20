@@ -18,6 +18,7 @@
 (require 'e-capabilities)
 (require 'e-operations)
 (require 'e-resource-coherence)
+(require 'e-resource-patterns)
 (require 'e-resources)
 (require 'e-tools)
 
@@ -621,45 +622,67 @@ OK-STATUSES defaults to only zero."
       (file-relative-name path scope)
     (file-name-nondirectory path)))
 
-(defun e-base-tools--glob-pattern-matches-file-p (pattern relative)
-  "Return non-nil when PATTERN matches RELATIVE or its file name."
-  (let ((regexp (wildcard-to-regexp pattern)))
-    (or (string-match-p regexp relative)
-        (string-match-p regexp (file-name-nondirectory relative)))))
-
-(defun e-base-tools--file-glob-single-result (scope scope-relative pattern)
+(defun e-base-tools--file-glob-single-result
+    (scope scope-relative pattern case-sensitive)
   "Return a single file glob result for SCOPE, or nil if it does not match."
   (when (and (file-regular-p scope)
-             (e-base-tools--glob-pattern-matches-file-p pattern scope-relative))
+             (e-resource-pattern-glob-match-p
+              pattern
+              (file-name-nondirectory scope-relative)
+              case-sensitive))
     (let ((attributes (file-attributes scope)))
       (list :uri (concat "file://" scope-relative)
             :name (file-name-nondirectory scope)
             :kind 'file
             :metadata (list :bytes (file-attribute-size attributes))))))
 
-(defun e-base-tools--file-glob-resource (uri pattern limit directory)
+(defun e-base-tools--file-glob-resource
+    (uri pattern limit case-sensitive directory)
   "List file resources under parsed URI with PATTERN and LIMIT."
-  (let* ((fd (e-base-tools--find-executable "fd" '("fdfind")))
-         (primary (e-base-tools--primary-root directory))
+  (let* ((primary (e-base-tools--primary-root directory))
          (scope (e-base-tools--resource-path uri directory))
          (scope-relative (e-base-tools--file-scope-relative-path uri directory))
          (actual-pattern (or pattern "*"))
-         (actual-limit (e-base-tools--file-discovery-limit limit)))
-    (if-let ((single (e-base-tools--file-glob-single-result
-                      scope scope-relative actual-pattern)))
-        (list :resources (vector single) :truncated nil)
+         (actual-limit (e-base-tools--file-discovery-limit limit))
+         (actual-case-sensitive (if (null case-sensitive) t case-sensitive)))
+    (e-resource-pattern-compile-glob actual-pattern)
+    (if (file-regular-p scope)
+        (list :resources
+              (if-let ((single (e-base-tools--file-glob-single-result
+                                scope
+                                scope-relative
+                                actual-pattern
+                                actual-case-sensitive)))
+                  (vector single)
+                [])
+              :truncated nil)
       (let* ((lines (e-base-tools--process-lines
-                     fd
+                     (e-base-tools--find-executable "fd" '("fdfind"))
                      primary
-                     (list "--glob"
-                           "--color" "never"
-                           "--base-directory" primary
-                           "--search-path" scope-relative
-                           "--type" "file"
-                           "--max-results" (number-to-string (1+ actual-limit))
-                           actual-pattern)))
-             (truncated (> (length lines) actual-limit))
-             (selected (seq-take lines actual-limit)))
+                     (append
+                      (list "--glob"
+                            "--color" "never"
+                            "--base-directory" primary
+                            "--search-path" scope-relative
+                            "--type" "file"
+                            "--max-results" (number-to-string (1+ actual-limit)))
+                      (list (if actual-case-sensitive
+                                "--case-sensitive"
+                              "--ignore-case"))
+                      (list actual-pattern))))
+             (filtered
+              (seq-filter
+               (lambda (relative)
+                 (let* ((relative (e-base-tools--clean-relative-path relative))
+                        (absolute (expand-file-name relative primary))
+                        (name (e-base-tools--file-result-name absolute scope)))
+                   (e-resource-pattern-glob-match-p
+                    actual-pattern
+                    name
+                    actual-case-sensitive)))
+               lines))
+             (truncated (> (length filtered) actual-limit))
+             (selected (seq-take filtered actual-limit)))
         (list :resources
               (vconcat
                (mapcar
@@ -680,7 +703,8 @@ OK-STATUSES defaults to only zero."
       (when-let ((bytes (plist-get object :bytes)))
         (base64-decode-string bytes))))
 
-(defun e-base-tools--search-match-from-rg-json (line directory)
+(defun e-base-tools--search-match-from-rg-json
+    (line directory scope glob-pattern)
   "Return a search match plist for rg JSON LINE, or nil."
   (let* ((object (json-parse-string line :object-type 'plist :array-type 'list))
          (type (plist-get object :type)))
@@ -696,16 +720,23 @@ OK-STATUSES defaults to only zero."
              (first-match (car submatches))
              (start (or (plist-get first-match :start) 0))
              (absolute (expand-file-name path (e-base-tools--primary-root directory))))
-        (list :uri (e-base-tools--file-resource-uri absolute directory)
-              :line (plist-get data :line_number)
-              :column (1+ start)
-              :text line-text)))))
+        (when (or (null glob-pattern)
+                  (e-resource-pattern-glob-match-p
+                   glob-pattern
+                   (e-base-tools--file-result-name absolute scope)
+                   t))
+          (list :uri (e-base-tools--file-resource-uri absolute directory)
+                :line (plist-get data :line_number)
+                :column (1+ start)
+                :text line-text))))))
 
 (defun e-base-tools--file-search-resource (uri query options directory)
   "Search file resources under parsed URI for QUERY with OPTIONS."
-  (let* ((rg (e-base-tools--find-executable "rg"))
-         (primary (e-base-tools--primary-root directory))
+  (let* ((primary (e-base-tools--primary-root directory))
+         (scope (e-base-tools--resource-path uri directory))
          (scope-relative (e-base-tools--file-scope-relative-path uri directory))
+         (glob-pattern (plist-get options :glob))
+         (query-regexp (e-resource-pattern-search-rg-regexp query options))
          (actual-limit (e-base-tools--file-discovery-limit
                         (plist-get options :limit)))
          (args (append
@@ -715,19 +746,27 @@ OK-STATUSES defaults to only zero."
                       "--color" "never")
                 (unless (plist-get options :case-sensitive)
                   (list "--ignore-case"))
-                (when (plist-get options :literal)
-                  (list "--fixed-strings"))
-                (when-let ((glob (plist-get options :glob)))
-                  (list "--glob" glob))
-                (list "-e" query scope-relative)))
-         (lines (e-base-tools--process-lines rg primary args '(0 1)))
-         matches)
-    (dolist (line lines)
-      (when-let ((match (e-base-tools--search-match-from-rg-json line directory)))
-        (push match matches)))
-    (setq matches (nreverse matches))
-    (list :matches (vconcat (seq-take matches actual-limit))
-          :truncated (> (length matches) actual-limit))))
+                (when (plist-get options :multiline)
+                  (list "--multiline"))
+                (list "-e" query-regexp scope-relative))))
+    (when glob-pattern
+      (e-resource-pattern-compile-glob glob-pattern))
+    (let ((lines (e-base-tools--process-lines
+                  (e-base-tools--find-executable "rg")
+                  primary
+                  args
+                  '(0 1)))
+          matches)
+      (dolist (line lines)
+        (when-let ((match (e-base-tools--search-match-from-rg-json
+                           line
+                           directory
+                           scope
+                           glob-pattern)))
+          (push match matches)))
+      (setq matches (nreverse matches))
+      (list :matches (vconcat (seq-take matches actual-limit))
+            :truncated (> (length matches) actual-limit)))))
 
 (defun e-base-tools--write-file-resource (uri content directory)
   "Write CONTENT to parsed file URI in DIRECTORY."
@@ -890,9 +929,9 @@ OK-STATUSES defaults to only zero."
    :operation e-operation-glob
    :description "Workspace text files and directories."
    :uri-patterns '("file://<path-or-directory>")
-   :handler (lambda (uri pattern limit)
+   :handler (lambda (uri pattern limit case-sensitive)
               (e-base-tools--file-glob-resource
-               uri pattern limit directory))))
+               uri pattern limit case-sensitive directory))))
 
 (defun e-base-tools--file-search-method (directory)
   "Return a file search resource method rooted at DIRECTORY."

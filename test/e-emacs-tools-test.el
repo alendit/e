@@ -120,7 +120,6 @@ When READ-ONLY is non-nil, buffer resources only support reads."
                       :arguments (:uri "buffer://e-test-search-"
                                   :query "needle"
                                   :glob "*alpha*"
-                                  :literal t
                                   :limit 5)))
                    :content)
                   `(:matches [(:uri ,(concat "buffer://" (buffer-name alpha))
@@ -135,7 +134,7 @@ When READ-ONLY is non-nil, buffer resources only support reads."
                     `(:id "call-2"
                       :name "search"
                       :arguments (:uri "buffer://e-test-search-"
-                                  :query "n.e+"
+                                  :query "needle again"
                                   :glob "*beta*"
                                   :case-sensitive t
                                   :limit 5)))

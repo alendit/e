@@ -14,6 +14,7 @@
 
 (require 'cl-lib)
 (require 'e-operations)
+(require 'e-resource-patterns)
 (require 'e-resources)
 (require 'seq)
 (require 'subr-x)
@@ -161,19 +162,21 @@ and optional range."
       (substring address (1+ (length root-address))))
      (t address))))
 
-(defun e-store--glob-regexp (pattern)
-  "Return regexp for glob PATTERN."
-  (wildcard-to-regexp (or pattern "*")))
-
-(defun e-store--matching-entries (store uri &optional pattern)
+(defun e-store--matching-entries
+    (store uri &optional pattern case-sensitive)
   "Return STORE entries under parsed URI matching optional glob PATTERN."
   (let* ((root-address (e-store--root-address uri))
-         (glob (e-store--glob-regexp pattern))
+         (actual-pattern (or pattern "*"))
+         (actual-case-sensitive (if (null case-sensitive) t case-sensitive))
          entries)
+    (e-resource-pattern-compile-glob actual-pattern)
     (dolist (entry (e-store-list store) (nreverse entries))
       (let ((name (e-store--entry-name entry root-address)))
         (when (and (e-store--entry-under-root-p entry root-address)
-                   (string-match-p glob name))
+                   (e-resource-pattern-glob-match-p
+                    actual-pattern
+                    name
+                    actual-case-sensitive))
           (push entry entries))))))
 
 (defun e-store--discovery-limit (limit)
@@ -183,11 +186,15 @@ and optional range."
    ((and (numberp limit) (> limit 0)) (truncate limit))
    (t (signal 'wrong-type-argument (list 'positive-number-p limit)))))
 
-(defun e-store-glob (store uri pattern limit)
+(defun e-store-glob (store uri pattern limit case-sensitive)
   "List STORE resources under parsed URI with PATTERN and LIMIT."
   (let* ((root-address (e-store--root-address uri))
          (actual-limit (e-store--discovery-limit limit))
-         (entries (e-store--matching-entries store uri pattern))
+         (entries (e-store--matching-entries
+                   store
+                   uri
+                   pattern
+                   case-sensitive))
          (truncated (> (length entries) actual-limit)))
     (list :resources
           (vconcat
@@ -209,22 +216,24 @@ and optional range."
   "Return search matches for ENTRY and QUERY with OPTIONS."
   (let ((content (e-store-read-entry entry nil))
         (case-fold-search (not (plist-get options :case-sensitive)))
+        (regexp (e-resource-pattern-search-emacs-regexp query options))
         matches)
     (with-temp-buffer
       (insert content)
       (goto-char (point-min))
-      (while (if (plist-get options :literal)
-                 (search-forward query nil t)
-               (re-search-forward query nil t))
-        (let ((start (match-beginning 0))
-              (end (match-end 0)))
-          (push (list :uri (e-store-entry-uri entry)
-                      :line (line-number-at-pos start)
-                      :column (1+ (- start (line-beginning-position)))
-                      :text (e-store--current-line-text))
-                matches)
-          (when (= start end)
-            (forward-char 1)))))
+      (catch 'done
+        (while (re-search-forward regexp nil t)
+          (let ((start (match-beginning 0))
+                (end (match-end 0)))
+            (push (list :uri (e-store-entry-uri entry)
+                        :line (line-number-at-pos start)
+                        :column (1+ (- start (line-beginning-position)))
+                        :text (e-store--current-line-text))
+                  matches)
+            (when (= start end)
+              (if (eobp)
+                  (throw 'done nil)
+                (forward-char 1)))))))
     (nreverse matches)))
 
 (defun e-store-search (store uri query options)
@@ -234,7 +243,8 @@ and optional range."
          (entries (e-store--matching-entries
                    store
                    uri
-                   (plist-get options :glob)))
+                   (plist-get options :glob)
+                   t))
          matches)
     (dolist (entry entries)
       (setq matches
@@ -268,8 +278,8 @@ and optional range."
    :uri-patterns '("e://<capability>"
                    "e://<capability>/<path>"
                    "e://")
-   :handler (lambda (uri pattern limit)
-              (e-store-glob store uri pattern limit))))
+   :handler (lambda (uri pattern limit case-sensitive)
+              (e-store-glob store uri pattern limit case-sensitive))))
 
 (defun e-store-search-resource-method (store)
   "Return a search e:// resource method backed by STORE."

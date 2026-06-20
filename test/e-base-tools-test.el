@@ -116,7 +116,7 @@ When READ-ONLY is non-nil, file resources only support reads."
                    (e-base-tools-test--execute
                     registry
                     "glob"
-                    '(:uri "file://lisp" :pattern "*.el" :limit 5))
+                    '(:uri "file://lisp" :pattern "**/*.el" :limit 5))
                    :content)
                   '(:resources [(:uri "file://lisp/core/e-resources.el"
                                   :name "core/e-resources.el"
@@ -135,11 +135,19 @@ When READ-ONLY is non-nil, file resources only support reads."
                                   :kind file
                                   :metadata (:bytes 6))]
                     :truncated nil)))
+          (should
+           (equal (plist-get
+                   (e-base-tools-test--execute
+                    registry
+                    "glob"
+                    '(:uri "file://lisp/core/notes.txt" :pattern "*.md" :limit 5))
+                   :content)
+                  '(:resources [] :truncated nil)))
           (let* ((content (plist-get
                            (e-base-tools-test--execute
                             registry
                             "glob"
-                            '(:uri "file://" :pattern "*.txt" :limit 1))
+                            '(:uri "file://" :pattern "**/*.txt" :limit 1))
                            :content))
                  (resources (plist-get content :resources)))
             (should (equal (length resources) 1))
@@ -171,7 +179,6 @@ When READ-ONLY is non-nil, file resources only support reads."
                     '(:uri "file://src"
                       :query "needle"
                       :glob "*.el"
-                      :literal t
                       :limit 5))
                    :content)
                   '(:matches [(:uri "file://src/one.el"
@@ -185,7 +192,7 @@ When READ-ONLY is non-nil, file resources only support reads."
                     registry
                     "search"
                     '(:uri "file://src"
-                      :query "n.e+"
+                      :query "needle again"
                       :glob "*.txt"
                       :case-sensitive t
                       :limit 5))
@@ -201,8 +208,7 @@ When READ-ONLY is non-nil, file resources only support reads."
                     registry
                     "search"
                     '(:uri "file://src"
-                      :query "missing"
-                      :literal t))
+                      :query "missing"))
                    :content)
                   '(:matches [] :truncated nil))))
       (delete-directory directory t))))
@@ -230,12 +236,25 @@ When READ-ONLY is non-nil, file resources only support reads."
   "File glob/search report missing fd and rg commands clearly."
   (let* ((directory (make-temp-file "e-base-discovery-missing-" t))
          (registry (e-base-tools-test--resource-tools directory))
+         (resources (e-resources-registry-create))
          (original-executable-find (symbol-function 'executable-find)))
     (unwind-protect
-        (cl-letf (((symbol-function 'executable-find)
-                   (lambda (command)
-                     (unless (member command '("fd" "fdfind" "rg"))
-                       (funcall original-executable-find command)))))
+        (progn
+          (e-base-tools-register-file-resource resources directory)
+          (cl-letf (((symbol-function 'executable-find)
+                     (lambda (command)
+                       (unless (member command '("fd" "fdfind" "rg"))
+                         (funcall original-executable-find command)))))
+            (should-error
+             (e-resources-glob resources "file://" "foo**bar" 5)
+             :type 'e-resource-pattern-invalid)
+            (should-error
+             (e-resources-search
+              resources
+              "file://"
+              "needle"
+              '(:glob "foo**bar"))
+             :type 'e-resource-pattern-invalid)
           (let ((glob (e-base-tools-test--execute
                        registry "glob" '(:uri "file://")))
                 (search (e-base-tools-test--execute
@@ -247,7 +266,7 @@ When READ-ONLY is non-nil, file resources only support reads."
                                     (plist-get glob :content)))
             (should (equal (plist-get search :status) 'error))
             (should (string-match-p "Missing executable: rg"
-                                    (plist-get search :content)))))
+                                    (plist-get search :content))))))
       (delete-directory directory t))))
 
 (ert-deftest e-base-tools-test-read-file-errors-for-missing-and-binary ()

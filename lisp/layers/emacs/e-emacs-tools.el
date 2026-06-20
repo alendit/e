@@ -16,6 +16,7 @@
 (require 'seq)
 (require 'subr-x)
 (require 'e-operations)
+(require 'e-resource-patterns)
 (require 'e-resources)
 (require 'e-tools)
 
@@ -218,28 +219,37 @@ When VISIBLE-ONLY is non-nil, include only buffers visible in windows."
   "Return non-nil when NAME is an internal buffer name."
   (string-prefix-p " " name))
 
-(defun e-emacs-tools--glob-regexp (pattern)
-  "Return regexp for glob PATTERN."
-  (wildcard-to-regexp (or pattern "*")))
-
-(defun e-emacs-tools--buffer-resource-candidates (uri &optional pattern)
+(defun e-emacs-tools--buffer-resource-candidates
+    (uri &optional pattern case-sensitive)
   "Return live buffers matching parsed URI and optional glob PATTERN."
   (let* ((prefix (e-emacs-tools--buffer-resource-name uri))
-         (glob (e-emacs-tools--glob-regexp pattern))
+         (actual-pattern (or pattern "*"))
+         (actual-case-sensitive (if (null case-sensitive) t case-sensitive))
          buffers)
+    (e-resource-pattern-compile-glob actual-pattern)
     (dolist (buffer (buffer-list) (nreverse buffers))
       (let ((name (buffer-name buffer)))
         (when (and (string-prefix-p prefix name)
-                   (string-match-p glob name)
+                   (let ((relative-name (if (string-empty-p prefix)
+                                            name
+                                          (substring name (length prefix)))))
+                     (e-resource-pattern-glob-match-p
+                      actual-pattern
+                      relative-name
+                      actual-case-sensitive))
                    (or (not (e-emacs-tools--internal-buffer-p name))
                        (string= prefix name)
                        pattern))
           (push buffer buffers))))))
 
-(defun e-emacs-tools--buffer-glob-resource (uri pattern limit)
+(defun e-emacs-tools--buffer-glob-resource
+    (uri pattern limit case-sensitive)
   "List live buffer resources under parsed URI with PATTERN and LIMIT."
   (let* ((actual-limit (e-emacs-tools--discovery-limit limit))
-         (buffers (e-emacs-tools--buffer-resource-candidates uri pattern))
+         (buffers (e-emacs-tools--buffer-resource-candidates
+                   uri
+                   pattern
+                   case-sensitive))
          (truncated (> (length buffers) actual-limit)))
     (list :resources
           (vconcat
@@ -262,22 +272,24 @@ When VISIBLE-ONLY is non-nil, include only buffers visible in windows."
 (defun e-emacs-tools--buffer-search-one (buffer query options)
   "Return search matches for BUFFER and QUERY with OPTIONS."
   (let ((case-fold-search (not (plist-get options :case-sensitive)))
+        (regexp (e-resource-pattern-search-emacs-regexp query options))
         matches)
     (with-current-buffer buffer
       (save-excursion
         (goto-char (point-min))
-        (while (if (plist-get options :literal)
-                   (search-forward query nil t)
-                 (re-search-forward query nil t))
-          (let ((start (match-beginning 0))
-                (end (match-end 0)))
-            (push (list :uri (concat "buffer://" (buffer-name buffer))
-                        :line (line-number-at-pos start)
-                        :column (1+ (- start (line-beginning-position)))
-                        :text (e-emacs-tools--current-line-text))
-                  matches)
-            (when (= start end)
-              (forward-char 1))))))
+        (catch 'done
+          (while (re-search-forward regexp nil t)
+            (let ((start (match-beginning 0))
+                  (end (match-end 0)))
+              (push (list :uri (concat "buffer://" (buffer-name buffer))
+                          :line (line-number-at-pos start)
+                          :column (1+ (- start (line-beginning-position)))
+                          :text (e-emacs-tools--current-line-text))
+                    matches)
+              (when (= start end)
+                (if (eobp)
+                    (throw 'done nil)
+                  (forward-char 1))))))))
     (nreverse matches)))
 
 (defun e-emacs-tools--buffer-search-resource (uri query options)
@@ -286,7 +298,8 @@ When VISIBLE-ONLY is non-nil, include only buffers visible in windows."
                         (plist-get options :limit)))
          (buffers (e-emacs-tools--buffer-resource-candidates
                    uri
-                   (plist-get options :glob)))
+                   (plist-get options :glob)
+                   t))
          matches)
     (dolist (buffer buffers)
       (setq matches
