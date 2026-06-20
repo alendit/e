@@ -79,6 +79,19 @@ git diff --check
 
 Result: clean.
 
+* UX and performance playthrough
+
+The reviewed user journeys were active-session popup wiring, action-key
+dispatch, terminal fallback annotations, and cleanup after picker buffer kill.
+Focused tests and bounded live probes exercised the actual local keymap,
+fallback annotation metadata, posframe delete hook, and active-sessions command
+wiring.
+
+The interaction remains keyboard-operable through installed action keys and
+recoverable after cleanup because killed picker buffers delete their posframes.
+No profiling was required; the review did not find slow candidate generation or
+redraw behavior in the exercised paths.
+
 * Live reload
 
 The running Emacs was reloaded with:

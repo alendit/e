@@ -82,6 +82,18 @@ git diff --check
 
 Result: clean.
 
+* UX and performance playthrough
+
+The reviewed flow is file-tool behavior across primary and secondary workspace
+roots.  Tests covered =glob=, =search=, =resource_sync_status=, and rejection of
+paths outside configured roots.  The bounded live probe exercised registering a
+temporary primary and secondary root, writing under the secondary root, and
+preserving the shell-directory bridge to the primary root.
+
+No separate visual UI playthrough was required for this review pass.  No
+profiling was required; the review did not find a repeated enumeration or redraw
+hot path beyond the already-tested resource discovery surfaces.
+
 * Live reload
 
 The running Emacs was reloaded with:

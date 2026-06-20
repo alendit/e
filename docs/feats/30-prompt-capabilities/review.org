@@ -53,6 +53,18 @@ git diff --check
 
 Result: clean.
 
+* UX and performance playthrough
+
+The reviewed user journey is selecting and rendering built-in prompt
+capabilities from a default chat harness.  The bounded live probe confirmed the
+available prompt names, rendered summarize/review text, and duplicate-name
+diagnostics.
+
+No separate visual picker flow was required for this review pass because the
+feature reviewed here is the capability contract and prompt rendering surface.
+No profiling was required; prompt lookup and rendering are bounded over the
+configured prompt list.
+
 * Live reload
 
 The running Emacs was reloaded with:

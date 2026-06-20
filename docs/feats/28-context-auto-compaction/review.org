@@ -98,6 +98,18 @@ git diff --check
 
 Result: clean.
 
+* UX and performance playthrough
+
+The reviewed user journeys were auto-compaction on submit, unknown-window skip,
+mode-line context status, and repeated submit when the previous compaction
+boundary cannot advance.  Bounded live probes confirmed the expected activity
+labels, mode-line text, and no-progress guard behavior.
+
+No extra visual issue was found in the recorded live pass.  Profiling was not
+required for this review pass because the finding targeted correctness of the
+retry guard, and the live probe confirmed the second submit did not churn
+additional compactions.
+
 * Live reload
 
 The running Emacs was reloaded with:

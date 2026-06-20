@@ -117,6 +117,18 @@ git diff --check
 
 Result: clean.
 
+* UX and performance playthrough
+
+The reviewed user journeys were repeated =e-debug= invocation and =e-debug-here=
+from an active chat buffer without a recent failure.  Focused tests and bounded
+live probes covered stable debug-tab reuse, inspected session metadata, and the
+presence of the inspected-session reference.
+
+The interaction is expected to feel recoverable because repeated debug entry no
+longer creates extra tabs and the debug agent receives the current chat session
+identity when invoked from chat.  No profiling was required; the change is
+bounded tab/session lookup work.
+
 * Live reload
 
 The running Emacs was reloaded with:

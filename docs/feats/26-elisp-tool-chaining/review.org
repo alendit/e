@@ -109,6 +109,19 @@ git diff --check
 
 Result: clean.
 
+* UX and performance playthrough
+
+The reviewed flow is nested tool execution through =run_elisp= rather than a
+dedicated visual command.  The live probe exercised the user-visible activity
+path by producing nested =tool-started= and =tool-finished= events with merged
+metadata and by returning the chained result.  The compact guidance example was
+verified through capability rendering tests.
+
+No separate visual picker or buffer playthrough was required for this review
+pass.  No profiling was required; the change appends metadata to existing event
+payload construction and did not introduce a repeated redraw or enumeration
+path.
+
 * Live reload
 
 The running Emacs was reloaded with:

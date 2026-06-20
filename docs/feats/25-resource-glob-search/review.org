@@ -122,6 +122,38 @@ Subagent review reported no new suggestions after the depth-bound fix.
 No new suggestions.
 #+end_example
 
+* Verification
+
+Focused feature verification covered resource pattern matching, operation
+routing, file resources, tmp resources, harness exposure, file/emacs
+capabilities, stores, and harness base behavior:
+
+#+begin_src sh
+rtk eldev test test/e-resource-patterns-test.el test/e-operations-test.el test/e-resources-test.el test/e-harness-test.el test/e-base-tools-test.el test/e-file-capabilities-test.el test/e-emacs-capabilities-test.el test/e-emacs-tools-test.el test/e-store-test.el test/e-session-tmp-resources-test.el test/e-harness-base-test.el
+#+end_src
+
+Result:
+
+#+begin_example
+151 expected, 0 unexpected
+#+end_example
+
+The review loop also recorded narrower focused passes for the concrete-root and
+depth-bound regressions above.
+
+* UX and performance playthrough
+
+The relevant user journey is tool-facing resource discovery rather than a
+visual command surface.  Bounded live probes exercised concrete =file://= and
+=tmp://= roots, literal facade glob syntax, escaped backend metacharacters, and
+bounded direct-child matching.  The attached Emacs app showed the feature 25
+review/probe buffer selected with concrete glob/search outputs and no blocking
+prompt or confusing transient UI.
+
+No separate profiling was required for this review pass; the performance-sensitive
+bounded-enumeration behavior is covered by the max-depth regression and live
+probe that returned the expected root match without truncation.
+
 * Live reload
 
 The running Emacs was reloaded with:

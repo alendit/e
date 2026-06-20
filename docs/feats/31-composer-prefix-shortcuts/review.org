@@ -60,6 +60,18 @@ git diff --check
 
 Result: clean.
 
+* UX and performance playthrough
+
+The reviewed user journey is invoking composer prefix file selection when
+multiple workspace roots contain the same relative file name.  The fix keeps
+unique labels short while qualifying duplicates by workspace root, and the
+bounded live probe confirmed the duplicate candidates render as distinct labels.
+
+The interaction should remain keyboard-friendly because the candidate labels are
+disambiguated before selection rather than relying on hidden metadata.  No
+profiling was required; the label qualification is bounded by the candidate set
+already presented by the picker.
+
 * Live reload
 
 The running Emacs was reloaded with:
