@@ -360,11 +360,6 @@ When SELECTED is non-nil, run ACTION after closing."
     (when (and selected action)
       (funcall action selected))))
 
-(defun e-picker--render-and-refocus ()
-  "Render the picker and keep input focus on its child frame."
-  (e-picker--render)
-  (e-picker--focus-frame e-picker--frame))
-
 (defun e-picker-next ()
   "Move to the next picker candidate."
   (interactive)
@@ -372,14 +367,14 @@ When SELECTED is non-nil, run ACTION after closing."
     (setq e-picker--selection
           (min (1- (length e-picker--filtered-candidates))
                (1+ e-picker--selection)))
-    (e-picker--render-and-refocus)))
+    (e-picker--render)))
 
 (defun e-picker-previous ()
   "Move to the previous picker candidate."
   (interactive)
   (when e-picker--filtered-candidates
     (setq e-picker--selection (max 0 (1- e-picker--selection)))
-    (e-picker--render-and-refocus)))
+    (e-picker--render)))
 
 (defun e-picker-select ()
   "Select the current picker candidate."
@@ -400,7 +395,7 @@ When SELECTED is non-nil, run ACTION after closing."
         (concat e-picker--input (string last-command-event)))
   (setq e-picker--selection 0)
   (e-picker--filter-candidates)
-  (e-picker--render-and-refocus))
+  (e-picker--render))
 
 (defun e-picker-backspace ()
   "Delete one character from picker input."
@@ -410,7 +405,7 @@ When SELECTED is non-nil, run ACTION after closing."
           (substring e-picker--input 0 (1- (length e-picker--input))))
     (setq e-picker--selection 0)
     (e-picker--filter-candidates)
-    (e-picker--render-and-refocus)))
+    (e-picker--render)))
 
 (defun e-picker-dispatch-action (key)
   "Dispatch picker action bound to KEY for the current candidate."

@@ -176,8 +176,8 @@
         (should (eq hidden buffer))
         (should (equal selected "beta"))))))
 
-(ert-deftest e-picker-test-navigation-refocuses-picker-frame ()
-  "Navigation keeps input focus on the picker frame for the next key."
+(ert-deftest e-picker-test-navigation-does-not-refocus-picker-frame ()
+  "Navigation does not repeatedly move input focus while handling keys."
   (let (focused)
     (cl-letf (((symbol-function 'e-picker--posframe-available-p)
                (lambda () t))
@@ -197,7 +197,7 @@
         (with-current-buffer buffer
           (setq focused nil)
           (e-picker-next)
-          (should (equal focused '(picker-frame))))))))
+          (should-not focused))))))
 
 (ert-deftest e-picker-test-kill-unshown-buffer-does-not-delete-posframe ()
   "Killing an unshown picker buffer does not call into posframe deletion."
