@@ -3,7 +3,7 @@
 
 * Status
 
-Draft addendum for =docs/feats/25-resource-glob-search/plan.org=.
+Implemented and in review with =docs/feats/25-resource-glob-search/plan.org=.
 
 * Reason for addendum
 

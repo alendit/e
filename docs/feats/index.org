@@ -35,7 +35,7 @@ Status values for coding agents:
 | 22 | Done | 22-project-shells/ | Project Shells |
 | 23 | Done | 23-prompt-cache-context/ | Prompt Cache Friendly Context |
 | 24 | Done | 24-mcp-capability-wrapper/ | MCP Capability Wrapper |
-| 25 | Ready | 25-resource-glob-search/ | Resource Glob and Search Tools |
+| 25 | In-review | 25-resource-glob-search/ | Resource Glob and Search Tools |
 | 26 | Ready | 26-elisp-tool-chaining/ | Elisp Tool Chaining |
 | 27 | Ready | 27-debug-agent-session/ | Debug Agent Session |
 | 28 | Ready | 28-context-auto-compaction/ | Context Auto-Compaction |

@@ -1,0 +1,137 @@
+#+title: Review: Resource Glob and Search Tools
+#+author: e implementation
+#+date: 2026-06-20
+#+startup: overview
+
+* Status
+
+In-review.
+
+* Review loop
+
+** Finding 1: Concrete file roots were passed to =fd=
+
+*** Problem
+
+=file://= and =tmp://= concrete file roots could fail because the glob
+implementation passed a file path to =fd= as though it were a searchable
+directory.
+
+*** Change
+
+Added concrete-resource handling for =file://= and =tmp://= glob roots.  A
+regular file root now matches directly against the requested facade pattern and
+returns that single resource when appropriate.
+
+*** Evidence
+
+Focused feature 25 verification passed after the fix:
+
+#+begin_src sh
+rtk eldev test test/e-resource-patterns-test.el test/e-operations-test.el test/e-resources-test.el test/e-harness-test.el test/e-base-tools-test.el test/e-file-capabilities-test.el test/e-emacs-capabilities-test.el test/e-emacs-tools-test.el test/e-store-test.el test/e-session-tmp-resources-test.el test/e-harness-base-test.el
+#+end_src
+
+Result:
+
+#+begin_example
+151 expected, 0 unexpected
+#+end_example
+
+Live probe returned concrete =file://nested/one.txt= and
+=tmp://nested/one.txt= resources.
+
+** Finding 2: Backend glob syntax leaked through =fd=
+
+*** Problem
+
+The addendum requires a portable facade glob syntax.  Passing facade patterns
+directly to =fd --glob= leaked fd-only syntax.  For example,
+=literal[abc].txt= was interpreted as a character class rather than a literal
+resource name.
+
+*** Change
+
+Added a shared fd translation helper for facade glob syntax.  The translator
+keeps facade =*= and =**= semantics, escapes backend-only fd glob metacharacters,
+and still post-filters returned names through the facade matcher.
+
+*** Evidence
+
+Focused and full feature 25 tests passed:
+
+#+begin_example
+45 expected, 0 unexpected
+151 expected, 0 unexpected
+#+end_example
+
+Live probe for =literal[abc].txt= returned exactly the literal file for both
+=file://docs= and =tmp://docs= with =:truncated nil=.
+
+** Finding 3: Bounded fd enumeration could drop facade matches
+
+*** Problem
+
+Using =fd --max-results= before facade post-filtering was unsafe when fd's
+prefilter was broader than the facade.  A facade pattern such as =*.txt= should
+only match direct children, but recursive fd enumeration could return nested
+false positives first and consume the bounded result window before the direct
+match was seen.
+
+*** Change
+
+Added a facade max-depth helper.  For glob patterns without =**=, =file://= and
+=tmp://= now pass =fd --max-depth= equal to the facade pattern segment count.
+Patterns containing =**= remain depth-unbounded.  The implementations continue
+to use =--max-results limit+1= and facade post-filtering.
+
+*** Evidence
+
+Focused resource-pattern, file, and tmp tests:
+
+#+begin_src sh
+rtk eldev test test/e-resource-patterns-test.el test/e-base-tools-test.el test/e-session-tmp-resources-test.el
+#+end_src
+
+Result:
+
+#+begin_example
+45 expected, 0 unexpected
+#+end_example
+
+Full feature 25 verification:
+
+#+begin_src sh
+rtk eldev test test/e-resource-patterns-test.el test/e-operations-test.el test/e-resources-test.el test/e-harness-test.el test/e-base-tools-test.el test/e-file-capabilities-test.el test/e-emacs-capabilities-test.el test/e-emacs-tools-test.el test/e-store-test.el test/e-session-tmp-resources-test.el test/e-harness-base-test.el
+#+end_src
+
+Result:
+
+#+begin_example
+151 expected, 0 unexpected
+#+end_example
+
+Live probe with nested =a/one.txt=, =b/two.txt=, root =z.txt=, pattern
+=*.txt=, and limit =1= returned only =z.txt= for both =file://= and =tmp://=,
+with =:truncated nil=.
+
+* Final review
+
+Subagent review reported no new suggestions after the depth-bound fix.
+
+#+begin_example
+No new suggestions.
+#+end_example
+
+* Live reload
+
+The running Emacs was reloaded with:
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Result:
+
+#+begin_example
+"/Users/dimitrivorona/projects/elisp/e/"
+#+end_example
