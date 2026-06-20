@@ -112,6 +112,17 @@
                   (e-elisp-eval-capability-create))
                  '("run_elisp"))))
 
+(ert-deftest e-emacs-capabilities-test-elisp-eval-documents-tool-chaining ()
+  "Elisp eval contributes guidance for chaining active tools from Lisp."
+  (let* ((capability (e-elisp-eval-capability-create))
+         (instructions (e-capability-instructions capability)))
+    (should (string-match-p "(e-tools-call NAME ARGUMENTS" instructions))
+    (should (string-match-p "(e-tools-call! NAME ARGUMENTS" instructions))
+    (should (string-match-p "currently active tools" instructions))
+    (should (string-match-p "several tool calls" instructions))
+    (should (string-match-p "single direct tool call" instructions))
+    (should (string-match-p "visible as activity" instructions))))
+
 (ert-deftest e-emacs-capabilities-test-selection-context-placeholder ()
   "Selection context exists as a no-op capability placeholder."
   (let ((capability (e-selection-context-capability-create)))

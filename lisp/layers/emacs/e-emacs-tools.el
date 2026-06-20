@@ -464,7 +464,11 @@ When VISIBLE-ONLY is non-nil, include only buffers visible in windows."
   (e-tools-register
    registry
    :name "run_elisp"
-   :description "Evaluate explicit Emacs Lisp in Emacs and return the printed result."
+   :description
+   (concat
+    "Evaluate explicit Emacs Lisp in Emacs and return the printed result. "
+    "When this tool runs in an active e tool context, code may call currently "
+    "active tools with e-tools-call and e-tools-call!.")
    :parameters '(:type "object"
                  :properties (:code (:type "string"))
                  :required ["code"])

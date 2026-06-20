@@ -82,11 +82,27 @@ Before finalizing, verify presentation, not just content. Confirm the resource y
    :tools (list #'e-emacs-tools-register-save-buffer)
    :resource-methods (list #'e-emacs-tools-register-buffer-resource)))
 
+(defconst e-elisp-eval-instructions
+  (string-join
+   '("When using run_elisp, evaluated code may compose currently active tools through the context-bound API:"
+     ""
+     "(e-tools-call NAME ARGUMENTS &optional OPTIONS)"
+     "(e-tools-call! NAME ARGUMENTS &optional OPTIONS)"
+     ""
+     "Use this when several tool calls are needed to compute one answer, later calls depend on earlier results, many similar resources need the same read/search/edit operation, or the result should be filtered, grouped, or summarized before returning."
+     ""
+     "Do not use nested tool calls when a single direct tool call is enough, when the user should see each mutating decision before the next step, or when an ordinary top-level tool sequence would be clearer."
+     ""
+     "Only currently active tools are callable. Nested tool calls are visible as activity and run through the harness lifecycle.")
+   "\n")
+  "Instructions for explicit Elisp evaluation and active tool chaining.")
+
 (defun e-elisp-eval-capability-create ()
   "Create a capability for explicit Emacs Lisp evaluation."
   (e-capability-create
    :id 'elisp-eval
    :name "Elisp Eval"
+   :instructions e-elisp-eval-instructions
    :tools (list #'e-emacs-tools-register-elisp-eval)))
 
 (defun e-selection-context-capability-create ()
