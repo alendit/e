@@ -524,6 +524,64 @@
         (when (buffer-live-p buffer)
           (kill-buffer buffer))))))
 
+(ert-deftest e-org-canvas-test-input-open-session-reveals_backing_chat ()
+  "Opening the session from an input pane reveals the normal backing chat."
+  (let ((harness (e-org-canvas-test--harness))
+        (original-window (selected-window))
+        (original-buffer (window-buffer))
+        source
+        chat
+        input
+        opened)
+    (unwind-protect
+        (e-org-canvas-test--with-empty-harness-registry
+          (let ((e-chat-default-harness-id :org-canvas-test))
+            (e-harness-registry-register :org-canvas-test harness)
+            (delete-other-windows)
+            (setq source (get-buffer-create "org-canvas-input-open-source"))
+            (with-current-buffer source
+              (org-mode)
+              (insert "* Topic\nBody\n"))
+            (set-window-buffer original-window source)
+            (select-window original-window)
+            (e-harness-create-session
+             harness
+             :id "session-1"
+             :metadata (list :project-root default-directory))
+            (e-org-canvas--mark-session
+             harness "session-1" source :scope 'thread :target-folder nil)
+            (e-session-append-message
+             (e-harness-sessions harness)
+             "session-1"
+             '(:id "msg-1" :role user :content "Existing backing chat history"))
+            (setq chat (e-chat-open :harness harness :session-id "session-1"))
+            (setq input
+                  (e-org-canvas--input-buffer
+                   :harness harness
+                   :session-id "session-1"
+                   :scope 'thread
+                   :target-buffer source))
+            (set-window-buffer original-window input)
+            (select-window original-window)
+            (setq opened
+                  (with-current-buffer input
+                    (e-org-canvas-input-open-session)))
+            (should (eq opened chat))
+            (should (eq (window-buffer (selected-window)) chat))
+            (should-not (eq opened input))
+            (should-not (get-buffer-window input t))
+            (with-current-buffer opened
+              (goto-char (point-min))
+              (should (search-forward "Existing backing chat history" nil t)))))
+      (when (window-live-p original-window)
+        (select-window original-window)
+        (set-window-buffer original-window original-buffer))
+      (delete-other-windows)
+      (dolist (buffer (list input chat source))
+        (when (buffer-live-p buffer)
+          (kill-buffer buffer)))
+      (e-org-canvas-test--kill-chat-buffers))))
+
 (ert-deftest e-org-canvas-test-prompt-scope-selects_input_pane_for_typing ()
   "Prompt commands select the editable input pane at the prompt body."
   (let ((harness (e-org-canvas-test--harness))

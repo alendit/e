@@ -76,3 +76,30 @@ chat buffer and a visible transient input pane for the same session. The expecte
 behavior should be explicit: the command should reveal the normal backing chat
 buffer with history, and =e-chat--find-session-buffer= should not select
 =e-org-canvas-input-mode= buffers as ordinary chat buffers.
+
+* Fix
+
+Added =e-org-canvas-test-input-open-session-reveals_backing_chat=. The test
+creates a durable Org Canvas session with existing transcript history, opens a
+normal backing chat buffer, then opens a transient Org Canvas input pane for the
+same session. Running =e-org-canvas-input-open-session= from the input pane must
+return and select the normal backing chat, hide the transient input pane, and
+show the durable history.
+
+Changed =e-chat--find-session-buffer= to treat only ordinary =e-chat-mode=
+buffers as canonical session chat buffers. Derived transient shells such as
+=e-org-canvas-input-mode= still reuse chat rendering/composer internals, but no
+longer satisfy canonical chat lookup. Changed
+=e-org-canvas-input-open-session= to display the canonical chat session and
+dismiss the input pane after the handoff.
+
+* Validation
+
+#+begin_src sh
+rtk eldev test -f test/e-org-canvas-test.el e-org-canvas-test-input-open-session-reveals_backing_chat
+rtk eldev test -f test/e-org-canvas-test.el -f test/e-chat-test.el
+#+end_src
+
+The focused regression passed. The affected Org Canvas and chat suites passed
+with 229 expected results, 1 skipped markdown-dependent test, and 0 unexpected
+results.

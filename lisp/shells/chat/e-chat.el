@@ -1038,7 +1038,7 @@ When HARNESS or INSTANCE-ID is non-nil, require the buffer to match it."
     (dolist (buffer (buffer-list))
       (when (buffer-live-p buffer)
         (with-current-buffer buffer
-          (when (and (derived-mode-p 'e-chat-mode)
+          (when (and (eq major-mode 'e-chat-mode)
                      (equal e-chat-session-id session-id)
                      (or (not harness)
                          (eq e-chat-harness harness))

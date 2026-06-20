@@ -1238,9 +1238,17 @@ progress redraws follow output instead of staying pinned at the top."
   (interactive)
   (unless (and e-org-canvas-input--harness e-org-canvas-input--session-id)
     (user-error "This input pane is not attached to an Org Canvas session"))
-  (e-chat-open
-   :harness e-org-canvas-input--harness
-   :session-id e-org-canvas-input--session-id))
+  (let ((input (current-buffer))
+        (input-window (selected-window)))
+    (prog1 (e-chat-open-session
+            e-org-canvas-input--harness
+            e-org-canvas-input--session-id
+            t)
+      (when (and (window-live-p input-window)
+                 (eq (window-buffer input-window) input))
+        (quit-window t input-window))
+      (when (buffer-live-p input)
+        (kill-buffer input)))))
 
 ;;;###autoload
 (defun e-org-canvas-input-switch-scope ()
