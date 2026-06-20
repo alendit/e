@@ -20,6 +20,7 @@
 (require 'e-capability-config)
 (require 'e-context)
 (require 'e-dev-profile)
+(require 'e-emacs-tools)
 (require 'e-harness)
 (require 'e-layers)
 (require 'e-operations)
@@ -1192,6 +1193,172 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
                                 :nested)
                      t)))
     (should (equal (e-harness-messages harness "session-1") nil))))
+
+(ert-deftest e-harness-test-run-elisp-chains-active-tools-end-to-end ()
+  "run_elisp can compose active tools without nested transcript messages."
+  (let* ((code
+          "(let* ((first (e-tools-call! \"tag_text\" '(:text \"alpha\")))
+        (second (e-tools-call! \"tag_text\" (list :text first))))
+   (list :first first :second second))")
+         (calls 0)
+         (second-request-messages nil)
+         (events nil)
+         (backend
+          (e-backend-create
+           :name "fake-run-elisp-chain"
+           :stream
+           (cl-function
+            (lambda (&key messages options on-item)
+              (ignore options)
+              (setq calls (1+ calls))
+              (if (= calls 1)
+                  (progn
+                    (should (equal (mapcar (lambda (message)
+                                             (plist-get message :role))
+                                           messages)
+                                   '(user)))
+                    (funcall on-item
+                             (list :type 'tool-call
+                                   :id "run-1"
+                                   :name "run_elisp"
+                                   :arguments (list :code code)))
+                    (funcall on-item '(:type done :reason tool-use)))
+                (setq second-request-messages messages)
+                (should (equal (mapcar (lambda (message)
+                                         (plist-get message :role))
+                                       messages)
+                               '(user tool-call tool)))
+                (funcall on-item
+                         '(:type assistant-message
+                           :content "done"))
+                (funcall on-item '(:type done :reason stop)))))))
+         (tools-capability
+          (e-capability-create
+           :id 'run-elisp-chain-tools
+           :tools
+           (list
+            (lambda (registry)
+              (e-emacs-tools-register-run-elisp registry)
+              (e-tools-register
+               registry
+               :name "tag_text"
+               :description "Wrap text."
+               :handler (lambda (arguments)
+                          (format "[%s]" (plist-get arguments :text))))))))
+         (harness
+          (e-harness-create
+           :backend backend
+           :active-layers
+           (list (e-layer-create
+                  :id 'run-elisp-chain-layer
+                  :name "Run Elisp Chain Layer"
+                  :capabilities (list tools-capability))))))
+    (e-harness-create-session harness :id "session-1")
+    (e-harness-subscribe harness (lambda (event) (push event events)))
+    (e-harness-prompt harness "session-1" "chain tools")
+    (should (equal calls 2))
+    (let* ((messages (e-harness-messages harness "session-1"))
+           (roles (mapcar (lambda (message)
+                            (plist-get message :role))
+                          messages))
+           (tool-message (cl-find 'tool second-request-messages
+                                  :key (lambda (message)
+                                         (plist-get message :role))))
+           (tool-result (plist-get tool-message :content))
+           (nested-events
+            (seq-filter
+             (lambda (event)
+               (plist-get (plist-get event :payload) :nested))
+             (nreverse events)))
+           (nested-activity
+            (seq-filter
+             (lambda (event)
+               (plist-get (plist-get event :payload) :nested))
+             (e-harness-session-activity-events harness "session-1"))))
+      (should (equal roles '(user tool-call tool assistant)))
+      (should (= (cl-count 'tool-call roles) 1))
+      (should (= (cl-count 'tool roles) 1))
+      (should (equal (plist-get tool-result :tool-call-id) "run-1"))
+      (should (equal (plist-get tool-result :name) "run_elisp"))
+      (should (eq (plist-get tool-result :status) 'ok))
+      (should (string-match-p "\\[\\[alpha\\]\\]"
+                              (format "%S"
+                                      (plist-get tool-result :content))))
+      (should (= (length nested-events) 4))
+      (dolist (event nested-events)
+        (should (member (plist-get event :type)
+                        '(tool-started tool-finished)))
+        (should (equal (plist-get (plist-get event :payload)
+                                  :parent-tool-call-id)
+                       "run-1")))
+      (should (= (length nested-activity) 4)))))
+
+(ert-deftest e-harness-test-run-elisp-can-catch-nested-tool-errors ()
+  "Evaluated Lisp can catch nested tool failures and return data."
+  (let* ((code
+          "(condition-case err
+     (e-tools-call! \"fail_tool\" nil)
+   (e-tools-nested-tool-error
+    (let ((result (cadr err)))
+      (list :caught t
+            :tool (plist-get result :name)
+            :status (plist-get result :status)
+            :content (plist-get result :content)))))")
+         (calls 0)
+         (second-request-messages nil)
+         (backend
+          (e-backend-create
+           :name "fake-run-elisp-caught-nested-error"
+           :stream
+           (cl-function
+            (lambda (&key messages options on-item)
+              (ignore options)
+              (setq calls (1+ calls))
+              (if (= calls 1)
+                  (progn
+                    (funcall on-item
+                             (list :type 'tool-call
+                                   :id "run-error"
+                                   :name "run_elisp"
+                                   :arguments (list :code code)))
+                    (funcall on-item '(:type done :reason tool-use)))
+                (setq second-request-messages messages)
+                (funcall on-item
+                         '(:type assistant-message
+                           :content "handled"))
+                (funcall on-item '(:type done :reason stop)))))))
+         (tools-capability
+          (e-capability-create
+           :id 'run-elisp-error-tools
+           :tools
+           (list
+            (lambda (registry)
+              (e-emacs-tools-register-run-elisp registry)
+              (e-tools-register
+               registry
+               :name "fail_tool"
+               :description "Fail."
+               :handler (lambda (_arguments)
+                          (error "nested boom")))))))
+         (harness
+          (e-harness-create
+           :backend backend
+           :active-layers
+           (list (e-layer-create
+                  :id 'run-elisp-error-layer
+                  :name "Run Elisp Error Layer"
+                  :capabilities (list tools-capability))))))
+    (e-harness-create-session harness :id "session-1")
+    (e-harness-prompt harness "session-1" "catch nested error")
+    (should (equal calls 2))
+    (let* ((tool-message (cl-find 'tool second-request-messages
+                                  :key (lambda (message)
+                                         (plist-get message :role))))
+           (content (plist-get (plist-get tool-message :content)
+                               :content)))
+      (should (string-match-p ":caught t" (format "%S" content)))
+      (should (string-match-p "fail_tool" (format "%S" content)))
+      (should (string-match-p "nested boom" (format "%S" content))))))
 
 (ert-deftest e-harness-test-profile-records-tool-start ()
   "Enabled dev profiling records harness tool start spans."
