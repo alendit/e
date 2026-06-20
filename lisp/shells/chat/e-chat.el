@@ -1603,6 +1603,11 @@ scan."
         (walk root)))
     (nreverse files)))
 
+(defun e-chat--usable-workspace-root-p (root)
+  "Return non-nil when ROOT can be scanned for composer file completion."
+  (and (stringp root)
+       (file-directory-p root)))
+
 (defun e-chat--disambiguate-file-candidates (candidates)
   "Return CANDIDATES with duplicate labels qualified by root."
   (let ((counts (make-hash-table :test 'equal)))
@@ -1629,16 +1634,19 @@ scan."
         candidates)
     (dolist (root (e-chat--workspace-roots))
       (when (> remaining 0)
-        (let* ((root (file-name-as-directory (expand-file-name root)))
-               (files (e-chat--git-file-candidates root remaining))
-               (files (cond
-                       ((eq files :e-chat-git-empty) nil)
-                       (files files)
-                       (t (e-chat--fallback-file-candidates root remaining)))))
-          (dolist (file files)
-            (let ((label (file-relative-name file root)))
-              (push (list :label label :path file :root root) candidates)))
-          (setq remaining (- remaining (length files))))))
+        (let ((root (file-name-as-directory (expand-file-name root))))
+          (when (e-chat--usable-workspace-root-p root)
+            (let* ((files (e-chat--git-file-candidates root remaining))
+                   (files (cond
+                           ((eq files :e-chat-git-empty) nil)
+                           (files files)
+                           (t (e-chat--fallback-file-candidates
+                               root
+                               remaining)))))
+              (dolist (file files)
+                (let ((label (file-relative-name file root)))
+                  (push (list :label label :path file :root root) candidates)))
+              (setq remaining (- remaining (length files))))))))
     (e-chat--disambiguate-file-candidates (nreverse candidates))))
 
 (defun e-chat--read-file-reference-text (path)
@@ -1690,17 +1698,94 @@ scan."
           (push (cons name value) arguments))))
     (nreverse arguments)))
 
-(defun e-chat--completion-select (prompt candidates)
-  "Read PROMPT from CANDIDATES and return the selected plist."
+(defvar-local e-chat--inline-completion-overlay nil)
+
+(defun e-chat--inline-completion-delete ()
+  "Delete the active composer inline completion overlay."
+  (when (overlayp e-chat--inline-completion-overlay)
+    (delete-overlay e-chat--inline-completion-overlay))
+  (setq e-chat--inline-completion-overlay nil))
+
+(defun e-chat--inline-completion-matches (candidates filter)
+  "Return CANDIDATES whose labels contain FILTER."
+  (if (string-empty-p filter)
+      candidates
+    (cl-remove-if-not
+     (lambda (candidate)
+       (string-match-p
+        (regexp-quote filter)
+        (downcase (plist-get candidate :label))))
+     candidates)))
+
+(defun e-chat--inline-completion-render (prompt candidates index filter)
+  "Render PROMPT, CANDIDATES, INDEX, and FILTER as popup text."
+  (let ((rows (cl-subseq candidates 0 (min 8 (length candidates)))))
+    (concat
+     "\n"
+     prompt
+     filter
+     "\n"
+     (mapconcat
+      (lambda (candidate)
+        (let ((label (plist-get candidate :label)))
+          (format "%s %s"
+                  (if (eq candidate (nth index candidates)) ">" " ")
+                  label)))
+      rows
+      "\n"))))
+
+(defun e-chat--inline-completion-show (prompt candidates index filter)
+  "Show an inline completion popup at point."
+  (e-chat--inline-completion-delete)
+  (setq e-chat--inline-completion-overlay (make-overlay (point) (point)))
+  (overlay-put e-chat--inline-completion-overlay
+               'after-string
+               (propertize
+                (e-chat--inline-completion-render
+                 prompt
+                 candidates
+                 index
+                 filter)
+                'face 'shadow)))
+
+(defun e-chat--inline-completion-select (prompt candidates)
+  "Select one of CANDIDATES through an inline composer popup."
   (when candidates
-    (let* ((labels (mapcar (lambda (candidate)
-                             (plist-get candidate :label))
-                           candidates))
-           (selection (completing-read prompt labels nil t)))
-      (unless (string-empty-p selection)
-        (cl-find selection candidates
-                 :key (lambda (candidate) (plist-get candidate :label))
-                 :test #'equal)))))
+    (let ((filter "")
+          (index 0))
+      (unwind-protect
+          (catch 'selected
+            (while t
+              (let ((matches (e-chat--inline-completion-matches
+                              candidates
+                              (downcase filter))))
+                (setq index (min index (max 0 (1- (length matches)))))
+                (e-chat--inline-completion-show prompt matches index filter)
+                (let ((key (read-key)))
+                  (cond
+                   ((memq key '(return ?\r))
+                    (when-let ((candidate (nth index matches)))
+                      (throw 'selected candidate)))
+                   ((memq key '(?\C-g escape))
+                    (signal 'quit nil))
+                   ((memq key '(?\C-n down tab))
+                    (setq index (if matches
+                                    (mod (1+ index) (length matches))
+                                  0)))
+                   ((memq key '(?\C-p up backtab))
+                    (setq index (if matches
+                                    (mod (1- index) (length matches))
+                                  0)))
+                   ((memq key '(?\C-h backspace delete))
+                    (unless (string-empty-p filter)
+                      (setq filter (substring filter 0 -1))
+                      (setq index 0)))
+                   ((and (characterp key)
+                         (>= key 32)
+                         (/= key 127))
+                    (setq filter (concat filter (string key)))
+                    (setq index 0)))))))
+        (e-chat--inline-completion-delete)))))
 
 (defun e-chat-composer-bang ()
   "Run a leading composer ! command and insert its output as context."
@@ -1723,7 +1808,7 @@ scan."
   (if (not (e-chat--composer-word-boundary-prefix-p))
       (e-chat--self-insert-prefix)
     (condition-case nil
-        (if-let ((candidate (e-chat--completion-select
+        (if-let ((candidate (e-chat--inline-completion-select
                              "@ file: "
                              (e-chat--project-file-candidates))))
             (e-chat--insert-file-reference candidate)
@@ -1736,7 +1821,7 @@ scan."
   (if (not (e-chat--composer-word-boundary-prefix-p))
       (e-chat--self-insert-prefix)
     (condition-case nil
-        (if-let* ((candidate (e-chat--completion-select
+        (if-let* ((candidate (e-chat--inline-completion-select
                               "/ prompt: "
                               (e-chat--prompt-candidates)))
                   (prompt (plist-get candidate :prompt)))

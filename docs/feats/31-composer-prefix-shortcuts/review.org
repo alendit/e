@@ -18,6 +18,18 @@ The fix qualifies duplicate labels with their workspace root while leaving
 unique labels unchanged, and adds a regression that selects the secondary
 duplicate file and verifies the submitted reference content.
 
+Follow-up review on <2026-06-21 Sun> found two related UX robustness issues:
+
+- =@= file completion raised when any configured workspace root was stale or
+  missing, even when other workspace roots were still valid.
+- =@= and =/= prefix completion used an external picker path instead of keeping
+  autocomplete visually inline with the composer.
+
+The fix skips missing workspace roots during file candidate collection and
+routes =@= and =/= through an in-buffer inline completion popup.  Regressions
+cover stale root handling, =@= inline file selection, and =/= inline prompt
+selection without calling =completing-read=.
+
 * Final review
 
 Subagent re-review reported no new suggestions after the fix.
@@ -60,6 +72,31 @@ git diff --check
 
 Result: clean.
 
+Follow-up focused verification for stale workspace roots and inline composer
+completion:
+
+#+begin_src sh
+rtk eldev test -f test/e-chat-test.el e-chat-test-composer-prefix-cancel-keeps-literal-character e-chat-test-composer-empty-prefix-candidates-keep-literal-character e-chat-test-composer-at-skips-missing-workspace-roots e-chat-test-composer-at-inserts-file-reference e-chat-test-composer-at-uses-inline-completion-popup e-chat-test-composer-at-disambiguates-duplicate-workspace-files e-chat-test-composer-slash-expands-selected-prompt e-chat-test-composer-slash-uses-inline-completion-popup e-chat-test-composer-slash-render-error-does-not-insert
+#+end_src
+
+Result:
+
+#+begin_example
+Ran 9 tests, 9 results as expected, 0 unexpected
+#+end_example
+
+Broader feature verification:
+
+#+begin_src sh
+rtk eldev test test/e-chat-test.el test/e-prompts-test.el test/e-harness-test.el
+#+end_src
+
+Result:
+
+#+begin_example
+Ran 287 tests, 286 results as expected, 0 unexpected, 1 skipped
+#+end_example
+
 * UX and performance playthrough
 
 The reviewed user journey is invoking composer prefix file selection when
@@ -67,10 +104,18 @@ multiple workspace roots contain the same relative file name.  The fix keeps
 unique labels short while qualifying duplicates by workspace root, and the
 bounded live probe confirmed the duplicate candidates render as distinct labels.
 
-The interaction should remain keyboard-friendly because the candidate labels are
-disambiguated before selection rather than relying on hidden metadata.  No
-profiling was required; the label qualification is bounded by the candidate set
-already presented by the picker.
+Follow-up UX review requires =@= and =/= autocomplete to stay inline with the
+composer instead of opening a picker in a separate window.  The inline popup is
+owned by the composer command, appears at point, supports filtering and keyboard
+navigation, and is removed after selection or cancel.  Stale workspace roots are
+ignored during =@= candidate collection so one missing directory does not break
+autocomplete for the remaining live roots.
+
+The interaction should remain keyboard-friendly because duplicate file labels
+are disambiguated before selection rather than relying on hidden metadata, and
+because completion stays in the composer surface.  No profiling was required;
+the label qualification and stale-root skip are bounded by the candidate set
+already presented by autocomplete.
 
 * Live reload
 
@@ -87,10 +132,33 @@ Result:
 #+end_example
 
 A bounded live probe constructed two temporary workspace roots containing the
-same relative file name and confirmed that the picker labels are unique.
+same relative file name and confirmed that duplicate candidate labels are
+unique.
 
 #+begin_example
 (:count 2 :unique t :labels
         ("same.txt (.../e-live-primary-...)"
          "same.txt (.../e-live-secondary-...)"))
+#+end_example
+
+Follow-up reload for the inline popup and stale-root fix:
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Result:
+
+#+begin_example
+"/Users/dimitrivorona/projects/elisp/e/"
+#+end_example
+
+A bounded live probe used a temporary chat buffer and temporary workspace roots.
+It confirmed a missing workspace root was ignored, =completing-read= was not
+called, the inline file reference was inserted, and the popup overlay cleaned up
+after selection:
+
+#+begin_example
+(:labels ("keep.txt") :completion-called nil :composer "see @[keep.txt]"
+ :overlay-live nil)
 #+end_example

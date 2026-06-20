@@ -1137,7 +1137,7 @@
                               (plist-get result :output))))))
 
 (ert-deftest e-chat-test-composer-prefix-cancel-keeps-literal-character ()
-  "Cancelling a prefix picker leaves the typed prefix in the composer."
+  "Cancelling a prefix popup leaves the typed prefix in the composer."
   (let (buffer)
     (unwind-protect
         (progn
@@ -1147,40 +1147,33 @@
                        (lambda (&rest _args) (signal 'quit nil))))
               (e-chat-composer-bang))
             (insert " ")
-            (cl-letf (((symbol-function 'completing-read)
-                       (lambda (&rest _args) (signal 'quit nil)))
-                      ((symbol-function 'e-chat--project-file-candidates)
+            (let ((unread-command-events (list ?\C-g)))
+              (cl-letf (((symbol-function 'e-chat--project-file-candidates)
                        (lambda () (list (list :label "a.txt" :path "/tmp/a.txt")))))
-              (e-chat-composer-at))
+                (e-chat-composer-at)))
             (insert " ")
-            (cl-letf (((symbol-function 'completing-read)
-                       (lambda (&rest _args) (signal 'quit nil)))
-                      ((symbol-function 'e-chat--prompt-candidates)
+            (let ((unread-command-events (list ?\C-g)))
+              (cl-letf (((symbol-function 'e-chat--prompt-candidates)
                        (lambda () (list (list :label "review" :prompt 'prompt)))))
-              (e-chat-composer-slash))
+                (e-chat-composer-slash)))
             (should (equal (e-chat--composer-text) "! @ /"))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
 (ert-deftest e-chat-test-composer-empty-prefix-candidates-keep-literal-character ()
   "Empty file and prompt candidate sets leave the typed prefix literal."
-  (let (buffer picker-called)
+  (let (buffer)
     (unwind-protect
         (progn
           (setq buffer (e-chat-test--buffer nil "chat-prefix-empty"))
           (with-current-buffer buffer
-            (cl-letf (((symbol-function 'completing-read)
-                       (lambda (&rest _args)
-                         (setq picker-called t)
-                         ""))
-                      ((symbol-function 'e-chat--project-file-candidates)
+            (cl-letf (((symbol-function 'e-chat--project-file-candidates)
                        (lambda () nil))
                       ((symbol-function 'e-chat--prompt-candidates)
                        (lambda () nil)))
               (e-chat-composer-at)
               (insert " ")
               (e-chat-composer-slash))
-            (should-not picker-called)
             (should (equal (e-chat--composer-text) "@ /"))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
@@ -1228,6 +1221,24 @@
               (should-not (member "ignored.txt" labels)))))
       (delete-directory directory t))))
 
+(ert-deftest e-chat-test-composer-at-skips-missing-workspace-roots ()
+  "Project file completion ignores stale workspace roots and keeps live roots."
+  (let ((directory (make-temp-file "e-chat-prefix-live-root-" t))
+        (missing (expand-file-name "missing-root" temporary-file-directory)))
+    (unwind-protect
+        (progn
+          (with-temp-file (expand-file-name "keep.txt" directory)
+            (insert "keep\n"))
+          (when (file-exists-p missing)
+            (delete-directory missing t))
+          (cl-letf (((symbol-function 'e-chat--workspace-roots)
+                     (lambda () (list directory missing))))
+            (let ((labels (mapcar (lambda (candidate)
+                                    (plist-get candidate :label))
+                                  (e-chat--project-file-candidates))))
+              (should (member "keep.txt" labels)))))
+      (delete-directory directory t))))
+
 (ert-deftest e-chat-test-composer-at-inserts-file-reference ()
   "Word-boundary @ inserts a selected project file as an inline reference."
   (let (buffer)
@@ -1236,17 +1247,16 @@
           (setq buffer (e-chat-test--buffer nil "chat-prefix-at"))
           (with-current-buffer buffer
             (insert "see ")
-            (cl-letf (((symbol-function 'e-chat--project-file-candidates)
-                       (lambda ()
-                         (list (list :label "src/example.el"
-                                     :path "/tmp/example.el"))))
-                      ((symbol-function 'completing-read)
-                       (lambda (&rest _args) "src/example.el"))
-                      ((symbol-function 'e-chat--read-file-reference-text)
-                       (lambda (path)
-                         (should (equal path "/tmp/example.el"))
-                         "(message \"hi\")\n")))
-              (e-chat-composer-at))
+            (let ((unread-command-events (list ?\r)))
+              (cl-letf (((symbol-function 'e-chat--project-file-candidates)
+                         (lambda ()
+                           (list (list :label "src/example.el"
+                                       :path "/tmp/example.el"))))
+                        ((symbol-function 'e-chat--read-file-reference-text)
+                         (lambda (path)
+                           (should (equal path "/tmp/example.el"))
+                           "(message \"hi\")\n")))
+                (e-chat-composer-at)))
             (let* ((document (e-chat--composer-document))
                    (references (plist-get document :references))
                    (submission (plist-get (e-chat--composer-submission)
@@ -1257,6 +1267,32 @@
               (should (string-match-p (regexp-quote "file:///tmp/example.el")
                                       submission))
               (should (string-match-p (regexp-quote "(message \"hi\")")
+                                      submission)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-composer-at-uses-inline-completion-popup ()
+  "Word-boundary @ selects files through an inline composer popup."
+  (let (buffer)
+    (unwind-protect
+        (progn
+          (setq buffer (e-chat-test--buffer nil "chat-prefix-at-inline"))
+          (with-current-buffer buffer
+            (insert "see ")
+            (let ((unread-command-events (list ?\r)))
+              (cl-letf (((symbol-function 'e-chat--project-file-candidates)
+                         (lambda ()
+                           (list (list :label "src/example.el"
+                                       :path "/tmp/example.el"))))
+                        ((symbol-function 'completing-read)
+                         (lambda (&rest _args)
+                           (error "composer @ must not use completing-read")))
+                        ((symbol-function 'e-chat--read-file-reference-text)
+                         (lambda (_path) "(message \"hi\")\n")))
+                (e-chat-composer-at)))
+            (let ((submission (plist-get (e-chat--composer-submission)
+                                         :prompt)))
+              (should (string-match-p (regexp-quote "file:///tmp/example.el")
                                       submission)))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
@@ -1288,11 +1324,10 @@
                      (secondary-label (plist-get secondary-candidate :label)))
                 (should secondary-candidate)
                 (should-not (equal secondary-label "same.txt"))
-                (cl-letf (((symbol-function 'e-chat--project-file-candidates)
-                           (lambda () candidates))
-                          ((symbol-function 'completing-read)
-                           (lambda (&rest _args) secondary-label)))
-                  (e-chat-composer-at))
+                (let ((unread-command-events (list ?\C-n ?\r)))
+                  (cl-letf (((symbol-function 'e-chat--project-file-candidates)
+                             (lambda () candidates)))
+                    (e-chat-composer-at)))
                 (let ((submission (plist-get (e-chat--composer-submission)
                                              :prompt)))
                   (should (string-match-p
@@ -1342,15 +1377,41 @@
                                 :prompts (list prompt))))
               (e-harness-activate-capability e-chat-harness capability)
               (insert "please ")
-              (cl-letf (((symbol-function 'completing-read)
-                         (lambda (&rest _args) "review"))
-                        ((symbol-function 'e-chat--collect-prompt-arguments)
-                         (lambda (selected)
-                           (should (eq selected prompt))
-                           '(("focus" . "regressions")))))
-                (e-chat-composer-slash)))
+              (let ((unread-command-events (list ?\r)))
+                (cl-letf (((symbol-function 'e-chat--collect-prompt-arguments)
+                           (lambda (selected)
+                             (should (eq selected prompt))
+                             '(("focus" . "regressions")))))
+                  (e-chat-composer-slash))))
             (should (equal (e-chat--composer-text)
                            "please Review regressions."))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-composer-slash-uses-inline-completion-popup ()
+  "Word-boundary / selects prompts through an inline composer popup."
+  (let (buffer)
+    (unwind-protect
+        (progn
+          (setq buffer (e-chat-test--buffer nil "chat-prefix-slash-inline"))
+          (with-current-buffer buffer
+            (let* ((prompt (e-prompt-spec-create
+                            :name "review"
+                            :description "Review code."
+                            :parameters nil
+                            :template "Review now."))
+                   (capability (e-capability-with-prompts-create
+                                :id 'review-prompts
+                                :name "Review Prompts"
+                                :instructions "Use review prompts."
+                                :prompts (list prompt)))
+                   (unread-command-events (list ?\r)))
+              (e-harness-activate-capability e-chat-harness capability)
+              (cl-letf (((symbol-function 'completing-read)
+                         (lambda (&rest _args)
+                           (error "composer / must not use completing-read"))))
+                (e-chat-composer-slash)))
+            (should (equal (e-chat--composer-text) "Review now."))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -1369,15 +1430,14 @@
                                   :name "topic"
                                   :description "Topic."))
                            :template "Topic ${topic}.")))
-              (cl-letf (((symbol-function 'e-chat--prompt-candidates)
+              (let ((unread-command-events (list ?\r)))
+                (cl-letf (((symbol-function 'e-chat--prompt-candidates)
                          (lambda () (list (list :label "needs-topic"
                                                 :prompt prompt))))
-                        ((symbol-function 'completing-read)
-                         (lambda (&rest _args) "needs-topic"))
                         ((symbol-function 'e-chat--collect-prompt-arguments)
                          (lambda (_prompt) nil)))
-                (should-error (e-chat-composer-slash) :type 'user-error)
-                (should (string-empty-p (e-chat--composer-text)))))))
+                  (should-error (e-chat-composer-slash) :type 'user-error)
+                  (should (string-empty-p (e-chat--composer-text))))))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
