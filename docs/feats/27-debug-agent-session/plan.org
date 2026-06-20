@@ -291,6 +291,12 @@ Each package is a useful stopping point: after it, the project is better off.
   buffer and from a chat buffer, inspecting the session messages/context in the
   running Emacs.
 - Value alone: the headline workflow ("debug what just happened here") works.
+- Implemented: =e-debug-here= captures focused source context, recent failure
+  detail references, safety/remediation guidance, submits to the standing debug
+  session, and displays it through the debug tab policy. Verified with focused
+  debug tests, adjacent chat/context/default/package tests, =git diff --check=,
+  =e-dev-reload=, and a bounded live source-buffer plus chat-buffer submission
+  probe with provider submission stubbed.
 
 ** WP4: Discoverability + docs
 

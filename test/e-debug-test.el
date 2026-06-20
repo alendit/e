@@ -16,6 +16,7 @@
 (require 'e)
 (require 'e-backend)
 (require 'e-chat)
+(require 'e-context-inspection)
 (require 'e-debug)
 (require 'e-harness)
 (require 'e-harness-instances)
@@ -114,6 +115,76 @@
     (should command)
     (should (eq (e-shell-command-interactive command) 'e-debug))
     (should (commandp (e-shell-command-interactive command)))))
+
+(ert-deftest e-debug-test-capture-builds-source-and-failure-references ()
+  "Debug capture includes focused source and recent failure detail references."
+  (let* ((store (e-session-store-create))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :sessions store)))
+    (e-harness-create-session harness :id "failed-session"
+                              :metadata '(:project-root "/tmp/project/"))
+    (e-session-append-message
+     store "failed-session"
+     '(:id "msg-1" :role user :content "broken prompt" :turn-id "turn-1"))
+    (e-session-append-activity-event
+     store "failed-session" "turn-1" 'turn-failed
+     '(:error "provider failed" :details (:status 520)))
+    (with-temp-buffer
+      (insert "alpha\nbeta\ngamma\n")
+      (goto-char (point-min))
+      (forward-line 1)
+      (let* ((capture (e-debug--capture
+                       :question ""
+                       :inspection-harness harness))
+             (prompt (plist-get capture :prompt))
+             (references (plist-get capture :references)))
+        (should (string-match-p "Debug what just happened here\\." prompt))
+        (should (string-match-p "Diagnose first" prompt))
+        (should (string-match-p "\\[source\\]" prompt))
+        (should (string-match-p "\\[failure-1\\]" prompt))
+        (should (string-match-p "provider failed" prompt))
+        (should (= (length references) 2))
+        (should (equal (plist-get (car references) :id) "source"))
+        (should (equal (plist-get (cadr references) :id) "failure-1"))))))
+
+(ert-deftest e-debug-test-here-submits-to-standing-session ()
+  "`e-debug-here' submits the assembled prompt to the standing debug session."
+  (let* ((debug-store (e-session-store-create))
+         (debug-harness (e-harness-create
+                         :backend (e-backend-fake-create :items nil)
+                         :sessions debug-store))
+         (inspection-harness (e-harness-create
+                              :backend (e-backend-fake-create :items nil)
+                              :sessions (e-session-store-create)))
+         submitted
+         shown-buffer
+         (e-debug--session-id nil))
+    (cl-letf (((symbol-function 'e-debug--default-harness)
+               (lambda () debug-harness))
+              ((symbol-function 'e-debug--inspection-harness)
+               (lambda () inspection-harness))
+              ((symbol-function 'read-string)
+               (lambda (&rest _args) "why did it fail?"))
+              ((symbol-function 'e-chat-submit-session)
+               (lambda (harness session-id prompt &rest args)
+                 (setq submitted
+                       (list :harness harness
+                             :session-id session-id
+                             :prompt prompt
+                             :references (plist-get args :references)
+                             :metadata (plist-get args :metadata)))))
+              ((symbol-function 'e-debug--show-buffer)
+               (lambda (buffer)
+                 (setq shown-buffer buffer))))
+      (let ((session-id (e-debug-here)))
+        (should (equal session-id e-debug--session-id))
+        (should (eq (plist-get submitted :harness) debug-harness))
+        (should (equal (plist-get submitted :session-id) session-id))
+        (should (string-match-p "why did it fail\\?" (plist-get submitted :prompt)))
+        (should (equal (plist-get (plist-get submitted :metadata) :source)
+                       'e-debug-here))
+        (should shown-buffer)))))
 
 (provide 'e-debug-test)
 
