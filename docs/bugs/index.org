@@ -8,6 +8,8 @@ State values for coding agents:
 
 | State  | Path | Title |
 |--------+------+-------|
+| New | org-canvas-open-existing-session-no-bottom-window/ | Org Canvas Open Existing Session No Bottom Window |
+| New | org-canvas-input-open-session-reuses-input-buffer/ | Org Canvas Input Open Session Reuses Input Buffer |
 | Closed | abort-url-network-process/ | Abort Url Network Process |
 | Closed | compaction-empty-summary/ | Compaction Empty Summary |
 | Closed | backend-empty-output-masks-provider-html-error/ | Backend Empty Output Masks Provider HTML Error |

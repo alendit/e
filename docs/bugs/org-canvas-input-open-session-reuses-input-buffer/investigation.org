@@ -1,0 +1,78 @@
+#+title: Org Canvas Input Open Session Reuses Input Buffer Investigation
+#+startup: overview
+
+* Source inspected
+
+- =lisp/shells/e-org-canvas.el=: =s-i= is bound by =e-org-canvas-mode-map= to
+  =e-org-canvas-prompt-thread=.
+- =lisp/shells/e-org-canvas.el=: =e-org-canvas--prompt-scope= calls
+  =e-org-canvas--ensure-current-session=, creates an
+  =e-org-canvas-input-mode= buffer, and displays it below the target canvas via
+  =e-org-canvas--input-display-window=.
+- =lisp/shells/e-org-canvas.el=: =e-org-canvas-input-open-session= calls
+  =e-chat-open= with the input pane's harness and session id.
+- =lisp/shells/chat/e-chat.el=: =e-chat--find-session-buffer= returns the first
+  live buffer derived from =e-chat-mode= with the requested =e-chat-session-id=.
+  It does not exclude transient =e-org-canvas-input-mode= buffers.
+- =lisp/shells/e-org-canvas.el=: =e-org-canvas--input-buffer= intentionally
+  initializes a transient pane by resetting chat presentation state and inserting
+  a composer, rather than rendering the full backing session transcript.
+
+* Live inspection
+
+By the time the running Emacs was inspected, the originally reported visible
+Org Canvas session was no longer present. The only visible window was
+=plan.org<7>=, and =e-org-canvas--buffer-session= returned nil for it.
+
+* Controlled reproduction
+
+A controlled live probe used an isolated fake harness, a temporary Org buffer,
+and an existing Org Canvas session with two durable messages. The probe opened
+the Org Canvas input pane and then ran =e-org-canvas-input-open-session= from
+that pane.
+
+Result:
+
+#+begin_src emacs-lisp
+(:input-buffer "*e-chat:Org Canvas: e-org-canvas-controlled.org*<2>"
+ :opened-buffer "*e-chat:Org Canvas: e-org-canvas-controlled.org*<2>"
+ :opened-same-as-input t
+ :opened-mode e-chat-mode
+ :opened-displayed t
+ :opened-windows ((:buffer "*e-chat:Org Canvas: e-org-canvas-controlled.org*<2>"
+                  :mode e-chat-mode :height 8)
+                 (:buffer "e-org-canvas-controlled.org"
+                  :mode org-mode :height 55))
+ :opened-has-history t)
+#+end_src
+
+The controlled probe did render durable user and assistant messages after
+reattaching the buffer, so the exact missing-history symptom was not reproduced
+with durable session messages alone.
+
+It did reproduce a suspicious buffer-identity bug: opening the backing session
+from the input pane reused the transient input pane itself as the chat buffer.
+The selected bottom window became the input buffer converted to =e-chat-mode=,
+instead of revealing or creating a distinct backing chat buffer.
+
+* Conclusion
+
+The likely root cause area is session-buffer discovery, not session lookup. The
+Org Canvas input pane is derived from =e-chat-mode= and carries the same
+=e-chat-session-id= as the backing session. Therefore =e-chat--find-session-buffer=
+can treat the transient input pane as the canonical chat buffer for that
+session.
+
+That explains why the bottom window can become a new chat-like buffer for the
+existing session. It also creates a plausible path for missing history whenever
+the visible backing chat contains state that is not reconstructed from durable
+session messages and activity events, or when the transient pane is perceived as
+the backing chat before =C-c C-o= is used.
+
+* Next step
+
+Add a regression for =e-org-canvas-input-open-session= with an existing normal
+chat buffer and a visible transient input pane for the same session. The expected
+behavior should be explicit: the command should reveal the normal backing chat
+buffer with history, and =e-chat--find-session-buffer= should not select
+=e-org-canvas-input-mode= buffers as ordinary chat buffers.

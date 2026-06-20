@@ -1,0 +1,12 @@
+#+title: Org Canvas Input Open Session Reuses Input Buffer
+#+startup: overview
+
+* Report
+
+The user reported that pressing =s-i= from an Org Canvas can open a bottom
+window, but the resulting chat lacks the existing session history.
+
+The suspected trigger is opening a backing chat for an existing Org Canvas
+session from the transient input pane. Expected behavior: the command for opening
+the backing session should reveal the normal chat buffer for that session with
+its history, not produce an empty or transient chat-like buffer.

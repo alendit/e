@@ -1,0 +1,13 @@
+#+title: Org Canvas Open Existing Session No Bottom Window
+#+startup: overview
+
+* Report
+
+The user reported that calling =e-org-canvas-open-for-current-buffer= on an Org
+Canvas that already has an associated session does not open a chat window at
+the bottom.
+
+The suspected trigger is the case where a chat buffer for that session already
+exists. Expected behavior: reopening an Org Canvas session should make the
+backing chat visible in a bottom window while leaving the canvas available for
+continued editing.
