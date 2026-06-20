@@ -5497,6 +5497,30 @@ The context-window denominator comes from the live provider lookup
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-auto-compaction-renders-distinct-label ()
+  "Auto-compaction events render with a distinct visible label."
+  (let* ((backend (e-backend-fake-create :items nil))
+         (harness (e-harness-create :backend backend))
+         (buffer (e-chat-open :harness harness :session-id "chat-auto-label")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (let ((store (e-harness-sessions e-chat-harness)))
+            (e-harness--emit-turn-event
+             e-chat-harness e-chat-session-id "turn-auto" 'compaction-started
+             '(:reason auto))
+            (e-session-append-compaction
+             store e-chat-session-id "summary"
+             :metadata '(:reason auto))
+            (e-harness--emit-turn-event
+             e-chat-harness e-chat-session-id "turn-auto" 'compaction-finished
+             '(:compaction-id "compaction-auto" :reason auto))
+            (should (string-match-p "Auto-compaction started"
+                                    (buffer-string)))
+            (should (string-match-p "Auto-compacted context into"
+                                    (buffer-string)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-mid-turn-compact-session-renders-visible-message ()
   "A model-triggered compaction tool call renders visible chat progress."
   (let* ((calls 0)

@@ -16,6 +16,7 @@
 (require 'e-capability-config)
 (require 'e-compaction)
 (require 'e-context)
+(require 'e-context-budget)
 (require 'e-events)
 (require 'e-hooks)
 (require 'e-layers)
@@ -34,6 +35,21 @@
 (define-error 'e-harness-no-active-turn "No active turn")
 (define-error 'e-harness-active-turn-exists
   "Session already has an active turn")
+
+(defgroup e-harness nil
+  "Core harness service for e."
+  :group 'e)
+
+(defcustom e-harness-auto-compaction-enabled t
+  "When non-nil, auto-compact before a turn that would near the context window."
+  :type 'boolean
+  :group 'e-harness)
+
+(defcustom e-harness-auto-compaction-reserve-tokens 16384
+  "Tokens to reserve below the model context window before auto-compacting.
+Auto-compaction triggers when estimated context exceeds WINDOW minus this."
+  :type 'integer
+  :group 'e-harness)
 
 (cl-defstruct (e-harness (:constructor e-harness--make))
   backend
@@ -932,7 +948,7 @@ TURN-ID is passed to active capability context providers when present."
 
 (cl-defun e-harness-compact-session
     (harness session-id &key instructions keep-recent-tokens allow-active-turn
-             turn-id)
+             turn-id (reason 'manual))
   "Manually compact SESSION-ID in HARNESS and append a durable record."
   (when (and (not allow-active-turn)
              (e-harness--active-turn-running-p
@@ -949,6 +965,7 @@ TURN-ID is passed to active capability context providers when present."
           (e-harness--emit-turn-event
            harness session-id turn-id 'compaction-started
            (list :instructions instructions
+                 :reason reason
                  :active-turn allow-active-turn))
           (setq preparation
                 (e-compaction-prepare
@@ -956,16 +973,18 @@ TURN-ID is passed to active capability context providers when present."
                  session-id
                  :instructions instructions
                  :keep-recent-tokens keep-recent-tokens
-                 :allow-split-turn allow-active-turn))
+                 :allow-split-turn allow-active-turn
+                 :reason reason))
           (e-harness--emit-turn-event
            harness session-id turn-id 'compaction-prepared
            (list :first-kept-entry-id
                  (plist-get preparation :first-kept-entry-id)
+                 :reason reason
                  :tokens-before (plist-get preparation :tokens-before)
                  :tokens-kept (plist-get preparation :tokens-kept)))
           (e-harness--emit-turn-event
            harness session-id turn-id 'compaction-summary-started
-           (list :backend t))
+           (list :backend t :reason reason))
           (e-backend-stream
            (e-harness-backend harness)
            :messages (e-compaction-summary-messages preparation)
@@ -1012,6 +1031,7 @@ TURN-ID is passed to active capability context providers when present."
               (e-harness--emit-turn-event
                harness session-id turn-id 'compaction-finished
                (list :compaction-id (plist-get record :id)
+                     :reason (plist-get (plist-get record :metadata) :reason)
                      :first-kept-entry-id
                      (plist-get record :first-kept-entry-id)
                      :tokens-before (plist-get record :tokens-before)
@@ -1024,8 +1044,64 @@ TURN-ID is passed to active capability context providers when present."
            (ignore-errors (e-backend-cancel-request request)))
          (e-harness--emit-turn-event
           harness session-id turn-id 'compaction-failed
-          (list :message message :details details))
+          (list :message message :details details :reason reason))
          (signal (car err) (cdr err)))))))
+
+(defun e-harness--auto-compaction-reserve-tokens ()
+  "Return a normalized auto-compaction reserve."
+  (if (and (integerp e-harness-auto-compaction-reserve-tokens)
+           (>= e-harness-auto-compaction-reserve-tokens 0))
+      e-harness-auto-compaction-reserve-tokens
+    16384))
+
+(defun e-harness--auto-compaction-suffix-tokens (harness session-id compaction)
+  "Return estimated current suffix tokens since COMPACTION."
+  (let* ((boundary-id (plist-get compaction :first-kept-entry-id))
+         (entries (and boundary-id
+                       (e-session-entries-from
+                        (e-harness-sessions harness)
+                        session-id
+                        boundary-id))))
+    (when entries
+      (apply #'+ (mapcar #'e-compaction-entry-token-estimate entries)))))
+
+(defun e-harness--auto-compaction-no-progress-p (harness session-id)
+  "Return non-nil when another auto-compaction would not move the boundary."
+  (when-let ((latest (e-session-latest-valid-compaction
+                      (e-harness-sessions harness)
+                      session-id)))
+    (let ((suffix-tokens
+           (e-harness--auto-compaction-suffix-tokens
+            harness session-id latest))
+          (keep (if (and (integerp e-compaction-keep-recent-tokens)
+                         (> e-compaction-keep-recent-tokens 0))
+                    e-compaction-keep-recent-tokens
+                  20000)))
+      (and suffix-tokens (< suffix-tokens keep)))))
+
+(defun e-harness--auto-compaction-needed-p (harness session-id)
+  "Return non-nil when SESSION-ID should auto-compact before prompting."
+  (when e-harness-auto-compaction-enabled
+    (when-let ((status (e-context-budget-status
+                        harness session-id
+                        :prefer-token-usage t
+                        :estimate-context t)))
+      (let ((used (plist-get status :used-tokens))
+            (window (plist-get status :window))
+            (reserve (e-harness--auto-compaction-reserve-tokens)))
+        (and (integerp used)
+             (integerp window)
+             (> window reserve)
+             (> used (- window reserve))
+             (not (e-harness--auto-compaction-no-progress-p
+                   harness session-id)))))))
+
+(defun e-harness--maybe-auto-compact-session (harness session-id)
+  "Best-effort auto-compact SESSION-ID when it is near the context window."
+  (when (e-harness--auto-compaction-needed-p harness session-id)
+    (condition-case err
+        (e-harness-compact-session harness session-id :reason 'auto)
+      (e-compaction-error nil))))
 
 (defun e-harness--cancel-active-request (entry)
   "Cancel ENTRY's active backend or tool request when one exists."
@@ -1223,6 +1299,7 @@ cancellation.  SESSION-ID identifies the session."
      (when (e-harness--active-turn-running-p
             (gethash session-id (e-harness-active-turns harness)))
        (signal 'e-harness-active-turn-exists (list session-id)))
+     (e-harness--maybe-auto-compact-session harness session-id)
      (let* ((turn-id (e-harness--next-turn-id))
             (entry (list :id turn-id
                          :status 'running

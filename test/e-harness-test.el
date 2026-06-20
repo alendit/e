@@ -2234,6 +2234,157 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
                                 :summary)
                      "Second summary.")))))
 
+(ert-deftest e-harness-test-auto-compaction-runs-before_prompt_turn ()
+  "Above-threshold prompts auto-compact once before appending the new user turn."
+  (let ((calls nil))
+    (let* ((backend (e-backend-create
+                     :name 'auto-summary
+                     :stream
+                     (cl-function
+                      (lambda (&key messages options on-item)
+                        (ignore options)
+                        (push messages calls)
+                        (funcall on-item
+                                 (list :type 'assistant-message
+                                       :content (if (= (length calls) 1)
+                                                    "Auto summary."
+                                                  "Answer.")))
+                        (funcall on-item '(:type done :reason stop))))))
+           (harness (e-harness-create
+                     :backend backend
+                     :default-options '(:model "auto-model")))
+           (store (e-harness-sessions harness))
+           (e-context-budget-model-token-limits '(("auto-model" . 100)))
+           (e-harness-auto-compaction-reserve-tokens 10))
+      (e-harness-create-session harness :id "session-1")
+      (e-session-append-message store "session-1"
+                                '(:role user :content "old question"))
+      (e-session-append-message store "session-1"
+                                '(:role assistant :content "old answer"))
+      (e-session-append-message store "session-1"
+                                '(:id "kept" :role user :content "new topic"))
+      (e-session-append-activity-event
+       store "session-1" "turn-1" 'token-usage
+       '(:input-tokens 95 :total-tokens 96))
+      (e-harness-prompt-async harness "session-1" "fresh prompt")
+      (should (equal (plist-get (e-harness-wait harness "session-1" 1.0)
+                                :status)
+                     'done))
+      (let ((record (car (e-session-compactions store "session-1"))))
+        (should record)
+        (should (eq (plist-get (plist-get record :metadata) :reason) 'auto)))
+      (should (= (length calls) 2))
+      (let ((summary-prompt (mapconcat
+                             (lambda (message)
+                               (or (plist-get message :content) ""))
+                             (car (last calls))
+                             "\n")))
+        (should (string-match-p "old question" summary-prompt))
+        (should-not (string-match-p "fresh prompt" summary-prompt))))))
+
+(ert-deftest e-harness-test-auto-compaction-skips_unknown_window ()
+  "Unknown model windows do not trigger auto-compaction."
+  (let ((calls 0))
+    (let* ((backend (e-backend-create
+                     :name 'unknown-window
+                     :stream
+                     (cl-function
+                      (lambda (&key messages options on-item)
+                        (ignore messages options)
+                        (setq calls (1+ calls))
+                        (funcall on-item
+                                 '(:type assistant-message :content "Answer."))
+                        (funcall on-item '(:type done :reason stop))))))
+           (harness (e-harness-create
+                     :backend backend
+                     :default-options '(:model "unknown-model")))
+           (store (e-harness-sessions harness))
+           (e-context-budget-model-token-limits nil)
+           (e-harness-auto-compaction-reserve-tokens 10))
+      (e-harness-create-session harness :id "session-1")
+      (e-session-append-message store "session-1"
+                                '(:role user :content "old question"))
+      (e-session-append-activity-event
+       store "session-1" "turn-1" 'token-usage
+       '(:input-tokens 999999 :total-tokens 1000000))
+      (e-harness-prompt-async harness "session-1" "fresh prompt")
+      (should (equal (plist-get (e-harness-wait harness "session-1" 1.0)
+                                :status)
+                     'done))
+      (should (= calls 1))
+      (should-not (e-session-compactions store "session-1")))))
+
+(ert-deftest e-harness-test-auto-compaction_skip_no_progress_boundary ()
+  "Auto-compaction skips when the prior boundary cannot move meaningfully."
+  (let ((calls 0))
+    (let* ((backend (e-backend-create
+                     :name 'no-progress
+                     :stream
+                     (cl-function
+                      (lambda (&key messages options on-item)
+                        (ignore messages options)
+                        (setq calls (1+ calls))
+                        (funcall on-item
+                                 '(:type assistant-message :content "Answer."))
+                        (funcall on-item '(:type done :reason stop))))))
+           (harness (e-harness-create
+                     :backend backend
+                     :default-options '(:model "auto-model")))
+           (store (e-harness-sessions harness))
+           (e-context-budget-model-token-limits '(("auto-model" . 100)))
+           (e-harness-auto-compaction-reserve-tokens 10)
+           (e-compaction-keep-recent-tokens 1000))
+      (e-harness-create-session harness :id "session-1")
+      (e-session-append-message store "session-1"
+                                '(:id "kept" :role user :content "kept suffix"))
+      (e-session-append-compaction store "session-1" "Summary"
+                                   :first-kept-entry-id "kept")
+      (e-session-append-activity-event
+       store "session-1" "turn-1" 'token-usage
+       '(:input-tokens 95 :total-tokens 96))
+      (e-harness-prompt-async harness "session-1" "fresh prompt")
+      (should (equal (plist-get (e-harness-wait harness "session-1" 1.0)
+                                :status)
+                     'done))
+      (should (= calls 1))
+      (should (= (length (e-session-compactions store "session-1")) 1)))))
+
+(ert-deftest e-harness-test-auto-compaction_expected_failure_keeps_prompt ()
+  "Expected auto-compaction preparation failures do not block the prompt."
+  (let ((calls 0))
+    (let* ((backend (e-backend-create
+                     :name 'expected-failure
+                     :stream
+                     (cl-function
+                      (lambda (&key messages options on-item)
+                        (ignore messages options)
+                        (setq calls (1+ calls))
+                        (funcall on-item
+                                 '(:type assistant-message :content "Answer."))
+                        (funcall on-item '(:type done :reason stop))))))
+           (harness (e-harness-create
+                     :backend backend
+                     :default-options '(:model "auto-model")))
+           (store (e-harness-sessions harness))
+           (e-context-budget-model-token-limits '(("auto-model" . 100)))
+           (e-harness-auto-compaction-reserve-tokens 10))
+      (e-harness-create-session harness :id "session-1")
+      (e-session-append-message store "session-1"
+                                '(:role user :content "only one message"))
+      (e-session-append-activity-event
+       store "session-1" "turn-1" 'token-usage
+       '(:input-tokens 95 :total-tokens 96))
+      (e-harness-prompt-async harness "session-1" "fresh prompt")
+      (should (equal (plist-get (e-harness-wait harness "session-1" 1.0)
+                                :status)
+                     'done))
+      (should (= calls 1))
+      (should (seq-find
+               (lambda (message)
+                 (equal (plist-get message :content) "fresh prompt"))
+               (e-session-messages store "session-1")))
+      (should-not (e-session-compactions store "session-1")))))
+
 (ert-deftest e-harness-test-compact-session-failure-does-not_append-record ()
   "Backend compaction failures leave session compactions unchanged."
   (let* ((backend (e-backend-create

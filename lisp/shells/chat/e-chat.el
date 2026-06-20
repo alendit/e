@@ -4301,9 +4301,13 @@ When REFRESH-MODE-LINE is non-nil, also refresh context-aware mode-line text."
        (e-chat--set-status "compacting")
        (e-chat--insert-entry
         "System"
-        (if (plist-get payload :active-turn)
-            "Agent compacting context mid-turn"
-          "Context compaction started")
+        (cond
+         ((eq (plist-get payload :reason) 'auto)
+          "Auto-compaction started")
+         ((plist-get payload :active-turn)
+          "Agent compacting context mid-turn")
+         (t
+          "Context compaction started"))
         t
         (plist-get event :turn-id))))
     ('compaction-prepared
@@ -4323,7 +4327,10 @@ When REFRESH-MODE-LINE is non-nil, also refresh context-aware mode-line text."
        (e-chat--set-status "compacted" t)
        (e-chat--insert-entry
         "System"
-        (format "Context compacted into %s"
+        (format "%s %s"
+                (if (eq (plist-get payload :reason) 'auto)
+                    "Auto-compacted context into"
+                  "Context compacted into")
                 (or (plist-get payload :compaction-id) "summary"))
         t
         (plist-get event :turn-id))
@@ -4333,9 +4340,13 @@ When REFRESH-MODE-LINE is non-nil, also refresh context-aware mode-line text."
      (e-chat--set-status "compaction failed")
      (e-chat--insert-entry
       "System"
-      (format "Context compaction failed: %s"
-              (or (plist-get (plist-get event :payload) :message)
-                  "unknown error"))
+      (let ((payload (plist-get event :payload)))
+        (format "%s: %s"
+                (if (eq (plist-get payload :reason) 'auto)
+                    "Auto-compaction failed"
+                  "Context compaction failed")
+                (or (plist-get payload :message)
+                    "unknown error")))
       t
       (plist-get event :turn-id)))
     ('message-added

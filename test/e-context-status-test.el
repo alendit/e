@@ -131,8 +131,8 @@
     (e-session-create store :id "status-cache")
     (e-session-append-message
      store "status-cache" '(:role user :content "first"))
-    (cl-letf* ((orig (symbol-function 'e-context-status-context-token-estimate))
-               ((symbol-function 'e-context-status-context-token-estimate)
+    (cl-letf* ((orig (symbol-function 'e-context-budget-context-token-estimate))
+               ((symbol-function 'e-context-budget-context-token-estimate)
                 (lambda (&rest args)
                   (setq calls (1+ calls))
                   (apply orig args))))

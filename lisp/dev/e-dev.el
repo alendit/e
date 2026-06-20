@@ -86,6 +86,7 @@
                   "lisp/core/e-session.el"
                   "lisp/core/e-compaction.el"
                   "lisp/core/e-context.el"
+                  "lisp/core/e-context-budget.el"
                   "lisp/core/e-tools.el"
                   "lisp/core/e-operations.el"
                   "lisp/core/e-resource-patterns.el"
