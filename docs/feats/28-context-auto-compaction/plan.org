@@ -246,11 +246,13 @@ introduced.
 - Existing sessions and durable compaction records remain valid; auto records use
   the same shape with =:reason auto=.
 - Manual =e-chat-compact-session= is unchanged and remains the override.
-- Moving the model-window table to core may obsolete
-  =e-context-status-model-token-limits=. Provide a one-release obsolete alias
-  only if user config likely sets it; otherwise remove and document the rename.
-- No long-lived shims for in-memory struct layout; a defcustom/module move does
-  not require one.
+- Moving the model-window table to core renames the public customization point
+  from =e-context-status-model-token-limits= to the core-owned budget variable.
+  Update internal callers and mention the rename in the feature notes; do not
+  plan a release-style compatibility shim unless there is concrete evidence that
+  user config already depends on the old name.
+- No long-lived shims for in-memory struct layout or moved defcustoms; update
+  references at the module boundary instead of carrying obsolete paths.
 
 * Testing plan
 Core trigger logic must be testable without a real backend, using the fake
