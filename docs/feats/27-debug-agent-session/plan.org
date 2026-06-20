@@ -302,6 +302,9 @@ Each package is a useful stopping point: after it, the project is better off.
 
 - Suggested binding for =e-debug-here=, README section, and =docs/feats/index=
   status update. Mention the multi-issue follow-up explicitly.
+- Implemented: README documents =e-debug=, =e-debug-here=, the default tab
+  behavior, and a suggested =C-c e d= binding. Package smoke tests include both
+  public debug commands.
 
 * Follow-up: multiple concurrent debug issues
 

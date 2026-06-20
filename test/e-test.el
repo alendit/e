@@ -44,6 +44,8 @@
     e-org-canvas-list-sessions
     e-org-canvas-list-project-sessions
     e-org-canvas-resume
+    e-debug
+    e-debug-here
     e-layers-toggle
     e-layers-enable
     e-layers-disable
@@ -218,6 +220,8 @@
   (should (commandp 'e-chat-rename))
   (should (commandp 'e-chat-set-model))
   (should (commandp 'e-chat-set-effort))
+  (should (commandp 'e-debug))
+  (should (commandp 'e-debug-here))
   (should (commandp 'e-chat-show-context))
   (should (commandp 'e-chat-context-mode))
   (should (commandp 'e-chat-submit))

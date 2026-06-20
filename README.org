@@ -161,6 +161,10 @@ Current shells:
 
 - =e-chat=: chat buffer presentation over the harness and =chat-session= capability
 - =e-canvas=: commands for attaching buffers/files as live canvas context
+- =e-debug=: standing debug-agent chat session. =M-x e-debug= opens the session
+  in a separate tab by default; =M-x e-debug-here= captures the current source
+  or chat failure context and submits it to that standing session. A useful
+  local binding is =(global-set-key (kbd "C-c e d") #'e-debug-here)=.
 
 ** Prompt flow
 
