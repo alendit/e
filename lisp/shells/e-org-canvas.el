@@ -482,6 +482,19 @@ the display to a normal window when the selected window is a side window."
      (t (switch-to-buffer buffer))))
   buffer)
 
+(defun e-org-canvas--display-chat-buffer (buffer)
+  "Display Org Canvas backing chat BUFFER and keep chat invariants current."
+  (when (buffer-live-p buffer)
+    (let ((window (if (e-chat--side-window-p)
+                      (e-chat--display-from-side-window buffer)
+                    (display-buffer
+                     buffer
+                     '((display-buffer-at-bottom)
+                       (inhibit-same-window . t))))))
+      (when (window-live-p window)
+        (e-chat--after-display-buffer buffer))
+      window)))
+
 (defun e-org-canvas--open-session-for-buffer
     (buffer &optional needs-file-name target-folder)
   "Create and open an Org Canvas session for BUFFER."
@@ -525,7 +538,9 @@ the display to a normal window when the selected window is a side window."
                 (e-org-canvas-mode 1))
               (message "Org Canvas resumed for %s; use s-i to prompt the current topic"
                        (buffer-name source))
-              (e-chat-open :harness harness :session-id existing))
+              (let ((chat-buffer (e-chat-open :harness harness :session-id existing)))
+                (e-org-canvas--display-chat-buffer chat-buffer)
+                chat-buffer))
           (e-org-canvas--select-org-buffer source))
       (prog1 (e-org-canvas--open-session-for-buffer source)
         (e-org-canvas--select-org-buffer source)))))

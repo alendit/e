@@ -96,3 +96,26 @@ Add a regression around reopening an existing Org Canvas session from a visible
 Org buffer. The test should assert that the backing chat is displayed in a
 bottom window, not merely returned, and should clarify whether this applies to
 new sessions, existing sessions, or both.
+
+* Fix
+
+Added =e-org-canvas-test-open-existing-session-displays-chat-below-source= to
+cover reopening a file-backed Org Canvas session. The regression keeps the Org
+source buffer visible, reopens the existing session, and asserts that the
+backing chat has a live window below the source while the source window remains
+selected.
+
+Implemented =e-org-canvas--display-chat-buffer= and used it in the existing
+session branch of =e-org-canvas-open-for-current-buffer=. The command still
+returns the backing chat buffer and reselects the Org source buffer, but now it
+also displays the chat in a bottom window before restoring source focus.
+
+* Validation
+
+#+begin_src sh
+rtk eldev test -f test/e-org-canvas-test.el e-org-canvas-test-open-existing-session-displays-chat-below-source
+rtk eldev test -f test/e-org-canvas-test.el
+#+end_src
+
+The focused regression passed, and the full Org Canvas test file passed with 49
+expected results and 0 unexpected results.

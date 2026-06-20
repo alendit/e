@@ -157,6 +157,47 @@
           (kill-buffer buffer)))
       (delete-directory directory t))))
 
+(ert-deftest e-org-canvas-test-open-existing-session-displays-chat-below-source ()
+  "Reopening an existing Org Canvas session displays its chat below the source."
+  (let ((directory (make-temp-file "e-org-canvas-" t))
+        (harness (e-org-canvas-test--harness))
+        (original-window (selected-window))
+        (original-buffer (window-buffer))
+        source
+        chat-buffer)
+    (unwind-protect
+        (e-org-canvas-test--with-empty-harness-registry
+          (let* ((e-chat-default-harness-id :org-canvas-test)
+                 (file (e-org-canvas-test--org-file directory "notes.org")))
+            (e-harness-registry-register :org-canvas-test harness)
+            (delete-other-windows)
+            (setq source (find-file-noselect file))
+            (set-window-buffer original-window source)
+            (select-window original-window)
+            (with-current-buffer source
+              (e-org-canvas-open-for-current-buffer))
+            (delete-other-windows)
+            (set-window-buffer original-window source)
+            (select-window original-window)
+            (setq chat-buffer
+                  (with-current-buffer source
+                    (e-org-canvas-open-for-current-buffer)))
+            (let ((source-window (get-buffer-window source t))
+                  (chat-window (get-buffer-window chat-buffer t)))
+              (should (window-live-p source-window))
+              (should (window-live-p chat-window))
+              (should (eq (selected-window) source-window))
+              (should (> (nth 1 (window-edges chat-window))
+                         (nth 1 (window-edges source-window)))))))
+      (when (window-live-p original-window)
+        (select-window original-window)
+        (set-window-buffer original-window original-buffer))
+      (delete-other-windows)
+      (when (buffer-live-p source)
+        (kill-buffer source))
+      (e-org-canvas-test--kill-chat-buffers)
+      (delete-directory directory t))))
+
 (ert-deftest e-org-canvas-test-new-file-directory-starts-unsaved-folder-canvas ()
   "Selecting a directory creates an unsaved Org Canvas targeting that folder."
   (let ((directory (file-name-as-directory
