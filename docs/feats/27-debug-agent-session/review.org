@@ -1,0 +1,136 @@
+#+title: Review: Debug Agent Session
+#+author: e implementation
+#+date: 2026-06-20
+#+startup: overview
+
+* Status
+
+In-review.
+
+* Review loop
+
+** Finding 1: =e-debug= created a fresh tab on every invocation
+
+*** Problem
+
+The tab display strategy called =tab-bar-new-tab= before showing the debug
+buffer, so repeated =e-debug= invocations kept creating extra tabs instead of
+returning to a stable debug workspace.
+
+*** Change
+
+=e-debug-tab-name= now names the debug tab.  =e-debug--show-buffer= selects the
+existing tab with that name when available, otherwise it creates and renames one
+debug tab before showing the standing session buffer.
+
+*** Evidence
+
+#+begin_src sh
+rtk eldev test test/e-debug-test.el
+#+end_src
+
+Result:
+
+#+begin_example
+9 expected, 0 unexpected
+#+end_example
+
+The bounded live probe returned:
+
+#+begin_example
+((select "e-debug") (show t))
+#+end_example
+
+** Finding 2: =e-debug-here= lost active chat identity without a recent failure
+
+*** Problem
+
+When =e-debug-here= was invoked in an =e-chat-mode= buffer with no recent
+failure, the debug submission had no =:inspection-session-id=.  The debug agent
+could see focused source context but not which chat session was being inspected.
+
+*** Change
+
+=e-debug--inspection-target= now captures the active chat harness and session id
+from =e-chat-mode=.  =e-debug--capture= carries that session id into submission
+metadata and adds an =inspected-session= reference alongside source and failure
+references.
+
+*** Evidence
+
+#+begin_src sh
+rtk eldev test test/e-debug-test.el
+#+end_src
+
+Result:
+
+#+begin_example
+9 expected, 0 unexpected
+#+end_example
+
+The bounded live probe returned:
+
+#+begin_example
+(:inspection-session-id "live-plain-session" :has-inspected-session-ref t)
+#+end_example
+
+* Final review
+
+Subagent review reported no new suggestions after the tab reuse and inspected
+session fixes.
+
+#+begin_example
+No new suggestions.
+#+end_example
+
+* Verification
+
+Focused feature verification:
+
+#+begin_src sh
+rtk eldev test test/e-debug-test.el
+#+end_src
+
+Result:
+
+#+begin_example
+9 expected, 0 unexpected
+#+end_example
+
+Adjacent verification:
+
+#+begin_src sh
+rtk eldev test test/e-debug-test.el test/e-context-inspection-test.el test/e-chat-test.el test/e-defaults-test.el test/e-test.el
+#+end_src
+
+Result:
+
+#+begin_example
+238 tests, 237 expected, 0 unexpected, 1 skipped
+#+end_example
+
+Whitespace:
+
+#+begin_src sh
+git diff --check
+#+end_src
+
+Result: clean.
+
+* Live reload
+
+The running Emacs was reloaded with:
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Result:
+
+#+begin_example
+"/Users/dimitrivorona/projects/elisp/e/"
+#+end_example
+
+Bounded live probes confirmed that the named debug tab is reused and that
+=e-debug-here= submits the inspected chat session id when no recent failure is
+present.
