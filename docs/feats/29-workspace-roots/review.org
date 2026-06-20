@@ -1,0 +1,107 @@
+#+title: Review: Workspace Roots
+#+author: e implementation
+#+date: 2026-06-20
+#+startup: overview
+
+* Status
+
+In-review.
+
+* Review loop
+
+** Finding 1: secondary roots lacked discovery and sync-status regressions
+
+*** Problem
+
+The implementation covered secondary-root reads and the file-capability bridge,
+but did not directly regress the other file surfaces named by the plan:
+=glob=, =search=, and =resource_sync_status=.  Those paths thread root lists
+through discovery processes and the coherence provider, so they needed explicit
+coverage before marking the feature ready for review.
+
+*** Change
+
+=e-base-tools-test-discovers-secondary-root-resources= now verifies that a
+configured secondary root works for =glob=, =search=, and
+=resource_sync_status= through the public registration paths.  The same test
+also asserts that paths outside all configured roots are still rejected for all
+three operations.
+
+*** Evidence
+
+#+begin_src sh
+rtk eldev test test/e-harness-test.el test/e-base-tools-test.el test/e-file-capabilities-test.el test/e-base-test.el
+#+end_src
+
+Result:
+
+#+begin_example
+116 tests, 116 expected, 0 unexpected
+#+end_example
+
+* Final review
+
+Subagent review reported no new suggestions after the discovery and sync-status
+coverage was added.
+
+#+begin_example
+No new suggestions.
+#+end_example
+
+* Verification
+
+Focused feature verification:
+
+#+begin_src sh
+rtk eldev test test/e-harness-test.el test/e-base-tools-test.el test/e-file-capabilities-test.el test/e-base-test.el
+#+end_src
+
+Result:
+
+#+begin_example
+116 tests, 116 expected, 0 unexpected
+#+end_example
+
+Full suite:
+
+#+begin_src sh
+rtk eldev test
+#+end_src
+
+Result:
+
+#+begin_example
+871 tests, 870 expected, 0 unexpected, 1 skipped
+#+end_example
+
+Whitespace:
+
+#+begin_src sh
+git diff --check
+#+end_src
+
+Result: clean.
+
+* Live reload
+
+The running Emacs was reloaded with:
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Result:
+
+#+begin_example
+"/Users/dimitrivorona/projects/elisp/e/"
+#+end_example
+
+A bounded live probe registered file-handling resources for a temporary primary
+and secondary root, then wrote an absolute =file://= URI under the secondary
+root.  It confirmed the active roots included both directories, the secondary
+file was written, and the shell-directory bridge still resolved to the primary
+root.
+
+#+begin_example
+(:secondary-written t :bash-primary t)
+#+end_example
