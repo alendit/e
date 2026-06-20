@@ -5898,6 +5898,11 @@ The context-window denominator comes from the live provider lookup
                   :message-count 0
                   :messages nil
                   :loaded t))
+         (untitled-index-empty '(:id "untitled-index-empty"
+                                 :title "Untitled 2026-06-20T12:00:00Z"
+                                 :summary "Untitled 2026-06-20T12:00:00Z"
+                                 :message-count 0
+                                 :messages nil))
          (assistant-only '(:id "assistant-only"
                            :title "Assistant only"
                            :summary nil
@@ -5917,6 +5922,9 @@ The context-window denominator comes from the live provider lookup
                  (list (list :harness harness
                              :session empty
                              :session-id "empty-session")
+                       (list :harness harness
+                             :session untitled-index-empty
+                             :session-id "untitled-index-empty")
                        (list :harness harness
                              :session assistant-only
                              :session-id "assistant-only")
@@ -5966,6 +5974,34 @@ The context-window denominator comes from the live provider lookup
           (should-not (string-match-p "first response" text))
           (should (string-match-p "last prompt" text))
           (should (string-match-p "last response" text)))))))
+
+(ert-deftest e-chat-test-active-session-preview-loads-unloaded-index-session ()
+  "Active-session preview loads messages for restart-style index sessions."
+  (let* ((store (e-session-store-create))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :sessions store))
+         candidate)
+    (e-session-create store :id "unloaded-active"
+                      :metadata '(:name "Unloaded active"))
+    (e-session-append-message
+     store "unloaded-active"
+     '(:id "msg-1" :role user :content "last prompt"))
+    (e-session-append-message
+     store "unloaded-active"
+     '(:id "msg-2" :role assistant :content "last response"))
+    (setq candidate
+          (list :harness harness
+                :session '(:id "unloaded-active"
+                           :title "Unloaded active"
+                           :summary "last prompt"
+                           :message-count 2)
+                :session-id "unloaded-active"))
+    (with-temp-buffer
+      (e-chat--active-session-preview candidate (current-buffer))
+      (let ((text (buffer-string)))
+        (should (string-match-p "last prompt" text))
+        (should (string-match-p "last response" text))))))
 
 (ert-deftest e-chat-test-active-session-preview-marks-session-read ()
   "Showing a session in the active-session preview records its latest response."

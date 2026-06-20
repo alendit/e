@@ -301,6 +301,24 @@
         (when (buffer-live-p buffer)
           (kill-buffer buffer))))))
 
+(ert-deftest e-picker-test-preview-lines-wrap-long-lines ()
+  "Preview lines wrap to the preview width instead of being truncated."
+  (with-temp-buffer
+    (e-picker-mode)
+    (setq-local e-picker--spec
+                (list :name 'test-preview-wrap
+                      :candidate-key #'identity
+                      :candidate-line #'identity
+                      :on-select #'ignore
+                      :preview
+                      (lambda (_candidate buffer)
+                        (with-current-buffer buffer
+                          (insert "0123456789abcdef")))))
+    (setq-local e-picker--filtered-candidates '("candidate"))
+    (setq-local e-picker--selection 0)
+    (should (equal (e-picker--preview-lines 10)
+                   '("0123456789" "abcdef")))))
+
 (ert-deftest e-picker-test-selection-overlay-stays-in-left-pane ()
   "The selection overlay highlights only the candidate cell, not preview text."
   (cl-letf (((symbol-function 'e-picker--posframe-available-p)

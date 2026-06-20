@@ -339,13 +339,25 @@ Return non-nil when the picker needs a full rerender."
         (concat truncated (make-string padding ?\s))
       truncated)))
 
+(defun e-picker--wrap-preview-line (line width)
+  "Return LINE wrapped into chunks no wider than WIDTH columns."
+  (let ((text line)
+        chunks)
+    (while (> (length text) 0)
+      (let ((chunk (truncate-string-to-width text width)))
+        (when (string-empty-p chunk)
+          (setq chunk (substring text 0 1)))
+        (push chunk chunks)
+        (setq text (substring text (length chunk)))))
+    (or (nreverse chunks) '(""))))
+
 (defun e-picker--preview-lines (width)
-  "Return selected candidate preview lines truncated to WIDTH."
+  "Return selected candidate preview lines wrapped to WIDTH."
   (when-let ((preview-text (e-picker--render-preview
                             (e-picker--selected-candidate))))
-    (mapcar (lambda (line)
-              (truncate-string-to-width line width))
-            (split-string (string-trim-right preview-text) "\n"))))
+    (cl-mapcan (lambda (line)
+                 (e-picker--wrap-preview-line line width))
+               (split-string (string-trim-right preview-text) "\n"))))
 
 (defun e-picker--ensure-selection-overlay ()
   "Return the overlay used for the selected picker row."

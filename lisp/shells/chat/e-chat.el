@@ -5767,12 +5767,15 @@ adds its display name to the row."
 
 (defun e-chat--active-session-has-prompt-p (candidate)
   "Return non-nil when CANDIDATE has at least one user prompt."
-  (let ((session (plist-get candidate :session)))
+  (let* ((session (plist-get candidate :session))
+         (message-count (plist-get session :message-count)))
     (or (cl-some #'e-chat--active-session-user-prompt-p
                  (plist-get session :messages))
-        (when-let ((summary (plist-get session :summary)))
-          (and (stringp summary)
-               (not (string-empty-p (string-trim summary))))))))
+        (and (integerp message-count)
+             (> message-count 0)
+             (when-let ((summary (plist-get session :summary)))
+               (and (stringp summary)
+                    (not (string-empty-p (string-trim summary)))))))))
 
 (defun e-chat--active-session-active-p (harness session-id)
   "Return non-nil when SESSION-ID has an active turn in HARNESS."
@@ -5844,9 +5847,8 @@ adds its display name to the row."
 (defun e-chat--active-session-preview-messages (harness session)
   "Return messages to render for active-session preview of SESSION."
   (or (plist-get session :messages)
-      (when (plist-get session :loaded)
-        (ignore-errors
-          (e-harness-messages harness (plist-get session :id))))))
+      (ignore-errors
+        (e-harness-messages harness (plist-get session :id)))))
 
 (defun e-chat--active-session-sanitize-preview-properties ()
   "Strip chat buffer structural properties from the active-session preview.
