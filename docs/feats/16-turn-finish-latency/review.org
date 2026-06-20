@@ -243,6 +243,85 @@ Result:
 "/Users/dimitrivorona/projects/elisp/e/"
 #+end_example
 
+* UX and performance playthrough
+
+Fresh review pass on 2026-06-20 reloaded the running Emacs and exercised the
+latency-sensitive paths in temporary chat buffers displayed in the attached
+Emacs frame.
+
+Use case: durable entry id generation stays cheap enough for turn finish.
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'benchmark) (require 'e-session) (prin1 (list :ulid-100 (car (benchmark-run 100 (e-session-generate-ulid))))))"
+#+end_src
+
+Result:
+
+#+begin_example
+(:ulid-100 0.003261)
+#+end_example
+
+Use case: ordinary visible chat status updates do not rebuild context or make
+the header/mode line incoherent.
+
+#+begin_example
+(:selected-buffer "*e-chat:Untitled 2026-06-20T21:38:57Z*"
+ :derived-mode e-chat-mode
+ :context-calls 0
+ :header "E Chat: done - Untitled 2026-06-20T21:38:57Z - gpt-5.5/high"
+ :mode-name "e-chat gpt-5.5/high ~1% (~7/258k tok)"
+ :point 115
+ :window-point 115)
+#+end_example
+
+The temporary chat buffer was selected in the attached Emacs frame.  The user
+visible state was direct and recoverable: the header showed the final status,
+the mode line retained model/effort/context information, and point stayed in
+the selected chat buffer.
+
+Use case: a running activity burst schedules one deferred redraw and does not
+steal scrollback focus when the redraw is flushed.
+
+#+begin_example
+(:selected-buffer "*e-chat:Untitled 2026-06-20T21:39:12Z*"
+ :scheduled t
+ :pending-after nil
+ :point-preserved t
+ :window-point-preserved t
+ :window-start-preserved t
+ :has-tool-summary 128
+ :window-point 1)
+#+end_example
+
+The visible chat stayed on the scrollback position while the redraw inserted
+the running tool summary.  This covers the plan's UX risk that deferred redraws
+could feel laggy or disturb navigation.
+
+Targeted profiling was used because this feature is explicitly performance
+work:
+
+#+begin_example
+(:profile-file
+ "/var/folders/04/hlfb6mrd3lggh4fmp496jmxc0000gn/T/e-review-f16-profile-wAgCEO/20260620-233927-000001.jsonl"
+ :has-chat-status t
+ :has-activity-redraw t
+ :aggregate-count 7)
+#+end_example
+
+The profile confirmed that the review scenario hit both =chat.status= and
+=chat.activity-redraw= spans.  No additional hot path was pursued because the
+bounded live interaction was responsive.
+
+Attempted model-side screenshot capture of the attached Emacs app with
+=screencapture -x /private/tmp/e-review-f16.png= failed:
+
+#+begin_example
+could not create image from display
+#+end_example
+
+That limits the durable visual evidence to live Emacs selected-window and buffer
+state rather than a saved screenshot.
+
 * Cross-cutting review notes
 
 - Byte compilation remains a separate optional optimization for pure Elisp CPU
