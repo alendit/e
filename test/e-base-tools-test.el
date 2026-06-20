@@ -413,6 +413,85 @@ When READ-ONLY is non-nil, file resources only support reads."
       (delete-directory secondary t)
       (delete-directory outside t))))
 
+(ert-deftest e-base-tools-test-discovers-secondary-root-resources ()
+  "Discovery and sync-status tools accept configured secondary roots."
+  (let* ((primary (make-temp-file "e-base-primary-" t))
+         (secondary (make-temp-file "e-base-secondary-" t))
+         (outside (make-temp-file "e-base-outside-" t))
+         (sec-dir (expand-file-name "src" secondary))
+         (sec-file (expand-file-name "two.txt" sec-dir))
+         (out-file (expand-file-name "bad.txt" outside))
+         (registry (e-base-tools-test--resource-tools
+                    (list primary secondary)))
+         (status-registry (e-tools-registry-create)))
+    (unwind-protect
+        (progn
+          (make-directory sec-dir t)
+          (write-region "needle\n" nil sec-file nil 'silent)
+          (write-region "outside\n" nil out-file nil 'silent)
+          (e-base-tools-register-resource-sync-status
+           status-registry
+           (list primary secondary))
+          (let* ((glob (e-base-tools-test--execute
+                        registry
+                        "glob"
+                        (list :uri (concat "file://" sec-dir)
+                              :pattern "*.txt"
+                              :limit 5)))
+                 (content (plist-get glob :content))
+                 (resources (plist-get content :resources)))
+            (should (equal (plist-get glob :status) 'ok))
+            (should (equal (length resources) 1))
+            (should (equal (plist-get (elt resources 0) :name) "two.txt"))
+            (should (string-match-p "two\\.txt\\'"
+                                    (plist-get (elt resources 0) :uri)))
+            (should-not (plist-get content :truncated)))
+          (let* ((search (e-base-tools-test--execute
+                          registry
+                          "search"
+                          (list :uri (concat "file://" sec-dir)
+                                :query "needle"
+                                :limit 5)))
+                 (content (plist-get search :content))
+                 (matches (plist-get content :matches)))
+            (should (equal (plist-get search :status) 'ok))
+            (should (equal (length matches) 1))
+            (should (string-match-p "two\\.txt\\'"
+                                    (plist-get (elt matches 0) :uri)))
+            (should (equal (plist-get (elt matches 0) :text) "needle"))
+            (should-not (plist-get content :truncated)))
+          (let ((status (e-base-tools-test--execute
+                         status-registry
+                         "resource_sync_status"
+                         (list :uri (concat "file://" sec-file)))))
+            (should (equal (plist-get status :status) 'ok))
+            (should (eq (plist-get (plist-get status :content) :status)
+                        'coherent))
+            (should (plist-get (plist-get status :content) :disk-exists)))
+          (dolist (call (list (list registry
+                                    "glob"
+                                    (list :uri (concat "file://" out-file)
+                                          :pattern "*.txt"
+                                          :limit 5))
+                              (list registry
+                                    "search"
+                                    (list :uri (concat "file://" outside)
+                                          :query "outside"
+                                          :limit 5))
+                              (list status-registry
+                                    "resource_sync_status"
+                                    (list :uri (concat "file://" out-file)))))
+            (let ((result (e-base-tools-test--execute
+                           (nth 0 call)
+                           (nth 1 call)
+                           (nth 2 call))))
+              (should (equal (plist-get result :status) 'error))
+              (should (string-match-p "escapes workspace root"
+                                      (plist-get result :content))))))
+      (delete-directory primary t)
+      (delete-directory secondary t)
+      (delete-directory outside t))))
+
 (ert-deftest e-base-tools-test-write-file-rejects-paths-outside-root ()
   "The write tool does not create files outside its configured root."
   (let* ((parent (make-temp-file "e-base-write-root-" t))
