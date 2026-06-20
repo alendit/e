@@ -5,7 +5,7 @@
 
 * Status
 
-Ready.
+In-review.
 
 * Issue review
 
@@ -250,6 +250,48 @@ Result:
 - The changes preserve public transcript and activity shapes while reducing
   synchronous work in four specific places: ULID entropy, activity index flushes,
   status header updates, and running activity redraw.
+
+* Subagent fixpoint review
+
+Reviewed by subagent =019ee46d-488e-78f3-9eaa-f2eb6cfcdce3= after the bug-fix
+branch had reloaded the current code and rerun focused affected tests.
+
+Scope reviewed:
+
+- =docs/feats/16-turn-finish-latency/plan.org=
+- =docs/feats/16-turn-finish-latency/review.org=
+- =lisp/core/e-session.el=
+- =lisp/core/e-harness.el=
+- =lisp/shells/chat/e-chat.el=
+- =test/e-session-test.el=
+- =test/e-harness-test.el=
+- =test/e-chat-test.el=
+
+Verification performed during review:
+
+#+begin_src sh
+rtk eldev test -f test/e-session-test.el
+rtk eldev test -f test/e-harness-test.el
+rtk eldev test -f test/e-chat-test.el
+rtk eldev test
+#+end_src
+
+Results:
+
+- =test/e-session-test.el=: 40 passed.
+- =test/e-harness-test.el=: 66 passed.
+- =test/e-chat-test.el=: 179 passed, 1 existing markdown-mode-dependent test
+  skipped.
+- Aggregate: 821 passed, 1 existing markdown-mode-dependent test skipped.
+
+Findings:
+
+No new suggestions.
+
+Unresolved:
+
+- The subagent did not independently rerun the live Emacs probes already
+  recorded above.
 
 * Architecture self-check
 
