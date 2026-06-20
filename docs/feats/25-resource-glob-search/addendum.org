@@ -1,0 +1,287 @@
+#+title: Resource Glob and Search Facade Addendum
+#+startup: overview
+
+* Status
+
+Draft addendum for =docs/feats/25-resource-glob-search/plan.org=.
+
+* Reason for addendum
+
+The original plan correctly places =glob= and =search= beside =read=, =write=,
+and =edit= as resource operations.  It still leaves one important contract hole:
+the first plan allows search syntax to be scheme-native when =:literal= is nil,
+which means =file://= and =tmp://= would expose =rg= regex semantics while
+=buffer://= and =e://= expose Emacs regex semantics.
+
+That is a real downside because the purpose of resources is to provide a unified
+interface over different resource types.  If callers need to know which regex
+dialect a scheme uses, =search= is not a true resource facade.
+
+This addendum changes the feature direction: =glob= and =search= must expose a
+small common pattern language.  Each scheme implementation translates that
+facade syntax into its native listing or search mechanism.
+
+* Corrected design principle
+
+=glob= and =search= are facade tools over resource methods.
+
+The facade owns:
+
+- the public parameter schema;
+- the portable pattern syntax;
+- match/list result shape;
+- truncation behavior;
+- error wording for invalid facade patterns.
+
+Scheme methods own:
+
+- resource enumeration;
+- resource content access;
+- conversion from facade pattern AST to =fd=, =rg=, or Emacs-native matching;
+- scheme-specific path and safety checks.
+
+The public contract should not expose raw =fd= glob syntax, raw =rg= regex
+syntax, or raw Emacs regex syntax.
+
+* Portable glob syntax
+
+** Scope
+
+=glob= lists resource names under a URI root.  The pattern is interpreted
+relative to the requested root and matched against normalized resource names.
+
+Examples:
+
+#+begin_example
+*.el
+lisp/*.el
+lisp/**/*.el
+**/plan.org
+docs/feats/25-resource-glob-search/*
+#+end_example
+
+** Syntax
+
+The first slice should support only these wildcards:
+
+- =*= :: matches zero or more non-separator characters inside one path segment.
+- =**= :: when used as a complete segment, matches zero or more complete path
+  segments.
+
+No character classes, brace expansion, alternation, extglob, escaping rules, or
+shell-specific behavior should be part of the first contract.
+
+Path matching rules:
+
+- =/= is the normalized resource-name separator.
+- Leading =/= is invalid because resource names are relative to the URI root.
+- Empty patterns default to =*=.
+- =**= is special only as a complete segment.  A segment like =foo**bar= should
+  be rejected in the first slice rather than guessed.
+- Pattern matching is case-sensitive by default.  If case-insensitive globbing
+  is needed, add an explicit =:case-sensitive= parameter rather than inheriting a
+  backend default.
+
+** Translation requirement
+
+Each implementation must enforce the same facade semantics:
+
+- =file://= and =tmp://= may use =fd= for enumeration, but should still validate
+  and, if necessary, post-filter names with the facade matcher so =fd= syntax
+  extensions do not leak into the public contract.
+- =buffer://= should run the same facade matcher over normalized buffer resource
+  names.
+- =e://= should run the same facade matcher over store resource names.
+
+This likely wants a small shared helper, for example
+=e-resource-pattern-glob-p=, that compiles facade glob syntax once and can be
+used by all schemes.
+
+* Portable search syntax
+
+** Scope
+
+=search= searches resource text under a URI root using a small query language,
+not raw regex.  Implementations translate the query into =rg= regex, Emacs
+regex, or native scanning as needed.
+
+The query language is intended for model-generated "find this text-like thing"
+usage, not arbitrary regular expressions.
+
+** Syntax
+
+The first slice should support:
+
+- literal word/text parts;
+- =*= as a wildcard inside a word/text part;
+- generalized whitespace matching;
+- explicit modes for case sensitivity, whole-word matching, and multiline
+  matching.
+
+Text parts:
+
+#+begin_example
+resource method
+e-resource-* method
+Resource Glob
+#+end_example
+
+Wildcard rules:
+
+- =*= matches zero or more non-whitespace characters inside a part.
+- Multiple =*= wildcards may appear in one part.
+- No raw regex metacharacters are public syntax.  Characters such as =.=, =(=,
+  =)=, =[=, and =+= are literal unless a later addendum explicitly extends the
+  language.
+
+Whitespace rules:
+
+- One or more spaces in the query are collapsed into a single whitespace gap.
+- A whitespace gap matches one or more consecutive whitespace-like characters.
+- "Whitespace-like" should include spaces, tabs, newlines, and carriage returns.
+- In non-multiline mode, a whitespace gap should not cross line boundaries.
+- In multiline mode, a whitespace gap may cross line boundaries.
+
+Modes:
+
+- =:case-sensitive= :: boolean, default nil.  When nil, matching is
+  case-insensitive.
+- =:whole-word= :: boolean, default nil.  When non-nil, matches must start and
+  end on word boundaries around the whole query.
+- =:multiline= :: boolean, default nil.  When non-nil, whitespace gaps can match
+  newlines and matches may span lines.
+
+The old =:literal= parameter should be removed from the plan or reinterpreted as
+an internal implementation detail.  Literal behavior is already the default for
+all non-wildcard characters in the facade language.
+
+** Translation requirement
+
+Implementations should parse the facade query into a small AST, then compile it
+for each backend:
+
+- =file://= and =tmp://= compile to an =rg= regex and invoke =rg= with arguments
+  that match the requested modes.
+- =buffer://= and =e://= compile to an Emacs regexp or use an equivalent native
+  scanner.
+
+The compiler must escape backend regex metacharacters from literal text parts.
+Only facade wildcards and facade whitespace gaps should become regex structure.
+
+For whole-word mode, apply word-boundary checks around the complete query, not
+around every individual part.  For example, =foo* bar= should match a phrase
+whose first part starts at a word boundary and whose final part ends at a word
+boundary.
+
+For multiline mode, result entries should still include =:uri=, =:line=,
+=:column=, and =:text=.  If the match spans more than one line, =:text= should
+be a bounded excerpt and metadata may include =:end-line= and =:end-column=.
+
+* Revised operation parameters
+
+** =glob=
+
+#+begin_src elisp
+(:uri "file://lisp"
+ :pattern "**/*.el"
+ :case-sensitive t
+ :limit 100)
+#+end_src
+
+Parameters:
+
+- =:uri=, required string.
+- =:pattern=, optional facade glob string, default =*=.
+- =:case-sensitive=, optional boolean, default t.
+- =:limit=, optional positive number, default 100.
+
+** =search=
+
+#+begin_src elisp
+(:uri "file://"
+ :query "e-resource-* method"
+ :glob "**/*.el"
+ :case-sensitive nil
+ :whole-word nil
+ :multiline nil
+ :limit 100)
+#+end_src
+
+Parameters:
+
+- =:uri=, required string.
+- =:query=, required facade search string.
+- =:glob=, optional facade glob string limiting searched resources.
+- =:case-sensitive=, optional boolean, default nil.
+- =:whole-word=, optional boolean, default nil.
+- =:multiline=, optional boolean, default nil.
+- =:limit=, optional positive number, default 100.
+
+* Implementation impact
+
+** Shared pattern helper
+
+Add a small core helper before implementing individual schemes.  Tentative file:
+
+#+begin_example
+lisp/core/e-resource-patterns.el
+#+end_example
+
+Responsibilities:
+
+- validate facade glob patterns;
+- compile facade glob patterns to a matcher usable from Elisp;
+- compile facade search queries to backend-neutral pattern AST;
+- compile search AST to Emacs regexp;
+- compile search AST to an =rg=-compatible regexp;
+- normalize case-sensitive, whole-word, and multiline options.
+
+This helper should not know about resources, harnesses, buffers, tmp roots, or
+capabilities.  It owns syntax only.
+
+** File and tmp implementations
+
+=file://= and =tmp://= can still use =fd= and =rg=, but only as implementation
+engines:
+
+- =fd= should be called with conservative arguments and results should be
+  filtered through the facade glob matcher when needed.
+- =rg= should receive a compiled regex produced from the facade query, not raw
+  model-provided regex.
+- Backend-specific errors should be reported as implementation failures, not as
+  public syntax rules.
+
+** Buffer and e-store implementations
+
+=buffer://= and =e://= should use the same parsed facade patterns as file/tmp:
+
+- glob uses the shared facade glob matcher over resource names;
+- search uses the Emacs-regexp compiler or equivalent scanner;
+- mode behavior must match file/tmp behavior.
+
+* Acceptance criteria additions
+
+- =glob= has one documented wildcard language across =file://=, =tmp://=,
+  =buffer://=, and =e://=.
+- =search= has one documented query language across =file://=, =tmp://=,
+  =buffer://=, and =e://=.
+- Raw =rg= regex and raw Emacs regex are not exposed in the public =search=
+  contract.
+- Scheme implementations translate facade patterns into native engine syntax or
+  native matchers.
+- Tests prove equivalent =glob= and =search= queries return equivalent matches
+  across at least one file resource, one tmp resource, one buffer resource, and
+  one =e://= store resource with the same text.
+- Invalid facade patterns fail before shell/process execution.
+- Documentation no longer frames regex dialect differences as an accepted user-
+  visible downside.
+
+* Plan follow-up
+
+Before implementation starts, fold this addendum into =plan.org= or treat it as
+the overriding design note for the feature.  In particular:
+
+1. Replace the =:literal= search contract with the facade query language.
+2. Replace the "scheme-native regex" risk with a compiler/translation risk.
+3. Add the shared pattern helper to Slice 1.
+4. Add cross-scheme equivalence tests to the acceptance criteria.
