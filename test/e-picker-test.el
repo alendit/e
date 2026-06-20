@@ -72,7 +72,7 @@
         (should (equal selected "beta"))))))
 
 (ert-deftest e-picker-test-action-can-keep-picker-open ()
-  "Action keys can run against the selected candidate without closing."
+  "Action keys are bound in the picker map and can keep the picker open."
   (let (hidden acted)
     (cl-letf (((symbol-function 'e-picker--posframe-available-p)
                (lambda () t))
@@ -92,32 +92,63 @@
                                                t)))
                      :on-select #'ignore)))
         (with-current-buffer buffer
-          (e-picker-dispatch-action ?o))
+          (let ((command (lookup-key (current-local-map) (kbd "o"))))
+            (should (commandp command))
+            (call-interactively command)))
         (should (equal acted "alpha"))
         (should-not hidden)))))
 
+(ert-deftest e-picker-test-kill-buffer-deletes-posframe ()
+  "Killing a picker buffer tears down the cached posframe."
+  (let (deleted)
+    (cl-letf (((symbol-function 'e-picker--posframe-available-p)
+               (lambda () t))
+              ((symbol-function 'posframe-show)
+               (lambda (_buffer &rest _args) t))
+              ((symbol-function 'posframe-delete)
+               (lambda (buffer)
+                 (setq deleted buffer))))
+      (let ((buffer (e-picker-open
+                     :name 'test-teardown
+                     :title "Teardown"
+                     :candidates '("alpha")
+                     :candidate-key #'identity
+                     :candidate-line #'identity
+                     :on-select #'ignore)))
+        (kill-buffer buffer)
+        (should (eq deleted buffer))))))
+
 (ert-deftest e-picker-test-terminal-fallback-selects-with-completing-read ()
   "When posframe is unavailable, the picker falls back to completing-read."
-  (let (selected prompt labels)
+  (let (selected prompt labels annotation)
     (cl-letf (((symbol-function 'e-picker--posframe-available-p)
                (lambda () nil))
               ((symbol-function 'completing-read)
                (lambda (read-prompt collection &rest _args)
                  (setq prompt read-prompt)
                  (setq labels (all-completions "" collection))
+                 (setq annotation
+                       (alist-get 'annotation-function
+                                  (cdr (funcall collection "" nil
+                                                'metadata))))
                  "beta")))
       (should-not
        (e-picker-open
         :name 'test-fallback
         :title "Fallback"
-        :candidates '("alpha" "beta")
-        :candidate-key #'identity
-        :candidate-line #'identity
+        :candidates '((:key "alpha" :line "Alpha row")
+                      (:key "beta" :line "Beta row"))
+        :candidate-key (lambda (candidate)
+                         (plist-get candidate :key))
+        :candidate-line (lambda (candidate)
+                          (plist-get candidate :line))
         :on-select (lambda (candidate)
                      (setq selected candidate))))
       (should (equal prompt "Fallback: "))
       (should (equal labels '("alpha" "beta")))
-      (should (equal selected "beta")))))
+      (should (functionp annotation))
+      (should (equal (funcall annotation "beta") " Beta row"))
+      (should (equal selected '(:key "beta" :line "Beta row"))))))
 
 (provide 'e-picker-test)
 

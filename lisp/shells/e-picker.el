@@ -108,7 +108,8 @@
 (define-derived-mode e-picker-mode special-mode "e-picker"
   "Major mode for e floating picker buffers."
   (setq-local truncate-lines t)
-  (setq-local cursor-type nil))
+  (setq-local cursor-type nil)
+  (add-hook 'kill-buffer-hook #'e-picker--delete-posframe nil t))
 
 (defun e-picker--buffer-name (name)
   "Return picker buffer name for NAME."
@@ -259,6 +260,36 @@ WIDTH defaults to the current window body width."
                    :accept-focus t
                    :border-width 1)))
 
+(defun e-picker--delete-posframe ()
+  "Delete the posframe associated with the current picker buffer."
+  (when (fboundp 'posframe-delete)
+    (posframe-delete (current-buffer))))
+
+(defun e-picker-delete (&optional name)
+  "Delete picker posframe and buffer for NAME.
+When NAME is nil, delete the currently active picker."
+  (interactive)
+  (let ((buffer (or (and name
+                         (get-buffer (e-picker--buffer-name name)))
+                    e-picker--active-buffer
+                    (and (derived-mode-p 'e-picker-mode)
+                         (current-buffer)))))
+    (when (buffer-live-p buffer)
+      (with-current-buffer buffer
+        (e-picker--delete-posframe))
+      (kill-buffer buffer))))
+
+(defun e-picker--install-action-keys (spec)
+  "Install SPEC action keys into the current picker buffer map."
+  (let ((map (copy-keymap e-picker-mode-map)))
+    (dolist (entry (plist-get spec :actions))
+      (let ((key (car entry)))
+        (define-key map (vector key)
+                    (lambda ()
+                      (interactive)
+                      (e-picker-dispatch-action key)))))
+    (use-local-map map)))
+
 (defun e-picker--close (&optional selected action)
   "Close current picker.
 When SELECTED is non-nil, run ACTION after closing."
@@ -338,18 +369,26 @@ When SELECTED is non-nil, run ACTION after closing."
 (defun e-picker--fallback (spec candidates)
   "Use completing-read fallback for SPEC over CANDIDATES."
   (let* ((candidate-key (plist-get spec :candidate-key))
+         (candidate-line (plist-get spec :candidate-line))
          (labels (mapcar (lambda (candidate)
                            (funcall candidate-key candidate))
                          candidates))
+         (candidate-by-label
+          (cl-mapcar #'cons labels candidates))
          (selected-label
           (completing-read
            (format "%s: " (or (plist-get spec :title)
                               (plist-get spec :name)))
            (lambda (string predicate action)
              (if (eq action 'metadata)
-                 '(metadata
+                 `(metadata
                    (display-sort-function . identity)
-                   (cycle-sort-function . identity))
+                   (cycle-sort-function . identity)
+                   (annotation-function
+                    . ,(lambda (label)
+                         (when-let ((candidate
+                                     (cdr (assoc label candidate-by-label))))
+                           (concat " " (funcall candidate-line candidate))))))
                (complete-with-action action labels string predicate)))
            nil
            t))
@@ -379,6 +418,7 @@ handles selection synchronously."
           (setq-local e-picker--closed nil)
           (setq-local e-picker--window-configuration
                       (current-window-configuration))
+          (e-picker--install-action-keys spec)
           (e-picker--filter-candidates)
           (e-picker--render))
         (e-picker--show-posframe buffer spec)
