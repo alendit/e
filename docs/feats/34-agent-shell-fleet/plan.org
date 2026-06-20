@@ -1,0 +1,423 @@
+#+title: Agent Shell Fleet
+#+startup: overview
+
+* Goal
+
+Let =e= coordinate work handed off to Emacs Agent Shell sessions while keeping
+=e-harness= completely agnostic about Agent Shell, ACP, shell buffers,
+transcripts, and worker lifecycle details.
+
+The MVP should let an =e= coordinator create tracked work items, hand off
+prompts to Agent Shell workers, monitor progress, inspect results, and
+interrupt work.  It should do this through a capability-owned integration that
+returns normalized work records designed for agentic consumption.
+
+* Status
+
+Planned.
+
+* Background
+
+Agent Shell is an Emacs package for running ACP-backed coding agents in shell
+buffers.  Direct source inspection of =xenodium/agent-shell= showed several
+usable seams:
+
+- =agent-shell--start= can start a shell programmatically with a chosen config,
+  background/no-focus behavior, and session strategy.
+- =agent-shell-status= returns structured status: =ready=, =busy=, or
+  =blocked=.
+- =agent-shell-subscribe-to= provides events such as =input-submitted=,
+  =turn-complete=, =tool-call-update=, =permission-request=, =file-write=,
+  =error=, and =clean-up=.
+- =agent-shell--transcript-file= and
+  =agent-shell-transcript-file-path-function= identify transcript files.
+- Prompt submission is still shell-buffer-oriented through
+  =agent-shell-insert= / =agent-shell--insert-to-shell-buffer= and internal
+  ACP prompt handling.
+
+Those seams are good enough to wrap, but not good enough to expose raw to =e=
+agents as the primary MVP contract.  An =e= coordinator should not need to
+reason about shell buffers, private Agent Shell state alists, transcript file
+format, pending request queues, or ACP stop reasons in prompt text.
+
+The local precedent is the MCP capability wrapper: external protocol details
+belong below the capability boundary.  Capabilities are the extension seam; the
+harness should consume ordinary capability contributions and remain unaware of
+integration-specific runtime categories.
+
+* Non-goals
+
+- Do not add Agent Shell concepts to =e-harness=.
+- Do not add Agent Shell as a peer runtime primitive next to capabilities,
+  sessions, tools, or backends.
+- Do not expose raw Agent Shell commands as a broad first-level model tool
+  family in the MVP.
+- Do not depend on Agent Shell transcript parsing as the only source of
+  progress; use Agent Shell events and buffer-local state when available.
+- Do not build a full scheduler, dependency graph, worker pool optimizer, or
+  multi-agent review pipeline in the first slice.
+- Do not mutate user buffers except through the Agent Shell worker process that
+  the user or coordinator explicitly starts.
+
+* Design Options
+
+** Recommended: capability actions with normalized work records
+
+Add an Agent Shell capability that exposes semantic shell-facing actions:
+
+#+begin_src elisp
+:handoff-work
+:list-work
+:work-status
+:read-work
+:send-followup
+:interrupt-work
+#+end_src
+
+The actions are implemented by an =e-agent-shell= adapter and an E-owned work
+registry.  They return normalized plist records instead of raw Agent Shell
+buffers or event alists.
+
+This is the MVP direction because Agent Shell provides useful primitives, but
+its public experience is still buffer/session oriented.  A coordinator needs a
+stable work-item contract:
+
+#+begin_src elisp
+(:work-id "asw_01H..."
+ :status ready|busy|blocked|failed|finished|interrupted|dead
+ :agent-id "claude-code"
+ :project-root "/path/to/project"
+ :shell-buffer "*agent-shell claude-code: e*"
+ :agent-session-id "..."
+ :transcript-file "/path/.agent-shell/transcripts/..."
+ :prompt-summary "Implement feature 34 MVP"
+ :last-event turn-complete
+ :last-event-at "2026-06-20T..."
+ :latest-response-preview "..."
+ :usage (...)
+ :error nil)
+#+end_src
+
+The model-facing guidance can then describe the workflow at a higher level:
+create work, poll/list work, inspect results, interrupt or follow up.  The
+prompt does not need to embed Agent Shell's private function names.
+
+** Alternative: first-level model tools
+
+Expose tools such as =agent_shell_start=, =agent_shell_status=,
+=agent_shell_transcript=, and =agent_shell_interrupt= directly to the model
+registry.
+
+This is easy to discover and gives structured outputs, but it makes Agent Shell
+feel like a peer tool family in every active session.  It also exposes
+implementation verbs rather than the fleet-management workflow.  Agent Shell is
+not a static catalog of deterministic tools like MCP; it is an interactive
+worker runtime with buffers, events, transcripts, permissions, and pending
+requests.
+
+This may be useful later for a coordinator-specific layer, but it should not be
+the default MVP shape.
+
+** Alternative: reference-only guidance
+
+Expose an =e://= reference that teaches agents how to call Agent Shell from
+Elisp through =run_elisp= or future nested Elisp calls.
+
+This is the smallest implementation and remains flexible while Agent Shell
+evolves, but it pushes too much orchestration into prompt-following.  Agents
+would have to rediscover shell buffers, parse status, track transcripts, and
+normalize progress themselves.  That is brittle and makes fleet state
+uninspectable outside the current model context.
+
+Reference guidance should exist as documentation for advanced use, not as the
+primary MVP integration.
+
+* Architecture
+
+** Capability boundary
+
+Add a capability builder, likely:
+
+#+begin_src elisp
+(e-capability-with-agent-shell-create
+ :id "agent-shell-fleet"
+ :name "Agent Shell Fleet"
+ :agent-configs ...)
+#+end_src
+
+The builder returns an ordinary =e-capability=.  It contributes actions,
+context guidance, and a reference resource.  It does not require any new
+harness contribution kind.
+
+The capability owns:
+
+- Agent Shell package feature checks.
+- Agent config selection and defaults.
+- Work registry lifecycle.
+- Event subscription and status normalization.
+- Transcript lookup and preview extraction.
+- Agent Shell interruption and follow-up behavior.
+
+** Adapter module
+
+Create =lisp/core/e-agent-shell.el= as the only module that directly calls
+Agent Shell APIs.
+
+It should wrap these observed seams:
+
+- start shell: =agent-shell--start= or safer public start functions where
+  enough arguments are available;
+- send prompt: =agent-shell-insert= or =agent-shell-queue-request= depending on
+  status;
+- status: =agent-shell-status=;
+- events: =agent-shell-subscribe-to= and =agent-shell-unsubscribe=;
+- transcript: buffer-local =agent-shell--transcript-file= and transcript path
+  customization;
+- interrupt: =agent-shell-interrupt= with force.
+
+Because several useful Agent Shell functions are double-dash/private, the
+adapter should contain all source-version-sensitive calls and feature checks.
+No other =e= module should call Agent Shell functions directly.
+
+** Work registry
+
+Create =lisp/core/e-agent-shell-work.el= for E-owned work records.
+
+The registry maps stable =e= work ids to Agent Shell shell buffers and
+normalized metadata.  It should be independent from any one coordinator
+session, because a coordinator may list or reconnect to existing workers after
+reload.
+
+Initial state can be in memory.  The implementation plan should explicitly
+evaluate whether to persist a compact registry under the project-local =e=
+store or a dedicated JSONL file.  Persistence is not required to send the first
+handoff, but the MVP acceptance criteria require reconnecting to live buffers
+after reload when they still exist.
+
+** Events and progress
+
+Subscribe to Agent Shell events for each tracked shell.  Convert raw events
+into work-record updates:
+
+| Agent Shell event | Work update |
+|-------------------+-------------|
+| =input-submitted= | mark work =busy= and record submission timestamp |
+| =tool-call-update= | append compact tool/progress note |
+| =permission-request= | mark work =blocked= |
+| =permission-response= | clear blocked detail if appropriate |
+| =file-write= | append changed-file note |
+| =turn-complete= | mark work =finished= or =ready= with stop reason and usage |
+| =error= | mark work =failed= with error message |
+| =clean-up= | mark work =dead= unless already finished/interrupted |
+
+The wrapper should prefer Agent Shell events and status over transcript parsing.
+Transcript excerpts are for result inspection, not lifecycle truth.
+
+** Capability actions
+
+Expose these actions first:
+
+#+begin_src elisp
+(e-capabilities-action capability :handoff-work)
+(e-capabilities-action capability :list-work)
+(e-capabilities-action capability :work-status)
+(e-capabilities-action capability :read-work)
+(e-capabilities-action capability :send-followup)
+(e-capabilities-action capability :interrupt-work)
+#+end_src
+
+Action inputs should be plain plists and outputs should be plain plists or
+vectors of plists.  This keeps them easy to call from shell code, future Elisp
+tool chaining, and possible model-facing wrappers.
+
+MVP actions:
+
+- =:handoff-work= starts or chooses an Agent Shell worker, submits the prompt,
+  creates a work record, subscribes to events, and returns the initial work
+  summary.
+- =:list-work= returns compact summaries for tracked work items.
+- =:work-status= returns one full normalized record.
+- =:read-work= returns latest transcript/result excerpts with byte limits.
+- =:send-followup= submits an additional prompt to a tracked worker.
+- =:interrupt-work= cancels the active request for a tracked worker and marks
+  the work interrupted.
+
+** Model-facing surface
+
+The MVP should not register a broad first-level tool family by default.
+
+Instead, the capability contributes:
+
+- instructions describing the coordinator workflow;
+- an =e://= reference documenting the action contract and raw Agent Shell source
+  seams;
+- optionally one narrow model-facing =agent_shell_work= dispatcher only if the
+  current =e= tool-chaining surface needs a model-callable bridge to capability
+  actions.
+
+This keeps the model-visible namespace small while preserving a path to direct
+tool calls when the coordinator actually needs them.
+
+* Implementation Slices
+
+** Slice 1: Source-backed adapter skeleton
+
+- Add =lisp/core/e-agent-shell.el=.
+- Require Agent Shell lazily and fail with a clear diagnostic when it is not
+  installed.
+- Wrap shell start, status, transcript-file lookup, event subscription, prompt
+  submission, and interrupt behind E-owned functions.
+- Add tests with stubs instead of requiring a real Agent Shell process.
+
+** Slice 2: Work registry and normalized records
+
+- Add =lisp/core/e-agent-shell-work.el=.
+- Define work id generation, work record creation, status normalization, and
+  read/list helpers.
+- Store shell buffer references defensively and mark work =dead= when the
+  buffer is gone.
+- Add focused tests for work lifecycle transitions.
+
+** Slice 3: Capability builder and actions
+
+- Add =e-capability-with-agent-shell-create=.
+- Contribute the six MVP actions.
+- Add a reference resource that documents action input/output shapes and the
+  Agent Shell source seams the adapter relies on.
+- Keep =e-harness= unchanged.
+
+** Slice 4: Coordinator guidance and optional bridge
+
+- Add concise model-facing guidance for the coordinator workflow.
+- Decide during implementation whether a single dispatcher tool is needed for
+  model access, based on current Elisp tool-chaining ergonomics.
+- If added, keep it narrow: =agent_shell_work= with =:operation= selecting the
+  action, not one first-level tool per Agent Shell primitive.
+
+** Slice 5: Live validation
+
+- Reload =e= in the running Emacs.
+- With Agent Shell installed, start a temporary tracked handoff against a safe
+  prompt and verify status/list/read flows.
+- If Agent Shell is unavailable, verify the missing-package diagnostic and the
+  pure registry/action tests.
+
+* Acceptance Criteria
+
+- =e-harness= has no Agent Shell-specific code, conditionals, events, or state.
+- A capability can hand off a prompt to an Agent Shell worker and return a
+  stable =e= work id.
+- E can list tracked Agent Shell work items with normalized statuses.
+- E can inspect one work item and retrieve a bounded latest response or
+  transcript excerpt.
+- E can interrupt a tracked active Agent Shell request.
+- Agent Shell event subscriptions update work records for submitted, blocked,
+  file-write, complete, error, and cleanup events.
+- The integration degrades clearly when Agent Shell is not installed.
+- The plan and implementation cite the Agent Shell source seams used for the
+  adapter, so future Agent Shell API drift has one place to audit.
+
+* Test Plan
+
+- Unit-test adapter behavior with stubbed Agent Shell functions:
+  start, status, subscribe, send, transcript, and interrupt.
+- Unit-test work registry transitions independently of Agent Shell.
+- Unit-test capability action lookup and action result shapes.
+- Add a negative test for Agent Shell missing/unavailable.
+- Add a live smoke check in the running Emacs when Agent Shell is installed.
+
+* Risks and Constraints
+
+- Agent Shell's most useful start/send functions currently include private
+  double-dash functions.  The adapter must isolate those calls and check
+  function availability.
+- Transcript text is useful for inspection but should not be the authoritative
+  progress source.
+- Agent Shell statuses are coarser than fleet statuses.  E must derive
+  =finished=, =failed=, =dead=, and =interrupted= from events and wrapper
+  actions.
+- Permission prompts can block worker progress.  The MVP should report blocked
+  state clearly but does not need to automate permission decisions.
+- Real fleet scheduling belongs in a later feature once work records are stable.
+
+* Future Options
+
+- Worker pools with named agents, project roots, and per-worker capability
+  policies.
+- Dependency-aware work graphs where the coordinator can launch tasks only
+  after prerequisite work finishes.
+- Review-gate actions that import worker output into an =e= session for critique
+  before applying changes.
+- Persistent work registry replay from project-local files.
+- A dedicated overview shell for active Agent Shell work.
+- First-level model tools for coordinator-only harness profiles, if action
+  dispatch through Elisp proves too awkward.
+- ACP-level integration below Agent Shell if Agent Shell exposes a stable public
+  worker API or if E needs non-Emacs worker processes later.
+
+* Architecture Review Questions
+
+1. If this work package stopped here, would the project be better off than if it
+   had not been built?
+   Yes.  It establishes a narrow integration boundary and a concrete MVP for
+   handoff/monitoring without contaminating harness policy.
+
+2. What final direction does this move toward?
+   E as a coordinator that can plan/spec work, delegate execution to external
+   agent workers, monitor progress, and integrate results through normalized
+   work records.
+
+3. Which decisions are likely to change, uncertain, or stable, and are uncertain
+   ones local and reversible instead of hidden behind speculative abstraction?
+   Stable: harness agnosticism and capability ownership.  Likely to change:
+   Agent Shell public/private API details and persistence shape.  Those are
+   localized in the adapter and work registry.
+
+4. What component owns this behavior, and why?  Does it have one cohesive
+   responsibility and one primary reason to change?
+   =e-agent-shell= owns Agent Shell calls; =e-agent-shell-work= owns normalized
+   work state; the capability owns exposure to E.  Each changes for a distinct
+   reason.
+
+5. Does this change increase or reduce coupling?  Are interfaces narrow,
+   consumer-shaped, and free of unused capabilities?
+   It reduces coupling by hiding Agent Shell buffers/events behind work-item
+   actions shaped for coordinator consumption.
+
+6. Did any dependency start pointing the wrong way, especially from stable policy
+   toward concrete adapters, providers, UI, transport, persistence, or tool
+   clients?
+   No.  Stable harness policy does not depend on Agent Shell.  The capability
+   depends on the adapter.
+
+7. Could any side effect be moved outward into an adapter or shell?
+   Yes, and the design does that: shell start, prompt send, event subscription,
+   transcript reads, and interrupts live in the adapter/action layer.
+
+8. Are the abstractions and interfaces semantically real, and can
+   implementations substitute for each other without narrowed preconditions,
+   weakened behavior, ignored requirements, or unsupported-operation errors?
+   The work-record abstraction is semantically real: a delegated work item has
+   identity, status, progress, result, and cancellation regardless of the worker
+   implementation.  Unsupported Agent Shell features should be reported as
+   capability diagnostics, not hidden.
+
+9. What compatibility expectations apply, and were obsolete paths removed unless
+   required?
+   Compatibility is source-version-sensitive because Agent Shell exposes useful
+   private functions.  The adapter must check feature availability and avoid
+   scattering compatibility paths.
+
+10. What legacy code can we remove now?
+    None in the planning slice.
+
+11. Where are expected errors handled, and where do unexpected errors surface?
+    Expected errors such as missing Agent Shell, dead buffers, blocked workers,
+    and unavailable transcripts are normalized in action results.  Unexpected
+    adapter failures should surface as action errors with diagnostics.
+
+12. What tests prove the core behavior independently of the full system?  If the
+    design changed, would tests change narrowly, or would unrelated tests need
+    rewrites?
+    Registry and adapter tests prove behavior with stubs.  Design changes should
+    affect only Agent Shell adapter/work/capability tests, not harness tests.

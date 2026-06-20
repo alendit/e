@@ -44,3 +44,4 @@ Status values for coding agents:
 | 31 | Ready | 31-composer-prefix-shortcuts/ | Composer Prefix Shortcuts |
 | 32 | Ready | 32-floating-picker/ | Floating Picker and Active Sessions Popup |
 | 33 | Planned | 33-workspace-awareness/ | Workspace Awareness |
+| 34 | Planned | 34-agent-shell-fleet/ | Agent Shell Fleet |
