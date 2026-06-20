@@ -1089,7 +1089,9 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
                :name "outer"
                :description "Call inner."
                :handler (lambda (_arguments)
-                          (e-tools-call "inner" '(:text "raw"))))
+                          (e-tools-call
+                           "inner" '(:text "raw")
+                           '(:metadata (:purpose "chain-test")))))
               (e-tools-register
                registry
                :name "inner"
@@ -1177,12 +1179,16 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
       (should (equal (plist-get (plist-get started-payload :tool-call)
                                 :arguments)
                      '(:text "prepared")))
+      (should (equal (plist-get started-payload :purpose)
+                     "chain-test"))
       (should (equal (plist-get finished-payload :nested) t))
       (should (equal (plist-get finished-payload :parent-tool-call-id)
                      "outer-1"))
       (should (equal (plist-get (plist-get finished-payload :result)
                                 :content)
-                     "prepared-post")))
+                     "prepared-post"))
+      (should (equal (plist-get finished-payload :purpose)
+                     "chain-test")))
     (let* ((activity (e-harness-session-activity-events harness "session-1"))
            (nested-finished
             (cl-find 'tool-finished activity

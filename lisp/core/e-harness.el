@@ -780,7 +780,9 @@ compaction) where exposing tools risks a tool-call instead of a reply."
          :nested t
          :parent-tool-call-id (plist-get parent-tool-call :id)
          :depth depth)
-   extra))
+   extra
+   (when (listp (plist-get tool-call :metadata))
+     (plist-get tool-call :metadata))))
 
 (defun e-harness--execute-nested-tool
     (harness session-id turn-id tools tool-call _options parent-context)

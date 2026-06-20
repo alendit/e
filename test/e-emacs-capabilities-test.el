@@ -118,6 +118,8 @@
          (instructions (e-capability-instructions capability)))
     (should (string-match-p "(e-tools-call NAME ARGUMENTS" instructions))
     (should (string-match-p "(e-tools-call! NAME ARGUMENTS" instructions))
+    (should (string-match-p "e-tools-call! \"search\"" instructions))
+    (should (string-match-p "e-tools-call! \"read\"" instructions))
     (should (string-match-p "currently active tools" instructions))
     (should (string-match-p "several tool calls" instructions))
     (should (string-match-p "single direct tool call" instructions))
