@@ -14,6 +14,9 @@
 (require 'ert)
 (require 'e-picker)
 
+(defvar evil-local-mode nil)
+(defvar evil-state nil)
+
 (ert-deftest e-picker-test-filter-substring-matches-candidate-keys ()
   "The default picker filter matches candidate keys case-insensitively."
   (let ((candidates '((:id alpha :title "Alpha Session")
@@ -42,14 +45,114 @@
     (should (string-suffix-p "ctx 10%" line))
     (should (= (string-width line) 32))))
 
-(ert-deftest e-picker-test-open-renders-posframe-and-selects-current-candidate ()
-  "Opening with posframe renders a buffer and RET selects the highlighted row."
-  (let (shown hidden selected)
+(ert-deftest e-picker-test-mode-map-binds-j-k-for-navigation ()
+  "The picker keymap uses j/k, not n/p, for candidate navigation."
+  (should (eq (lookup-key e-picker-mode-map (kbd "j")) #'e-picker-next))
+  (should (eq (lookup-key e-picker-mode-map (kbd "k")) #'e-picker-previous))
+  (should-not (lookup-key e-picker-mode-map (kbd "n")))
+  (should-not (lookup-key e-picker-mode-map (kbd "p"))))
+
+(ert-deftest e-picker-test-mode-map-binds-return-to-select ()
+  "Both terminal RET and GUI return select the current candidate."
+  (should (eq (lookup-key e-picker-mode-map (kbd "RET")) #'e-picker-select))
+  (should (eq (lookup-key e-picker-mode-map (kbd "<return>"))
+              #'e-picker-select)))
+
+(ert-deftest e-picker-test-mode-neutralizes-evil ()
+  "Picker buffers keep Evil from intercepting j/k/RET navigation keys."
+  (let ((buffer (get-buffer-create "*e-picker-evil-test*")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'evil-local-mode)
+                   (lambda (argument)
+                     (setq-local evil-local-mode
+                                 (not (and (numberp argument)
+                                           (< argument 0))))
+                     (unless evil-local-mode
+                       (setq-local evil-state nil)))))
+          (with-current-buffer buffer
+            (setq-local evil-local-mode t)
+            (setq-local evil-state 'normal)
+            (e-picker-mode)
+            (should-not evil-local-mode)
+            (should-not evil-state)
+            (should (eq (lookup-key e-picker-mode-map (kbd "RET"))
+                        #'e-picker-select))
+            (should (eq (lookup-key e-picker-mode-map (kbd "j"))
+                        #'e-picker-next))
+            (should (eq (lookup-key e-picker-mode-map (kbd "k"))
+                        #'e-picker-previous))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-picker-test-evil-local-mode-hook-does-not-recurse ()
+  "Disabling Evil in picker mode does not recurse through Evil's hook."
+  (let ((buffer (get-buffer-create "*e-picker-evil-recursion-test*"))
+        (calls 0))
+    (unwind-protect
+        (cl-letf (((symbol-function 'evil-local-mode)
+                   (lambda (argument)
+                     (setq calls (1+ calls))
+                     (when (> calls 3)
+                       (error "recursive evil-local-mode disable"))
+                     (if (and (numberp argument) (< argument 0))
+                         (progn
+                           (setq-local evil-local-mode t)
+                           (run-hooks 'evil-local-mode-hook)
+                           (setq-local evil-local-mode nil)
+                           (setq-local evil-state nil))
+                       (setq-local evil-local-mode t)))))
+          (with-current-buffer buffer
+            (setq-local evil-local-mode t)
+            (setq-local evil-state 'normal)
+            (e-picker-mode)
+            (should (= calls 1))
+            (should-not evil-local-mode)
+            (should-not evil-state)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-picker-test-navigation-keeps-point-on-selected-row ()
+  "Moving with j/k moves point to the selected picker candidate row."
+  (let (selected)
+    (cl-letf (((symbol-function 'e-picker--posframe-available-p)
+               (lambda () t))
+              ((symbol-function 'posframe-show)
+               (lambda (_buffer &rest _args) 'picker-frame))
+              ((symbol-function 'e-picker--focus-frame)
+               (lambda (_frame) nil)))
+      (let ((buffer (e-picker-open
+                     :name 'test-selected-point
+                     :title "Pick"
+                     :candidates '("alpha" "beta" "gamma")
+                     :candidate-key #'identity
+                     :candidate-line #'identity
+                     :on-select (lambda (candidate)
+                                  (setq selected candidate)))))
+        (unwind-protect
+            (with-current-buffer buffer
+              (should (looking-at-p "> alpha"))
+              (e-picker-next)
+              (should (looking-at-p "> beta"))
+              (e-picker-previous)
+              (should (looking-at-p "> alpha"))
+              (e-picker-next)
+              (e-picker-select)
+              (should (equal selected "beta")))
+          (when (buffer-live-p buffer)
+            (kill-buffer buffer)))))))
+
+(ert-deftest e-picker-test-open-renders-posframe-focuses-it-and-selects-current-candidate ()
+  "Opening with posframe focuses the picker so navigation keys reach its map."
+  (let (shown focused hidden selected)
     (cl-letf (((symbol-function 'e-picker--posframe-available-p)
                (lambda () t))
               ((symbol-function 'posframe-show)
                (lambda (buffer &rest _args)
-                 (setq shown buffer)))
+                 (setq shown buffer)
+                 'picker-frame))
+              ((symbol-function 'e-picker--focus-frame)
+               (lambda (frame)
+                 (setq focused frame)))
               ((symbol-function 'posframe-hide)
                (lambda (buffer)
                  (setq hidden buffer))))
@@ -62,14 +165,53 @@
                      :on-select (lambda (candidate)
                                   (setq selected candidate)))))
         (should (eq shown buffer))
+        (should (eq focused 'picker-frame))
         (with-current-buffer buffer
           (should (derived-mode-p 'e-picker-mode))
+          (should (eq e-picker--frame 'picker-frame))
           (should (string-match-p "Pick one" (buffer-string)))
           (should (string-match-p "alpha" (buffer-string)))
           (e-picker-next)
           (e-picker-select))
         (should (eq hidden buffer))
         (should (equal selected "beta"))))))
+
+(ert-deftest e-picker-test-navigation-refocuses-picker-frame ()
+  "Navigation keeps input focus on the picker frame for the next key."
+  (let (focused)
+    (cl-letf (((symbol-function 'e-picker--posframe-available-p)
+               (lambda () t))
+              ((symbol-function 'posframe-show)
+               (lambda (_buffer &rest _args)
+                 'picker-frame))
+              ((symbol-function 'e-picker--focus-frame)
+               (lambda (frame)
+                 (push frame focused))))
+      (let ((buffer (e-picker-open
+                     :name 'test-refocus
+                     :title "Refocus"
+                     :candidates '("alpha" "beta")
+                     :candidate-key #'identity
+                     :candidate-line #'identity
+                     :on-select #'ignore)))
+        (with-current-buffer buffer
+          (setq focused nil)
+          (e-picker-next)
+          (should (equal focused '(picker-frame))))))))
+
+(ert-deftest e-picker-test-kill-unshown-buffer-does-not-delete-posframe ()
+  "Killing an unshown picker buffer does not call into posframe deletion."
+  (let ((buffer (get-buffer-create "*e-picker-unshown-delete-test*")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'posframe-delete)
+                   (lambda (_buffer)
+                     (error "unexpected posframe deletion"))))
+          (with-current-buffer buffer
+            (e-picker-mode))
+          (kill-buffer buffer)
+          (setq buffer nil))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
 
 (ert-deftest e-picker-test-action-can-keep-picker-open ()
   "Action keys are bound in the picker map and can keep the picker open."

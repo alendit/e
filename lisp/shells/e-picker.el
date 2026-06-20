@@ -81,20 +81,55 @@
 (defvar-local e-picker--window-configuration nil
   "Window configuration captured before opening this picker.")
 
+(defvar-local e-picker--frame nil
+  "Child frame displaying the current picker buffer, when known.")
+
 (defvar-local e-picker--closed nil
   "Non-nil when this picker was closed.")
 
-(defun e-picker--make-mode-map ()
-  "Return the keymap for `e-picker-mode'."
-  (let ((map (make-sparse-keymap)))
+(defvar-local e-picker--disabling-modal-editing nil
+  "Non-nil while picker mode is disabling modal editing.")
+
+(defun e-picker--disable-modal-editing ()
+  "Disable local modal editing state for picker buffers when available."
+  (unless e-picker--disabling-modal-editing
+    (setq-local e-picker--disabling-modal-editing t)
+    (unwind-protect
+        (progn
+          (when (fboundp 'evil-local-mode)
+            (evil-local-mode -1))
+          (when (boundp 'evil-local-mode)
+            (setq-local evil-local-mode nil))
+          (when (boundp 'evil-state)
+            (setq-local evil-state nil)))
+      (setq-local e-picker--disabling-modal-editing nil))))
+
+(defun e-picker--enforce-modal-editing-policy ()
+  "Disable modal editing if it is reactivated in picker buffers."
+  (when (and (derived-mode-p 'e-picker-mode)
+             (boundp 'evil-local-mode)
+             evil-local-mode)
+    (e-picker--disable-modal-editing)))
+
+(defun e-picker--configure-modal-editing-policy ()
+  "Configure modal editors to keep `e-picker-mode' in Emacs state."
+  (when (fboundp 'evil-set-initial-state)
+    (evil-set-initial-state 'e-picker-mode 'emacs)))
+
+(defun e-picker--make-mode-map (&optional map)
+  "Return MAP configured as the keymap for `e-picker-mode'."
+  (let ((map (or map (make-sparse-keymap))))
     (suppress-keymap map)
     (define-key map (kbd "C-n") #'e-picker-next)
     (define-key map (kbd "<down>") #'e-picker-next)
-    (define-key map (kbd "n") #'e-picker-next)
+    (define-key map (kbd "j") #'e-picker-next)
+    (define-key map (kbd "n") nil)
     (define-key map (kbd "C-p") #'e-picker-previous)
     (define-key map (kbd "<up>") #'e-picker-previous)
-    (define-key map (kbd "p") #'e-picker-previous)
+    (define-key map (kbd "k") #'e-picker-previous)
+    (define-key map (kbd "p") nil)
     (define-key map (kbd "RET") #'e-picker-select)
+    (define-key map (kbd "<return>") #'e-picker-select)
     (define-key map (kbd "C-g") #'e-picker-cancel)
     (define-key map (kbd "<escape>") #'e-picker-cancel)
     (define-key map (kbd "DEL") #'e-picker-backspace)
@@ -102,14 +137,22 @@
     (define-key map [remap self-insert-command] #'e-picker-self-insert)
     map))
 
-(defvar e-picker-mode-map (e-picker--make-mode-map)
+(defvar e-picker-mode-map nil
   "Keymap for `e-picker-mode'.")
+
+(setq e-picker-mode-map (e-picker--make-mode-map e-picker-mode-map))
 
 (define-derived-mode e-picker-mode special-mode "e-picker"
   "Major mode for e floating picker buffers."
   (setq-local truncate-lines t)
   (setq-local cursor-type nil)
+  (add-hook 'evil-local-mode-hook
+            #'e-picker--enforce-modal-editing-policy nil t)
+  (e-picker--disable-modal-editing)
   (add-hook 'kill-buffer-hook #'e-picker--delete-posframe nil t))
+
+(with-eval-after-load 'evil
+  (e-picker--configure-modal-editing-policy))
 
 (defun e-picker--buffer-name (name)
   "Return picker buffer name for NAME."
@@ -215,7 +258,8 @@ WIDTH defaults to the current window body width."
         (title (or (plist-get e-picker--spec :title)
                    (symbol-name (plist-get e-picker--spec :name))))
         (footer (or (plist-get e-picker--spec :footer)
-                    "RET open  C-g cancel")))
+                    "RET open  C-g cancel"))
+        selected-position)
     (erase-buffer)
     (e-picker--insert-line title 'e-picker-title-face)
     (e-picker--insert-line (format "> %s" e-picker--input)
@@ -231,6 +275,7 @@ WIDTH defaults to the current window body width."
                       line
                       "\n")
               (when (= index e-picker--selection)
+                (setq selected-position start)
                 (add-text-properties start (point)
                                      '(font-lock-face e-picker-selection-face)))))
       (e-picker--insert-line "No matches" 'e-picker-meta-face))
@@ -243,7 +288,7 @@ WIDTH defaults to the current window body width."
         (insert "\n")))
     (insert "\n")
     (e-picker--insert-line footer 'e-picker-footer-face)
-    (goto-char (point-min))))
+    (goto-char (or selected-position (point-min)))))
 
 (defun e-picker--show-posframe (buffer spec)
   "Show BUFFER as a posframe for SPEC."
@@ -260,10 +305,17 @@ WIDTH defaults to the current window body width."
                    :accept-focus t
                    :border-width 1)))
 
+(defun e-picker--focus-frame (frame)
+  "Give input focus to picker FRAME."
+  (when (frame-live-p frame)
+    (select-frame-set-input-focus frame)))
+
 (defun e-picker--delete-posframe ()
   "Delete the posframe associated with the current picker buffer."
-  (when (fboundp 'posframe-delete)
-    (posframe-delete (current-buffer))))
+  (when (and e-picker--frame
+             (fboundp 'posframe-delete))
+    (posframe-delete (current-buffer))
+    (setq-local e-picker--frame nil)))
 
 (defun e-picker-delete (&optional name)
   "Delete picker posframe and buffer for NAME.
@@ -298,13 +350,20 @@ When SELECTED is non-nil, run ACTION after closing."
     (when (and e-picker--window-configuration
                (window-configuration-p e-picker--window-configuration))
       (set-window-configuration e-picker--window-configuration))
-    (when (and (fboundp 'posframe-hide)
+    (when (and e-picker--frame
+               (fboundp 'posframe-hide)
                (buffer-live-p (current-buffer)))
-      (posframe-hide (current-buffer)))
+      (posframe-hide (current-buffer))
+      (setq-local e-picker--frame nil))
     (when (eq e-picker--active-buffer (current-buffer))
       (setq e-picker--active-buffer nil))
     (when (and selected action)
       (funcall action selected))))
+
+(defun e-picker--render-and-refocus ()
+  "Render the picker and keep input focus on its child frame."
+  (e-picker--render)
+  (e-picker--focus-frame e-picker--frame))
 
 (defun e-picker-next ()
   "Move to the next picker candidate."
@@ -313,14 +372,14 @@ When SELECTED is non-nil, run ACTION after closing."
     (setq e-picker--selection
           (min (1- (length e-picker--filtered-candidates))
                (1+ e-picker--selection)))
-    (e-picker--render)))
+    (e-picker--render-and-refocus)))
 
 (defun e-picker-previous ()
   "Move to the previous picker candidate."
   (interactive)
   (when e-picker--filtered-candidates
     (setq e-picker--selection (max 0 (1- e-picker--selection)))
-    (e-picker--render)))
+    (e-picker--render-and-refocus)))
 
 (defun e-picker-select ()
   "Select the current picker candidate."
@@ -341,7 +400,7 @@ When SELECTED is non-nil, run ACTION after closing."
         (concat e-picker--input (string last-command-event)))
   (setq e-picker--selection 0)
   (e-picker--filter-candidates)
-  (e-picker--render))
+  (e-picker--render-and-refocus))
 
 (defun e-picker-backspace ()
   "Delete one character from picker input."
@@ -351,7 +410,7 @@ When SELECTED is non-nil, run ACTION after closing."
           (substring e-picker--input 0 (1- (length e-picker--input))))
     (setq e-picker--selection 0)
     (e-picker--filter-candidates)
-    (e-picker--render)))
+    (e-picker--render-and-refocus)))
 
 (defun e-picker-dispatch-action (key)
   "Dispatch picker action bound to KEY for the current candidate."
@@ -421,8 +480,23 @@ handles selection synchronously."
           (e-picker--install-action-keys spec)
           (e-picker--filter-candidates)
           (e-picker--render))
-        (e-picker--show-posframe buffer spec)
+        (let ((frame (e-picker--show-posframe buffer spec)))
+          (with-current-buffer buffer
+            (setq-local e-picker--frame frame))
+          (e-picker--focus-frame frame))
         buffer))))
+
+(defun e-picker--refresh-keymaps ()
+  "Refresh picker keymaps after live reload."
+  (setq e-picker-mode-map (e-picker--make-mode-map e-picker-mode-map))
+  (dolist (buffer (buffer-list))
+    (when (buffer-live-p buffer)
+      (with-current-buffer buffer
+        (when (and (derived-mode-p 'e-picker-mode)
+                   e-picker--spec)
+          (e-picker--install-action-keys e-picker--spec))))))
+
+(e-picker--refresh-keymaps)
 
 (provide 'e-picker)
 
