@@ -5734,6 +5734,29 @@ adds its display name to the row."
                       (e-harness-instance-name instance))))
      " ")))
 
+(defun e-chat--active-session-user-prompt-p (message)
+  "Return non-nil when MESSAGE is a user prompt."
+  (and (eq (plist-get message :role) 'user)
+       (when-let ((content (plist-get message :content)))
+         (and (stringp content)
+              (not (string-empty-p (string-trim content)))))))
+
+(defun e-chat--active-session-preview-message-p (message)
+  "Return non-nil when MESSAGE belongs in the active-session preview."
+  (and (memq (plist-get message :role) '(user assistant))
+       (when-let ((content (plist-get message :content)))
+         (and (stringp content)
+              (not (string-empty-p (string-trim content)))))))
+
+(defun e-chat--active-session-has-prompt-p (candidate)
+  "Return non-nil when CANDIDATE has at least one user prompt."
+  (let ((session (plist-get candidate :session)))
+    (or (cl-some #'e-chat--active-session-user-prompt-p
+                 (plist-get session :messages))
+        (when-let ((summary (plist-get session :summary)))
+          (and (stringp summary)
+               (not (string-empty-p (string-trim summary))))))))
+
 (defun e-chat--active-session-line (candidate)
   "Return picker row text for active session CANDIDATE."
   (let* ((harness (plist-get candidate :harness))
@@ -5741,7 +5764,15 @@ adds its display name to the row."
          (session-id (plist-get candidate :session-id))
          (instance-id (plist-get candidate :instance-id))
          (instance (plist-get candidate :instance))
-         (title (e-chat--active-session-title session))
+         (unread (ignore-errors
+                   (e-chat-overview--session-unread-p
+                    harness session instance-id)))
+         (title (concat (if unread
+                            (propertize "● "
+                                        'font-lock-face
+                                        'e-chat-overview-unread-face)
+                          "  ")
+                        (e-chat--active-session-title session)))
          (message-count (or (plist-get session :message-count) 0))
          (timestamp (or (plist-get session :last-message-at)
                         (plist-get session :created-at)))
@@ -5754,11 +5785,7 @@ adds its display name to the row."
                     :estimate-context nil)))
          (meta (string-join
                 (delq nil
-                      (list (when (ignore-errors
-                                    (e-chat-overview--session-unread-p
-                                     harness session instance-id))
-                              "!")
-                            (and instance
+                      (list (and instance
                                  (e-harness-instance-name instance))
                             (when (> message-count 0)
                               (format "%d %s"
@@ -5771,14 +5798,49 @@ adds its display name to the row."
                 "  ")))
     (e-picker-make-line title meta 96)))
 
+(defun e-chat--active-session-preview-label (message)
+  "Return preview label for MESSAGE."
+  (pcase (plist-get message :role)
+    ('user "User")
+    ('assistant "Assistant")
+    (_ "Message")))
+
+(defun e-chat--active-session-preview-line (message)
+  "Return one compact preview line for MESSAGE."
+  (format "%s: %s"
+          (e-chat--active-session-preview-label message)
+          (or (e-chat-overview--compact-row-text
+               (plist-get message :content)
+               96)
+              "")))
+
+(defun e-chat--active-session-preview-lines (session)
+  "Return fast preview lines for active SESSION."
+  (let ((messages (cl-remove-if-not
+                   #'e-chat--active-session-preview-message-p
+                   (plist-get session :messages))))
+    (cond
+     (messages
+      (mapcar #'e-chat--active-session-preview-line
+              (e-chat--tail-messages
+               messages
+               e-chat-resume-preview-message-limit)))
+     ((plist-get session :summary)
+      (list (format "User: %s"
+                    (or (e-chat-overview--compact-row-text
+                         (plist-get session :summary)
+                         96)
+                        ""))))
+     (t
+      (list "No prompts yet")))))
+
 (defun e-chat--active-session-preview (candidate buffer)
   "Render active session CANDIDATE into preview BUFFER."
-  (let ((preview (e-chat--render-resume-preview
-                  (plist-get candidate :harness)
-                  (plist-get candidate :session))))
-    (with-current-buffer buffer
-      (insert (with-current-buffer preview
-                (buffer-string))))))
+  (with-current-buffer buffer
+    (insert (string-join
+             (e-chat--active-session-preview-lines
+              (plist-get candidate :session))
+             "\n"))))
 
 (defun e-chat--active-session-open (candidate)
   "Open selected active session CANDIDATE."
@@ -5791,7 +5853,9 @@ adds its display name to the row."
 (defun e-chat-active-sessions ()
   "Open a floating picker of active or recent chat sessions."
   (interactive)
-  (let ((candidates (e-chat--session-candidates)))
+  (let ((candidates (cl-remove-if-not
+                     #'e-chat--active-session-has-prompt-p
+                     (e-chat--session-candidates))))
     (unless candidates
       (user-error "No e chat sessions to show"))
     (e-picker-open

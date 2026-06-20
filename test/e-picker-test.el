@@ -158,6 +158,9 @@
                      :candidate-line (lambda (candidate)
                                        (setq line-calls (1+ line-calls))
                                        candidate)
+                     :preview (lambda (candidate buffer)
+                                (with-current-buffer buffer
+                                  (insert "Preview for " candidate)))
                      :on-select #'ignore)))
         (unwind-protect
             (with-current-buffer buffer
@@ -165,7 +168,10 @@
               (setq line-calls 0)
               (e-picker-next)
               (should (= line-calls 0))
-              (should (looking-at-p "> beta")))
+              (should (looking-at-p "> beta"))
+              (should (string-match-p "| Preview for beta" (buffer-string)))
+              (should-not (string-match-p "| Preview for alpha"
+                                           (buffer-string))))
           (when (buffer-live-p buffer)
             (kill-buffer buffer)))))))
 
@@ -198,6 +204,34 @@
               (should (looking-at-p "> alpha")))
           (when (buffer-live-p buffer)
             (kill-buffer buffer)))))))
+
+(ert-deftest e-picker-test-preview-renders-in-right-pane ()
+  "Picker previews render in the right side of the candidate rows."
+  (cl-letf (((symbol-function 'e-picker--posframe-available-p)
+             (lambda () t))
+            ((symbol-function 'posframe-show)
+             (lambda (_buffer &rest _args) 'picker-frame))
+            ((symbol-function 'e-picker--focus-frame)
+             (lambda (_frame) nil)))
+    (let ((buffer (e-picker-open
+                   :name 'test-right-preview
+                   :title "Pick"
+                   :candidates '("alpha" "beta")
+                   :candidate-key #'identity
+                   :candidate-line #'identity
+                   :preview (lambda (candidate buffer)
+                              (with-current-buffer buffer
+                                (insert "Preview for " candidate)))
+                   :on-select #'ignore)))
+      (unwind-protect
+          (with-current-buffer buffer
+            (should-not (string-match-p "^Preview$" (buffer-string)))
+            (goto-char (point-min))
+            (should (re-search-forward
+                     "^> alpha[^\n]* | Preview for alpha$"
+                     nil t)))
+        (when (buffer-live-p buffer)
+          (kill-buffer buffer))))))
 
 (ert-deftest e-picker-test-open-renders-posframe-focuses-it-and-selects-current-candidate ()
   "Opening with posframe focuses the picker so navigation keys reach its map."

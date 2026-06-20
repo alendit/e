@@ -5794,14 +5794,26 @@ The context-window denominator comes from the live provider lookup
                       :title "Alpha Session"
                       :summary "Alpha summary"
                       :message-count 1
+                      :messages ((:id "alpha-user"
+                                   :role user
+                                   :content "Alpha prompt")
+                                  (:id "alpha-assistant"
+                                   :role assistant
+                                   :content "Alpha final response"))
                       :created-at "2026-06-20T10:00:00Z"
-                      :loaded nil))
+                      :loaded t))
          (session-b '(:id "beta-session"
                       :title "Beta Session"
                       :summary "Beta summary"
                       :message-count 2
+                      :messages ((:id "beta-user"
+                                   :role user
+                                   :content "Beta prompt")
+                                  (:id "beta-assistant"
+                                   :role assistant
+                                   :content "Beta final response"))
                       :created-at "2026-06-20T11:00:00Z"
-                      :loaded nil))
+                      :loaded t))
          (candidates (list (list :harness harness-a
                                  :session session-a
                                  :session-id "alpha-session")
@@ -5814,6 +5826,9 @@ The context-window denominator comes from the live provider lookup
                (lambda () candidates))
               ((symbol-function 'e-context-status-text)
                (lambda (&rest _args) "ctx model/effort 10%"))
+              ((symbol-function 'e-chat-overview--session-unread-p)
+               (lambda (_harness session &optional _instance-id)
+                 (equal (plist-get session :id) "beta-session")))
               ((symbol-function 'e-picker-open)
                (lambda (&rest args)
                  (setq spec args)
@@ -5836,15 +5851,70 @@ The context-window denominator comes from the live provider lookup
                "ctx model/effort"
                (funcall (plist-get spec :candidate-line)
                         (cadr candidates))))
+      (should (string-prefix-p
+               "● Beta Session"
+               (funcall (plist-get spec :candidate-line)
+                        (cadr candidates))))
+      (should-not (string-match-p
+                   "!"
+                   (funcall (plist-get spec :candidate-line)
+                            (cadr candidates))))
       (with-temp-buffer
         (funcall (plist-get spec :preview) (car candidates) (current-buffer))
         (setq preview-text (buffer-string)))
-      (should (string-match-p "Alpha Session" preview-text))
+      (should (string-match-p "User: Alpha prompt" preview-text))
+      (should (string-match-p "Assistant: Alpha final response" preview-text))
       (funcall (plist-get spec :on-select) (cadr candidates))
       (should (eq (plist-get opened :harness) harness-b))
       (should (equal (plist-get opened :session-id) "beta-session"))
       (should (eq (plist-get opened :display) t))
       (should (eq (plist-get opened :instance-id) :beta)))))
+
+(ert-deftest e-chat-test-active-sessions-filters-empty-sessions ()
+  "The active sessions picker omits sessions with no user prompts."
+  (let* ((harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :sessions (e-session-store-create)))
+         (empty '(:id "empty-session"
+                  :title "Empty"
+                  :summary nil
+                  :message-count 0
+                  :messages nil
+                  :loaded t))
+         (assistant-only '(:id "assistant-only"
+                           :title "Assistant only"
+                           :summary nil
+                           :message-count 1
+                           :messages ((:role assistant
+                                        :content "answer without prompt"))
+                           :loaded t))
+         (prompted '(:id "prompted-session"
+                     :title "Prompted"
+                     :summary "Prompt text"
+                     :message-count 1
+                     :messages ((:role user :content "Prompt text"))
+                     :loaded t))
+         spec)
+    (cl-letf (((symbol-function 'e-chat--session-candidates)
+               (lambda ()
+                 (list (list :harness harness
+                             :session empty
+                             :session-id "empty-session")
+                       (list :harness harness
+                             :session assistant-only
+                             :session-id "assistant-only")
+                       (list :harness harness
+                             :session prompted
+                             :session-id "prompted-session"))))
+              ((symbol-function 'e-picker-open)
+               (lambda (&rest args)
+                 (setq spec args)
+                 nil)))
+      (e-chat-active-sessions)
+      (should (equal (mapcar (lambda (candidate)
+                               (plist-get candidate :session-id))
+                             (funcall (plist-get spec :candidates)))
+                     '("prompted-session"))))))
 
 (ert-deftest e-chat-test-active-sessions-errors-without-candidates ()
   "The active sessions command reports an empty session list."

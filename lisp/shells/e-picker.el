@@ -90,11 +90,11 @@
 (defvar-local e-picker--selection-overlay nil
   "Overlay highlighting the selected picker row.")
 
-(defvar-local e-picker--preview-start nil
-  "Marker at the start of the rendered preview section.")
+(defvar-local e-picker--preview-text-column nil
+  "Column where right-side preview text starts.")
 
-(defvar-local e-picker--preview-end nil
-  "Marker at the end of the rendered preview section.")
+(defvar-local e-picker--preview-width nil
+  "Width of the right-side preview pane.")
 
 (defvar-local e-picker--closed nil
   "Non-nil when this picker was closed.")
@@ -256,15 +256,38 @@ WIDTH defaults to the current window body width."
       (funcall preview candidate (current-buffer))
       (buffer-string))))
 
-(defun e-picker--insert-preview-section ()
-  "Insert the preview section for the current selected candidate."
+(defun e-picker--preview-enabled-p ()
+  "Return non-nil when the current picker has a preview callback."
+  (and (plist-get e-picker--spec :preview) t))
+
+(defun e-picker--render-width ()
+  "Return the current picker render width in columns."
+  (max 40
+       (e-picker--dimension
+        (or (plist-get e-picker--spec :width) e-picker-default-width)
+        (frame-width))))
+
+(defun e-picker--preview-ratio ()
+  "Return the configured preview pane ratio."
+  (let ((ratio (or (plist-get e-picker--spec :preview-ratio) 0.45)))
+    (min 0.7 (max 0.2 ratio))))
+
+(defun e-picker--format-cell (text width)
+  "Return TEXT truncated or padded to WIDTH display columns."
+  (let* ((text (or text ""))
+         (truncated (truncate-string-to-width text width))
+         (padding (- width (string-width truncated))))
+    (if (> padding 0)
+        (concat truncated (make-string padding ?\s))
+      truncated)))
+
+(defun e-picker--preview-lines (width)
+  "Return selected candidate preview lines truncated to WIDTH."
   (when-let ((preview-text (e-picker--render-preview
                             (e-picker--selected-candidate))))
-    (insert "\n")
-    (e-picker--insert-line "Preview" 'e-picker-title-face)
-    (insert preview-text)
-    (unless (bolp)
-      (insert "\n"))))
+    (mapcar (lambda (line)
+              (truncate-string-to-width line width))
+            (split-string (string-trim-right preview-text) "\n"))))
 
 (defun e-picker--ensure-selection-overlay ()
   "Return the overlay used for the selected picker row."
@@ -305,15 +328,19 @@ WIDTH defaults to the current window body width."
       (delete-overlay e-picker--selection-overlay))))
 
 (defun e-picker--update-preview-section ()
-  "Refresh the preview section for the current selected candidate."
-  (when (and (markerp e-picker--preview-start)
-             (markerp e-picker--preview-end))
+  "Refresh the right-side preview for the current selected candidate."
+  (when (and e-picker--preview-text-column
+             e-picker--preview-width)
     (let ((inhibit-read-only t))
-      (save-excursion
-        (goto-char e-picker--preview-start)
-        (delete-region e-picker--preview-start e-picker--preview-end)
-        (e-picker--insert-preview-section)
-        (set-marker e-picker--preview-end (point))))))
+      (cl-loop
+       with preview-lines = (e-picker--preview-lines e-picker--preview-width)
+       for start in e-picker--candidate-row-starts
+       for index from 0
+       do (save-excursion
+            (goto-char start)
+            (move-to-column e-picker--preview-text-column t)
+            (delete-region (point) (line-end-position))
+            (insert (or (nth index preview-lines) "")))))))
 
 (defun e-picker--refresh-selection-display (&optional old-selection)
   "Refresh displayed selection after moving away from OLD-SELECTION."
@@ -333,13 +360,30 @@ WIDTH defaults to the current window body width."
 
 (defun e-picker--render ()
   "Render the current picker buffer."
-  (let ((inhibit-read-only t)
-        (candidate-line (plist-get e-picker--spec :candidate-line))
-        (title (or (plist-get e-picker--spec :title)
-                   (symbol-name (plist-get e-picker--spec :name))))
-        (footer (or (plist-get e-picker--spec :footer)
-                    "RET open  C-g cancel")))
+  (let* ((inhibit-read-only t)
+         (candidate-line (plist-get e-picker--spec :candidate-line))
+         (title (or (plist-get e-picker--spec :title)
+                    (symbol-name (plist-get e-picker--spec :name))))
+         (footer (or (plist-get e-picker--spec :footer)
+                     "RET open  C-g cancel"))
+         (preview-enabled (and e-picker--filtered-candidates
+                               (e-picker--preview-enabled-p)))
+         (render-width (e-picker--render-width))
+         (separator-width 3)
+         (preview-width (and preview-enabled
+                             (max 24
+                                  (floor (* render-width
+                                            (e-picker--preview-ratio))))))
+         (left-width (if preview-enabled
+                         (max 30 (- render-width preview-width
+                                    separator-width))
+                       render-width))
+         (preview-lines (and preview-enabled
+                             (e-picker--preview-lines preview-width))))
     (setq-local e-picker--candidate-row-starts nil)
+    (setq-local e-picker--preview-width preview-width)
+    (setq-local e-picker--preview-text-column
+                (and preview-enabled (+ left-width separator-width)))
     (erase-buffer)
     (e-picker--insert-line title 'e-picker-title-face)
     (e-picker--insert-line (format "> %s" e-picker--input)
@@ -350,17 +394,21 @@ WIDTH defaults to the current window body width."
          for candidate in e-picker--filtered-candidates
          for index from 0
          do (let* ((line (funcall candidate-line candidate))
-                   (start (point)))
+                   (start (point))
+                   (left (concat (if (= index e-picker--selection)
+                                     "> "
+                                   "  ")
+                                 line)))
               (push start e-picker--candidate-row-starts)
-              (insert (if (= index e-picker--selection) "> " "  ")
-                      line
-                      "\n")))
+              (if preview-enabled
+                  (insert (e-picker--format-cell left left-width)
+                          " | "
+                          (or (nth index preview-lines) "")
+                          "\n")
+                (insert left "\n"))))
       (e-picker--insert-line "No matches" 'e-picker-meta-face))
     (setq-local e-picker--candidate-row-starts
                 (nreverse e-picker--candidate-row-starts))
-    (setq-local e-picker--preview-start (point-marker))
-    (e-picker--insert-preview-section)
-    (setq-local e-picker--preview-end (point-marker))
     (insert "\n")
     (e-picker--insert-line footer 'e-picker-footer-face)
     (e-picker--move-selection-overlay)))

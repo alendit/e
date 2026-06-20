@@ -100,6 +100,13 @@ grimoire (and any project-local layer) reuses =e-picker= directly — it is part
 of e's public shell surface — to build its own "active topics" picker with its
 own candidate source, rendering, and action.
 
+Triggering is consumer-specific: =e-picker= itself is a Lisp primitive called by
+shells/layers, not a user-facing command. The concrete active-sessions picker is
+summoned with =M-x e-chat-active-sessions=, through the registered global
+=e-shell-command= with id =active-sessions=, or by any user keybinding such as
+=(global-set-key (kbd "C-c e s") #'e-chat-active-sessions)=. When the floating
+posframe cannot be used, the same command falls back to the minibuffer selector.
+
 ** Why posframe
 The popup must center over the entire frame regardless of which split is
 selected. =posframe= provides exactly this via
@@ -142,18 +149,18 @@ plists, and =e-picker= treats both identically.
   =posframe-poshandler-frame-center=, sized from =:width=/=:height=.
 - The popup buffer is a dedicated major mode (=e-picker-mode=, derived from
   =special-mode= but with editable input) laid out as: header (title), an input
-  line, a results region, and — when =:preview= is set — a preview region.
-  First cut: input + results in the child frame; preview rendered into the same
-  frame below/right of results (single child frame, internal regions), so the
-  whole picker is one centered overlay matching the screenshot's single bordered
-  box. (A two-frame split preview is a later refinement, explicitly out of scope
-  here.)
+  line, and a results region. When =:preview= is set, the results rows split
+  into a left candidate column and a right preview column inside the same child
+  frame.
 - Typing edits the input line; after each change the candidate list is
   re-filtered (=:filter=) and the results region redrawn. A selection marker
   tracks the current candidate.
-- Navigation keys move the selection; the preview re-renders for the selected
-  candidate (debounced, reusing the =e-context-status= estimate-cache pattern so
-  fast cursor movement does not thrash).
+- Navigation keys move the selection: =C-n= / =<down>= / =j= move to the next
+  candidate, and =C-p= / =<up>= / =k= move to the previous candidate. The live
+  keymap intentionally does not bind =n= / =p= so plain letters remain available
+  for filter input except for explicit navigation keys. Navigation moves the
+  existing row marker/overlay in place; it does not rebuild every candidate row.
+  The right preview column refreshes from the selected candidate only.
 - =RET= selects: the popup is hidden/closed, prior window configuration is
   restored, then =:on-select= runs with the chosen candidate. Closing before
   running the action avoids the side-window/popup display races already fixed
@@ -179,15 +186,18 @@ plists, and =e-picker= treats both identically.
 
 ** Active sessions consumer
 =e-chat-active-sessions= (interactive, global scope):
-- =:candidates= → =e-chat--session-candidates= (reuse as-is).
+- =:candidates= → =e-chat--session-candidates= filtered to sessions with at
+  least one user prompt; empty sessions are omitted from this picker.
 - =:candidate-key= → session title + short id (so the filter matches both).
-- =:candidate-line= → title (primary) + right-aligned compact meta: unread
-  indicator (reuse =e-chat-overview--session-unread-p=), last-message age
-  (=e-chat-overview--compact-timestamp=), and the =e-context-status= one-liner
-  (model/effort/usage). Reuse the overview's row helpers via the new
-  =e-picker-make-line= so the popup and sidebar render alike.
-- =:preview= → =e-chat--render-resume-preview= into the preview buffer (the exact
-  renderer the Consult preview already uses).
+- =:candidate-line= → unread fat-dot marker at the left of the title, then title
+  (primary) + right-aligned compact meta: instance name, message count,
+  last-message age (=e-chat-overview--compact-timestamp=), and the
+  =e-context-status= one-liner (model/effort/usage). Reuse the overview's row
+  helpers via =e-picker-make-line= so the popup and sidebar render alike.
+- =:preview= → a fast plain-text preview of the last couple user prompts and
+  final assistant responses from the session's available message tail. This
+  avoids loading or fully rendering the transcript while moving through the
+  picker.
 - =:on-select= → =e-chat-open-session= on =(:harness :session-id :instance-id)=,
   routed through the side-window-safe display helpers
   (=e-chat--pop-to-buffer=) so it works from any layout.
