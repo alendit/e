@@ -1,0 +1,84 @@
+#+title: Review: Composer Prefix Shortcuts
+#+author: e implementation
+#+date: 2026-06-20
+#+startup: overview
+
+* Status
+
+In-review.
+
+* Review loop
+
+The first subagent review found one actionable issue:
+
+- duplicate relative =@= file candidates across workspace roots were shown with
+  identical labels, making the secondary root impossible to select reliably.
+
+The fix qualifies duplicate labels with their workspace root while leaving
+unique labels unchanged, and adds a regression that selects the secondary
+duplicate file and verifies the submitted reference content.
+
+* Final review
+
+Subagent re-review reported no new suggestions after the fix.
+
+#+begin_example
+No new suggestions.
+#+end_example
+
+* Verification
+
+Focused feature verification:
+
+#+begin_src sh
+rtk eldev test test/e-chat-test.el test/e-prompts-test.el test/e-harness-test.el
+#+end_src
+
+Result:
+
+#+begin_example
+277 tests, 276 expected, 0 unexpected, 1 skipped
+#+end_example
+
+Full suite:
+
+#+begin_src sh
+rtk eldev test
+#+end_src
+
+Result:
+
+#+begin_example
+893 tests, 892 expected, 0 unexpected, 1 skipped
+#+end_example
+
+Whitespace:
+
+#+begin_src sh
+git diff --check
+#+end_src
+
+Result: clean.
+
+* Live reload
+
+The running Emacs was reloaded with:
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Result:
+
+#+begin_example
+"/Users/dimitrivorona/projects/elisp/e/"
+#+end_example
+
+A bounded live probe constructed two temporary workspace roots containing the
+same relative file name and confirmed that the picker labels are unique.
+
+#+begin_example
+(:count 2 :unique t :labels
+        ("same.txt (.../e-live-primary-...)"
+         "same.txt (.../e-live-secondary-...)"))
+#+end_example
