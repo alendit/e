@@ -102,6 +102,12 @@
    (e-resource-pattern--glob-segments pattern)
    "/"))
 
+(defun e-resource-pattern-glob-max-depth (pattern)
+  "Return the maximum path depth for facade glob PATTERN, or nil if unbounded."
+  (let ((segments (e-resource-pattern--glob-segments pattern)))
+    (unless (member "**" segments)
+      (length segments))))
+
 (defun e-resource-pattern-glob-match-p (pattern name &optional case-sensitive)
   "Return non-nil when facade glob PATTERN matches resource NAME.
 CASE-SENSITIVE defaults to non-nil."

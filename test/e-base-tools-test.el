@@ -114,6 +114,17 @@ When READ-ONLY is non-nil, file resources only support reads."
           (write-region "epsilon\n" nil
                         (expand-file-name "literal[abc].txt" nested)
                         nil 'silent)
+          (make-directory (expand-file-name "a" directory) t)
+          (make-directory (expand-file-name "b" directory) t)
+          (write-region "root\n" nil
+                        (expand-file-name "z.txt" directory)
+                        nil 'silent)
+          (write-region "nested\n" nil
+                        (expand-file-name "a/one.txt" directory)
+                        nil 'silent)
+          (write-region "nested\n" nil
+                        (expand-file-name "b/two.txt" directory)
+                        nil 'silent)
           (should
            (equal (plist-get
                    (e-base-tools-test--execute
@@ -160,6 +171,18 @@ When READ-ONLY is non-nil, file resources only support reads."
                                   :kind file
                                   :metadata (:bytes 8))]
                     :truncated nil)))
+          (should
+           (equal (plist-get
+                   (e-base-tools-test--execute
+                    registry
+                    "glob"
+                    '(:uri "file://" :pattern "*.txt" :limit 1))
+                   :content)
+                  '(:resources [(:uri "file://z.txt"
+                                  :name "z.txt"
+                                  :kind file
+                                  :metadata (:bytes 5))]
+                    :truncated nil)))
           (let* ((content (plist-get
                            (e-base-tools-test--execute
                             registry
@@ -171,7 +194,10 @@ When READ-ONLY is non-nil, file resources only support reads."
             (should (member (plist-get (elt resources 0) :uri)
                             '("file://lisp/core/more.txt"
                               "file://lisp/core/notes.txt"
-                              "file://lisp/core/literal[abc].txt")))
+                              "file://lisp/core/literal[abc].txt"
+                              "file://a/one.txt"
+                              "file://b/two.txt"
+                              "file://z.txt")))
             (should (equal (plist-get content :truncated) t))))
       (delete-directory directory t))))
 

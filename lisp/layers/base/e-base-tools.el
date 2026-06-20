@@ -644,6 +644,7 @@ OK-STATUSES defaults to only zero."
          (scope-relative (e-base-tools--file-scope-relative-path uri directory))
          (actual-pattern (or pattern "*"))
          (fd-pattern (e-resource-pattern-glob-fd-pattern actual-pattern))
+         (fd-max-depth (e-resource-pattern-glob-max-depth actual-pattern))
          (actual-limit (e-base-tools--file-discovery-limit limit))
          (actual-case-sensitive (if (null case-sensitive) t case-sensitive)))
     (e-resource-pattern-compile-glob actual-pattern)
@@ -667,6 +668,8 @@ OK-STATUSES defaults to only zero."
                             "--search-path" scope-relative
                             "--type" "file"
                             "--max-results" (number-to-string (1+ actual-limit)))
+                      (when fd-max-depth
+                        (list "--max-depth" (number-to-string fd-max-depth)))
                       (list (if actual-case-sensitive
                                 "--case-sensitive"
                               "--ignore-case"))

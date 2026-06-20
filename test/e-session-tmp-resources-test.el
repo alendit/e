@@ -131,6 +131,9 @@ blocked on the interactive coding-system picker."
     (e-resources-write resources "tmp://notes/two.log" "other\n")
     (e-resources-write resources "tmp://notes/literal[abc].txt" "literal\n")
     (e-resources-write resources "tmp://tool-results/out.txt" "needle again\n")
+    (e-resources-write resources "tmp://a/one.txt" "nested\n")
+    (e-resources-write resources "tmp://b/two.txt" "nested\n")
+    (e-resources-write resources "tmp://z.txt" "root\n")
     (let* ((content (e-resources-glob resources "tmp://notes" "*.txt" 5))
            (items (append (plist-get content :resources) nil)))
       (should (equal (mapcar (lambda (item) (plist-get item :uri)) items)
@@ -157,6 +160,13 @@ blocked on the interactive coding-system picker."
                             :name "literal[abc].txt"
                             :kind file
                             :metadata (:bytes 8))]
+              :truncated nil)))
+    (should
+     (equal (e-resources-glob resources "tmp://" "*.txt" 1)
+            '(:resources [(:uri "tmp://z.txt"
+                            :name "z.txt"
+                            :kind file
+                            :metadata (:bytes 5))]
               :truncated nil)))
     (should
      (equal (e-resources-search
