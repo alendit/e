@@ -13,6 +13,7 @@
 
 (require 'cl-lib)
 (require 'ert)
+(require 'seq)
 (require 'e)
 (require 'e-backend)
 (require 'e-chat)
@@ -88,21 +89,52 @@
             (should (eq e-chat-harness harness))
             (should (equal e-chat-session-id e-debug--session-id))))))))
 
-(ert-deftest e-debug-test-tab-display-strategy-opens-tab-before-buffer ()
-  "The tab display strategy opens a tab before showing the chat buffer."
+(ert-deftest e-debug-test-tab-display-strategy-creates-named-tab-before-buffer ()
+  "The tab display strategy creates and names a debug tab before showing BUFFER."
   (let ((buffer (generate-new-buffer " *e-debug-test*"))
         (e-debug-display-strategy 'tab)
         events)
     (unwind-protect
-        (cl-letf (((symbol-function 'tab-bar-new-tab)
+        (cl-letf (((symbol-function 'tab-bar-tabs)
+                   (lambda () '((current-tab (name . "main")))))
+                  ((symbol-function 'tab-bar-new-tab)
                    (lambda (&rest _args)
-                     (push 'tab events)))
+                     (push 'new-tab events)))
+                  ((symbol-function 'tab-bar-rename-tab)
+                   (lambda (name)
+                     (push (list 'rename name) events)))
                   ((symbol-function 'e-chat--pop-to-buffer)
                    (lambda (shown)
                      (push (list 'show shown) events))))
           (e-debug--show-buffer buffer)
           (should (equal (nreverse events)
-                         (list 'tab (list 'show buffer)))))
+                         (list 'new-tab
+                               (list 'rename e-debug-tab-name)
+                               (list 'show buffer)))))
+      (kill-buffer buffer))))
+
+(ert-deftest e-debug-test-tab-display-strategy-reuses-named-debug-tab ()
+  "The tab display strategy reuses the named debug tab when it exists."
+  (let ((buffer (generate-new-buffer " *e-debug-test*"))
+        (e-debug-display-strategy 'tab)
+        events)
+    (unwind-protect
+        (cl-letf (((symbol-function 'tab-bar-tabs)
+                   (lambda () `((current-tab (name . "main"))
+                                ((name . ,e-debug-tab-name)))))
+                  ((symbol-function 'tab-bar-new-tab)
+                   (lambda (&rest _args)
+                     (ert-fail "Existing debug tab should be reused")))
+                  ((symbol-function 'tab-bar-select-tab-by-name)
+                   (lambda (name)
+                     (push (list 'select name) events)))
+                  ((symbol-function 'e-chat--pop-to-buffer)
+                   (lambda (shown)
+                     (push (list 'show shown) events))))
+          (e-debug--show-buffer buffer)
+          (should (equal (nreverse events)
+                         (list (list 'select e-debug-tab-name)
+                               (list 'show buffer)))))
       (kill-buffer buffer))))
 
 (ert-deftest e-debug-test-shell-manifest-exposes-debug-command ()
@@ -185,6 +217,43 @@
         (should (equal (plist-get (plist-get submitted :metadata) :source)
                        'e-debug-here))
         (should shown-buffer)))))
+
+(ert-deftest e-debug-test-here-carries-chat-session-identity-without-failure ()
+  "`e-debug-here' records the inspected chat session even without failures."
+  (let* ((debug-harness (e-harness-create
+                         :backend (e-backend-fake-create :items nil)
+                         :sessions (e-session-store-create)))
+         (chat-harness (e-harness-create
+                        :backend (e-backend-fake-create :items nil)
+                        :sessions (e-session-store-create)))
+         submitted
+         (e-debug--session-id nil))
+    (e-harness-create-session chat-harness :id "plain-session"
+                              :metadata '(:project-root "/tmp/project/"))
+    (cl-letf (((symbol-function 'e-debug--default-harness)
+               (lambda () debug-harness))
+              ((symbol-function 'e-chat-submit-session)
+               (lambda (_harness _session-id _prompt &rest args)
+                 (setq submitted
+                       (list :references (plist-get args :references)
+                             :metadata (plist-get args :metadata)))))
+              ((symbol-function 'e-debug--show-buffer)
+               (lambda (_buffer) nil)))
+      (let ((chat-buffer (e-chat-open :harness chat-harness
+                                      :session-id "plain-session")))
+        (unwind-protect
+            (with-current-buffer chat-buffer
+              (e-debug-here "inspect this chat")
+              (should (equal (plist-get (plist-get submitted :metadata)
+                                        :inspection-session-id)
+                             "plain-session"))
+              (should (seq-find
+                       (lambda (reference)
+                         (equal (plist-get reference :id)
+                                "inspected-session"))
+                       (plist-get submitted :references))))
+          (when (buffer-live-p chat-buffer)
+            (kill-buffer chat-buffer)))))))
 
 (provide 'e-debug-test)
 

@@ -37,6 +37,11 @@
                  (const :tag "Use current window" current-window))
   :group 'e-debug)
 
+(defcustom e-debug-tab-name "e-debug"
+  "Name of the tab used by the standing debug session."
+  :type 'string
+  :group 'e-debug)
+
 (defconst e-debug-default-prompt
   "Debug what just happened here."
   "Default prompt used by `e-debug-here' when the question is empty.")
@@ -102,12 +107,21 @@
 
 (defun e-debug--inspection-harness ()
   "Return the harness currently under inspection, or nil."
+  (plist-get (e-debug--inspection-target) :harness))
+
+(defun e-debug--inspection-target ()
+  "Return the harness/session currently under inspection, or nil."
   (cond
    ((and (derived-mode-p 'e-chat-mode)
-         e-chat-harness)
-    e-chat-harness)
+         e-chat-harness
+         e-chat-session-id)
+    (list :harness e-chat-harness
+          :session-id e-chat-session-id
+          :source 'chat-buffer))
    (t
-    (ignore-errors (e-chat--default-harness)))))
+    (when-let ((harness (ignore-errors (e-chat--default-harness))))
+      (list :harness harness
+            :source 'default-chat)))))
 
 (defun e-debug--failure-details (harness &optional limit)
   "Return recent failure detail plists from HARNESS."
@@ -140,22 +154,47 @@
                          (or (plist-get terminal :error) "failed turn"))
           :text (pp-to-string detail))))
 
-(cl-defun e-debug--capture (&key question inspection-harness source-reference)
+(defun e-debug--inspected-session-reference (harness session-id)
+  "Return a reference describing inspected HARNESS SESSION-ID."
+  (when (and harness session-id)
+    (when-let ((session (e-session-get (e-harness-sessions harness) session-id)))
+      (let ((metadata (plist-get session :metadata)))
+        (list :id "inspected-session"
+              :uri (format "e://session/%s" session-id)
+              :label (format "Inspected chat session %s" session-id)
+              :text (string-trim
+                     (format "Inspected chat session: %s\nTitle: %s\nProject root: %s\nMetadata:\n%s"
+                             session-id
+                             (or (ignore-errors
+                                   (e-harness-session-title harness session-id))
+                                 "")
+                             (or (plist-get metadata :project-root) "")
+                             (pp-to-string metadata))))))))
+
+(cl-defun e-debug--capture
+    (&key question inspection-harness inspection-session-id source-reference)
   "Capture prompt and references for `e-debug-here'."
   (let* ((question (e-debug--normalize-question question))
          (source (or source-reference (e-debug--source-reference)))
+         (inspected-session
+          (e-debug--inspected-session-reference
+           inspection-harness
+           inspection-session-id))
          (details (e-debug--failure-details inspection-harness 2))
          (failure-references
           (cl-loop for detail in details
                    for index from 1
                    collect (e-debug--failure-reference detail index)))
-         (references (delq nil (append (list source) failure-references)))
+         (references (delq nil
+                           (append (list source inspected-session)
+                                   failure-references)))
          (prompt-text (format "%s\n\n%s" question e-debug-remediation-guidance)))
     (list :prompt (e-chat-format-reference-prompt prompt-text references)
           :references references
           :metadata (list :source 'e-debug-here
                           :inspection-session-id
-                          (plist-get (plist-get (car details) :session) :id)
+                          (or inspection-session-id
+                              (plist-get (plist-get (car details) :session) :id))
                           :inspection-turn-id
                           (plist-get (plist-get (car details) :turn) :id)))))
 
@@ -175,12 +214,36 @@
               :metadata (e-debug--session-metadata))
              :id))))))
 
+(defun e-debug--tab-name (tab)
+  "Return the display name from TAB returned by `tab-bar-tabs'."
+  (or (alist-get 'name tab nil nil #'eq)
+      (alist-get 'name (cdr tab) nil nil #'eq)))
+
+(defun e-debug--debug-tab-exists-p ()
+  "Return non-nil when the named debug tab exists."
+  (and (fboundp 'tab-bar-tabs)
+       (cl-some (lambda (tab)
+                  (equal (e-debug--tab-name tab) e-debug-tab-name))
+                (tab-bar-tabs))))
+
+(defun e-debug--select-or-create-tab ()
+  "Select the named debug tab, or create and name it."
+  (cond
+   ((not (fboundp 'tab-bar-new-tab))
+    nil)
+   ((and (e-debug--debug-tab-exists-p)
+         (fboundp 'tab-bar-select-tab-by-name))
+    (tab-bar-select-tab-by-name e-debug-tab-name))
+   (t
+    (tab-bar-new-tab)
+    (when (fboundp 'tab-bar-rename-tab)
+      (tab-bar-rename-tab e-debug-tab-name)))))
+
 (defun e-debug--show-buffer (buffer)
   "Show debug session BUFFER according to `e-debug-display-strategy'."
   (pcase e-debug-display-strategy
     ('tab
-     (when (fboundp 'tab-bar-new-tab)
-       (tab-bar-new-tab))
+     (e-debug--select-or-create-tab)
      (e-chat--pop-to-buffer buffer))
     ('window
      (e-chat--pop-to-buffer buffer))
@@ -209,9 +272,12 @@
                                     e-debug-default-prompt)))
          (debug-harness (e-debug--default-harness))
          (debug-session-id (e-debug--ensure-session debug-harness))
+         (inspection-target (e-debug--inspection-target))
          (capture (e-debug--capture
                    :question question
-                   :inspection-harness (e-debug--inspection-harness)))
+                   :inspection-harness (plist-get inspection-target :harness)
+                   :inspection-session-id
+                   (plist-get inspection-target :session-id)))
          (prompt (plist-get capture :prompt))
          (references (plist-get capture :references))
          (metadata (plist-get capture :metadata))
