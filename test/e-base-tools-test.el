@@ -120,8 +120,20 @@ When READ-ONLY is non-nil, file resources only support reads."
                    :content)
                   '(:resources [(:uri "file://lisp/core/e-resources.el"
                                   :name "core/e-resources.el"
+                                 :kind file
+                                 :metadata (:bytes 5))]
+                    :truncated nil)))
+          (should
+           (equal (plist-get
+                   (e-base-tools-test--execute
+                    registry
+                    "glob"
+                    '(:uri "file://lisp/core/notes.txt" :pattern "*.txt" :limit 5))
+                   :content)
+                  '(:resources [(:uri "file://lisp/core/notes.txt"
+                                  :name "notes.txt"
                                   :kind file
-                                  :metadata (:bytes 5))]
+                                  :metadata (:bytes 6))]
                     :truncated nil)))
           (let* ((content (plist-get
                            (e-base-tools-test--execute

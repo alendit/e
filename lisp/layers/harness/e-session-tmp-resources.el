@@ -145,6 +145,22 @@ OK-STATUSES defaults to only zero."
       (file-relative-name path scope)
     (file-name-nondirectory path)))
 
+(defun e-session-tmp--glob-pattern-matches-file-p (pattern relative)
+  "Return non-nil when PATTERN matches RELATIVE or its file name."
+  (let ((regexp (wildcard-to-regexp pattern)))
+    (or (string-match-p regexp relative)
+        (string-match-p regexp (file-name-nondirectory relative)))))
+
+(defun e-session-tmp--glob-single-result (scope scope-relative pattern)
+  "Return a single tmp glob result for SCOPE, or nil if it does not match."
+  (when (and (file-regular-p scope)
+             (e-session-tmp--glob-pattern-matches-file-p pattern scope-relative))
+    (let ((attributes (file-attributes scope)))
+      (list :uri (concat "tmp://" scope-relative)
+            :name (file-name-nondirectory scope)
+            :kind 'file
+            :metadata (list :bytes (file-attribute-size attributes))))))
+
 (defun e-session-tmp--glob-resource (harness session-id uri pattern limit)
   "List tmp resources under parsed URI with PATTERN and LIMIT."
   (let* ((fd (e-session-tmp--find-executable "fd" '("fdfind")))
@@ -152,32 +168,35 @@ OK-STATUSES defaults to only zero."
          (scope (e-session-tmp--scope-path harness session-id uri))
          (scope-relative (e-session-tmp--scope-relative-name uri))
          (actual-pattern (or pattern "*"))
-         (actual-limit (e-session-tmp--discovery-limit limit))
-         (lines (e-session-tmp--process-lines
-                 fd
-                 root
-                 (list "--glob"
-                       "--color" "never"
-                       "--base-directory" root
-                       "--search-path" scope-relative
-                       "--type" "file"
-                       "--max-results" (number-to-string (1+ actual-limit))
-                       actual-pattern)))
-         (truncated (> (length lines) actual-limit))
-         (selected (seq-take lines actual-limit)))
-    (list :resources
-          (vconcat
-           (mapcar
-            (lambda (relative)
-              (let* ((relative (e-session-tmp--clean-relative-path relative))
-                     (absolute (expand-file-name relative root))
-                     (attributes (file-attributes absolute)))
-                (list :uri (concat "tmp://" relative)
-                      :name (e-session-tmp--result-name absolute scope)
-                      :kind 'file
-                      :metadata (list :bytes (file-attribute-size attributes)))))
-            selected))
-          :truncated truncated)))
+         (actual-limit (e-session-tmp--discovery-limit limit)))
+    (if-let ((single (e-session-tmp--glob-single-result
+                      scope scope-relative actual-pattern)))
+        (list :resources (vector single) :truncated nil)
+      (let* ((lines (e-session-tmp--process-lines
+                     fd
+                     root
+                     (list "--glob"
+                           "--color" "never"
+                           "--base-directory" root
+                           "--search-path" scope-relative
+                           "--type" "file"
+                           "--max-results" (number-to-string (1+ actual-limit))
+                           actual-pattern)))
+             (truncated (> (length lines) actual-limit))
+             (selected (seq-take lines actual-limit)))
+        (list :resources
+              (vconcat
+               (mapcar
+                (lambda (relative)
+                  (let* ((relative (e-session-tmp--clean-relative-path relative))
+                         (absolute (expand-file-name relative root))
+                         (attributes (file-attributes absolute)))
+                    (list :uri (concat "tmp://" relative)
+                          :name (e-session-tmp--result-name absolute scope)
+                          :kind 'file
+                          :metadata (list :bytes (file-attribute-size attributes)))))
+                selected))
+              :truncated truncated)))))
 
 (defun e-session-tmp--rg-json-text (object)
   "Return text value from rg JSON OBJECT."

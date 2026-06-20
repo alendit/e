@@ -138,6 +138,13 @@ blocked on the interactive coding-system picker."
                             :metadata (:bytes 13))]
               :truncated nil)))
     (should
+     (equal (e-resources-glob resources "tmp://notes/one.txt" "*.txt" 5)
+            '(:resources [(:uri "tmp://notes/one.txt"
+                            :name "one.txt"
+                            :kind file
+                            :metadata (:bytes 13))]
+              :truncated nil)))
+    (should
      (equal (e-resources-search
              resources
              "tmp://"

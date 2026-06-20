@@ -621,6 +621,22 @@ OK-STATUSES defaults to only zero."
       (file-relative-name path scope)
     (file-name-nondirectory path)))
 
+(defun e-base-tools--glob-pattern-matches-file-p (pattern relative)
+  "Return non-nil when PATTERN matches RELATIVE or its file name."
+  (let ((regexp (wildcard-to-regexp pattern)))
+    (or (string-match-p regexp relative)
+        (string-match-p regexp (file-name-nondirectory relative)))))
+
+(defun e-base-tools--file-glob-single-result (scope scope-relative pattern)
+  "Return a single file glob result for SCOPE, or nil if it does not match."
+  (when (and (file-regular-p scope)
+             (e-base-tools--glob-pattern-matches-file-p pattern scope-relative))
+    (let ((attributes (file-attributes scope)))
+      (list :uri (concat "file://" scope-relative)
+            :name (file-name-nondirectory scope)
+            :kind 'file
+            :metadata (list :bytes (file-attribute-size attributes))))))
+
 (defun e-base-tools--file-glob-resource (uri pattern limit directory)
   "List file resources under parsed URI with PATTERN and LIMIT."
   (let* ((fd (e-base-tools--find-executable "fd" '("fdfind")))
@@ -628,32 +644,35 @@ OK-STATUSES defaults to only zero."
          (scope (e-base-tools--resource-path uri directory))
          (scope-relative (e-base-tools--file-scope-relative-path uri directory))
          (actual-pattern (or pattern "*"))
-         (actual-limit (e-base-tools--file-discovery-limit limit))
-         (lines (e-base-tools--process-lines
-                 fd
-                 primary
-                 (list "--glob"
-                       "--color" "never"
-                       "--base-directory" primary
-                       "--search-path" scope-relative
-                       "--type" "file"
-                       "--max-results" (number-to-string (1+ actual-limit))
-                       actual-pattern)))
-         (truncated (> (length lines) actual-limit))
-         (selected (seq-take lines actual-limit)))
-    (list :resources
-          (vconcat
-           (mapcar
-            (lambda (relative)
-              (let* ((relative (e-base-tools--clean-relative-path relative))
-                     (absolute (expand-file-name relative primary))
-                     (attributes (file-attributes absolute)))
-                (list :uri (concat "file://" relative)
-                      :name (e-base-tools--file-result-name absolute scope)
-                      :kind 'file
-                      :metadata (list :bytes (file-attribute-size attributes)))))
-            selected))
-          :truncated truncated)))
+         (actual-limit (e-base-tools--file-discovery-limit limit)))
+    (if-let ((single (e-base-tools--file-glob-single-result
+                      scope scope-relative actual-pattern)))
+        (list :resources (vector single) :truncated nil)
+      (let* ((lines (e-base-tools--process-lines
+                     fd
+                     primary
+                     (list "--glob"
+                           "--color" "never"
+                           "--base-directory" primary
+                           "--search-path" scope-relative
+                           "--type" "file"
+                           "--max-results" (number-to-string (1+ actual-limit))
+                           actual-pattern)))
+             (truncated (> (length lines) actual-limit))
+             (selected (seq-take lines actual-limit)))
+        (list :resources
+              (vconcat
+               (mapcar
+                (lambda (relative)
+                  (let* ((relative (e-base-tools--clean-relative-path relative))
+                         (absolute (expand-file-name relative primary))
+                         (attributes (file-attributes absolute)))
+                    (list :uri (concat "file://" relative)
+                          :name (e-base-tools--file-result-name absolute scope)
+                          :kind 'file
+                          :metadata (list :bytes (file-attribute-size attributes)))))
+                selected))
+              :truncated truncated)))))
 
 (defun e-base-tools--rg-json-text (object)
   "Return text value from rg JSON OBJECT."
