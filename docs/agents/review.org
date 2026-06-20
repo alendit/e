@@ -1,0 +1,218 @@
+#+title: Feature Review Notes
+#+startup: overview
+
+* Purpose
+
+A feature =review.org= is the durable handoff for reviewing implemented dev
+work under =docs/feats/<id>-<slug>/=.  It records what was reviewed, how the
+implementation compares to =plan.org=, what findings were raised, how findings
+were resolved, and which verification proves the final state.
+
+The file is not a release note or a duplicate implementation summary.  It is
+the audit trail that lets another agent or operator answer:
+
+- what was in scope for the review;
+- whether the plan contract was met, changed, or deferred;
+- which issues were found and how severe they were;
+- what changes resolved each issue;
+- what batch, whitespace, live reload, or live probe evidence was collected;
+- whether any unresolved notes keep the dev work at =In-review=.
+
+* When To Create Or Update
+
+Create =docs/feats/<id>-<slug>/review.org= when implementation is ready for
+review or when the user asks for a feature review artifact.
+
+Update it during the review loop instead of scattering review history across
+chat.  Keep the file in the feature directory as history after completion.
+
+Use the dev-work index status from =docs/references/dev_work.org=:
+
+- If =review.org= exists and there are unresolved findings or follow-ups, keep
+  the feature =In-review=.
+- If the review has no notes, or every review note is resolved, mark the feature
+  =Done= only when the operator's status policy allows it.
+- If the user has said implemented features stay =In-review= until explicit
+  approval, preserve that rule even when tests pass.
+
+* Inputs To Inspect
+
+Review against the feature's local contract first:
+
+- =docs/feats/<id>-<slug>/plan.org= and any local addenda;
+- =docs/feats/index.org= for the feature status and surrounding feature notes;
+- source and tests touched by the implementation;
+- previous review comments, if =review.org= already exists;
+- live Emacs state when the feature affects runtime behavior, chat
+  presentation, tools, backend requests, reload behavior, or buffer state.
+
+Do not rely on the implementation summary alone.  A useful review names the
+actual plan slice, source/test evidence, or live behavior that supports each
+claim.
+
+* Common Shapes
+
+Existing feature reviews use two stable shapes.  Choose the smallest one that
+captures the review faithfully.
+
+** Full audit review
+
+Use this for a first review of a substantial feature, a review with unresolved
+findings, or a review that compares many plan slices.
+
+#+begin_example
+#+title: Review: <Feature Name>
+#+startup: overview
+
+* Status
+
+In-review.
+
+* Review summary
+
+Short statement of the implementation state and the review result.
+
+* Scope reviewed
+
+Files, plan slices, tests, commands, and live behavior inspected.
+
+* What looks good
+
+Concrete strengths that matter for acceptance.  Omit this section if it would
+only say "looks fine".
+
+* Verification performed during this review pass
+
+Commands and live checks with exact results.
+
+* Findings
+
+** TODO High: <finding title>
+
+Explain the bug or mismatch, cite the plan/source/test evidence, explain why it
+matters, and suggest the smallest corrective direction.
+
+* Plan coverage
+
+Map the implementation back to plan slices, especially partial or deferred
+items.
+
+* Architecture review
+
+Call out dependency direction, ownership, side effects, compatibility, or
+interface concerns when the feature is design-sensitive.
+
+* Design self-check
+
+Answer the AGENTS.md design questions when relevant.
+
+* Unresolved
+
+List remaining notes, or say none.
+#+end_example
+
+** Compact resolution review
+
+Use this when review findings were already fixed in the same slice, or when the
+review is mainly documenting a short fixpoint.
+
+#+begin_example
+#+title: Review: <Feature Name>
+#+author: e implementation
+#+date: YYYY-MM-DD
+#+startup: overview
+
+* Status
+
+In-review.
+
+* Review loop
+
+** Finding 1: <title>
+
+*** Problem
+
+What was wrong, with the plan or source evidence.
+
+*** Change
+
+What changed to resolve it.
+
+*** Evidence
+
+Focused verification and, when needed, live probe evidence.
+
+* Final review
+
+Record whether another review pass found no new suggestions, or summarize the
+remaining decision.
+
+* Verification
+
+Focused tests, broader tests, and whitespace checks with exact result snippets.
+
+* Live reload
+
+Reload command and result, plus the bounded live probe result when runtime
+behavior changed.
+#+end_example
+
+If no =lisp/*.el= or loaded behavior changed during the final slice, say that
+live reload was not required instead of inventing one.
+
+* Finding Style
+
+Write findings as actionable review items, not vague concerns.
+
+Use severity when the issue is still open:
+
+- =TODO High= for correctness, data loss, broken core flows, or plan-contract
+  misses that block acceptance.
+- =TODO Medium= for meaningful behavioral gaps, missing regression coverage, or
+  important UX/API mismatches.
+- =TODO Low= for cleanup, documentation gaps, naming, or small follow-ups that
+  do not block the main flow.
+
+Use =DONE <severity>= or =Resolved:= only after the fix and evidence are
+recorded.  A resolved finding should still keep its problem/change/evidence
+history so later agents understand why the change exists.
+
+Each finding should include:
+
+- the expected behavior from =plan.org= or an explicit project rule;
+- the observed behavior from source, tests, or live state;
+- why the mismatch matters;
+- the smallest useful fix direction;
+- the verification that proves resolution, once fixed.
+
+* Evidence Rules
+
+Capture exact commands in =sh= blocks and exact results in =example= blocks.
+Prefer the narrowest useful verification first, then broader checks when the
+blast radius justifies them.
+
+For Emacs Lisp runtime changes, include:
+
+- focused ERT selectors or files relevant to the feature;
+- broader affected test files or full suite when warranted;
+- =git diff --check= or equivalent whitespace validation for doc/code edits;
+- =emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"= result;
+- one bounded live probe when the behavior is observable in the running Emacs.
+
+Keep live probes narrow and scalar.  Avoid broad dumps of registries,
+buffer-locals, or session state.
+
+* Status And Completion
+
+The review result should make the next action obvious:
+
+- If findings remain, keep an =Unresolved= section and keep the feature
+  =In-review=.
+- If findings were fixed, keep the resolved history and add final verification.
+- If there were no findings, say so directly in =Final review= or =Review
+  result=.
+- If a plan item is intentionally deferred, name the compatibility or product
+  reason and make sure the plan, addendum, or review records that decision.
+
+Passing tests alone does not make a feature =Done=.  Follow the current
+operator approval policy in =AGENTS.md= and =docs/references/dev_work.org=.

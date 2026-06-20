@@ -22,6 +22,7 @@
 
 - Dev work plans and related dev work notes belong under `docs/feats/`; maintain `docs/feats/index.org` as the compact status index for coding-agent orientation.
 - Use the dev work statuses `Planned`, `Ready`, `In-progress`, `In-review`, and `Done` exactly as described in `docs/references/dev_work.org`.
+- When creating or updating feature `review.org` files, follow `docs/agents/review.org` for the expected structure, finding style, evidence, and completion notes.
 - Tiny work, meaning small changes like trivial styling changes, belongs under `docs/feats/tiny/` and should be numbered there.
 - Research notes belong under `docs/research/`.
 - Bug reports belong under `docs/bugs/`. When a user creates a bug report, create a new directory under `docs/bugs/` containing `report.org` with a short description of what the user reported, then create `investigation.org` in the same directory with the results of investigating the report using both code and live access.
