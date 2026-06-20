@@ -28,6 +28,8 @@
                              (plist-get definition :name))
                            (e-tools-definitions (e-harness-tools harness)))
                    '("read"
+                     "glob"
+                     "search"
                      "write"
                      "edit"
                      "list_buffers"

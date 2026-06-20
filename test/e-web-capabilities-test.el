@@ -35,6 +35,8 @@
                               (e-tools-definitions (e-harness-tools harness)))))
       (should (equal tool-names
                      '("read"
+                       "glob"
+                       "search"
                        "web_search"
                        "web_fetch"
                        "web_browser"))))
