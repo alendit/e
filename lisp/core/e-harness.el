@@ -1133,7 +1133,7 @@ TURN-ID is passed to active capability context providers when present."
 (defun e-harness--maybe-auto-compact-session (harness session-id)
   "Best-effort auto-compact SESSION-ID when it is near the context window."
   (when (e-harness--auto-compaction-needed-p harness session-id)
-    (condition-case err
+    (condition-case nil
         (e-harness-compact-session harness session-id :reason 'auto)
       (e-compaction-error nil))))
 

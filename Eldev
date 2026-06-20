@@ -4,6 +4,11 @@
 ;; the package entry point, lisp files, tests, byte-compilation targets, lint
 ;; tools, and package tarball from the repository and package headers.
 
+;; Prevent macOS copy/archive helpers from materializing AppleDouble `._*'
+;; metadata files in Eldev's local package install, where byte-compilation would
+;; otherwise treat them as Lisp sources.
+(setenv "COPYFILE_DISABLE" "1")
+
 (setf eldev-test-framework 'ert)
 
 (eldev-use-package-archive 'melpa)

@@ -16,6 +16,12 @@
 (require 'cl-lib)
 (require 'subr-x)
 
+(declare-function posframe-delete "ext:posframe")
+(declare-function posframe-hide "ext:posframe")
+(declare-function posframe-show "ext:posframe")
+(declare-function posframe-poshandler-frame-center "ext:posframe")
+(declare-function posframe-workable-p "ext:posframe")
+
 (defgroup e-picker nil
   "Reusable shell picker primitive."
   :group 'e)
