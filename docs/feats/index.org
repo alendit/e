@@ -42,6 +42,6 @@ Status values for coding agents:
 | 29 | In-review | 29-workspace-roots/ | Workspace Roots |
 | 30 | In-review | 30-prompt-capabilities/ | Prompt Capabilities |
 | 31 | In-review | 31-composer-prefix-shortcuts/ | Composer Prefix Shortcuts |
-| 32 | Ready | 32-floating-picker/ | Floating Picker and Active Sessions Popup |
+| 32 | In-review | 32-floating-picker/ | Floating Picker and Active Sessions Popup |
 | 33 | Planned | 33-workspace-awareness/ | Workspace Awareness |
 | 34 | Planned | 34-agent-shell-fleet/ | Agent Shell Fleet |

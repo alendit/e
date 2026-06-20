@@ -1,0 +1,107 @@
+#+title: Review: Floating Picker and Active Sessions Popup
+#+author: e implementation
+#+date: 2026-06-20
+#+startup: overview
+
+* Status
+
+In-review.
+
+* Review loop
+
+The first subagent review found three actionable issues:
+
+- picker =:actions= were implemented as a dispatcher but action keys were not
+  installed in the live picker keymap;
+- terminal fallback completion used =:candidate-key= but did not expose the
+  planned =:candidate-line= annotation metadata;
+- posframe teardown only hid the child frame and did not delete it from a
+  kill-buffer lifecycle path, and the new module was missing from
+  =e-dev-reload=.
+
+The fixes install per-spec action keys into the picker buffer's local map, add
+fallback completion annotation metadata, delete the posframe from the picker
+kill hook, and add =lisp/shells/e-picker.el= to the dev reload module list.
+Regression coverage exercises each path through the actual keymap, completion
+metadata, and kill hook behavior.
+
+* Final review
+
+Subagent re-review reported no new suggestions after the fixes.
+
+#+begin_example
+No new suggestions.
+#+end_example
+
+* Verification
+
+Focused feature verification:
+
+#+begin_src sh
+rtk eldev test test/e-picker-test.el test/e-chat-test.el
+#+end_src
+
+Result:
+
+#+begin_example
+203 tests, 202 expected, 0 unexpected, 1 skipped
+#+end_example
+
+Focused startup/load verification:
+
+#+begin_src sh
+rtk eldev test test/e-picker-test.el test/e-chat-test.el test/e-test.el
+#+end_src
+
+Result:
+
+#+begin_example
+218 tests, 217 expected, 0 unexpected, 1 skipped
+#+end_example
+
+Full suite:
+
+#+begin_src sh
+rtk eldev test
+#+end_src
+
+Result:
+
+#+begin_example
+901 tests, 900 expected, 0 unexpected, 1 skipped
+#+end_example
+
+Whitespace:
+
+#+begin_src sh
+git diff --check
+#+end_src
+
+Result: clean.
+
+* Live reload
+
+The running Emacs was reloaded with:
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Result:
+
+#+begin_example
+"/Users/dimitrivorona/projects/elisp/e/"
+#+end_example
+
+Because =e-dev-reload= itself gained the new =e-picker= module, the reload was
+run twice: the first invocation refreshed =e-dev-reload=, and the second loaded
+=e-picker= through the updated module list.
+
+Bounded live probes confirmed the active-sessions command wiring, action-key
+binding, posframe delete hook, and fallback annotation metadata.
+
+#+begin_example
+(:feature t :command t :picker-name active-sessions :line-has-title 0)
+(:action-bound t :deleted "*e-picker-live-review*" :install t)
+(:annotation " One row" :selected (:key "one" :line "One row"))
+#+end_example

@@ -3,6 +3,10 @@
 #+date: 2026-06-19
 #+startup: overview
 
+* Status
+
+In-review.
+
 * Goal
 Add a centered floating popup picker built on the =posframe= package, and use it
 to ship an "active sessions" overview that the user can summon from anywhere.
