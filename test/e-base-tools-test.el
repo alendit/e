@@ -111,6 +111,9 @@ When READ-ONLY is non-nil, file resources only support reads."
           (write-region "delta\n" nil
                         (expand-file-name "more.txt" nested)
                         nil 'silent)
+          (write-region "epsilon\n" nil
+                        (expand-file-name "literal[abc].txt" nested)
+                        nil 'silent)
           (should
            (equal (plist-get
                    (e-base-tools-test--execute
@@ -143,6 +146,20 @@ When READ-ONLY is non-nil, file resources only support reads."
                     '(:uri "file://lisp/core/notes.txt" :pattern "*.md" :limit 5))
                    :content)
                   '(:resources [] :truncated nil)))
+          (should
+           (equal (plist-get
+                   (e-base-tools-test--execute
+                    registry
+                    "glob"
+                    '(:uri "file://lisp/core"
+                      :pattern "literal[abc].txt"
+                      :limit 5))
+                   :content)
+                  '(:resources [(:uri "file://lisp/core/literal[abc].txt"
+                                  :name "literal[abc].txt"
+                                  :kind file
+                                  :metadata (:bytes 8))]
+                    :truncated nil)))
           (let* ((content (plist-get
                            (e-base-tools-test--execute
                             registry
@@ -153,7 +170,8 @@ When READ-ONLY is non-nil, file resources only support reads."
             (should (equal (length resources) 1))
             (should (member (plist-get (elt resources 0) :uri)
                             '("file://lisp/core/more.txt"
-                              "file://lisp/core/notes.txt")))
+                              "file://lisp/core/notes.txt"
+                              "file://lisp/core/literal[abc].txt")))
             (should (equal (plist-get content :truncated) t))))
       (delete-directory directory t))))
 

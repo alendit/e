@@ -129,14 +129,14 @@ blocked on the interactive coding-system picker."
          (resources (e-harness-resources harness "session-1" "turn-1")))
     (e-resources-write resources "tmp://notes/one.txt" "Alpha needle\n")
     (e-resources-write resources "tmp://notes/two.log" "other\n")
+    (e-resources-write resources "tmp://notes/literal[abc].txt" "literal\n")
     (e-resources-write resources "tmp://tool-results/out.txt" "needle again\n")
-    (should
-     (equal (e-resources-glob resources "tmp://notes" "*.txt" 5)
-            '(:resources [(:uri "tmp://notes/one.txt"
-                            :name "one.txt"
-                            :kind file
-                            :metadata (:bytes 13))]
-              :truncated nil)))
+    (let* ((content (e-resources-glob resources "tmp://notes" "*.txt" 5))
+           (items (append (plist-get content :resources) nil)))
+      (should (equal (mapcar (lambda (item) (plist-get item :uri)) items)
+                     '("tmp://notes/literal[abc].txt"
+                       "tmp://notes/one.txt")))
+      (should (equal (plist-get content :truncated) nil)))
     (should
      (equal (e-resources-glob resources "tmp://notes/one.txt" "*.txt" 5)
             '(:resources [(:uri "tmp://notes/one.txt"
@@ -147,6 +147,17 @@ blocked on the interactive coding-system picker."
     (should
      (equal (e-resources-glob resources "tmp://notes/one.txt" "*.md" 5)
             '(:resources [] :truncated nil)))
+    (should
+     (equal (e-resources-glob
+             resources
+             "tmp://notes"
+             "literal[abc].txt"
+             5)
+            '(:resources [(:uri "tmp://notes/literal[abc].txt"
+                            :name "literal[abc].txt"
+                            :kind file
+                            :metadata (:bytes 8))]
+              :truncated nil)))
     (should
      (equal (e-resources-search
              resources

@@ -188,12 +188,11 @@ OK-STATUSES defaults to only zero."
                             "--color" "never"
                             "--base-directory" root
                             "--search-path" scope-relative
-                            "--type" "file"
-                            "--max-results" (number-to-string (1+ actual-limit)))
+                            "--type" "file")
                       (list (if actual-case-sensitive
                                 "--case-sensitive"
                               "--ignore-case"))
-                      (list actual-pattern))))
+                      (list "*"))))
              (filtered
               (seq-filter
                (lambda (relative)
