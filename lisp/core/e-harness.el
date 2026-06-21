@@ -12,6 +12,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'e-backend)
 (require 'e-capabilities)
 (require 'e-capability-config)
 (require 'e-compaction)
@@ -61,7 +62,8 @@ Auto-compaction triggers when estimated context exceeds WINDOW minus this."
   (sessions (e-session-store-create))
   (active-layers nil)
   (subscribers nil)
-  active-turns)
+  active-turns
+  prompt-queues)
 
 (defvar e-harness--layer-change-functions (make-hash-table :test 'eq :weakness 'key)
   "Layer change callbacks keyed by harness.")
@@ -142,7 +144,8 @@ layer activation or deactivation APIs change the active layer set."
                           (copy-tree capability-config)
                           :sessions (or sessions (e-session-store-create))
                           :active-layers nil
-                          :active-turns (make-hash-table :test 'equal))))
+                          :active-turns (make-hash-table :test 'equal)
+                          :prompt-queues (make-hash-table :test 'equal))))
     (when layer-change-function
       (e-harness-set-layer-change-function harness layer-change-function))
     (dolist (layer active-layers)
@@ -520,7 +523,7 @@ an already-removed record is a no-op."
 (defconst e-harness--durable-activity-event-types
   '(turn-started provider-request-started provider-request-finished
     reasoning-delta tool-started tool-finished turn-finished token-usage
-    turn-failed turn-cancelled backend-empty-output
+    turn-failed turn-cancelled turn-steered backend-empty-output
     compaction-started compaction-prepared compaction-summary-started
     compaction-finished compaction-failed)
   "Turn event types stored as durable session activity.")
@@ -684,6 +687,110 @@ Currently this is rate limiting: HTTP 429 or an explicit rate-limit message."
 (defun e-harness-messages (harness session-id)
   "Return messages for SESSION-ID in HARNESS."
   (e-session-messages (e-harness-sessions harness) session-id))
+
+(defun e-harness--queue-item-metadata (item)
+  "Return turn metadata for queued ITEM."
+  (append (copy-sequence (plist-get item :metadata))
+          (when-let ((references (plist-get item :references)))
+            (list :references references))))
+
+(defun e-harness--queue-timestamp ()
+  "Return an ISO-8601 UTC timestamp for prompt queue entries."
+  (format-time-string "%Y-%m-%dT%H:%M:%SZ" nil t))
+
+(defun e-harness-queued-prompts (harness session-id)
+  "Return queued prompt items for SESSION-ID in HARNESS."
+  (copy-sequence (gethash session-id (e-harness-prompt-queues harness))))
+
+(defun e-harness--set-queued-prompts (harness session-id items)
+  "Replace SESSION-ID queued prompt ITEMS in HARNESS."
+  (if items
+      (puthash session-id items (e-harness-prompt-queues harness))
+    (remhash session-id (e-harness-prompt-queues harness)))
+  items)
+
+(defun e-harness--emit-queue-changed (harness session-id)
+  "Emit a queue update event for SESSION-ID."
+  (e-harness--emit
+   harness
+   (e-events-make :type 'queue-changed
+                  :session-id session-id
+                  :turn-id nil
+                  :payload (list :queue
+                                 (e-harness-queued-prompts
+                                  harness session-id)))))
+
+(cl-defun e-harness-queue-prompt
+    (harness session-id prompt &key references metadata)
+  "Queue PROMPT as a follow-up for SESSION-ID in HARNESS.
+The session must currently have a running active turn."
+  (unless (and (stringp prompt) (not (string-empty-p prompt)))
+    (user-error "Prompt must not be empty"))
+  (unless (e-harness--active-turn-running-p
+           (gethash session-id (e-harness-active-turns harness)))
+    (signal 'e-harness-no-active-turn (list session-id)))
+  (let* ((queue-id (e-session-generate-ulid))
+         (item (list :id queue-id
+                     :prompt prompt
+                     :references (copy-tree references)
+                     :metadata (copy-sequence metadata)
+                     :created-at (e-harness--queue-timestamp)))
+         (items (append (e-harness-queued-prompts harness session-id)
+                        (list item))))
+    (e-harness--set-queued-prompts harness session-id items)
+    (e-harness--emit-queue-changed harness session-id)
+    queue-id))
+
+(defun e-harness--steering-prompt-preview (prompt)
+  "Return compact activity preview for steering PROMPT."
+  (let ((text (string-trim
+               (replace-regexp-in-string "[\n\r\t ]+" " " prompt))))
+    (e-harness--string-byte-prefix text 160)))
+
+(cl-defun e-harness-steer-active-turn
+    (harness session-id prompt &key metadata)
+  "Steer SESSION-ID's running active turn with PROMPT in HARNESS."
+  (unless (and (stringp prompt) (not (string-empty-p prompt)))
+    (user-error "Prompt must not be empty"))
+  (let ((entry (gethash session-id (e-harness-active-turns harness))))
+    (unless (e-harness--active-turn-running-p entry)
+      (signal 'e-harness-no-active-turn (list session-id)))
+    (let* ((turn-id (plist-get entry :id))
+           (request (plist-get entry :request))
+           (result (e-backend-steer-request
+                    request prompt :metadata metadata)))
+      (e-harness--emit-turn-event
+       harness session-id turn-id 'turn-steered
+       (list :prompt-preview (e-harness--steering-prompt-preview prompt)
+             :metadata (copy-sequence metadata)))
+      result)))
+
+(defun e-harness--drain-next-queued-prompt (harness session-id settled-entry)
+  "Start SESSION-ID's next queued prompt after SETTLED-ENTRY clears."
+  (let ((current-entry (gethash session-id (e-harness-active-turns harness))))
+    (when (and current-entry
+               (not (e-harness--active-turn-running-p current-entry))
+               (eq current-entry settled-entry))
+      (remhash session-id (e-harness-active-turns harness)))
+    (unless (e-harness--active-turn-running-p
+             (gethash session-id (e-harness-active-turns harness)))
+      (when-let ((item (car (e-harness-queued-prompts harness session-id))))
+        (e-harness--set-queued-prompts
+         harness session-id
+         (cdr (e-harness-queued-prompts harness session-id)))
+        (e-harness--emit-queue-changed harness session-id)
+        (e-harness-prompt-async
+         harness
+         session-id
+         (plist-get item :prompt)
+         :metadata (e-harness--queue-item-metadata item))))))
+
+(defun e-harness--schedule-queue-drain (harness session-id settled-entry)
+  "Schedule queue drain for SESSION-ID after SETTLED-ENTRY settles."
+  (run-at-time 0 nil
+               (lambda ()
+                 (e-harness--drain-next-queued-prompt
+                  harness session-id settled-entry))))
 
 (defun e-harness-session-title (harness session-id)
   "Return display title for SESSION-ID in HARNESS."
@@ -1588,7 +1695,9 @@ cancellation.  SESSION-ID identifies the session."
                    (plist-put entry :error message)
                    (plist-put entry :error-details details)
                    (e-harness--emit-turn-failed
-                    harness session-id turn-id message details)))))
+                    harness session-id turn-id message details)
+                   (e-harness--schedule-queue-drain
+                    harness session-id entry)))))
             (finish-done
              (result)
              (when (and (active-entry-p) (not (plist-get entry :cancelled)))
@@ -1602,7 +1711,9 @@ cancellation.  SESSION-ID identifies the session."
                       (e-harness--run-turn-finished-hooks
                        harness session-id turn-id result)))
                  (plist-put entry :result hooked-result)
-                 (plist-put entry :status 'done))))
+                 (plist-put entry :status 'done)
+                 (e-harness--schedule-queue-drain
+                  harness session-id entry))))
             (start-turn
              ()
              (when (and (active-entry-p) (not (plist-get entry :cancelled)))
@@ -1658,6 +1769,9 @@ cancellation.  SESSION-ID identifies the session."
 (defun e-harness-reset (harness session-id)
   "Clear SESSION-ID transcript state in HARNESS."
   (e-session-clear-messages (e-harness-sessions harness) session-id)
+  (when (e-harness-queued-prompts harness session-id)
+    (e-harness--set-queued-prompts harness session-id nil)
+    (e-harness--emit-queue-changed harness session-id))
   (e-harness--emit
    harness
    (e-events-make :type 'session-reset
@@ -1690,6 +1804,7 @@ cancellation.  SESSION-ID identifies the session."
           (plist-put entry :status 'cancelled)
           (e-harness--emit-turn-event
            harness session-id turn-id 'turn-cancelled nil)
+          (e-harness--schedule-queue-drain harness session-id entry)
           entry)
       (signal 'e-harness-no-active-turn (list session-id)))))
 

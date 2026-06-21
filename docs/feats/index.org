@@ -46,4 +46,4 @@ Status values for coding agents:
 | 33 | In-review | 33-workspace-awareness/ | Workspace Awareness |
 | 34 | In-review | 34-agent-shell-fleet/ | Agent Shell Fleet |
 | 35 | In-review | 35-provider-context-anchors/ | Provider Context Anchors |
-| 36 | Ready | 36-steering-and-queuing/ | Steering and Queuing |
+| 36 | In-review | 36-steering-and-queuing/ | Steering and Queuing |

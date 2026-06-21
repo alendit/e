@@ -440,6 +440,12 @@ The mode line uses this presentation-owned table for context usage display."
 (defvar-local e-chat--composer-spacer-marker nil
   "Marker at the beginning of the visual spacer above the composer.")
 
+(defvar-local e-chat--queue-start-marker nil
+  "Marker at the start of the queued prompt list.")
+
+(defvar-local e-chat--queue-end-marker nil
+  "Marker at the end of the queued prompt list.")
+
 (defvar-local e-chat--composer-scroll-needed nil
   "Non-nil when a composer edit should scroll input fully into view.")
 
@@ -1273,6 +1279,10 @@ Return non-nil when a composer was removed."
            (set-marker e-chat--composer-start-marker nil)
            (when (markerp e-chat--composer-spacer-marker)
              (set-marker e-chat--composer-spacer-marker nil))
+           (when (markerp e-chat--queue-start-marker)
+             (set-marker e-chat--queue-start-marker nil))
+           (when (markerp e-chat--queue-end-marker)
+             (set-marker e-chat--queue-end-marker nil))
            (setq e-chat--composer-scroll-needed nil)
            t))))))
 
@@ -1330,6 +1340,43 @@ Return non-nil when a composer was removed."
                 (or composer-lines 2)
                 2)))))
 
+(defun e-chat--queued-prompts ()
+  "Return queued prompt items for the attached chat session."
+  (when (and e-chat-harness e-chat-session-id)
+    (ignore-errors
+      (e-harness-queued-prompts e-chat-harness e-chat-session-id))))
+
+(defun e-chat--queue-preview-text (prompt)
+  "Return compact one-line preview text for queued PROMPT."
+  (let ((text (string-trim
+               (replace-regexp-in-string "[\n\r\t ]+" " " (or prompt "")))))
+    (if (> (length text) 96)
+        (concat (substring text 0 93) "...")
+      text)))
+
+(defun e-chat--insert-queued-prompts ()
+  "Insert queued prompt previews above the composer separator."
+  (let ((items (e-chat--queued-prompts)))
+    (if (not items)
+        (progn
+          (when (markerp e-chat--queue-start-marker)
+            (set-marker e-chat--queue-start-marker nil))
+          (when (markerp e-chat--queue-end-marker)
+            (set-marker e-chat--queue-end-marker nil)))
+      (setq e-chat--queue-start-marker (point-marker))
+      (set-marker-insertion-type e-chat--queue-start-marker nil)
+      (e-chat--insert-protected "Queued prompts\n" 'e-chat-separator-face)
+      (cl-loop for item in items
+               for index from 1
+               do (e-chat--insert-protected
+                   (format "%d. %s\n"
+                           index
+                           (e-chat--queue-preview-text
+                            (plist-get item :prompt)))
+                   'e-chat-separator-face))
+      (setq e-chat--queue-end-marker (point-marker))
+      (set-marker-insertion-type e-chat--queue-end-marker nil))))
+
 (defun e-chat--insert-composer (&optional text preserve-focus)
   "Insert an editable composer at the end of the current chat buffer.
 When PRESERVE-FOCUS is non-nil, do not move point or window focus to it."
@@ -1351,6 +1398,7 @@ When PRESERVE-FOCUS is non-nil, do not move point or window focus to it."
            (insert "\n"))
          (setq e-chat--composer-spacer-marker (point-marker))
          (set-marker-insertion-type e-chat--composer-spacer-marker nil)
+         (e-chat--insert-queued-prompts)
          (e-chat--insert-protected
           (concat e-chat--composer-separator "\n")
           'e-chat-separator-face)
@@ -4709,6 +4757,8 @@ When OMIT-COMPOSER is non-nil, leave the buffer as transcript-only."
     (setq e-chat--transcript-end-marker nil)
     (setq e-chat--composer-start-marker nil)
     (setq e-chat--composer-spacer-marker nil)
+    (setq e-chat--queue-start-marker nil)
+    (setq e-chat--queue-end-marker nil)
     (setq e-chat--turn-registry (make-hash-table :test 'equal))
     (setq e-chat--block-registry (make-hash-table :test 'equal))
     (setq e-chat--block-order nil)
@@ -5034,6 +5084,11 @@ When REFRESH-MODE-LINE is non-nil, also refresh context-aware mode-line text."
       (plist-get event :created-at)
       (plist-get (plist-get event :payload) :status))
      (e-chat--request-activity-redraw (plist-get event :turn-id)))
+    ('queue-changed
+     (e-chat--ensure-composer)
+     (e-chat--refresh-composer-position))
+    ('turn-steered
+     (e-chat--set-status "steered"))
     ('assistant-delta
      (e-chat--set-status "streaming"))
     ('reasoning-delta
@@ -5234,6 +5289,25 @@ reload.  User-facing commands should call `e-chat-new' or `e-chat-resume'."
    :references references
    :delay delay
    :metadata metadata))
+
+(defun e-chat--active-turn-running-p ()
+  "Return non-nil when the attached session has a running active turn."
+  (and e-chat-harness
+       e-chat-session-id
+       (plist-get (e-harness-state e-chat-harness e-chat-session-id)
+                  :active-turn)))
+
+(defun e-chat--submit-intent (prefix)
+  "Return submit intent for PREFIX in the current chat state."
+  (if (not (e-chat--active-turn-running-p))
+      'submit
+    (if prefix 'queue 'steer)))
+
+(defun e-chat--submit-metadata (mode references)
+  "Return metadata for composer submission MODE and REFERENCES."
+  (append (list :source 'chat-composer
+                :submit-mode mode)
+          (and references (list :references references))))
 
 (defun e-chat--failed-turn-target-at-point ()
   "Return failed turn target at point in a chat buffer, or nil."
@@ -6675,21 +6749,61 @@ When DISPLAY is non-nil, display the preview buffer."
    :instructions instructions))
 
 ;;;###autoload
-(defun e-chat-submit (&optional prompt)
-  "Submit PROMPT or the current editable prompt text."
-  (interactive)
+(defun e-chat-submit (&optional arg)
+  "Submit composer text.
+When ARG is a string, submit it as a noninteractive prompt.  Interactively,
+plain submit steers an active turn and prefix submit queues a follow-up."
+  (interactive "P")
   (unless (and e-chat-harness e-chat-session-id)
     (user-error "This buffer is not attached to an e chat session"))
-  (let* ((submission (unless prompt (e-chat--composer-submission)))
-         (references (plist-get submission :references)))
-    (setq prompt (or prompt (plist-get submission :prompt)))
-    (e-chat-session-submit e-chat-harness e-chat-session-id prompt
-                           :delay e-chat-submit-backend-delay
-                           :references references))
-  (e-chat--delete-composer)
-  (e-chat--set-status "queued")
-  (e-chat--insert-composer)
-  (redisplay t))
+  (let* ((explicit-prompt (and (stringp arg) arg))
+         (prefix (and (not explicit-prompt) arg))
+         (submission (unless explicit-prompt (e-chat--composer-submission)))
+         (references (plist-get submission :references))
+         (prompt (or explicit-prompt (plist-get submission :prompt)))
+         (intent (if explicit-prompt
+                     'submit
+                   (e-chat--submit-intent prefix))))
+    (condition-case err
+        (progn
+          (pcase intent
+            ('submit
+             (e-chat-session-submit
+              e-chat-harness e-chat-session-id prompt
+              :delay e-chat-submit-backend-delay
+              :references references))
+            ('steer
+             (e-chat-session-steer
+              e-chat-harness e-chat-session-id prompt
+              :metadata (e-chat--submit-metadata 'steering references)))
+            ('queue
+             (e-chat-session-queue
+              e-chat-harness e-chat-session-id prompt
+              :references references
+              :metadata (e-chat--submit-metadata 'queued references))))
+          (e-chat--delete-composer)
+          (e-chat--set-status
+           (pcase intent
+             ('steer "steered")
+             ('queue "queued")
+             (_ "queued")))
+          (e-chat--insert-composer)
+          (redisplay t))
+      (e-backend-steering-unsupported
+       (e-chat--set-status "steering unsupported")
+       (message "Steering unsupported: %s" (error-message-string err)))
+      (user-error
+       (if (memq intent '(steer queue))
+           (progn
+             (e-chat--set-status "input rejected")
+             (message "%s" (error-message-string err)))
+         (signal (car err) (cdr err))))
+      (error
+       (if (memq intent '(steer queue))
+           (progn
+             (e-chat--set-status "input failed")
+             (message "%s" (error-message-string err)))
+         (signal (car err) (cdr err)))))))
 
 ;;;###autoload
 (defun e-chat-abort ()

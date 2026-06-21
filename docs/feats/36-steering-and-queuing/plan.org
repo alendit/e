@@ -17,7 +17,16 @@ current turn to finish before typing the next prompt.
 
 * Status
 
-Planned.
+In-review.
+
+* Implementation Notes
+
+- The first implementation adds the backend-neutral steering contract and keeps
+  provider support explicit.  Current OpenAI Responses/Chat Completions and
+  Anthropic Messages adapters expose cancellable HTTP/timer request handles, but
+  no real mid-turn input mechanism.  They therefore leave request =:steer= nil
+  and plain active-turn submit reports unsupported steering without discarding
+  the composer draft.
 
 * Background
 

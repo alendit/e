@@ -55,6 +55,64 @@
       (should (equal (plist-get metadata :references)
                      '((:uri "buffer://source")))))))
 
+(ert-deftest e-chat-session-test-queue-validates-and-delegates ()
+  "Queueing validates prompt text and delegates to harness queue state."
+  (let* ((backend (e-backend-create
+                   :name "held"
+                   :start (lambda (&rest _args) nil)))
+         (harness (e-harness-create :backend backend)))
+    (e-harness-create-session harness :id "session-1")
+    (e-chat-session-submit harness "session-1" "running" :delay 1.0)
+    (should-error
+     (e-chat-session-queue harness "session-1" "")
+     :type 'user-error)
+    (let ((queue-id
+           (e-chat-session-queue
+            harness
+            "session-1"
+            "queued"
+            :references '((:uri "buffer://source"))
+            :metadata '(:source chat-composer))))
+      (let ((item (car (e-harness-queued-prompts harness "session-1"))))
+        (should (equal (plist-get item :id) queue-id))
+        (should (equal (plist-get item :prompt) "queued"))
+        (should (equal (plist-get item :references)
+                       '((:uri "buffer://source"))))
+        (should (equal (plist-get item :metadata)
+                       '(:source chat-composer)))))
+    (e-harness-abort harness "session-1")))
+
+(ert-deftest e-chat-session-test-steer-validates-and-delegates ()
+  "Steering validates prompt text and delegates to the active harness turn."
+  (let* ((seen nil)
+         (request (e-backend-request-create
+                   :steer (cl-function
+                           (lambda (&key prompt metadata)
+                             (setq seen (list prompt metadata))
+                             :accepted))))
+         (backend (e-backend-create
+                   :name "steerable"
+                   :start (cl-function
+                           (lambda (&key messages options on-item on-done
+                                          on-error on-request-start)
+                             (ignore messages options on-item on-done
+                                     on-error)
+                             (funcall on-request-start request)
+                             nil))))
+         (harness (e-harness-create :backend backend)))
+    (e-harness-create-session harness :id "session-1")
+    (e-chat-session-submit harness "session-1" "running" :delay 0)
+    (should-error
+     (e-chat-session-steer harness "session-1" "")
+     :type 'user-error)
+    (should (eq (e-chat-session-steer
+                 harness
+                 "session-1"
+                 "focus here"
+                 :metadata '(:source chat-composer))
+                :accepted))
+    (should (equal seen '("focus here" (:source chat-composer))))))
+
 (ert-deftest e-chat-session-test-abort-reset-and-rename ()
   "Chat-session actions delegate abort, reset, and rename to the harness/store."
   (let ((harness (e-harness-create
@@ -103,7 +161,8 @@
   "The chat-session capability exposes stable shell action names."
   (let ((capability (e-chat-session-capability-create)))
     (should (eq (e-capability-id capability) 'chat-session))
-    (dolist (action '(:submit :abort :reset :rename :set-model :set-effort
+    (dolist (action '(:submit :steer :queue :abort :reset :rename
+                      :set-model :set-effort
                       :attach-context :detach-context :context))
       (should (functionp (e-capabilities-action capability action))))))
 

@@ -34,6 +34,32 @@ METADATA is caller-provided turn metadata."
    :metadata (append (copy-sequence metadata)
                      (and references (list :references references)))))
 
+(cl-defun e-chat-session-queue
+    (harness session-id prompt &key references metadata)
+  "Queue PROMPT as a follow-up for SESSION-ID through HARNESS.
+REFERENCES are ordered source references from the composer.
+METADATA is caller-provided turn metadata."
+  (unless (and (stringp prompt) (not (string-empty-p prompt)))
+    (user-error "Prompt must not be empty"))
+  (e-harness-queue-prompt
+   harness
+   session-id
+   prompt
+   :references references
+   :metadata metadata))
+
+(cl-defun e-chat-session-steer
+    (harness session-id prompt &key metadata)
+  "Steer SESSION-ID's active turn through HARNESS with PROMPT.
+METADATA is caller-provided turn activity metadata."
+  (unless (and (stringp prompt) (not (string-empty-p prompt)))
+    (user-error "Prompt must not be empty"))
+  (e-harness-steer-active-turn
+   harness
+   session-id
+   prompt
+   :metadata metadata))
+
 (defun e-chat-session-ensure-project-root (harness session-id project-root)
   "Ensure SESSION-ID uses PROJECT-ROOT when it safely widens the stored root.
 Existing roots are updated only when absent or when they are descendants of
@@ -296,6 +322,8 @@ in the next turn's context."
           :cache-placement 'dynamic-context
           :build #'e-chat-session-context-attachments-provider))
    :actions (list :submit #'e-chat-session-submit
+                  :steer #'e-chat-session-steer
+                  :queue #'e-chat-session-queue
                   :abort #'e-chat-session-abort
                   :reset #'e-chat-session-reset
                   :compact #'e-chat-session-compact

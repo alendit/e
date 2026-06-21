@@ -1,0 +1,197 @@
+#+title: Review: Steering and Queuing
+#+author: e implementation
+#+date: 2026-06-21
+#+startup: overview
+
+* Status
+
+In-review.
+
+* Review loop
+
+** DONE Medium: Reset left queued prompts alive
+
+*** Problem
+
+The first subagent review found that =e-harness-reset= cleared transcript
+messages but left =prompt-queues= intact.  A queued follow-up from before reset
+could therefore drain after the old active turn settled, mutating a session the
+user had just reset.
+
+*** Change
+
+=e-harness-reset= now clears the session's queued prompts and emits
+=queue-changed= before =session-reset=.  The reset behavior does not try to
+silently redefine active-turn abort semantics; it only removes stale queued
+follow-ups owned by the harness queue.
+
+*** Evidence
+
+#+begin_src sh
+rtk eldev test test/e-harness-test.el test/e-chat-test.el
+#+end_src
+
+#+begin_example
+Ran 320 tests, 319 results as expected, 0 unexpected, 1 skipped
+SKIPPED e-chat-test-assistant-markdown-renders-with-text-properties
+#+end_example
+
+The new =e-harness-test-reset-clears-queued-prompts= covers queue cleanup and
+proves a stale queued prompt does not start after reset and old-turn settlement.
+
+** DONE Medium: Inline-reference survival needed direct coverage
+
+*** Problem
+
+The plan requires inline reference metadata to survive ordinary submit,
+steering, and queueing.  Ordinary submit already had coverage, but the first
+implementation's active steering, active prefix queueing, and queued-drain tests
+used plain text.
+
+*** Change
+
+The active steering and prefix queueing chat tests now insert inline context
+references and assert that formatted prompt text plus reference metadata reach
+the session action.  The FIFO drain harness test now asserts queued references
+and metadata reach the later submitted user message.
+
+*** Evidence
+
+#+begin_src sh
+rtk eldev test test/e-harness-test.el test/e-chat-test.el
+#+end_src
+
+#+begin_example
+Ran 320 tests, 319 results as expected, 0 unexpected, 1 skipped
+SKIPPED e-chat-test-assistant-markdown-renders-with-text-properties
+#+end_example
+
+* Final review
+
+The fixpoint subagent review found no new suggestions after the reset cleanup
+and inline-reference coverage changes.  Fixpoint reached.
+
+* Verification
+
+#+begin_src sh
+rtk eldev test test/e-backend-test.el test/e-harness-test.el test/e-chat-session-test.el test/e-chat-test.el test/e-loop-test.el test/e-openai-test.el test/e-anthropic-test.el
+#+end_src
+
+#+begin_example
+Ran 440 tests, 439 results as expected, 0 unexpected, 1 skipped
+SKIPPED e-chat-test-assistant-markdown-renders-with-text-properties
+#+end_example
+
+#+begin_src sh
+rtk eldev test
+#+end_src
+
+#+begin_example
+Ran 1041 tests, 1040 results as expected, 0 unexpected, 1 skipped
+SKIPPED e-chat-test-assistant-markdown-renders-with-text-properties
+#+end_example
+
+#+begin_src sh
+git diff --check
+#+end_src
+
+#+begin_example
+No output.
+#+end_example
+
+* UX and performance playthrough
+
+- Unsupported steering: in a temporary running chat turn, plain active submit
+  reported =steering unsupported= and preserved the composer draft =steer draft=.
+- Queue display: =C-u C-c C-c= during that active turn rendered =Queued prompts=
+  with =queued live follow-up= above the composer in the attached Emacs window.
+- Queue drain: finishing the first held turn started =queued live follow-up=,
+  removed the queue display, rendered the answer, and left the queue length at
+  zero.
+- Responsiveness: the probe used one held fake backend turn and one queued
+  follow-up; no profiling was needed because there was no observed slowness or
+  repeated redraw hot path.
+
+* Live reload
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+#+begin_example
+"/Users/dimitrivorona/projects/elisp/e/"
+#+end_example
+
+Bounded live probe result:
+
+#+begin_example
+(:unsupported-draft "steer draft"
+ :unsupported-visible t
+ :queue-visible t
+ :queue-length 1
+ :composer-after-queue ""
+ :starts-after-first ("first live prompt" "queued live follow-up")
+ :queue-after-first 0
+ :final-has-answer t
+ :final-queue-length 0)
+#+end_example
+
+Computer Use visual inspection confirmed the Emacs window showed
+=*e-chat:first live prompt*= with =Queued prompts= and =1. queued live follow-up=
+above the composer before the drain step.
+
+* Plan coverage
+
+- Slice 1 is covered by harness/session queue APIs, queue storage,
+  =queue-changed= events, FIFO drain, reset cleanup, and queue metadata tests.
+- Slice 2 is covered by the backend request =:steer= slot, explicit unsupported
+  steering condition, harness steering action, and steering event tests.
+- Slice 3 is covered by active submit intent dispatch, prefix queueing, draft
+  preservation on unsupported steering, and noninteractive submit compatibility.
+- Slice 4 is covered by queue chrome rendering above the composer and persistence
+  across composer refresh, final insertion, failure/cancel rendering, and empty
+  queue removal.
+- Slice 5 is covered by adapter inspection and the plan note that current
+  OpenAI Responses, OpenAI Chat Completions, and Anthropic Messages request
+  handles do not expose a real mid-turn input mechanism, so they intentionally
+  leave =:steer= unsupported.
+
+* Architecture review
+
+The ownership follows the plan: the harness owns active-turn lifecycle and
+queue drain, the chat-session layer exposes semantic actions, the shell owns
+prefix handling and bottom chrome rendering, and the backend contract exposes
+only the optional request-level steering function.  Provider adapters do not
+fake steering through transcript append or queueing.
+
+* Design self-check
+
+1. The package leaves the project better off by making active-turn submit
+   behavior explicit and adding a safe queue instead of accidental concurrent
+   turns.
+2. It moves toward live-configurable chat workflows where mid-turn input and
+   follow-up work are first-class harness/session behavior.
+3. Provider steering remains the uncertain decision and is localized to the
+   optional backend request =:steer= contract.
+4. Ownership is cohesive: lifecycle in harness, semantic actions in
+   chat-session, presentation in chat shell, transport support in adapters.
+5. Coupling is reduced because shell code calls session actions instead of
+   mutating harness internals directly for steering/queue semantics.
+6. Stable policy does not depend on concrete providers; adapters opt in only
+   when a real mechanism exists.
+7. Side effects stay at the shell and harness boundaries; provider transport
+   remains behind backend requests.
+8. The new abstractions are semantically real: queueing and steering are
+   distinct operations with different provider requirements.
+9. Compatibility is explicit: ordinary submit and noninteractive prompt submit
+   remain supported.
+10. No legacy path was introduced for fake steering.
+11. Expected unsupported steering surfaces through a specific condition; active
+    steering/queue failures preserve the draft and report a visible input
+    failure, while ordinary submit keeps its existing error behavior.
+12. Core behavior is proven by focused backend, harness, session, and chat tests,
+    with live reload and visual verification for user-facing behavior.
+
+* Unresolved
+
+None.

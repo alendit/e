@@ -13,8 +13,12 @@
 
 (require 'cl-lib)
 
+(define-error 'e-backend-steering-unsupported
+  "Backend request does not support steering")
+
 (cl-defstruct (e-backend-request (:constructor e-backend-request-create))
   cancel
+  steer
   metadata)
 
 (cl-defstruct (e-backend
@@ -38,6 +42,14 @@
   (when-let ((cancel (and (e-backend-request-p request)
                           (e-backend-request-cancel request))))
     (funcall cancel)))
+
+(cl-defun e-backend-steer-request (request prompt &key metadata)
+  "Steer REQUEST with PROMPT and METADATA when the provider supports it."
+  (let ((steer (and (e-backend-request-p request)
+                    (e-backend-request-steer request))))
+    (unless (functionp steer)
+      (signal 'e-backend-steering-unsupported (list request)))
+    (funcall steer :prompt prompt :metadata metadata)))
 
 (cl-defun e-backend-stream
     (backend &key messages options on-item on-request-start)

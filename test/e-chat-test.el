@@ -423,6 +423,9 @@
                             'e-chat-assistant-face)))
           (should (equal (e-chat--composer-text) "")))
       (when (buffer-live-p buffer)
+        (with-current-buffer buffer
+          (ignore-errors
+            (e-harness-abort harness e-chat-session-id)))
         (kill-buffer buffer)))))
 
 (ert-deftest e-chat-test-shared-harness-buffers-render-only-their-session ()
@@ -476,6 +479,9 @@
           (should (e-chat--composer-active-p))
           (should (equal (e-chat--composer-text) "")))
       (when (buffer-live-p buffer)
+        (with-current-buffer buffer
+          (ignore-errors
+            (e-harness-abort harness e-chat-session-id)))
         (kill-buffer buffer)))))
 
 (ert-deftest e-chat-test-submit-forces-redisplay-after-human-turn ()
@@ -544,6 +550,301 @@
           (should (string-match-p "late answer" (buffer-string)))
           (should (string-match-p "done" (format "%s" header-line-format))))
       (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-active-submit-steers-running-turn ()
+  "Plain submit during a running turn steers instead of starting a new turn."
+  (let* ((backend (e-backend-create
+                   :name "held-chat"
+                   :start (cl-function
+                           (lambda (&key messages options on-item on-done
+                                          on-error on-request-start)
+                             (ignore messages options on-item on-done
+                                     on-error on-request-start)
+                             nil))))
+         (harness (e-harness-create :backend backend))
+         (e-chat-submit-backend-delay 0)
+         (buffer (e-chat-open :harness harness
+                              :session-id "chat-active-steer"))
+         steered)
+    (unwind-protect
+        (with-current-buffer buffer
+          (goto-char (point-max))
+          (insert "first")
+          (e-chat-submit)
+          (goto-char (point-max))
+          (insert "focus ")
+          (let ((reference
+                 (e-chat--insert-context-reference
+                  '(:id "ref-1"
+                    :uri "buffer://source"
+                    :label "source:2"
+                    :text "two"
+                    :start-line 2
+                    :end-line 2
+                    :point-line 2))))
+            (insert " here")
+            (cl-letf (((symbol-function 'e-chat-session-steer)
+                       (lambda (_harness session-id prompt &key metadata)
+                         (setq steered (list session-id prompt metadata))
+                         :accepted)))
+              (e-chat-submit))
+            (should (equal (car steered) e-chat-session-id))
+            (should (string-match-p
+                     "focus <reference id=\"ref-1\" label=\"source:2\"> here"
+                     (cadr steered)))
+            (should (equal (plist-get (caddr steered) :submit-mode)
+                           'steering))
+            (should (equal (plist-get (caddr steered) :references)
+                           (list reference))))
+          (should (equal (e-chat--composer-text) "")))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-active-prefix-submit-queues-running-turn ()
+  "Prefix submit during a running turn queues the composer text."
+  (let* ((backend (e-backend-create
+                   :name "held-chat"
+                   :start (cl-function
+                           (lambda (&key messages options on-item on-done
+                                          on-error on-request-start)
+                             (ignore messages options on-item on-done
+                                     on-error on-request-start)
+                             nil))))
+         (harness (e-harness-create :backend backend))
+         (e-chat-submit-backend-delay 0)
+         (buffer (e-chat-open :harness harness
+                              :session-id "chat-active-queue"))
+         queued)
+    (unwind-protect
+        (with-current-buffer buffer
+          (goto-char (point-max))
+          (insert "first")
+          (e-chat-submit)
+          (goto-char (point-max))
+          (insert "next ")
+          (let ((reference
+                 (e-chat--insert-context-reference
+                  '(:id "ref-1"
+                    :uri "buffer://source"
+                    :label "source:2"
+                    :text "two"
+                    :start-line 2
+                    :end-line 2
+                    :point-line 2))))
+            (insert " prompt")
+            (cl-letf (((symbol-function 'e-chat-session-queue)
+                       (cl-function
+                        (lambda (_harness session-id prompt
+                                 &key references metadata)
+                          (setq queued
+                                (list session-id prompt references metadata))
+                          "queue-id"))))
+              (e-chat-submit '(4)))
+            (should (equal (car queued) e-chat-session-id))
+            (should (string-match-p
+                     "next <reference id=\"ref-1\" label=\"source:2\"> prompt"
+                     (cadr queued)))
+            (should (equal (caddr queued) (list reference)))
+            (should (equal (plist-get (cadddr queued) :submit-mode)
+                           'queued))
+            (should (equal (plist-get (cadddr queued) :references)
+                           (list reference))))
+          (should (equal (e-chat--composer-text) "")))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-failed-active-steering-preserves-composer ()
+  "Unsupported steering keeps the user's draft in the composer."
+  (let* ((backend (e-backend-create
+                   :name "held-chat"
+                   :start (cl-function
+                           (lambda (&key messages options on-item on-done
+                                          on-error on-request-start)
+                             (ignore messages options on-item on-done
+                                     on-error on-request-start)
+                             nil))))
+         (harness (e-harness-create :backend backend))
+         (e-chat-submit-backend-delay 0)
+         (buffer (e-chat-open :harness harness
+                              :session-id "chat-steer-failure"))
+         shown-message)
+    (unwind-protect
+        (with-current-buffer buffer
+          (goto-char (point-max))
+          (insert "first")
+          (e-chat-submit)
+          (goto-char (point-max))
+          (insert "focus here")
+          (cl-letf (((symbol-function 'e-chat-session-steer)
+                     (lambda (&rest _args)
+                       (signal 'e-backend-steering-unsupported nil)))
+                    ((symbol-function 'message)
+                     (lambda (format-string &rest args)
+                       (setq shown-message
+                             (apply #'format format-string args)))))
+            (e-chat-submit))
+          (should (equal (e-chat--composer-text) "focus here"))
+          (should (string-match-p "Steering unsupported" shown-message)))
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer
+          (ignore-errors
+            (e-harness-abort harness e-chat-session-id)))
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-queued-prompts-render-above-composer ()
+  "Queued prompts appear in bottom chrome above the composer separator."
+  (let* ((backend (e-backend-create
+                   :name "held-chat"
+                   :start (cl-function
+                           (lambda (&key messages options on-item on-done
+                                          on-error on-request-start)
+                             (ignore messages options on-item on-done
+                                     on-error on-request-start)
+                             nil))))
+         (harness (e-harness-create :backend backend))
+         (e-chat-submit-backend-delay 0)
+         (buffer (e-chat-open :harness harness
+                              :session-id "chat-queue-render")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (goto-char (point-max))
+          (insert "first")
+          (e-chat-submit)
+          (e-harness-queue-prompt harness e-chat-session-id
+                                  "second line\ncontinued")
+          (e-harness-queue-prompt harness e-chat-session-id
+                                  "third")
+          (let* ((content (buffer-string))
+                 (queue-pos (and (markerp e-chat--queue-start-marker)
+                                 (marker-position
+                                  e-chat--queue-start-marker)))
+                 (composer-pos (and (markerp e-chat--composer-start-marker)
+                                    (marker-position
+                                     e-chat--composer-start-marker))))
+            (should queue-pos)
+            (should composer-pos)
+            (should (< queue-pos composer-pos))
+            (should (string-match-p "Queued prompts" content))
+            (should (string-match-p "1\\. second line continued" content))
+            (should (string-match-p "2\\. third" content))))
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer
+          (ignore-errors
+            (e-harness-abort harness e-chat-session-id)))
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-queued-prompts-survive-composer-refresh-and-final-insertion ()
+  "Queue chrome survives spacer refresh and final assistant insertion."
+  (let* ((backend (e-backend-create
+                   :name "held-chat"
+                   :start (cl-function
+                           (lambda (&key messages options on-item on-done
+                                          on-error on-request-start)
+                             (ignore messages options on-item on-done
+                                     on-error on-request-start)
+                             nil))))
+         (harness (e-harness-create :backend backend))
+         (e-chat-submit-backend-delay 0)
+         (buffer (e-chat-open :harness harness
+                              :session-id "chat-queue-refresh")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (goto-char (point-max))
+          (insert "first")
+          (e-chat-submit)
+          (e-harness-queue-prompt harness e-chat-session-id "second")
+          (goto-char (point-max))
+          (insert "draft")
+          (e-chat--refresh-composer-position)
+          (should (string-match-p "Queued prompts" (buffer-string)))
+          (should (string-match-p "1\\. second" (buffer-string)))
+          (should (equal (e-chat--composer-text) "draft"))
+          (e-chat--insert-entry "Assistant" "final answer" t "turn-final")
+          (should (string-match-p "final answer" (buffer-string)))
+          (should (string-match-p "Queued prompts" (buffer-string)))
+          (should (string-match-p "1\\. second" (buffer-string)))
+          (should (equal (e-chat--composer-text) "draft")))
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer
+          (ignore-errors
+            (e-harness-abort harness e-chat-session-id)))
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-queued-prompts-survive-failure-and-cancel-rendering ()
+  "Queue chrome survives terminal error and cancellation entries."
+  (let* ((backend (e-backend-create
+                   :name "held-chat"
+                   :start (cl-function
+                           (lambda (&key messages options on-item on-done
+                                          on-error on-request-start)
+                             (ignore messages options on-item on-done
+                                     on-error on-request-start)
+                             nil))))
+         (harness (e-harness-create :backend backend))
+         (e-chat-submit-backend-delay 0)
+         (buffer (e-chat-open :harness harness
+                              :session-id "chat-queue-terminal")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (goto-char (point-max))
+          (insert "first")
+          (e-chat-submit)
+          (e-harness-queue-prompt harness e-chat-session-id "second")
+          (goto-char (point-max))
+          (insert "draft")
+          (e-chat--render-turn-failure
+           "turn-failed"
+           (current-time)
+           '(:error "provider failed")
+           t)
+          (should (string-match-p "Turn failed: provider failed"
+                                  (buffer-string)))
+          (should (string-match-p "Queued prompts" (buffer-string)))
+          (should (string-match-p "1\\. second" (buffer-string)))
+          (should (equal (e-chat--composer-text) "draft"))
+          (e-chat--insert-entry "System" "Turn cancelled" t "turn-cancelled")
+          (should (string-match-p "Turn cancelled" (buffer-string)))
+          (should (string-match-p "Queued prompts" (buffer-string)))
+          (should (string-match-p "1\\. second" (buffer-string)))
+          (should (equal (e-chat--composer-text) "draft")))
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer
+          (ignore-errors
+            (e-harness-abort harness e-chat-session-id)))
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-empty-queue-removes-list-without-deleting-composer ()
+  "Clearing the queue removes queue chrome and preserves composer text."
+  (let* ((backend (e-backend-create
+                   :name "held-chat"
+                   :start (cl-function
+                           (lambda (&key messages options on-item on-done
+                                          on-error on-request-start)
+                             (ignore messages options on-item on-done
+                                     on-error on-request-start)
+                             nil))))
+         (harness (e-harness-create :backend backend))
+         (e-chat-submit-backend-delay 0)
+         (buffer (e-chat-open :harness harness
+                              :session-id "chat-queue-empty")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (goto-char (point-max))
+          (insert "first")
+          (e-chat-submit)
+          (e-harness-queue-prompt harness e-chat-session-id "second")
+          (goto-char (point-max))
+          (insert "draft")
+          (should (string-match-p "Queued prompts" (buffer-string)))
+          (e-harness--set-queued-prompts harness e-chat-session-id nil)
+          (e-chat--refresh-composer-position)
+          (should-not (string-match-p "Queued prompts" (buffer-string)))
+          (should (equal (e-chat--composer-text) "draft")))
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer
+          (ignore-errors
+            (e-harness-abort harness e-chat-session-id)))
         (kill-buffer buffer)))))
 
 (ert-deftest e-chat-test-return-inserts-newline-in-composer ()
