@@ -341,6 +341,9 @@ A fractional value is interpreted relative to the selected frame height."
     (setq e-debug--popup-buffer buffer)
     (setq e-debug--popup-frame frame)
     (with-current-buffer buffer
+      (setq-local cursor-type 'bar)
+      (setq-local cursor-in-non-selected-windows t)
+      (e-chat--enter-composer-input-state)
       (e-debug-popup-mode 1)
       (add-hook 'kill-buffer-hook #'e-debug--popup-cleanup nil t))
     (when (frame-live-p frame)

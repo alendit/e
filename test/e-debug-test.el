@@ -136,6 +136,38 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-debug-test-popup-display-restores-visible-composer-cursor ()
+  "The debug popup restores a visible cursor for reused chat buffers."
+  (let ((buffer (generate-new-buffer " *e-debug-popup-cursor-test*"))
+        (e-debug-display-strategy 'popup))
+    (unwind-protect
+        (cl-letf (((symbol-function 'e-debug--popup-available-p)
+                   (lambda () t))
+                  ((symbol-function 'posframe-show)
+                   (lambda (_buffer &rest _args)
+                     'debug-popup-frame))
+                  ((symbol-function 'frame-live-p)
+                   (lambda (frame)
+                     (eq frame 'debug-popup-frame)))
+                  ((symbol-function 'select-frame-set-input-focus)
+                   (lambda (_frame) nil)))
+          (with-current-buffer buffer
+            (e-chat-mode)
+            (e-chat--insert-composer "for")
+            (goto-char (point-min))
+            (set-mark (point-max))
+            (activate-mark)
+            (setq-local cursor-type nil)
+            (setq-local cursor-in-non-selected-windows nil))
+          (e-debug--show-buffer buffer)
+          (with-current-buffer buffer
+            (should (eq cursor-type 'bar))
+            (should (e-chat--point-in-composer-p))
+            (should-not (region-active-p))
+            (should cursor-in-non-selected-windows)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-debug-test-popup-dismiss-hides-without-aborting-session ()
   "Dismissing the popup hides presentation only; the debug session continues."
   (let ((buffer (generate-new-buffer " *e-debug-popup-dismiss-test*"))
