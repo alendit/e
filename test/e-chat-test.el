@@ -4441,6 +4441,50 @@ the orphaned region and appeared to vanish."
         (kill-buffer buffer))
       (delete-directory directory t))))
 
+(ert-deftest e-chat-test-reload-buffers-keeps-active-turn-harness ()
+  "Reloading chat buffers does not detach a buffer from an in-flight turn."
+  (let* ((old-backend
+          (e-backend-create
+           :name "held-chat"
+           :start (cl-function
+                   (lambda (&key messages options on-item on-done
+                                  on-error on-request-start)
+                     (ignore messages options on-item on-done
+                             on-error on-request-start)
+                     nil))))
+         (old-harness (e-chat-test--activate-chat-session
+                       (e-harness-create :backend old-backend)))
+         (new-harness (e-chat-test--activate-chat-session
+                       (e-harness-create
+                        :backend (e-backend-fake-create :items nil))))
+         (e-chat-submit-backend-delay 0)
+         (buffer (e-chat-open :harness old-harness
+                              :session-id "chat-reload-active")))
+    (unwind-protect
+        (progn
+          (with-current-buffer buffer
+            (e-chat-submit "long turn")
+            (should (eq e-chat-harness old-harness))
+            (should (plist-get
+                     (e-harness-state old-harness "chat-reload-active")
+                     :active-turn)))
+          (e-chat-test--with-empty-harness-registry
+            (let ((e-chat-default-harness-id :chat-test))
+              (e-harness-registry-register-factory
+               :chat-test
+               (lambda () new-harness))
+              (should (= (e-chat-reload-buffers) 1))))
+          (with-current-buffer buffer
+            (should (eq e-chat-harness old-harness))
+            (should (not (eq e-chat-harness new-harness)))
+            (should (plist-get
+                     (e-harness-state e-chat-harness e-chat-session-id)
+                     :active-turn))))
+      (ignore-errors
+        (e-harness-abort old-harness "chat-reload-active"))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-reload-buffers-preserves-current-harness-without-default ()
   "Reloading chat buffers keeps their harness when no default is configured."
   (let* ((harness (e-chat-test--activate-chat-session

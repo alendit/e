@@ -5299,6 +5299,12 @@ reload.  User-facing commands should call `e-chat-new' or `e-chat-resume'."
        (plist-get (e-harness-state e-chat-harness e-chat-session-id)
                   :active-turn)))
 
+(defun e-chat--harness-session-active-turn-p (harness session-id)
+  "Return non-nil when HARNESS has a running active turn for SESSION-ID."
+  (and (e-harness-p harness)
+       session-id
+       (plist-get (e-harness-state harness session-id) :active-turn)))
+
 (defun e-chat--submit-intent (prefix)
   "Return submit intent for PREFIX in the current chat state."
   (if (not (e-chat--active-turn-running-p))
@@ -5490,15 +5496,19 @@ HARNESS are internal test seams."
             (let ((session-id (or e-chat-session-id
                                   e-chat-default-session-id))
                   (harness
-                   (condition-case err
-                       (if e-chat-harness-instance-id
-                           (e-chat--harness-for-instance
-                            (e-harness-instance-get e-chat-harness-instance-id))
-                         (e-chat--default-harness))
-                     (user-error
-                      (if (e-harness-p e-chat-harness)
-                          e-chat-harness
-                        (signal (car err) (cdr err)))))))
+                   (if (e-chat--harness-session-active-turn-p
+                        e-chat-harness
+                        (or e-chat-session-id e-chat-default-session-id))
+                       e-chat-harness
+                     (condition-case err
+                         (if e-chat-harness-instance-id
+                             (e-chat--harness-for-instance
+                              (e-harness-instance-get e-chat-harness-instance-id))
+                           (e-chat--default-harness))
+                       (user-error
+                        (if (e-harness-p e-chat-harness)
+                            e-chat-harness
+                          (signal (car err) (cdr err))))))))
               (setq count (1+ count))
               (e-chat--attach-buffer
                buffer

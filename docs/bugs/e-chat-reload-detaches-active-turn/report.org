@@ -1,0 +1,18 @@
+#+title: e-chat reload detaches active turn
+
+* Report
+
+The user reported that the same =e-debug= failure happened again in the
+currently opened debug session after the stale-progress-timer fix.
+
+The visible symptom was the same class of bad state: the UI could continue to
+show progress such as =Thinking for ...=, or fail to print a final assistant
+message until nudged.  The user suspected =e-dev-reload= might be breaking its
+own active debug session.
+
+* Scope
+
+This report covers the reload split-brain failure mode found after the first
+progress-timer fix.  The earlier stale timer guard remains valid, but it did
+not address reload reattaching a live chat buffer away from the harness that
+still owns an in-flight turn.

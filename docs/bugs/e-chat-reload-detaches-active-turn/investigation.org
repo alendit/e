@@ -1,0 +1,68 @@
+#+title: e-chat reload detaches active turn investigation
+
+* Evidence
+
+- The current debug session file was
+  =~/.emacs.d/.local/cache/e/sessions/sessions/20260621T193605-da08c5bf25c1.jsonl=.
+- The older turn =01KVNXDQYDP7M2SSYEFCKVS0KQ= continued appending provider
+  requests, tool calls, tool results, and reasoning deltas after the user had
+  nudged the session.
+- The nudge prompt produced later turn ids, including
+  =01KVNXWCDEC4TD19QS4159B961= and =01KVNXZ1AHZZCVACSDCACJDC71=.
+- The durable log showed interleaved activity from the old turn and newer
+  turns in the same session.  One newer-turn message was appended under a
+  parent id belonging to the old turn's provider request chain, which is
+  consistent with two harness/session writers touching the same durable
+  session.
+- A live scalar probe initially showed no stale progress timer in the visible
+  =*e-chat:Debug Agent*= buffer.  Later the current active turn rendered
+  normally, so the first stale-timer fix was not the whole failure.
+
+* Root Cause
+
+=e-dev-reload= reloads =e-chat.el= and then reruns startup hooks.  Chat startup
+calls =e-chat-reload-buffers=.
+
+Before this fix, =e-chat-reload-buffers= always chose the currently configured
+default or instance harness for each live chat buffer when that harness could
+be created.  That is correct for idle buffers, but unsafe for a buffer whose
+current harness still has a running active turn for the same session.
+
+In that active-turn case, reattaching the buffer to a fresh/current default
+harness detaches the presentation from the harness object whose async provider
+callbacks still own the in-flight turn.  The old callbacks can continue
+writing durable activity, while the visible buffer now consults a different
+harness state and can accept new input as if there were no active turn.  That
+creates the observed split-brain state.
+
+* Fix
+
+- Added =e-chat--harness-session-active-turn-p=.
+- Updated =e-chat-reload-buffers= to preserve the buffer's current harness
+  when that harness has a running active turn for the buffer's session.
+- Kept the existing idle-buffer behavior: inactive buffers still refresh to
+  the current default or instance harness on reload.
+
+* Fix Evidence
+
+- Added =e-chat-test-reload-buffers-keeps-active-turn-harness=.
+- Verified RED:
+  =rtk eldev test -f test/e-chat-test.el e-chat-test-reload-buffers-keeps-active-turn-harness=
+  failed because reload replaced =old-harness= with =new-harness= while the
+  old harness still had an active turn.
+- Verified GREEN with the same command after the fix.
+- Verified adjacent reload/progress selectors with:
+  =rtk eldev test -f test/e-chat-test.el e-chat-test-reload-buffers-keeps-active-turn-harness e-chat-test-reload-buffers-refreshes-existing-chat-harness e-chat-test-reload-buffers-preserves-composer-draft e-chat-test-reload-buffers-preserves-current-harness-without-default e-chat-test-reload-buffers-preserves-instance-harness-without-backend e-chat-test-progress-timer-stops-when-harness-turn-settled e-chat-test-active-activity-restores-missing-progress-timer=.
+- Verified affected files with:
+  =rtk eldev test -f test/e-chat-test.el -f test/e-debug-test.el=.
+  This passed with 251 expected results, 1 skipped markdown rendering test, and
+  0 unexpected results.
+- =git diff --check= passed.
+- Reloaded the running Emacs with:
+  =emacsclient --timeout=10 --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"=.
+- After reload, a bounded probe against =*e-chat:Debug Agent*= showed
+  =:active-turn "01KVNXZ1AHZZCVACSDCACJDC71"=,
+  =:progress-turn "01KVNXZ1AHZZCVACSDCACJDC71"=, =:timer-live t=, and
+  =:default-eq-buffer nil=.  That means the active debug buffer stayed attached
+  to the harness owning its in-flight turn instead of being rebound to the
+  current default harness during reload.
