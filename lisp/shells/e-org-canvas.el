@@ -451,16 +451,62 @@ Org Canvas status refreshes for the current buffer.")
           (push (cons uri (list session)) groups))))
     (nreverse groups)))
 
+(defun e-org-canvas--session-or-nil (harness session-id)
+  "Return SESSION-ID from HARNESS, or nil when it is missing."
+  (and session-id
+       (condition-case nil
+           (e-session-get (e-harness-sessions harness) session-id)
+         (e-session-missing nil))))
+
+(defun e-org-canvas--session-matches-buffer-p (session buffer)
+  "Return non-nil when SESSION's Org Canvas metadata belongs to BUFFER."
+  (let ((canvas (and session (e-org-canvas--session-canvas session))))
+    (and canvas
+         (equal (plist-get canvas :uri)
+                (e-org-canvas--buffer-uri buffer)))))
+
 (defun e-org-canvas--buffer-session (harness buffer)
-  "Return an Org Canvas session id for BUFFER in HARNESS, or nil."
-  (let ((uri (e-org-canvas--buffer-uri buffer))
-        (buffer-name (buffer-name buffer)))
-    (catch 'session
-      (dolist (session (e-org-canvas--session-candidates harness))
-        (let ((canvas (e-org-canvas--session-canvas session)))
-          (when (or (equal (plist-get canvas :uri) uri)
-                    (equal (plist-get canvas :buffer-name) buffer-name))
-            (throw 'session (plist-get session :id))))))))
+  "Return BUFFER's matching referenced Org Canvas session id in HARNESS, or nil."
+  (with-current-buffer buffer
+    (and e-org-canvas-session-id
+         (e-org-canvas--session-matches-buffer-p
+          (e-org-canvas--session-or-nil harness e-org-canvas-session-id)
+          buffer)
+         e-org-canvas-session-id)))
+
+(defun e-org-canvas--buffer-referenced-session (buffer)
+  "Return BUFFER's explicitly referenced Org Canvas session id, or nil."
+  (with-current-buffer buffer
+    e-org-canvas-session-id))
+
+(defun e-org-canvas--buffer-harness (buffer default-harness)
+  "Return BUFFER's referenced Org Canvas harness or DEFAULT-HARNESS."
+  (with-current-buffer buffer
+    (or e-org-canvas-harness default-harness)))
+
+(defun e-org-canvas--confirm-session-replacement (buffer session-id reason)
+  "Ask whether invalid SESSION-ID for BUFFER should be replaced.
+REASON is either `missing' or `different-buffer'."
+  (let ((message
+         (pcase reason
+           ('missing
+            (format "Org Canvas session %s referenced by %s could not be found"
+                    session-id
+                    (buffer-name buffer)))
+           ('different-buffer
+            (format "Org Canvas session %s referenced by %s belongs to a different Org buffer"
+                    session-id
+                    (buffer-name buffer)))
+           (_
+            (format "Org Canvas session %s referenced by %s is invalid"
+                    session-id
+                    (buffer-name buffer))))))
+    (display-warning 'e-org-canvas message :warning))
+  (unless (yes-or-no-p
+           (format "Org Canvas session %s is not valid for %s. Start a new session? "
+                   session-id
+                   (buffer-name buffer)))
+    (user-error "Org Canvas session %s is not valid for this buffer" session-id)))
 
 (defun e-org-canvas--ensure-org-buffer (buffer)
   "Signal unless BUFFER is an Org buffer."
@@ -527,10 +573,16 @@ the display to a normal window when the selected window is a side window."
   "Start or reuse an Org Canvas session for the current Org buffer."
   (interactive)
   (let* ((source (current-buffer))
-         (harness (e-org-canvas--default-harness))
+         (default-harness (e-org-canvas--default-harness))
+         (harness (e-org-canvas--buffer-harness source default-harness))
+         (referenced (e-org-canvas--buffer-referenced-session source))
+         (referenced-session (e-org-canvas--session-or-nil harness referenced))
          (existing (progn
                      (e-org-canvas--ensure-org-buffer source)
-                     (e-org-canvas--buffer-session harness source))))
+                     (and referenced-session
+                          (e-org-canvas--session-matches-buffer-p
+                           referenced-session source)
+                          referenced))))
     (if existing
         (prog1
             (progn
@@ -544,6 +596,10 @@ the display to a normal window when the selected window is a side window."
                 (e-org-canvas--display-chat-buffer chat-buffer)
                 chat-buffer))
           (e-org-canvas--select-org-buffer source))
+      (when referenced
+        (e-org-canvas--confirm-session-replacement
+         source referenced
+         (if referenced-session 'different-buffer 'missing)))
       (e-org-canvas--open-session-for-buffer-and-display source))))
 
 ;;;###autoload

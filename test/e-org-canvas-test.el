@@ -133,8 +133,8 @@
                     (should (plist-get org-canvas :root))))))))
       (e-org-canvas-test--kill-chat-buffers))))
 
-(ert-deftest e-org-canvas-test-open-reuses-session-by-file-uri ()
-  "Reopening the same file-backed Org canvas reuses its existing session."
+(ert-deftest e-org-canvas-test-open-starts-new-session-without-reference ()
+  "Opening an Org buffer without a session reference starts a new session."
   (let ((directory (make-temp-file "e-org-canvas-" t))
         (harness (e-org-canvas-test--harness)))
     (unwind-protect
@@ -154,8 +154,132 @@
                     (with-current-buffer
                         (e-org-canvas-open-for-current-buffer)
                       e-chat-session-id)))
-            (should (equal second-id first-id))
-            (should (= (length (e-harness-session-list harness)) 1))))
+            (should-not (equal second-id first-id))
+            (should (= (length (e-harness-session-list harness)) 2))))
+      (e-org-canvas-test--kill-chat-buffers)
+      (dolist (buffer (buffer-list))
+        (when (and (buffer-file-name buffer)
+                   (file-in-directory-p (buffer-file-name buffer) directory))
+          (kill-buffer buffer)))
+      (delete-directory directory t))))
+
+(ert-deftest e-org-canvas-test-open-does-not-fallback-to-buffer-name ()
+  "Opening plan.org without a session reference does not reuse another plan.org."
+  (let ((directory (make-temp-file "e-org-canvas-" t))
+        (harness (e-org-canvas-test--harness))
+        first-file
+        second-file)
+    (unwind-protect
+        (e-org-canvas-test--with-empty-harness-registry
+          (let* ((e-chat-default-harness-id :org-canvas-test)
+                 (first-directory (expand-file-name "first" directory))
+                 (second-directory (expand-file-name "second" directory))
+                 first-id
+                 second-id)
+            (make-directory first-directory)
+            (make-directory second-directory)
+            (setq first-file (e-org-canvas-test--org-file
+                              first-directory "plan.org"))
+            (setq second-file (e-org-canvas-test--org-file
+                               second-directory "plan.org"))
+            (e-harness-registry-register :org-canvas-test harness)
+            (with-current-buffer (find-file-noselect first-file)
+              (setq first-id
+                    (with-current-buffer
+                        (e-org-canvas-open-for-current-buffer)
+                      e-chat-session-id))
+              (kill-buffer (current-buffer)))
+            (with-current-buffer (find-file-noselect second-file)
+              (setq second-id
+                    (with-current-buffer
+                        (e-org-canvas-open-for-current-buffer)
+                      e-chat-session-id)))
+            (should-not (equal second-id first-id))
+            (should (= (length (e-harness-session-list harness)) 2))))
+      (e-org-canvas-test--kill-chat-buffers)
+      (dolist (buffer (buffer-list))
+        (when (and (buffer-file-name buffer)
+                   (file-in-directory-p (buffer-file-name buffer) directory))
+          (kill-buffer buffer)))
+      (delete-directory directory t))))
+
+(ert-deftest e-org-canvas-test-open-stale-reference-prompts-before-new-session ()
+  "A stale Org Canvas session reference prompts before starting a replacement."
+  (let ((directory (make-temp-file "e-org-canvas-" t))
+        (harness (e-org-canvas-test--harness))
+        prompt
+        warning)
+    (unwind-protect
+        (e-org-canvas-test--with-empty-harness-registry
+          (let* ((e-chat-default-harness-id :org-canvas-test)
+                 (file (e-org-canvas-test--org-file directory "notes.org")))
+            (e-harness-registry-register :org-canvas-test harness)
+            (with-current-buffer (find-file-noselect file)
+              (setq-local e-org-canvas-harness harness)
+              (setq-local e-org-canvas-session-id "missing-session")
+              (cl-letf (((symbol-function 'yes-or-no-p)
+                         (lambda (text)
+                           (setq prompt text)
+                           t))
+                        ((symbol-function 'display-warning)
+                         (lambda (_type message &optional _level _buffer-name)
+                           (setq warning message))))
+                (with-current-buffer (e-org-canvas-open-for-current-buffer)
+                  (should e-chat-session-id)
+                  (should-not (equal e-chat-session-id "missing-session"))))
+              (should (string-match-p "missing-session" prompt))
+              (should (string-match-p "missing-session" warning))
+              (should (= (length (e-harness-session-list harness)) 1)))))
+      (e-org-canvas-test--kill-chat-buffers)
+      (dolist (buffer (buffer-list))
+        (when (and (buffer-file-name buffer)
+                   (file-in-directory-p (buffer-file-name buffer) directory))
+          (kill-buffer buffer)))
+      (delete-directory directory t))))
+
+(ert-deftest e-org-canvas-test-open-wrong-file-reference-prompts-before-new-session ()
+  "A live reference for a different file prompts before starting a replacement."
+  (let ((directory (make-temp-file "e-org-canvas-" t))
+        (harness (e-org-canvas-test--harness))
+        prompt
+        warning)
+    (unwind-protect
+        (e-org-canvas-test--with-empty-harness-registry
+          (let* ((e-chat-default-harness-id :org-canvas-test)
+                 (first-directory (expand-file-name "first" directory))
+                 (second-directory (expand-file-name "second" directory))
+                 (first-file (progn
+                               (make-directory first-directory)
+                               (e-org-canvas-test--org-file
+                                first-directory "plan.org")))
+                 (second-file (progn
+                                (make-directory second-directory)
+                                (e-org-canvas-test--org-file
+                                 second-directory "plan.org")))
+                 first-id)
+            (e-harness-registry-register :org-canvas-test harness)
+            (with-current-buffer (find-file-noselect first-file)
+              (setq first-id
+                    (with-current-buffer
+                        (e-org-canvas-open-for-current-buffer)
+                      e-chat-session-id))
+              (kill-buffer (current-buffer)))
+            (with-current-buffer (find-file-noselect second-file)
+              (setq-local e-org-canvas-harness harness)
+              (setq-local e-org-canvas-session-id first-id)
+              (cl-letf (((symbol-function 'yes-or-no-p)
+                         (lambda (text)
+                           (setq prompt text)
+                           t))
+                        ((symbol-function 'display-warning)
+                         (lambda (_type message &optional _level _buffer-name)
+                           (setq warning message))))
+                (with-current-buffer (e-org-canvas-open-for-current-buffer)
+                  (should e-chat-session-id)
+                  (should-not (equal e-chat-session-id first-id))))
+              (should (string-match-p first-id prompt))
+              (should (string-match-p "different Org buffer" warning))
+              (should (= (length (e-harness-session-list harness)) 2)))))
       (e-org-canvas-test--kill-chat-buffers)
       (dolist (buffer (buffer-list))
         (when (and (buffer-file-name buffer)
