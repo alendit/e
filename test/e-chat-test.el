@@ -3967,6 +3967,28 @@ the orphaned region and appeared to vanish."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-reload-buffers-preserves-composer-draft ()
+  "Reloading chat buffers keeps unsent composer draft text."
+  (let* ((harness (e-chat-test--activate-chat-session
+                   (e-harness-create
+                    :backend (e-backend-fake-create :items nil))))
+         (buffer (e-chat-open :harness harness :session-id "chat-reload-draft")))
+    (unwind-protect
+        (progn
+          (with-current-buffer buffer
+            (goto-char (point-max))
+            (insert "draft before reload")
+            (should (equal (e-chat--composer-text) "draft before reload")))
+          (e-chat-test--with-empty-harness-registry
+            (let ((e-chat-default-harness-id :missing-chat))
+              (should (>= (e-chat-reload-buffers) 1))))
+          (with-current-buffer buffer
+            (should (eq e-chat-harness harness))
+            (should (e-chat--composer-active-p))
+            (should (equal (e-chat--composer-text) "draft before reload"))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-reload-buffers-preserves-instance-harness-without-backend ()
   "Instance-backed chat buffers keep their harness when factory creation fails."
   (let* ((harness (e-chat-test--activate-chat-session
