@@ -1,0 +1,8 @@
+#+title: e-debug-here verbose context
+#+startup: overview
+
+* Report
+
+The user reported that =e-debug-here= produces far too much context.  The
+expected behavior is a brief reference to where the cursor is plus the prompt.
+

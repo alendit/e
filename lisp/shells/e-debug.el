@@ -14,7 +14,6 @@
 ;;; Code:
 
 (require 'cl-lib)
-(require 'pp)
 (require 'subr-x)
 (require 'e-chat)
 (require 'e-context-inspection)
@@ -62,14 +61,6 @@ A fractional value is interpreted relative to the selected frame height."
 (defconst e-debug-default-prompt
   "Debug what just happened here."
   "Default prompt used by `e-debug-here' when the question is empty.")
-
-(defconst e-debug-remediation-guidance
-  "Debug guidance:
-- Diagnose first from the attached evidence.
-- Identify the strongest source, session, and failure signals before proposing a fix.
-- Do not retry, mutate, edit, or change the inspected session unless explicitly asked.
-- If remediation is requested, name the owning component and choose the smallest safe fix or file a bug report when the work should be saved for later."
-  "Prompt guidance appended by `e-debug-here'.")
 
 (defvar e-debug--session-id nil
   "Cached standing debug session id.")
@@ -158,13 +149,36 @@ A fractional value is interpreted relative to the selected frame height."
         e-debug-default-prompt
       question)))
 
-(defun e-debug--source-reference ()
-  "Return a focused source reference for the current buffer, or nil."
+(defun e-debug--cursor-uri ()
+  "Return a compact URI for the current cursor location."
+  (if buffer-file-name
+      (concat "file://" (expand-file-name buffer-file-name))
+    (format "buffer://%s" (buffer-name))))
+
+(defun e-debug--cursor-label ()
+  "Return a compact label for the current cursor location."
+  (if buffer-file-name
+      (abbreviate-file-name (expand-file-name buffer-file-name))
+    (buffer-name)))
+
+(defun e-debug--cursor-location ()
+  "Return a compact description of the current cursor location, or nil."
   (unless (minibufferp)
     (condition-case nil
-        (let ((reference (e-chat-capture-source-reference)))
-          (and reference
-               (plist-put reference :id "source")))
+        (let* ((line (line-number-at-pos))
+               (column (1+ (current-column)))
+               (region
+                (when (use-region-p)
+                  (format "; region %d-%d"
+                          (line-number-at-pos (region-beginning))
+                          (line-number-at-pos
+                           (max (region-beginning) (1- (region-end))))))))
+          (format "%s:%d:%d (%s)%s"
+                  (e-debug--cursor-label)
+                  line
+                  column
+                  (e-debug--cursor-uri)
+                  (or region "")))
       (error nil))))
 
 (defun e-debug--inspection-harness ()
@@ -185,80 +199,39 @@ A fractional value is interpreted relative to the selected frame height."
       (list :harness harness
             :source 'default-chat)))))
 
-(defun e-debug--failure-details (harness &optional limit)
-  "Return recent failure detail plists from HARNESS."
+(defun e-debug--recent-failure-target (harness)
+  "Return the newest recent failure target from HARNESS."
   (when harness
-    (delq nil
-          (mapcar
-           (lambda (failure)
-             (condition-case nil
-                 (e-context-inspection-failure-detail
-                  :harness harness
-                  :session-id (plist-get failure :session-id)
-                  :turn-id (plist-get failure :turn-id))
-               (error nil)))
-           (e-context-inspection-recent-failures
-            :harness harness
-            :limit (or limit 2))))))
+    (car (ignore-errors
+           (e-context-inspection-recent-failures :harness harness :limit 1)))))
 
-(defun e-debug--failure-reference (detail index)
-  "Return a model-facing failure reference for DETAIL at one-based INDEX."
-  (let* ((session (plist-get detail :session))
-         (turn (plist-get detail :turn))
-         (terminal (plist-get detail :terminal-error))
-         (session-id (plist-get session :id))
-         (turn-id (plist-get turn :id)))
-    (list :id (format "failure-%d" index)
-          :uri (format "e://session/%s/turn/%s/failure" session-id turn-id)
-          :label (format "Failed turn %s/%s: %s"
-                         session-id
-                         turn-id
-                         (or (plist-get terminal :error) "failed turn"))
-          :text (pp-to-string detail))))
-
-(defun e-debug--inspected-session-reference (harness session-id)
-  "Return a reference describing inspected HARNESS SESSION-ID."
-  (when (and harness session-id)
-    (when-let ((session (e-session-get (e-harness-sessions harness) session-id)))
-      (let ((metadata (plist-get session :metadata)))
-        (list :id "inspected-session"
-              :uri (format "e://session/%s" session-id)
-              :label (format "Inspected chat session %s" session-id)
-              :text (string-trim
-                     (format "Inspected chat session: %s\nTitle: %s\nProject root: %s\nMetadata:\n%s"
-                             session-id
-                             (or (ignore-errors
-                                   (e-harness-session-title harness session-id))
-                                 "")
-                             (or (plist-get metadata :project-root) "")
-                             (pp-to-string metadata))))))))
+(defun e-debug--source-reference-location (reference)
+  "Return a compact location string for SOURCE REFERENCE."
+  (when reference
+    (string-trim
+     (format "%s (%s)"
+             (or (plist-get reference :label) "source")
+             (or (plist-get reference :uri) "")))))
 
 (cl-defun e-debug--capture
     (&key question inspection-harness inspection-session-id source-reference)
   "Capture prompt and references for `e-debug-here'."
   (let* ((question (e-debug--normalize-question question))
-         (source (or source-reference (e-debug--source-reference)))
-         (inspected-session
-          (e-debug--inspected-session-reference
-           inspection-harness
-           inspection-session-id))
-         (details (e-debug--failure-details inspection-harness 2))
-         (failure-references
-          (cl-loop for detail in details
-                   for index from 1
-                   collect (e-debug--failure-reference detail index)))
-         (references (delq nil
-                           (append (list source inspected-session)
-                                   failure-references)))
-         (prompt-text (format "%s\n\n%s" question e-debug-remediation-guidance)))
-    (list :prompt (e-chat-format-reference-prompt prompt-text references)
-          :references references
+         (cursor-location (or (e-debug--source-reference-location source-reference)
+                              (e-debug--cursor-location)))
+         (recent-failure (unless inspection-session-id
+                           (e-debug--recent-failure-target inspection-harness)))
+         (prompt-text (if cursor-location
+                          (format "Cursor: %s\n\n%s" cursor-location question)
+                        question)))
+    (list :prompt (string-trim prompt-text)
+          :references nil
           :metadata (list :source 'e-debug-here
                           :inspection-session-id
                           (or inspection-session-id
-                              (plist-get (plist-get (car details) :session) :id))
+                              (plist-get recent-failure :session-id))
                           :inspection-turn-id
-                          (plist-get (plist-get (car details) :turn) :id)))))
+                          (plist-get recent-failure :turn-id)))))
 
 (defun e-debug--ensure-session (&optional harness)
   "Return the standing debug session id, creating it in HARNESS when needed."

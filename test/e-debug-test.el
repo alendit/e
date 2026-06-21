@@ -13,7 +13,6 @@
 
 (require 'cl-lib)
 (require 'ert)
-(require 'seq)
 (require 'e)
 (require 'e-backend)
 (require 'e-chat)
@@ -565,8 +564,8 @@
     (should (eq (e-shell-command-interactive command) 'e-debug))
     (should (commandp (e-shell-command-interactive command)))))
 
-(ert-deftest e-debug-test-capture-builds-source-and-failure-references ()
-  "Debug capture includes focused source and recent failure detail references."
+(ert-deftest e-debug-test-capture-builds-compact-cursor-prompt ()
+  "Debug capture includes the question plus a compact cursor reference."
   (let* ((store (e-session-store-create))
          (harness (e-harness-create
                    :backend (e-backend-fake-create :items nil)
@@ -589,13 +588,15 @@
              (prompt (plist-get capture :prompt))
              (references (plist-get capture :references)))
         (should (string-match-p "Debug what just happened here\\." prompt))
-        (should (string-match-p "Diagnose first" prompt))
-        (should (string-match-p "\\[source\\]" prompt))
-        (should (string-match-p "\\[failure-1\\]" prompt))
-        (should (string-match-p "provider failed" prompt))
-        (should (= (length references) 2))
-        (should (equal (plist-get (car references) :id) "source"))
-        (should (equal (plist-get (cadr references) :id) "failure-1"))))))
+        (should (string-match-p "Cursor: .*:2:" prompt))
+        (should-not (string-match-p "Debug guidance:" prompt))
+        (should-not (string-match-p "Diagnose first" prompt))
+        (should-not (string-match-p "References:" prompt))
+        (should-not (string-match-p "\\[source\\]" prompt))
+        (should-not (string-match-p "\\[failure-1\\]" prompt))
+        (should-not (string-match-p "provider failed" prompt))
+        (should-not (string-match-p "alpha" prompt))
+        (should-not references)))))
 
 (ert-deftest e-debug-test-here-submits-to-standing-session ()
   "`e-debug-here' submits the assembled prompt to the standing debug session."
@@ -664,11 +665,7 @@
               (should (equal (plist-get (plist-get submitted :metadata)
                                         :inspection-session-id)
                              "plain-session"))
-              (should (seq-find
-                       (lambda (reference)
-                         (equal (plist-get reference :id)
-                                "inspected-session"))
-                       (plist-get submitted :references))))
+              (should-not (plist-get submitted :references)))
           (when (buffer-live-p chat-buffer)
             (kill-buffer chat-buffer)))))))
 

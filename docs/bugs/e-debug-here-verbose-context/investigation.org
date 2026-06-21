@@ -1,0 +1,57 @@
+#+title: e-debug-here verbose context investigation
+#+startup: overview
+
+* Investigation
+
+** Reported behavior
+
+=e-debug-here= submitted a large prompt containing the user's question,
+debug-remediation guidance, focused source reference bodies, and serialized
+recent failure detail.
+
+** Code path
+
+- =e-debug-here= calls =e-debug--capture= in =lisp/shells/e-debug.el=.
+- =e-debug--capture= called =e-chat-capture-source-reference= for focused
+  source context, =e-context-inspection-failure-detail= for recent failures,
+  and =e-chat-format-reference-prompt= to append full reference bodies.
+- =e-chat-format-reference-prompt= in =lisp/shells/chat/e-chat.el= expands
+  point references into numbered context lines and expands failure references
+  into the serialized detail body.
+
+** Root cause
+
+The debug shell reused the normal chat reference prompt formatter for a
+diagnostic shortcut whose desired behavior is much narrower.  That made
+=e-debug-here= duplicate bulky source and failure evidence into the one-shot
+debug message instead of sending only the user's prompt and a compact cursor
+location.
+
+** Fix
+
+=e-debug--capture= now builds a compact prompt:
+
+- =Cursor: <buffer-or-file>:<line>:<column> (<uri>)=
+- the normalized user question or default prompt
+
+It no longer appends source reference bodies, inspected-session reference
+bodies, full failure details, or the standing debug guidance block.  For
+metadata fallback, it only reads the newest recent failure target ids instead
+of full failure detail.
+
+** Evidence
+
+Before the fix, the new focused regression failed because the prompt still
+contained =References:=, source context lines, and =provider failed= failure
+detail.
+
+After the fix:
+
+#+begin_src sh
+rtk eldev test test/e-debug-test.el
+#+end_src
+
+#+begin_example
+Ran 24 tests, 24 results as expected, 0 unexpected
+#+end_example
+
