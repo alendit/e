@@ -4936,6 +4936,41 @@ When REFRESH-MODE-LINE is non-nil, also refresh context-aware mode-line text."
          (plist-get activity-event :payload)
          t)))))
 
+(defun e-chat--activity-event-turn-ids (activity-events)
+  "Return TURN-IDs represented in ACTIVITY-EVENTS, preserving event order."
+  (let (turn-ids)
+    (dolist (event activity-events)
+      (when-let ((turn-id (plist-get event :turn-id)))
+        (unless (member turn-id turn-ids)
+          (push turn-id turn-ids))))
+    (nreverse turn-ids)))
+
+(defun e-chat--turn-activity-events (turn-id activity-events)
+  "Return ACTIVITY-EVENTS belonging to TURN-ID."
+  (cl-remove-if-not
+   (lambda (event)
+     (equal (plist-get event :turn-id) turn-id))
+   activity-events))
+
+(defun e-chat--terminal-activity-p (events)
+  "Return non-nil when EVENTS contain a terminal turn activity event."
+  (cl-some
+   (lambda (event)
+     (memq (plist-get event :event-type)
+           '(turn-finished turn-failed turn-cancelled)))
+   events))
+
+(defun e-chat--render-replayed-active-activity (activity-events)
+  "Render replayed non-terminal ACTIVITY-EVENTS as live transient activity."
+  (dolist (turn-id (e-chat--activity-event-turn-ids activity-events))
+    (let* ((events (e-chat--turn-activity-events turn-id activity-events))
+           (record (e-chat--existing-turn-record turn-id)))
+      (when (and record
+                 (not (plist-get record :final-rendered))
+                 (not (plist-get record :failure-rendered))
+                 (not (e-chat--terminal-activity-p events)))
+        (e-chat--render-turn-activity-events turn-id activity-events)))))
+
 (defun e-chat--render-session (&optional messages)
   "Render the attached session transcript in the current buffer.
 When MESSAGES is non-nil, render that message list instead of the
@@ -4968,6 +5003,7 @@ attached session's full transcript."
             (e-chat--render-turn-activity-events turn-id activity-events)
             (e-chat--finalize-turn-display turn-id))
           (e-chat--insert-entry (car entry) (cdr entry) t turn-id))))
+    (e-chat--render-replayed-active-activity activity-events)
     (when turn-id
       (e-chat--render-replayed-terminal-event turn-id activity-events))))
 

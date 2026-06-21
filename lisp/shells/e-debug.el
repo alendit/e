@@ -305,10 +305,15 @@ A fractional value is interpreted relative to the selected frame height."
   "Show debug session BUFFER according to `e-debug-display-strategy'."
   (pcase e-debug-display-strategy
     ('popup
-     (if (e-debug--popup-available-p)
+     (if (and (eq buffer e-debug--popup-buffer)
+              (e-debug--popup-visible-p))
+         (when (and e-debug--popup-frame
+                    (frame-live-p e-debug--popup-frame))
+           (select-frame-set-input-focus e-debug--popup-frame))
+       (if (e-debug--popup-available-p)
          (e-debug--show-popup buffer)
        (e-debug--select-or-create-tab)
-       (e-chat--pop-to-buffer buffer)))
+       (e-chat--pop-to-buffer buffer))))
     ('tab
      (e-debug--select-or-create-tab)
      (e-chat--pop-to-buffer buffer))
@@ -326,18 +331,28 @@ A fractional value is interpreted relative to the selected frame height."
     (setq e-debug--popup-buffer nil)
     (setq e-debug--popup-frame nil)))
 
+(defun e-debug--popup-parent-frame ()
+  "Return the root frame that should parent the debug popup."
+  (let ((frame (selected-frame))
+        parent)
+    (while (setq parent (frame-parameter frame 'parent-frame))
+      (setq frame parent))
+    frame))
+
 (defun e-debug--show-popup (buffer)
   "Show BUFFER in the floating debug popup."
-  (let ((frame
-         (posframe-show
-          buffer
-          :poshandler 'posframe-poshandler-frame-center
-          :width (e-debug--popup-dimension e-debug-popup-width
-                                            (frame-width))
-          :height (e-debug--popup-dimension e-debug-popup-height
-                                             (frame-height))
-          :accept-focus t
-          :border-width 1)))
+  (let* ((parent-frame (e-debug--popup-parent-frame))
+         (frame
+          (posframe-show
+           buffer
+           :parent-frame parent-frame
+           :poshandler 'posframe-poshandler-frame-center
+           :width (e-debug--popup-dimension e-debug-popup-width
+                                             (frame-width parent-frame))
+           :height (e-debug--popup-dimension e-debug-popup-height
+                                              (frame-height parent-frame))
+           :accept-focus t
+           :border-width 1)))
     (setq e-debug--popup-buffer buffer)
     (setq e-debug--popup-frame frame)
     (with-current-buffer buffer
