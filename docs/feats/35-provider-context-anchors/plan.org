@@ -51,6 +51,26 @@ Current OpenAI Responses guidance separates these concerns:
   send the current instructions for each request.
 - Prompt caching remains the cost optimization for reused prefixes.
 
+Current Anthropic Messages guidance points to a different implementation shape:
+
+- Messages API multi-turn conversations are stateless: the client sends the
+  prior conversational turns in =messages= on each request.
+- Anthropic prompt caching can be enabled with top-level =cache_control=, which
+  automatically applies a cache breakpoint to the last cacheable block, or with
+  explicit =cache_control= on individual blocks.  The cached prefix spans
+  =tools=, =system=, and =messages= in that order, and cache usage is reported
+  through =cache_creation_input_tokens= and =cache_read_input_tokens=.
+- Beta =container= is exposed as a reusable provider identifier, but current
+  public SDK/API descriptions do not make it a transcript-continuation handle;
+  it must not justify omitting local history.
+- Beta =context_management= can clear old tool results or thinking blocks
+  server-side, but Anthropic documents that the client maintains the full,
+  unmodified conversation history locally.
+- Beta server-side compaction can emit =compaction= blocks that the client
+  appends for later requests; adopting that would require explicit local
+  modeling of those blocks and should not be confused with =e='s own
+  transcript-stack compaction.
+
 This feature should treat provider continuation as an optional request
 optimization and state-management aid, not as a replacement for local
 transcript semantics, compaction, or prompt-cache discipline.
@@ -144,7 +164,8 @@ request.
 ** Keep provider state below the adapter boundary
 
 Core may store opaque provider-anchor metadata under the session, but only the
-owning provider interprets provider-specific fields such as OpenAI response ids.
+owning provider interprets provider-specific fields such as OpenAI response ids
+or Anthropic cache/context-management metadata.
 
 A provider anchor should be shaped like:
 
@@ -162,7 +183,33 @@ A provider anchor should be shaped like:
  :created-at "2026-06-21T...")
 #+end_src
 
-Core code should not branch on =:response-id= or =previous_response_id=.
+Core code should not branch on =:response-id=, =previous_response_id=,
+Anthropic =cache_control= placement, or Anthropic =context_management= edits.
+
+Anthropic anchors should use the same opaque provider-owned slot, but their
+first implementation should not pretend that Messages has an OpenAI-style
+response-chain id.  Useful Anthropic anchor fields are likely to be:
+
+#+begin_src elisp
+(:provider anthropic
+ :wire-api messages
+ :mode prompt-cache
+ :container-id "..."             ; only when explicitly enabled by profile
+ :covered-entry-id "01..."
+ :static-fingerprint "..."
+ :stable-fingerprint "..."
+ :current-state-fingerprint "..."
+ :tool-schema-fingerprint "..."
+ :model "claude-opus-4-8"
+ :cache-ttl "5m"
+ :context-management (...opaque provider options...)
+ :created-at "2026-06-21T...")
+#+end_src
+
+The Anthropic adapter owns the meanings of =:container-id=,
+=:context-management=, cache-control placement, and any future compaction block
+metadata.  Core should only persist and select anchors by provider id,
+covered-entry id, and provider-supplied compatibility fingerprints.
 
 ** Use provider continuation conservatively
 
@@ -193,6 +240,12 @@ This rule is stricter than prompt caching.  Prompt caching can tolerate dynamic
 context late in the request; provider continuation must prove that replacing
 state has not changed before it omits older items.
 
+For Anthropic, a changed =current-state= fingerprint should not imply that the
+adapter may omit old history, because Anthropic does not have that
+continuation path.  It should instead force the cache/context anchor to rebuild
+or move its breakpoint so stale live context is not hidden behind an old
+cache-control decision, container id, or context-management diagnostic.
+
 ** Preserve prompt cache behavior
 
 =prompt_cache_key= should continue to be sent for OpenAI requests where it is
@@ -202,6 +255,56 @@ supported.  Provider continuation and prompt caching are complementary:
   chain semantics;
 - prompt caching reduces cost and latency for repeated prefixes;
 - compaction and transcript pruning reduce the logical input window.
+
+For Anthropic, this means preserving the existing =cache_control= support and
+making it segment-aware.  Anthropic cache hits should be reported through
+=cache_read_input_tokens= and writes through =cache_creation_input_tokens=; an
+Anthropic cache anchor should explain breakpoint choice and invalidation, not
+claim that any local transcript prefix was omitted.
+
+** Support Anthropic with cache and context-management anchors
+
+Anthropic Messages is still a stateless multi-turn API: callers send the
+conversation history in =messages=, and the service generates the next assistant
+message.  The Anthropic provider should therefore not try to implement an
+OpenAI-style =previous_response_id= path unless Anthropic later exposes an
+explicit continuation id.
+
+The comparable Anthropic support should use the same segment fingerprints for
+three provider-local optimizations instead:
+
+- place =cache_control= breakpoints on stable prefixes, or enable top-level
+  automatic prompt caching, so tools, system content, and stable history can be
+  reused by Anthropic's prompt cache;
+- optionally enable Anthropic =context_management= beta edits for long-running
+  conversations, especially tool-result clearing and thinking-block clearing;
+- optionally enable Anthropic server-side compaction only behind an explicit
+  profile gate, because compaction returns provider-specific =compaction=
+  blocks that must be appended to subsequent requests and reconciled with =e='s
+  local compaction semantics.
+
+Anthropic prompt caching does not let the client omit prior messages.  Cache
+anchors for Anthropic should be diagnostic and request-construction metadata,
+not transcript coverage proofs.  A cached-prefix anchor can record the segment
+fingerprints, cache TTL, beta headers, and chosen breakpoint, but a valid
+Anthropic cache anchor still sends the full logical request.  Its purpose is to
+keep cache breakpoints stable, report cache hits and writes, and decide when to
+move or rebuild the breakpoint.
+
+Anthropic context editing also must not become authoritative local state.  For
+tool-result and thinking clearing, the API edits context server-side before the
+model sees it; =e= should keep its full transcript and continue sending the
+canonical history.  Diagnostics should report that server-side clearing was
+requested and usage should surface =cache_read_input_tokens= and
+=cache_creation_input_tokens=, but local transcript entries remain unchanged.
+
+Server-side Anthropic compaction is stronger and should be treated separately
+from provider continuation.  If enabled, the adapter must capture any returned
+=compaction= blocks as provider-specific artifacts and either persist them as
+opaque Anthropic continuation metadata or translate them into an explicit =e=
+compaction record through a deliberate core path.  It must never silently drop
+local transcript history just because Anthropic would drop blocks before the
+provider compaction marker on the next request.
 
 * Proposed API
 
@@ -260,11 +363,19 @@ session facts.
   - Parse completed response ids from OpenAI stream events.
   - Build =previous_response_id= requests when an anchor is valid.
   - Fall back to full replay when invalid.
+- Modify =lisp/adapters/anthropic/e-anthropic.el=
+  - Preserve and extend =cache_control= placement using context segment
+    fingerprints.
+  - Add optional Anthropic =context_management= request construction behind
+    provider profile gates.
+  - Keep Anthropic cache/context metadata diagnostic unless server-side
+    compaction is explicitly integrated with =e= compaction records.
 - Modify tests:
   - =test/e-context-test.el=
   - =test/e-harness-test.el=
   - =test/e-session-test.el=
   - =test/e-openai-test.el=
+  - =test/e-anthropic-test.el=
   - add focused tests if a new module is created.
 
 * Implementation slices
@@ -336,18 +447,44 @@ Acceptance criteria:
 - Tests prove stale current-state context is not silently hidden behind
   =previous_response_id=.
 
-** Slice 6: Live verification and status evidence
+** Slice 6: Anthropic cache and context-management support
 
-Expose enough diagnostics to prove when a turn used continuation versus full
-replay.
+Use context segment fingerprints to make Anthropic request construction more
+cache-aware without pretending Anthropic has OpenAI-style continuation.
+
+Acceptance criteria:
+
+- Anthropic requests can choose stable =cache_control= breakpoints from segment
+  boundaries while preserving existing prompt-cache behavior.
+- Anthropic cache metadata records provider id, model, segment fingerprints,
+  cache TTL, beta headers, and breakpoint choice, but does not allow omitting
+  prior transcript messages.
+- Optional =context_management= edits are gated by provider profile/config and
+  include the required beta headers.
+- Tool-result clearing and thinking-block clearing leave local =e= transcript
+  state unchanged.
+- Server-side Anthropic compaction remains disabled unless a separate explicit
+  integration maps returned =compaction= blocks into provider metadata or =e=
+  compaction records.
+- Usage normalization keeps reporting cache creation/read tokens.
+
+** Slice 7: Live verification and status evidence
+
+Expose enough diagnostics to prove when a turn used continuation, full replay,
+Anthropic cache breakpoints, or Anthropic context-management edits.
 
 Acceptance criteria:
 
 - Provider request events or debug diagnostics show =:continuation used|full=,
   anchor id, and invalidation reason without dumping full prompts.
+- Anthropic diagnostics show chosen cache breakpoint, cache TTL, cache
+  creation/read tokens, and any requested context-management edits without
+  dumping full prompts.
 - Live Emacs verification covers one full-replay request, one valid
   continuation request, and one invalidated continuation after current-state
   change.
+- Anthropic live verification covers a cached-prefix request and a request with
+  context-management edits enabled when a supported profile is configured.
 - Token usage events still show input, cached input, output, reasoning, and
   total tokens.
 
@@ -363,6 +500,13 @@ Acceptance criteria:
   - instruction resend with =previous_response_id=;
   - invalidation on model/tool/context fingerprint mismatch;
   - fallback when response id is missing.
+- Anthropic adapter tests for:
+  - stable cache breakpoint selection from segments;
+  - top-level or explicit =cache_control= request construction;
+  - context-management beta header and body construction;
+  - no transcript omission when an Anthropic cache anchor is valid;
+  - no local transcript mutation for tool-result or thinking clearing;
+  - server-side compaction disabled unless explicitly configured.
 - Harness tests proving existing backends that ignore segments behave exactly
   as before.
 - Regression tests around compaction boundaries and orphan tool-call cleanup.
@@ -384,17 +528,28 @@ After implementation:
    emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
    #+end_src
 
-5. Run bounded live probes that inspect request diagnostics only:
+5. Run bounded OpenAI live probes that inspect request diagnostics only:
    - first request creates an anchor;
    - second request reuses it through =previous_response_id=;
    - changing current-state context causes a full replay with a clear
      invalidation reason.
+6. Run bounded Anthropic live probes when a supported Anthropic profile is
+   configured:
+   - prompt-cache request records cache creation/read usage;
+   - segment-derived breakpoint remains stable across appended turns;
+   - context-management edits are visible in diagnostics when enabled;
+   - local transcript entries are unchanged after server-side context editing.
 
 * Compatibility expectations
 
 - Existing sessions without provider anchors continue to load.
 - Non-OpenAI providers continue to receive flat =:messages=.
 - OpenAI profiles can disable continuation.
+- Anthropic profiles can keep today’s prompt-cache-only behavior and ignore
+  anchor metadata.
+- Anthropic context-management beta features are opt-in and profile-gated.
+- Anthropic cache anchors never permit transcript omission, so they cannot
+  diverge from local session authority.
 - ChatGPT-backed Codex endpoints may reject public API fields differently from
   token-auth Responses endpoints; adapter profile gates must keep this
   explicit.
@@ -414,6 +569,11 @@ After implementation:
   work may improve replay/state handling more than direct token cost.
 - ChatGPT-backed Codex endpoint behavior may differ from public OpenAI
   Responses; live validation must use the configured provider.
+- Anthropic server-side context editing can hide old tool results from the
+  model while the local transcript still contains them; diagnostics must make
+  that provider-side edit visible.
+- Anthropic server-side compaction can become a competing compaction system if
+  returned =compaction= blocks are not explicitly modeled.
 
 * Review questions
 
@@ -427,13 +587,13 @@ After implementation:
    continuation state?
 5. Does this reduce coupling between core session semantics and provider
    request optimization?
-6. Did any dependency start pointing from stable core policy toward OpenAI
-   adapter details?
+6. Did any dependency start pointing from stable core policy toward OpenAI or
+   Anthropic adapter details?
 7. Could provider-specific side effects be moved farther outward?
 8. Are segment and anchor abstractions semantically real, and can providers
    ignore them without weakened behavior?
-9. What compatibility expectations apply to old sessions and non-OpenAI
-   providers?
+9. What compatibility expectations apply to old sessions, non-OpenAI
+   providers, and Anthropic profiles that only support prompt caching?
 10. What legacy prompt-cache code can be removed or simplified after this?
 11. Where are expected provider-anchor invalidations handled, and where do
     unexpected provider-state errors surface?
