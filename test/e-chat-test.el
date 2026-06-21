@@ -25,6 +25,7 @@
 (require 'e-harness-registry)
 (require 'e-layer)
 (require 'e-prompts)
+(require 'e-store)
 (require 'e-tools)
 
 (defun e-chat-test--buffer (&optional items session-id)
@@ -1061,6 +1062,35 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-composer-slash-only-triggers-at-leading-position ()
+  "Composer / expands prompts only as the first non-whitespace input."
+  (let (buffer)
+    (unwind-protect
+        (progn
+          (setq buffer (e-chat-test--buffer nil "chat-prefix-slash-leading"))
+          (with-current-buffer buffer
+            (let ((prompt (e-prompt-spec-create
+                           :name "review"
+                           :description "Review code."
+                           :parameters nil
+                           :template "Review now.")))
+              (cl-letf (((symbol-function 'e-chat--prompt-candidates)
+                         (lambda ()
+                           (list (list :label "review" :prompt prompt)))))
+                (let ((unread-command-events (list ?\r)))
+                  (e-chat-composer-slash))
+                (should (equal (e-chat--composer-text) "Review now.")))
+              (delete-region e-chat--composer-start-marker (point-max))
+              (insert "please ")
+              (cl-letf (((symbol-function 'e-chat--prompt-candidates)
+                         (lambda ()
+                           (error "non-leading / must not collect prompts"))))
+                (let ((last-command-event ?/))
+                  (e-chat-composer-slash)))
+              (should (equal (e-chat--composer-text) "please /")))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-composer-prefix-shortcuts-no-op-outside-composer ()
   "Prefix shortcut commands do nothing outside an active composer."
   (with-temp-buffer
@@ -1155,7 +1185,8 @@
             (let ((unread-command-events (list ?\C-g)))
               (cl-letf (((symbol-function 'e-chat--prompt-candidates)
                        (lambda () (list (list :label "review" :prompt 'prompt)))))
-                (e-chat-composer-slash)))
+                (let ((last-command-event ?/))
+                  (e-chat-composer-slash))))
             (should (equal (e-chat--composer-text) "! @ /"))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
@@ -1173,7 +1204,8 @@
                        (lambda () nil)))
               (e-chat-composer-at)
               (insert " ")
-              (e-chat-composer-slash))
+              (let ((last-command-event ?/))
+                (e-chat-composer-slash)))
             (should (equal (e-chat--composer-text) "@ /"))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
@@ -1326,6 +1358,43 @@
                           (:label "ac.txt")))
                        '(:label "ab.txt")))))))
 
+(ert-deftest e-chat-test-composer-at-lists-files-resources-and-capabilities ()
+  "Composer @ candidates include files, active resources, and capabilities."
+  (let (buffer)
+    (unwind-protect
+        (progn
+          (setq buffer (e-chat-test--buffer nil "chat-prefix-at-candidates"))
+          (with-current-buffer buffer
+            (let ((capability
+                   (e-capability-create
+                    :id 'reference-capability
+                    :name "Reference Capability"
+                    :instructions "Use references."
+                    :resources
+                    (list (lambda (store capability)
+                            (e-store-register
+                             store
+                             (e-capability-id capability)
+                             "refs/guide.md"
+                             :description "Reference guide."
+                             :content "Guide content."))))))
+              (e-harness-activate-capability e-chat-harness capability)
+              (cl-letf (((symbol-function 'e-chat--project-file-candidates)
+                         (lambda ()
+                           (list (list :label "src/example.el"
+                                       :path "/tmp/example.el")))))
+                (let* ((candidates (e-chat--at-candidates))
+                       (labels (mapcar (lambda (candidate)
+                                         (plist-get candidate :label))
+                                       candidates)))
+                  (should (member "file: src/example.el" labels))
+                  (should (member "resource: e://reference-capability/refs/guide.md - Reference guide."
+                                  labels))
+                  (should (member "capability: reference-capability - Reference Capability"
+                                  labels)))))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-composer-at-inserts-file-reference ()
   "Word-boundary @ inserts a selected project file as an inline reference."
   (let (buffer)
@@ -1335,9 +1404,10 @@
           (with-current-buffer buffer
             (insert "see ")
             (let ((unread-command-events (list ?\r)))
-              (cl-letf (((symbol-function 'e-chat--project-file-candidates)
+              (cl-letf (((symbol-function 'e-chat--at-candidates)
                          (lambda ()
                            (list (list :label "src/example.el"
+                                       :kind 'file
                                        :path "/tmp/example.el"))))
                         ((symbol-function 'e-chat--read-file-reference-text)
                          (lambda (path)
@@ -1367,9 +1437,10 @@
           (with-current-buffer buffer
             (insert "see ")
             (let ((unread-command-events (list ?\r)))
-              (cl-letf (((symbol-function 'e-chat--project-file-candidates)
+              (cl-letf (((symbol-function 'e-chat--at-candidates)
                          (lambda ()
                            (list (list :label "src/example.el"
+                                       :kind 'file
                                        :path "/tmp/example.el"))))
                         ((symbol-function 'completing-read)
                          (lambda (&rest _args)
@@ -1427,6 +1498,82 @@
       (delete-directory primary t)
       (delete-directory secondary t))))
 
+(ert-deftest e-chat-test-composer-at-inserts-resource-reference ()
+  "Selecting an e:// resource inserts URI, description, and content context."
+  (let (buffer)
+    (unwind-protect
+        (progn
+          (setq buffer (e-chat-test--buffer nil "chat-prefix-at-resource"))
+          (with-current-buffer buffer
+            (let ((capability
+                   (e-capability-create
+                    :id 'reference-capability
+                    :name "Reference Capability"
+                    :resources
+                    (list (lambda (store capability)
+                            (e-store-register
+                             store
+                             (e-capability-id capability)
+                             "refs/guide.md"
+                             :description "Reference guide."
+                             :content "Guide content."))))))
+              (e-harness-activate-capability e-chat-harness capability)
+              (insert "see ")
+              (let ((unread-command-events (list ?\r)))
+                (cl-letf (((symbol-function 'e-chat--project-file-candidates)
+                           (lambda () nil)))
+                  (e-chat-composer-at)))
+              (let ((submission (plist-get (e-chat--composer-submission)
+                                           :prompt)))
+                (should (string-match-p
+                         (regexp-quote "e://reference-capability/refs/guide.md")
+                         submission))
+                (should (string-match-p (regexp-quote "Reference guide.")
+                                        submission))
+                (should (string-match-p (regexp-quote "Guide content.")
+                                        submission))))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-composer-at-inserts-capability-reference ()
+  "Selecting a capability inserts guidance and a lean resource list."
+  (let (buffer)
+    (unwind-protect
+        (progn
+          (setq buffer (e-chat-test--buffer nil "chat-prefix-at-capability"))
+          (with-current-buffer buffer
+            (let ((capability
+                   (e-capability-create
+                    :id 'reference-capability
+                    :name "Reference Capability"
+                    :instructions "Use references."
+                    :resources
+                    (list (lambda (store capability)
+                            (e-store-register
+                             store
+                             (e-capability-id capability)
+                             "refs/guide.md"
+                             :description "Reference guide."
+                             :content "Guide content."))))))
+              (e-harness-activate-capability e-chat-harness capability)
+              (let ((unread-command-events (list ?\C-n ?\r)))
+                (cl-letf (((symbol-function 'e-chat--project-file-candidates)
+                           (lambda () nil)))
+                  (e-chat-composer-at)))
+              (let ((submission (plist-get (e-chat--composer-submission)
+                                           :prompt)))
+                (should (string-match-p
+                         (regexp-quote "The user referenced capability `reference-capability` with @.")
+                         submission))
+                (should (string-match-p
+                         (regexp-quote "consider using the context, actions, tools, or resources provided by this capability")
+                         submission))
+                (should (string-match-p
+                         (regexp-quote "- e://reference-capability/refs/guide.md: Reference guide.")
+                         submission))))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-composer-at-truncates-file-reference-text ()
   "File reference text is capped with a visible truncation marker."
   (let ((e-chat-file-reference-max-bytes 5)
@@ -1442,8 +1589,8 @@
       (when (file-exists-p path)
         (delete-file path)))))
 
-(ert-deftest e-chat-test-composer-slash-expands-selected-prompt ()
-  "Word-boundary / expands the selected prompt as editable composer text."
+(ert-deftest e-chat-test-composer-slash-expands-leading-selected-prompt ()
+  "Leading / expands the selected prompt as editable composer text."
   (let (buffer)
     (unwind-protect
         (progn
@@ -1463,7 +1610,6 @@
                                 :instructions "Use review prompts."
                                 :prompts (list prompt))))
               (e-harness-activate-capability e-chat-harness capability)
-              (insert "please ")
               (let ((unread-command-events (list ?\r)))
                 (cl-letf (((symbol-function 'e-chat--collect-prompt-arguments)
                            (lambda (selected)
@@ -1471,7 +1617,7 @@
                              '(("focus" . "regressions")))))
                   (e-chat-composer-slash))))
             (should (equal (e-chat--composer-text)
-                           "please Review regressions."))))
+                           "Review regressions."))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 

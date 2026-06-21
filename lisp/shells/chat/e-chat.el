@@ -20,10 +20,12 @@
 (require 'e-chat-session)
 (require 'e-context-inspection)
 (require 'e-context-status)
+(require 'e-capabilities)
 (require 'e-harness)
 (require 'e-harness-instances)
 (require 'e-harness-registry)
 (require 'e-prompts)
+(require 'e-store)
 (require 'e-tools)
 (require 'e-picker)
 (require 'e-session)
@@ -1705,6 +1707,137 @@ scan."
                           :text (e-chat--read-file-reference-text path))))
     (e-chat--insert-context-reference reference)))
 
+(defun e-chat--resource-candidate-label (entry)
+  "Return composer @ candidate label for e:// resource ENTRY."
+  (let ((description (e-store-entry-description entry)))
+    (if (and (stringp description)
+             (not (string-empty-p description)))
+        (format "resource: %s - %s" (e-store-entry-uri entry) description)
+      (format "resource: %s" (e-store-entry-uri entry)))))
+
+(defun e-chat--capability-candidate-label (capability)
+  "Return composer @ candidate label for CAPABILITY."
+  (let ((id (e-capability-id capability))
+        (name (e-capability-name capability)))
+    (if (and (stringp name)
+             (not (string-empty-p name)))
+        (format "capability: %s - %s" id name)
+      (format "capability: %s" id))))
+
+(defun e-chat--resource-candidates ()
+  "Return active e:// resource candidates for the current chat harness."
+  (when e-chat-harness
+    (mapcar (lambda (entry)
+              (list :kind 'resource
+                    :label (e-chat--resource-candidate-label entry)
+                    :entry entry))
+            (e-store-list
+             (e-harness-store e-chat-harness e-chat-session-id)))))
+
+(defun e-chat--capability-candidates ()
+  "Return active capability candidates for the current chat harness."
+  (when e-chat-harness
+    (mapcar (lambda (capability)
+              (list :kind 'capability
+                    :label (e-chat--capability-candidate-label capability)
+                    :capability capability))
+            (e-harness-active-capabilities e-chat-harness))))
+
+(defun e-chat--at-candidates ()
+  "Return composer @ candidates for files, resources, and capabilities."
+  (append
+   (mapcar (lambda (candidate)
+             (let ((candidate (copy-sequence candidate)))
+               (plist-put candidate :kind 'file)
+               (plist-put candidate
+                          :label
+                          (format "file: %s" (plist-get candidate :label)))))
+           (e-chat--project-file-candidates))
+   (e-chat--resource-candidates)
+   (e-chat--capability-candidates)))
+
+(defun e-chat--resource-reference-text (entry)
+  "Return model-facing reference text for e:// resource ENTRY."
+  (let ((description (e-store-entry-description entry))
+        (uri (e-store-entry-uri entry)))
+    (string-join
+     (delq nil
+           (list
+            (format "Resource: %s" uri)
+            (when (and (stringp description)
+                       (not (string-empty-p description)))
+              (format "Description: %s" description))
+            ""
+            (condition-case err
+                (e-store-read-entry entry nil)
+              (error
+               (format "Read %s for the full resource. Reading now failed: %s"
+                       uri
+                       (error-message-string err))))))
+     "\n")))
+
+(defun e-chat--insert-resource-reference (candidate)
+  "Insert CANDIDATE as an inline e:// resource reference."
+  (let* ((entry (plist-get candidate :entry))
+         (reference (list :uri (e-store-entry-uri entry)
+                          :label (e-store-entry-uri entry)
+                          :text (e-chat--resource-reference-text entry))))
+    (e-chat--insert-context-reference reference)))
+
+(defun e-chat--resource-line-for-capability (entry)
+  "Return one lean resource listing line for e:// resource ENTRY."
+  (let ((description (e-store-entry-description entry)))
+    (if (and (stringp description)
+             (not (string-empty-p description)))
+        (format "- %s: %s" (e-store-entry-uri entry) description)
+      (format "- %s" (e-store-entry-uri entry)))))
+
+(defun e-chat--capability-resource-lines (capability)
+  "Return lean resource lines for active resources owned by CAPABILITY."
+  (when e-chat-harness
+    (let ((capability-id (symbol-name (e-capability-id capability))))
+      (mapcar #'e-chat--resource-line-for-capability
+              (cl-remove-if-not
+               (lambda (entry)
+                 (equal (e-store-entry-capability entry) capability-id))
+               (e-store-list
+                (e-harness-store e-chat-harness e-chat-session-id)))))))
+
+(defun e-chat--capability-reference-text (capability)
+  "Return model-facing reference text for CAPABILITY."
+  (let* ((id (e-capability-id capability))
+         (name (e-capability-name capability))
+         (resource-lines (e-chat--capability-resource-lines capability)))
+    (string-join
+     (delq nil
+           (list
+            (format "The user referenced capability `%s` with @." id)
+            (when (and (stringp name)
+                       (not (string-empty-p name)))
+              (format "Capability name: %s" name))
+            "Interpret this as: consider using the context, actions, tools, or resources provided by this capability."
+            (when resource-lines
+              (concat "Available resources:\n"
+                      (string-join resource-lines "\n")))))
+     "\n\n")))
+
+(defun e-chat--insert-capability-reference (candidate)
+  "Insert CANDIDATE as an inline capability reference."
+  (let* ((capability (plist-get candidate :capability))
+         (id (e-capability-id capability))
+         (reference (list :uri (format "e://%s" id)
+                          :label (format "capability:%s" id)
+                          :text (e-chat--capability-reference-text capability))))
+    (e-chat--insert-context-reference reference)))
+
+(defun e-chat--insert-at-reference (candidate)
+  "Insert selected composer @ CANDIDATE as an inline reference."
+  (pcase (plist-get candidate :kind)
+    ('file (e-chat--insert-file-reference candidate))
+    ('resource (e-chat--insert-resource-reference candidate))
+    ('capability (e-chat--insert-capability-reference candidate))
+    (_ (e-chat--insert-file-reference candidate))))
+
 (defun e-chat--prompt-candidates ()
   "Return prompt completion candidates for the active chat harness."
   (when e-chat-harness
@@ -1858,16 +1991,16 @@ Matching is case-insensitive."
       (e-chat--self-insert-prefix)
     (condition-case nil
         (if-let ((candidate (e-chat--inline-completion-select
-                             "@ file: "
-                             (e-chat--project-file-candidates))))
-            (e-chat--insert-file-reference candidate)
+                             "@ reference: "
+                             (e-chat--at-candidates))))
+            (e-chat--insert-at-reference candidate)
           (e-chat--insert-literal-prefix "@"))
       (quit (e-chat--insert-literal-prefix "@")))))
 
 (defun e-chat-composer-slash ()
   "Expand a capability prompt from a composer / prefix."
   (interactive)
-  (if (not (e-chat--composer-word-boundary-prefix-p))
+  (if (not (e-chat--composer-leading-prefix-p))
       (e-chat--self-insert-prefix)
     (condition-case nil
         (if-let* ((candidate (e-chat--inline-completion-select

@@ -30,6 +30,19 @@ routes =@= and =/= through an in-buffer inline completion popup.  Regressions
 cover stale root handling, =@= inline file selection, and =/= inline prompt
 selection without calling =completing-read=.
 
+Follow-up implementation on <2026-06-21 Sun> tightened the trigger model and
+expanded =@= references:
+
+- =/= now behaves like =!= and only triggers when typed as the first
+  non-whitespace composer input; after prose it self-inserts literally.
+- =@= remains a word-boundary inline reference trigger, but its candidates now
+  include project files, active =e://= resources, and active capabilities.
+- Selecting a resource inserts an inline reference with its URI, description,
+  and readable content when available.
+- Selecting a capability inserts model-facing guidance to consider that
+  capability's context, actions, tools, and resources, including a lean inline
+  list of the capability's active resources.
+
 * Final review
 
 Subagent re-review reported no new suggestions after the fix.
@@ -97,6 +110,44 @@ Result:
 Ran 287 tests, 286 results as expected, 0 unexpected, 1 skipped
 #+end_example
 
+Follow-up verification for leading-only =/= and capability-aware =@=:
+
+#+begin_src sh
+rtk eldev test test/e-chat-test.el
+#+end_src
+
+Result:
+
+#+begin_example
+Ran 216 tests, 215 results as expected, 0 unexpected, 1 skipped
+#+end_example
+
+#+begin_src sh
+rtk eldev test test/e-capabilities-test.el test/e-harness-test.el test/e-store-test.el
+#+end_src
+
+Result:
+
+#+begin_example
+Ran 94 tests, 94 results as expected, 0 unexpected
+#+end_example
+
+#+begin_src sh
+rtk eldev test
+#+end_src
+
+Result:
+
+#+begin_example
+Ran 959 tests, 958 results as expected, 0 unexpected, 1 skipped
+#+end_example
+
+#+begin_src sh
+git diff --check
+#+end_src
+
+Result: clean.
+
 * UX and performance playthrough
 
 The reviewed user journey is invoking composer prefix file selection when
@@ -161,4 +212,29 @@ after selection:
 #+begin_example
 (:labels ("keep.txt") :completion-called nil :composer "see @[keep.txt]"
  :overlay-live nil)
+#+end_example
+
+Follow-up reload for leading-only =/= and capability-aware =@=:
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Result:
+
+#+begin_example
+"/Users/dimitrivorona/projects/elisp/e/"
+#+end_example
+
+A bounded live probe used a temporary fake-harness chat buffer.  It confirmed
+non-leading =/= self-inserted literally, =@= listed an active =e://= resource and
+its owning capability, and selecting the capability inserted guidance with the
+resource list.
+
+#+begin_example
+(:slash-text "please /"
+ :labels ("resource: e://live-capability/refs/live.md - Live reference."
+          "capability: live-capability - Live Capability")
+ :capability-reference 128
+ :resource-listed 349)
 #+end_example
