@@ -1,0 +1,163 @@
+#+title: Review: Agent Shell Fleet
+#+author: e implementation
+#+date: 2026-06-21
+#+startup: overview
+
+* Status
+
+In-review.
+
+* Review loop
+
+Initial implementation is ready for subagent review.
+
+The implementation adds:
+
+- =lisp/core/e-agent-shell.el= as the only module that directly calls Agent
+  Shell APIs and reports a clear missing-package diagnostic;
+- =lisp/core/e-agent-shell-work.el= as an in-memory normalized work registry;
+- =lisp/layers/agents/e-agent-shell-fleet.el= as a capability exposing
+  =:handoff-work=, =:adopt-work=, =:list-work=, =:work-status=, =:read-work=,
+  =:send-followup=, and =:interrupt-work= actions plus a readable
+  =e://agent-shell-fleet/skills/agent-shell-work= guidance resource.
+
+Agent Shell was not installed in the running Emacs, so live validation covered
+the unavailable-package diagnostic and capability/resource surface.  Adapter,
+registry, adoption, event, and action behavior are covered with stubs rather
+than a live Agent Shell process.
+
+* Verification
+
+Focused feature verification:
+
+#+begin_src sh
+rtk eldev test test/e-agent-shell-test.el test/e-agent-shell-work-test.el test/e-agent-shell-fleet-test.el
+#+end_src
+
+Result:
+
+#+begin_example
+Ran 14 tests, 14 results as expected, 0 unexpected
+#+end_example
+
+Startup/load verification:
+
+#+begin_src sh
+rtk eldev test test/e-agent-shell-test.el test/e-agent-shell-work-test.el test/e-agent-shell-fleet-test.el test/e-defaults-test.el test/e-test.el
+#+end_src
+
+Result:
+
+#+begin_example
+Ran 57 tests, 57 results as expected, 0 unexpected
+#+end_example
+
+Full suite:
+
+#+begin_src sh
+rtk eldev test
+#+end_src
+
+Result:
+
+#+begin_example
+Ran 991 tests, 990 results as expected, 0 unexpected, 1 skipped
+SKIPPED e-chat-test-assistant-markdown-renders-with-text-properties
+#+end_example
+
+Harness agnosticism check:
+
+#+begin_src sh
+rg -n "agent-shell|Agent Shell|agent shell" lisp/core/e-harness.el lisp/core/e-loop.el lisp/core/e-backend.el lisp/core/e-session.el
+#+end_src
+
+Result: no matches.
+
+Whitespace:
+
+#+begin_src sh
+git diff --check
+#+end_src
+
+Result: clean.
+
+* UX and performance playthrough
+
+Agent Shell is not installed in the running Emacs:
+
+#+begin_src sh
+emacsclient --eval "(locate-library \"agent-shell\")"
+#+end_src
+
+Result:
+
+#+begin_example
+nil
+#+end_example
+
+The live probe therefore verified graceful degradation and the available
+capability surface:
+
+#+begin_example
+(:missing-diagnostic
+ "Agent Shell is unavailable: \"Agent Shell is not installed or not loadable\""
+ :default-layer agent-shell-fleet
+ :actions
+ (:handoff-work :adopt-work :list-work :work-status :read-work :send-followup
+  :interrupt-work)
+ :resource-has-handoff 185)
+#+end_example
+
+No profiling was required; the current implementation does not start live Agent
+Shell processes in this environment, and registry/action tests operate on small
+in-memory records.
+
+* Live reload
+
+The running Emacs was reloaded with:
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Result:
+
+#+begin_example
+"/Users/dimitrivorona/projects/elisp/e/"
+#+end_example
+
+* Final review
+
+Initial subagent review found five implementation issues:
+
+- adapter calls did not match current =agent-shell--start=,
+  =agent-shell-insert=, and =agent-shell-subscribe-to= keyword APIs;
+- adoption accepted spoofed buffer-local metadata from non-Agent-Shell buffers;
+- dead buffers could fall through =e-agent-shell-status=;
+- =:list-work= and =:work-status= returned stale registry status;
+- the capability existed but was not registered as a default layer.
+
+Those findings were addressed with failing regression tests first, then code
+changes in the adapter, work registry, fleet capability, and default layer
+registration.
+
+Second subagent review found four additional contract gaps:
+
+- prompt insertion did not pass =:submit t=, so handoff/follow-up could insert
+  text without submitting it to Agent Shell;
+- Agent Shell alist events with nested =:data= were not normalized by the work
+  registry;
+- live status refresh could overwrite terminal event-derived states like
+  =finished= with coarser adapter status like =ready=;
+- adoption still accepted a plain buffer that spoofed =agent-shell--state=.
+
+Those findings were addressed with failing regression tests first, then code
+changes to submit prompts, require Agent Shell mode plus matching state during
+adoption, read nested alist event payloads, and preserve terminal work states
+during refresh.
+
+Final subagent review reached fixpoint:
+
+#+begin_quote
+No new suggestions.
+#+end_quote

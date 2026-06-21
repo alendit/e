@@ -56,6 +56,11 @@
      :summary "Progressive guidance for text editing workflows."
      :feature e-text-editing
      :factory e-text-editing-layer-create)
+    (:id agent-shell-fleet
+     :name "Agent Shell Fleet"
+     :summary "Agent Shell worker handoff, adoption, and status actions."
+     :feature e-agent-shell-fleet
+     :factory e-agent-shell-fleet-layer-create)
     (:id org-canvas
      :name "Org Canvas"
      :summary "Org document canvas context and visibility tools."

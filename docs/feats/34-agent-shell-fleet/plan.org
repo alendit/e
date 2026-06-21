@@ -14,7 +14,7 @@ returns normalized work records designed for agentic consumption.
 
 * Status
 
-Planned.
+In-review.
 
 * Background
 
