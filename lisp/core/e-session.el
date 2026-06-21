@@ -42,14 +42,16 @@
   (sequence 0))
 
 (defconst e-session--replay-list-fields
-  '(:session-events :messages :activity-events :branch-summaries :compactions)
+  '(:session-events :messages :activity-events :branch-summaries
+    :compactions :provider-anchors)
   "Session fields accumulated in reverse order while replaying JSONL.")
 
 (defconst e-session--list-tail-fields
   '((:messages . :messages-tail)
     (:activity-events . :activity-events-tail)
     (:branch-summaries . :branch-summaries-tail)
-    (:compactions . :compactions-tail))
+    (:compactions . :compactions-tail)
+    (:provider-anchors . :provider-anchors-tail))
   "Internal append-only list fields and their cached tail cells.")
 
 (defconst e-session--ulid-alphabet "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
@@ -430,7 +432,8 @@ and RECORD supplies persisted identity fields during replay."
             (plist-get session :messages)
             (plist-get session :activity-events)
             (plist-get session :branch-summaries)
-            (plist-get session :compactions))))
+            (plist-get session :compactions)
+            (plist-get session :provider-anchors))))
 
 (defun e-session-entry-by-id (store session-id entry-id)
   "Return durable entry ENTRY-ID from SESSION-ID."
@@ -514,6 +517,60 @@ and RECORD supplies persisted identity fields during replay."
      (and (eq (plist-get entry :type) 'compaction)
           (e-session-compaction-boundary-valid-p store session-id entry)))
    (reverse (e-session-compactions store session-id))))
+
+(defun e-session-provider-anchor-incompatibility-reason
+    (store session-id anchor provider-id model fingerprints)
+  "Return why ANCHOR is not compatible, or nil when compatible."
+  (let* ((path (e-session-current-path store session-id))
+         (path-ids (mapcar (lambda (entry) (plist-get entry :id)) path))
+         (anchor-id (plist-get anchor :id))
+         (covered-entry-id (plist-get anchor :covered-entry-id))
+         (anchor-fingerprints (plist-get anchor :fingerprints)))
+    (cond
+     ((not (eq (plist-get anchor :type) 'provider-anchor))
+      'invalid-anchor-type)
+     ((not (eq (plist-get anchor :provider-id) provider-id))
+      'provider-mismatch)
+     ((not (equal (plist-get anchor :model) model))
+      'model-mismatch)
+     ((not (equal (plist-get anchor-fingerprints :segments)
+                  (plist-get fingerprints :segments)))
+      'segment-fingerprint-mismatch)
+     ((not (equal (plist-get anchor-fingerprints :active-layer-ids)
+                  (plist-get fingerprints :active-layer-ids)))
+      'active-layers-changed)
+     ((not (equal (plist-get anchor-fingerprints :tools)
+                  (plist-get fingerprints :tools)))
+      'tools-changed)
+     ((not (equal (plist-get anchor-fingerprints :reasoning)
+                  (plist-get fingerprints :reasoning)))
+      'reasoning-changed)
+     ((not (equal (plist-get anchor-fingerprints :provider-options)
+                  (plist-get fingerprints :provider-options)))
+      'provider-options-changed)
+     ((not (equal (plist-get anchor-fingerprints :compaction-boundary)
+                  (plist-get fingerprints :compaction-boundary)))
+      'compaction-boundary-changed)
+     ((and (not (or (plist-member anchor-fingerprints :segments)
+                    (plist-member anchor-fingerprints :active-layer-ids)
+                    (plist-member anchor-fingerprints :tools)
+                    (plist-member anchor-fingerprints :reasoning)
+                    (plist-member anchor-fingerprints :provider-options)
+                    (plist-member anchor-fingerprints :compaction-boundary)))
+           (not (equal anchor-fingerprints fingerprints)))
+      'fingerprint-mismatch)
+     ((not (member anchor-id path-ids))
+      'anchor-not-on-current-path)
+     ((not (member covered-entry-id path-ids))
+      'covered-entry-not-on-current-path)
+     (t nil))))
+
+(defun e-session-provider-anchor-compatible-p
+    (store session-id anchor provider-id model fingerprints)
+  "Return non-nil when ANCHOR is compatible with current SESSION-ID state."
+  (null
+   (e-session-provider-anchor-incompatibility-reason
+    store session-id anchor provider-id model fingerprints)))
 
 (defun e-session--finalize-replayed-session (store session)
   "Restore replayed SESSION field ordering and derived metadata."
@@ -613,6 +670,12 @@ and RECORD supplies persisted identity fields during replay."
       (intern event-type)
     event-type))
 
+(defun e-session--known-provider-id (provider-id)
+  "Return PROVIDER-ID normalized for in-memory provider anchor records."
+  (if (stringp provider-id)
+      (intern provider-id)
+    provider-id))
+
 (defun e-session--normalize-activity-event (event)
   "Return EVENT normalized after JSON replay."
   (plist-put event
@@ -645,6 +708,7 @@ and RECORD supplies persisted identity fields during replay."
                             :branch-summaries nil
                             :current-branch nil
                             :compactions nil
+                            :provider-anchors nil
                             :created-at (or (plist-get record :created-at)
                                             timestamp)
                             :updated-at (or (plist-get record :updated-at)
@@ -742,6 +806,31 @@ and RECORD supplies persisted identity fields during replay."
            timestamp
            record))
          (e-session--touch store session timestamp)))
+      ("provider-anchor"
+       (when session
+         (e-session--prepend-replayed-item
+          session
+          :provider-anchors
+          (e-session--normalize-entry-from-record
+           session
+           'provider-anchor
+           (list :id (plist-get record :id)
+                 :parent-id (plist-get record :parent-id)
+                 :provider-id
+                 (e-session--known-provider-id
+                  (plist-get record :provider-id))
+                 :model
+                 (plist-get record :model)
+                 :covered-entry-id
+                 (plist-get record :covered-entry-id)
+                 :fingerprints
+                 (plist-get record :fingerprints)
+                 :metadata
+                 (plist-get record :metadata)
+                 :created-at timestamp)
+           timestamp
+           record))
+         (e-session--touch store session timestamp)))
       ("current-branch"
        (when session
          (plist-put session :current-branch
@@ -784,6 +873,7 @@ and RECORD supplies persisted identity fields during replay."
        (when session
          (e-session--replace-list-field session :messages nil)
          (e-session--replace-list-field session :activity-events nil)
+         (e-session--replace-list-field session :provider-anchors nil)
          (e-session--clear-message-derived-fields store session)
          (plist-put session :current-head-id (e-session--root-event-id session))
          (e-session--prepend-replayed-session-event
@@ -833,6 +923,7 @@ and RECORD supplies persisted identity fields during replay."
              :branch-summaries nil
              :current-branch nil
              :compactions nil
+             :provider-anchors nil
              :turn-options nil
              :created-at (plist-get entry :created-at)
              :updated-at (plist-get entry :updated-at)
@@ -1024,6 +1115,7 @@ state are requested."
                         :branch-summaries nil
                         :current-branch nil
                         :compactions nil
+                        :provider-anchors nil
                         :turn-options nil
                         :created-at timestamp
                         :updated-at timestamp
@@ -1075,6 +1167,20 @@ state are requested."
 (defun e-session-compactions (store session-id)
   "Return compaction records for SESSION-ID in STORE in insertion order."
   (copy-sequence (plist-get (e-session-get store session-id) :compactions)))
+
+(defun e-session-provider-anchors (store session-id)
+  "Return provider anchor records for SESSION-ID in STORE in insertion order."
+  (copy-sequence
+   (plist-get (e-session-get store session-id) :provider-anchors)))
+
+(cl-defun e-session-latest-compatible-provider-anchor
+    (store session-id provider-id &key model fingerprints)
+  "Return latest provider anchor compatible with SESSION-ID current path."
+  (seq-find
+   (lambda (anchor)
+     (e-session-provider-anchor-compatible-p
+      store session-id anchor provider-id model fingerprints))
+   (reverse (e-session-provider-anchors store session-id))))
 
 (defun e-session-turn-options (store session-id)
   "Return session-scoped turn options for SESSION-ID in STORE."
@@ -1254,6 +1360,43 @@ source when available."
     (e-session--write-index store)
     record))
 
+(cl-defun e-session-append-provider-anchor
+    (store session-id provider-id &key model covered-entry-id fingerprints
+           metadata)
+  "Append opaque PROVIDER-ID anchor metadata to SESSION-ID in STORE.
+COVERED-ENTRY-ID identifies the latest transcript entry covered by the
+provider-owned anchor.  FINGERPRINTS and METADATA are opaque to session core."
+  (let* ((session (e-session-get store session-id))
+         (timestamp (e-session--timestamp))
+         (record (e-session--normalize-entry-from-record
+                  session
+                  'provider-anchor
+                  (list :provider-id provider-id
+                        :model model
+                        :covered-entry-id covered-entry-id
+                        :fingerprints fingerprints
+                        :metadata metadata
+                        :created-at timestamp)
+                  timestamp)))
+    (e-session--append-list-item session :provider-anchors record)
+    (e-session--index-entry store session-id record)
+    (e-session--touch store session timestamp)
+    (e-session--refresh-file-field store session)
+    (e-session--append-record
+     store session-id
+     (list :type "provider-anchor"
+           :session-id session-id
+           :id (plist-get record :id)
+           :parent-id (plist-get record :parent-id)
+           :timestamp timestamp
+           :provider-id provider-id
+           :model model
+           :covered-entry-id covered-entry-id
+           :fingerprints fingerprints
+           :metadata metadata))
+    (e-session--write-index store)
+    record))
+
 (defun e-session-set-current-branch (store session-id branch-id)
   "Set SESSION-ID current branch cursor to BRANCH-ID in STORE."
   (let* ((session (e-session-get store session-id))
@@ -1286,6 +1429,7 @@ source when available."
          (event nil))
     (e-session--replace-list-field session :messages nil)
     (e-session--replace-list-field session :activity-events nil)
+    (e-session--replace-list-field session :provider-anchors nil)
     (e-session--clear-message-derived-fields store session)
     (e-session--clear-entry-index store session-id)
     (dolist (entry (plist-get session :session-events))
@@ -1293,6 +1437,8 @@ source when available."
     (dolist (entry (plist-get session :branch-summaries))
       (e-session--index-entry store session-id entry))
     (dolist (entry (plist-get session :compactions))
+      (e-session--index-entry store session-id entry))
+    (dolist (entry (plist-get session :provider-anchors))
       (e-session--index-entry store session-id entry))
     (plist-put session :current-head-id root-id)
     (setq event

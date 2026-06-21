@@ -45,5 +45,5 @@ Status values for coding agents:
 | 32 | In-review | 32-floating-picker/ | Floating Picker and Active Sessions Popup |
 | 33 | In-review | 33-workspace-awareness/ | Workspace Awareness |
 | 34 | In-review | 34-agent-shell-fleet/ | Agent Shell Fleet |
-| 35 | Ready  | 35-provider-context-anchors/ | Provider Context Anchors |
+| 35 | In-review | 35-provider-context-anchors/ | Provider Context Anchors |
 | 36 | Ready | 36-steering-and-queuing/ | Steering and Queuing |

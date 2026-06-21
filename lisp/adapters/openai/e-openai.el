@@ -70,6 +70,7 @@ Set this to nil to deliberately disable provider HTTP request timeouts."
      :name "ChatGPT Codex"
      :base-url ,(concat e-openai-codex-default-base-url "/codex")
      :wire-api responses
+     :continuation t
      :requires-openai-auth t))
   "OpenAI-like model provider profiles keyed by provider symbol.
 
@@ -78,7 +79,8 @@ Each profile is plist data.  `:wire-api' supports `responses' and
 Profiles with `:requires-openai-auth' non-nil use Codex-managed ChatGPT auth.
 Profiles with `:requires-openai-auth' nil read a bearer token from `:env-key'.
 Profiles can set `:prompt-cache-retention' to nil to suppress that request
-field, or non-nil to force it on."
+field, or non-nil to force it on.  Responses profiles can opt into provider
+continuation anchors with `:continuation' non-nil."
   :type '(alist :key-type symbol :value-type sexp)
   :group 'e-openai)
 
@@ -144,6 +146,21 @@ When PROVIDER is nil, use `e-openai-default-provider'."
   (if (plist-member profile :prompt-cache-retention)
       (plist-get profile :prompt-cache-retention)
     (not (plist-get profile :requires-openai-auth))))
+
+(defun e-openai--profile-continuation-supported-p (profile)
+  "Return non-nil when PROFILE should use Responses continuation anchors."
+  (and (eq (e-openai--provider-wire-api profile) 'responses)
+       (plist-get profile :continuation)))
+
+(defun e-openai--harness-default-options (profile model)
+  "Return backend-neutral harness options for PROFILE and MODEL."
+  (let ((options (list :model model
+                       :reasoning-effort e-openai-default-reasoning-effort)))
+    (if (e-openai--profile-continuation-supported-p profile)
+        (append options
+                (list :provider-continuation t
+                      :provider-anchor-provider-id 'openai))
+      options)))
 
 (defun e-openai--env-token (env-key)
   "Return bearer token from ENV-KEY or signal an auth error."
@@ -293,10 +310,33 @@ When CODEX-HOME is nil, use the CODEX_HOME environment variable or
                               messages))))
    "\n\n"))
 
+(defun e-openai-codex--continuation-response-id (options)
+  "Return previous Responses id from OPTIONS when continuation is enabled."
+  (when (plist-get options :provider-continuation)
+    (let* ((anchor (plist-get options :provider-anchor))
+           (metadata (plist-get anchor :metadata))
+           (response-id (plist-get metadata :response-id)))
+      (when (and (eq (plist-get anchor :provider-id) 'openai)
+                 (stringp response-id)
+                 (not (string-empty-p response-id)))
+        response-id))))
+
+(defun e-openai-codex--request-input-messages (messages options)
+  "Return Responses input messages from MESSAGES and OPTIONS."
+  (let* ((response-id (e-openai-codex--continuation-response-id options))
+         (delta-messages (plist-get options :provider-anchor-delta-messages))
+         (source (if (and response-id (listp delta-messages))
+                     delta-messages
+                   messages)))
+    (seq-remove #'e-openai-codex--system-message-p source)))
+
 (cl-defun e-openai-codex-request-body (&key messages options tools)
   "Build a Codex Responses request body from MESSAGES, OPTIONS, and TOOLS."
-  (let* ((input-messages (seq-remove #'e-openai-codex--system-message-p
-                                     messages))
+  (let* ((input-messages (e-openai-codex--request-input-messages
+                          messages
+                          options))
+         (continuation-response-id
+          (e-openai-codex--continuation-response-id options))
          (reasoning (if (plist-member options :reasoning)
                         (plist-get options :reasoning)
                       (when-let ((effort (or (plist-get options :reasoning-effort)
@@ -304,7 +344,9 @@ When CODEX-HOME is nil, use the CODEX_HOME environment variable or
                         (list :effort effort))))
          (body (list :model (or (plist-get options :model)
                                 e-openai-default-model)
-                     :store :json-false
+                     :store (if (plist-get options :provider-continuation)
+                                t
+                              :json-false)
                      :stream t
                      :instructions (e-openai-codex--instructions
                                     messages
@@ -317,6 +359,11 @@ When CODEX-HOME is nil, use the CODEX_HOME environment variable or
       (setq body (append body (list :tools (vconcat tools)))))
     (when reasoning
       (setq body (append body (list :reasoning reasoning))))
+    (when continuation-response-id
+      (setq body
+            (append body
+                    (list :previous_response_id
+                          continuation-response-id))))
     (when (plist-member options :prompt-cache-key)
       (setq body
             (append body
@@ -328,6 +375,42 @@ When CODEX-HOME is nil, use the CODEX_HOME environment variable or
                     (list :prompt_cache_retention
                           (plist-get options :prompt-cache-retention)))))
     body))
+
+
+(defun e-openai--request-metadata (wire-api options body)
+  "Return sanitized request metadata for WIRE-API, OPTIONS, and BODY."
+  (when (eq wire-api 'responses)
+    (let* ((anchor (plist-get options :provider-anchor))
+           (anchor-metadata (plist-get anchor :metadata))
+           (response-id (plist-get anchor-metadata :response-id))
+           (delta-messages (plist-get options :provider-anchor-delta-messages))
+           (continuation-state
+            (cond
+             ((not (plist-get options :provider-continuation)) 'disabled)
+             ((plist-member body :previous_response_id) 'used)
+             (t 'full)))
+           (metadata (list :provider-continuation continuation-state)))
+      (when (and (eq continuation-state 'used)
+                 (stringp response-id))
+        (setq metadata
+              (append metadata
+                      (list :provider-anchor-response-id response-id))))
+      (when-let ((covered-entry-id (plist-get anchor :covered-entry-id)))
+        (setq metadata
+              (append metadata
+                      (list :provider-anchor-covered-entry-id
+                            covered-entry-id))))
+      (when (listp delta-messages)
+        (setq metadata
+              (append metadata
+                      (list :provider-continuation-delta-count
+                            (length delta-messages)))))
+      (when-let ((reason
+                  (plist-get options :provider-anchor-invalidation-reason)))
+        (setq metadata
+              (append metadata
+                      (list :provider-anchor-invalidation-reason reason))))
+      metadata)))
 
 
 (defun e-openai-chat-completion--message-content (content)
@@ -694,6 +777,15 @@ condition list.  Return a cancellable `e-backend-request' handle."
               (plist-get usage :total_tokens)))))
       (list :type 'token-usage :usage normalized))))
 
+(defun e-openai-codex--anchor-candidate-item (response)
+  "Return provider anchor candidate item from completed RESPONSE."
+  (when-let ((response-id (and (consp response)
+                               (plist-get response :id))))
+    (when (stringp response-id)
+      (list :type 'provider-anchor-candidate
+            :provider-id 'openai
+            :metadata (list :response-id response-id)))))
+
 (defun e-openai-codex--json-error-item (stream-text)
   "Return a backend error item when STREAM-TEXT is a JSON error response."
   (when (string-prefix-p "{" (string-trim-left stream-text))
@@ -823,15 +915,23 @@ LIMIT defaults to 240 characters."
               (unless (or (string-empty-p data) (equal data "[DONE]"))
                 (let* ((event (e-openai-codex--parse-json data))
                        (item (e-openai-codex--event-item event))
+                       (completed-event-p
+                        (member (plist-get event :type)
+                                '("response.completed" "response.done")))
+                       (response (plist-get event :response))
+                       (anchor-candidate-item
+                        (when completed-event-p
+                          (e-openai-codex--anchor-candidate-item response)))
                        (usage-item
-                        (when (member (plist-get event :type)
-                                      '("response.completed" "response.done"))
+                        (when completed-event-p
                           (e-openai-codex--usage-item
-                           (plist-get (plist-get event :response) :usage)))))
+                           (plist-get response :usage)))))
                   (push (e-openai-codex--event-summary event item)
                         event-summaries)
                   (when usage-item
                     (handle-item usage-item))
+                  (when anchor-candidate-item
+                    (handle-item anchor-candidate-item))
                   (when item
                     (handle-item item)))))))))
     (unless assistant-message-seen
@@ -1026,18 +1126,21 @@ OpenAI request and backend-neutral context."
                        (not (e-openai--profile-prompt-cache-retention-supported-p
                              profile)))
               (cl-remf effective-options :prompt-cache-retention)))
-         (body (json-encode
-                (pcase wire-api
-                  ('responses
-                   (e-openai-codex-request-body
-                    :messages messages
-                    :options effective-options
-                    :tools (plist-get effective-options :tools)))
-                  ('chat-completion
-                   (e-openai-chat-completion-request-body
-                    :messages messages
-                    :options effective-options
-                    :tools (plist-get effective-options :tools))))))
+         (body-data
+          (pcase wire-api
+            ('responses
+             (e-openai-codex-request-body
+              :messages messages
+              :options effective-options
+              :tools (plist-get effective-options :tools)))
+            ('chat-completion
+             (e-openai-chat-completion-request-body
+              :messages messages
+              :options effective-options
+              :tools (plist-get effective-options :tools)))))
+         (metadata (e-openai--request-metadata
+                    wire-api effective-options body-data))
+         (body (json-encode body-data))
          (session-id (plist-get effective-options :session-id))
          (url (pcase wire-api
                 ('responses
@@ -1056,6 +1159,7 @@ OpenAI request and backend-neutral context."
           :wire-api wire-api
           :url url
           :headers headers
+          :metadata metadata
           :body body)))
 
 (defun e-openai--emit-response-items (response context on-item)
@@ -1099,6 +1203,7 @@ default when turn options do not include `:model'.  The provider profile's
                    :url (plist-get context :url)
                    :cancellable nil
                    :transport 'sync-wrapper)
+             (plist-get context :metadata)
              (e-openai-codex--url-metadata
               (plist-get context :url)))))
           (setq response
@@ -1136,6 +1241,7 @@ default when turn options do not include `:model'.  The provider profile's
                               :url (plist-get context :url)
                               :cancellable 'queued-only
                               :transport 'injected-request-function)
+                        (plist-get context :metadata)
                         (e-openai-codex--url-metadata
                          (plist-get context :url)))))
                 (when on-request-start
@@ -1180,6 +1286,7 @@ default when turn options do not include `:model'.  The provider profile's
                     (append
                      (list :provider (plist-get context :provider)
                            :wire-api (plist-get context :wire-api))
+                     (plist-get context :metadata)
                      (e-backend-request-metadata request)))
               (when on-request-start
                 (funcall on-request-start request))
@@ -1202,8 +1309,7 @@ backend-neutral turn options by the default context strategy path used by
                :base-url base-url
                :request-function request-function
                :model model)
-     :default-options (list :model model
-                            :reasoning-effort e-openai-default-reasoning-effort)
+     :default-options (e-openai--harness-default-options profile model)
      :sessions sessions)))
 
 (cl-defun e-openai-codex-backend-create

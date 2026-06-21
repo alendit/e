@@ -525,6 +525,88 @@
                            (e-session-compactions store "session-1"))
                    '("First" "Second")))))
 
+(ert-deftest e-session-test-provider-anchor-persists-through-replay ()
+  "Provider anchors append and replay as opaque durable session entries."
+  (let* ((directory (make-temp-file "e-session-" t))
+         (store (e-session-persistent-store-create directory))
+         (session-id (plist-get (e-session-create store :id "session-1") :id)))
+    (unwind-protect
+        (let* ((message (e-session-append-message
+                         store session-id
+                         '(:role assistant :content "anchored")))
+               (anchor (e-session-append-provider-anchor
+                        store session-id 'openai
+                        :model "gpt-test"
+                        :covered-entry-id (plist-get message :id)
+                        :fingerprints '(:static-prefix "abc"
+                                        :current-state "def")
+                        :metadata '(:response-id "resp-1")))
+               (loaded (e-session-persistent-store-create directory))
+               (replayed (car (e-session-provider-anchors
+                               loaded session-id))))
+          (should (equal (plist-get replayed :id)
+                         (plist-get anchor :id)))
+          (should (eq (plist-get replayed :provider-id) 'openai))
+          (should (equal (plist-get replayed :model) "gpt-test"))
+          (should (equal (plist-get replayed :covered-entry-id)
+                         (plist-get message :id)))
+          (should (equal (plist-get replayed :fingerprints)
+                         '(:static-prefix "abc"
+                           :current-state "def")))
+          (should (equal (plist-get replayed :metadata)
+                         '(:response-id "resp-1"))))
+      (delete-directory directory t))))
+
+(ert-deftest e-session-test-latest-provider-anchor-requires-current-path ()
+  "Provider anchors are compatible only when their covered entry is current."
+  (let ((store (e-session-store-create)))
+    (let* ((session-id (plist-get (e-session-create store :id "session-1") :id))
+           (first (e-session-append-message
+                   store session-id '(:role assistant :content "first")))
+           (second (e-session-append-message
+                    store session-id '(:role assistant :content "second")))
+           (first-anchor
+            (e-session-append-provider-anchor
+             store session-id 'openai
+             :model "gpt-test"
+             :covered-entry-id (plist-get first :id)
+             :fingerprints '(:history "one")
+             :metadata '(:response-id "resp-1")))
+           (second-anchor
+            (e-session-append-provider-anchor
+             store session-id 'openai
+             :model "gpt-test"
+             :covered-entry-id (plist-get second :id)
+             :fingerprints '(:history "two")
+             :metadata '(:response-id "resp-2"))))
+      (should (equal (plist-get
+                      (e-session-latest-compatible-provider-anchor
+                       store session-id 'openai
+                       :model "gpt-test"
+                       :fingerprints '(:history "two"))
+                      :id)
+                     (plist-get second-anchor :id)))
+      (should-not
+       (e-session-latest-compatible-provider-anchor
+        store session-id 'openai
+        :model "gpt-test"
+        :fingerprints '(:history "changed")))
+      (plist-put (e-session-get store session-id)
+                 :current-head-id
+                 (plist-get first-anchor :id))
+      (should (equal (plist-get
+                      (e-session-latest-compatible-provider-anchor
+                       store session-id 'openai
+                       :model "gpt-test"
+                       :fingerprints '(:history "one"))
+                      :id)
+                     (plist-get first-anchor :id)))
+      (should-not
+       (e-session-latest-compatible-provider-anchor
+        store session-id 'openai
+        :model "gpt-test"
+        :fingerprints '(:history "two"))))))
+
 (ert-deftest e-session-test-entry-query-helpers-cover-paths-turns-and-boundaries ()
   "Entry query helpers return ids, current paths, turn groups, and suffixes."
   (let ((store (e-session-store-create)))

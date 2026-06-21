@@ -755,6 +755,10 @@ Currently this is rate limiting: HTTP 429 or an explicit rate-limit message."
   "Return active layer ids for HARNESS."
   (mapcar #'e-layer-id (e-harness-active-layers harness)))
 
+(defun e-harness--active-layer-id-strings (harness)
+  "Return JSON-stable active layer ids for HARNESS."
+  (mapcar #'symbol-name (e-harness--active-layer-ids harness)))
+
 (defun e-harness--derived-prompt-cache-key (harness session-id options)
   "Return the default prompt cache key for HARNESS SESSION-ID OPTIONS.
 The active tool set participates in the key so mid-session tool activation
@@ -957,17 +961,31 @@ TURN-ID is passed to active capability context providers when present."
    (list :session-id session-id
          :turn-id turn-id)
    (lambda ()
-     (e-context-build
-      (e-harness-context-strategy harness)
-      :sessions (e-harness-sessions harness)
-      :session-id session-id
-      :options (e-harness-turn-options harness session-id)
-      :prefix-messages
-      (e-capabilities-context-messages
-       (e-harness-active-capabilities harness)
-       :harness harness
-       :session-id session-id
-       :turn-id turn-id)))))
+     (let ((capability-context
+            (e-capabilities-context
+             (e-harness-active-capabilities harness)
+             :harness harness
+             :session-id session-id
+             :turn-id turn-id)))
+       (let ((context
+              (e-context-build
+               (e-harness-context-strategy harness)
+               :sessions (e-harness-sessions harness)
+               :session-id session-id
+               :options (e-harness-turn-options harness session-id)
+               :prefix-messages (plist-get capability-context :messages)
+               :prefix-segments (plist-get capability-context :segments))))
+         (plist-put context
+                    :provider-anchor-active-layer-ids
+                    (e-harness--active-layer-id-strings harness))
+         (plist-put context
+                    :provider-anchor-compaction-boundary
+                    (e-harness--provider-anchor-compaction-boundary
+                     harness session-id))
+         (e-harness--context-with-provider-anchor
+          harness
+          session-id
+          context))))))
 
 (defun e-harness--active-turn-id (entry)
   "Return active turn id from ENTRY."
@@ -1243,6 +1261,155 @@ When a turn produced multiple assistant messages, return the last one."
                      (equal (plist-get message :turn-id) turn-id)))
               (e-harness-messages harness session-id)))))
 
+(defun e-harness--provider-anchor-fingerprints (context)
+  "Return JSON-stable provider-relevant fingerprints from CONTEXT."
+  (let ((options (plist-get context :options)))
+    (list
+     :segments
+     (mapcar
+      (lambda (segment)
+        (list :kind (symbol-name (plist-get segment :kind))
+              :id (prin1-to-string (plist-get segment :id))
+              :fingerprint (plist-get segment :fingerprint)))
+      (cl-remove-if
+       (lambda (segment)
+         (memq (plist-get segment :kind) '(history delta)))
+       (plist-get context :segments)))
+     :active-layer-ids
+     (copy-sequence (plist-get context :provider-anchor-active-layer-ids))
+     :tools
+     (mapcar
+      (lambda (tool)
+        (list :name (plist-get tool :name)
+              :fingerprint
+              (secure-hash 'sha256 (prin1-to-string tool))))
+      (plist-get options :tools))
+     :reasoning
+     (list :reasoning (plist-get options :reasoning)
+           :reasoning-effort (plist-get options :reasoning-effort)
+           :effort (plist-get options :effort))
+     :provider-options
+     (list :instructions (plist-get options :instructions)
+           :max-tokens (plist-get options :max-tokens)
+           :prompt-cache (plist-get options :prompt-cache)
+           :prompt-cache-mode (plist-get options :prompt-cache-mode)
+           :prompt-cache-ttl (plist-get options :prompt-cache-ttl)
+           :prompt-cache-key (plist-get options :prompt-cache-key)
+           :prompt-cache-retention (plist-get options :prompt-cache-retention)
+           :anthropic-container-id (plist-get options :anthropic-container-id)
+           :anthropic-context-management
+           (plist-get options :anthropic-context-management)
+           :anthropic-beta-headers
+           (plist-get options :anthropic-beta-headers))
+     :compaction-boundary
+     (plist-get context :provider-anchor-compaction-boundary))))
+
+(defun e-harness--provider-anchor-compaction-boundary (harness session-id)
+  "Return provider-anchor compatibility data for latest compaction boundary."
+  (when-let ((compaction
+              (e-session-latest-valid-compaction
+               (e-harness-sessions harness)
+               session-id)))
+    (list :id (plist-get compaction :id)
+          :first-kept-entry-id (plist-get compaction :first-kept-entry-id))))
+
+(defun e-harness--provider-anchor-invalidation-reason
+    (harness session-id provider-id model fingerprints)
+  "Return the most relevant provider-anchor invalidation reason."
+  (let* ((anchors
+          (cl-remove-if-not
+           (lambda (anchor)
+             (eq (plist-get anchor :provider-id) provider-id))
+           (e-session-provider-anchors (e-harness-sessions harness) session-id)))
+         (latest (car (last anchors))))
+    (if latest
+        (e-session-provider-anchor-incompatibility-reason
+         (e-harness-sessions harness)
+         session-id
+         latest
+         provider-id
+         model
+         fingerprints)
+      'missing-anchor)))
+
+(defun e-harness--provider-anchor-delta-messages
+    (harness session-id anchor)
+  "Return backend-neutral messages after ANCHOR coverage in SESSION-ID."
+  (let ((entries (cdr (e-session-entries-from
+                       (e-harness-sessions harness)
+                       session-id
+                       (plist-get anchor :covered-entry-id)))))
+    (mapcar #'e-context--backend-message
+            (cl-remove-if-not
+             (lambda (entry)
+               (eq (plist-get entry :type) 'message))
+             entries))))
+
+(defun e-harness--context-with-provider-anchor (harness session-id context)
+  "Attach a compatible provider anchor to CONTEXT options when available."
+  (let* ((options (plist-get context :options))
+         (provider-id (plist-get options :provider-anchor-provider-id))
+         (fingerprints (e-harness--provider-anchor-fingerprints context)))
+    (when (and (plist-get options :provider-continuation) provider-id)
+      (let ((anchor
+             (e-session-latest-compatible-provider-anchor
+              (e-harness-sessions harness)
+              session-id
+              provider-id
+              :model (plist-get options :model)
+              :fingerprints fingerprints))
+            (options (copy-sequence options)))
+        (if anchor
+            (progn
+              (setq options (plist-put options :provider-anchor anchor))
+              (setq options
+                    (plist-put
+                     options
+                     :provider-anchor-delta-messages
+                     (e-harness--provider-anchor-delta-messages
+                      harness session-id anchor))))
+          (setq options
+                (plist-put
+                 options
+                 :provider-anchor-invalidation-reason
+                 (e-harness--provider-anchor-invalidation-reason
+                  harness
+                  session-id
+                  provider-id
+                  (plist-get options :model)
+                  fingerprints))))
+        (plist-put context :options options)))
+    context))
+
+(defun e-harness--provider-anchor-candidate-persistable-p (context candidate)
+  "Return non-nil when CANDIDATE is durable for CONTEXT."
+  (let ((provider-id (plist-get candidate :provider-id))
+        (options (plist-get context :options)))
+    (and provider-id
+         (pcase provider-id
+           ('openai
+            (and (plist-get options :provider-continuation)
+                 (eq (plist-get options :provider-anchor-provider-id)
+                     'openai)))
+           (_ t)))))
+
+(defun e-harness--persist-provider-anchor-candidates
+    (harness session-id turn-id context candidates)
+  "Persist provider anchor CANDIDATES for completed TURN-ID."
+  (when-let ((assistant-message
+              (e-harness--turn-assistant-message harness session-id turn-id)))
+    (dolist (candidate candidates)
+      (when (e-harness--provider-anchor-candidate-persistable-p
+             context candidate)
+        (e-session-append-provider-anchor
+         (e-harness-sessions harness)
+         session-id
+         (plist-get candidate :provider-id)
+         :model (plist-get (plist-get context :options) :model)
+         :covered-entry-id (plist-get assistant-message :id)
+         :fingerprints (e-harness--provider-anchor-fingerprints context)
+         :metadata (plist-get candidate :metadata))))))
+
 (defun e-harness--run-turn-finished-hooks
     (harness session-id turn-id result)
   "Run `:turn-finished' hooks for HARNESS SESSION-ID TURN-ID over RESULT."
@@ -1425,6 +1592,12 @@ cancellation.  SESSION-ID identifies the session."
             (finish-done
              (result)
              (when (and (active-entry-p) (not (plist-get entry :cancelled)))
+               (e-harness--persist-provider-anchor-candidates
+                harness
+                session-id
+                turn-id
+                (plist-get entry :context)
+                (nreverse (plist-get entry :provider-anchor-candidates)))
                (let ((hooked-result
                       (e-harness--run-turn-finished-hooks
                        harness session-id turn-id result)))
@@ -1434,6 +1607,10 @@ cancellation.  SESSION-ID identifies the session."
              ()
              (when (and (active-entry-p) (not (plist-get entry :cancelled)))
                (plist-put entry :timer nil)
+               (plist-put entry
+                          :context
+                          (e-harness-context harness session-id turn-id))
+               (plist-put entry :provider-anchor-candidates nil)
                (e-harness--run-prompt-turn-async
                 harness session-id turn-id
                 :cancelled-p #'cancelled-p
@@ -1452,7 +1629,15 @@ cancellation.  SESSION-ID identifies the session."
                       ('tool-started
                        (plist-put entry :open-tool-call payload))
                       ('tool-finished
-                       (plist-put entry :open-tool-call nil)))
+                       (plist-put entry :open-tool-call nil))
+                      ('provider-anchor-candidate
+                       (plist-put
+                        entry
+                        :provider-anchor-candidates
+                        (cons payload
+                              (plist-get
+                               entry
+                               :provider-anchor-candidates)))))
                     (e-harness--emit-turn-event
                      harness session-id turn-id type payload)))
                 :append-message

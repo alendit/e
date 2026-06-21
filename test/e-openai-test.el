@@ -134,6 +134,132 @@
       :prompt_cache_key "cache-key"
       :prompt_cache_retention "24h"))))
 
+(ert-deftest e-openai-test-request-body-uses-continuation-anchor ()
+  "Continuation sends previous_response_id with only the transcript delta."
+  (should
+   (equal
+    (e-openai-codex-request-body
+     :messages '((:role system :content "current instructions")
+                 (:role user :content "old prompt")
+                 (:role assistant :content "old answer")
+                 (:role user :content "new prompt"))
+     :options '(:model "gpt-test"
+                :provider-continuation t
+                :provider-anchor (:provider-id openai
+                                  :metadata (:response-id "resp-1"))
+                :provider-anchor-delta-messages
+                ((:role user :content "new prompt"))))
+    '(:model "gpt-test"
+      :store t
+      :stream t
+      :instructions "You are a helpful assistant.\n\ncurrent instructions"
+      :input [(:type "message"
+               :role "user"
+               :content [(:type "input_text" :text "new prompt")])]
+      :tool_choice "auto"
+      :parallel_tool_calls t
+      :reasoning (:effort "high")
+      :previous_response_id "resp-1"))))
+
+(ert-deftest e-openai-test-request-body-full-replay-when-continuation-disabled ()
+  "Provider anchors are ignored unless continuation mode is enabled."
+  (should
+   (equal
+    (e-openai-codex-request-body
+     :messages '((:role system :content "current instructions")
+                 (:role user :content "old prompt")
+                 (:role assistant :content "old answer")
+                 (:role user :content "new prompt"))
+     :options '(:model "gpt-test"
+                :provider-anchor (:provider-id openai
+                                  :metadata (:response-id "resp-1"))
+                :provider-anchor-delta-messages
+                ((:role user :content "new prompt"))))
+    '(:model "gpt-test"
+      :store :json-false
+      :stream t
+      :instructions "You are a helpful assistant.\n\ncurrent instructions"
+      :input [(:type "message"
+               :role "user"
+               :content [(:type "input_text" :text "old prompt")])
+              (:type "message"
+               :role "assistant"
+               :content [(:type "output_text" :text "old answer")])
+              (:type "message"
+               :role "user"
+               :content [(:type "input_text" :text "new prompt")])]
+      :tool_choice "auto"
+      :parallel_tool_calls t
+      :reasoning (:effort "high")))))
+
+(ert-deftest e-openai-test-request-body-stores-full-replay-when-enabled-without-anchor ()
+  "Continuation mode stores full replay requests when no anchor is valid."
+  (let ((body (e-openai-codex-request-body
+               :messages '((:role user :content "hello"))
+               :options '(:model "gpt-test" :provider-continuation t))))
+    (should (eq (plist-get body :store) t))
+    (should-not (plist-member body :previous_response_id))
+    (should (equal (plist-get body :input)
+                   [(:type "message"
+                     :role "user"
+                     :content [(:type "input_text" :text "hello")])]))))
+
+(ert-deftest e-openai-test-request-context-reports-continuation-metadata ()
+  "Request context metadata reports continuation mode without prompt content."
+  (let* ((process-environment
+          (cons "OPENAI_GATEWAY_API_KEY=test-gateway-token" process-environment))
+         (e-openai-model-providers
+          '((eng-responses
+             :name "Engineering Responses"
+             :base-url "https://gateway.example.test/v1"
+             :auth bearer
+             :env-key "OPENAI_GATEWAY_API_KEY"
+             :wire-api responses
+             :requires-openai-auth nil)))
+         (context
+          (e-openai--request-context
+           :provider 'eng-responses
+           :messages '((:role system :content "current instructions")
+                       (:role user :content "new prompt"))
+           :options '(:model "gpt-test"
+                      :provider-continuation t
+                      :provider-anchor
+                      (:provider-id openai
+                       :covered-entry-id "entry-1"
+                       :metadata (:response-id "resp-1"))
+                      :provider-anchor-delta-messages
+                      ((:role user :content "new prompt")))))
+         (metadata (plist-get context :metadata)))
+    (should (equal (plist-get metadata :provider-continuation) 'used))
+    (should (equal (plist-get metadata :provider-anchor-response-id) "resp-1"))
+    (should (equal (plist-get metadata :provider-anchor-covered-entry-id)
+                   "entry-1"))
+    (should (equal (plist-get metadata :provider-continuation-delta-count) 1))))
+
+(ert-deftest e-openai-test-request-context-reports-full-replay-metadata ()
+  "Continuation metadata distinguishes enabled full replay from disabled mode."
+  (let* ((process-environment
+          (cons "OPENAI_GATEWAY_API_KEY=test-gateway-token" process-environment))
+         (e-openai-model-providers
+          '((eng-responses
+             :name "Engineering Responses"
+             :base-url "https://gateway.example.test/v1"
+             :auth bearer
+             :env-key "OPENAI_GATEWAY_API_KEY"
+             :wire-api responses
+             :requires-openai-auth nil)))
+         (context
+          (e-openai--request-context
+           :provider 'eng-responses
+           :messages '((:role user :content "hello"))
+           :options '(:model "gpt-test"
+                      :provider-continuation t
+                      :provider-anchor-invalidation-reason tools-changed))))
+    (let ((metadata (plist-get context :metadata)))
+      (should (equal (plist-get metadata :provider-continuation) 'full))
+      (should (equal (plist-get metadata :provider-anchor-invalidation-reason)
+                     'tools-changed)))))
+
 (ert-deftest e-openai-test-request-body-preserves-explicit-reasoning-option ()
   "Explicit provider reasoning options take precedence over default effort."
   (should
@@ -350,21 +476,65 @@
          '((openai-compatible-gateway
             :name "OpenAI-Compatible Gateway"
             :base-url "https://gateway.example.test"
+             :env-key "OPENAI_GATEWAY_API_KEY"
+             :wire-api responses
+             :requires-openai-auth nil
+             :continuation t
+             :default-model "gateway-default"))))
+    (should (equal (e-harness-default-options
+                    (e-openai-create-harness
+                     :provider 'openai-compatible-gateway
+                     :request-function #'ignore))
+                   '(:model "gateway-default"
+                     :reasoning-effort "high"
+                     :provider-continuation t
+                     :provider-anchor-provider-id openai)))))
+
+(ert-deftest e-openai-test-default-harness-uses-gpt55-high-effort ()
+  "The default OpenAI harness uses GPT-5.5 and high reasoning effort."
+  (should (equal (e-harness-default-options
+                  (e-openai-create-harness :request-function #'ignore))
+                 '(:model "gpt-5.5"
+                   :reasoning-effort "high"
+                   :provider-continuation t
+                   :provider-anchor-provider-id openai))))
+
+(ert-deftest e-openai-test-responses-profile-can-disable-continuation ()
+  "Responses profiles do not use provider continuation unless explicitly enabled."
+  (let ((e-openai-model-providers
+         '((openai-no-continuation
+            :name "OpenAI No Continuation"
+            :base-url "https://gateway.example.test"
             :env-key "OPENAI_GATEWAY_API_KEY"
             :wire-api responses
             :requires-openai-auth nil
             :default-model "gateway-default"))))
     (should (equal (e-harness-default-options
                     (e-openai-create-harness
-                     :provider 'openai-compatible-gateway
+                     :provider 'openai-no-continuation
                      :request-function #'ignore))
-                   '(:model "gateway-default" :reasoning-effort "high")))))
+                   '(:model "gateway-default"
+                     :reasoning-effort "high")))))
 
-(ert-deftest e-openai-test-default-harness-uses-gpt55-high-effort ()
-  "The default OpenAI harness uses GPT-5.5 and high reasoning effort."
-  (should (equal (e-harness-default-options
-                  (e-openai-create-harness :request-function #'ignore))
-                 '(:model "gpt-5.5" :reasoning-effort "high"))))
+(ert-deftest e-openai-test-responses-profile-can-enable-continuation ()
+  "Responses profiles opt into provider continuation explicitly."
+  (let ((e-openai-model-providers
+         '((openai-continuation
+            :name "OpenAI Continuation"
+            :base-url "https://gateway.example.test"
+            :env-key "OPENAI_GATEWAY_API_KEY"
+            :wire-api responses
+            :requires-openai-auth nil
+            :continuation t
+            :default-model "gateway-default"))))
+    (should (equal (e-harness-default-options
+                    (e-openai-create-harness
+                     :provider 'openai-continuation
+                     :request-function #'ignore))
+                   '(:model "gateway-default"
+                     :reasoning-effort "high"
+                     :provider-continuation t
+                     :provider-anchor-provider-id openai)))))
 
 (ert-deftest e-openai-test-generic-harness-streams-token-provider ()
   "Generic token-auth harnesses stream through injected requesters."
@@ -463,6 +633,17 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"
                :output-tokens 419
                :reasoning-output-tokens 139
                :total-tokens 203017))
+      (:type done :reason stop)))))
+
+(ert-deftest e-openai-test-parse-completed-response-id ()
+  "Responses completed ids become provider anchor candidates."
+  (should
+   (equal
+    (e-openai-codex-parse-stream
+     "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\",\"status\":\"completed\"}}\n\n")
+    '((:type provider-anchor-candidate
+       :provider-id openai
+       :metadata (:response-id "resp-1"))
       (:type done :reason stop)))))
 
 (ert-deftest e-openai-test-parse-identical-canonical-messages-are-preserved ()

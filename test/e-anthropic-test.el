@@ -140,6 +140,62 @@
       :text "Stable instructions."
       :cache_control (:type "ephemeral" :ttl "1h"))])))
 
+(ert-deftest e-anthropic-test-request-body-cache-control-uses-segment-breakpoint ()
+  "Segment-aware caching stops before current-state system context."
+  (let* ((body
+          (e-anthropic-request-body
+           :messages '((:role system :content "Stable instructions.")
+                       (:role system :content "Current buffer.")
+                       (:role user :content "hello"))
+           :options
+           '(:model "claude-test"
+             :max-tokens 1024
+             :prompt-cache t
+             :segments ((:kind static-prefix
+                         :id stable-instructions
+                         :fingerprint "stable-fp"
+                         :messages ((:role system
+                                     :content "Stable instructions.")))
+                        (:kind current-state
+                         :id current-buffer
+                         :fingerprint "current-fp"
+                         :messages ((:role system
+                                     :content "Current buffer.")))))))
+         (system (plist-get body :system))
+         (messages (plist-get body :messages)))
+    (should (equal system
+                   [(:type "text"
+                     :text "Stable instructions."
+                     :cache_control (:type "ephemeral"))
+                    (:type "text"
+                     :text "Current buffer.")]))
+    (should (equal messages
+                   [(:role "user"
+                     :content [(:type "text" :text "hello")])]))))
+
+(ert-deftest e-anthropic-test-request-body-top-level-cache-control ()
+  "Top-level automatic cache mode leaves system as plain content."
+  (let ((body (e-anthropic-request-body
+               :messages '((:role system :content "Stable instructions.")
+                           (:role user :content "hello"))
+               :options '(:model "claude-test"
+                          :max-tokens 1024
+                          :prompt-cache t
+                          :prompt-cache-mode top-level
+                          :prompt-cache-ttl "1h"))))
+    (should (equal (plist-get body :cache_control)
+                   '(:type "ephemeral" :ttl "1h")))
+    (should (equal (plist-get body :system) "Stable instructions."))))
+
+(ert-deftest e-anthropic-test-request-body-sends-container-when-configured ()
+  "Container ids are sent only when configured in turn options."
+  (let ((body (e-anthropic-request-body
+               :messages '((:role user :content "hello"))
+               :options '(:model "claude-test"
+                          :max-tokens 1024
+                          :anthropic-container-id "container-1"))))
+    (should (equal (plist-get body :container) "container-1"))))
+
 (ert-deftest e-anthropic-test-request-body-caches-tools-when-no-system ()
   "With caching enabled and no system, the breakpoint lands on the last tool."
   (let ((tools (plist-get
@@ -208,6 +264,33 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"))
               :output-tokens 5
               :reasoning-output-tokens nil
               :total-tokens nil)))))
+
+(ert-deftest e-anthropic-test-emits-cache-anchor-candidate ()
+  "Successful cached Anthropic responses emit a durable provider anchor candidate."
+  (let (items)
+    (e-anthropic--emit-response-items-with-context
+     "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+     '(:metadata (:provider anthropic
+                  :model "claude-test"
+                  :anthropic-cache-mode explicit
+                  :anthropic-cache-breakpoint system-stable-prefix
+                  :anthropic-breakpoint-segment-id "stable-instructions"
+                  :anthropic-breakpoint-fingerprint "stable-fp"
+                  :full-history t))
+     (lambda (item) (push item items)))
+    (should
+     (equal
+      (nreverse items)
+      '((:type provider-anchor-candidate
+         :provider-id anthropic
+         :metadata (:provider anthropic
+                    :model "claude-test"
+                    :anthropic-cache-mode explicit
+                    :anthropic-cache-breakpoint system-stable-prefix
+                    :anthropic-breakpoint-segment-id "stable-instructions"
+                    :anthropic-breakpoint-fingerprint "stable-fp"
+                    :full-history t))
+        (:type done :reason stop))))))
 
 (ert-deftest e-anthropic-test-parse-non-stream-json-error ()
   "A non-stream JSON error body becomes a backend error item."
@@ -294,6 +377,140 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
                                  :content ((:type "text" :text "hello"))))
                      :thinking (:type "adaptive")
                      :output_config (:effort "high"))))))
+
+(ert-deftest e-anthropic-test-request-context-reports-cache-metadata ()
+  "Anthropic request metadata explains cache placement without omitting history."
+  (let* ((process-environment
+          (cons "ANTHROPIC_GATEWAY_KEY=test-token" process-environment))
+         (e-anthropic-model-providers
+          '((eng-anthropic
+             :name "Engineering Anthropic"
+             :base-url "https://gateway.example.test/v1"
+             :auth bearer
+             :env-key "ANTHROPIC_GATEWAY_KEY")))
+         (context
+          (e-anthropic--request-context
+           :provider 'eng-anthropic
+           :messages '((:role system :content "Stable instructions.")
+                       (:role system :content "Current buffer.")
+                       (:role user :content "hello"))
+           :options
+           '(:model "claude-test"
+             :max-tokens 1024
+             :prompt-cache t
+             :prompt-cache-ttl "1h"
+             :anthropic-container-id "container-1"
+             :segments ((:kind static-prefix
+                         :id stable-instructions
+                         :fingerprint "stable-fp"
+                         :messages ((:role system
+                                     :content "Stable instructions.")))
+                        (:kind current-state
+                         :id current-buffer
+                         :fingerprint "current-fp"
+                         :messages ((:role system
+                                     :content "Current buffer.")))))))
+         (metadata (plist-get context :metadata)))
+    (should (equal (plist-get metadata :anthropic-cache-mode) 'explicit))
+    (should (equal (plist-get metadata :anthropic-cache-breakpoint)
+                   'system-stable-prefix))
+    (should (equal (plist-get metadata :anthropic-breakpoint-segment-id)
+                   "stable-instructions"))
+    (should (equal (plist-get metadata :anthropic-breakpoint-fingerprint)
+                   "stable-fp"))
+    (should (equal (plist-get metadata :anthropic-cache-ttl) "1h"))
+    (should (equal (plist-get metadata :anthropic-container-id)
+                   "container-1"))
+    (should (equal (plist-get metadata :provider) 'anthropic))
+    (should (equal (plist-get metadata :model) "claude-test"))
+    (should (equal (plist-get metadata :segment-fingerprints)
+                   '("stable-fp" "current-fp")))
+    (should (equal (plist-get metadata :anthropic-beta-headers) nil))
+    (should (eq (plist-get metadata :full-history) t))
+    (should (= (plist-get metadata :segment-fingerprint-count) 2))))
+
+(ert-deftest e-anthropic-test-request-context-sends-gated-context-management ()
+  "Raw Anthropic context_management is sent only with explicit beta headers."
+  (let* ((process-environment
+          (cons "ANTHROPIC_GATEWAY_KEY=test-token" process-environment))
+         (e-anthropic-model-providers
+          '((eng-anthropic
+             :name "Engineering Anthropic"
+             :base-url "https://gateway.example.test/v1"
+             :auth bearer
+             :env-key "ANTHROPIC_GATEWAY_KEY"
+             :context-management (:edits [(:type "clear_tool_results")])
+             :beta-headers ("context-management-test"))))
+         (context
+          (e-anthropic--request-context
+           :provider 'eng-anthropic
+           :messages '((:role user :content "hello"))
+           :options '(:model "claude-test" :max-tokens 1024)))
+         (body (json-parse-string (plist-get context :body)
+                                  :object-type 'plist
+                                  :array-type 'list
+                                  :null-object nil
+                                  :false-object :json-false))
+         (metadata (plist-get context :metadata)))
+    (should (equal (plist-get body :context_management)
+                   '(:edits ((:type "clear_tool_results")))))
+    (should (equal (cdr (assoc "anthropic-beta" (plist-get context :headers)))
+                   "context-management-test"))
+    (should (equal (plist-get metadata :anthropic-context-management)
+                   'requested))
+    (should (equal (plist-get metadata :anthropic-beta-headers)
+                   '("context-management-test")))))
+
+(ert-deftest e-anthropic-test-request-context-omits-unused-beta-headers ()
+  "Anthropic beta headers are sent only for active context-management requests."
+  (let* ((process-environment
+          (cons "ANTHROPIC_GATEWAY_KEY=test-token" process-environment))
+         (e-anthropic-model-providers
+          '((eng-anthropic
+             :name "Engineering Anthropic"
+             :base-url "https://gateway.example.test/v1"
+             :auth bearer
+             :env-key "ANTHROPIC_GATEWAY_KEY"
+             :beta-headers ("context-management-test"))))
+         (context
+          (e-anthropic--request-context
+           :provider 'eng-anthropic
+           :messages '((:role user :content "hello"))
+           :options '(:model "claude-test" :max-tokens 1024)))
+         (body (json-parse-string (plist-get context :body)
+                                  :object-type 'plist
+                                  :array-type 'list
+                                  :null-object nil
+                                  :false-object :json-false))
+         (metadata (plist-get context :metadata)))
+    (should-not (assoc "anthropic-beta" (plist-get context :headers)))
+    (should-not (plist-member body :context_management))
+    (should-not (plist-member metadata :anthropic-context-management))
+    (should-not (plist-member metadata :anthropic-beta-headers))))
+
+(ert-deftest e-anthropic-test-request-context-reports-top-level-cache-metadata ()
+  "Top-level cache mode is visible in sanitized request metadata."
+  (let* ((process-environment
+          (cons "ANTHROPIC_GATEWAY_KEY=test-token" process-environment))
+         (e-anthropic-model-providers
+          '((eng-anthropic
+             :name "Engineering Anthropic"
+             :base-url "https://gateway.example.test/v1"
+             :auth bearer
+             :env-key "ANTHROPIC_GATEWAY_KEY")))
+         (context
+          (e-anthropic--request-context
+           :provider 'eng-anthropic
+           :messages '((:role user :content "hello"))
+           :options '(:model "claude-test"
+                      :max-tokens 1024
+                      :prompt-cache t
+                      :prompt-cache-mode top-level)))
+         (metadata (plist-get context :metadata)))
+    (should (equal (plist-get metadata :anthropic-cache-mode) 'top-level))
+    (should (equal (plist-get metadata :anthropic-cache-breakpoint)
+                   'provider-managed))
+    (should (eq (plist-get metadata :full-history) t))))
 
 (ert-deftest e-anthropic-test-request-context-authorization-header ()
   "Bearer providers can send Authorization: Bearer instead of x-api-key."

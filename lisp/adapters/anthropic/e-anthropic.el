@@ -317,6 +317,50 @@ Anthropic requires an object, so nil arguments become an empty JSON object."
       (list :type "ephemeral" :ttl ttl)
     (list :type "ephemeral")))
 
+(defun e-anthropic--top-level-cache-mode-p (options)
+  "Return non-nil when OPTIONS request provider-managed cache control."
+  (eq (plist-get options :prompt-cache-mode) 'top-level))
+
+(defun e-anthropic--stable-cache-segment-p (segment)
+  "Return non-nil when SEGMENT belongs to the cacheable stable prefix."
+  (memq (plist-get segment :kind) '(static-prefix stable-context)))
+
+(defun e-anthropic--cache-breakpoint-segment (options)
+  "Return the stable segment that receives Anthropic cache control."
+  (let (candidate)
+    (dolist (segment (plist-get options :segments))
+      (when (and (e-anthropic--stable-cache-segment-p segment)
+                 (cl-some #'e-anthropic--system-message-p
+                          (plist-get segment :messages)))
+        (setq candidate segment)))
+    candidate))
+
+(defun e-anthropic--system-blocks-from-segments (options cache-control)
+  "Return segment-aware system blocks from OPTIONS.
+When CACHE-CONTROL is non-nil, attach it to the last stable system block before
+volatile current-state/history/delta segments."
+  (let ((blocks nil)
+        (stable-index nil)
+        (instructions (plist-get options :instructions)))
+    (when (and (stringp instructions) (not (string-empty-p instructions)))
+      (push (e-anthropic--text-block instructions) blocks)
+      (setq stable-index 0))
+    (dolist (segment (plist-get options :segments))
+      (let ((stable-p (e-anthropic--stable-cache-segment-p segment)))
+        (dolist (message (plist-get segment :messages))
+          (when (e-anthropic--system-message-p message)
+            (push (e-anthropic--text-block (plist-get message :content))
+                  blocks)
+            (when stable-p
+              (setq stable-index (1- (length blocks))))))))
+    (when blocks
+      (let ((ordered (nreverse blocks)))
+        (when (and cache-control stable-index)
+          (let ((block (nth stable-index ordered)))
+            (setcar (nthcdr stable-index ordered)
+                    (append block (list :cache_control cache-control)))))
+        (vconcat ordered)))))
+
 (cl-defun e-anthropic-request-body (&key messages options tools)
   "Build an Anthropic Messages request body from MESSAGES, OPTIONS, and TOOLS.
 
@@ -329,7 +373,13 @@ is no system prompt) so Anthropic caches tools + system on the prefix match.
          (cache-control (and cache-p
                              (e-anthropic--cache-control
                               (plist-get options :prompt-cache-ttl))))
+         (top-level-cache-p (and cache-control
+                                 (e-anthropic--top-level-cache-mode-p options)))
          (system (e-anthropic--system messages options))
+         (system-blocks (and cache-control
+                             (not top-level-cache-p)
+                             (e-anthropic--system-blocks-from-segments
+                              options cache-control)))
          (turns (seq-remove #'e-anthropic--system-message-p messages))
          (tool-defs (and tools (e-anthropic--tool-definitions tools)))
          (body (list :model (or (plist-get options :model)
@@ -344,12 +394,17 @@ is no system prompt) so Anthropic caches tools + system on the prefix match.
       (setq body
             (append body
                     (list :system
-                          (if cache-control
+                          (if system-blocks
+                              system-blocks
+                            (if (and cache-control (not top-level-cache-p))
                               (vector (append (e-anthropic--text-block system)
                                               (list :cache_control
                                                     cache-control)))
-                            system)))))
-    (when (and cache-control (not system) (> (length tool-defs) 0))
+                              system))))))
+    (when top-level-cache-p
+      (setq body (append body (list :cache_control cache-control))))
+    (when (and cache-control (not top-level-cache-p)
+               (not system) (> (length tool-defs) 0))
       (let ((last (1- (length tool-defs))))
         (aset tool-defs last
               (append (aref tool-defs last)
@@ -359,9 +414,101 @@ is no system prompt) so Anthropic caches tools + system on the prefix match.
                                          (mapcar #'e-anthropic--message turns))
                               :thinking (list :type "adaptive")
                               :output_config (list :effort effort))))
+    (when-let ((container (plist-get options :anthropic-container-id)))
+      (when (and (stringp container) (not (string-empty-p container)))
+        (setq body (append body (list :container container)))))
+    (when-let ((context-management
+                (plist-get options :anthropic-context-management)))
+      (setq body
+            (append body (list :context_management context-management))))
     (when tool-defs
       (setq body (append body (list :tools tool-defs))))
     body))
+
+(defun e-anthropic--request-metadata (options body)
+  "Return sanitized Anthropic request metadata for OPTIONS and BODY."
+  (let ((metadata (list :provider 'anthropic
+                        :model (plist-get options :model))))
+    (when (plist-get options :prompt-cache)
+      (let ((mode (cond
+                   ((e-anthropic--top-level-cache-mode-p options)
+                    'top-level)
+                   ((plist-member body :system)
+                    'explicit)
+                   ((plist-member body :tools)
+                    'explicit)
+                   (t 'off)))
+            (breakpoint (cond
+                         ((plist-member body :cache_control)
+                          'provider-managed)
+                         ((and (plist-member body :system)
+                               (vectorp (plist-get body :system)))
+                          'system-stable-prefix)
+                         ((plist-member body :tools)
+                          'tools)
+                         (t 'none))))
+        (setq metadata
+              (append metadata
+                      (list :anthropic-cache-mode mode
+                            :anthropic-cache-breakpoint breakpoint
+                            :full-history t)))
+        (when-let ((breakpoint-segment
+                    (and (eq breakpoint 'system-stable-prefix)
+                         (e-anthropic--cache-breakpoint-segment options))))
+          (setq metadata
+                (append metadata
+                        (list :anthropic-breakpoint-segment-id
+                              (prin1-to-string
+                               (plist-get breakpoint-segment :id))
+                              :anthropic-breakpoint-fingerprint
+                              (plist-get breakpoint-segment :fingerprint)))))
+        (when-let ((ttl (plist-get options :prompt-cache-ttl)))
+          (setq metadata
+                (append metadata
+                        (list :anthropic-cache-ttl ttl))))))
+    (when-let ((container (plist-get options :anthropic-container-id)))
+      (when (and (stringp container) (not (string-empty-p container)))
+        (setq metadata
+              (append metadata
+                      (list :anthropic-container-id container)))))
+    (when (plist-get body :context_management)
+      (setq metadata
+            (append metadata
+                    (list :anthropic-context-management 'requested))))
+    (when (plist-get body :context_management)
+      (setq metadata
+            (append metadata
+                    (list :anthropic-beta-headers
+                          (plist-get options :anthropic-beta-headers)))))
+    (when-let ((segments (plist-get options :segments)))
+      (setq metadata
+            (append metadata
+                    (list :segment-fingerprints
+                          (mapcar (lambda (segment)
+                                    (plist-get segment :fingerprint))
+                                  segments)
+                          :segment-fingerprint-count (length segments)))))
+    metadata))
+
+(defun e-anthropic--beta-headers (value)
+  "Return normalized Anthropic beta header names from VALUE."
+  (cond
+   ((and (stringp value) (not (string-empty-p value)))
+    (list value))
+   ((listp value)
+    (cl-remove-if-not
+     (lambda (item)
+       (and (stringp item) (not (string-empty-p item))))
+     value))
+   (t nil)))
+
+(defun e-anthropic--headers-with-betas (headers beta-headers)
+  "Return HEADERS with BETA-HEADERS appended as `anthropic-beta'."
+  (if beta-headers
+      (append headers
+              (list (cons "anthropic-beta"
+                          (string-join beta-headers ","))))
+    headers))
 
 (defun e-anthropic--parse-json (value)
   "Parse VALUE as JSON into plist data."
@@ -686,8 +833,32 @@ condition list.  Return a cancellable `e-backend-request' handle."
 
 (defun e-anthropic--emit-response-items (response on-item)
   "Parse RESPONSE and emit backend-neutral items through ON-ITEM."
-  (dolist (item (e-anthropic-parse-stream response))
-    (funcall on-item item)))
+  (e-anthropic--emit-response-items-with-context response nil on-item))
+
+(defun e-anthropic--anchor-candidate-item (context)
+  "Return provider anchor candidate item for successful CONTEXT, when useful."
+  (when-let ((metadata (plist-get context :metadata)))
+    (when (or (plist-get metadata :anthropic-cache-mode)
+              (plist-get metadata :anthropic-container-id)
+              (plist-get metadata :anthropic-context-management)
+              (plist-get metadata :anthropic-beta-headers))
+      (list :type 'provider-anchor-candidate
+            :provider-id 'anthropic
+            :metadata metadata))))
+
+(defun e-anthropic--emit-response-items-with-context (response context on-item)
+  "Parse RESPONSE and emit backend-neutral items through ON-ITEM.
+When CONTEXT has provider cache metadata, emit a provider anchor candidate
+before the terminal success item so the harness can persist the cache state."
+  (let ((candidate (e-anthropic--anchor-candidate-item context))
+        emitted-candidate)
+    (dolist (item (e-anthropic-parse-stream response))
+      (when (and candidate
+                 (not emitted-candidate)
+                 (eq (plist-get item :type) 'done))
+        (funcall on-item candidate)
+        (setq emitted-candidate t))
+      (funcall on-item item))))
 
 (cl-defun e-anthropic--request-context
     (&key provider base-url model messages options)
@@ -699,18 +870,41 @@ request and backend-neutral context."
          (resolved-model (e-anthropic--provider-model
                           profile
                           (or (plist-get effective-options :model) model)))
-         (headers (e-anthropic--headers profile)))
+         (context-management
+          (or (plist-get effective-options :anthropic-context-management)
+              (plist-get profile :context-management)))
+         (configured-beta-headers
+          (e-anthropic--beta-headers
+           (or (plist-get effective-options :anthropic-beta-headers)
+               (plist-get profile :beta-headers))))
+         (beta-headers (and context-management configured-beta-headers))
+         (headers (e-anthropic--headers-with-betas
+                   (e-anthropic--headers profile)
+                   beta-headers)))
     (setq effective-options
           (plist-put effective-options :model resolved-model))
-    (list :provider provider
-          :url (e-anthropic-messages-url
-                (or base-url (e-anthropic--provider-base-url profile)))
-          :headers headers
-          :body (json-encode
-                 (e-anthropic-request-body
-                  :messages messages
-                  :options effective-options
-                  :tools (plist-get effective-options :tools))))))
+    (when (and context-management beta-headers)
+      (setq effective-options
+            (plist-put effective-options
+                       :anthropic-context-management
+                       context-management)))
+    (when beta-headers
+      (setq effective-options
+            (plist-put effective-options
+                       :anthropic-beta-headers
+                       beta-headers)))
+    (let* ((body-data (e-anthropic-request-body
+                       :messages messages
+                       :options effective-options
+                       :tools (plist-get effective-options :tools)))
+           (metadata (e-anthropic--request-metadata
+                      effective-options body-data)))
+      (list :provider provider
+            :url (e-anthropic-messages-url
+                  (or base-url (e-anthropic--provider-base-url profile)))
+            :headers headers
+            :metadata metadata
+            :body (json-encode body-data)))))
 
 (cl-defun e-anthropic-backend-create
     (&key provider base-url request-function name model)
@@ -740,13 +934,15 @@ MODEL is the backend-local default when turn options omit `:model'."
                    :url (plist-get context :url)
                    :cancellable nil
                    :transport 'sync-wrapper)
+             (plist-get context :metadata)
              (e-anthropic--url-metadata (plist-get context :url)))))
           (setq response
                 (funcall requester
                          :url (plist-get context :url)
                          :headers (plist-get context :headers)
                          :body (plist-get context :body)))
-          (e-anthropic--emit-response-items response on-item))))
+          (e-anthropic--emit-response-items-with-context
+           response context on-item))))
      :start
      (cl-function
       (lambda (&key messages options on-item on-done on-error on-request-start)
@@ -770,6 +966,7 @@ MODEL is the backend-local default when turn options omit `:model'."
                               :url (plist-get context :url)
                               :cancellable 'queued-only
                               :transport 'injected-request-function)
+                        (plist-get context :metadata)
                         (e-anthropic--url-metadata (plist-get context :url)))))
                 (when on-request-start
                   (funcall on-request-start request))
@@ -785,8 +982,8 @@ MODEL is the backend-local default when turn options omit `:model'."
                                        :url (plist-get context :url)
                                        :headers (plist-get context :headers)
                                        :body (plist-get context :body))))
-                                 (e-anthropic--emit-response-items
-                                  response on-item)
+                                 (e-anthropic--emit-response-items-with-context
+                                  response context on-item)
                                  (when on-done
                                    (funcall on-done '(:status done))))
                              (error
@@ -801,13 +998,15 @@ MODEL is the backend-local default when turn options omit `:model'."
                     (lambda (response)
                       (condition-case err
                           (progn
-                            (e-anthropic--emit-response-items response on-item)
+                            (e-anthropic--emit-response-items-with-context
+                             response context on-item)
                             (when on-done (funcall on-done '(:status done))))
                         (error
                          (when on-error (funcall on-error err)))))
                     :on-error on-error)))
               (setf (e-backend-request-metadata request)
                     (append (list :provider provider)
+                            (plist-get context :metadata)
                             (e-backend-request-metadata request)))
               (when on-request-start
                 (funcall on-request-start request))

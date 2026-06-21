@@ -1,0 +1,398 @@
+#+title: Review: Provider Context Anchors
+#+author: e implementation
+#+date: 2026-06-21
+#+startup: overview
+
+* Status
+
+In-review.
+
+* Review loop
+
+** Finding 1: Provider-anchor compatibility is too weak
+
+*** Problem
+
+Subagent review found that provider-anchor compatibility only compared
+provider id, model, current path, covered entry id, and non-history segment
+fingerprints.  The plan requires continuation anchors to invalidate when
+request-semantic inputs change, including reasoning options, active layer ids,
+tool schema names/definitions, and compaction/current-state compatibility.
+
+*** Change
+
+Anchor compatibility now fingerprints non-history context segments, active
+layer ids, tool definitions, reasoning options, provider request-shaping
+options, and latest compaction boundary data.  Legacy opaque fingerprints are
+handled conservatively: identical opaque fingerprints remain compatible, while
+old opaque anchors compared against the new structured fingerprint shape are
+rejected instead of becoming over-broadly compatible.
+
+*** Evidence
+
+=e-session-test-latest-provider-anchor-requires-current-path= covers the
+legacy opaque fingerprint fallback.  Harness regressions cover invalidation
+for current-state segment changes, reasoning changes, tool schema changes,
+active layer changes, and provider option changes.
+
+** Finding 2: Anthropic cache/context anchors are not persisted
+
+*** Problem
+
+Subagent review found that Anthropic support only builds request metadata.
+The plan calls for Anthropic cache/context metadata to use the same opaque
+provider-owned anchor slot while preserving the full-history invariant.
+
+*** Change
+
+Anthropic successful cached/context-managed responses now emit
+=provider-anchor-candidate= items carrying sanitized full-history cache,
+container, beta-header, and context-management metadata.  The harness persists
+them through the same provider-anchor slot while Anthropic request construction
+continues to send the full logical history.
+
+*** Evidence
+
+=e-anthropic-test-emits-cache-anchor-candidate= proves the adapter emits an
+Anthropic provider anchor candidate before the terminal success item.
+=e-harness-test-provider-anchor-candidates-are-persisted= proves provider
+anchor candidates are stored in the session, and
+=e-harness-test-provider-anchor-invalidates-on-provider-option-change= proves
+Anthropic container/cache shaping changes invalidate reuse.
+
+** Finding 3: Diagnostics do not report invalidation reasons or exact Anthropic breakpoint
+
+*** Problem
+
+Subagent review found that OpenAI request metadata can distinguish used/full
+continuation, but not why a candidate anchor was rejected.  Anthropic metadata
+reports a broad breakpoint class but not the specific segment id/fingerprint
+chosen for the cache boundary.
+
+*** Change
+
+OpenAI request metadata now includes
+=:provider-anchor-invalidation-reason= when continuation mode falls back to a
+full replay.  Anthropic cache metadata now records the exact breakpoint segment
+id and fingerprint in addition to the broader breakpoint class.
+
+*** Evidence
+
+=e-openai-test-request-context-reports-full-replay-metadata= proves the
+invalidation reason is surfaced.  =e-anthropic-test-request-context-reports-cache-metadata=
+proves the exact Anthropic breakpoint segment id and fingerprint are reported.
+
+** Finding 4: Responses continuation is enabled by default for every Responses profile
+
+*** Problem
+
+Subagent review found that continuation defaults to enabled for every
+Responses profile, making OpenAI-compatible gateways opt out rather than
+explicitly opt in.
+
+*** Change
+
+Responses continuation is now profile opt-in.  The built-in Codex Responses
+profile sets =:continuation t=; generic Responses profiles only get
+=:provider-continuation= defaults when they explicitly request continuation.
+
+*** Evidence
+
+=e-openai-test-responses-profile-can-disable-continuation= proves an unmarked
+Responses profile uses full replay defaults.  =e-openai-test-responses-profile-can-enable-continuation=
+proves explicit opt-in still enables provider continuation, and
+=e-openai-test-default-harness-uses-gpt55-high-effort= proves the default Codex
+profile still uses continuation.
+
+** Initial implementation summary
+
+The implementation adds:
+
+- backend-neutral context segments for static prefix, stable context,
+  current-state context, and transcript history;
+- replay-safe provider-anchor records in the session store, with compatibility
+  checks against provider id, model, current transcript path, covered entry id,
+  and provider-relevant segment fingerprints;
+- OpenAI Responses continuation support using stored response ids,
+  =previous_response_id=, current instruction resend, full-replay fallback, and
+  current-state invalidation;
+- Anthropic cache-aware request construction using segment boundaries, optional
+  top-level =cache_control=, optional =container=, gated raw
+  =context_management= with beta headers, and full-history diagnostics;
+- sanitized provider request metadata that reports continuation/cache decisions
+  without dumping prompt contents.
+
+Subagent review findings were addressed to fixpoint; see the review loop
+below.
+
+* Verification
+
+Focused provider-context verification:
+
+#+begin_src sh
+rtk eldev test test/e-context-test.el test/e-session-test.el test/e-openai-test.el test/e-harness-test.el test/e-anthropic-test.el
+#+end_src
+
+Result:
+
+#+begin_example
+Ran 227 tests, 227 results as expected, 0 unexpected
+#+end_example
+
+Full suite:
+
+#+begin_src sh
+rtk eldev test
+#+end_src
+
+Result:
+
+#+begin_example
+Ran 1023 tests, 1022 results as expected, 0 unexpected, 1 skipped
+SKIPPED e-chat-test-assistant-markdown-renders-with-text-properties
+#+end_example
+
+Whitespace:
+
+#+begin_src sh
+git diff --check
+#+end_src
+
+Result: clean.
+
+* UX and performance playthrough
+
+The running Emacs was reloaded, then request construction was probed with
+sanitized metadata-only scenarios.  The probe exercised:
+
+- OpenAI continuation with a valid provider anchor;
+- OpenAI continuation enabled but falling back to full replay without a valid
+  anchor and reporting the invalidation reason;
+- OpenAI Responses profile defaults proving generic profiles do not opt into
+  continuation unless =:continuation t= is explicit;
+- OpenAI provider-anchor candidate persistence gating for unstored versus
+  continuation-enabled response ids;
+- Anthropic explicit stable-prefix cache placement with full-history metadata;
+- Anthropic gated =context_management= and beta header metadata;
+- Anthropic beta headers omitted when no =context_management= request is active;
+- Anthropic provider-anchor candidate emission for the cache/context metadata.
+
+Live probe result:
+
+#+begin_example
+(:plain-default-options
+ (:model "gateway-default" :reasoning-effort "high")
+ :continuation-default-options
+ (:model "gateway-default" :reasoning-effort "high" :provider-continuation t
+  :provider-anchor-provider-id openai)
+ :plain-openai-persistable nil
+ :continuation-openai-persistable t
+ :beta-only-header nil
+ :beta-only-metadata
+ (:provider anthropic :model "claude-test")
+ :anthropic-metadata
+ (:provider anthropic :model "claude-test"
+  :anthropic-cache-mode explicit
+  :anthropic-cache-breakpoint system-stable-prefix
+  :full-history t
+  :anthropic-breakpoint-segment-id "stable-instructions"
+  :anthropic-breakpoint-fingerprint "stable-fp"
+  :anthropic-cache-ttl "1h"
+  :anthropic-container-id "container-1"
+  :anthropic-context-management requested
+  :anthropic-beta-headers ("context-management-test")
+  :segment-fingerprints ("stable-fp" "current-fp")
+  :segment-fingerprint-count 2)
+ :anthropic-anchor-item
+ (:type provider-anchor-candidate :provider-id anthropic :metadata
+        (:provider anthropic :model "claude-test"
+         :anthropic-cache-mode explicit
+         :anthropic-cache-breakpoint system-stable-prefix
+         :full-history t
+         :anthropic-breakpoint-segment-id "stable-instructions"
+         :anthropic-breakpoint-fingerprint "stable-fp"
+         :anthropic-cache-ttl "1h"
+         :anthropic-container-id "container-1"
+         :anthropic-context-management requested
+         :anthropic-beta-headers ("context-management-test")
+         :segment-fingerprints ("stable-fp" "current-fp")
+         :segment-fingerprint-count 2)))
+#+end_example
+
+Computer Use confirmed the attached Emacs app was visible and controllable on
+=docs/feats/index.org= after reload.  No profiling was required; this feature
+changes request assembly and metadata paths, not an interactive rendering loop.
+
+* Live reload
+
+The running Emacs was reloaded with:
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-openai) (require 'e-anthropic) (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Result:
+
+#+begin_example
+"/Users/dimitrivorona/projects/elisp/e/"
+#+end_example
+
+The running Emacs still resolved changed adapter code from older =.elc= files
+after reload, so the changed source files were explicitly loaded with:
+
+#+begin_src sh
+emacsclient --eval "(progn (mapc #'load-file '(\"/Users/dimitrivorona/projects/elisp/e/lisp/core/e-capabilities.el\" \"/Users/dimitrivorona/projects/elisp/e/lisp/core/e-context.el\" \"/Users/dimitrivorona/projects/elisp/e/lisp/core/e-session.el\" \"/Users/dimitrivorona/projects/elisp/e/lisp/core/e-harness.el\" \"/Users/dimitrivorona/projects/elisp/e/lisp/core/e-loop.el\" \"/Users/dimitrivorona/projects/elisp/e/lisp/adapters/openai/e-openai.el\" \"/Users/dimitrivorona/projects/elisp/e/lisp/adapters/anthropic/e-anthropic.el\")))"
+#+end_src
+
+Result:
+
+#+begin_example
+:loaded
+#+end_example
+
+* Plan coverage
+
+- Slice 1, context segments: covered by =e-context=, =e-capabilities=, harness
+  context propagation, and segment preview tests.
+- Slice 2, provider anchor persistence: covered by session replay, current-path
+  compatibility checks, and harness anchor persistence tests.
+- Slice 3, OpenAI response id capture: covered by parser tests for completed
+  response ids and harness persistence of provider-anchor candidates.
+- Slice 4, OpenAI continuation requests: covered by request-body tests for
+  =previous_response_id=, delta-only input, current instruction resend,
+  full-replay fallback, and profile opt-out.
+- Slice 5, current-state invalidation: covered by a harness regression proving
+  changed current-state fingerprints suppress compatible anchor attachment.
+- Slice 6, Anthropic cache/context metadata: covered by request-body and
+  request-context tests for segment-aware =cache_control=, top-level
+  =cache_control=, =container=, gated =context_management=, beta headers,
+  full-history diagnostics, and cache token normalization.
+- Slice 7, live verification and status evidence: covered by provider request
+  metadata tests, full-suite verification, live reload, bounded metadata probe,
+  and Computer Use visibility check.
+
+* Architecture review
+
+Core stores opaque provider anchors and compares provider-neutral
+compatibility data, but provider-specific meanings stay in the adapters:
+OpenAI owns response ids and =previous_response_id=; Anthropic owns
+=cache_control=, =container=, beta headers, and =context_management= request
+shape.  The local session remains authoritative because Anthropic never omits
+history and OpenAI continuation only applies after local compatibility checks.
+
+* Design self-check
+
+1. The package is useful if stopped here because existing providers keep flat
+   replay compatibility while OpenAI can safely use continuation anchors.
+2. The work moves toward provider-managed request optimizations without making
+   provider state authoritative.
+3. Provider API details are likely to change and are local to adapters; segment
+   and anchor compatibility are stable local contracts.
+4. Context assembly owns segment semantics, sessions own durable local anchors,
+   adapters own provider request shape.
+5. Coupling is reduced by giving adapters structured context while keeping core
+   away from provider-specific fields.
+6. Stable core policy does not depend on concrete OpenAI or Anthropic request
+   fields.
+7. Provider side effects remain in adapter request construction and transport
+   code.
+8. Segment and anchor contracts are real: providers can ignore segments,
+   consume cache breakpoints, or use continuation anchors without weakening the
+   local transcript contract.
+9. Existing sessions without anchors load; non-OpenAI providers can ignore
+   anchors; Anthropic cache support never permits transcript omission.
+10. No legacy prompt-cache path was removed beyond extracting request assembly
+    helpers.
+11. Expected invalidations happen through fingerprint/path/model checks;
+    unexpected provider errors still surface through normal backend error paths.
+12. Core behavior is covered by context, session, and harness tests; provider
+    shape is covered by adapter request tests.
+
+* Review follow-up
+
+** Second review pass
+
+Reviewer: Hypatia (=019eeae7-3e65-74d3-b378-dac29b2980b3=).
+
+*** Finding 5: Compatibility omitted request-shaping options
+
+**** Problem
+
+The second review found that provider-anchor compatibility omitted request
+options that adapters actually use: OpenAI =:instructions= and Anthropic
+=:max-tokens=.  Reusing an anchor across those changes would violate the
+strict compatibility requirement.
+
+**** Change
+
+=e-harness--provider-anchor-fingerprints= now includes =:instructions= and
+=:max-tokens= in =:provider-options=.
+
+**** Evidence
+
+=e-harness-test-provider-anchor-invalidates-on-instructions-change= and
+=e-harness-test-provider-anchor-invalidates-on-max-tokens-change= cover the
+new invalidation cases.
+
+*** Finding 6: OpenAI unstored responses could persist anchors
+
+**** Problem
+
+The second review found that OpenAI parsing emits response-id anchor
+candidates whenever a completed response contains an id, but Responses
+requests without continuation are sent with =store: false=.  Persisting those
+ids could later make an opted-in continuation request reuse an unstored
+provider response id.
+
+**** Change
+
+The parser still reports provider output, but the harness now persists OpenAI
+provider-anchor candidates only when the request context had OpenAI
+continuation enabled.  Anthropic cache/context candidates remain persistable
+because they are diagnostic cache anchors and do not imply transcript
+omission.
+
+**** Evidence
+
+=e-harness-test-openai-anchor-candidates-require-continuation= proves OpenAI
+response ids are skipped when continuation is disabled.  The existing
+=e-harness-test-provider-anchor-candidates-are-persisted= covers the enabled
+OpenAI continuation path.
+
+*** Finding 7: Anthropic beta headers were active without context management
+
+**** Problem
+
+The second review found that Anthropic beta headers could be sent and recorded
+even when no =context_management= body was sent.  The plan scopes those beta
+headers to explicit context-management requests.
+
+**** Change
+
+Anthropic request context now activates beta headers only when context
+management is also configured.  Request metadata records beta headers only
+when the body includes =context_management=.
+
+**** Evidence
+
+=e-anthropic-test-request-context-omits-unused-beta-headers= proves beta
+headers and metadata are absent when no context-management request is active.
+=e-anthropic-test-request-context-sends-gated-context-management= continues to
+cover the active gated path.
+
+** Follow-up review pass
+
+Hypatia reviewed the follow-up diff after findings 5-7 were fixed.
+
+Result:
+
+#+begin_example
+No new actionable correctness, design, or test gaps found in the current
+feature-35 diff.
+
+Ready to merge? Yes.
+#+end_example
+
+* Unresolved
+
+No unresolved findings remain.

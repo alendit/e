@@ -47,6 +47,14 @@
 
 (put 'e-context-provider-priority 'compiler-macro nil)
 
+(defun e-context-provider-name (provider)
+  "Return PROVIDER name."
+  (unless (e-context-provider-p provider)
+    (signal 'wrong-type-argument (list 'e-context-provider-p provider)))
+  (e-context-provider--name provider))
+
+(put 'e-context-provider-name 'compiler-macro nil)
+
 (defun e-context-cache-placement-rank (placement)
   "Return cache-order rank for context PLACEMENT."
   (pcase placement
@@ -77,6 +85,17 @@
 
 (put 'e-context-provider--build-function 'compiler-macro nil)
 
+(defun e-context-segment-fingerprint (messages)
+  "Return deterministic fingerprint for backend-neutral MESSAGES."
+  (secure-hash 'sha256 (prin1-to-string messages)))
+
+(cl-defun e-context-segment-create (&key kind id messages)
+  "Create a backend-neutral context segment."
+  (list :kind kind
+        :id id
+        :fingerprint (e-context-segment-fingerprint messages)
+        :messages messages))
+
 (cl-defun e-context-provider-build (provider &key harness session-id turn-id)
   "Build read-only context messages with PROVIDER.
 HARNESS, SESSION-ID, and TURN-ID identify the current turn."
@@ -89,7 +108,7 @@ HARNESS, SESSION-ID, and TURN-ID identify the current turn."
            :turn-id turn-id))
 
 (cl-defun e-context-build
-    (strategy &key sessions session-id options prefix-messages)
+    (strategy &key sessions session-id options prefix-messages prefix-segments)
   "Build backend-neutral context with STRATEGY.
 SESSIONS and SESSION-ID identify durable state.  OPTIONS are backend-neutral
 turn options passed through or adjusted by the strategy.  PREFIX-MESSAGES are
@@ -104,6 +123,16 @@ backend-neutral messages that should appear before the session transcript."
       (plist-put context
                  :messages
                  (append prefix-messages (plist-get context :messages))))
+    (when (and prefix-messages (not prefix-segments))
+      (setq prefix-segments
+            (list (e-context-segment-create
+                   :kind 'static-prefix
+                   :id 'prefix-messages
+                   :messages prefix-messages))))
+    (when prefix-segments
+      (plist-put context
+                 :segments
+                 (append prefix-segments (plist-get context :segments))))
     context))
 
 (defun e-context--backend-message (message)
@@ -178,9 +207,17 @@ drop the unpaired tool-call so the transcript stays valid."
    :name 'transcript-stack
    :build (cl-function
            (lambda (&key sessions session-id options)
+             (let ((messages (e-context--compacted-messages
+                              sessions session-id)))
              (list :strategy 'transcript-stack
-                   :messages (e-context--compacted-messages sessions session-id)
-                   :options options)))))
+                   :messages messages
+                   :segments
+                   (list
+                    (e-context-segment-create
+                     :kind 'history
+                     :id 'transcript-history
+                     :messages messages))
+                   :options options))))))
 
 (provide 'e-context)
 

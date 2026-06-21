@@ -255,9 +255,35 @@ HARNESS, SESSION-ID, and TURN-ID identify the active turn."
        (e-context-provider-cache-placement provider))
     (e-context-cache-placement-rank 'stable-context)))
 
-(cl-defun e-capabilities-context-messages
+(defun e-capabilities--provider-segment-kind (provider)
+  "Return backend-neutral segment kind for PROVIDER."
+  (pcase (if (e-context-provider-p provider)
+             (e-context-provider-cache-placement provider)
+           'stable-context)
+    ('static-prefix 'static-prefix)
+    ('stable-context 'stable-context)
+    ('dynamic-context 'current-state)))
+
+(defun e-capabilities--fragment-less-p (left right)
+  "Return non-nil when LEFT context fragment sorts before RIGHT."
+  (let ((left-key (list (plist-get left :cache-placement)
+                        (plist-get left :priority)
+                        (plist-get left :capability-index)
+                        (or (plist-get left :provider-index) -1)
+                        (plist-get left :message-index)))
+        (right-key (list (plist-get right :cache-placement)
+                         (plist-get right :priority)
+                         (plist-get right :capability-index)
+                         (or (plist-get right :provider-index) -1)
+                         (plist-get right :message-index))))
+    (cl-loop for left-item in left-key
+             for right-item in right-key
+             thereis (< left-item right-item)
+             until (/= left-item right-item))))
+
+(cl-defun e-capabilities--context-fragments
     (capabilities &key harness session-id turn-id)
-  "Return backend-neutral context messages contributed by CAPABILITIES.
+  "Return sorted context fragments contributed by CAPABILITIES.
 HARNESS, SESSION-ID, and TURN-ID are passed to context providers."
   (let ((fragments nil)
         (capability-index 0))
@@ -268,6 +294,9 @@ HARNESS, SESSION-ID, and TURN-ID are passed to context providers."
                     :priority (e-capability-instruction-priority capability)
                     :capability-index capability-index
                     :message-index 0
+                    :segment-kind 'static-prefix
+                    :segment-id (list (e-capability-id capability)
+                                      'instructions)
                     :message (list :role 'system
                                    :content
                                    (e-capability-instructions capability)))
@@ -286,29 +315,53 @@ HARNESS, SESSION-ID, and TURN-ID are passed to context providers."
                           :capability-index capability-index
                           :provider-index provider-index
                           :message-index message-index
+                          :segment-kind
+                          (e-capabilities--provider-segment-kind provider)
+                          :segment-id
+                          (list (e-capability-id capability)
+                                (if (e-context-provider-p provider)
+                                    (e-context-provider-name provider)
+                                  provider-index)
+                                message-index)
                           :message message)
                     fragments)
               (setq message-index (1+ message-index))))
           (setq provider-index (1+ provider-index))))
       (setq capability-index (1+ capability-index)))
-    (mapcar
-     (lambda (fragment) (plist-get fragment :message))
-     (sort fragments
-           (lambda (left right)
-             (let ((left-key (list (plist-get left :cache-placement)
-                                   (plist-get left :priority)
-                                   (plist-get left :capability-index)
-                                   (or (plist-get left :provider-index) -1)
-                                   (plist-get left :message-index)))
-                   (right-key (list (plist-get right :cache-placement)
-                                    (plist-get right :priority)
-                                    (plist-get right :capability-index)
-                                    (or (plist-get right :provider-index) -1)
-                                    (plist-get right :message-index))))
-               (cl-loop for left-item in left-key
-                        for right-item in right-key
-                        thereis (< left-item right-item)
-                        until (/= left-item right-item))))))))
+    (sort fragments #'e-capabilities--fragment-less-p)))
+
+(defun e-capabilities--fragment-segment (fragment)
+  "Return backend-neutral context segment for FRAGMENT."
+  (e-context-segment-create
+   :kind (plist-get fragment :segment-kind)
+   :id (plist-get fragment :segment-id)
+   :messages (list (plist-get fragment :message))))
+
+(cl-defun e-capabilities-context
+    (capabilities &key harness session-id turn-id)
+  "Return context messages and segment metadata from CAPABILITIES.
+HARNESS, SESSION-ID, and TURN-ID are passed to context providers."
+  (let ((fragments (e-capabilities--context-fragments
+                    capabilities
+                    :harness harness
+                    :session-id session-id
+                    :turn-id turn-id)))
+    (list :messages
+          (mapcar (lambda (fragment) (plist-get fragment :message))
+                  fragments)
+          :segments
+          (mapcar #'e-capabilities--fragment-segment fragments))))
+
+(cl-defun e-capabilities-context-messages
+    (capabilities &key harness session-id turn-id)
+  "Return backend-neutral context messages contributed by CAPABILITIES.
+HARNESS, SESSION-ID, and TURN-ID are passed to context providers."
+  (plist-get (e-capabilities-context
+              capabilities
+              :harness harness
+              :session-id session-id
+              :turn-id turn-id)
+             :messages))
 
 (defun e-capabilities-action (capability action)
   "Return CAPABILITY function for ACTION."

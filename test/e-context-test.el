@@ -24,16 +24,70 @@
     (e-session-append-message store "session-1" '(:id "m1" :role user :content "hi"))
     (e-session-append-message store "session-1" '(:id "m2" :role assistant :content "hello"))
     (e-session-append-message store "session-1" '(:id "m3" :role tool :content (:status ok)))
-    (should
-     (equal (e-context-build strategy
-                             :sessions store
-                             :session-id "session-1"
-                             :options '(:model "fake"))
-            '(:strategy transcript-stack
-              :messages ((:role user :content "hi")
-                         (:role assistant :content "hello")
-                         (:role tool :content (:status ok)))
-              :options (:model "fake"))))))
+    (let ((context (e-context-build strategy
+                                    :sessions store
+                                    :session-id "session-1"
+                                    :options '(:model "fake"))))
+      (should (equal (plist-get context :strategy) 'transcript-stack))
+      (should (equal (plist-get context :messages)
+                     '((:role user :content "hi")
+                       (:role assistant :content "hello")
+                       (:role tool :content (:status ok)))))
+      (should (equal (plist-get context :options) '(:model "fake"))))))
+
+(ert-deftest e-context-test-transcript-stack-includes-history-segment ()
+  "Transcript-stack exposes history segment metadata beside flat messages."
+  (let ((store (e-session-store-create))
+        (strategy (e-context-transcript-stack-create)))
+    (e-session-create store :id "session-1")
+    (e-session-append-message store "session-1"
+                              '(:id "m1" :role user :content "hi"))
+    (let* ((context (e-context-build strategy
+                                     :sessions store
+                                     :session-id "session-1"
+                                     :options nil))
+           (segments (plist-get context :segments))
+           (segment (car segments)))
+      (should (= (length segments) 1))
+      (should (eq (plist-get segment :kind) 'history))
+      (should (equal (plist-get segment :id) 'transcript-history))
+      (should (equal (plist-get segment :messages)
+                     (plist-get context :messages)))
+      (should (stringp (plist-get segment :fingerprint)))
+      (should (equal (plist-get segment :fingerprint)
+                     (plist-get
+                      (car (plist-get
+                            (e-context-build strategy
+                                             :sessions store
+                                             :session-id "session-1"
+                                             :options nil)
+                            :segments))
+                      :fingerprint))))))
+
+(ert-deftest e-context-test-prefix-messages-create-compatible-segment ()
+  "Prefix messages keep flat order and get deterministic segment metadata."
+  (let ((store (e-session-store-create))
+        (strategy (e-context-transcript-stack-create)))
+    (e-session-create store :id "session-1")
+    (e-session-append-message store "session-1"
+                              '(:id "m1" :role user :content "hi"))
+    (let* ((context (e-context-build
+                     strategy
+                     :sessions store
+                     :session-id "session-1"
+                     :options nil
+                     :prefix-messages '((:role system :content "prefix"))))
+           (segments (plist-get context :segments)))
+      (should (equal (mapcar (lambda (message)
+                               (plist-get message :content))
+                             (plist-get context :messages))
+                     '("prefix" "hi")))
+      (should (equal (mapcar (lambda (segment)
+                               (plist-get segment :kind))
+                             segments)
+                     '(static-prefix history)))
+      (should (equal (plist-get (car segments) :messages)
+                     '((:role system :content "prefix")))))))
 
 (ert-deftest e-context-test-transcript-stack-uses-latest-compaction-suffix ()
   "Transcript-stack sends one compaction summary plus the kept suffix."

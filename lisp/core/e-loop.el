@@ -279,10 +279,15 @@ Provider I/O, tool I/O, and turn settlement are callback-driven."
                                        ('token-usage
                                         (setq token-usage
                                               (plist-get item :usage))
+                                       (e-loop--emit
+                                        :on-event on-event
+                                        :type 'token-usage
+                                        :payload token-usage))
+                                       ('provider-anchor-candidate
                                         (e-loop--emit
                                          :on-event on-event
-                                         :type 'token-usage
-                                         :payload token-usage))
+                                         :type 'provider-anchor-candidate
+                                         :payload item))
                                        ('done
                                         (setq done-reason
                                               (plist-get item :reason)))

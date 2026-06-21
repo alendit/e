@@ -615,6 +615,82 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
                        :reasoning-output-tokens 139
                        :total-tokens 203017))))))
 
+(ert-deftest e-harness-test-provider-anchor-candidates-are-persisted ()
+  "Provider anchor candidates persist with covered entry and context metadata."
+  (let* ((dynamic-provider
+          (e-context-provider-create
+           :name 'visible-buffer
+           :build (lambda (&rest _)
+                    '((:role system :content "current state")))
+           :cache-placement 'dynamic-context))
+         (capability
+          (e-capability-create
+           :id 'context-anchor-capability
+           :instructions "stable instructions"
+           :context-providers (list dynamic-provider)))
+         (layer (e-layer-create
+                 :id 'context-anchor-layer
+                 :name "Context Anchor Layer"
+                 :capabilities (list capability)))
+         (backend (e-backend-fake-create
+                   :items '((:type assistant-message :content "answer")
+                            (:type provider-anchor-candidate
+                             :provider-id openai
+                             :metadata (:response-id "resp-1"))
+                            (:type done :reason stop))))
+         (harness (e-harness-create
+                   :backend backend
+                   :active-layers (list layer)
+                   :default-options '(:model "gpt-test"
+                                      :provider-continuation t
+                                      :provider-anchor-provider-id openai))))
+    (e-harness-create-session harness :id "session-1")
+    (e-harness-prompt harness "session-1" "question")
+    (let* ((messages (e-harness-messages harness "session-1"))
+           (assistant (cl-find 'assistant messages
+                               :key (lambda (message)
+                                      (plist-get message :role))))
+           (anchors (e-session-provider-anchors
+                     (e-harness-sessions harness)
+                     "session-1"))
+           (anchor (car anchors))
+           (fingerprints (plist-get anchor :fingerprints)))
+      (should (= (length anchors) 1))
+      (should (eq (plist-get anchor :provider-id) 'openai))
+      (should (equal (plist-get anchor :model) "gpt-test"))
+      (should (equal (plist-get anchor :covered-entry-id)
+                     (plist-get assistant :id)))
+      (should (equal (plist-get anchor :metadata)
+                     '(:response-id "resp-1")))
+      (should (equal (mapcar (lambda (fingerprint)
+                               (plist-get fingerprint :kind))
+                             (plist-get fingerprints :segments))
+                     '("static-prefix" "current-state")))
+      (should (equal (plist-get fingerprints :active-layer-ids)
+                     '("context-anchor-layer")))
+      (should (equal (plist-get fingerprints :reasoning)
+                     '(:reasoning nil :reasoning-effort nil :effort nil)))
+      (dolist (fingerprint (plist-get fingerprints :segments))
+        (should (stringp (plist-get fingerprint :id)))
+        (should (stringp (plist-get fingerprint :fingerprint)))))))
+
+(ert-deftest e-harness-test-openai-anchor-candidates-require-continuation ()
+  "OpenAI response ids are not persisted when the request was not store-enabled."
+  (let* ((backend (e-backend-fake-create
+                   :items '((:type assistant-message :content "answer")
+                            (:type provider-anchor-candidate
+                             :provider-id openai
+                             :metadata (:response-id "resp-unstored"))
+                            (:type done :reason stop))))
+         (harness (e-harness-create
+                   :backend backend
+                   :default-options '(:model "gpt-test"))))
+    (e-harness-create-session harness :id "session-1")
+    (e-harness-prompt harness "session-1" "question")
+    (should-not
+     (e-session-provider-anchors (e-harness-sessions harness)
+                                 "session-1"))))
+
 (ert-deftest e-harness-test-provider-request-lifecycle-events-are-durable ()
   "Provider request lifecycle events are retained in ordered session activity."
   (let* ((backend
@@ -906,6 +982,482 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
                      '("capability instructions" "provider context" "hello")))
       (should (equal (plist-get (plist-get context :options) :model)
                      "session-model")))))
+
+(ert-deftest e-harness-test-context-preview-includes-segments ()
+  "Context preview exposes segment metadata without changing flat messages."
+  (let* ((stable-provider (e-context-provider-create
+                           :name 'stable-provider
+                           :cache-placement 'stable-context
+                           :build (cl-function
+                                   (lambda (&key harness session-id turn-id)
+                                     (ignore harness session-id turn-id)
+                                     '((:role system
+                                        :content "stable context"))))))
+         (dynamic-provider (e-context-provider-create
+                            :name 'dynamic-provider
+                            :cache-placement 'dynamic-context
+                            :build (cl-function
+                                    (lambda (&key harness session-id turn-id)
+                                      (ignore harness session-id turn-id)
+                                      '((:role system
+                                         :content "dynamic context"))))))
+         (capability (e-capability-create
+                      :id 'test-capability
+                      :instructions "capability instructions"
+                      :context-providers (list stable-provider
+                                               dynamic-provider)))
+         (layer (e-layer-create
+                 :id 'test-layer
+                 :name "Test Layer"
+                 :capabilities (list capability)))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :active-layers (list layer))))
+    (e-harness-create-session harness :id "session-1")
+    (e-session-append-message
+     (e-harness-sessions harness)
+     "session-1"
+     '(:role user :content "hello"))
+    (let* ((context (e-harness-context harness "session-1"))
+           (segments (plist-get context :segments)))
+      (should (equal (mapcar (lambda (message)
+                               (plist-get message :content))
+                             (plist-get context :messages))
+                     '("capability instructions"
+                       "stable context"
+                       "dynamic context"
+                       "hello")))
+      (should (equal (mapcar (lambda (segment)
+                               (plist-get segment :kind))
+                             segments)
+                     '(static-prefix stable-context current-state history)))
+      (dolist (segment segments)
+        (should (stringp (plist-get segment :fingerprint)))
+        (should (plist-get segment :messages))))))
+
+(ert-deftest e-harness-test-context-attaches-compatible-provider-anchor ()
+  "Context options include a compatible provider anchor and transcript delta."
+  (let* ((current-state "dynamic context")
+         (dynamic-provider
+          (e-context-provider-create
+           :name 'dynamic-provider
+           :cache-placement 'dynamic-context
+           :build (lambda (&rest _)
+                    (list (list :role 'system :content current-state)))))
+         (capability
+          (e-capability-create
+           :id 'anchor-capability
+           :instructions "capability instructions"
+           :context-providers (list dynamic-provider)))
+         (layer (e-layer-create
+                 :id 'anchor-layer
+                 :name "Anchor Layer"
+                 :capabilities (list capability)))
+         (harness
+          (e-harness-create
+           :backend (e-backend-fake-create :items nil)
+           :active-layers (list layer)
+           :default-options '(:model "gpt-test"
+                              :provider-continuation t
+                              :provider-anchor-provider-id openai))))
+    (e-harness-create-session harness :id "session-1")
+    (e-session-append-message
+     (e-harness-sessions harness)
+     "session-1"
+     '(:role user :content "old prompt"))
+    (let* ((assistant
+            (e-session-append-message
+             (e-harness-sessions harness)
+             "session-1"
+             '(:role assistant :content "old answer")))
+           (anchor-context (e-harness-context harness "session-1" "turn-1"))
+           (fingerprints
+            (e-harness--provider-anchor-fingerprints anchor-context)))
+      (e-session-append-provider-anchor
+       (e-harness-sessions harness)
+       "session-1"
+       'openai
+       :model "gpt-test"
+       :covered-entry-id (plist-get assistant :id)
+       :fingerprints fingerprints
+       :metadata '(:response-id "resp-1"))
+      (e-session-append-message
+       (e-harness-sessions harness)
+       "session-1"
+       '(:role user :content "new prompt"))
+      (let* ((context (e-harness-context harness "session-1" "turn-2"))
+             (options (plist-get context :options))
+             (anchor (plist-get options :provider-anchor))
+             (delta (plist-get options :provider-anchor-delta-messages)))
+        (should (equal (plist-get (plist-get anchor :metadata) :response-id)
+                       "resp-1"))
+        (should (equal (mapcar (lambda (message)
+                                 (plist-get message :content))
+                               delta)
+                       '("new prompt")))))))
+
+(ert-deftest e-harness-test-context-skips-provider-anchor-after-current-state-change ()
+  "Changed current-state fingerprints invalidate provider continuation anchors."
+  (let* ((current-state "dynamic context")
+         (dynamic-provider
+          (e-context-provider-create
+           :name 'dynamic-provider
+           :cache-placement 'dynamic-context
+           :build (lambda (&rest _)
+                    (list (list :role 'system :content current-state)))))
+         (capability
+          (e-capability-create
+           :id 'anchor-capability
+           :instructions "capability instructions"
+           :context-providers (list dynamic-provider)))
+         (layer (e-layer-create
+                 :id 'anchor-layer
+                 :name "Anchor Layer"
+                 :capabilities (list capability)))
+         (harness
+          (e-harness-create
+           :backend (e-backend-fake-create :items nil)
+           :active-layers (list layer)
+           :default-options '(:model "gpt-test"
+                              :provider-continuation t
+                              :provider-anchor-provider-id openai))))
+    (e-harness-create-session harness :id "session-1")
+    (e-session-append-message
+     (e-harness-sessions harness)
+     "session-1"
+     '(:role user :content "old prompt"))
+    (let* ((assistant
+            (e-session-append-message
+             (e-harness-sessions harness)
+             "session-1"
+             '(:role assistant :content "old answer")))
+           (anchor-context (e-harness-context harness "session-1" "turn-1")))
+      (e-session-append-provider-anchor
+       (e-harness-sessions harness)
+       "session-1"
+       'openai
+       :model "gpt-test"
+       :covered-entry-id (plist-get assistant :id)
+       :fingerprints (e-harness--provider-anchor-fingerprints anchor-context)
+       :metadata '(:response-id "resp-1"))
+      (setq current-state "changed dynamic context")
+      (e-session-append-message
+       (e-harness-sessions harness)
+       "session-1"
+       '(:role user :content "new prompt"))
+      (let ((options (plist-get
+                      (e-harness-context harness "session-1" "turn-2")
+                      :options)))
+        (should-not (plist-get options :provider-anchor))
+        (should-not (plist-get options :provider-anchor-delta-messages))))))
+
+(ert-deftest e-harness-test-context-reports-provider-anchor-invalidation-reason ()
+  "Context options report why an otherwise current provider anchor was skipped."
+  (let* ((current-state "dynamic context")
+         (dynamic-provider
+          (e-context-provider-create
+           :name 'dynamic-provider
+           :cache-placement 'dynamic-context
+           :build (lambda (&rest _)
+                    (list (list :role 'system :content current-state)))))
+         (capability
+          (e-capability-create
+           :id 'anchor-capability
+           :instructions "capability instructions"
+           :context-providers (list dynamic-provider)))
+         (layer (e-layer-create
+                 :id 'anchor-layer
+                 :name "Anchor Layer"
+                 :capabilities (list capability)))
+         (harness
+          (e-harness-create
+           :backend (e-backend-fake-create :items nil)
+           :active-layers (list layer)
+           :default-options '(:model "gpt-test"
+                              :provider-continuation t
+                              :provider-anchor-provider-id openai))))
+    (e-harness-create-session harness :id "session-1")
+    (e-session-append-message
+     (e-harness-sessions harness)
+     "session-1"
+     '(:role user :content "old prompt"))
+    (let* ((assistant
+            (e-session-append-message
+             (e-harness-sessions harness)
+             "session-1"
+             '(:role assistant :content "old answer")))
+           (anchor-context (e-harness-context harness "session-1" "turn-1")))
+      (e-session-append-provider-anchor
+       (e-harness-sessions harness)
+       "session-1"
+       'openai
+       :model "gpt-test"
+       :covered-entry-id (plist-get assistant :id)
+       :fingerprints (e-harness--provider-anchor-fingerprints anchor-context)
+       :metadata '(:response-id "resp-1"))
+      (setq current-state "changed dynamic context")
+      (e-session-append-message
+       (e-harness-sessions harness)
+       "session-1"
+       '(:role user :content "new prompt"))
+      (let ((options (plist-get
+                      (e-harness-context harness "session-1" "turn-2")
+                      :options)))
+        (should (equal (plist-get options :provider-anchor-invalidation-reason)
+                       'segment-fingerprint-mismatch))))))
+
+(ert-deftest e-harness-test-provider-anchor-invalidates-on-reasoning-change ()
+  "Provider continuation anchors include reasoning options in compatibility."
+  (let* ((harness
+          (e-harness-create
+           :backend (e-backend-fake-create :items nil)
+           :default-options '(:model "gpt-test"
+                              :reasoning-effort "high"
+                              :provider-continuation t
+                              :provider-anchor-provider-id openai))))
+    (e-harness-create-session harness :id "session-1")
+    (e-session-append-message
+     (e-harness-sessions harness) "session-1"
+     '(:role user :content "old prompt"))
+    (let* ((assistant
+            (e-session-append-message
+             (e-harness-sessions harness) "session-1"
+             '(:role assistant :content "old answer")))
+           (anchor-context (e-harness-context harness "session-1" "turn-1")))
+      (e-session-append-provider-anchor
+       (e-harness-sessions harness) "session-1" 'openai
+       :model "gpt-test"
+       :covered-entry-id (plist-get assistant :id)
+       :fingerprints (e-harness--provider-anchor-fingerprints anchor-context)
+       :metadata '(:response-id "resp-1"))
+      (setf (e-harness-default-options harness)
+            '(:model "gpt-test"
+              :reasoning-effort "low"
+              :provider-continuation t
+              :provider-anchor-provider-id openai))
+      (e-session-append-message
+       (e-harness-sessions harness) "session-1"
+       '(:role user :content "new prompt"))
+      (let ((options (plist-get
+                      (e-harness-context harness "session-1" "turn-2")
+                      :options)))
+        (should-not (plist-get options :provider-anchor))
+        (should (equal (plist-get options :provider-anchor-invalidation-reason)
+                       'reasoning-changed))))))
+
+(ert-deftest e-harness-test-provider-anchor-invalidates-on-tool-schema-change ()
+  "Provider continuation anchors include active tool schemas in compatibility."
+  (let* ((tool-parameters '(:type "object"
+                           :properties (:path (:type "string"))))
+         (tool-provider
+          (lambda (registry)
+            (e-tools-register
+             registry
+             :name "read"
+             :description "Read a file."
+             :parameters tool-parameters
+             :handler (lambda (&rest _) "ok"))))
+         (capability
+          (e-capability-create :id 'tool-capability
+                               :tools (list tool-provider)))
+         (layer (e-layer-create
+                 :id 'tool-layer :name "Tool Layer"
+                 :capabilities (list capability)))
+         (harness
+          (e-harness-create
+           :backend (e-backend-fake-create :items nil)
+           :active-layers (list layer)
+           :default-options '(:model "gpt-test"
+                              :provider-continuation t
+                              :provider-anchor-provider-id openai))))
+    (e-harness-create-session harness :id "session-1")
+    (e-session-append-message
+     (e-harness-sessions harness) "session-1"
+     '(:role user :content "old prompt"))
+    (let* ((assistant
+            (e-session-append-message
+             (e-harness-sessions harness) "session-1"
+             '(:role assistant :content "old answer")))
+           (anchor-context (e-harness-context harness "session-1" "turn-1")))
+      (e-session-append-provider-anchor
+       (e-harness-sessions harness) "session-1" 'openai
+       :model "gpt-test"
+       :covered-entry-id (plist-get assistant :id)
+       :fingerprints (e-harness--provider-anchor-fingerprints anchor-context)
+       :metadata '(:response-id "resp-1"))
+      (setq tool-parameters '(:type "object"
+                              :properties (:uri (:type "string"))))
+      (e-session-append-message
+       (e-harness-sessions harness) "session-1"
+       '(:role user :content "new prompt"))
+      (let ((options (plist-get
+                      (e-harness-context harness "session-1" "turn-2")
+                      :options)))
+        (should-not (plist-get options :provider-anchor))
+        (should (equal (plist-get options :provider-anchor-invalidation-reason)
+                       'tools-changed))))))
+
+(ert-deftest e-harness-test-provider-anchor-invalidates-on-active-layer-change ()
+  "Provider continuation anchors include active layer ids in compatibility."
+  (let* ((layer (e-layer-create :id 'base-layer :name "Base Layer"))
+         (extra-layer (e-layer-create :id 'extra-layer :name "Extra Layer"))
+         (harness
+          (e-harness-create
+           :backend (e-backend-fake-create :items nil)
+           :active-layers (list layer)
+           :default-options '(:model "gpt-test"
+                              :provider-continuation t
+                              :provider-anchor-provider-id openai))))
+    (e-harness-create-session harness :id "session-1")
+    (e-session-append-message
+     (e-harness-sessions harness) "session-1"
+     '(:role user :content "old prompt"))
+    (let* ((assistant
+            (e-session-append-message
+             (e-harness-sessions harness) "session-1"
+             '(:role assistant :content "old answer")))
+           (anchor-context (e-harness-context harness "session-1" "turn-1")))
+      (e-session-append-provider-anchor
+       (e-harness-sessions harness) "session-1" 'openai
+       :model "gpt-test"
+       :covered-entry-id (plist-get assistant :id)
+       :fingerprints (e-harness--provider-anchor-fingerprints anchor-context)
+       :metadata '(:response-id "resp-1"))
+      (setf (e-harness-active-layers harness) (list layer extra-layer))
+      (e-session-append-message
+       (e-harness-sessions harness) "session-1"
+       '(:role user :content "new prompt"))
+      (let ((options (plist-get
+                      (e-harness-context harness "session-1" "turn-2")
+                      :options)))
+        (should-not (plist-get options :provider-anchor))
+        (should (equal (plist-get options :provider-anchor-invalidation-reason)
+                       'active-layers-changed))))))
+
+(ert-deftest e-harness-test-provider-anchor-invalidates-on-provider-option-change ()
+  "Provider continuation anchors include provider request-shaping options."
+  (let* ((harness
+          (e-harness-create
+           :backend (e-backend-fake-create :items nil)
+           :default-options '(:model "claude-test"
+                              :provider-continuation t
+                              :provider-anchor-provider-id anthropic
+                              :prompt-cache t
+                              :anthropic-container-id "container-1"))))
+    (e-harness-create-session harness :id "session-1")
+    (e-session-append-message
+     (e-harness-sessions harness) "session-1"
+     '(:role user :content "old prompt"))
+    (let* ((assistant
+            (e-session-append-message
+             (e-harness-sessions harness) "session-1"
+             '(:role assistant :content "old answer")))
+           (anchor-context (e-harness-context harness "session-1" "turn-1")))
+      (e-session-append-provider-anchor
+       (e-harness-sessions harness) "session-1" 'anthropic
+       :model "claude-test"
+       :covered-entry-id (plist-get assistant :id)
+       :fingerprints (e-harness--provider-anchor-fingerprints anchor-context)
+       :metadata '(:provider anthropic
+                   :model "claude-test"
+                   :anthropic-cache-mode explicit
+                   :anthropic-container-id "container-1"
+                   :full-history t))
+      (setf (e-harness-default-options harness)
+            '(:model "claude-test"
+              :provider-continuation t
+              :provider-anchor-provider-id anthropic
+              :prompt-cache t
+              :anthropic-container-id "container-2"))
+      (e-session-append-message
+       (e-harness-sessions harness) "session-1"
+       '(:role user :content "new prompt"))
+      (let ((options (plist-get
+                      (e-harness-context harness "session-1" "turn-2")
+                      :options)))
+        (should-not (plist-get options :provider-anchor))
+        (should (equal (plist-get options :provider-anchor-invalidation-reason)
+                       'provider-options-changed))))))
+
+(ert-deftest e-harness-test-provider-anchor-invalidates-on-instructions-change ()
+  "Provider continuation anchors include explicit request instructions."
+  (let* ((harness
+          (e-harness-create
+           :backend (e-backend-fake-create :items nil)
+           :default-options '(:model "gpt-test"
+                              :instructions "Be terse."
+                              :provider-continuation t
+                              :provider-anchor-provider-id openai))))
+    (e-harness-create-session harness :id "session-1")
+    (e-session-append-message
+     (e-harness-sessions harness) "session-1"
+     '(:role user :content "old prompt"))
+    (let* ((assistant
+            (e-session-append-message
+             (e-harness-sessions harness) "session-1"
+             '(:role assistant :content "old answer")))
+           (anchor-context (e-harness-context harness "session-1" "turn-1")))
+      (e-session-append-provider-anchor
+       (e-harness-sessions harness) "session-1" 'openai
+       :model "gpt-test"
+       :covered-entry-id (plist-get assistant :id)
+       :fingerprints (e-harness--provider-anchor-fingerprints anchor-context)
+       :metadata '(:response-id "resp-1"))
+      (setf (e-harness-default-options harness)
+            '(:model "gpt-test"
+              :instructions "Be detailed."
+              :provider-continuation t
+              :provider-anchor-provider-id openai))
+      (e-session-append-message
+       (e-harness-sessions harness) "session-1"
+       '(:role user :content "new prompt"))
+      (let ((options (plist-get
+                      (e-harness-context harness "session-1" "turn-2")
+                      :options)))
+        (should-not (plist-get options :provider-anchor))
+        (should (equal (plist-get options :provider-anchor-invalidation-reason)
+                       'provider-options-changed))))))
+
+(ert-deftest e-harness-test-provider-anchor-invalidates-on-max-tokens-change ()
+  "Provider continuation anchors include Anthropic max token request shaping."
+  (let* ((harness
+          (e-harness-create
+           :backend (e-backend-fake-create :items nil)
+           :default-options '(:model "claude-test"
+                              :max-tokens 1024
+                              :provider-continuation t
+                              :provider-anchor-provider-id anthropic))))
+    (e-harness-create-session harness :id "session-1")
+    (e-session-append-message
+     (e-harness-sessions harness) "session-1"
+     '(:role user :content "old prompt"))
+    (let* ((assistant
+            (e-session-append-message
+             (e-harness-sessions harness) "session-1"
+             '(:role assistant :content "old answer")))
+           (anchor-context (e-harness-context harness "session-1" "turn-1")))
+      (e-session-append-provider-anchor
+       (e-harness-sessions harness) "session-1" 'anthropic
+       :model "claude-test"
+       :covered-entry-id (plist-get assistant :id)
+       :fingerprints (e-harness--provider-anchor-fingerprints anchor-context)
+       :metadata '(:provider anthropic
+                   :model "claude-test"
+                   :full-history t))
+      (setf (e-harness-default-options harness)
+            '(:model "claude-test"
+              :max-tokens 2048
+              :provider-continuation t
+              :provider-anchor-provider-id anthropic))
+      (e-session-append-message
+       (e-harness-sessions harness) "session-1"
+       '(:role user :content "new prompt"))
+      (let ((options (plist-get
+                      (e-harness-context harness "session-1" "turn-2")
+                      :options)))
+        (should-not (plist-get options :provider-anchor))
+        (should (equal (plist-get options :provider-anchor-invalidation-reason)
+                       'provider-options-changed))))))
 
 (ert-deftest e-harness-test-profile-records-context-build ()
   "Enabled dev profiling records harness context spans."
