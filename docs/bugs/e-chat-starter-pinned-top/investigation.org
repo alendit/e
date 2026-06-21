@@ -1,0 +1,36 @@
+#+title: e-chat starter pinned top investigation
+#+startup: overview
+
+* Source inspected
+
+- =lisp/shells/chat/e-chat-starter.el=: =e-chat-starter--handle-event= updates starter state for turn, reasoning, tool, and answer events, then calls =e-chat-starter--render-state-buffer=.
+- =lisp/shells/chat/e-chat-starter.el=: =e-chat-starter--ensure-progress-timer= also calls =e-chat-starter--render-state-buffer= while a turn is running, so timer-only duration updates use the same repaint path.
+- =lisp/shells/chat/e-chat-starter.el=: =e-chat-starter--render= erased the popup, rebuilt the rendered blocks, and ended with =(goto-char (point-min))=.
+  Because the popup window is selected during normal use, each repaint moved the buffer and visible window back to the header.
+- =lisp/shells/chat/e-chat.el=: the main chat reasoning/progress renderer uses =e-chat--render-running-status=, which captures composer and navigation state before deleting/redrawing transient progress.
+  The existing =docs/bugs/e-chat-progress-redraw-refocuses-composer/= investigation and =e-chat-test-progress-rerender-preserves-scrollback-focus= cover that separate path.
+
+* Conclusion
+
+The root cause is local to the starter popup renderer.
+Whole-buffer starter repaints always ended at =point-min=, so any harness event or progress timer tick made =*e-start-here*= show the top of the popup instead of the newest status or answer.
+
+The main chat reasoning/progress path was checked as the adjacent similar update path.
+It already has a regression and implementation for preserving deliberate scrollback focus during redraws, so this fix should not change that behavior.
+
+* Fix
+
+Added =e-chat-starter--show-tail= and made =e-chat-starter--render= finish by moving point, and any visible popup window point, to the rendered tail.
+This keeps the starter popup following live updates while keeping the change inside the presentation shell that owns the starter buffer.
+
+Regression coverage:
+
+- =e-chat-starter-test-running-repaint-keeps-popup-at-bottom= displays a running starter popup, places point/window focus at the tail, delivers a =reasoning-delta= repaint, and asserts both buffer point and window point remain at the new =point-max=.
+
+Validation:
+
+- =rtk eldev test -f test/e-chat-starter-test.el e-chat-starter-test-running-repaint-keeps-popup-at-bottom=
+- =rtk eldev test -f test/e-chat-starter-test.el=
+- =rtk eldev test -f test/e-chat-test.el e-chat-test-progress-rerender-preserves-scrollback-focus=
+- =emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"=
+- Live probe after reload returned =(:point 87 :point-max 87 :window-point 87 :at-bottom t)= for a temporary running starter popup after a =reasoning-delta= repaint.

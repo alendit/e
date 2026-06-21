@@ -1,0 +1,9 @@
+#+title: e-chat starter pinned top
+#+startup: overview
+
+* Report
+
+The =e-chat-start-here= popup stays pinned at the top when live updates arrive.
+The expected behavior is that the popup follows the newest rendered status or answer at the bottom.
+
+Similar update windows for =e-chat= reasoning may have the same class of problem, so the investigation should check the main chat progress renderer as well as the starter popup.

@@ -264,6 +264,15 @@ so a child-frame adapter can be added without changing controller logic."
     (_
      (insert "\n[q] close\n"))))
 
+(defun e-chat-starter--show-tail ()
+  "Move point and any visible starter popup window to the rendered tail."
+  (goto-char (point-max))
+  (when-let ((window (get-buffer-window (current-buffer) t)))
+    (set-window-point window (point))
+    (with-selected-window window
+      (ignore-errors
+        (recenter -1)))))
+
 (defun e-chat-starter--render ()
   "Render the current starter popup."
   (let* ((state (e-chat-starter--current-state))
@@ -279,7 +288,7 @@ so a child-frame adapter can be added without changing controller logic."
     (insert "\n")
     (e-chat-starter--render-status state)
     (e-chat-starter--render-actions state)
-    (goto-char (point-min))))
+    (e-chat-starter--show-tail)))
 
 (defun e-chat-starter--display-buffer (buffer)
   "Display starter BUFFER using the configured fallback window strategy."
