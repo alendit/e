@@ -102,7 +102,9 @@
     (should (eq (lookup-key e-chat-mode-map (kbd "C-g"))
                 #'e-debug--dismiss-popup-or-keyboard-quit))
     (should (eq (lookup-key e-debug-popup-mode-map (kbd "C-g"))
-                #'e-debug--dismiss-popup-or-keyboard-quit))))
+                #'e-debug--dismiss-popup-or-keyboard-quit))
+    (should (eq (lookup-key e-debug-popup-mode-map (kbd "M-3"))
+                #'e-debug-popup-workspace-switch-to-2))))
 
 (ert-deftest e-debug-test-popup-display-shows-buffer-in-focused-posframe ()
   "The popup strategy shows the existing chat buffer in a focused posframe."
@@ -126,6 +128,9 @@
           (e-debug--show-buffer buffer)
           (should (eq (car shown) buffer))
           (should (eq (plist-get (cdr shown) :accept-focus) t))
+          (should (equal (alist-get 'tab-bar-lines
+                                    (plist-get (cdr shown) :override-parameters))
+                         0))
           (should (eq (plist-get (cdr shown) :poshandler)
                       'posframe-poshandler-frame-center))
           (should (eq focused 'debug-popup-frame))
@@ -196,6 +201,27 @@
       (setq e-debug--popup-frame nil)
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
+
+(ert-deftest e-debug-test-popup-workspace-command-runs-in-parent-frame-and-refocuses ()
+  "Workspace key commands in the popup run against the parent frame."
+  (let (called
+        focused)
+    (cl-letf (((symbol-function 'selected-frame)
+               (lambda () 'debug-popup-frame))
+              ((symbol-function 'e-debug--popup-parent-frame)
+               (lambda (&optional _frame) 'parent-frame))
+              ((symbol-function 'e-debug--call-interactively-in-frame)
+               (lambda (command frame)
+                 (setq called (list command frame))))
+              ((symbol-function 'frame-live-p)
+               (lambda (frame)
+                 (eq frame 'debug-popup-frame)))
+              ((symbol-function 'select-frame-set-input-focus)
+               (lambda (frame)
+                 (setq focused frame))))
+      (e-debug-popup-workspace-switch-to-2)
+      (should (equal called '(+workspace/switch-to-2 parent-frame)))
+      (should (eq focused 'debug-popup-frame)))))
 
 (ert-deftest e-debug-test-popup-display-restores-visible-composer-cursor ()
   "The debug popup restores a visible cursor for reused chat buffers."

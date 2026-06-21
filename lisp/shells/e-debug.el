@@ -92,6 +92,12 @@ A fractional value is interpreted relative to the selected frame height."
 (defvar e-debug-popup-mode-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "C-g") #'e-debug--dismiss-popup-or-keyboard-quit)
+    (dotimes (i 9)
+      (let ((command (intern (format "e-debug-popup-workspace-switch-to-%d" i))))
+        (define-key map (kbd (format "M-%d" (1+ i))) command)
+        (define-key map (kbd (format "s-%d" (1+ i))) command)))
+    (define-key map (kbd "M-0") #'e-debug-popup-workspace-switch-to-final)
+    (define-key map (kbd "s-0") #'e-debug-popup-workspace-switch-to-final)
     map)
   "Keymap active while a debug chat buffer is shown as a popup.")
 
@@ -331,13 +337,43 @@ A fractional value is interpreted relative to the selected frame height."
     (setq e-debug--popup-buffer nil)
     (setq e-debug--popup-frame nil)))
 
-(defun e-debug--popup-parent-frame ()
-  "Return the root frame that should parent the debug popup."
-  (let ((frame (selected-frame))
+(defun e-debug--popup-parent-frame (&optional frame)
+  "Return the root frame that should parent the debug popup.
+When FRAME is nil, start from the selected frame."
+  (let ((frame (or frame (selected-frame)))
         parent)
     (while (setq parent (frame-parameter frame 'parent-frame))
       (setq frame parent))
     frame))
+
+(defun e-debug--call-interactively-in-frame (command frame)
+  "Call COMMAND interactively with FRAME selected."
+  (with-selected-frame frame
+    (call-interactively command)))
+
+(defun e-debug-popup-workspace-command (command)
+  "Run workspace COMMAND against the debug popup's parent frame.
+Refocus the popup frame afterward so typing can continue in the debug chat."
+  (interactive)
+  (let ((popup-frame (selected-frame))
+        (parent-frame (e-debug--popup-parent-frame)))
+    (e-debug--call-interactively-in-frame command parent-frame)
+    (when (frame-live-p popup-frame)
+      (select-frame-set-input-focus popup-frame))))
+
+(dotimes (i 9)
+  (let ((source (intern (format "+workspace/switch-to-%d" i)))
+        (target (intern (format "e-debug-popup-workspace-switch-to-%d" i))))
+    (defalias target
+      (lambda ()
+        (interactive)
+        (e-debug-popup-workspace-command source))
+      (format "Switch popup parent frame to Doom workspace #%d." (1+ i)))))
+
+(defun e-debug-popup-workspace-switch-to-final ()
+  "Switch the debug popup's parent frame to the final Doom workspace."
+  (interactive)
+  (e-debug-popup-workspace-command #'+workspace/switch-to-final))
 
 (defun e-debug--show-popup (buffer)
   "Show BUFFER in the floating debug popup."
@@ -352,7 +388,8 @@ A fractional value is interpreted relative to the selected frame height."
            :height (e-debug--popup-dimension e-debug-popup-height
                                               (frame-height parent-frame))
            :accept-focus t
-           :border-width 1)))
+           :border-width 1
+           :override-parameters '((tab-bar-lines . 0)))))
     (setq e-debug--popup-buffer buffer)
     (setq e-debug--popup-frame frame)
     (with-current-buffer buffer
@@ -403,10 +440,22 @@ A fractional value is interpreted relative to the selected frame height."
       (e-debug--dismiss-popup)
     (keyboard-quit)))
 
+(defun e-debug--install-popup-workspace-keybindings ()
+  "Install workspace navigation bindings into `e-debug-popup-mode-map'."
+  (dotimes (i 9)
+    (let ((command (intern (format "e-debug-popup-workspace-switch-to-%d" i))))
+      (define-key e-debug-popup-mode-map (kbd (format "M-%d" (1+ i))) command)
+      (define-key e-debug-popup-mode-map (kbd (format "s-%d" (1+ i))) command)))
+  (define-key e-debug-popup-mode-map (kbd "M-0")
+              #'e-debug-popup-workspace-switch-to-final)
+  (define-key e-debug-popup-mode-map (kbd "s-0")
+              #'e-debug-popup-workspace-switch-to-final))
+
 (defun e-debug--install-keybindings ()
   "Install debug popup keybindings into live chat keymaps."
   (define-key e-debug-popup-mode-map (kbd "C-g")
               #'e-debug--dismiss-popup-or-keyboard-quit)
+  (e-debug--install-popup-workspace-keybindings)
   (define-key e-chat-mode-map (kbd "C-g")
               #'e-debug--dismiss-popup-or-keyboard-quit))
 
