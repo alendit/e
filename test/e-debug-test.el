@@ -102,9 +102,7 @@
     (should (eq (lookup-key e-chat-mode-map (kbd "C-g"))
                 #'e-debug--dismiss-popup-or-keyboard-quit))
     (should (eq (lookup-key e-debug-popup-mode-map (kbd "C-g"))
-                #'e-debug--dismiss-popup-or-keyboard-quit))
-    (should (eq (lookup-key e-debug-popup-mode-map (kbd "M-3"))
-                #'e-debug-popup-workspace-switch-to-2))))
+                #'e-debug--dismiss-popup-or-keyboard-quit))))
 
 (ert-deftest e-debug-test-popup-display-shows-buffer-in-focused-posframe ()
   "The popup strategy shows the existing chat buffer in a focused posframe."
@@ -202,10 +200,11 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest e-debug-test-popup-workspace-command-runs-in-parent-frame-and-refocuses ()
-  "Workspace key commands in the popup run against the parent frame."
+(ert-deftest e-debug-test-popup-parent-frame-key-forwards-generic-command ()
+  "Popup-local keys can forward arbitrary commands to the parent frame."
   (let (called
-        focused)
+        focused
+        binding)
     (cl-letf (((symbol-function 'selected-frame)
                (lambda () 'debug-popup-frame))
               ((symbol-function 'e-debug--popup-parent-frame)
@@ -219,8 +218,11 @@
               ((symbol-function 'select-frame-set-input-focus)
                (lambda (frame)
                  (setq focused frame))))
-      (e-debug-popup-workspace-switch-to-2)
-      (should (equal called '(+workspace/switch-to-2 parent-frame)))
+      (e-debug-popup-define-parent-frame-key (kbd "M-3") 'example-workspace-command)
+      (setq binding (lookup-key e-debug-popup-mode-map (kbd "M-3")))
+      (should (commandp binding))
+      (funcall binding)
+      (should (equal called '(example-workspace-command parent-frame)))
       (should (eq focused 'debug-popup-frame)))))
 
 (ert-deftest e-debug-test-popup-display-restores-visible-composer-cursor ()

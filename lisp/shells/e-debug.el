@@ -92,12 +92,6 @@ A fractional value is interpreted relative to the selected frame height."
 (defvar e-debug-popup-mode-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "C-g") #'e-debug--dismiss-popup-or-keyboard-quit)
-    (dotimes (i 9)
-      (let ((command (intern (format "e-debug-popup-workspace-switch-to-%d" i))))
-        (define-key map (kbd (format "M-%d" (1+ i))) command)
-        (define-key map (kbd (format "s-%d" (1+ i))) command)))
-    (define-key map (kbd "M-0") #'e-debug-popup-workspace-switch-to-final)
-    (define-key map (kbd "s-0") #'e-debug-popup-workspace-switch-to-final)
     map)
   "Keymap active while a debug chat buffer is shown as a popup.")
 
@@ -348,32 +342,38 @@ When FRAME is nil, start from the selected frame."
 
 (defun e-debug--call-interactively-in-frame (command frame)
   "Call COMMAND interactively with FRAME selected."
-  (with-selected-frame frame
+  (if (frame-live-p frame)
+      (with-selected-frame frame
+        (call-interactively command))
     (call-interactively command)))
 
-(defun e-debug-popup-workspace-command (command)
-  "Run workspace COMMAND against the debug popup's parent frame.
-Refocus the popup frame afterward so typing can continue in the debug chat."
-  (interactive)
+(defun e-debug-popup-call-command-in-parent-frame (command)
+  "Call interactive COMMAND in the debug popup's parent frame.
+Refocus the popup frame afterward so typing can continue in the debug chat.
+This is a generic popup-isolation helper: callers decide which package-specific
+commands, such as workspace navigation commands, should be forwarded."
+  (interactive
+   (list (read-command "Command to run in debug popup parent frame: ")))
   (let ((popup-frame (selected-frame))
         (parent-frame (e-debug--popup-parent-frame)))
     (e-debug--call-interactively-in-frame command parent-frame)
     (when (frame-live-p popup-frame)
       (select-frame-set-input-focus popup-frame))))
 
-(dotimes (i 9)
-  (let ((source (intern (format "+workspace/switch-to-%d" i)))
-        (target (intern (format "e-debug-popup-workspace-switch-to-%d" i))))
-    (defalias target
-      (lambda ()
-        (interactive)
-        (e-debug-popup-workspace-command source))
-      (format "Switch popup parent frame to Doom workspace #%d." (1+ i)))))
+(defun e-debug-popup-parent-frame-command (command)
+  "Return an interactive command that forwards COMMAND to the popup parent frame."
+  (lambda ()
+    (interactive)
+    (e-debug-popup-call-command-in-parent-frame command)))
 
-(defun e-debug-popup-workspace-switch-to-final ()
-  "Switch the debug popup's parent frame to the final Doom workspace."
-  (interactive)
-  (e-debug-popup-workspace-command #'+workspace/switch-to-final))
+(defun e-debug-popup-define-parent-frame-key (key command)
+  "In `e-debug-popup-mode-map', bind KEY to run COMMAND in the parent frame.
+KEY is a value accepted by `define-key', typically from `kbd'.  COMMAND is any
+interactive command; e-debug does not assume it belongs to a specific workspace
+or tab package."
+  (define-key e-debug-popup-mode-map
+              key
+              (e-debug-popup-parent-frame-command command)))
 
 (defun e-debug--show-popup (buffer)
   "Show BUFFER in the floating debug popup."
