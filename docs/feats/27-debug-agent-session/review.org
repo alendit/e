@@ -146,3 +146,131 @@ Result:
 Bounded live probes confirmed that the named debug tab is reused and that
 =e-debug-here= submits the inspected chat session id when no recent failure is
 present.
+
+* Floating popup addendum review loop
+
+** Finding 3: notification subscription did not follow a changed debug session id
+
+*** Problem
+
+The addendum introduced a session-filtered notification subscription, but the
+first implementation keyed reuse only by harness.
+If the standing debug session id changed inside the same harness, the old
+subscription would remain attached to the previous session and background
+completion notifications could be missed for the new debug session.
+
+*** Change
+
+=e-debug--notification-session-id= now records the subscribed session id.
+=e-debug--ensure-notification-subscription= re-subscribes when either the
+harness or session id changes.
+
+*** Evidence
+
+#+begin_src sh
+rtk eldev test test/e-debug-test.el
+#+end_src
+
+Result after the fix:
+
+#+begin_example
+17 expected, 0 unexpected
+#+end_example
+
+** Finding 4: stale popup state could suppress background completion messages
+
+*** Problem
+
+The addendum hides notifications while the floating popup is visible, but the
+first visibility check looked only at the popup buffer and minor mode.
+If the child frame were deleted outside the normal dismiss path while the minor
+mode remained active, =e-debug= could treat the popup as visible and suppress the
+=*e-debug*:= completion message.
+
+*** Change
+
+=e-debug--popup-visible-p= now also requires the recorded popup frame to be live
+when one exists.
+The normal =C-g= dismiss path still clears the buffer and frame state.
+
+*** Evidence
+
+#+begin_src sh
+rtk eldev test test/e-debug-test.el
+#+end_src
+
+Result after the fix:
+
+#+begin_example
+17 expected, 0 unexpected
+#+end_example
+
+* Floating popup addendum final review
+
+A final local review pass over the addendum diff found no new actionable
+suggestions after Findings 3 and 4 were fixed.
+The implementation matches the addendum contract: =popup= is the default display
+strategy, the popup hosts the normal =e-chat= buffer, =C-g= hides only the
+presentation, the standing session continues, and hidden terminal turn events
+produce compact =*e-debug*:= echo-area messages.
+
+#+begin_example
+No new suggestions.
+#+end_example
+
+* Floating popup addendum verification
+
+Focused and package verification:
+
+#+begin_src sh
+rtk eldev test test/e-debug-test.el test/e-test.el
+#+end_src
+
+Result:
+
+#+begin_example
+32 expected, 0 unexpected
+#+end_example
+
+Adjacent popup/chat verification:
+
+#+begin_src sh
+rtk eldev test test/e-picker-test.el test/e-chat-starter-test.el test/e-chat-test.el
+#+end_src
+
+Result:
+
+#+begin_example
+250 tests, 249 expected, 0 unexpected, 1 skipped
+#+end_example
+
+Whitespace:
+
+#+begin_src sh
+git diff --check -- lisp/shells/e-debug.el test/e-debug-test.el README.org docs/feats/27-debug-agent-session/plan.org docs/feats/27-debug-agent-session/review.org
+#+end_src
+
+Result: clean.
+
+* Floating popup addendum live reload
+
+The running Emacs was reloaded with:
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Result:
+
+#+begin_example
+"/Users/dimitrivorona/projects/elisp/e/"
+#+end_example
+
+The bounded live probe opened the debug session through the popup strategy,
+confirmed the popup minor mode was active, dismissed it with the same path as
+=C-g=, and confirmed the notification formatter for a hidden finished turn:
+
+#+begin_example
+(:strategy popup :buffer-live t :popup-on t :popup-after-dismiss nil
+ :frame-was-live ns :notification "*e-debug*: finished: live-probe-turn")
+#+end_example

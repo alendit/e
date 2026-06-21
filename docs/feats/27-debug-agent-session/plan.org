@@ -384,6 +384,12 @@ Each package is a useful stopping point: after it, the project is better off.
   finishes after the popup has been dismissed.
 - Verify with focused tests for popup dismissal, session reuse, and completion
   notification, then live-verify the split-window =e-debug-here= flow.
+- Implemented: =e-debug-display-strategy= now defaults to =popup=, =e-debug=
+  and =e-debug-here= show the ordinary debug chat buffer in a focused posframe
+  when available, =C-g= hides only that floating presentation, and terminal
+  background turn events emit compact =*e-debug*:= messages while the popup is
+  hidden. Verified with focused debug tests plus adjacent chat, starter, picker,
+  and package-entry tests.
 
 * Follow-up: multiple concurrent debug issues
 

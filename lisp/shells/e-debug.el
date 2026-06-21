@@ -30,9 +30,10 @@
   :group 'e
   :prefix "e-debug-")
 
-(defcustom e-debug-display-strategy 'tab
+(defcustom e-debug-display-strategy 'popup
   "Display strategy used by `e-debug'."
-  :type '(choice (const :tag "Open in a new tab" tab)
+  :type '(choice (const :tag "Open in a floating popup" popup)
+                 (const :tag "Open in a new tab" tab)
                  (const :tag "Pop to another window" window)
                  (const :tag "Use current window" current-window))
   :group 'e-debug)
@@ -40,6 +41,18 @@
 (defcustom e-debug-tab-name "e-debug"
   "Name of the tab used by the standing debug session."
   :type 'string
+  :group 'e-debug)
+
+(defcustom e-debug-popup-width 0.82
+  "Preferred floating debug popup width.
+A fractional value is interpreted relative to the selected frame width."
+  :type '(choice (number :tag "Frame fraction") (integer :tag "Columns"))
+  :group 'e-debug)
+
+(defcustom e-debug-popup-height 0.72
+  "Preferred floating debug popup height.
+A fractional value is interpreted relative to the selected frame height."
+  :type '(choice (number :tag "Frame fraction") (integer :tag "Lines"))
   :group 'e-debug)
 
 (defconst e-debug-default-prompt
@@ -56,6 +69,51 @@
 
 (defvar e-debug--session-id nil
   "Cached standing debug session id.")
+
+(defvar e-debug--popup-buffer nil
+  "Buffer currently shown as the floating debug popup.")
+
+(defvar e-debug--popup-frame nil
+  "Frame currently used by the floating debug popup.")
+
+(defvar e-debug--notification-harness nil
+  "Harness currently subscribed for debug completion notifications.")
+
+(defvar e-debug--notification-subscription nil
+  "Harness subscription used for debug completion notifications.")
+
+(defvar e-debug--notification-session-id nil
+  "Session id currently subscribed for debug completion notifications.")
+
+(defvar e-debug-popup-mode-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "C-g") #'e-debug--dismiss-popup)
+    map)
+  "Keymap active while a debug chat buffer is shown as a popup.")
+
+(define-minor-mode e-debug-popup-mode
+  "Minor mode for the floating debug popup presentation."
+  :init-value nil
+  :lighter " e-debug-popup"
+  :keymap e-debug-popup-mode-map)
+
+(defun e-debug--popup-available-p ()
+  "Return non-nil when a floating debug popup can be displayed."
+  (and (require 'posframe nil t)
+       (fboundp 'posframe-workable-p)
+       (posframe-workable-p)
+       (fboundp 'posframe-show)
+       (fboundp 'posframe-hide)))
+
+(defun e-debug--popup-dimension (value frame-size)
+  "Return concrete popup dimension for VALUE against FRAME-SIZE."
+  (cond
+   ((and (numberp value) (> value 0) (< value 1))
+    (max 20 (floor (* frame-size value))))
+   ((and (integerp value) (> value 0))
+    value)
+   (t
+    (max 20 (floor (* frame-size 0.7))))))
 
 (defun e-debug--default-harness ()
   "Return the configured default debug harness."
@@ -242,6 +300,11 @@
 (defun e-debug--show-buffer (buffer)
   "Show debug session BUFFER according to `e-debug-display-strategy'."
   (pcase e-debug-display-strategy
+    ('popup
+     (if (e-debug--popup-available-p)
+         (e-debug--show-popup buffer)
+       (e-debug--select-or-create-tab)
+       (e-chat--pop-to-buffer buffer)))
     ('tab
      (e-debug--select-or-create-tab)
      (e-chat--pop-to-buffer buffer))
@@ -253,6 +316,101 @@
      (user-error "Unknown e debug display strategy: %S"
                  e-debug-display-strategy))))
 
+(defun e-debug--popup-cleanup ()
+  "Clear popup globals when the popup buffer is killed."
+  (when (eq (current-buffer) e-debug--popup-buffer)
+    (setq e-debug--popup-buffer nil)
+    (setq e-debug--popup-frame nil)))
+
+(defun e-debug--show-popup (buffer)
+  "Show BUFFER in the floating debug popup."
+  (let ((frame
+         (posframe-show
+          buffer
+          :poshandler 'posframe-poshandler-frame-center
+          :width (e-debug--popup-dimension e-debug-popup-width
+                                            (frame-width))
+          :height (e-debug--popup-dimension e-debug-popup-height
+                                             (frame-height))
+          :accept-focus t
+          :border-width 1)))
+    (setq e-debug--popup-buffer buffer)
+    (setq e-debug--popup-frame frame)
+    (with-current-buffer buffer
+      (e-debug-popup-mode 1)
+      (add-hook 'kill-buffer-hook #'e-debug--popup-cleanup nil t))
+    (when (frame-live-p frame)
+      (select-frame-set-input-focus frame))
+    buffer))
+
+(defun e-debug--dismiss-popup ()
+  "Dismiss the floating debug popup without aborting the debug session."
+  (interactive)
+  (let ((buffer (or (and (derived-mode-p 'e-chat-mode)
+                         (current-buffer))
+                    e-debug--popup-buffer)))
+    (when (buffer-live-p buffer)
+      (with-current-buffer buffer
+        (when (fboundp 'posframe-hide)
+          (posframe-hide (current-buffer)))
+        (e-debug-popup-mode -1))))
+  (setq e-debug--popup-buffer nil)
+  (setq e-debug--popup-frame nil))
+
+(defun e-debug--popup-visible-p ()
+  "Return non-nil when the floating debug popup is currently visible."
+  (and (buffer-live-p e-debug--popup-buffer)
+       (or (not e-debug--popup-frame)
+           (frame-live-p e-debug--popup-frame))
+       (with-current-buffer e-debug--popup-buffer
+         e-debug-popup-mode)))
+
+(defun e-debug--terminal-event-p (event)
+  "Return non-nil when EVENT completes a debug turn."
+  (memq (plist-get event :type)
+        '(turn-finished turn-failed turn-cancelled backend-empty-output)))
+
+(defun e-debug--notification-status (event)
+  "Return compact notification status text for terminal EVENT."
+  (let ((payload (plist-get event :payload)))
+    (pcase (plist-get event :type)
+      ('turn-finished
+       (format "finished: %s" (or (plist-get event :turn-id) "turn")))
+      ('turn-failed
+       (format "failed: %s"
+               (or (and (listp payload)
+                        (plist-get payload :error))
+                   "turn failed")))
+      ('turn-cancelled
+       (format "cancelled: %s" (or (plist-get event :turn-id) "turn")))
+      ('backend-empty-output
+       "failed: empty output")
+      (_ nil))))
+
+(defun e-debug--handle-notification-event (event)
+  "Emit a compact debug notification for terminal EVENT when hidden."
+  (when (and (e-debug--terminal-event-p event)
+             (not (e-debug--popup-visible-p)))
+    (when-let ((status (e-debug--notification-status event)))
+      (message "*e-debug*: %s" status))))
+
+(defun e-debug--ensure-notification-subscription (harness session-id)
+  "Subscribe to terminal events for HARNESS SESSION-ID debug notifications."
+  (unless (and (eq e-debug--notification-harness harness)
+               (equal e-debug--notification-session-id session-id)
+               e-debug--notification-subscription)
+    (when (and e-debug--notification-harness
+               e-debug--notification-subscription)
+      (e-harness-unsubscribe e-debug--notification-harness
+                             e-debug--notification-subscription))
+    (setq e-debug--notification-harness harness)
+    (setq e-debug--notification-session-id session-id)
+    (setq e-debug--notification-subscription
+          (e-harness-subscribe
+           harness
+           #'e-debug--handle-notification-event
+           :session-id session-id))))
+
 ;;;###autoload
 (defun e-debug ()
   "Open the standing debug agent session."
@@ -260,6 +418,7 @@
   (let* ((harness (e-debug--default-harness))
          (session-id (e-debug--ensure-session harness))
          (buffer (e-chat-open-session harness session-id nil)))
+    (e-debug--ensure-notification-subscription harness session-id)
     (e-debug--show-buffer buffer)
     buffer))
 
@@ -282,6 +441,7 @@
          (references (plist-get capture :references))
          (metadata (plist-get capture :metadata))
          (buffer (e-chat-open-session debug-harness debug-session-id nil)))
+    (e-debug--ensure-notification-subscription debug-harness debug-session-id)
     (e-chat-submit-session
      debug-harness
      debug-session-id

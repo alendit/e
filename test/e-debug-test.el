@@ -89,6 +89,191 @@
             (should (eq e-chat-harness harness))
             (should (equal e-chat-session-id e-debug--session-id))))))))
 
+(ert-deftest e-debug-test-display-strategy-defaults-to-popup ()
+  "The debug shell defaults to the floating popup display strategy."
+  (should (eq e-debug-display-strategy 'popup)))
+
+(ert-deftest e-debug-test-popup-display-shows-buffer-in-focused-posframe ()
+  "The popup strategy shows the existing chat buffer in a focused posframe."
+  (let ((buffer (generate-new-buffer " *e-debug-popup-test*"))
+        (e-debug-display-strategy 'popup)
+        shown
+        focused)
+    (unwind-protect
+        (cl-letf (((symbol-function 'e-debug--popup-available-p)
+                   (lambda () t))
+                  ((symbol-function 'posframe-show)
+                   (lambda (shown-buffer &rest args)
+                     (setq shown (cons shown-buffer args))
+                     'debug-popup-frame))
+                  ((symbol-function 'frame-live-p)
+                   (lambda (frame)
+                     (eq frame 'debug-popup-frame)))
+                  ((symbol-function 'select-frame-set-input-focus)
+                   (lambda (frame)
+                     (setq focused frame))))
+          (e-debug--show-buffer buffer)
+          (should (eq (car shown) buffer))
+          (should (eq (plist-get (cdr shown) :accept-focus) t))
+          (should (eq (plist-get (cdr shown) :poshandler)
+                      'posframe-poshandler-frame-center))
+          (should (eq focused 'debug-popup-frame))
+          (should (eq e-debug--popup-buffer buffer))
+          (should (eq e-debug--popup-frame 'debug-popup-frame))
+          (with-current-buffer buffer
+            (should e-debug-popup-mode)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-debug-test-popup-dismiss-hides-without-aborting-session ()
+  "Dismissing the popup hides presentation only; the debug session continues."
+  (let ((buffer (generate-new-buffer " *e-debug-popup-dismiss-test*"))
+        (e-debug-display-strategy 'popup)
+        (e-debug--session-id "debug-session")
+        hidden
+        aborted)
+    (unwind-protect
+        (cl-letf (((symbol-function 'e-debug--popup-available-p)
+                   (lambda () t))
+                  ((symbol-function 'posframe-show)
+                   (lambda (_buffer &rest _args)
+                     'debug-popup-frame))
+                  ((symbol-function 'select-frame-set-input-focus)
+                   (lambda (_frame) nil))
+                  ((symbol-function 'posframe-hide)
+                   (lambda (hidden-buffer)
+                     (setq hidden hidden-buffer)))
+                  ((symbol-function 'e-chat-abort)
+                   (lambda ()
+                     (setq aborted t))))
+          (e-debug--show-buffer buffer)
+          (with-current-buffer buffer
+            (e-debug--dismiss-popup))
+          (should (eq hidden buffer))
+          (should-not aborted)
+          (should (buffer-live-p buffer))
+          (should (equal e-debug--session-id "debug-session"))
+          (with-current-buffer buffer
+            (should-not e-debug-popup-mode)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-debug-test-command-reattaches-popup-after-dismissal ()
+  "Reopening e-debug after dismissal reuses the standing session buffer."
+  (e-debug-test--with-empty-harness-registry
+    (let ((harness (e-harness-create
+                    :backend (e-backend-fake-create :items nil)
+                    :sessions (e-session-store-create)))
+          (e-debug-display-strategy 'popup)
+          (e-debug--session-id nil)
+          hidden)
+      (cl-letf (((symbol-function 'e-debug--default-harness)
+                 (lambda () harness))
+                ((symbol-function 'e-debug--popup-available-p)
+                 (lambda () t))
+                ((symbol-function 'posframe-show)
+                 (lambda (_buffer &rest _args)
+                   'debug-popup-frame))
+                ((symbol-function 'frame-live-p)
+                 (lambda (frame)
+                   (eq frame 'debug-popup-frame)))
+                ((symbol-function 'select-frame-set-input-focus)
+                 (lambda (_frame) nil))
+                ((symbol-function 'posframe-hide)
+                 (lambda (hidden-buffer)
+                   (setq hidden hidden-buffer))))
+        (let ((first-buffer (e-debug))
+              second-buffer)
+          (with-current-buffer first-buffer
+            (e-debug--dismiss-popup))
+          (setq second-buffer (e-debug))
+          (should (eq hidden first-buffer))
+          (should (eq second-buffer first-buffer))
+          (should (= (length (e-harness-session-list harness)) 1))
+          (with-current-buffer second-buffer
+            (should e-debug-popup-mode)))))))
+
+(ert-deftest e-debug-test-background-turn-finished-notifies-after-popup-dismissal ()
+  "A completed debug turn reports in the echo area when the popup is hidden."
+  (let* ((store (e-session-store-create))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :sessions store))
+         messages
+         (e-debug--popup-buffer nil)
+         (e-debug--popup-frame nil)
+         (e-debug--notification-harness nil)
+         (e-debug--notification-subscription nil))
+    (e-harness-create-session harness :id "debug-session"
+                              :metadata '(:source e-debug))
+    (cl-letf (((symbol-function 'message)
+               (lambda (format-string &rest args)
+                 (push (apply #'format format-string args) messages))))
+      (e-debug--ensure-notification-subscription harness "debug-session")
+      (e-harness--emit-turn-event harness "debug-session" "turn-1"
+                                  'turn-finished nil)
+      (should (equal (car messages) "*e-debug*: finished: turn-1")))))
+
+(ert-deftest e-debug-test-background-turn-failed-notifies-error-after-popup-dismissal ()
+  "A failed debug turn reports the compact error when the popup is hidden."
+  (let* ((store (e-session-store-create))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :sessions store))
+         messages
+         (e-debug--popup-buffer nil)
+         (e-debug--popup-frame nil)
+         (e-debug--notification-harness nil)
+         (e-debug--notification-subscription nil))
+    (e-harness-create-session harness :id "debug-session"
+                              :metadata '(:source e-debug))
+    (cl-letf (((symbol-function 'message)
+               (lambda (format-string &rest args)
+                 (push (apply #'format format-string args) messages))))
+      (e-debug--ensure-notification-subscription harness "debug-session")
+      (e-harness--emit-turn-event harness "debug-session" "turn-1"
+                                  'turn-failed '(:error "provider failed"))
+      (should (equal (car messages) "*e-debug*: failed: provider failed")))))
+
+(ert-deftest e-debug-test-popup-visible-requires-live-frame ()
+  "A stale popup mode does not count as visible after its frame is gone."
+  (let ((buffer (generate-new-buffer " *e-debug-popup-stale-frame-test*"))
+        (e-debug--popup-frame 'dead-frame))
+    (unwind-protect
+        (progn
+          (setq e-debug--popup-buffer buffer)
+          (with-current-buffer buffer
+            (e-debug-popup-mode 1))
+          (cl-letf (((symbol-function 'frame-live-p)
+                     (lambda (frame)
+                       (not (eq frame 'dead-frame)))))
+            (should-not (e-debug--popup-visible-p))))
+      (setq e-debug--popup-buffer nil)
+      (setq e-debug--popup-frame nil)
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-debug-test-notification-subscription-updates-for-new-session ()
+  "Notification subscriptions follow a changed debug session id on one harness."
+  (let* ((store (e-session-store-create))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :sessions store))
+         (e-debug--notification-harness nil)
+         (e-debug--notification-subscription nil)
+         (e-debug--notification-session-id nil))
+    (e-harness-create-session harness :id "debug-session-1"
+                              :metadata '(:source e-debug))
+    (e-harness-create-session harness :id "debug-session-2"
+                              :metadata '(:source e-debug))
+    (e-debug--ensure-notification-subscription harness "debug-session-1")
+    (let ((first e-debug--notification-subscription))
+      (e-debug--ensure-notification-subscription harness "debug-session-2")
+      (should-not (eq e-debug--notification-subscription first))
+      (should (equal e-debug--notification-session-id "debug-session-2"))
+      (should (equal (plist-get e-debug--notification-subscription :session-id)
+                     "debug-session-2")))))
+
 (ert-deftest e-debug-test-tab-display-strategy-creates-named-tab-before-buffer ()
   "The tab display strategy creates and names a debug tab before showing BUFFER."
   (let ((buffer (generate-new-buffer " *e-debug-test*"))
