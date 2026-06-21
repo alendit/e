@@ -1,0 +1,86 @@
+#+title: e-chat starter reuses popup investigation
+#+startup: overview
+
+* Source inspected
+
+- =lisp/shells/chat/e-chat-starter.el=: =e-chat-starter-buffer-name= is a single global string, =*e-start-here*=.
+- =lisp/shells/chat/e-chat-starter.el=: =e-chat-starter--start= creates each new session, then calls =(get-buffer-create e-chat-starter-buffer-name)=.
+  That means every starter state receives the same buffer object unless the previous one was killed.
+- =lisp/shells/chat/e-chat-starter.el=: =e-chat-starter--state= is buffer-local, but because the same buffer is reused, the second start overwrites the first start's buffer-local state.
+- =lisp/shells/chat/e-chat-starter.el=: =e-chat-starter--display-buffer= calls =display-buffer= with =display-buffer-reuse-window= before =display-buffer-pop-up-window=.
+  When the shared buffer is already visible, the existing popup window is reused.
+- =lisp/shells/chat/e-chat-starter.el=: =e-chat-starter--close-state-buffer= closes windows showing the state's buffer and kills that buffer.
+  With shared buffers, closing the second state can close the presentation surface that the first state also believed it owned.
+
+* Live reproduction
+
+I ran a bounded live Emacs probe that created two temporary source buffers, started two delayed starter sessions from them against a test harness, and inspected the resulting state.
+
+Observed result:
+
+#+begin_src elisp
+(:same-buffer t
+ :same-popup-window t
+ :buffer-name-1 "*e-start-here*"
+ :buffer-name-2 "*e-start-here*"
+ :live-state-session "20260621T052451-0af5b0c54e85"
+ :state1-session "20260621T052451-ec504fb2085f"
+ :state2-session "20260621T052451-0af5b0c54e85"
+ :source1 "*start-here-probe-source-a*"
+ :source2 "*start-here-probe-source-b*")
+#+end_src
+
+This reproduces the core bug.
+Two distinct sessions from two distinct source buffers share both the same popup buffer and the same visible popup window, and the live buffer-local state points at the second session.
+
+* Root cause
+
+The starter presentation model is currently singleton-shaped.
+Sessions are distinct in the harness, but presentation is keyed by one global buffer name.
+Because the visible buffer stores the active =e-chat-starter--state=, the second invocation replaces the first invocation's UI ownership even though the first harness session still exists.
+
+This is not fundamentally a workspace-root bug.
+Different workspaces make the problem more visible, but the same reuse happens for any two concurrent =e-chat-start-here= calls while the first popup is still live.
+
+* Options considered
+
+** Option 1: Per-session popup buffers and windows
+
+Give every starter state a unique presentation buffer, for example =*e-start-here:<short-session-id>*= with a source label in the rendered header.
+Keep =e-chat-starter--state= buffer-local and let the existing close/open/copy/continue actions operate on the state owned by that buffer.
+
+This is the smallest change that supports true parallel sessions.
+It preserves the current mental model: each popup is one one-shot answer with its own actions.
+The display strategy can remain normal-window based now, and a future child-frame adapter can allocate one frame per state using the same state ownership model.
+
+Tradeoff: multiple invocations can create multiple popup windows, so the display policy should avoid stealing or replacing an existing starter window unintentionally.
+
+** Option 2: Workspace-keyed popup buffers
+
+Key the starter buffer by project or workspace root, such as =*e-start-here:<project>*=.
+Different workspaces get separate popups, while repeated starts inside the same workspace continue to reuse one popup.
+
+This directly addresses the cross-workspace report with less UI clutter than per-session buffers.
+It does not fully support multiple parallel here sessions inside one workspace, so it preserves a hidden singleton at a narrower scope.
+
+Tradeoff: users still need to understand when a new start replaces an old one.
+That replacement would need explicit UX, such as a warning, archive, or session switch action.
+
+** Option 3: One starter manager surface with multiple entries
+
+Keep one global =*e-start-here*= surface, but make it a manager that lists all active starter states as separate entries.
+Each entry owns its session id, source reference, answer, and actions.
+
+This avoids window proliferation and gives a clear global inbox for starter answers.
+It is also the largest change because the current buffer-local one-state model would become a list model with per-entry actions, focus, cleanup, and rendering rules.
+
+Tradeoff: this changes =e-chat-start-here= from a lightweight answer popup into a mini overview UI.
+That may be useful later, but it is more than the immediate bug requires.
+
+* Recommendation
+
+Use Option 1 first.
+The root cause is that presentation identity is not aligned with session identity.
+Per-session buffers fix that directly, make close/continue/open/copy ownership local again, and leave room for a later child-frame display adapter without redesigning state ownership.
+
+If popup proliferation becomes annoying after that, add an explicit listing command or manager surface as a second step rather than keeping implicit reuse.

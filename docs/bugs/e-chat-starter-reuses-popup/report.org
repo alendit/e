@@ -1,0 +1,9 @@
+#+title: e-chat starter reuses popup
+#+startup: overview
+
+* Report
+
+Calling =e-chat-start-here= twice from different workspaces appears to reuse the same temporary popup.
+The expected behavior is that separate here sessions can remain visible and actionable in parallel, or that reuse is made explicit and scoped.
+
+The screenshot showed a single =*e-start-here*= starter popup containing one session's answer, which matches a possible overwrite/reuse failure mode.
