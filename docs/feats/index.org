@@ -46,3 +46,4 @@ Status values for coding agents:
 | 33 | Planned | 33-workspace-awareness/ | Workspace Awareness |
 | 34 | Planned | 34-agent-shell-fleet/ | Agent Shell Fleet |
 | 35 | Planned | 35-provider-context-anchors/ | Provider Context Anchors |
+| 36 | Planned | 36-steering-and-queuing/ | Steering and Queuing |

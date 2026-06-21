@@ -1,0 +1,504 @@
+#+title: Steering and Queuing
+#+startup: overview
+
+* Goal
+
+Let the chat composer accept useful input while a turn is already running:
+
+- By default, submitting composer text during an active turn steers that
+  running turn.
+- =C-u C-c C-c= queues the composer text as a follow-up prompt instead.
+- Queued prompts are always visible above the composer and below the current
+  turn output as a compact list.
+
+The result should make long turns feel live and steerable without making the
+user choose between losing a draft, interrupting the model, or waiting for the
+current turn to finish before typing the next prompt.
+
+* Status
+
+Planned.
+
+* Background
+
+The current chat submission path is single-turn:
+
+- =lisp/shells/chat/e-chat.el= binds =C-c C-c= to =e-chat-submit=.
+- =e-chat-submit= reads =e-chat--composer-submission=, delegates to
+  =e-chat-session-submit=, deletes the composer, sets status to =queued=, and
+  inserts a fresh composer.
+- =lisp/layers/chat/e-chat-session.el= exposes one semantic =:submit= action;
+  =e-chat-session-submit= validates non-empty prompt text and calls
+  =e-harness-prompt-async= with references and metadata.
+- =lisp/core/e-harness.el= rejects another prompt while the session has a
+  running active turn by signalling =e-harness-active-turn-exists=.
+- =lisp/core/e-backend.el= currently gives request handles =:cancel= and
+  =:metadata= slots only.  There is no backend-neutral way to send new
+  mid-turn input to a provider request.
+- =lisp/core/e-loop.el= can refresh the turn message list between provider
+  requests after tool calls, but does not have an explicit steering channel for
+  user text received while a provider request is streaming.
+
+The composer already survives running turns and preserves follow-up drafts
+during progress redraws.  This feature builds on that behavior instead of
+introducing another input buffer.
+
+* User-visible behavior
+
+** Normal submit
+
+When no turn is active, =C-c C-c= keeps the existing behavior: submit the
+composer text as the next user prompt and start a turn.
+
+When a turn is active, plain =C-c C-c= treats the composer text as steering for
+the running turn.  The composer clears after successful steering and remains
+editable for further steering or queued follow-ups.
+
+If the active backend request cannot accept steering, the chat buffer should
+show a clear transient error and keep the composer text intact.  It must not
+silently queue the text, append a transcript message that the backend will not
+see, or discard the draft.
+
+** Queued submit
+
+When a turn is active, =C-u C-c C-c= queues the composer text as a follow-up
+prompt.  The prompt does not affect the running turn.  It starts automatically
+after the active turn settles, unless the user removes it first.
+
+When no turn is active, =C-u C-c C-c= should behave like ordinary submit.  The
+prefix is only meaningful while there is a running turn.
+
+** Queue display
+
+Queued prompts are displayed in the chat buffer's bottom chrome:
+
+- below the current turn output and any running-turn activity/progress region;
+- above the composer separator and editable composer text;
+- as a list in insertion order, with short one-line previews;
+- with stable numbering that updates when queued prompts are removed or drained.
+
+The list is always present when the queue is non-empty, including while progress
+redraws, final assistant insertion, failure rendering, and composer spacer
+refreshes happen.
+
+* Non-goals
+
+- Do not add a full prompt-management sidebar or separate queue buffer in the
+  first slice.
+- Do not add model-side branching, replay, or manual reorder controls in the
+  first slice.
+- Do not pretend all providers support steering.  Unsupported steering is a
+  surfaced capability gap, not a fallback to local transcript append.
+- Do not change =RET= behavior; multiline composer input remains newline-based
+  and =C-c C-c= remains the submit command.
+- Do not make queued prompts durable across Emacs restarts in the first slice.
+  The queue is live session state attached to the running chat buffer/session.
+
+* Design Options
+
+** Recommended: session-level queue plus backend request steering
+
+Add two semantic chat-session actions: one for steering the active turn and one
+for queuing the next prompt.  The harness owns active-turn state and queue
+draining; backend request handles optionally expose a steering operation.  The
+chat shell owns =C-u= interpretation and renders the queue list in the bottom
+chrome.
+
+This keeps presentation details out of the harness while avoiding a fake
+"steering" path that only mutates local transcript state.  It also gives tests
+a clear split: session/harness tests prove queue and steering semantics, while
+chat tests prove prefix behavior and display placement.
+
+** Alternative: chat-only queue and no backend steering
+
+Keep the entire queue in =e-chat.el= and convert active-turn submissions into
+queued prompts unless the user aborts the turn.
+
+This is easier but does not implement the requested default: messages during a
+turn should steer that turn.  It would also make non-chat shells unable to share
+the behavior.
+
+** Alternative: transcript-only steering message
+
+Append the steering text to the session transcript during a running turn and
+let future provider requests include it.
+
+This is misleading.  The current provider request would not see the steering
+text, so the visible transcript would imply behavior the model never received.
+The plan rejects this path.
+
+* Architecture
+
+** Ownership
+
+The chat shell owns interaction policy and rendering:
+
+- =e-chat-submit= decides whether the current invocation is ordinary submit,
+  steering, or queueing based on active-turn state and =current-prefix-arg=.
+- =e-chat.el= renders queued prompt previews in the bottom chrome and preserves
+  them across composer redraws.
+- =e-chat.el= should expose small helpers such as
+  =e-chat--submit-intent=, =e-chat--insert-queued-prompts=, and
+  =e-chat--refresh-bottom-chrome= instead of spreading queue rendering through
+  unrelated progress paths.
+
+The chat-session layer owns shell-neutral operations:
+
+- =e-chat-session-steer= validates steering text and asks the harness to steer
+  the active turn.
+- =e-chat-session-queue= validates queued prompt text and records references
+  and metadata with the prompt.
+- =e-chat-session-pop-queued= or equivalent drains the next queued item when a
+  turn settles.
+
+The harness owns turn lifecycle and provider request interaction:
+
+- Running active-turn entries need an optional queue field keyed by session id,
+  or a sibling queue table in the harness.  The queue should be session-scoped,
+  not chat-buffer-scoped, so non-chat callers and future shells can observe the
+  same state.
+- Active request entries should retain the provider request handle already
+  published through =e-loop=.
+- =e-harness-steer-active-turn= should call an optional backend request steering
+  function and emit a durable activity event only after the provider accepts
+  the steering input.
+- =e-harness-queue-prompt= should append a queue item without starting another
+  turn while the active turn is running.
+- When a turn finishes, fails, or is cancelled, the harness should start the
+  next queued prompt only after the active-turn entry is settled and cleared.
+
+The backend contract owns provider-specific steering capability:
+
+- Extend =e-backend-request= with an optional =steer= function.
+- Add =e-backend-steer-request= as the only public helper that invokes it.
+- Providers that do not support steering leave the slot nil; callers receive a
+  specific unsupported steering error.
+
+** Queue item shape
+
+Use a plist with the same submission fields the existing submit path already
+produces:
+
+#+begin_src elisp
+(:id "queue-1"
+ :prompt "Please also check the tests."
+ :references ((:uri "file:///tmp/example.el" :label "example.el"))
+ :metadata (:source chat-composer :submit-mode queued)
+ :created-at "2026-06-21T12:00:00Z")
+#+end_src
+
+The =:prompt= field is the formatted prompt that will be submitted.  References
+remain attached separately for metadata and UI previews.
+
+** Steering event shape
+
+When steering succeeds, emit a turn activity event with enough information for
+the chat UI and persisted activity history:
+
+#+begin_src elisp
+(:type turn-steered
+ :session-id "..."
+ :turn-id "turn-..."
+ :payload (:prompt-preview "Focus on the failing reload path."
+           :metadata (:source chat-composer :submit-mode steering)))
+#+end_src
+
+The full steering text should not be duplicated into the assistant transcript
+as a separate ordinary user prompt during the same turn unless the provider
+adapter explicitly requires that representation and the harness can guarantee
+the model saw it.
+
+** Bottom chrome
+
+Today composer insertion is owned by =e-chat--insert-composer= and preserved by
+=e-chat--capture-composer-state= / =e-chat--restore-composer-state=.  Queue
+rendering should become part of the same bottom-chrome lifecycle:
+
+1. Delete bottom chrome before durable entry/progress insertion.
+2. Reinsert queued prompt list when non-empty.
+3. Reinsert or restore the composer.
+
+This avoids separate markers competing for the same bottom-of-buffer region.
+The queue list should have its own markers so refreshes can update it without
+touching transcript blocks.
+
+* Implementation Slices
+
+** Slice 1: Session and harness queue semantics
+
+Add a harness queue for prompts submitted while a turn is running.
+
+Files:
+
+- Modify =lisp/core/e-harness.el=.
+- Modify =lisp/layers/chat/e-chat-session.el=.
+- Modify =test/e-harness-test.el=.
+- Modify =test/e-chat-session-test.el=.
+
+Work:
+
+1. Add an =e-harness-queued-prompts= slot or session-keyed queue table.
+2. Add =e-harness-queue-prompt= that validates active-turn state, stores prompt
+   text, references, metadata, and created-at, emits a queue-changed event, and
+   returns the queue item id.
+3. Add =e-harness-queued-prompts= accessor for UI rendering.
+4. Drain the next queued prompt after an active turn settles, starting it through
+   the same path as =e-harness-prompt-async= after the previous active-turn entry
+   is no longer running.
+5. Add =e-chat-session-queue= as a thin validation/delegation action.
+
+Tests:
+
+- Queueing while no turn is active signals a clear error at the harness layer.
+- Queueing while a delayed turn is active stores a prompt without replacing the
+  active turn.
+- When the delayed turn settles, the next queued prompt starts automatically.
+- Multiple queued prompts drain in insertion order.
+- Metadata and references survive queueing and later submission.
+
+** Slice 2: Backend steering contract
+
+Add an explicit, optional provider steering contract.
+
+Files:
+
+- Modify =lisp/core/e-backend.el=.
+- Modify =lisp/core/e-harness.el=.
+- Modify =test/e-harness-test.el=.
+
+Work:
+
+1. Extend =e-backend-request= with a =steer= slot.
+2. Add =e-backend-steer-request= that calls the slot or signals
+   =e-backend-steering-unsupported=.
+3. Add =e-harness-steer-active-turn= that validates a running active turn,
+   extracts the active request handle, calls =e-backend-steer-request=, and emits
+   =turn-steered= only on success.
+4. Keep the active composer text intact when steering fails; the shell will own
+   that behavior, but the harness API must return errors precisely enough for
+   the shell to decide.
+
+Tests:
+
+- Steering with no active turn signals a no-active-turn error.
+- Steering with a running active turn and a request =steer= function calls that
+  function with the prompt and metadata.
+- Steering with a request lacking =steer= signals the unsupported steering
+  condition and does not append a transcript user message.
+- Successful steering emits =turn-steered= with the active turn id.
+
+** Slice 3: Chat submit intent and prefix behavior
+
+Teach the chat composer to distinguish ordinary submit, steering, and queueing.
+
+Files:
+
+- Modify =lisp/shells/chat/e-chat.el=.
+- Modify =test/e-chat-test.el=.
+
+Work:
+
+1. Change =e-chat-submit= to be =(interactive "P")= so it receives the raw
+   prefix argument.
+2. Preserve the existing optional string prompt path for noninteractive callers.
+   If this becomes ambiguous, introduce an internal helper and keep
+   =e-chat-submit-session= as the stable programmatic API.
+3. Add =e-chat--active-turn-running-p= or use the session/harness state accessor
+   to detect whether the current session has a running turn.
+4. With no active turn, submit normally regardless of prefix.
+5. With an active turn and no prefix, call =e-chat-session-steer=.
+6. With an active turn and =C-u= prefix, call =e-chat-session-queue=.
+7. Clear the composer only after the chosen operation succeeds.
+8. Keep the composer text and show a specific message when steering is
+   unsupported or queueing fails.
+
+Tests:
+
+- Plain =C-c C-c= with no active turn calls the existing submit path.
+- Plain =C-c C-c= with an active turn calls steering and clears the composer on
+  success.
+- =C-u C-c C-c= with an active turn queues and clears the composer on success.
+- Failed steering leaves the composer text unchanged.
+- Noninteractive submit callers keep their existing behavior.
+
+** Slice 4: Queue list rendering above the composer
+
+Render queued prompts in the bottom chrome.
+
+Files:
+
+- Modify =lisp/shells/chat/e-chat.el=.
+- Modify =test/e-chat-test.el=.
+
+Work:
+
+1. Add queue-list start/end markers separate from composer markers.
+2. Add =e-chat--queue-preview-text= that trims whitespace, collapses internal
+   newlines to spaces, and truncates long prompts to a stable display width.
+3. Add =e-chat--insert-queued-prompts= that renders:
+
+   #+begin_example
+   Queued prompts
+   1. Please inspect the failing reload path.
+   2. Then update the review notes.
+   #+end_example
+
+4. Update composer insertion/restoration paths so the queue list is always
+   inserted before =e-chat--composer-separator=.
+5. Refresh the queue list on queue-changed, turn-finished, turn-failed, and
+   turn-cancelled events.
+
+Tests:
+
+- A non-empty queue appears above the composer separator.
+- Queue previews preserve insertion order.
+- Queue display survives progress redraw and final assistant insertion.
+- Empty queue removes the queue list without deleting composer text.
+
+** Slice 5: Provider adapter support and live verification
+
+Wire steering into providers that can actually accept mid-turn input.
+
+Files:
+
+- Inspect and modify the relevant adapter files under =lisp/adapters/=.
+- Modify adapter-specific tests when present.
+- Update =docs/feats/36-steering-and-queuing/plan.org= with any provider
+  limitations discovered during implementation.
+
+Work:
+
+1. Inspect each provider adapter's request handle and streaming API.
+2. Add a request =steer= function only for providers with a real mid-turn input
+   mechanism.
+3. Leave unsupported providers explicit; do not emulate steering by queueing.
+4. Run focused tests for the backend contract, harness queue, chat submit, and
+   queue rendering.
+5. Run =e-dev-reload= because this changes loaded chat/harness behavior.
+6. In a live chat buffer, verify:
+   - plain =C-c C-c= during a running turn steers or clearly reports unsupported
+     steering while preserving the draft;
+   - =C-u C-c C-c= during a running turn displays a queued prompt above the
+     composer;
+   - queued prompts drain after the active turn settles;
+   - progress/final rendering keeps the queue list visible.
+
+* Acceptance Criteria
+
+- During an active turn, plain =C-c C-c= attempts steering by default.
+- During an active turn, =C-u C-c C-c= queues the prompt instead of steering.
+- Queued prompts are visible above the composer and below turn output whenever
+  the queue is non-empty.
+- Queue display persists across progress redraws, final assistant insertion,
+  failures, cancellations, and composer spacer refreshes.
+- Queued prompts drain automatically in FIFO order after active turns settle.
+- Unsupported steering is visible and non-destructive: the composer draft
+  remains intact.
+- Existing normal submit behavior is unchanged when no turn is running.
+- Existing inline reference metadata survives ordinary submit, steering, and
+  queueing.
+
+* Test Plan
+
+- Focused session tests:
+  =bin/agent-clj-test --nrepl test/e-chat-session-test.el= if the Emacs test
+  bridge is active, or the repo's normal ERT selector for
+  =test/e-chat-session-test.el=.
+- Focused harness tests around active-turn state, queue draining, unsupported
+  steering, and steering events in =test/e-harness-test.el=.
+- Focused chat tests in =test/e-chat-test.el= for =C-u= submit dispatch,
+  composer preservation on steering failure, and queue-list placement.
+- Broader affected suite for chat/harness/session tests after the focused tests
+  pass.
+- =git diff --check= after docs and code edits.
+- =emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"=
+  after implementation changes to loaded Lisp.
+- One bounded live probe in the running Emacs chat UI for steering failure or
+  success and queue display/drain behavior.
+
+* Risks and Constraints
+
+- Provider support for true steering may be uneven.  The architecture must keep
+  unsupported steering explicit instead of papering over it with queueing.
+- Queue draining must not start the next prompt before failure/cancellation
+  rendering finishes and the previous active-turn entry is cleared.
+- Bottom-chrome rendering is already sensitive because composer spacer,
+  progress redraw, final insertion, and draft preservation all share the same
+  buffer tail.  Queue rendering should be added through one bottom-chrome path,
+  not scattered through every event handler.
+- Prefix handling must preserve noninteractive calls that pass an explicit
+  prompt string to =e-chat-submit=.
+
+* Architecture Review Questions
+
+1. If this work package stopped here, would the project be better off than if it
+   had not been built?
+   Yes.  Even before provider-specific steering is broadly available, the plan
+   establishes a real queue model, keeps unsupported steering honest, and
+   clarifies the boundary between chat UI, session actions, harness lifecycle,
+   and backend requests.
+
+2. What final direction does this move toward?
+   E chat becomes an interactive live agent surface where a user can steer
+   running work and stage follow-up work without losing composer state.
+
+3. Which decisions are likely to change, uncertain, or stable, and are uncertain
+   ones local and reversible instead of hidden behind speculative abstraction?
+   Stable: =C-u C-c C-c= means queue, plain active-turn submit means steer, and
+   queued prompts display above the composer.  Uncertain: provider-specific
+   steering APIs.  That uncertainty is localized in the optional backend
+   request =steer= slot.
+
+4. What component owns this behavior, and why?  Does it have one cohesive
+   responsibility and one primary reason to change?
+   The chat shell owns interaction and rendering, the chat-session layer owns
+   shell-neutral actions, the harness owns active-turn and queue lifecycle, and
+   backend adapters own provider steering.  Each changes for a distinct reason.
+
+5. Does this change increase or reduce coupling?  Are interfaces narrow,
+   consumer-shaped, and free of unused capabilities?
+   It reduces coupling by avoiding chat-local queue state and by exposing only a
+   narrow optional steering operation on backend request handles.
+
+6. Did any dependency start pointing the wrong way, especially from stable
+   policy toward concrete adapters, providers, UI, transport, persistence, or
+   tool clients?
+   No.  Harness policy depends on the backend-neutral request contract, not on a
+   concrete provider adapter or chat buffer implementation.
+
+7. Could any side effect be moved outward into an adapter or shell?
+   Yes.  Provider-specific steering transport belongs in adapters, and queue
+   display belongs in the chat shell.  The harness should only emit lifecycle
+   events and manage queue state.
+
+8. Are the abstractions and interfaces semantically real, and can
+   implementations substitute for each other without narrowed preconditions,
+   weakened behavior, ignored requirements, or unsupported-operation errors?
+   The queue API is semantically real for every backend.  The steering API is
+   optional and explicitly unsupported when a provider cannot accept mid-turn
+   input; callers must handle that condition without pretending substitution
+   succeeded.
+
+9. What compatibility expectations apply, and were obsolete paths removed unless
+   required?
+   Existing no-active-turn =C-c C-c= behavior and noninteractive submit callers
+   must remain compatible.  No obsolete path is intentionally preserved beyond
+   that compatibility.
+
+10. What legacy code can we remove now?
+    None as part of planning.  During implementation, duplicated bottom-chrome
+    refresh logic can be consolidated if queue rendering would otherwise
+    duplicate composer redraw paths.
+
+11. Where are expected errors handled, and where do unexpected errors surface?
+    Unsupported steering and no-active-turn queue/steer errors are expected and
+    handled at the chat shell without losing composer text.  Unexpected backend
+    or harness errors should surface through the existing error path.
+
+12. What tests prove the core behavior independently of the full system?  If
+    the design changed, would tests change narrowly, or would unrelated tests
+    need rewrites?
+    Harness tests prove queue draining and steering contract behavior without a
+    chat buffer.  Chat tests prove prefix dispatch and rendering.  Adapter tests
+    prove provider steering only where supported, so provider changes should not
+    rewrite queue or chat tests.
