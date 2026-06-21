@@ -441,10 +441,28 @@ or tab package."
     (keyboard-quit)))
 
 
+(defun e-debug--legacy-popup-workspace-command (index)
+  "Return legacy popup workspace command symbol for INDEX.
+These commands were installed by older e-debug versions and are removed on
+reload so package-specific workspace behavior can live in user config."
+  (if (zerop index)
+      'e-debug-popup-workspace-switch-to-final
+    (intern (format "e-debug-popup-workspace-switch-to-%d" (1- index)))))
+
+(defun e-debug--remove-legacy-popup-workspace-keybindings ()
+  "Remove workspace bindings installed by older e-debug versions."
+  (dotimes (i 10)
+    (let ((command (e-debug--legacy-popup-workspace-command i)))
+      (dolist (prefix '("M" "s"))
+        (let ((key (kbd (format "%s-%d" prefix i))))
+          (when (eq (lookup-key e-debug-popup-mode-map key) command)
+            (define-key e-debug-popup-mode-map key nil)))))))
+
 (defun e-debug--install-keybindings ()
   "Install debug popup keybindings into live chat keymaps."
   (define-key e-debug-popup-mode-map (kbd "C-g")
               #'e-debug--dismiss-popup-or-keyboard-quit)
+  (e-debug--remove-legacy-popup-workspace-keybindings)
   (define-key e-chat-mode-map (kbd "C-g")
               #'e-debug--dismiss-popup-or-keyboard-quit))
 
