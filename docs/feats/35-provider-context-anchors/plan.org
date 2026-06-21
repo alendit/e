@@ -1,0 +1,441 @@
+#+title: Provider Context Anchors
+#+startup: overview
+
+* Goal
+
+Let provider adapters reuse provider-managed conversation state when it is safe
+to do so, without making provider state authoritative for =e= sessions.
+
+The MVP should add a backend-neutral context segmentation contract and
+provider-owned continuation anchors.  OpenAI Responses can then use stored
+response ids and =previous_response_id= for compatible follow-up requests,
+while all providers can still fall back to the current full-replay request
+shape.
+
+* Status
+
+Planned.
+
+* Background
+
+Feature 23 made context prompt-cache friendly by keeping stable request
+prefixes stable, moving dynamic current-state context later, deriving
+=prompt_cache_key= values, and forwarding cache usage into =token-usage=
+events.  Recent long sessions show this works: stable prefixes often reach high
+cached-input ratios.
+
+The remaining inefficiency is that the OpenAI/Codex adapter is deliberately
+stateless:
+
+- =e= owns sessions, transcript stack, compaction, live context attachments,
+  tools, and events.
+- =e-openai-codex-request-body= sends =store: false= to the Responses-style
+  endpoint.
+- No adapter path persists a provider response id or sends
+  =previous_response_id=.
+- Every provider round trip gets a freshly flattened view of the current
+  context and transcript.
+
+Prompt caching reduces the cost of repeated stable prefixes, but each new tool
+result, assistant message, canvas state refresh, compaction summary, or user
+message changes the request suffix.  The model still receives a full logical
+conversation window, and the client still serializes and sends it.
+
+Current OpenAI Responses guidance separates these concerns:
+
+- =previous_response_id= chains responses and lets the API manage multi-turn
+  continuation state.
+- =store: true= makes the response available as a continuation anchor.
+- Prior input tokens in a response chain are still billed as input tokens.
+- =instructions= from a previous response are not carried over, so clients must
+  send the current instructions for each request.
+- Prompt caching remains the cost optimization for reused prefixes.
+
+This feature should treat provider continuation as an optional request
+optimization and state-management aid, not as a replacement for local
+transcript semantics, compaction, or prompt-cache discipline.
+
+* Non-goals
+
+- Do not make OpenAI or any provider the source of truth for =e= session
+  history.
+- Do not remove transcript-stack session semantics.
+- Do not make =previous_response_id= a core harness concept.
+- Do not require providers to support server-managed continuation.
+- Do not make provider continuation mandatory for correctness.
+- Do not blindly chain provider responses across changed current-state context.
+- Do not solve token minimization only with provider state; compaction and tool
+  output discipline still matter.
+- Do not change user-facing chat, canvas, or Org Canvas behavior in the first
+  slice.
+
+* Current behavior
+
+- =e-harness-context= builds backend-neutral context from active capability
+  messages and the session transcript.
+- =e-capabilities-context-messages= sorts capability instructions and context
+  providers by cache-placement rank, priority, capability order, provider
+  order, and message order.
+- Context providers can classify messages as =static-prefix=,
+  =stable-context=, or =dynamic-context=.
+- =e-chat-session-context-attachments-provider= marks live attachments and
+  canvas content as =dynamic-context= because they represent current state,
+  not transcript history.
+- =e-context-transcript-stack-create= returns transcript messages, optionally
+  replacing compacted history with a compaction summary plus a kept suffix.
+- =e-openai-codex-request-body= moves backend-neutral system messages into
+  top-level Responses =instructions=, sends non-system messages as =input=,
+  and sets =store= to false.
+- =e-openai-codex--usage-item= normalizes cached input tokens into the
+  provider-neutral =token-usage= event payload.
+
+* Accepted decisions
+
+** Preserve local session authority
+
+=e-session= remains the canonical record of user messages, assistant messages,
+tool calls, tool results, compactions, activity events, and branches.
+
+Provider continuation state is a disposable cache.  If it is absent, rejected,
+expired, ambiguous, or incompatible with the current context, the adapter must
+fall back to the existing full-replay request without changing behavior.
+
+** Segment context before flattening
+
+Core context assembly should expose enough structure for providers to reason
+about what changed.  The old flat =:messages= result should remain available
+for existing providers and tests.
+
+The segment model should describe semantics, not a provider feature:
+
+| Segment kind | Meaning |
+|--------------+---------|
+| =static-prefix= | capability instructions and stable policy that should be resent every request |
+| =stable-context= | project, layer, resource, skill, and catalog context that changes rarely |
+| =current-state= | live buffer, canvas, visible-window, and other replace-not-append state |
+| =history= | durable session transcript through a known entry |
+| =delta= | new transcript items after a chosen provider anchor |
+
+Names can change during implementation, but the contract should avoid
+provider-specific terms such as =cached= and =new=.
+
+** Fingerprints prove compatibility
+
+Segments should carry deterministic fingerprints derived from the backend
+neutral content they contribute.  Provider adapters can persist those
+fingerprints alongside their provider-specific anchor data.
+
+A continuation anchor is valid only when all provider-relevant fingerprints
+still match:
+
+- model id;
+- reasoning mode when it affects request semantics;
+- active layer ids;
+- tool schema names and definitions;
+- static instruction content;
+- stable context content;
+- current-state epoch or fingerprint;
+- compaction boundary;
+- transcript entry id covered by the anchor.
+
+If any fingerprint differs, the provider should start a new anchor from a full
+request.
+
+** Keep provider state below the adapter boundary
+
+Core may store opaque provider-anchor metadata under the session, but only the
+owning provider interprets provider-specific fields such as OpenAI response ids.
+
+A provider anchor should be shaped like:
+
+#+begin_src elisp
+(:provider openai
+ :wire-api responses
+ :response-id "resp_..."
+ :covered-entry-id "01..."
+ :context-fingerprint "..."
+ :static-fingerprint "..."
+ :stable-fingerprint "..."
+ :current-state-fingerprint "..."
+ :tool-schema-fingerprint "..."
+ :model "gpt-5.5"
+ :created-at "2026-06-21T...")
+#+end_src
+
+Core code should not branch on =:response-id= or =previous_response_id=.
+
+** Use provider continuation conservatively
+
+The first useful target is OpenAI Responses continuation for requests where the
+context fingerprints are unchanged and only transcript delta has been appended.
+
+When valid, the adapter can send:
+
+- current =instructions=, because OpenAI does not carry prior instructions
+  forward;
+- =previous_response_id= from the anchor;
+- only the new input items after =:covered-entry-id=;
+- the current tool definitions when required by provider semantics;
+- =store: true= so the new response can become the next anchor.
+
+When invalid, the adapter sends the existing full request, with =store: true=
+only if continuation mode is enabled and the provider accepts it.
+
+** Reset on replace-current-state changes
+
+Current-state context is not append-only.  Canvas attachments, Org Canvas
+focus, visible buffers, and similar provider inputs replace earlier state.
+
+The provider must not chain through an anchor if the current-state fingerprint
+changed, because the prior provider state may still contain stale live context.
+
+This rule is stricter than prompt caching.  Prompt caching can tolerate dynamic
+context late in the request; provider continuation must prove that replacing
+state has not changed before it omits older items.
+
+** Preserve prompt cache behavior
+
+=prompt_cache_key= should continue to be sent for OpenAI requests where it is
+supported.  Provider continuation and prompt caching are complementary:
+
+- provider continuation can reduce client-side replay and preserve response
+  chain semantics;
+- prompt caching reduces cost and latency for repeated prefixes;
+- compaction and transcript pruning reduce the logical input window.
+
+* Proposed API
+
+The implementation should introduce a backend-neutral context result that can
+serve both old and new providers:
+
+#+begin_src elisp
+(:strategy transcript-stack
+ :messages (...flat backend-neutral messages...)
+ :segments ((:kind static-prefix
+             :id instructions
+             :fingerprint "..."
+             :messages (...))
+            (:kind stable-context
+             :id agents-std-context
+             :fingerprint "..."
+             :messages (...))
+            (:kind current-state
+             :id chat-session-attachments
+             :fingerprint "..."
+             :messages (...))
+            (:kind history
+             :through-entry-id "01..."
+             :fingerprint "..."
+             :messages (...)))
+ :options (...))
+#+end_src
+
+The exact plist keys should follow existing =e= naming style.  The important
+requirement is that old consumers can keep using =:messages= while provider
+adapters can opt into =:segments=.
+
+Provider anchor metadata can live in session metadata or a dedicated session
+record type.  A dedicated record type is preferable if anchors will change
+often during tool loops, because session metadata is better for user-visible
+session facts.
+
+* File plan
+
+- Modify =lisp/core/e-context.el=
+  - Add context segment data structures or plist helpers.
+  - Keep flat =:messages= compatibility.
+  - Add segment fingerprinting helpers.
+- Modify =lisp/core/e-capabilities.el=
+  - Preserve cache-placement ordering while retaining segment identity and
+    source metadata for capability context.
+- Modify =lisp/core/e-harness.el=
+  - Pass the richer context result to backend adapters without making provider
+    state a harness-level primitive.
+  - Add or route opaque provider-anchor persistence through sessions.
+- Modify =lisp/core/e-session.el=
+  - Persist provider anchor records or metadata in a replay-safe way.
+  - Support looking up the latest compatible provider anchor for a session.
+- Modify =lisp/adapters/openai/e-openai.el=
+  - Add optional Responses continuation mode.
+  - Parse completed response ids from OpenAI stream events.
+  - Build =previous_response_id= requests when an anchor is valid.
+  - Fall back to full replay when invalid.
+- Modify tests:
+  - =test/e-context-test.el=
+  - =test/e-harness-test.el=
+  - =test/e-session-test.el=
+  - =test/e-openai-test.el=
+  - add focused tests if a new module is created.
+
+* Implementation slices
+
+** Slice 1: Context segments with flat compatibility
+
+Add segment metadata to context assembly without changing provider request
+behavior.
+
+Acceptance criteria:
+
+- Existing context callers still receive =:messages= with the same order.
+- Context results also include segment metadata.
+- Static capability instructions, stable providers, dynamic providers, and
+  transcript history are represented as distinct segment kinds.
+- Segment fingerprints are deterministic and covered by tests.
+- No provider uses the segments yet.
+
+** Slice 2: Provider anchor persistence
+
+Add a replay-safe way to store opaque provider anchors against a session.
+
+Acceptance criteria:
+
+- A provider can append an anchor with provider id, covered transcript entry,
+  fingerprints, model, and provider-specific opaque fields.
+- Session reload reconstructs anchors.
+- Branching, compaction, or transcript truncation cannot make a stale anchor
+  look current.
+- Existing sessions without anchor records load normally.
+
+** Slice 3: OpenAI stream response id capture
+
+Teach the OpenAI Responses adapter to observe completed response ids and emit
+or return anchor candidate data without changing request replay behavior.
+
+Acceptance criteria:
+
+- OpenAI stream parsing captures response ids from completed response events.
+- Token usage parsing remains unchanged.
+- The adapter can produce an anchor candidate that core can persist.
+- Missing response ids do not fail a turn.
+
+** Slice 4: OpenAI continuation request construction
+
+Add request construction for valid anchors.
+
+Acceptance criteria:
+
+- When an anchor is valid, the request body includes =previous_response_id=.
+- The request still sends current =instructions=.
+- The request includes only transcript delta after the anchor plus required
+  current input.
+- The request sets =store= true only when continuation mode is enabled and the
+  provider profile supports it.
+- When any relevant fingerprint differs, the request body is identical to the
+  full-replay path except for allowed storage configuration.
+
+** Slice 5: Context epoch resets for current-state providers
+
+Make current-state changes invalidate continuation anchors.
+
+Acceptance criteria:
+
+- Changing a canvas attachment invalidates the previous anchor.
+- Changing visible-buffer context invalidates the previous anchor when that
+  provider is active.
+- A stable-only prompt change does not invalidate more than required.
+- Tests prove stale current-state context is not silently hidden behind
+  =previous_response_id=.
+
+** Slice 6: Live verification and status evidence
+
+Expose enough diagnostics to prove when a turn used continuation versus full
+replay.
+
+Acceptance criteria:
+
+- Provider request events or debug diagnostics show =:continuation used|full=,
+  anchor id, and invalidation reason without dumping full prompts.
+- Live Emacs verification covers one full-replay request, one valid
+  continuation request, and one invalidated continuation after current-state
+  change.
+- Token usage events still show input, cached input, output, reasoning, and
+  total tokens.
+
+* Testing plan
+
+- Focused context tests for segment ordering, segment kinds, and deterministic
+  fingerprints.
+- Session persistence tests for provider anchors and reload.
+- OpenAI adapter tests for:
+  - full-replay request body;
+  - response-id capture from stream events;
+  - continuation request body;
+  - instruction resend with =previous_response_id=;
+  - invalidation on model/tool/context fingerprint mismatch;
+  - fallback when response id is missing.
+- Harness tests proving existing backends that ignore segments behave exactly
+  as before.
+- Regression tests around compaction boundaries and orphan tool-call cleanup.
+
+* Live verification
+
+Because this touches request construction and live session behavior, batch
+tests are not enough.
+
+After implementation:
+
+1. Run focused ERT tests for context, session, harness, and OpenAI request
+   construction.
+2. Run the broader affected test files.
+3. Run =git diff --check=.
+4. Reload the running Emacs:
+
+   #+begin_src sh
+   emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+   #+end_src
+
+5. Run bounded live probes that inspect request diagnostics only:
+   - first request creates an anchor;
+   - second request reuses it through =previous_response_id=;
+   - changing current-state context causes a full replay with a clear
+     invalidation reason.
+
+* Compatibility expectations
+
+- Existing sessions without provider anchors continue to load.
+- Non-OpenAI providers continue to receive flat =:messages=.
+- OpenAI profiles can disable continuation.
+- ChatGPT-backed Codex endpoints may reject public API fields differently from
+  token-auth Responses endpoints; adapter profile gates must keep this
+  explicit.
+- If provider continuation fails during a turn, the user should get a normal
+  provider error or a safe retry through full replay, not silent transcript
+  divergence.
+
+* Risks
+
+- Provider state can become a hidden second source of truth if invalidation is
+  too weak.
+- Current-state context can become stale if replacement semantics are not
+  modeled explicitly.
+- Tool loops may append many anchors; persistence should avoid noisy metadata
+  churn.
+- OpenAI billing still includes prior input tokens in response chains, so this
+  work may improve replay/state handling more than direct token cost.
+- ChatGPT-backed Codex endpoint behavior may differ from public OpenAI
+  Responses; live validation must use the configured provider.
+
+* Review questions
+
+1. If this work package stopped here, would the project be better off than if
+   it had not been built?
+2. What final direction does this move toward?
+3. Which decisions are likely to change, uncertain, or stable, and are
+   uncertain ones local and reversible instead of hidden behind speculative
+   abstraction?
+4. What component owns context segmentation, and what component owns provider
+   continuation state?
+5. Does this reduce coupling between core session semantics and provider
+   request optimization?
+6. Did any dependency start pointing from stable core policy toward OpenAI
+   adapter details?
+7. Could provider-specific side effects be moved farther outward?
+8. Are segment and anchor abstractions semantically real, and can providers
+   ignore them without weakened behavior?
+9. What compatibility expectations apply to old sessions and non-OpenAI
+   providers?
+10. What legacy prompt-cache code can be removed or simplified after this?
+11. Where are expected provider-anchor invalidations handled, and where do
+    unexpected provider-state errors surface?
+12. What tests prove continuation correctness independently of the full live
+    chat system?
