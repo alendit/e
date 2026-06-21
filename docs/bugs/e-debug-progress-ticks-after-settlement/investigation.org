@@ -1,0 +1,99 @@
+#+title: Investigation
+#+startup: overview
+
+* Source inspected
+
+- =lisp/shells/chat/e-chat.el=: =e-chat--render-event= starts the progress
+  timer on =turn-started= and stops it when an assistant =message-added= event
+  arrives, or on explicit failure/cancellation/empty-output paths.
+- =lisp/shells/chat/e-chat.el=: =turn-finished= updates status and composer
+  position, but does not itself stop a progress timer.  That relies on a final
+  assistant message having arrived first.
+- =lisp/shells/chat/e-chat.el=: =e-chat--render-replayed-active-activity= can
+  restore a running =Thinking for ...= row from durable activity after a reload
+  or popup reopen when the turn has no terminal event in durable activity.
+- =lisp/shells/chat/e-chat.el=: =e-chat--clear= already cancels old timers
+  during reload-buffer reattachment, so the stale timer is not just an old
+  pre-reload timer surviving buffer clearing.
+- =lisp/core/e-harness.el=: async turns are stored in =active-turns= while
+  running, but the presentation layer is event-driven and did not reconcile a
+  restored progress turn against the harness active-turn state on subsequent
+  timer ticks.
+
+* Persisted session evidence
+
+- The current debug session was
+  =20260621T053817-8c38f82a04eb=, marked with metadata
+  =(:name "Debug Agent" :source e-debug)=.
+- The tail of that session showed three interleaved turn ids.  One turn,
+  =01KVN0HA7BB71G1W4Z8P6927NC=, produced an assistant message at line 2003 and
+  =turn-finished= at line 2004.
+- The visible stale progress turn was =01KVN16Z0YNSTRG9ZX0RWM75DD=.  Its last
+  durable events were activity/tool/provider events ending in
+  =provider-request-started=, with no assistant message and no terminal
+  =turn-finished=, =turn-failed=, =turn-cancelled=, or =backend-empty-output=
+  event for that turn.
+
+* Live access
+
+- A bounded live probe over =e-chat-mode= buffers showed:
+  - =*e-chat:Debug Agent*= had
+    =:progress-turn "01KVN16Z0YNSTRG9ZX0RWM75DD"=.
+  - The same buffer had =:timer-live t=.
+  - =e-harness-state= for the same session returned =:active-turn nil=.
+- A follow-up probe for that progress turn found only user/tool/tool-call
+  messages, no assistant message, no terminal activity events, and last events
+  ending with =provider-request-started=.
+
+* Conclusion
+
+The immediate bad state is a chat presentation reconciliation bug.  The debug
+chat buffer can restore or keep a progress timer for a durable turn whose
+provider activity has no terminal event, while the harness no longer considers
+that session to have a running active turn.  Once in that state, the progress
+timer only advances/redraws; it never asks whether its turn still matches the
+harness active-turn truth.
+
+=e-dev-reload= is a plausible trigger because reload/popup reopen can restore
+running activity from durable events, and in-flight async callback/subscription
+state can be disrupted.  The existing reload hardening cancels old timers during
+buffer reattach and preserves composer state, but it did not add a timer-side
+reconciliation guard.
+
+* Fix
+
+Add a chat presentation guard before each progress tick schedules another
+redraw:
+
+- Compare =e-chat--progress-turn-id= with the attached harness
+  =active-turns= entry for the session.
+- If the harness has a different running turn, a settled entry, or no running
+  entry for a durable progress turn, treat the progress turn as stale.
+- Settle the open thinking row to a terminal =Thought for ...= line before
+  stopping the progress indicator, because stopping without settling would
+  immediately restart the timer from the still-active provider round record.
+- Keep synthetic presentation tests working by only treating a no-entry turn as
+  stale when that turn is known in durable messages or activity.
+
+* Fix evidence
+
+- Added =e-chat-test-progress-timer-stops-when-harness-turn-settled=.  It failed
+  before the fix because =e-chat--progress-turn-id= stayed at =turn-1= after the
+  harness entry was marked =:status done=.
+- Added =e-chat--stale-progress-turn-p= and
+  =e-chat--durable-progress-turn-p=.
+- Updated =e-chat--advance-progress-indicator= so stale progress turns settle
+  open thinking, stop the timer, and return the status to =idle=.
+- Verified the focused regression with:
+  =rtk eldev test -f test/e-chat-test.el e-chat-test-progress-timer-stops-when-harness-turn-settled=.
+- Verified adjacent progress/reload selectors with:
+  =rtk eldev test -f test/e-chat-test.el e-chat-test-active-activity-restores-missing-progress-timer e-chat-test-progress-timer-stops-when-harness-turn-settled e-chat-test-running-activity-schedules-deferred-redraw e-chat-test-reload-buffers-refreshes-existing-chat-harness e-chat-test-reload-buffers-preserves-composer-draft e-chat-test-reload-buffers-preserves-current-harness-without-default e-chat-test-reload-buffers-preserves-instance-harness-without-backend=.
+- Verified the full chat/debug test files with:
+  =rtk eldev test -f test/e-chat-test.el -f test/e-debug-test.el=.
+  Result: 240 expected passes, 1 expected skip, 0 unexpected.
+- =git diff --check= was clean for the changed source, test, and bug docs.
+- Reloaded the running Emacs with
+  =emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"=.
+- After reload, a bounded live probe against =*e-chat:Debug Agent*= returned
+  =:progress-turn nil=, =:timer-live nil=, =:active-turn nil=, and no visible
+  =Thinking for= text.

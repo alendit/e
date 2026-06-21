@@ -1,0 +1,11 @@
+#+title: e-debug progress ticks after settled turn
+#+startup: overview
+
+The user reported that a recent =e-debug= session got into a bad state where
+the UI progress line, =Thinking for ...=, kept ticking even though the turn was
+actually finished.  The session did not print a final message until the user
+nudged the session with another prompt.
+
+The user also noted that this could be related to the agent running
+=e-dev-reload= during its own debug session.  Recent hardening around reload and
+debug popup progress restoration might not be sufficient.

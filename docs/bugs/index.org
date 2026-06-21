@@ -8,6 +8,7 @@ State values for coding agents:
 
 | State  | Path | Title |
 |--------+------+-------|
+| Closed | e-debug-progress-ticks-after-settlement/ | e-debug progress ticks after settled turn |
 | Closed | org-canvas-open-existing-session-no-bottom-window/ | Org Canvas Open Existing Session No Bottom Window |
 | Closed | org-canvas-input-open-session-reuses-input-buffer/ | Org Canvas Input Open Session Reuses Input Buffer |
 | Closed | abort-url-network-process/ | Abort Url Network Process |

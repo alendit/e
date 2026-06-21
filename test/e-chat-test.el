@@ -2291,6 +2291,32 @@ the orphaned region and appeared to vanish."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-progress-timer-stops-when-harness-turn-settled ()
+  "Progress ticks stop when the harness no longer has the progress turn active."
+  (let ((buffer (e-chat-test--buffer nil "chat-stale-progress-turn")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat--render-event
+           (e-events-make :type 'turn-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 0))
+          (e-chat--render-event
+           (e-events-make :type 'provider-request-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 0
+                          :payload '(:status started)))
+          (puthash e-chat-session-id
+                   '(:id "turn-1" :status done)
+                   (e-harness-active-turns e-chat-harness))
+          (e-chat--advance-progress-indicator)
+          (should-not e-chat--progress-turn-id)
+          (should-not (timerp e-chat--progress-timer))
+          (should-not (string-match-p "Thinking for" (buffer-string))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-tool-count-renders-on-thinking-row ()
   "A round's tool count renders on the same line as its thought row."
   (let ((buffer (e-chat-test--buffer nil "chat-tool-count-thinking-row")))

@@ -3515,6 +3515,39 @@ When TURN-ID is non-nil, cancel only a redraw for that turn."
   "Return non-nil when RECORD has an active provider activity round."
   (and record (e-chat--active-round-record record)))
 
+(defun e-chat--durable-progress-turn-p (turn-id)
+  "Return non-nil when TURN-ID is known to the attached durable session."
+  (and turn-id
+       e-chat-harness
+       e-chat-session-id
+       (or
+        (cl-some
+         (lambda (message)
+           (equal (plist-get message :turn-id) turn-id))
+         (ignore-errors
+           (e-harness-messages e-chat-harness e-chat-session-id)))
+        (cl-some
+         (lambda (event)
+           (equal (plist-get event :turn-id) turn-id))
+         (ignore-errors
+           (e-harness-session-activity-events
+            e-chat-harness
+            e-chat-session-id))))))
+
+(defun e-chat--stale-progress-turn-p (turn-id)
+  "Return non-nil when TURN-ID no longer matches harness running state."
+  (when (and turn-id
+             e-chat-session-id
+             (e-harness-p e-chat-harness))
+    (let ((entry (gethash e-chat-session-id
+                          (e-harness-active-turns e-chat-harness))))
+      (cond
+       ((e-harness--active-turn-running-p entry)
+        (not (equal turn-id (e-harness--active-turn-id entry))))
+       (entry t)
+       ((e-chat--durable-progress-turn-p turn-id) t)
+       (t nil)))))
+
 (defun e-chat--cancel-progress-timer ()
   "Cancel the active assistant progress timer."
   (when (timerp e-chat--progress-timer)
@@ -3561,18 +3594,25 @@ When TURN-ID is non-nil, cancel only a redraw for that turn."
 (defun e-chat--advance-progress-indicator ()
   "Advance and rerender the active assistant progress indicator."
   (when e-chat--progress-turn-id
-    (let* ((now (float-time))
-           (late-by (and e-chat--progress-next-tick-time
-                         (- now e-chat--progress-next-tick-time)))
-           (threshold (max 5.0 (* 3 e-chat-progress-interval))))
-      (when (and late-by (> late-by threshold))
-        (e-chat--set-status
-         (format "Emacs was blocked for %.0fs; checking turn state"
-                 late-by)))
-      (setq e-chat--progress-next-tick-time
-            (+ now e-chat-progress-interval)))
-    (setq e-chat--progress-frame (1+ e-chat--progress-frame))
-    (e-chat--request-activity-redraw e-chat--progress-turn-id 'progress)))
+    (if (e-chat--stale-progress-turn-p e-chat--progress-turn-id)
+        (let ((turn-id e-chat--progress-turn-id))
+          (e-chat--settle-open-thinking turn-id
+                                        (e-chat--current-time-seconds)
+                                        'done)
+          (e-chat--stop-progress-indicator turn-id)
+          (e-chat--set-status "idle" t))
+      (let* ((now (float-time))
+             (late-by (and e-chat--progress-next-tick-time
+                           (- now e-chat--progress-next-tick-time)))
+             (threshold (max 5.0 (* 3 e-chat-progress-interval))))
+        (when (and late-by (> late-by threshold))
+          (e-chat--set-status
+           (format "Emacs was blocked for %.0fs; checking turn state"
+                   late-by)))
+        (setq e-chat--progress-next-tick-time
+              (+ now e-chat-progress-interval)))
+      (setq e-chat--progress-frame (1+ e-chat--progress-frame))
+      (e-chat--request-activity-redraw e-chat--progress-turn-id 'progress))))
 
 (defun e-chat--start-progress-indicator (turn-id)
   "Start the active assistant progress indicator for TURN-ID."
