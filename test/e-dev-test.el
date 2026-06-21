@@ -15,6 +15,7 @@
 (require 'e)
 (require 'e-backend)
 (require 'e-default-harnesses)
+(require 'e-debug)
 (require 'e-dev)
 (require 'e-harness)
 (require 'e-openai)
@@ -96,6 +97,7 @@
            :feature e-emacs-base
            :factory e-emacs-base-layer-create)))
   (setq e-default-chat-layer-ids '(agents-std-context harness-base e os-base emacs-base))
+  (setq e-debug-display-strategy 'tab)
   (let ((e-default-chat-harness-factory
          (lambda (&rest args)
            (e-harness-create
@@ -111,6 +113,7 @@
   (should (equal e-default-chat-layer-ids
                  '(agents-std-context harness-base e os-base emacs-base web
                                       text-editing org-canvas project-local)))
+  (should (eq e-debug-display-strategy 'popup))
   (should (equal (mapcar #'e-layer-id
                          (e-harness-active-layers
                           (e-harness-registry-get-or-create :chat-default)))
