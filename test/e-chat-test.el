@@ -6193,6 +6193,28 @@ The context-window denominator comes from the live provider lookup
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-provider-anchor-candidates-do-not-render-transcript-events ()
+  "Provider anchor candidates are internal cache state, not chat transcript text."
+  (let* ((backend (e-backend-fake-create :items nil))
+         (harness (e-harness-create :backend backend))
+         (buffer (e-chat-open :harness harness
+                              :session-id "chat-provider-anchor-event")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat--render-event
+           (e-events-make
+            :type 'provider-anchor-candidate
+            :session-id e-chat-session-id
+            :turn-id "turn-1"
+            :payload '(:type provider-anchor-candidate
+                       :provider-id openai
+                       :metadata (:response-id "resp_123"))))
+          (should-not (string-match-p "provider-anchor-candidate"
+                                      (buffer-string)))
+          (should-not (string-match-p "Event:" (buffer-string))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-show-context-opens-read-only-preview-buffer ()
   "Context command renders the current session context in a read-only buffer."
   (let ((buffer (e-chat-test--buffer nil "chat-context")))

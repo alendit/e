@@ -5125,6 +5125,8 @@ When REFRESH-MODE-LINE is non-nil, also refresh context-aware mode-line text."
      (e-chat--set-status "done"))
     ('token-usage
      (e-chat--refresh-mode-line-status t))
+    ('provider-anchor-candidate
+     nil)
     ('session-reset
      (e-chat--cancel-pending-activity-redraw)
      (e-chat--stop-progress-indicator)
