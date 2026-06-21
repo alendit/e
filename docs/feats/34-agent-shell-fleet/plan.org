@@ -34,6 +34,20 @@ usable seams:
 - Prompt submission is still shell-buffer-oriented through
   =agent-shell-insert= / =agent-shell--insert-to-shell-buffer= and internal
   ACP prompt handling.
+The integration must work in both directions:
+
+- When =e= creates a worker, it must create a real Agent Shell shell buffer,
+  not a shadow worker hidden behind E state.  A user should be able to open
+  that buffer, inspect the live Agent Shell UI, answer permission prompts, and
+  continue using ordinary Agent Shell commands.  E's normalized work record is
+  a control/observation layer over that real buffer, not a replacement for it.
+- When a user has already created an Agent Shell manually, E should be able to
+  adopt that shell as a tracked worker when the buffer, project root, agent
+  config, and session metadata are sufficient.  Adoption should subscribe to
+  future events, attach or reconstruct a work record, and allow the same
+  status/read/follow-up/interrupt operations as E-created workers.  If the
+  existing shell lacks enough metadata for safe control, E should report a
+  clear non-adoptable diagnostic rather than guessing.
 
 Those seams are good enough to wrap, but not good enough to expose raw to =e=
 agents as the primary MVP contract.  An =e= coordinator should not need to
@@ -90,6 +104,7 @@ stable work-item contract:
  :shell-buffer "*agent-shell claude-code: e*"
  :agent-session-id "..."
  :transcript-file "/path/.agent-shell/transcripts/..."
+ :origin e-created|adopted
  :prompt-summary "Implement feature 34 MVP"
  :last-event turn-complete
  :last-event-at "2026-06-20T..."
@@ -162,11 +177,17 @@ The capability owns:
 
 Create =lisp/core/e-agent-shell.el= as the only module that directly calls
 Agent Shell APIs.
+The adapter should expose both creation and adoption primitives: start a new
+real Agent Shell buffer for E-owned handoffs, or validate and wrap an existing
+Agent Shell buffer that the user created manually.
 
 It should wrap these observed seams:
 
 - start shell: =agent-shell--start= or safer public start functions where
   enough arguments are available;
+- adopt shell: validate that a buffer is an Agent Shell buffer and extract
+  project, config, session, transcript, and status metadata without stealing
+  ownership from the user;
 - send prompt: =agent-shell-insert= or =agent-shell-queue-request= depending on
   status;
 - status: =agent-shell-status=;
@@ -182,6 +203,9 @@ No other =e= module should call Agent Shell functions directly.
 ** Work registry
 
 Create =lisp/core/e-agent-shell-work.el= for E-owned work records.
+The registry must treat Agent Shell buffers as canonical worker endpoints in
+both directions: E-created records point at real shell buffers, and adopted
+manual shells become records that point back at their existing buffers.
 
 The registry maps stable =e= work ids to Agent Shell shell buffers and
 normalized metadata.  It should be independent from any one coordinator
@@ -192,7 +216,10 @@ Initial state can be in memory.  The implementation plan should explicitly
 evaluate whether to persist a compact registry under the project-local =e=
 store or a dedicated JSONL file.  Persistence is not required to send the first
 handoff, but the MVP acceptance criteria require reconnecting to live buffers
-after reload when they still exist.
+after reload when they still exist.  Reconnection should scan candidate Agent
+Shell buffers, match them against stored work ids when available, and otherwise
+allow explicit adoption with a new E work id instead of silently taking over
+unrelated shells.
 
 ** Events and progress
 
@@ -219,6 +246,7 @@ Expose these actions first:
 
 #+begin_src elisp
 (e-capabilities-action capability :handoff-work)
+(e-capabilities-action capability :adopt-work)
 (e-capabilities-action capability :list-work)
 (e-capabilities-action capability :work-status)
 (e-capabilities-action capability :read-work)
@@ -234,7 +262,12 @@ MVP actions:
 
 - =:handoff-work= starts or chooses an Agent Shell worker, submits the prompt,
   creates a work record, subscribes to events, and returns the initial work
-  summary.
+  summary.  When it starts a worker, the returned =:shell-buffer= must name a
+  real Agent Shell buffer that the user can open and operate directly.
+- =:adopt-work= attaches E tracking to an existing manual Agent Shell buffer,
+  validates that its project/config/session metadata are sufficient, subscribes
+  to events from that point forward, and returns the same normalized record
+  shape as =:handoff-work=.
 - =:list-work= returns compact summaries for tracked work items.
 - =:work-status= returns one full normalized record.
 - =:read-work= returns latest transcript/result excerpts with byte limits.
@@ -284,6 +317,8 @@ tool calls when the coordinator actually needs them.
 - Contribute the six MVP actions.
 - Add a reference resource that documents action input/output shapes and the
   Agent Shell source seams the adapter relies on.
+- Include adoption semantics for manual Agent Shell buffers alongside E-created
+  handoffs.
 - Keep =e-harness= unchanged.
 
 ** Slice 4: Coordinator guidance and optional bridge
@@ -299,6 +334,10 @@ tool calls when the coordinator actually needs them.
 - Reload =e= in the running Emacs.
 - With Agent Shell installed, start a temporary tracked handoff against a safe
   prompt and verify status/list/read flows.
+- Open the E-created shell buffer directly and confirm it is an ordinary Agent
+  Shell buffer that can still be operated by the user.
+- Adopt an existing manually-created Agent Shell buffer and verify status,
+  read, follow-up, and interrupt use the same normalized work-record contract.
 - If Agent Shell is unavailable, verify the missing-package diagnostic and the
   pure registry/action tests.
 
@@ -307,6 +346,11 @@ tool calls when the coordinator actually needs them.
 - =e-harness= has no Agent Shell-specific code, conditionals, events, or state.
 - A capability can hand off a prompt to an Agent Shell worker and return a
   stable =e= work id.
+- E-created workers are real Agent Shell buffers that a user can open, inspect,
+  and operate directly.
+- E can adopt a manually-created Agent Shell buffer as a tracked work item when
+  its metadata are sufficient, or report a clear non-adoptable diagnostic when
+  they are not.
 - E can list tracked Agent Shell work items with normalized statuses.
 - E can inspect one work item and retrieve a bounded latest response or
   transcript excerpt.
@@ -321,6 +365,8 @@ tool calls when the coordinator actually needs them.
 
 - Unit-test adapter behavior with stubbed Agent Shell functions:
   start, status, subscribe, send, transcript, and interrupt.
+- Unit-test adoption of an existing Agent Shell buffer, including insufficient
+  metadata and dead-buffer cases.
 - Unit-test work registry transitions independently of Agent Shell.
 - Unit-test capability action lookup and action result shapes.
 - Add a negative test for Agent Shell missing/unavailable.
