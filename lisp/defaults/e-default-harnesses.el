@@ -287,6 +287,31 @@ hold HARNESS."
   (e-harness-set-layer-change-function harness nil)
   harness)
 
+(defun e-default-harness--effective-chat-spec ()
+  "Return the effective default chat harness spec."
+  (cl-find-if
+   (lambda (spec)
+     (eq (plist-get spec :id) :chat-default))
+   (e-default-harness--effective-specs)))
+
+(defun e-default-debug--custom-chat-spec-p ()
+  "Return non-nil when the effective chat default uses a custom spec factory."
+  (let ((factory (plist-get (e-default-harness--effective-chat-spec) :factory)))
+    (and factory
+         (not (eq factory 'e-default-chat-harness-create)))))
+
+(defun e-default-debug--chat-harness-from-custom-spec ()
+  "Return the current chat default harness for a custom chat spec."
+  (or (e-harness-registry-get :chat-default)
+      (e-harness-registry-get-or-create :chat-default)))
+
+(defun e-default-debug--context-strategy-from-chat (chat)
+  "Return an independent debug context strategy derived from CHAT."
+  (let ((strategy (e-harness-context-strategy chat)))
+    (if (e-context-transcript-stack-p strategy)
+        (e-context-transcript-stack-create)
+      strategy)))
+
 (defun e-default-debug-harness-sync (harness spec)
   "Reconcile cached default debug HARNESS from SPEC."
   (if (e-default-chat--sync-from-configured-factory-p spec)
@@ -340,11 +365,26 @@ with an explicit unconfigured backend and no provider."
   "Create the default standing debug harness.
 The debug harness shares the default chat backend/session-store configuration
 but keeps layer selection changes local to chat harnesses."
-  (let ((harness (e-default-chat-harness-create
-                  :provider provider
-                  :sessions sessions
-                  :layer-ids layer-ids
-                  :directory directory)))
+  (let ((harness (if (e-default-debug--custom-chat-spec-p)
+                     (let ((chat (e-default-debug--chat-harness-from-custom-spec)))
+                       (e-harness-create
+                        :backend (e-harness-backend chat)
+                        :context-strategy
+                        (e-default-debug--context-strategy-from-chat chat)
+                        :default-options
+                        (copy-sequence (e-harness-default-options chat))
+                        :capability-config
+                        (copy-tree (e-harness-runtime-capability-config chat))
+                        :sessions (or sessions (e-harness-sessions chat))
+                        :active-layers (e-harness-active-layers chat)
+                        :project-root
+                        (or directory
+                            (e-harness-default-project-root chat))))
+                   (e-default-chat-harness-create
+                    :provider provider
+                    :sessions sessions
+                    :layer-ids layer-ids
+                    :directory directory))))
     (e-harness-set-layer-change-function harness nil)
     (e-harness-activate-layer harness (e-default-debug--debug-layer))
     (e-harness-set-layer-change-function harness nil)

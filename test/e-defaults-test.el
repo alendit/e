@@ -47,6 +47,15 @@
              :sessions (plist-get args :sessions)))))
      ,@body))
 
+(defvar e-defaults-test--custom-chat-backend nil
+  "Backend returned by `e-defaults-test--custom-chat-harness-create'.")
+
+(defun e-defaults-test--custom-chat-harness-create (&rest args)
+  "Create a custom chat harness for default harness tests."
+  (e-harness-create
+   :backend e-defaults-test--custom-chat-backend
+   :sessions (plist-get args :sessions)))
+
 (ert-deftest e-defaults-test-startup-specs-include-chat-and-debug-defaults ()
   "The startup default harness specs include chat and debug defaults."
   (should (equal e-default-harness-specs
@@ -99,6 +108,58 @@
       (should (eq (e-harness-instance-id
                    (e-harness-instance-default :kind 'debug))
                   :debug-default)))))
+
+(ert-deftest e-defaults-test-debug-default-uses-custom-chat-spec-backend ()
+  "The built-in debug default derives from a custom chat default spec."
+  (e-defaults-test--with-empty-harness-registry
+    (let* ((backend (e-backend-fake-create :name "configured" :items nil))
+           (e-defaults-test--custom-chat-backend backend)
+           (e-default-chat-harness-factory nil)
+           (e-default-harness-specs
+            '((:id :chat-default
+               :name "Configured Chat"
+               :kind chat
+               :default t
+               :factory e-defaults-test--custom-chat-harness-create
+               :sync e-default-chat-harness-sync))))
+      (e-default-harnesses-register)
+      (let ((chat (e-harness-registry-get-or-create :chat-default))
+            (debug (e-harness-registry-get-or-create :debug-default)))
+        (should-not (eq debug chat))
+        (should (eq (e-harness-backend chat) backend))
+        (should (eq (e-harness-backend debug) backend))
+        (should-not (eq (e-harness-context-strategy debug)
+                        (e-harness-context-strategy chat)))
+        (should (memq 'debug-agent
+                      (mapcar #'e-capability-id
+                              (e-harness-active-capabilities debug))))))))
+
+(ert-deftest e-defaults-test-startup-refreshes-debug-default-from-custom-chat-spec ()
+  "Startup refreshes an existing debug default from a custom chat default spec."
+  (e-defaults-test--with-empty-harness-registry
+    (let* ((old-backend (e-backend-fake-create :name "old" :items nil))
+           (new-backend (e-backend-fake-create :name "new" :items nil))
+           (e-defaults-test--custom-chat-backend old-backend)
+           (e-default-chat-harness-factory nil)
+           (e-default-harness-specs
+            '((:id :chat-default
+               :name "Configured Chat"
+               :kind chat
+               :default t
+               :factory e-defaults-test--custom-chat-harness-create
+               :sync e-default-chat-harness-sync))))
+      (e-default-harnesses-register)
+      (let ((chat (e-harness-registry-get-or-create :chat-default))
+            (debug (e-harness-registry-get-or-create :debug-default)))
+        (should (eq (e-harness-backend chat) old-backend))
+        (should (eq (e-harness-backend debug) old-backend))
+        (setq e-defaults-test--custom-chat-backend new-backend)
+        (e-default-harnesses-startup)
+        (should (eq (e-harness-backend chat) new-backend))
+        (should (eq (e-harness-backend debug) new-backend))
+        (should (memq 'debug-agent
+                      (mapcar #'e-capability-id
+                              (e-harness-active-capabilities debug))))))))
 
 (ert-deftest e-defaults-test-registers-chat-instance-for-legacy-spec ()
   "Legacy chat-default specs still register the default chat instance."
