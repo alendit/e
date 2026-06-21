@@ -1239,6 +1239,93 @@
               (should (member "keep.txt" labels)))))
       (delete-directory directory t))))
 
+(ert-deftest e-chat-test-composer-at-uses-fd-before-recursive-fallback ()
+  "Non-git project file completion prefers fd before recursive Lisp fallback."
+  (let ((directory (file-name-as-directory
+                    (make-temp-file "e-chat-prefix-fd-root-" t))))
+    (unwind-protect
+        (cl-letf (((symbol-function 'e-chat--workspace-roots)
+                   (lambda () (list directory)))
+                  ((symbol-function 'e-chat--git-file-candidates)
+                   (lambda (_root _limit) nil))
+                  ((symbol-function 'e-chat--fd-file-candidates)
+                   (lambda (root limit)
+                     (should (equal root directory))
+                     (should (= limit e-chat-project-file-candidate-limit))
+                     (list (expand-file-name "from-fd.txt" root))))
+                  ((symbol-function 'e-chat--fallback-file-candidates)
+                   (lambda (&rest _args)
+                     (error "recursive fallback should not run when fd succeeds"))))
+          (let ((labels (mapcar (lambda (candidate)
+                                  (plist-get candidate :label))
+                                (e-chat--project-file-candidates))))
+            (should (equal labels '("from-fd.txt")))))
+      (delete-directory directory t))))
+
+(ert-deftest e-chat-test-fd-file-candidates-invokes-fd-for-files ()
+  "fd candidate collection asks fd for hidden, non-.git regular files."
+  (let ((directory (file-name-as-directory
+                    (make-temp-file "e-chat-prefix-fd-command-" t)))
+        calls)
+    (unwind-protect
+        (cl-letf (((symbol-function 'e-chat--fd-executable)
+                   (lambda () "fd"))
+                  ((symbol-function 'process-file)
+                   (lambda (program _infile _destination _display &rest args)
+                     (setq calls (cons program args))
+                     (insert ".hidden\n")
+                     (insert "visible.txt\n")
+                     0)))
+          (should (equal (e-chat--fd-file-candidates directory 1)
+                         (list (expand-file-name ".hidden" directory))))
+          (should (equal (car calls) "fd"))
+          (should (member "--type" (cdr calls)))
+          (should (member "file" (cdr calls)))
+          (should (member "--hidden" (cdr calls)))
+          (should (member "--exclude" (cdr calls)))
+          (should (member ".git" (cdr calls)))
+          (should (member "--base-directory" (cdr calls)))
+          (should (member directory (cdr calls))))
+      (delete-directory directory t))))
+
+(ert-deftest e-chat-test-inline-completion-matches-case-insensitive-fuzzy ()
+  "Inline completion filters labels by case-insensitive ordered characters."
+  (let ((candidates '((:label ".gitignore")
+                      (:label ".github/workflows/test.yml")
+                      (:label "src/example.el"))))
+    (should (equal (mapcar (lambda (candidate)
+                             (plist-get candidate :label))
+                           (e-chat--inline-completion-matches candidates "GIT"))
+                   '(".gitignore" ".github/workflows/test.yml")))
+    (should (equal (mapcar (lambda (candidate)
+                             (plist-get candidate :label))
+                           (e-chat--inline-completion-matches candidates "sre"))
+                   '("src/example.el")))))
+
+(ert-deftest e-chat-test-inline-completion-render-keeps-prompt-on-current-line ()
+  "Inline completion renders the prompt at point instead of below the composer."
+  (let ((text (e-chat--inline-completion-render
+               "@ file: "
+               '((:label ".gitignore")
+                 (:label ".github/workflows/test.yml"))
+               0
+               "git")))
+    (should (string-prefix-p "@ file: git\n> .gitignore" text))
+    (should-not (string-prefix-p "\n" text))))
+
+(ert-deftest e-chat-test-inline-completion-del-deletes-filter-character ()
+  "DEL removes the previous inline-completion filter character."
+  (let ((keys (list ?A ?Z ?\177 ?B ?\r ?\C-g)))
+    (with-temp-buffer
+      (cl-letf (((symbol-function 'read-key)
+                 (lambda ()
+                   (pop keys))))
+        (should (equal (e-chat--inline-completion-select
+                        "@ file: "
+                        '((:label "ab.txt")
+                          (:label "ac.txt")))
+                       '(:label "ab.txt")))))))
+
 (ert-deftest e-chat-test-composer-at-inserts-file-reference ()
   "Word-boundary @ inserts a selected project file as an inline reference."
   (let (buffer)
@@ -2617,6 +2704,38 @@ the orphaned region and appeared to vanish."
               (should (= (length (plist-get tool-batch :items)) 1))
               (should (equal child-kinds
                              '(activity-thought activity-tool-batch))))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-replayed-active-provider-activity-restores-progress ()
+  "Replayed active provider activity restores the running progress block."
+  (let* ((store (e-session-store-create))
+         (backend (e-backend-fake-create :items nil))
+         (harness (e-harness-create :backend backend :sessions store))
+         (buffer nil))
+    (unwind-protect
+        (progn
+          (e-harness-create-session harness :id "chat-provider-active-replay")
+          (e-session-append-message
+           store "chat-provider-active-replay"
+           '(:role user :content "inspect" :turn-id "turn-1"))
+          (e-session-append-activity-event
+           store "chat-provider-active-replay" "turn-1" 'turn-started nil)
+          (e-session-append-activity-event
+           store "chat-provider-active-replay" "turn-1" 'provider-request-started
+           '(:status started))
+          (setq buffer (e-chat-open :harness harness
+                                    :session-id "chat-provider-active-replay"))
+          (with-current-buffer buffer
+            (cl-letf (((symbol-function 'e-chat--current-time-seconds)
+                       (lambda (&optional _time) 8.0)))
+              (e-chat-test--flush-pending-activity-redraw))
+            (let ((content (buffer-string)))
+              (should (string-match-p
+                       "Thinking for 0min [0-9]+sec" content)))
+            (should (equal e-chat--progress-turn-id "turn-1"))
+            (should (timerp e-chat--progress-timer))
+            (should (e-chat--composer-active-p))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 

@@ -1603,6 +1603,37 @@ scan."
         (walk root)))
     (nreverse files)))
 
+(defun e-chat--fd-executable ()
+  "Return the fd executable for file candidate discovery, or nil."
+  (or (executable-find "fd")
+      (executable-find "fdfind")))
+
+(defun e-chat--fd-file-candidates (root limit)
+  "Return at most LIMIT regular file paths under ROOT using fd."
+  (when-let ((fd (e-chat--fd-executable)))
+    (with-temp-buffer
+      (let ((status (process-file
+                     fd
+                     nil
+                     (list t nil)
+                     nil
+                     "--type"
+                     "file"
+                     "--hidden"
+                     "--exclude"
+                     ".git"
+                     "--color"
+                     "never"
+                     "--base-directory"
+                     root
+                     ".")))
+        (when (zerop status)
+          (let (files)
+            (dolist (line (split-string (buffer-string) "\n" t))
+              (when (< (length files) limit)
+                (push (expand-file-name line root) files)))
+            (nreverse files)))))))
+
 (defun e-chat--usable-workspace-root-p (root)
   "Return non-nil when ROOT can be scanned for composer file completion."
   (and (stringp root)
@@ -1640,9 +1671,12 @@ scan."
                    (files (cond
                            ((eq files :e-chat-git-empty) nil)
                            (files files)
-                           (t (e-chat--fallback-file-candidates
-                               root
-                               remaining)))))
+                           (t (or (e-chat--fd-file-candidates
+                                   root
+                                   remaining)
+                                  (e-chat--fallback-file-candidates
+                                   root
+                                   remaining))))))
               (dolist (file files)
                 (let ((label (file-relative-name file root)))
                   (push (list :label label :path file :root root) candidates)))
@@ -1706,22 +1740,37 @@ scan."
     (delete-overlay e-chat--inline-completion-overlay))
   (setq e-chat--inline-completion-overlay nil))
 
+(defun e-chat--inline-completion-fuzzy-match-p (filter label)
+  "Return non-nil when LABEL contains FILTER characters in order.
+Matching is case-insensitive."
+  (let ((needle (downcase (or filter "")))
+        (haystack (downcase (or label "")))
+        (start 0))
+    (catch 'missing
+      (dotimes (index (length needle) t)
+        (let ((found (string-match-p
+                      (regexp-quote (char-to-string (aref needle index)))
+                      haystack
+                      start)))
+          (unless found
+            (throw 'missing nil))
+          (setq start (1+ found)))))))
+
 (defun e-chat--inline-completion-matches (candidates filter)
-  "Return CANDIDATES whose labels contain FILTER."
+  "Return CANDIDATES whose labels fuzzily match FILTER."
   (if (string-empty-p filter)
       candidates
     (cl-remove-if-not
      (lambda (candidate)
-       (string-match-p
-        (regexp-quote filter)
-        (downcase (plist-get candidate :label))))
+       (e-chat--inline-completion-fuzzy-match-p
+        filter
+        (plist-get candidate :label)))
      candidates)))
 
 (defun e-chat--inline-completion-render (prompt candidates index filter)
   "Render PROMPT, CANDIDATES, INDEX, and FILTER as popup text."
   (let ((rows (cl-subseq candidates 0 (min 8 (length candidates)))))
     (concat
-     "\n"
      prompt
      filter
      "\n"
@@ -1776,7 +1825,7 @@ scan."
                     (setq index (if matches
                                     (mod (1- index) (length matches))
                                   0)))
-                   ((memq key '(?\C-h backspace delete))
+                   ((memq key '(?\C-h ?\177 backspace delete))
                     (unless (string-empty-p filter)
                       (setq filter (substring filter 0 -1))
                       (setq index 0)))
