@@ -47,14 +47,20 @@
   "Return ENTRY message role."
   (plist-get entry :role))
 
+(defun e-compaction--proper-list-p (value)
+  "Return non-nil when VALUE is a proper list."
+  (and (listp value)
+       (proper-list-p value)))
+
 (defun e-compaction--stringify (value)
   "Return a compact text representation of VALUE."
   (cond
    ((null value) "")
    ((stringp value) value)
-   ((and (listp value) (plist-member value :content))
+   ((and (e-compaction--proper-list-p value)
+         (plist-member value :content))
     (e-compaction--stringify (plist-get value :content)))
-   ((listp value)
+   ((e-compaction--proper-list-p value)
     (string-join
      (delq nil
            (mapcar (lambda (item)
@@ -62,6 +68,13 @@
                        (unless (string-empty-p text) text)))
                    value))
      "\n"))
+   ((consp value)
+    (let ((key (e-compaction--stringify (car value)))
+          (val (e-compaction--stringify (cdr value))))
+      (cond
+       ((string-empty-p key) val)
+       ((string-empty-p val) key)
+       (t (format "%s: %s" key val)))))
    (t (format "%S" value))))
 
 (defun e-compaction--truncate (text limit)

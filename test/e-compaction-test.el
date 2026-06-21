@@ -87,6 +87,29 @@
                      "file:///tmp/a.el"))
       (should (equal (plist-get (car resources) :operation) 'read)))))
 
+(ert-deftest e-compaction-test-prepare-stringifies-tool-result-alists ()
+  "Compaction handles nested alists from structured tool results."
+  (let ((store (e-session-store-create)))
+    (e-session-create store :id "session-1")
+    (e-session-append-message store "session-1" '(:role user :content "old"))
+    (e-session-append-message
+     store "session-1"
+     '(:role tool
+       :content (:tool-call-id "call-1"
+                 :name "web_fetch"
+                 :status ok
+                 :content (:capability "web.fetch"
+                           :headers (("date" . "Sun, 21 Jun 2026 10:36:23 GMT")
+                                     ("content-type" . "text/html"))
+                           :markdown "Fetched page"))))
+    (e-session-append-message store "session-1" '(:role user :content "keep"))
+    (let ((preparation (e-compaction-prepare
+                        store "session-1" :keep-recent-tokens 1)))
+      (should (string-match-p "Fetched page"
+                              (plist-get preparation :summary-input)))
+      (should (string-match-p "Sun, 21 Jun 2026 10:36:23 GMT"
+                              (plist-get preparation :summary-input))))))
+
 (ert-deftest e-compaction-test-summary-messages-include-previous-summary-on-repeat ()
   "Repeated compaction prompt includes previous summary once."
   (let ((store (e-session-store-create)))
