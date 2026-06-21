@@ -221,9 +221,75 @@ Proposal: a dedicated, named =tab-bar= workspace tab (e.g. "e-debug").
   =display-buffer= with =inhibit-same-window=. This keeps a correct, if less
   isolated, experience without =tab-bar=.
 
-Keep the strategy behind a small custom (=e-debug-display-strategy=: =tab= or
-=window=) so the uncertain UI choice stays local and reversible, matching the
-=e-chat-starter-display-strategy= precedent.
+Keep the strategy behind a small custom (=e-debug-display-strategy=: =popup=,
+=tab=, or =window=) so the uncertain UI choice stays local and reversible,
+matching the =e-chat-starter-display-strategy= precedent.
+
+** Addendum: floating popup debug chat
+
+Update the default display policy: the debug session should open in a floating
+popup, visually and operationally close to the new active-session picker, rather
+than switching the user to a dedicated tab by default.
+The tab strategy remains as a fallback for terminal Emacs, missing popup
+dependencies, or user preference.
+
+This is not a picker UI.
+The popup hosts the normal =e-chat= interface attached to the standing debug
+session: transcript, progress, composer, turn status, and ordinary chat
+rendering should behave like a regular chat buffer shown through a floating
+frame presentation.
+The floating presentation is owned by the =e-debug= shell; the debug harness and
+session model stay unchanged.
+
+Interaction contract:
+
+- =e-debug= opens or reopens the standing debug session in the floating popup.
+- =e-debug-here= captures context, submits the turn, and shows the same floating
+  chat popup.
+- =C-g= inside the popup dismisses only the floating presentation.
+  It must not abort the turn, kill the chat buffer, delete the standing debug
+  session, or clear the session id.
+- If the user dismisses the popup while a turn is running, the turn continues in
+  the background.
+  Re-running =e-debug= should reattach to the same session and show current
+  progress or the completed answer.
+- When a background debug turn finishes while the popup is not visible, emit an
+  echo-area notification such as =*e-debug*: finished: <brief status>= or
+  =*e-debug*: failed: <brief error>=.
+  The notification should be short enough for the bottom line and should not
+  steal focus.
+
+Reuse the feature-32 floating picker infrastructure where it is genuinely
+presentation-level reuse: centered child-frame/posframe display, focus return,
+popup cleanup, size customization, and =C-g= dismissal semantics.
+Do not force the debug chat through the opaque-candidate picker contract, because
+the debug popup displays a live chat buffer rather than a filtered candidate
+list.
+
+Implementation seams:
+
+- Extend =e-debug-display-strategy= with a =popup= value and make it the default.
+- Add an =e-debug--show-popup= display path that shows the existing debug chat
+  buffer in a focused floating frame.
+- Add an =e-debug--dismiss-popup= command bound to =C-g= in the floating debug
+  presentation only.
+- Track whether the popup is visible separately from whether the session or turn
+  is alive.
+- Subscribe to the standing debug session's turn completion events only for the
+  notification path, and remove popup-only subscriptions when the popup is
+  dismissed.
+
+Testing additions:
+
+- Batch-test that =C-g= from the floating debug popup closes the popup without
+  calling the abort path and without clearing =e-debug--session-id=.
+- Batch-test that re-running =e-debug= after dismissal reuses the same session
+  buffer/session id.
+- Batch-test that a completed background turn emits an =*e-debug*:= echo-area
+  message when the popup is not visible.
+- Live-verify from a split-window layout that =e-debug-here= opens a centered
+  floating chat popup, =C-g= returns to the original window, the turn keeps
+  running, and completion reports in the bottom line.
 
 ** Commands and binding
 
@@ -305,6 +371,19 @@ Each package is a useful stopping point: after it, the project is better off.
 - Implemented: README documents =e-debug=, =e-debug-here=, the default tab
   behavior, and a suggested =C-c e d= binding. Package smoke tests include both
   public debug commands.
+
+** WP5: Floating popup debug chat addendum
+
+- Change =e-debug-display-strategy= so =popup= is the default display strategy,
+  with =tab= and =window= kept as explicit fallbacks.
+- Show the normal debug =e-chat= buffer in a floating frame, reusing
+  presentation-level pieces from =e-picker= where that reuse is real.
+- Bind =C-g= in the floating debug presentation to dismiss the popup only; the
+  standing debug session and any running turn continue in the background.
+- Emit a short =*e-debug*:= echo-area notification when a background debug turn
+  finishes after the popup has been dismissed.
+- Verify with focused tests for popup dismissal, session reuse, and completion
+  notification, then live-verify the split-window =e-debug-here= flow.
 
 * Follow-up: multiple concurrent debug issues
 
