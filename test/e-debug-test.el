@@ -102,7 +102,10 @@
     (should (eq (lookup-key e-chat-mode-map (kbd "C-g"))
                 #'e-debug--dismiss-popup-or-keyboard-quit))
     (should (eq (lookup-key e-debug-popup-mode-map (kbd "C-g"))
-                #'e-debug--dismiss-popup-or-keyboard-quit))))
+                #'e-debug--dismiss-popup-or-keyboard-quit))
+    (should-not (lookup-key e-debug-popup-mode-map (kbd "M-3")))
+    (should-not (lookup-key e-debug-popup-mode-map (kbd "s-3")))
+    (should-not (lookup-key e-debug-popup-mode-map (kbd "M-0")))))
 
 (ert-deftest e-debug-test-popup-display-shows-buffer-in-focused-posframe ()
   "The popup strategy shows the existing chat buffer in a focused posframe."

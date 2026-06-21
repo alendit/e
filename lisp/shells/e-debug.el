@@ -440,22 +440,11 @@ or tab package."
       (e-debug--dismiss-popup)
     (keyboard-quit)))
 
-(defun e-debug--install-popup-workspace-keybindings ()
-  "Install workspace navigation bindings into `e-debug-popup-mode-map'."
-  (dotimes (i 9)
-    (let ((command (intern (format "e-debug-popup-workspace-switch-to-%d" i))))
-      (define-key e-debug-popup-mode-map (kbd (format "M-%d" (1+ i))) command)
-      (define-key e-debug-popup-mode-map (kbd (format "s-%d" (1+ i))) command)))
-  (define-key e-debug-popup-mode-map (kbd "M-0")
-              #'e-debug-popup-workspace-switch-to-final)
-  (define-key e-debug-popup-mode-map (kbd "s-0")
-              #'e-debug-popup-workspace-switch-to-final))
 
 (defun e-debug--install-keybindings ()
   "Install debug popup keybindings into live chat keymaps."
   (define-key e-debug-popup-mode-map (kbd "C-g")
               #'e-debug--dismiss-popup-or-keyboard-quit)
-  (e-debug--install-popup-workspace-keybindings)
   (define-key e-chat-mode-map (kbd "C-g")
               #'e-debug--dismiss-popup-or-keyboard-quit))
 
