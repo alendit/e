@@ -34,7 +34,10 @@
                      "edit"
                      "list_buffers"
                      "save_buffer"
-                     "run_elisp")))))
+                     "run_elisp"
+                     "workspace_state"
+                     "workspace_focus_buffer"
+                     "workspace_show_shell")))))
 
 (ert-deftest e-emacs-base-test-layer-activates-emacs-capabilities ()
   "The emacs-base layer remains a compatibility preset over capabilities."
@@ -45,7 +48,8 @@
                      buffer-read
                      selection-context
                      buffer-edit
-                     elisp-eval)))))
+                     elisp-eval
+                     workspace-awareness)))))
 
 (ert-deftest e-emacs-base-test-visible-buffer-context-uses-visible-windows ()
   "Visible-buffer context includes visible buffers and excludes hidden ones."

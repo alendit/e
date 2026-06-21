@@ -25,6 +25,7 @@
 (require 'e-session)
 (require 'e-shells)
 (require 'e-startup)
+(require 'e-workspaces)
 (require 'org)
 (require 'seq)
 (require 'subr-x)
@@ -525,7 +526,10 @@ the display to a normal window when the selected window is a side window."
      ((e-chat--side-window-p)
       (when-let ((window (e-chat--display-from-side-window buffer)))
         (select-window window)))
-     (t (switch-to-buffer buffer))))
+     (t (e-workspace-switch-to-buffer
+         buffer
+         :workspace (or (e-buffer-workspace buffer)
+                        (e-workspace-current))))))
   buffer)
 
 (defun e-org-canvas--display-chat-buffer (buffer)
@@ -533,10 +537,11 @@ the display to a normal window when the selected window is a side window."
   (when (buffer-live-p buffer)
     (let ((window (if (e-chat--side-window-p)
                       (e-chat--display-from-side-window buffer)
-                    (display-buffer
+                    (e-workspace-display-buffer
                      buffer
-                     '((display-buffer-at-bottom)
-                       (inhibit-same-window . t))))))
+                     :workspace (or (e-buffer-workspace buffer)
+                                    (e-workspace-current))
+                     :action '(display-buffer-at-bottom)))))
       (when (window-live-p window)
         (e-chat--after-display-buffer buffer))
       window)))
@@ -545,9 +550,12 @@ the display to a normal window when the selected window is a side window."
     (buffer &optional needs-file-name target-folder)
   "Create and open an Org Canvas session for BUFFER."
   (e-org-canvas--ensure-org-buffer buffer)
-  (let* ((harness (e-org-canvas--default-harness))
+  (let* ((workspace (or (e-buffer-workspace buffer)
+                        (e-workspace-current)))
+         (harness (e-org-canvas--default-harness))
          (session (e-chat--create-session harness))
          (session-id (plist-get session :id)))
+    (e-buffer-set-workspace buffer workspace)
     (e-org-canvas--mark-session
      harness session-id buffer
      :scope 'thread
@@ -555,7 +563,9 @@ the display to a normal window when the selected window is a side window."
      :needs-file-name needs-file-name)
     (message "Org Canvas enabled for %s; use s-i to prompt the current topic"
              (buffer-name buffer))
-    (e-chat-open :harness harness :session-id session-id)))
+    (let ((chat-buffer (e-chat-open :harness harness :session-id session-id)))
+      (e-buffer-set-workspace chat-buffer workspace)
+      chat-buffer)))
 
 (defun e-org-canvas--open-session-for-buffer-and-display
     (buffer &optional needs-file-name target-folder)
@@ -900,7 +910,11 @@ Org file."
   (when (buffer-live-p e-org-canvas-input--target-buffer)
     (if-let ((window (get-buffer-window e-org-canvas-input--target-buffer t)))
         (select-window window)
-      (pop-to-buffer e-org-canvas-input--target-buffer))))
+      (e-workspace-pop-to-buffer
+       e-org-canvas-input--target-buffer
+       :workspace (or (e-buffer-workspace e-org-canvas-input--target-buffer)
+                      (e-buffer-workspace (current-buffer))
+                      (e-workspace-current))))))
 
 (defun e-org-canvas--hide-visible-backing-chat-buffers
     (session-id target-buffer)
@@ -945,8 +959,13 @@ has no visible window."
                  '((display-buffer-below-selected)
                    (window-height . 8)
                    (inhibit-same-window . t))))
-            (display-buffer buffer '((display-buffer-at-bottom)
-                                     (window-height . 8))))))))
+            (e-workspace-display-buffer
+             buffer
+             :workspace (or (e-buffer-workspace buffer)
+                            (and (buffer-live-p target)
+                                 (e-buffer-workspace target))
+                            (e-workspace-current))
+             :action '(display-buffer-at-bottom)))))))
 
 (defun e-org-canvas--input-select-result-buffer (buffer)
   "Display and select submitted input/result BUFFER."
@@ -1177,6 +1196,11 @@ progress redraws follow output instead of staying pinned at the top."
         (setq-local e-current-harness harness)
         (setq-local e-chat-harness harness)
         (setq-local e-chat-session-id session-id)
+        (e-buffer-set-workspace
+         buffer
+         (or (and (buffer-live-p target-buffer)
+                  (e-buffer-workspace target-buffer))
+             (e-workspace-current)))
         (e-org-canvas--input-reset-chat-state)
         (setq-local e-org-canvas-input--harness harness)
         (setq-local e-org-canvas-input--session-id session-id)
@@ -1230,7 +1254,11 @@ progress redraws follow output instead of staying pinned at the top."
       (e-org-canvas--input-replay-deferred-events buffer)
       (unless e-org-canvas-input--final-message-rendered-p
         (when (buffer-live-p target)
-          (pop-to-buffer target))))))
+          (e-workspace-pop-to-buffer
+           target
+           :workspace (or (e-buffer-workspace target)
+                          (e-buffer-workspace buffer)
+                          (e-workspace-current))))))))
 
 ;;;###autoload
 (defun e-org-canvas-input-close-result ()
@@ -1247,7 +1275,10 @@ progress redraws follow output instead of staying pinned at the top."
     (when (buffer-live-p target)
       (if-let ((window (get-buffer-window target t)))
           (select-window window)
-        (pop-to-buffer target)))))
+        (e-workspace-pop-to-buffer
+         target
+         :workspace (or (e-buffer-workspace target)
+                        (e-workspace-current)))))))
 
 (defun e-org-canvas--input-abort-active-turn ()
   "Abort the running turn attached to the current input/result pane."
@@ -1287,7 +1318,10 @@ progress redraws follow output instead of staying pinned at the top."
       (kill-buffer input))
     (when (buffer-live-p target)
       (unless (get-buffer-window target t)
-        (pop-to-buffer target)))))
+        (e-workspace-pop-to-buffer
+         target
+         :workspace (or (e-buffer-workspace target)
+                        (e-workspace-current)))))))
 
 ;;;###autoload
 (defun e-org-canvas-input-open-session ()

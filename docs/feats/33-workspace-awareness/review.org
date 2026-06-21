@@ -1,0 +1,141 @@
+#+title: Review: Workspace Awareness
+#+author: e implementation
+#+date: 2026-06-21
+#+startup: overview
+
+* Status
+
+In-review.
+
+* Review loop
+
+The implementation adds a presentation-owned workspace service, chat and Org
+canvas workspace affinity, workspace-aware display routing for first-party
+shells, model-facing workspace actions, and a readable
+=e://workspace-awareness/skills/workspace-display= guidance resource.
+
+The first subagent review found four actionable issues:
+
+- =e-workspace--display-action= returned =(FUNCTIONS ALIST)= instead of the
+  =display-buffer= action shape =(FUNCTIONS . ALIST)=, so action alist entries
+  such as =reusable-frames= and =inhibit-switch-frame= were not visible to
+  Emacs.
+- =e-workspace-visible-window= reused any visible window on the token frame,
+  even when the target token named a different workspace than the current one.
+- =e-workspace-display-buffer= checked/admitted buffer membership before
+  switching to the target workspace, which made Doom/persp admission operate on
+  the wrong current workspace.
+- =workspace_focus_buffer= preferred the target buffer's existing workspace
+  over the active shell workspace, contrary to the model-facing action contract.
+
+The fixes return a cons action for =display-buffer=, only reuse visible windows
+when the target token matches the current workspace for that frame, switch
+before membership/admission for switch-like policies, and make
+=workspace_focus_buffer= target the active shell workspace first.  Regression
+coverage now exercises each reviewed failure mode.
+
+* Verification
+
+Focused capability/default-layer verification:
+
+#+begin_src sh
+rtk eldev test test/e-emacs-capabilities-test.el test/e-emacs-base-test.el
+#+end_src
+
+Result:
+
+#+begin_example
+Ran 14 tests, 14 results as expected, 0 unexpected
+#+end_example
+
+Focused review-fix regression verification:
+
+#+begin_src sh
+rtk eldev test test/e-workspaces-test.el test/e-emacs-capabilities-test.el test/e-emacs-base-test.el
+#+end_src
+
+Result:
+
+#+begin_example
+Ran 23 tests, 23 results as expected, 0 unexpected
+#+end_example
+
+Broader affected-suite verification:
+
+#+begin_src sh
+rtk eldev test test/e-workspaces-test.el test/e-chat-test.el test/e-org-canvas-test.el test/e-emacs-capabilities-test.el test/e-emacs-base-test.el
+#+end_src
+
+Result:
+
+#+begin_example
+Ran 296 tests, 295 results as expected, 0 unexpected, 1 skipped
+SKIPPED e-chat-test-assistant-markdown-renders-with-text-properties
+#+end_example
+
+Full suite:
+
+#+begin_src sh
+rtk eldev test
+#+end_src
+
+Result:
+
+#+begin_example
+Ran 977 tests, 976 results as expected, 0 unexpected, 1 skipped
+SKIPPED e-chat-test-assistant-markdown-renders-with-text-properties
+#+end_example
+
+Whitespace:
+
+#+begin_src sh
+git diff --check
+#+end_src
+
+Result: clean.
+
+* UX and performance playthrough
+
+The running Emacs was reloaded and probed through temporary shell and target
+buffers.  The probe registered the workspace-awareness tools, called
+=workspace_state=, focused a temporary buffer through =workspace_focus_buffer=,
+verified the buffer became visible, confirmed the dynamic context included
+workspace action guidance, and confirmed the focus action used the active shell
+workspace even when the target buffer had a different original workspace token.
+
+Computer Use also confirmed the visible Doom Emacs window remained on
+=docs/feats/index.org= after reload and probe.
+
+No profiling was required; the exercised display path is a bounded window
+selection/display operation and the new context/tool state only reads current
+workspace and buffer-local affinity.
+
+* Live reload
+
+The running Emacs was reloaded with:
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Result:
+
+#+begin_example
+"/Users/dimitrivorona/projects/elisp/e/"
+#+end_example
+
+Bounded live probe:
+
+#+begin_example
+(:shell-workspace "doom:e review" :buffer-original-workspace "doom:other-live"
+ :state-status ok :focus-status ok :focus-workspace "doom:e review" :focused t
+ :visible t :context-has-guidance 157)
+#+end_example
+
+* Final review
+
+Subagent re-review reported no new suggestions after the fixes.
+
+#+begin_example
+No new suggestions.
+#+end_example

@@ -135,6 +135,7 @@
                   "lisp/shells/e-shells.el"
                   "lisp/shells/e-layers-shell.el"
                   "lisp/shells/e-context-status.el"
+                  "lisp/shells/e-workspaces.el"
                   "lisp/shells/e-picker.el"
                   "lisp/shells/chat/e-chat.el"
                   "lisp/shells/chat/e-chat-starter.el"

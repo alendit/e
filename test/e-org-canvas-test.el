@@ -133,6 +133,65 @@
                     (should (plist-get org-canvas :root))))))))
       (e-org-canvas-test--kill-chat-buffers))))
 
+(ert-deftest e-org-canvas-test-open-current-buffer-captures-workspace-affinity ()
+  "Opening an Org Canvas surface gives source and chat buffers one workspace."
+  (let ((harness (e-org-canvas-test--harness))
+        (token (make-e-workspace-token
+                :backend 'single
+                :id 'canvas-workspace
+                :name "canvas"
+                :frame (selected-frame))))
+    (unwind-protect
+        (e-org-canvas-test--with-empty-harness-registry
+          (let ((e-chat-default-harness-id :org-canvas-test))
+            (e-harness-registry-register :org-canvas-test harness)
+            (cl-letf (((symbol-function 'e-workspace-current)
+                       (lambda (&optional _frame) token)))
+              (with-temp-buffer
+                (rename-buffer "org-canvas-workspace-source" t)
+                (org-mode)
+                (insert "* Topic\nBody\n")
+                (let ((chat-buffer (e-org-canvas-open-for-current-buffer))
+                      (source (current-buffer)))
+                  (should (e-workspace-equal-p
+                           (e-org-canvas-workspace source)
+                           token))
+                  (should (e-workspace-equal-p
+                           (e-chat-buffer-workspace chat-buffer)
+                           token))
+                  (should (e-workspace-equal-p
+                           (e-buffer-workspace chat-buffer)
+                           token)))))))
+      (e-org-canvas-test--kill-chat-buffers))))
+
+(ert-deftest e-org-canvas-test-input-buffer-inherits-target-workspace ()
+  "Transient Org Canvas input buffers inherit the target canvas workspace."
+  (let* ((harness (e-org-canvas-test--harness))
+         (token (make-e-workspace-token
+                 :backend 'single
+                 :id 'input-workspace
+                 :name "input"
+                 :frame (selected-frame)))
+         (target (get-buffer-create "org-canvas-input-workspace-target"))
+         input)
+    (unwind-protect
+        (progn
+          (with-current-buffer target
+            (org-mode)
+            (e-buffer-set-workspace target token))
+          (setq input
+                (e-org-canvas--input-buffer
+                 :harness harness
+                 :session-id "session-1"
+                 :scope 'document
+                 :target-buffer target))
+          (should (e-workspace-equal-p (e-buffer-workspace input) token))
+          (should (e-workspace-equal-p (e-org-canvas-workspace input) token)))
+      (when (buffer-live-p input)
+        (kill-buffer input))
+      (when (buffer-live-p target)
+        (kill-buffer target)))))
+
 (ert-deftest e-org-canvas-test-open-starts-new-session-without-reference ()
   "Opening an Org buffer without a session reference starts a new session."
   (let ((directory (make-temp-file "e-org-canvas-" t))
@@ -815,7 +874,7 @@
                      window))
                   ((symbol-function 'select-window)
                    (lambda (&rest _args) nil))
-                  ((symbol-function 'pop-to-buffer)
+                  ((symbol-function 'e-workspace-pop-to-buffer)
                    (lambda (buffer &rest _args)
                      (set-window-buffer window buffer)
                      buffer))
@@ -898,7 +957,7 @@
                      (lambda (&rest args)
                        (setq call args)
                        "turn-1"))
-                    ((symbol-function 'pop-to-buffer)
+                    ((symbol-function 'e-workspace-pop-to-buffer)
                      (lambda (&rest _args) nil)))
             (with-current-buffer buffer
               (goto-char (point-max))
@@ -951,7 +1010,7 @@
                          :created-at 0
                          :payload '(:status started)))
                        "turn-1"))
-                    ((symbol-function 'pop-to-buffer)
+                    ((symbol-function 'e-workspace-pop-to-buffer)
                      (lambda (&rest _args) nil)))
             (with-current-buffer buffer
               (goto-char (point-max))
@@ -1224,7 +1283,7 @@ relied on `e-chat--running-status-rendered-hook' to follow the bottom."
                  :target-buffer target))
           (cl-letf (((symbol-function 'e-harness-tools)
                      (lambda (_harness &optional _session-id _turn-id) tools))
-                    ((symbol-function 'pop-to-buffer)
+                    ((symbol-function 'e-workspace-pop-to-buffer)
                      (lambda (&rest _args) nil)))
             (with-current-buffer input
               (goto-char (point-max))

@@ -11,11 +11,13 @@
 
 ;;; Code:
 
+(require 'cl-lib)
 (require 'ert)
 (require 'e)
 (require 'e-capabilities)
 (require 'e-emacs-capabilities)
 (require 'e-resources)
+(require 'e-store)
 (require 'e-tools)
 
 (defun e-emacs-capabilities-test--tool-names (capability)
@@ -125,6 +127,142 @@
     (should (string-match-p "single direct tool call" instructions))
     (should (string-match-p "visible as activity" instructions))))
 
+(ert-deftest e-emacs-capabilities-test-workspace-awareness-context ()
+  "Workspace awareness reports current and shell workspace state."
+  (let* ((token (make-e-workspace-token
+                 :backend 'single
+                 :id 'test-workspace
+                 :name "test"
+                 :frame (selected-frame)))
+         (buffer (get-buffer-create " *e-workspace-context*")))
+    (unwind-protect
+        (progn
+          (e-buffer-set-workspace buffer token)
+          (cl-letf (((symbol-function 'e-workspace-current)
+                     (lambda (&optional _frame) token)))
+            (with-current-buffer buffer
+              (let* ((capability (e-workspace-awareness-capability-create))
+                     (messages (e-capabilities-context-messages
+                                (list capability)
+                                :harness nil
+                                :session-id "session-1"
+                                :turn-id "turn-1"))
+                     (message (cl-find-if
+                               (lambda (candidate)
+                                 (string-match-p
+                                  "Workspace awareness:"
+                                  (plist-get candidate :content)))
+                               messages))
+                     (content (plist-get message :content)))
+                (should message)
+                (should (string-match-p "Workspace awareness:" content))
+                (should (string-match-p "current=single:test" content))
+                (should (string-match-p "shell=single:test" content))
+                (should (string-match-p "prefer workspace_state" content))))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-emacs-capabilities-test-workspace-awareness-registers-actions ()
+  "Workspace awareness registers the small model-facing action set."
+  (should (equal (e-emacs-capabilities-test--tool-names
+                  (e-workspace-awareness-capability-create))
+                 '("workspace_state"
+                   "workspace_focus_buffer"
+                   "workspace_show_shell"))))
+
+(ert-deftest e-emacs-capabilities-test-workspace-focus-buffer-action ()
+  "The focus action routes a named buffer through the workspace display helper."
+  (let* ((capability (e-workspace-awareness-capability-create))
+         (registry (e-tools-registry-create))
+         (buffer (get-buffer-create " *e-workspace-focus*"))
+         (shell (get-buffer-create " *e-workspace-focus-shell*"))
+         (token (make-e-workspace-token
+                 :backend 'single
+                 :id 'focus-workspace
+                 :name "focus"
+                 :frame (selected-frame)))
+         focused)
+    (unwind-protect
+        (progn
+          (e-capabilities-register-tools capability registry)
+          (e-buffer-set-workspace buffer token)
+          (e-buffer-set-workspace shell token)
+          (with-current-buffer shell
+            (cl-letf (((symbol-function 'e-workspace-pop-to-buffer)
+                       (lambda (candidate &key workspace)
+                         (setq focused (list candidate workspace))
+                         candidate)))
+              (let ((result (e-tools-execute
+                             registry
+                             '(:id "call-1"
+                               :name "workspace_focus_buffer"
+                               :arguments (:buffer " *e-workspace-focus*")))))
+                (should (eq (plist-get result :status) 'ok))
+                (should (equal (plist-get (plist-get result :content) :buffer)
+                               " *e-workspace-focus*"))
+                (should (equal focused (list buffer token)))))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (when (buffer-live-p shell)
+        (kill-buffer shell)))))
+
+(ert-deftest e-emacs-capabilities-test-workspace-focus-buffer-targets-shell-workspace ()
+  "The focus action prefers the active shell workspace over buffer affinity."
+  (let* ((capability (e-workspace-awareness-capability-create))
+         (registry (e-tools-registry-create))
+         (buffer (get-buffer-create " *e-workspace-focus-owned*"))
+         (shell (get-buffer-create " *e-workspace-focus-owner-shell*"))
+         (buffer-token (make-e-workspace-token
+                        :backend 'doom
+                        :id "buffer"
+                        :name "buffer"
+                        :frame (selected-frame)))
+         (shell-token (make-e-workspace-token
+                       :backend 'doom
+                       :id "shell"
+                       :name "shell"
+                       :frame (selected-frame)))
+         focused)
+    (unwind-protect
+        (progn
+          (e-capabilities-register-tools capability registry)
+          (e-buffer-set-workspace buffer buffer-token)
+          (e-buffer-set-workspace shell shell-token)
+          (with-current-buffer shell
+            (cl-letf (((symbol-function 'e-workspace-pop-to-buffer)
+                       (lambda (candidate &key workspace)
+                         (setq focused (list candidate workspace))
+                         candidate)))
+              (let ((result (e-tools-execute
+                             registry
+                             '(:id "call-1"
+                               :name "workspace_focus_buffer"
+                               :arguments (:buffer " *e-workspace-focus-owned*")))))
+                (should (eq (plist-get result :status) 'ok))
+                (should (equal focused (list buffer shell-token)))))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (when (buffer-live-p shell)
+        (kill-buffer shell)))))
+
+(ert-deftest e-emacs-capabilities-test-workspace-awareness-skill-is-readable ()
+  "Workspace awareness registers workspace display guidance as an e:// skill."
+  (let* ((store (e-store-create))
+         (capability (e-workspace-awareness-capability-create)))
+    (e-capabilities-register-resources capability store)
+    (should (equal (mapcar #'e-store-entry-uri (e-store-list store))
+                   '("e://workspace-awareness/skills/workspace-display")))
+    (let ((content (e-store-read
+                    store
+                    "e://workspace-awareness/skills/workspace-display"
+                    nil)))
+      (should (string-match-p "Workspace-aware Emacs display" content))
+      (should (string-match-p "workspace_focus_buffer" content))
+      (should (string-match-p "active shell workspace" content))
+      (should (string-match-p "e-workspace-pop-to-buffer" content))
+      (should (string-match-p "Presentation shells own workspace affinity"
+                              content)))))
+
 (ert-deftest e-emacs-capabilities-test-selection-context-placeholder ()
   "Selection context exists as a no-op capability placeholder."
   (let ((capability (e-selection-context-capability-create)))
@@ -143,7 +281,8 @@
                    buffer-read
                    selection-context
                    buffer-edit
-                   elisp-eval))))
+                   elisp-eval
+                   workspace-awareness))))
 
 (provide 'e-emacs-capabilities-test)
 

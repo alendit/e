@@ -31,6 +31,7 @@
 (require 'e-session)
 (require 'e-shells)
 (require 'e-startup)
+(require 'e-workspaces)
 
 (declare-function markdown-mode "markdown-mode")
 (declare-function e-dev-profile-enabled-p "e-dev-profile")
@@ -4665,7 +4666,10 @@ display to a normal window and select it instead of erroring."
   (if (e-chat--side-window-p)
       (when-let ((window (e-chat--display-from-side-window buffer)))
         (select-window window))
-    (switch-to-buffer buffer))
+    (e-workspace-switch-to-buffer
+     buffer
+     :workspace (or (e-buffer-workspace buffer)
+                    (e-workspace-current))))
   (e-chat--after-display-buffer buffer))
 
 (defun e-chat--pop-to-buffer (buffer)
@@ -4675,7 +4679,10 @@ signal; route the display to a normal window in that case."
   (if (e-chat--side-window-p)
       (when-let ((window (e-chat--display-from-side-window buffer)))
         (select-window window))
-    (pop-to-buffer buffer))
+    (e-workspace-pop-to-buffer
+     buffer
+     :workspace (or (e-buffer-workspace buffer)
+                    (e-workspace-current))))
   (e-chat--after-display-buffer buffer))
 
 (defun e-chat--session-title ()
@@ -5384,6 +5391,9 @@ HARNESS are internal test seams."
       (setq-local e-chat-harness harness)
       (setq-local e-chat-harness-instance-id instance-id)
       (setq-local e-chat-session-id session-id)
+      (when (or e-workspace-rebind-shell-on-open
+                (null (e-buffer-workspace buffer)))
+        (e-buffer-set-workspace buffer (e-workspace-current)))
       (e-chat--rename-buffer-for-session)
       (e-chat--clear)
       (e-chat--render-session)

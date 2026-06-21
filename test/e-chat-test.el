@@ -28,6 +28,26 @@
 (require 'e-store)
 (require 'e-tools)
 
+(ert-deftest e-chat-test-open-captures-current-workspace ()
+  "Opening a chat buffer records presentation workspace affinity."
+  (let* ((harness (e-harness-create :backend (e-backend-fake-create :items nil)))
+         (token (make-e-workspace-token
+                 :backend 'single
+                 :id 'test-workspace
+                 :name "test"
+                 :frame (selected-frame))))
+    (cl-letf (((symbol-function 'e-workspace-current)
+               (lambda (&optional _frame) token)))
+      (let ((buffer (e-chat-open :harness harness :session-id "workspace-chat")))
+        (unwind-protect
+            (with-current-buffer buffer
+              (should (e-workspace-equal-p (e-chat-buffer-workspace buffer)
+                                           token))
+              (should (e-workspace-equal-p (e-buffer-workspace buffer)
+                                           token)))
+          (when (buffer-live-p buffer)
+            (kill-buffer buffer)))))))
+
 (defun e-chat-test--buffer (&optional items session-id)
   "Return a chat buffer backed by fake backend ITEMS and SESSION-ID."
   (let* ((backend (e-backend-fake-create :items items))
@@ -670,13 +690,13 @@
             (e-harness-registry-register :chat-test harness)
             (cl-letf (((symbol-function 'called-interactively-p)
                        (lambda (_kind) t))
-                      ((symbol-function 'switch-to-buffer)
+                      ((symbol-function 'e-workspace-switch-to-buffer)
                        (lambda (display-buffer &rest _args)
                          (setq selected-buffer display-buffer)
                          display-buffer))
-                      ((symbol-function 'pop-to-buffer)
+                      ((symbol-function 'e-workspace-pop-to-buffer)
                        (lambda (&rest _args)
-                         (ert-fail "Default e-chat-new should not use pop-to-buffer"))))
+                         (ert-fail "Default e-chat-new should not use pop display"))))
               (setq buffer (call-interactively #'e-chat-new))
               (should (eq selected-buffer buffer)))))
       (when (buffer-live-p buffer)
@@ -696,10 +716,10 @@
             (e-harness-registry-register :chat-test harness)
             (cl-letf (((symbol-function 'called-interactively-p)
                        (lambda (_kind) t))
-                      ((symbol-function 'switch-to-buffer)
+                      ((symbol-function 'e-workspace-switch-to-buffer)
                        (lambda (&rest _args)
-                         (ert-fail "Prefix e-chat-new should not use switch-to-buffer")))
-                      ((symbol-function 'pop-to-buffer)
+                         (ert-fail "Prefix e-chat-new should not use switch display")))
+                      ((symbol-function 'e-workspace-pop-to-buffer)
                        (lambda (display-buffer &rest _args)
                          (setq popped-buffer display-buffer)
                          display-buffer)))
