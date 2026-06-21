@@ -1234,6 +1234,28 @@ provider or loop failure."
          :content prompt
          :metadata metadata)))
 
+(defun e-harness--turn-assistant-message (harness session-id turn-id)
+  "Return the final assistant message for SESSION-ID TURN-ID in HARNESS.
+When a turn produced multiple assistant messages, return the last one."
+  (car (last (cl-remove-if-not
+              (lambda (message)
+                (and (eq (plist-get message :role) 'assistant)
+                     (equal (plist-get message :turn-id) turn-id)))
+              (e-harness-messages harness session-id)))))
+
+(defun e-harness--run-turn-finished-hooks
+    (harness session-id turn-id result)
+  "Run `:turn-finished' hooks for HARNESS SESSION-ID TURN-ID over RESULT."
+  (e-hooks-run-reduce
+   (e-harness-hooks harness)
+   :turn-finished
+   result
+   (list :harness harness
+         :session-id session-id
+         :turn-id turn-id
+         :assistant-message
+         (e-harness--turn-assistant-message harness session-id turn-id))))
+
 (cl-defun e-harness--run-prompt-turn
     (harness session-id turn-id &key on-request-start)
   "Run the queued prompt turn for SESSION-ID and TURN-ID in HARNESS."
@@ -1403,8 +1425,11 @@ cancellation.  SESSION-ID identifies the session."
             (finish-done
              (result)
              (when (and (active-entry-p) (not (plist-get entry :cancelled)))
-               (plist-put entry :result result)
-               (plist-put entry :status 'done)))
+               (let ((hooked-result
+                      (e-harness--run-turn-finished-hooks
+                       harness session-id turn-id result)))
+                 (plist-put entry :result hooked-result)
+                 (plist-put entry :status 'done))))
             (start-turn
              ()
              (when (and (active-entry-p) (not (plist-get entry :cancelled)))

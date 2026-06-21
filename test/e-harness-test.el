@@ -152,6 +152,44 @@
       (should (equal (plist-get (cadr messages) :content) "answer")))
     (should (member 'turn-started (mapcar (lambda (event) (plist-get event :type)) events)))))
 
+(ert-deftest e-harness-test-turn-finished-hook-receives-assistant-message ()
+  "Turn-finished hooks can inspect the final assistant message in the same turn."
+  (let* ((assistant-text "Summarize change\n\nUpdated the topic file.")
+         (seen nil)
+         (capability
+          (e-capability-create
+           :id 'test-turn-finished-hook
+           :name "Test turn finished hook"
+           :hooks
+           (list
+            (e-hook-create
+             :id "50-capture-turn-finished"
+             :point :turn-finished
+             :handler
+             (lambda (value context)
+               (setq seen (list :value value
+                                :session-id (plist-get context :session-id)
+                                :turn-id (plist-get context :turn-id)
+                                :assistant-message
+                                (plist-get context :assistant-message)))
+               value)))))
+         (backend (e-backend-fake-create
+                   :items `((:type assistant-message :content ,assistant-text)
+                            (:type done :reason stop))))
+         (harness (e-harness-create :backend backend)))
+    (e-harness-activate-capability harness capability)
+    (e-harness-create-session harness :id "session-1")
+    (e-harness-prompt harness "session-1" "question")
+    (should (equal (plist-get seen :value)
+                   `(:status done :reason stop :assistant-content
+                     ,assistant-text)))
+    (should (equal (plist-get seen :session-id) "session-1"))
+    (should (stringp (plist-get seen :turn-id)))
+    (should (equal (plist-get (plist-get seen :assistant-message) :role)
+                   'assistant))
+    (should (equal (plist-get (plist-get seen :assistant-message) :content)
+                   assistant-text))))
+
 (ert-deftest e-harness-test-subscribe-can-filter-events-by-session ()
   "Session-scoped subscribers only receive events for their session."
   (let* ((harness (e-harness-create
