@@ -333,6 +333,14 @@
         (should (memq 'debug-agent
                       (mapcar #'e-capability-id
                               (e-harness-active-capabilities harness))))
+        (let ((instructions
+               (e-capability-instructions
+                (cl-find 'debug-agent
+                         (e-harness-active-capabilities harness)
+                         :key #'e-capability-id))))
+          (should (string-match-p "debug popup" instructions))
+          (should (string-match-p "Do not treat the debug popup" instructions))
+          (should (string-match-p "dismiss the debug popup" instructions)))
         (should-not (e-harness-layer-change-function harness))))))
 
 (ert-deftest e-defaults-test-chat-harness-enables-web-and-text-editing-by-default ()
