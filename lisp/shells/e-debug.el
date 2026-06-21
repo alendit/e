@@ -25,6 +25,10 @@
 (require 'e-shells)
 (require 'e-startup)
 
+(declare-function posframe-hide "ext:posframe")
+(declare-function posframe-show "ext:posframe")
+(declare-function posframe-workable-p "ext:posframe")
+
 (defgroup e-debug nil
   "Standing debug agent shell."
   :group 'e
@@ -87,7 +91,7 @@ A fractional value is interpreted relative to the selected frame height."
 
 (defvar e-debug-popup-mode-map
   (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "C-g") #'e-debug--dismiss-popup)
+    (define-key map (kbd "C-g") #'e-debug--dismiss-popup-or-keyboard-quit)
     map)
   "Keymap active while a debug chat buffer is shown as a popup.")
 
@@ -346,16 +350,49 @@ A fractional value is interpreted relative to the selected frame height."
 (defun e-debug--dismiss-popup ()
   "Dismiss the floating debug popup without aborting the debug session."
   (interactive)
-  (let ((buffer (or (and (derived-mode-p 'e-chat-mode)
-                         (current-buffer))
-                    e-debug--popup-buffer)))
+  (let* ((popup-selected-frame
+          (and (derived-mode-p 'e-chat-mode)
+               (frame-parameter nil 'parent-frame)
+               (selected-frame)))
+         (buffer (or (and (derived-mode-p 'e-chat-mode)
+                          (current-buffer))
+                     e-debug--popup-buffer))
+         (frame (or e-debug--popup-frame popup-selected-frame)))
     (when (buffer-live-p buffer)
       (with-current-buffer buffer
         (when (fboundp 'posframe-hide)
           (posframe-hide (current-buffer)))
+        (when (and frame (frame-live-p frame))
+          (delete-frame frame))
         (e-debug-popup-mode -1))))
   (setq e-debug--popup-buffer nil)
   (setq e-debug--popup-frame nil))
+
+(defun e-debug--selected-debug-popup-frame-p ()
+  "Return non-nil when point is in a debug chat child frame."
+  (and (derived-mode-p 'e-chat-mode)
+       (frame-parameter nil 'parent-frame)
+       e-chat-harness
+       e-chat-session-id
+       (or (equal e-chat-session-id e-debug--session-id)
+           (e-debug--session-exists-p e-chat-harness e-chat-session-id))))
+
+(defun e-debug--dismiss-popup-or-keyboard-quit ()
+  "Dismiss a debug popup when focused, otherwise run `keyboard-quit'."
+  (interactive)
+  (if (or e-debug-popup-mode
+          (e-debug--selected-debug-popup-frame-p))
+      (e-debug--dismiss-popup)
+    (keyboard-quit)))
+
+(defun e-debug--install-keybindings ()
+  "Install debug popup keybindings into live chat keymaps."
+  (define-key e-debug-popup-mode-map (kbd "C-g")
+              #'e-debug--dismiss-popup-or-keyboard-quit)
+  (define-key e-chat-mode-map (kbd "C-g")
+              #'e-debug--dismiss-popup-or-keyboard-quit))
+
+(e-debug--install-keybindings)
 
 (defun e-debug--popup-visible-p ()
   "Return non-nil when the floating debug popup is currently visible."
@@ -475,6 +512,7 @@ A fractional value is interpreted relative to the selected frame height."
 
 (defun e-debug-startup ()
   "Register the standing debug shell manifest."
+  (e-debug--install-keybindings)
   (e-shell-register (e-debug-shell)))
 
 (add-hook 'e-startup-shell-hook #'e-debug-startup)

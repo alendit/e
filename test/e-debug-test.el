@@ -93,6 +93,17 @@
   "The debug shell defaults to the floating popup display strategy."
   (should (eq e-debug-display-strategy 'popup)))
 
+(ert-deftest e-debug-test-installs-popup-c-g-keybindings ()
+  "Reloading e-debug refreshes C-g bindings in chat and popup maps."
+  (let ((e-chat-mode-map (make-sparse-keymap))
+        (e-debug-popup-mode-map (make-sparse-keymap)))
+    (define-key e-debug-popup-mode-map (kbd "C-g") #'e-debug--dismiss-popup)
+    (e-debug--install-keybindings)
+    (should (eq (lookup-key e-chat-mode-map (kbd "C-g"))
+                #'e-debug--dismiss-popup-or-keyboard-quit))
+    (should (eq (lookup-key e-debug-popup-mode-map (kbd "C-g"))
+                #'e-debug--dismiss-popup-or-keyboard-quit))))
+
 (ert-deftest e-debug-test-popup-display-shows-buffer-in-focused-posframe ()
   "The popup strategy shows the existing chat buffer in a focused posframe."
   (let ((buffer (generate-new-buffer " *e-debug-popup-test*"))
@@ -131,6 +142,7 @@
         (e-debug-display-strategy 'popup)
         (e-debug--session-id "debug-session")
         hidden
+        deleted
         aborted)
     (unwind-protect
         (cl-letf (((symbol-function 'e-debug--popup-available-p)
@@ -140,9 +152,15 @@
                      'debug-popup-frame))
                   ((symbol-function 'select-frame-set-input-focus)
                    (lambda (_frame) nil))
+                  ((symbol-function 'frame-live-p)
+                   (lambda (frame)
+                     (eq frame 'debug-popup-frame)))
                   ((symbol-function 'posframe-hide)
                    (lambda (hidden-buffer)
                      (setq hidden hidden-buffer)))
+                  ((symbol-function 'delete-frame)
+                   (lambda (frame &optional _force)
+                     (setq deleted frame)))
                   ((symbol-function 'e-chat-abort)
                    (lambda ()
                      (setq aborted t))))
@@ -152,11 +170,90 @@
           (should (eq hidden buffer))
           (should-not aborted)
           (should (buffer-live-p buffer))
+          (should (eq deleted 'debug-popup-frame))
           (should (equal e-debug--session-id "debug-session"))
           (with-current-buffer buffer
             (should-not e-debug-popup-mode)))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
+
+(ert-deftest e-debug-test-popup-dismiss-closes-selected-orphan-frame ()
+  "Dismissing from an untracked popup child frame closes that frame."
+  (let ((buffer (generate-new-buffer " *e-debug-popup-orphan-test*"))
+        (e-debug--popup-buffer nil)
+        (e-debug--popup-frame nil)
+        hidden
+        deleted)
+    (unwind-protect
+        (cl-letf (((symbol-function 'selected-frame)
+                   (lambda ()
+                     'orphan-popup-frame))
+                  ((symbol-function 'frame-parameter)
+                   (lambda (_frame parameter)
+                     (and (eq parameter 'parent-frame)
+                          'parent-frame)))
+                  ((symbol-function 'frame-live-p)
+                   (lambda (frame)
+                     (eq frame 'orphan-popup-frame)))
+                  ((symbol-function 'posframe-hide)
+                   (lambda (hidden-buffer)
+                     (setq hidden hidden-buffer)))
+                  ((symbol-function 'delete-frame)
+                   (lambda (frame &optional _force)
+                     (setq deleted frame))))
+          (with-current-buffer buffer
+            (e-chat-mode)
+            (e-debug-popup-mode 1)
+            (e-debug--dismiss-popup)
+            (should (eq hidden buffer))
+            (should (eq deleted 'orphan-popup-frame))
+            (should-not e-debug-popup-mode))
+          (should (buffer-live-p buffer)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-debug-test-chat-c-g-closes-debug-child-frame-without-popup-mode ()
+  "The debug chat C-g fallback closes an orphaned debug child frame."
+  (e-debug-test--with-empty-harness-registry
+    (let* ((store (e-session-store-create))
+           (harness (e-harness-create
+                     :backend (e-backend-fake-create :items nil)
+                     :sessions store))
+           (buffer (generate-new-buffer " *e-debug-popup-c-g-test*"))
+           (e-debug--popup-buffer nil)
+           (e-debug--popup-frame nil)
+           hidden
+           deleted)
+      (e-harness-create-session harness :id "debug-session"
+                                :metadata '(:source e-debug))
+      (unwind-protect
+          (cl-letf (((symbol-function 'selected-frame)
+                     (lambda ()
+                       'orphan-popup-frame))
+                    ((symbol-function 'frame-parameter)
+                     (lambda (_frame parameter)
+                       (and (eq parameter 'parent-frame)
+                            'parent-frame)))
+                    ((symbol-function 'frame-live-p)
+                     (lambda (frame)
+                       (eq frame 'orphan-popup-frame)))
+                    ((symbol-function 'posframe-hide)
+                     (lambda (hidden-buffer)
+                       (setq hidden hidden-buffer)))
+                    ((symbol-function 'delete-frame)
+                     (lambda (frame &optional _force)
+                       (setq deleted frame))))
+            (with-current-buffer buffer
+              (e-chat-mode)
+              (setq-local e-chat-harness harness)
+              (setq-local e-chat-session-id "debug-session")
+              (e-debug--dismiss-popup-or-keyboard-quit)
+              (should (eq hidden buffer))
+              (should (eq deleted 'orphan-popup-frame))
+              (should-not e-debug-popup-mode))
+            (should (buffer-live-p buffer)))
+        (when (buffer-live-p buffer)
+          (kill-buffer buffer))))))
 
 (ert-deftest e-debug-test-command-reattaches-popup-after-dismissal ()
   "Reopening e-debug after dismissal reuses the standing session buffer."
@@ -166,7 +263,8 @@
                     :sessions (e-session-store-create)))
           (e-debug-display-strategy 'popup)
           (e-debug--session-id nil)
-          hidden)
+          hidden
+          deleted)
       (cl-letf (((symbol-function 'e-debug--default-harness)
                  (lambda () harness))
                 ((symbol-function 'e-debug--popup-available-p)
@@ -181,13 +279,17 @@
                  (lambda (_frame) nil))
                 ((symbol-function 'posframe-hide)
                  (lambda (hidden-buffer)
-                   (setq hidden hidden-buffer))))
+                   (setq hidden hidden-buffer)))
+                ((symbol-function 'delete-frame)
+                 (lambda (frame &optional _force)
+                   (setq deleted frame))))
         (let ((first-buffer (e-debug))
               second-buffer)
           (with-current-buffer first-buffer
             (e-debug--dismiss-popup))
           (setq second-buffer (e-debug))
           (should (eq hidden first-buffer))
+          (should (eq deleted 'debug-popup-frame))
           (should (eq second-buffer first-buffer))
           (should (= (length (e-harness-session-list harness)) 1))
           (with-current-buffer second-buffer
