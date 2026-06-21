@@ -306,6 +306,52 @@ compaction record through a deliberate core path.  It must never silently drop
 local transcript history just because Anthropic would drop blocks before the
 provider compaction marker on the next request.
 
+** Anthropic adapter implementation guidance
+
+The current Anthropic adapter already has the right first building block:
+=e-anthropic-request-body= can attach an ephemeral =cache_control= breakpoint to
+the system block, or to the last tool definition when there is no system prompt.
+The feature should evolve that behavior rather than replace it.
+
+The Anthropic-specific implementation should proceed in this order:
+
+1. Keep the existing flat =:messages= request path as the compatibility path.
+   Add segment-aware request construction only when the richer context result
+   includes =:segments=.
+2. Split request construction into small helpers that can be tested without
+   performing HTTP:
+   - choose an Anthropic cache mode: =off=, =top-level= automatic caching, or
+     =explicit= breakpoint placement;
+   - choose the breakpoint segment from =static-prefix= and =stable-context=
+     content, stopping before =current-state= and uncached transcript =delta=;
+   - attach =cache_control= to the exact Anthropic block when explicit placement
+     is required;
+   - build optional =context_management= and beta header data from provider
+     profile/config;
+   - build a compact diagnostic plist that records cache mode, breakpoint
+     segment id/fingerprint, TTL, context-management edits, container id, and
+     =:full-history t=.
+3. Preserve Anthropic's full-history invariant.  Even when an Anthropic cache
+   anchor is valid, =:messages= should contain the full logical conversation
+   produced by =e=, subject only to =e='s own transcript-stack compaction.
+4. Treat Anthropic =container= as provider-owned metadata.  A configured
+   reusable container id may be sent and recorded, but it is not a transcript
+   continuation proof.  Container id changes should invalidate Anthropic cache
+   anchors that depended on that container.
+5. Gate =context_management= behind profile/config flags.  The adapter should
+   add the required beta header only when it sends =context_management=, and
+   diagnostics should state which edits were requested.  Tool-result clearing
+   and thinking-block clearing must not mutate =e= session entries.
+6. Keep server-side Anthropic compaction disabled in this feature unless a
+   separate explicit integration captures returned =compaction= blocks.  If that
+   later becomes enabled, tests must prove that local transcript history is not
+   silently dropped or replaced outside an =e= compaction record.
+
+The practical target is therefore not fewer Anthropic =messages= items.  It is
+more stable cache breakpoint selection, clearer invalidation reasons, optional
+server-side context editing, and better diagnostics while preserving local
+session authority.
+
 * Proposed API
 
 The implementation should introduce a backend-neutral context result that can
@@ -364,12 +410,24 @@ session facts.
   - Build =previous_response_id= requests when an anchor is valid.
   - Fall back to full replay when invalid.
 - Modify =lisp/adapters/anthropic/e-anthropic.el=
+  - Preserve the current flat =:messages= request path.
+  - Teach =e-anthropic-request-body=, or a new helper it delegates to, to accept
+    segment metadata when present.
   - Preserve and extend =cache_control= placement using context segment
     fingerprints.
+  - Support top-level automatic prompt caching when exact segment placement is
+    not needed.
+  - Add explicit breakpoint placement when the adapter must stop caching before
+    =current-state= or transcript =delta= content.
+  - Add optional Anthropic =container= request fields only when configured, and
+    treat the container id as opaque provider metadata rather than a history
+    continuation id.
   - Add optional Anthropic =context_management= request construction behind
-    provider profile gates.
+    provider profile gates, including beta header construction.
   - Keep Anthropic cache/context metadata diagnostic unless server-side
     compaction is explicitly integrated with =e= compaction records.
+  - Keep usage normalization for =cache_creation_input_tokens= and
+    =cache_read_input_tokens= unchanged.
 - Modify tests:
   - =test/e-context-test.el=
   - =test/e-harness-test.el=
@@ -452,13 +510,35 @@ Acceptance criteria:
 Use context segment fingerprints to make Anthropic request construction more
 cache-aware without pretending Anthropic has OpenAI-style continuation.
 
+Implementation notes:
+
+- Start by extracting the current cache-control placement logic from
+  =e-anthropic-request-body= into a helper that accepts already-built system,
+  tool, message, cache, and segment inputs.
+- Add a pure breakpoint-selection helper that returns an explanatory plist such
+  as =(:mode explicit :segment stable-context :segment-id ... :fingerprint ...
+  :ttl "5m" :reason before-current-state)=.
+- Prefer =(:cache_control (:type "ephemeral" ...))= at the top level for simple
+  automatic caching when no segment boundary needs exact placement.
+- Use explicit block-level =cache_control= when the segment boundary matters:
+  for example, cache tools + system + stable context, but stop before
+  =current-state= and appended transcript =delta=.
+- Add a provider-profile option for =context_management= edits and beta headers,
+  but keep it off by default.
+- Emit diagnostics/anchor candidates that include =:full-history t= so future
+  readers can see that Anthropic cache anchors are not continuation proofs.
+
 Acceptance criteria:
 
 - Anthropic requests can choose stable =cache_control= breakpoints from segment
   boundaries while preserving existing prompt-cache behavior.
+- Anthropic requests can use top-level automatic =cache_control= when exact
+  segment placement is unnecessary.
 - Anthropic cache metadata records provider id, model, segment fingerprints,
-  cache TTL, beta headers, and breakpoint choice, but does not allow omitting
-  prior transcript messages.
+  cache TTL, beta headers, breakpoint choice, and =:full-history t=, but does
+  not allow omitting prior transcript messages.
+- Optional =container= ids are sent only when configured and recorded only as
+  opaque provider metadata.
 - Optional =context_management= edits are gated by provider profile/config and
   include the required beta headers.
 - Tool-result clearing and thinking-block clearing leave local =e= transcript
