@@ -30,7 +30,7 @@
   :prefix "e-chat-starter-")
 
 (defcustom e-chat-starter-buffer-name "*e-start-here*"
-  "Buffer name for the global chat starter popup."
+  "Base buffer name for chat starter popups."
   :type 'string
   :group 'e-chat-starter)
 
@@ -158,6 +158,20 @@ so a child-frame adapter can be added without changing controller logic."
   "Return starter state for the current buffer."
   (or e-chat-starter--state
       (user-error "No e chat starter state in this buffer")))
+
+(defun e-chat-starter--buffer-name (session-id)
+  "Return a per-session starter popup buffer name for SESSION-ID."
+  (let* ((stem (string-remove-prefix
+                "*"
+                (string-remove-suffix "*" e-chat-starter-buffer-name)))
+         (stem (if (string-empty-p stem) "e-start-here" stem))
+         (token (if (string-match "-\\([^-]+\\)\\'" session-id)
+                    (match-string 1 session-id)
+                  session-id))
+         (token (if (> (length token) 12)
+                    (substring token 0 12)
+                  token)))
+    (format "*%s:%s*" stem token)))
 
 (defun e-chat-starter--insert-block (text face)
   "Insert TEXT using FACE."
@@ -449,7 +463,8 @@ popup buffer.  DELAY is forwarded to the chat session submit path for tests."
                    :metadata (list :origin :global-session-starter
                                    :source-reference reference)))
          (session-id (plist-get session :id))
-         (buffer (get-buffer-create e-chat-starter-buffer-name))
+         (buffer (get-buffer-create
+                  (e-chat-starter--buffer-name session-id)))
          (state (make-e-chat-starter-state
                  :harness harness
                  :session-id session-id

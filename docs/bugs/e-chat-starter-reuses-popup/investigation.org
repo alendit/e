@@ -84,3 +84,35 @@ The root cause is that presentation identity is not aligned with session identit
 Per-session buffers fix that directly, make close/continue/open/copy ownership local again, and leave room for a later child-frame display adapter without redesigning state ownership.
 
 If popup proliferation becomes annoying after that, add an explicit listing command or manager surface as a second step rather than keeping implicit reuse.
+
+* Fix
+
+Implemented Option 1.
+=e-chat-starter--start= now creates a per-session popup buffer through =e-chat-starter--buffer-name= instead of reusing the single =e-chat-starter-buffer-name= buffer directly.
+The popup state remains buffer-local, so each popup owns its own session id, source reference, action commands, subscription, and cleanup path.
+
+The first implementation tried to reuse =e-chat--short-session-id= for the buffer suffix.
+That was not safe for concurrent starter sessions because it returns the timestamp prefix, and two sessions created in the same second can share that prefix.
+The final starter-local buffer token uses the unique suffix after the final hyphen and truncates that suffix for display.
+
+Regression coverage:
+
+- =e-chat-starter-test-start-uses-independent-popup-per-session= starts two delayed starter sessions from two source buffers, displays both popups, and asserts that their session ids, buffers, popup windows, and buffer-local states stay distinct.
+
+Validation:
+
+- =rtk eldev test -f test/e-chat-starter-test.el e-chat-starter-test-start-uses-independent-popup-per-session=
+- =rtk eldev test -f test/e-chat-starter-test.el=
+- =emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"=
+- Live probe after reload returned distinct starter presentation state:
+
+#+begin_src elisp
+(:same-buffer nil
+ :same-popup-window nil
+ :buffer-name-1 "*e-start-here:2ca4b8f47d71*"
+ :buffer-name-2 "*e-start-here:eb4fbf7b6937*"
+ :state1-live t
+ :state2-live t
+ :source1 "*start-here-probe-source-a*"
+ :source2 "*start-here-probe-source-b*")
+#+end_src

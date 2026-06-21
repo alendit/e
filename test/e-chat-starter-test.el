@@ -465,6 +465,52 @@ its final value only when the turn settled."
           (when (buffer-live-p buffer)
             (kill-buffer buffer)))))))
 
+(ert-deftest e-chat-starter-test-start-uses-independent-popup-per-session ()
+  "Concurrent starter sessions keep separate popup buffers and windows."
+  (let* ((harness (e-chat-starter-test--harness
+                   '((:type assistant-message :content "starter answer")
+                     (:type done :reason stop))))
+         (source-a (get-buffer-create "*e-chat-starter-source-a*"))
+         (source-b (get-buffer-create "*e-chat-starter-source-b*"))
+         state-a
+         state-b)
+    (unwind-protect
+        (progn
+          (delete-other-windows)
+          (with-current-buffer source-a
+            (erase-buffer)
+            (insert "source A\n")
+            (setq state-a (e-chat-starter--start "Explain A"
+                                                 :harness harness
+                                                 :display t
+                                                 :delay 5)))
+          (with-current-buffer source-b
+            (erase-buffer)
+            (insert "source B\n")
+            (setq state-b (e-chat-starter--start "Explain B"
+                                                 :harness harness
+                                                 :display t
+                                                 :delay 5)))
+          (should-not (eq (e-chat-starter-state-session-id state-a)
+                          (e-chat-starter-state-session-id state-b)))
+          (should-not (eq (e-chat-starter-state-buffer state-a)
+                          (e-chat-starter-state-buffer state-b)))
+          (should-not (eq (e-chat-starter-state-popup-window state-a)
+                          (e-chat-starter-state-popup-window state-b)))
+          (with-current-buffer (e-chat-starter-state-buffer state-a)
+            (should (eq e-chat-starter--state state-a)))
+          (with-current-buffer (e-chat-starter-state-buffer state-b)
+            (should (eq e-chat-starter--state state-b))))
+      (when state-b
+        (e-chat-starter--close-state-buffer state-b))
+      (when (and state-a
+                 (buffer-live-p (e-chat-starter-state-buffer state-a)))
+        (e-chat-starter--close-state-buffer state-a))
+      (when (buffer-live-p source-a)
+        (kill-buffer source-a))
+      (when (buffer-live-p source-b)
+        (kill-buffer source-b)))))
+
 (ert-deftest e-chat-starter-test-display-buffer-selects-popup-window ()
   "Displaying the starter popup focuses the temporary window."
   (let ((buffer (get-buffer-create "*e-chat-starter-display-focus*"))
