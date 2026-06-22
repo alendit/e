@@ -490,14 +490,43 @@
                      :provider-continuation t
                      :provider-anchor-provider-id openai)))))
 
+(ert-deftest e-openai-test-normalizes-legacy-codex-continuation ()
+  "Reloaded legacy Codex defaults drop stored Responses continuation."
+  (should
+   (equal
+    (e-openai--normalize-model-providers
+     `((codex
+        :name "ChatGPT Codex"
+        :base-url ,(concat e-openai-codex-default-base-url "/codex")
+        :wire-api responses
+        :continuation t
+        :requires-openai-auth t)
+       (openai-continuation
+        :name "OpenAI Continuation"
+        :base-url "https://gateway.example.test"
+        :env-key "OPENAI_GATEWAY_API_KEY"
+        :wire-api responses
+        :requires-openai-auth nil
+        :continuation t)))
+    `((codex
+       :name "ChatGPT Codex"
+       :base-url ,(concat e-openai-codex-default-base-url "/codex")
+       :wire-api responses
+       :requires-openai-auth t)
+      (openai-continuation
+       :name "OpenAI Continuation"
+       :base-url "https://gateway.example.test"
+       :env-key "OPENAI_GATEWAY_API_KEY"
+       :wire-api responses
+       :requires-openai-auth nil
+       :continuation t)))))
+
 (ert-deftest e-openai-test-default-harness-uses-gpt55-high-effort ()
-  "The default OpenAI harness uses GPT-5.5 and high reasoning effort."
+  "The default OpenAI harness uses full replay with store disabled."
   (should (equal (e-harness-default-options
                   (e-openai-create-harness :request-function #'ignore))
                  '(:model "gpt-5.5"
-                   :reasoning-effort "high"
-                   :provider-continuation t
-                   :provider-anchor-provider-id openai))))
+                   :reasoning-effort "high"))))
 
 (ert-deftest e-openai-test-responses-profile-can-disable-continuation ()
   "Responses profiles do not use provider continuation unless explicitly enabled."

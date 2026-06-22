@@ -65,12 +65,44 @@ Set this to nil to deliberately disable provider HTTP request timeouts."
                  (number :tag "Seconds"))
   :group 'e-openai)
 
+(defun e-openai--plist-without (plist key)
+  "Return PLIST without KEY."
+  (let (result)
+    (while plist
+      (let ((current-key (pop plist))
+            (value (pop plist)))
+        (unless (eq current-key key)
+          (setq result (append result (list current-key value))))))
+    result))
+
+(defun e-openai--legacy-codex-continuation-profile-p (provider-id profile)
+  "Return non-nil when PROFILE is the old built-in Codex continuation default."
+  (and (eq provider-id 'codex)
+       (equal (plist-get profile :name) "ChatGPT Codex")
+       (equal (plist-get profile :base-url)
+              (concat e-openai-codex-default-base-url "/codex"))
+       (eq (plist-get profile :wire-api) 'responses)
+       (plist-get profile :requires-openai-auth)
+       (plist-get profile :continuation)))
+
+(defun e-openai--normalize-model-providers (providers)
+  "Return PROVIDERS with obsolete built-in Codex continuation disabled."
+  (mapcar (lambda (entry)
+            (let ((provider-id (car entry))
+                  (profile (cdr entry)))
+              (if (e-openai--legacy-codex-continuation-profile-p
+                   provider-id
+                   profile)
+                  (cons provider-id
+                        (e-openai--plist-without profile :continuation))
+                entry)))
+          providers))
+
 (defcustom e-openai-model-providers
   `((codex
      :name "ChatGPT Codex"
      :base-url ,(concat e-openai-codex-default-base-url "/codex")
      :wire-api responses
-     :continuation t
      :requires-openai-auth t))
   "OpenAI-like model provider profiles keyed by provider symbol.
 
@@ -83,6 +115,9 @@ field, or non-nil to force it on.  Responses profiles can opt into provider
 continuation anchors with `:continuation' non-nil."
   :type '(alist :key-type symbol :value-type sexp)
   :group 'e-openai)
+
+(setq e-openai-model-providers
+      (e-openai--normalize-model-providers e-openai-model-providers))
 
 (defcustom e-openai-codex-debug nil
   "When non-nil, retain the last raw Codex response and event summaries."

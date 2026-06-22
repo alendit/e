@@ -92,9 +92,10 @@ explicitly opt in.
 
 *** Change
 
-Responses continuation is now profile opt-in.  The built-in Codex Responses
-profile sets =:continuation t=; generic Responses profiles only get
-=:provider-continuation= defaults when they explicitly request continuation.
+Responses continuation is now profile opt-in.  Generic Responses profiles only
+get =:provider-continuation= defaults when they explicitly request
+continuation; the built-in Codex Responses profile also uses full replay because
+the ChatGPT-backed Codex endpoint rejects stored Responses requests.
 
 *** Evidence
 
@@ -102,7 +103,7 @@ profile sets =:continuation t=; generic Responses profiles only get
 Responses profile uses full replay defaults.  =e-openai-test-responses-profile-can-enable-continuation=
 proves explicit opt-in still enables provider continuation, and
 =e-openai-test-default-harness-uses-gpt55-high-effort= proves the default Codex
-profile still uses continuation.
+profile uses full replay with stored Responses disabled.
 
 ** Initial implementation summary
 
