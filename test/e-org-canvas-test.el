@@ -22,6 +22,7 @@
 (require 'e-default-harnesses)
 (require 'e-events)
 (require 'e-harness)
+(require 'e-harness-instances)
 (require 'e-harness-registry)
 (require 'e-layers)
 (require 'e-session)
@@ -132,6 +133,54 @@
                     (should (equal (plist-get org-canvas :mode) 'org))
                     (should (plist-get org-canvas :root))))))))
       (e-org-canvas-test--kill-chat-buffers))))
+
+(ert-deftest e-org-canvas-test-open-current-buffer-activates-project-local-layer-for-file-project ()
+  "Opening a file-backed Org Canvas surface syncs project-local layers for its project."
+  (let ((project (make-temp-file "e-org-canvas-project-local-" t))
+        (sync-directory nil)
+        (sync-called nil)
+        (harness (e-org-canvas-test--harness)))
+    (unwind-protect
+        (e-org-canvas-test--with-empty-harness-registry
+          (let* ((e-harness-instance--instances (make-hash-table :test 'equal))
+                 (e-harness-instance--defaults (make-hash-table :test 'equal))
+                 (e-chat-default-harness-id :chat-default)
+                 (file (e-org-canvas-test--org-file project "notes.org")))
+            (e-harness-registry-register :chat-default harness)
+            (e-harness-instance-register
+             :id :chat-default
+             :name "Chat"
+             :kind 'chat
+             :harness-id :chat-default
+             :default t)
+            (cl-letf (((symbol-function 'e-default-chat-sync-harness-layers)
+                       (lambda (harness &optional _layer-ids directory)
+                         (setq sync-called t)
+                         (setq sync-directory directory)
+                         (e-harness-activate-layer
+                          harness
+                          (e-layer-create
+                           :id 'synced-project
+                           :name "Synced Project"
+                           :capabilities
+                           (list (e-capability-create
+                                  :id 'synced-project
+                                  :name "Synced Project"))))
+                         harness)))
+              (with-current-buffer (find-file-noselect file)
+                (let ((chat-buffer (e-org-canvas-open-for-current-buffer)))
+                  (should sync-called)
+                  (should (equal sync-directory (file-name-as-directory project)))
+                  (should (memq 'synced-project
+                                (mapcar #'e-capability-id
+                                        (e-harness-active-capabilities harness))))
+                  (kill-buffer chat-buffer))))))
+      (e-org-canvas-test--kill-chat-buffers)
+      (dolist (buffer (buffer-list))
+        (when (and (buffer-file-name buffer)
+                   (file-in-directory-p (buffer-file-name buffer) project))
+          (kill-buffer buffer)))
+      (delete-directory project t))))
 
 (ert-deftest e-org-canvas-test-open-current-buffer-captures-workspace-affinity ()
   "Opening an Org Canvas surface gives source and chat buffers one workspace."

@@ -19,7 +19,9 @@
 (require 'e-chat)
 (require 'e-chat-session)
 (require 'e-context-status)
+(require 'e-default-harnesses)
 (require 'e-harness)
+(require 'e-harness-instances)
 (require 'e-harness-registry)
 (require 'e-org-canvas-capabilities)
 (require 'e-session)
@@ -335,6 +337,23 @@ Org Canvas status refreshes for the current buffer.")
          (file-name-directory buffer-file-name)
        default-directory))))
 
+(defun e-org-canvas--sync-default-harness-for-buffer (harness buffer)
+  "Sync default chat HARNESS layers for BUFFER's project when appropriate.
+
+Org Canvas uses a file as the active work surface, so project-local layers need
+that file's project root rather than whatever directory the default chat harness
+was originally created with.  Only sync registered default chat instances, so
+ad-hoc test or caller-supplied harnesses keep their explicit layer state."
+  (when-let* ((file (buffer-local-value 'buffer-file-name buffer))
+              (instance (e-harness-instance-get e-chat-default-harness-id))
+              (_default (eq (e-harness-registry-get
+                             (e-harness-instance-harness-id instance))
+                            harness))
+              (root (with-current-buffer buffer
+                      (e-chat--project-root (file-name-directory file)))))
+    (e-default-chat-sync-harness-layers harness nil root))
+  harness)
+
 (cl-defun e-org-canvas--metadata-for-buffer
     (buffer &key scope focus target-folder needs-file-name)
   "Return Org Canvas metadata for BUFFER."
@@ -552,7 +571,9 @@ the display to a normal window when the selected window is a side window."
   (e-org-canvas--ensure-org-buffer buffer)
   (let* ((workspace (or (e-buffer-workspace buffer)
                         (e-workspace-current)))
-         (harness (e-org-canvas--default-harness))
+         (harness (e-org-canvas--sync-default-harness-for-buffer
+                   (e-org-canvas--default-harness)
+                   buffer))
          (session (e-chat--create-session harness))
          (session-id (plist-get session :id)))
     (e-buffer-set-workspace buffer workspace)
@@ -596,6 +617,7 @@ the display to a normal window when the selected window is a side window."
     (if existing
         (prog1
             (progn
+              (e-org-canvas--sync-default-harness-for-buffer harness source)
               (with-current-buffer source
                 (setq-local e-org-canvas-harness harness)
                 (setq-local e-org-canvas-session-id existing)
