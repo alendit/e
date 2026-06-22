@@ -1,0 +1,56 @@
+#+title: e-debug session root uses home directory investigation
+#+startup: overview
+
+* Reported behavior
+
+The user saw an =e-debug= agent message saying it had searched from the home
+directory by mistake because the active shell was in =/Users/dimitrivorona=.
+The debug session should have been scoped to the last project buffer the user
+was working in, not to =~/=.
+
+* Code path
+
+- =e-debug-here= calls =e-debug--ensure-session= before opening/submitting to
+  the standing debug chat.
+- =e-debug--ensure-session= either reuses the existing debug session or creates
+  one with =e-debug--session-metadata=.
+- Before the fix, =e-debug--session-metadata= used raw =default-directory= as
+  =:project-root=.
+- Once the standing debug session had a home root, reuse kept that bad root for
+  later debug turns.
+
+* Root cause
+
+=e-debug= treated the transient command/default directory as the durable debug
+session root.  If the standing session was first created while Emacs considered
+=~/= current, the session's file resources and shell process context were rooted
+in home.
+
+The root also did not self-repair on reuse because session metadata wins over
+harness defaults and chat root updates only widen safely.
+
+* Fix
+
+=e-debug= now tracks the most recent selected non-debug buffer through a narrow
+post-command hook.  New debug session metadata derives =:project-root= from that
+last focused buffer using the existing =e-chat--project-root= resolver.
+
+When an existing standing debug session is reused, =e-debug= repairs the stored
+root if the last-focused buffer resolves to a narrower project under the current
+root.  That keeps the current bad home-root case recoverable without requiring a
+manual session reset.
+
+* Evidence
+
+- Added =e-debug-test-ensure-session-uses-last-focused-buffer-project-root=.
+- Verified the regression failed before the fix because the session root was
+  the home temp directory instead of the last-focused project temp directory.
+- Verified after the fix:
+  - =rtk eldev test -f test/e-debug-test.el e-debug-test-ensure-session-uses-last-focused-buffer-project-root=
+  - =rtk eldev test -f test/e-debug-test.el=
+- Reloaded the running Emacs with:
+  - =emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"=
+- Live probe after reload confirmed:
+  - the temporary debug session root equaled the tracked project buffer root
+  - the temporary debug session root did not equal the caller's home/default directory
+  - =e-debug--record-focused-buffer= was installed in =post-command-hook=

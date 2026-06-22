@@ -80,6 +80,9 @@ A fractional value is interpreted relative to the selected frame height."
 (defvar e-debug--notification-session-id nil
   "Session id currently subscribed for debug completion notifications.")
 
+(defvar e-debug--last-focused-buffer nil
+  "Most recent non-debug buffer selected before using the debug shell.")
+
 (defvar e-debug-popup-mode-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "C-g") #'e-debug--dismiss-popup-or-keyboard-quit)
@@ -117,12 +120,70 @@ A fractional value is interpreted relative to the selected frame height."
       (user-error "No e debug harness registered"))
     (e-harness-instance-get-or-create (e-harness-instance-id instance))))
 
+(defun e-debug--buffer-p (buffer)
+  "Return non-nil when BUFFER is part of the standing debug UI."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (or e-debug-popup-mode
+          (and (derived-mode-p 'e-chat-mode)
+               e-chat-harness
+               e-chat-session-id
+               (e-debug--session-exists-p e-chat-harness e-chat-session-id))))))
+
+(defun e-debug--record-focused-buffer ()
+  "Remember the selected non-debug buffer for future debug session roots."
+  (when-let ((buffer (window-buffer (selected-window))))
+    (unless (or (minibufferp buffer)
+                (e-debug--buffer-p buffer))
+      (setq e-debug--last-focused-buffer buffer))))
+
+(defun e-debug--last-focused-project-root ()
+  "Return the project root for the last focused non-debug buffer, or nil."
+  (when (buffer-live-p e-debug--last-focused-buffer)
+    (with-current-buffer e-debug--last-focused-buffer
+      (e-chat--project-root default-directory))))
+
+(defun e-debug--narrower-project-root-p (candidate current)
+  "Return non-nil when CANDIDATE is a narrower root than CURRENT."
+  (and candidate
+       current
+       (file-in-directory-p candidate current)
+       (not (equal (file-truename candidate) (file-truename current)))))
+
+(defun e-debug--ensure-session-project-root (harness session-id)
+  "Keep the standing debug session rooted in the last focused project."
+  (when-let ((project-root (e-debug--last-focused-project-root))
+             (session (e-session-get (e-harness-sessions harness) session-id)))
+    (let* ((metadata (copy-sequence (plist-get session :metadata)))
+           (current-root (plist-get metadata :project-root)))
+      (when (or (not current-root)
+                (e-debug--narrower-project-root-p project-root current-root))
+        (e-session-set-metadata
+         (e-harness-sessions harness)
+         session-id
+         (plist-put metadata :project-root project-root))))))
+
+(defun e-debug--install-focus-tracking ()
+  "Install hooks that keep `e-debug--last-focused-buffer' current."
+  (add-hook 'post-command-hook #'e-debug--record-focused-buffer))
+
+(defun e-debug--uninstall-focus-tracking ()
+  "Remove debug focus-tracking hooks."
+  (remove-hook 'post-command-hook #'e-debug--record-focused-buffer))
+
+(defun e-debug--install-runtime-hooks ()
+  "Install reload-safe runtime hooks for the debug shell."
+  (e-debug--uninstall-focus-tracking)
+  (e-debug--install-focus-tracking))
+
+(e-debug--install-runtime-hooks)
+
 (defun e-debug--session-metadata ()
   "Return metadata for the standing debug session."
   (list :name "Debug Agent"
         :source 'e-debug
-        :project-root (file-name-as-directory
-                       (expand-file-name default-directory))))
+        :project-root (or (e-debug--last-focused-project-root)
+                          (e-chat--project-root default-directory))))
 
 (defun e-debug--debug-session-p (session)
   "Return non-nil when SESSION is the standing debug session."
@@ -236,18 +297,21 @@ A fractional value is interpreted relative to the selected frame height."
 (defun e-debug--ensure-session (&optional harness)
   "Return the standing debug session id, creating it in HARNESS when needed."
   (let ((harness (or harness (e-debug--default-harness))))
-    (cond
-     ((e-debug--session-exists-p harness e-debug--session-id)
-      e-debug--session-id)
-     ((e-debug--find-session-id harness)
-      (setq e-debug--session-id (e-debug--find-session-id harness)))
-     (t
-      (setq e-debug--session-id
-            (plist-get
-             (e-harness-create-session
-              harness
-              :metadata (e-debug--session-metadata))
-             :id))))))
+    (prog1
+        (cond
+         ((e-debug--session-exists-p harness e-debug--session-id)
+          e-debug--session-id)
+         ((e-debug--find-session-id harness)
+          (setq e-debug--session-id (e-debug--find-session-id harness)))
+         (t
+          (setq e-debug--session-id
+                (plist-get
+                 (e-harness-create-session
+                  harness
+                  :metadata (e-debug--session-metadata))
+                 :id))))
+      (when e-debug--session-id
+        (e-debug--ensure-session-project-root harness e-debug--session-id)))))
 
 (defun e-debug--tab-name (tab)
   "Return the display name from TAB returned by `tab-bar-tabs'."
@@ -560,6 +624,7 @@ reload so package-specific workspace behavior can live in user config."
 (defun e-debug-startup ()
   "Register the standing debug shell manifest."
   (e-debug--install-keybindings)
+  (e-debug--install-runtime-hooks)
   (e-shell-register (e-debug-shell)))
 
 (add-hook 'e-startup-shell-hook #'e-debug-startup)

@@ -1,0 +1,10 @@
+#+title: e-debug session root uses home directory
+#+startup: overview
+
+The standing =e-debug= session can be created with the user's home directory as
+its =:project-root=.  When that happens, debug-agent file and shell tools are
+scoped to =~/= instead of the project the user was actually debugging.
+
+This was observed in an =e-debug= session where the agent reported that it had
+started a home-directory search because the active shell was in
+=/Users/dimitrivorona=.

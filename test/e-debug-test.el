@@ -68,6 +68,35 @@
           (should (equal (e-debug--ensure-session) created))
           (should (= (length (e-harness-session-list harness)) 1)))))))
 
+(ert-deftest e-debug-test-ensure-session-uses-last-focused-buffer-project-root ()
+  "The standing debug session roots itself in the last focused buffer's project."
+  (let* ((home (make-temp-file "e-debug-home-" t))
+         (project (make-temp-file "e-debug-project-" t))
+         (nested (expand-file-name "src/" project))
+         (source-buffer (generate-new-buffer " *e-debug-source*"))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :sessions (e-session-store-create)))
+         (e-debug--session-id nil)
+         (e-debug--last-focused-buffer source-buffer)
+         session-id
+         session)
+    (unwind-protect
+        (progn
+          (make-directory (expand-file-name ".git/" project))
+          (make-directory nested)
+          (with-current-buffer source-buffer
+            (setq default-directory nested))
+          (let ((default-directory home))
+            (setq session-id (e-debug--ensure-session harness)))
+          (setq session (e-session-get (e-harness-sessions harness) session-id))
+          (should (equal (plist-get (plist-get session :metadata) :project-root)
+                         (file-name-as-directory project))))
+      (when (buffer-live-p source-buffer)
+        (kill-buffer source-buffer))
+      (delete-directory home t)
+      (delete-directory project t))))
+
 (ert-deftest e-debug-test-command-opens-and-shows-standing-session ()
   "The `e-debug' command opens the standing debug session through chat UI."
   (e-debug-test--with-empty-harness-registry
