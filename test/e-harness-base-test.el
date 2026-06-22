@@ -66,7 +66,8 @@
                       (string-match-p
                        "reasoning explicitly and concretely"
                        text)
-                      (string-match-p "new decision" text)
+                      (string-match-p "genuinely new thought" text)
+                      (string-match-p "do not repeat" text)
                       (string-match-p "otherwise continue without" text)
                       (not (string-match-p "as you work" text))))
                system-texts)))))
