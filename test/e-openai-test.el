@@ -1447,8 +1447,8 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
       (should (e-backend-cancel-request request))
       (should (= close-count 1)))))
 
-(ert-deftest e-openai-test-websocket-store-false-reuses-local-response-id ()
-  "Unstored WebSocket responses reuse previous_response_id only locally."
+(ert-deftest e-openai-test-websocket-store-false-full-replays-follow-up ()
+  "Unstored WebSocket follow-ups replay input without previous_response_id."
   (let* ((process-environment
           (cons "OPENAI_GATEWAY_API_KEY=test-gateway-token" process-environment))
          (e-openai-model-providers
@@ -1517,10 +1517,15 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
           (should (eq (plist-get first :store) :json-false))
           (should-not (plist-member first :previous_response_id))
           (should (eq (plist-get second-response :store) :json-false))
-          (should (equal (plist-get second-response :previous_response_id)
-                         "resp-local-1"))
+          (should-not (plist-member second-response :previous_response_id))
           (should (equal (plist-get second-response :input)
                          '((:type "message"
+                            :role "user"
+                            :content ((:type "input_text" :text "one")))
+                           (:type "message"
+                            :role "assistant"
+                            :content ((:type "output_text" :text "answer one")))
+                           (:type "message"
                             :role "user"
                             :content ((:type "input_text" :text "two")))))))
         (should-not (seq-some (lambda (item)

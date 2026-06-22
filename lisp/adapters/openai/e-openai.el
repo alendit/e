@@ -353,8 +353,7 @@ When CODEX-HOME is nil, use the CODEX_HOME environment variable or
 (defun e-openai-codex--continuation-response-id (options)
   "Return previous Responses id from OPTIONS when continuation is enabled."
   (when (and (plist-get options :provider-continuation)
-             (or (not (e-openai--unstored-websocket-options-p options))
-                 (plist-get options :websocket-local-continuation)))
+             (not (e-openai--unstored-websocket-options-p options)))
     (let* ((anchor (plist-get options :provider-anchor))
            (metadata (plist-get anchor :metadata))
            (response-id (plist-get metadata :response-id)))
@@ -454,58 +453,6 @@ When CODEX-HOME is nil, use the CODEX_HOME environment variable or
               (append metadata
                       (list :provider-anchor-invalidation-reason reason))))
       metadata)))
-
-(defun e-openai--messages-prefix-p (prefix messages)
-  "Return non-nil when PREFIX is an `equal' prefix of MESSAGES."
-  (and (<= (length prefix) (length messages))
-       (cl-every #'equal prefix (seq-take messages (length prefix)))))
-
-(defun e-openai--websocket-local-continuation-options
-    (messages options response-id covered-messages)
-  "Return OPTIONS augmented with local WebSocket continuation when valid."
-  (if (and (stringp response-id)
-           (not (string-empty-p response-id))
-           (listp covered-messages)
-           (e-openai--messages-prefix-p covered-messages messages))
-      (let ((delta-messages (nthcdr (length covered-messages) messages))
-            (effective-options (copy-sequence options)))
-        (if delta-messages
-            (progn
-              (setq effective-options
-                    (plist-put effective-options :provider-continuation t))
-              (setq effective-options
-                    (plist-put effective-options
-                               :websocket-local-continuation
-                               t))
-              (setq effective-options
-                    (plist-put effective-options
-                               :provider-anchor
-                               (list :provider-id 'openai
-                                     :metadata
-                                     (list :response-id response-id))))
-              (plist-put effective-options
-                         :provider-anchor-delta-messages
-                         delta-messages))
-          options))
-    options))
-
-(defun e-openai--websocket-covered-messages (messages assistant-message)
-  "Return transcript MESSAGES covered by a completed WebSocket response."
-  (if (and (stringp assistant-message)
-           (not (string-empty-p assistant-message)))
-      (append messages
-              (list (list :role 'assistant :content assistant-message)))
-    messages))
-
-(defun e-openai--unstored-websocket-profile-p (provider)
-  "Return non-nil when PROVIDER uses WebSocket with explicit store disabled."
-  (let* ((profile (e-openai-provider-profile provider))
-         (wire-api (e-openai--provider-wire-api profile)))
-    (and (eq wire-api 'responses)
-         (eq (e-openai--profile-responses-transport profile) 'websocket)
-         (plist-member profile :response-store)
-         (eq (plist-get profile :response-store) :json-false))))
-
 
 (defun e-openai-chat-completion--message-content (content)
   "Return Chat Completions message content for CONTENT."
@@ -826,18 +773,16 @@ When EMIT-ANCHOR is nil, completed response ids stay transport-local."
     (delq nil (list usage-item anchor-candidate-item event-item))))
 
 (cl-defun e-openai-codex--websocket-request-start
-    (&key url headers body-data on-item on-complete on-error on-response-complete)
+    (&key url headers body-data on-item on-complete on-error)
   "Send BODY-DATA as a Responses WebSocket request to URL with HEADERS.
 ON-ITEM receives backend-neutral stream items.  ON-COMPLETE receives a status
 plist when a completed event arrives.  ON-ERROR receives an Emacs condition
-list.  ON-RESPONSE-COMPLETE receives the raw completed response and assistant
-message text, when available.  Return a cancellable `e-backend-request' handle."
+list.  Return a cancellable `e-backend-request' handle."
   (let ((timeout e-openai-websocket-idle-timeout-seconds)
         websocket
         timeout-timer
         settled
         closed
-        assistant-message
         assistant-message-candidate
         assistant-message-seen)
     (cl-labels
@@ -868,19 +813,16 @@ message text, when available.  Return a cancellable `e-backend-request' handle."
              (close-websocket)
              (when on-error
                (funcall on-error err))))
-         (settle-complete (response)
+         (settle-complete ()
            (unless settled
              (setq settled t)
              (cancel-timeout)
-             (when on-response-complete
-               (funcall on-response-complete response assistant-message))
              (when on-complete
                (funcall on-complete '(:status done)))))
          (emit-item (item)
            (pcase (plist-get item :type)
              ('assistant-message
               (setq assistant-message-seen t)
-              (setq assistant-message (plist-get item :content))
               (when on-item
                 (funcall on-item item)))
              ('assistant-message-candidate
@@ -892,8 +834,6 @@ message text, when available.  Return a cancellable `e-backend-request' handle."
               (unless assistant-message-seen
                 (when assistant-message-candidate
                   (setq assistant-message-seen t)
-                  (setq assistant-message
-                        (plist-get assistant-message-candidate :content))
                   (when on-item
                     (funcall on-item assistant-message-candidate))))
               (when on-item
@@ -905,7 +845,6 @@ message text, when available.  Return a cancellable `e-backend-request' handle."
            (condition-case err
                (let* ((text (e-openai-codex--websocket-frame-text frame))
                       (event (e-openai-codex--parse-json text))
-                      (response (plist-get event :response))
                       (completed-event-p
                        (member (plist-get event :type)
                                '("response.completed" "response.done")))
@@ -917,7 +856,7 @@ message text, when available.  Return a cancellable `e-backend-request' handle."
                                 emit-anchor))
                    (emit-item item))
                  (when completed-event-p
-                   (settle-complete response)))
+                   (settle-complete)))
              (error
               (settle-error err))))
          (handle-close (&rest _args)
@@ -1470,30 +1409,9 @@ for Codex-managed OpenAI auth profiles.  BASE-URL overrides the profile base
 URL.  REQUEST-FUNCTION is injectable for tests.  MODEL is the backend-local
 default when turn options do not include `:model'.  The provider profile's
 `:wire-api' chooses the Responses or Chat Completions request/stream mapping."
-  (let ((provider (or provider e-openai-default-provider))
-        websocket-last-response-id
-        websocket-covered-messages)
+  (let ((provider (or provider e-openai-default-provider)))
     (cl-labels
-        ((effective-options (messages options)
-           (if (e-openai--unstored-websocket-profile-p provider)
-               (e-openai--websocket-local-continuation-options
-                messages
-                options
-                websocket-last-response-id
-                websocket-covered-messages)
-             options))
-         (record-websocket-response (messages response assistant-message)
-           (when (e-openai--unstored-websocket-profile-p provider)
-             (let ((response-id (and (consp response)
-                                     (plist-get response :id))))
-               (when (and (stringp response-id)
-                          (not (string-empty-p response-id)))
-                 (setq websocket-last-response-id response-id)
-                 (setq websocket-covered-messages
-                       (e-openai--websocket-covered-messages
-                        messages
-                        assistant-message))))))
-         (request-metadata (context transport cancellable)
+        ((request-metadata (context transport cancellable)
            (append
             (list :provider (plist-get context :provider)
                   :wire-api (plist-get context :wire-api)
@@ -1508,14 +1426,13 @@ default when turn options do not include `:model'.  The provider profile's
        :stream
        (cl-function
         (lambda (&key messages options on-item)
-          (let* ((effective-options (effective-options messages options))
-                 (context (e-openai--request-context
+          (let* ((context (e-openai--request-context
                            :provider provider
                            :auth-file auth-file
                            :base-url base-url
                            :model model
                            :messages messages
-                           :options effective-options))
+                           :options options))
                  (websocket-p (and (not request-function)
                                    (eq (plist-get context :responses-transport)
                                        'websocket))))
@@ -1531,13 +1448,7 @@ default when turn options do not include `:model'.  The provider profile's
                                    (setq done t))
                     :on-error (lambda (err)
                                 (setq failure err)
-                                (setq done t))
-                    :on-response-complete
-                    (lambda (response assistant-message)
-                      (record-websocket-response
-                       messages
-                       response
-                       assistant-message))))
+                                (setq done t))))
                   (while (not done)
                     (accept-process-output nil 0.01))
                   (when failure
@@ -1559,14 +1470,13 @@ default when turn options do not include `:model'.  The provider profile's
        (cl-function
         (lambda (&key messages options on-item on-done on-error
                       on-request-start)
-          (let* ((effective-options (effective-options messages options))
-                 (context (e-openai--request-context
+          (let* ((context (e-openai--request-context
                            :provider provider
                            :auth-file auth-file
                            :base-url base-url
                            :model model
                            :messages messages
-                           :options effective-options)))
+                           :options options)))
             (cond
              (request-function
               (let ((cancelled nil)
@@ -1614,13 +1524,7 @@ default when turn options do not include `:model'.  The provider profile's
                       :body-data (plist-get context :body-data)
                       :on-item on-item
                       :on-complete on-done
-                      :on-error on-error
-                      :on-response-complete
-                      (lambda (response assistant-message)
-                        (record-websocket-response
-                         messages
-                         response
-                         assistant-message)))))
+                      :on-error on-error)))
                 (setf (e-backend-request-metadata request)
                       (append
                        (list :provider (plist-get context :provider)
