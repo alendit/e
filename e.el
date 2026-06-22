@@ -4,7 +4,7 @@
 
 ;; Author: Dimitri Vorona
 ;; Version: 0.1.0
-;; Package-Requires: ((emacs "28.1"))
+;; Package-Requires: ((emacs "28.1") (websocket "1.16"))
 ;; Keywords: tools
 ;; URL: https://github.com/dimitrivorona/e
 ;; SPDX-License-Identifier: MIT

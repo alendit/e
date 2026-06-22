@@ -18,6 +18,7 @@
 (require 'seq)
 (require 'subr-x)
 (require 'url)
+(require 'websocket)
 (require 'e-backend)
 (require 'e-harness)
 (require 'e-tools)
@@ -65,44 +66,21 @@ Set this to nil to deliberately disable provider HTTP request timeouts."
                  (number :tag "Seconds"))
   :group 'e-openai)
 
-(defun e-openai--plist-without (plist key)
-  "Return PLIST without KEY."
-  (let (result)
-    (while plist
-      (let ((current-key (pop plist))
-            (value (pop plist)))
-        (unless (eq current-key key)
-          (setq result (append result (list current-key value))))))
-    result))
-
-(defun e-openai--legacy-codex-continuation-profile-p (provider-id profile)
-  "Return non-nil when PROFILE is the old built-in Codex continuation default."
-  (and (eq provider-id 'codex)
-       (equal (plist-get profile :name) "ChatGPT Codex")
-       (equal (plist-get profile :base-url)
-              (concat e-openai-codex-default-base-url "/codex"))
-       (eq (plist-get profile :wire-api) 'responses)
-       (plist-get profile :requires-openai-auth)
-       (plist-get profile :continuation)))
-
-(defun e-openai--normalize-model-providers (providers)
-  "Return PROVIDERS with obsolete built-in Codex continuation disabled."
-  (mapcar (lambda (entry)
-            (let ((provider-id (car entry))
-                  (profile (cdr entry)))
-              (if (e-openai--legacy-codex-continuation-profile-p
-                   provider-id
-                   profile)
-                  (cons provider-id
-                        (e-openai--plist-without profile :continuation))
-                entry)))
-          providers))
+(defcustom e-openai-websocket-idle-timeout-seconds nil
+  "Seconds without Responses WebSocket events before a request fails.
+When nil, Responses WebSocket requests do not time out locally."
+  :type '(choice (const :tag "No timeout" nil)
+                 (number :tag "Seconds"))
+  :group 'e-openai)
 
 (defcustom e-openai-model-providers
   `((codex
      :name "ChatGPT Codex"
      :base-url ,(concat e-openai-codex-default-base-url "/codex")
      :wire-api responses
+     :responses-transport websocket
+     :response-store :json-false
+     :continuation t
      :requires-openai-auth t))
   "OpenAI-like model provider profiles keyed by provider symbol.
 
@@ -111,13 +89,13 @@ Each profile is plist data.  `:wire-api' supports `responses' and
 Profiles with `:requires-openai-auth' non-nil use Codex-managed ChatGPT auth.
 Profiles with `:requires-openai-auth' nil read a bearer token from `:env-key'.
 Profiles can set `:prompt-cache-retention' to nil to suppress that request
-field, or non-nil to force it on.  Responses profiles can opt into provider
-continuation anchors with `:continuation' non-nil."
+field, or non-nil to force it on.  Responses profiles can set
+`:responses-transport' to `http' or `websocket'.  WebSocket Responses requests
+store responses by default; set `:response-store' to explicitly override that
+value.  Responses profiles can opt into provider continuation anchors with
+`:continuation' non-nil."
   :type '(alist :key-type symbol :value-type sexp)
   :group 'e-openai)
-
-(setq e-openai-model-providers
-      (e-openai--normalize-model-providers e-openai-model-providers))
 
 (defcustom e-openai-codex-debug nil
   "When non-nil, retain the last raw Codex response and event summaries."
@@ -171,10 +149,37 @@ When PROVIDER is nil, use `e-openai-default-provider'."
 
 (defun e-openai--provider-wire-api (profile)
   "Return PROFILE's normalized wire API."
-  (let ((wire-api (plist-get profile :wire-api)))
-    (if (eq wire-api 'chat-completions)
-        'chat-completion
-      wire-api)))
+  (pcase (plist-get profile :wire-api)
+    ((or 'nil 'responses) 'responses)
+    ((or 'chat-completion 'chat-completions) 'chat-completion)
+    (other (signal 'e-openai-provider-invalid
+                   (list (format "Unsupported :wire-api %S" other))))))
+
+(defun e-openai--profile-responses-transport (profile)
+  "Return normalized Responses transport for PROFILE."
+  (let ((transport (or (plist-get profile :responses-transport) 'http)))
+    (unless (memq transport '(http websocket))
+      (signal 'e-openai-provider-invalid
+              (list (format "Unsupported :responses-transport %S"
+                            transport))))
+    transport))
+
+(defun e-openai--response-store-value (options)
+  "Return Responses store value for OPTIONS."
+  (cond
+   ((plist-member options :response-store)
+    (plist-get options :response-store))
+   ((eq (plist-get options :responses-transport) 'websocket)
+    t)
+   ((plist-get options :provider-continuation)
+    t)
+   (t :json-false)))
+
+(defun e-openai--unstored-websocket-options-p (options)
+  "Return non-nil when OPTIONS describe an unstored WebSocket request."
+  (and (eq (plist-get options :responses-transport) 'websocket)
+       (plist-member options :response-store)
+       (eq (plist-get options :response-store) :json-false)))
 
 (defun e-openai--profile-prompt-cache-retention-supported-p (profile)
   "Return non-nil when PROFILE accepts `prompt_cache_retention'."
@@ -347,7 +352,9 @@ When CODEX-HOME is nil, use the CODEX_HOME environment variable or
 
 (defun e-openai-codex--continuation-response-id (options)
   "Return previous Responses id from OPTIONS when continuation is enabled."
-  (when (plist-get options :provider-continuation)
+  (when (and (plist-get options :provider-continuation)
+             (or (not (e-openai--unstored-websocket-options-p options))
+                 (plist-get options :websocket-local-continuation)))
     (let* ((anchor (plist-get options :provider-anchor))
            (metadata (plist-get anchor :metadata))
            (response-id (plist-get metadata :response-id)))
@@ -379,9 +386,7 @@ When CODEX-HOME is nil, use the CODEX_HOME environment variable or
                         (list :effort effort))))
          (body (list :model (or (plist-get options :model)
                                 e-openai-default-model)
-                     :store (if (plist-get options :provider-continuation)
-                                t
-                              :json-false)
+                     :store (e-openai--response-store-value options)
                      :stream t
                      :instructions (e-openai-codex--instructions
                                     messages
@@ -424,7 +429,10 @@ When CODEX-HOME is nil, use the CODEX_HOME environment variable or
              ((not (plist-get options :provider-continuation)) 'disabled)
              ((plist-member body :previous_response_id) 'used)
              (t 'full)))
-           (metadata (list :provider-continuation continuation-state)))
+           (metadata (list :provider-continuation continuation-state
+                           :responses-transport
+                           (or (plist-get options :responses-transport)
+                               'http))))
       (when (and (eq continuation-state 'used)
                  (stringp response-id))
         (setq metadata
@@ -446,6 +454,57 @@ When CODEX-HOME is nil, use the CODEX_HOME environment variable or
               (append metadata
                       (list :provider-anchor-invalidation-reason reason))))
       metadata)))
+
+(defun e-openai--messages-prefix-p (prefix messages)
+  "Return non-nil when PREFIX is an `equal' prefix of MESSAGES."
+  (and (<= (length prefix) (length messages))
+       (cl-every #'equal prefix (seq-take messages (length prefix)))))
+
+(defun e-openai--websocket-local-continuation-options
+    (messages options response-id covered-messages)
+  "Return OPTIONS augmented with local WebSocket continuation when valid."
+  (if (and (stringp response-id)
+           (not (string-empty-p response-id))
+           (listp covered-messages)
+           (e-openai--messages-prefix-p covered-messages messages))
+      (let ((delta-messages (nthcdr (length covered-messages) messages))
+            (effective-options (copy-sequence options)))
+        (if delta-messages
+            (progn
+              (setq effective-options
+                    (plist-put effective-options :provider-continuation t))
+              (setq effective-options
+                    (plist-put effective-options
+                               :websocket-local-continuation
+                               t))
+              (setq effective-options
+                    (plist-put effective-options
+                               :provider-anchor
+                               (list :provider-id 'openai
+                                     :metadata
+                                     (list :response-id response-id))))
+              (plist-put effective-options
+                         :provider-anchor-delta-messages
+                         delta-messages))
+          options))
+    options))
+
+(defun e-openai--websocket-covered-messages (messages assistant-message)
+  "Return transcript MESSAGES covered by a completed WebSocket response."
+  (if (and (stringp assistant-message)
+           (not (string-empty-p assistant-message)))
+      (append messages
+              (list (list :role 'assistant :content assistant-message)))
+    messages))
+
+(defun e-openai--unstored-websocket-profile-p (provider)
+  "Return non-nil when PROVIDER uses WebSocket with explicit store disabled."
+  (let* ((profile (e-openai-provider-profile provider))
+         (wire-api (e-openai--provider-wire-api profile)))
+    (and (eq wire-api 'responses)
+         (eq (e-openai--profile-responses-transport profile) 'websocket)
+         (plist-member profile :response-store)
+         (eq (plist-get profile :response-store) :json-false))))
 
 
 (defun e-openai-chat-completion--message-content (content)
@@ -525,6 +584,21 @@ When CODEX-HOME is nil, use the CODEX_HOME environment variable or
         normalized
       (concat normalized "/responses"))))
 
+(defun e-openai-responses-websocket-url (base-url)
+  "Return the Responses WebSocket URL for BASE-URL."
+  (let ((url (e-openai-responses-url base-url)))
+    (cond
+     ((string-prefix-p "https://" url)
+      (concat "wss://" (substring url (length "https://"))))
+     ((string-prefix-p "http://" url)
+      (concat "ws://" (substring url (length "http://"))))
+     ((or (string-prefix-p "wss://" url)
+          (string-prefix-p "ws://" url))
+      url)
+     (t
+      (signal 'e-openai-provider-invalid
+              (list (format "Unsupported WebSocket base URL %S" base-url)))))))
+
 (defun e-openai-chat-completion-url (base-url)
   "Return the Chat Completions endpoint URL for BASE-URL."
   (let ((normalized (string-remove-suffix "/" base-url)))
@@ -573,6 +647,13 @@ profiles."
                                session-id)
     (e-openai--token-headers
      (e-openai--env-token (plist-get profile :env-key)))))
+
+(defun e-openai--responses-websocket-headers (headers)
+  "Return HEADERS adjusted for the Responses WebSocket handshake."
+  (append (seq-remove (lambda (header)
+                        (member (car header) '("Accept" "OpenAI-Beta")))
+                      headers)
+          '(("OpenAI-Beta" . "responses_websockets=2026-02-06"))))
 
 (defun e-openai-codex--http-header-bytes (value)
   "Return VALUE as an ASCII byte string suitable for `url-request-extra-headers'."
@@ -719,6 +800,158 @@ condition list.  Return a cancellable `e-backend-request' handle."
                       :timeout-seconds timeout
                       :cancellable t)
                 (e-openai-codex--url-metadata url)))))
+
+(defun e-openai-codex--websocket-frame-text (frame)
+  "Return text payload from WebSocket FRAME."
+  (cond
+   ((stringp frame) frame)
+   ((websocket-frame-payload frame))
+   (t "")))
+
+(defun e-openai-codex--websocket-event-items (event emit-anchor)
+  "Return backend-neutral items for WebSocket EVENT.
+When EMIT-ANCHOR is nil, completed response ids stay transport-local."
+  (let* ((completed-event-p
+          (member (plist-get event :type)
+                  '("response.completed" "response.done")))
+         (response (plist-get event :response))
+         (usage-item
+          (when completed-event-p
+            (e-openai-codex--usage-item
+             (plist-get response :usage))))
+         (anchor-candidate-item
+          (when (and emit-anchor completed-event-p)
+            (e-openai-codex--anchor-candidate-item response)))
+         (event-item (e-openai-codex--event-item event)))
+    (delq nil (list usage-item anchor-candidate-item event-item))))
+
+(cl-defun e-openai-codex--websocket-request-start
+    (&key url headers body-data on-item on-complete on-error on-response-complete)
+  "Send BODY-DATA as a Responses WebSocket request to URL with HEADERS.
+ON-ITEM receives backend-neutral stream items.  ON-COMPLETE receives a status
+plist when a completed event arrives.  ON-ERROR receives an Emacs condition
+list.  ON-RESPONSE-COMPLETE receives the raw completed response and assistant
+message text, when available.  Return a cancellable `e-backend-request' handle."
+  (let ((timeout e-openai-websocket-idle-timeout-seconds)
+        websocket
+        timeout-timer
+        settled
+        closed
+        assistant-message
+        assistant-message-candidate
+        assistant-message-seen)
+    (cl-labels
+        ((cancel-timeout ()
+           (when (timerp timeout-timer)
+             (cancel-timer timeout-timer))
+           (setq timeout-timer nil))
+         (arm-timeout ()
+           (cancel-timeout)
+           (when (and timeout (not settled))
+             (setq timeout-timer
+                   (run-at-time
+                    timeout nil
+                    (lambda ()
+                      (settle-error
+                       (list 'e-openai-request-timeout
+                             (format "OpenAI WebSocket idle timed out after %s seconds"
+                                     timeout))))))))
+         (close-websocket ()
+           (unless closed
+             (setq closed t)
+             (when websocket
+               (websocket-close websocket))))
+         (settle-error (err)
+           (unless settled
+             (setq settled t)
+             (cancel-timeout)
+             (close-websocket)
+             (when on-error
+               (funcall on-error err))))
+         (settle-complete (response)
+           (unless settled
+             (setq settled t)
+             (cancel-timeout)
+             (when on-response-complete
+               (funcall on-response-complete response assistant-message))
+             (when on-complete
+               (funcall on-complete '(:status done)))))
+         (emit-item (item)
+           (pcase (plist-get item :type)
+             ('assistant-message
+              (setq assistant-message-seen t)
+              (setq assistant-message (plist-get item :content))
+              (when on-item
+                (funcall on-item item)))
+             ('assistant-message-candidate
+              (unless assistant-message-candidate
+                (setq assistant-message-candidate
+                      (list :type 'assistant-message
+                            :content (plist-get item :content)))))
+             ('done
+              (unless assistant-message-seen
+                (when assistant-message-candidate
+                  (setq assistant-message-seen t)
+                  (setq assistant-message
+                        (plist-get assistant-message-candidate :content))
+                  (when on-item
+                    (funcall on-item assistant-message-candidate))))
+              (when on-item
+                (funcall on-item item)))
+             (_
+              (when on-item
+                (funcall on-item item)))))
+         (handle-message (_websocket frame)
+           (condition-case err
+               (let* ((text (e-openai-codex--websocket-frame-text frame))
+                      (event (e-openai-codex--parse-json text))
+                      (response (plist-get event :response))
+                      (completed-event-p
+                       (member (plist-get event :type)
+                               '("response.completed" "response.done")))
+                      (emit-anchor
+                       (not (eq (plist-get body-data :store) :json-false))))
+                 (arm-timeout)
+                 (dolist (item (e-openai-codex--websocket-event-items
+                                event
+                                emit-anchor))
+                   (emit-item item))
+                 (when completed-event-p
+                   (settle-complete response)))
+             (error
+              (settle-error err))))
+         (handle-close (&rest _args)
+           (unless settled
+             (settle-error '(error "Responses WebSocket closed before completion"))))
+         (handle-error (&rest args)
+           (settle-error (list 'error
+                               (format "Responses WebSocket error: %S"
+                                       args)))))
+      (setq websocket
+            (websocket-open
+             url
+             :custom-header-alist headers
+             :on-message #'handle-message
+             :on-close #'handle-close
+             :on-error #'handle-error))
+      (websocket-send-text
+       websocket
+       (json-encode (append (list :type "response.create")
+                            body-data)))
+      (arm-timeout)
+      (e-backend-request-create
+       :cancel (lambda ()
+                 (unless settled
+                   (setq settled t))
+                 (cancel-timeout)
+                 (close-websocket)
+                 t)
+       :metadata (append
+                  (list :transport 'websocket
+                        :url url
+                        :timeout-seconds timeout
+                        :cancellable t)
+                  (e-openai-codex--url-metadata url))))))
 
 (defun e-openai-codex--parse-json (value)
   "Parse VALUE as JSON into plist data."
@@ -1150,12 +1383,27 @@ AUTH-FILE, BASE-URL, MODEL, MESSAGES, and OPTIONS contribute to the encoded
 OpenAI request and backend-neutral context."
   (let* ((profile (e-openai-provider-profile provider))
          (wire-api (e-openai--provider-wire-api profile))
+         (responses-transport (e-openai--profile-responses-transport profile))
          (effective-options (copy-sequence options))
+         (_ (when (and (eq responses-transport 'websocket)
+                       (not (eq wire-api 'responses)))
+              (signal 'e-openai-provider-invalid
+                      '("WebSocket transport is only supported for Responses providers"))))
          (_ (unless (plist-get effective-options :model)
               (setq effective-options
                     (plist-put effective-options
                                :model
                                (e-openai--provider-model profile model)))))
+         (_ (when (eq wire-api 'responses)
+              (setq effective-options
+                    (plist-put effective-options
+                               :responses-transport
+                               responses-transport))
+              (when (plist-member profile :response-store)
+                (setq effective-options
+                      (plist-put effective-options
+                                 :response-store
+                                 (plist-get profile :response-store))))))
          (_ (when (and (eq wire-api 'responses)
                        (plist-member effective-options :prompt-cache-retention)
                        (not (e-openai--profile-prompt-cache-retention-supported-p
@@ -1179,9 +1427,12 @@ OpenAI request and backend-neutral context."
          (session-id (plist-get effective-options :session-id))
          (url (pcase wire-api
                 ('responses
-                 (e-openai-responses-url
-                  (or base-url
-                      (e-openai--provider-base-url profile))))
+                 (let ((resolved-base-url
+                        (or base-url
+                            (e-openai--provider-base-url profile))))
+                   (if (eq responses-transport 'websocket)
+                       (e-openai-responses-websocket-url resolved-base-url)
+                     (e-openai-responses-url resolved-base-url))))
                 ('chat-completion
                  (e-openai-chat-completion-url
                   (or base-url
@@ -1189,12 +1440,18 @@ OpenAI request and backend-neutral context."
          (headers (e-openai--headers
                    :profile profile
                    :auth-file auth-file
-                   :session-id session-id)))
+                   :session-id session-id))
+         (headers (if (and (eq wire-api 'responses)
+                           (eq responses-transport 'websocket))
+                      (e-openai--responses-websocket-headers headers)
+                    headers)))
     (list :provider provider
           :wire-api wire-api
+          :responses-transport responses-transport
           :url url
           :headers headers
           :metadata metadata
+          :body-data body-data
           :body body)))
 
 (defun e-openai--emit-response-items (response context on-item)
@@ -1213,52 +1470,105 @@ for Codex-managed OpenAI auth profiles.  BASE-URL overrides the profile base
 URL.  REQUEST-FUNCTION is injectable for tests.  MODEL is the backend-local
 default when turn options do not include `:model'.  The provider profile's
 `:wire-api' chooses the Responses or Chat Completions request/stream mapping."
-  (let ((provider (or provider e-openai-default-provider)))
-    (e-backend-create
-     :name (or name (e-openai-provider-name provider))
-     :stream
-     (cl-function
-      (lambda (&key messages options on-item)
-        (let* ((context (e-openai--request-context
-                         :provider provider
-                         :auth-file auth-file
-                         :base-url base-url
-                         :model model
-                         :messages messages
-                         :options options))
-               (requester (or request-function
-                              #'e-openai-codex--http-request))
-               (response nil))
-          (e-backend-note-request-started
-           (e-backend-request-create
-            :metadata
-            (append
-             (list :provider (plist-get context :provider)
-                   :wire-api (plist-get context :wire-api)
-                   :url (plist-get context :url)
-                   :cancellable nil
-                   :transport 'sync-wrapper)
-             (plist-get context :metadata)
-             (e-openai-codex--url-metadata
-              (plist-get context :url)))))
-          (setq response
-                (funcall requester
-                         :url (plist-get context :url)
-                         :headers (plist-get context :headers)
-                         :body (plist-get context :body)))
-          (e-openai--emit-response-items response context on-item))))
-     :start
-     (cl-function
-      (lambda (&key messages options on-item on-done on-error
-                    on-request-start)
-        (let ((context (e-openai--request-context
-                        :provider provider
-                        :auth-file auth-file
-                        :base-url base-url
-                        :model model
-                        :messages messages
-                        :options options)))
-          (if request-function
+  (let ((provider (or provider e-openai-default-provider))
+        websocket-last-response-id
+        websocket-covered-messages)
+    (cl-labels
+        ((effective-options (messages options)
+           (if (e-openai--unstored-websocket-profile-p provider)
+               (e-openai--websocket-local-continuation-options
+                messages
+                options
+                websocket-last-response-id
+                websocket-covered-messages)
+             options))
+         (record-websocket-response (messages response assistant-message)
+           (when (e-openai--unstored-websocket-profile-p provider)
+             (let ((response-id (and (consp response)
+                                     (plist-get response :id))))
+               (when (and (stringp response-id)
+                          (not (string-empty-p response-id)))
+                 (setq websocket-last-response-id response-id)
+                 (setq websocket-covered-messages
+                       (e-openai--websocket-covered-messages
+                        messages
+                        assistant-message))))))
+         (request-metadata (context transport cancellable)
+           (append
+            (list :provider (plist-get context :provider)
+                  :wire-api (plist-get context :wire-api)
+                  :url (plist-get context :url)
+                  :cancellable cancellable
+                  :transport transport)
+            (plist-get context :metadata)
+            (e-openai-codex--url-metadata
+             (plist-get context :url)))))
+      (e-backend-create
+       :name (or name (e-openai-provider-name provider))
+       :stream
+       (cl-function
+        (lambda (&key messages options on-item)
+          (let* ((effective-options (effective-options messages options))
+                 (context (e-openai--request-context
+                           :provider provider
+                           :auth-file auth-file
+                           :base-url base-url
+                           :model model
+                           :messages messages
+                           :options effective-options))
+                 (websocket-p (and (not request-function)
+                                   (eq (plist-get context :responses-transport)
+                                       'websocket))))
+            (if websocket-p
+                (let (done failure)
+                  (e-backend-note-request-started
+                   (e-openai-codex--websocket-request-start
+                    :url (plist-get context :url)
+                    :headers (plist-get context :headers)
+                    :body-data (plist-get context :body-data)
+                    :on-item on-item
+                    :on-complete (lambda (_status)
+                                   (setq done t))
+                    :on-error (lambda (err)
+                                (setq failure err)
+                                (setq done t))
+                    :on-response-complete
+                    (lambda (response assistant-message)
+                      (record-websocket-response
+                       messages
+                       response
+                       assistant-message))))
+                  (while (not done)
+                    (accept-process-output nil 0.01))
+                  (when failure
+                    (signal (car failure) (cdr failure))))
+              (let* ((requester (or request-function
+                                    #'e-openai-codex--http-request))
+                     (response nil))
+                (e-backend-note-request-started
+                 (e-backend-request-create
+                  :metadata
+                  (request-metadata context 'sync-wrapper nil)))
+                (setq response
+                      (funcall requester
+                               :url (plist-get context :url)
+                               :headers (plist-get context :headers)
+                               :body (plist-get context :body)))
+                (e-openai--emit-response-items response context on-item))))))
+       :start
+       (cl-function
+        (lambda (&key messages options on-item on-done on-error
+                      on-request-start)
+          (let* ((effective-options (effective-options messages options))
+                 (context (e-openai--request-context
+                           :provider provider
+                           :auth-file auth-file
+                           :base-url base-url
+                           :model model
+                           :messages messages
+                           :options effective-options)))
+            (cond
+             (request-function
               (let ((cancelled nil)
                     (timer nil)
                     request)
@@ -1270,15 +1580,10 @@ default when turn options do not include `:model'.  The provider profile's
                                    (cancel-timer timer))
                                  t)
                        :metadata
-                       (append
-                        (list :provider (plist-get context :provider)
-                              :wire-api (plist-get context :wire-api)
-                              :url (plist-get context :url)
-                              :cancellable 'queued-only
-                              :transport 'injected-request-function)
-                        (plist-get context :metadata)
-                        (e-openai-codex--url-metadata
-                         (plist-get context :url)))))
+                       (request-metadata
+                        context
+                        'injected-request-function
+                        'queued-only)))
                 (when on-request-start
                   (funcall on-request-start request))
                 (setq timer
@@ -1300,32 +1605,57 @@ default when turn options do not include `:model'.  The provider profile's
                              (error
                               (when on-error
                                 (funcall on-error err))))))))
-                request)
-            (let ((request
-                   (e-openai-codex--http-request-start
-                    :url (plist-get context :url)
-                    :headers (plist-get context :headers)
-                    :body (plist-get context :body)
-                    :on-complete
-                    (lambda (response)
-                      (condition-case err
-                          (progn
-                            (e-openai--emit-response-items response context on-item)
-                            (when on-done
-                              (funcall on-done '(:status done))))
-                        (error
-                         (when on-error
-                           (funcall on-error err)))))
-                    :on-error on-error)))
-              (setf (e-backend-request-metadata request)
-                    (append
-                     (list :provider (plist-get context :provider)
-                           :wire-api (plist-get context :wire-api))
-                     (plist-get context :metadata)
-                     (e-backend-request-metadata request)))
-              (when on-request-start
-                (funcall on-request-start request))
-              request))))))))
+                request))
+             ((eq (plist-get context :responses-transport) 'websocket)
+              (let ((request
+                     (e-openai-codex--websocket-request-start
+                      :url (plist-get context :url)
+                      :headers (plist-get context :headers)
+                      :body-data (plist-get context :body-data)
+                      :on-item on-item
+                      :on-complete on-done
+                      :on-error on-error
+                      :on-response-complete
+                      (lambda (response assistant-message)
+                        (record-websocket-response
+                         messages
+                         response
+                         assistant-message)))))
+                (setf (e-backend-request-metadata request)
+                      (append
+                       (list :provider (plist-get context :provider)
+                             :wire-api (plist-get context :wire-api))
+                       (plist-get context :metadata)
+                       (e-backend-request-metadata request)))
+                (when on-request-start
+                  (funcall on-request-start request))
+                request))
+             (t
+              (let ((request
+                     (e-openai-codex--http-request-start
+                      :url (plist-get context :url)
+                      :headers (plist-get context :headers)
+                      :body (plist-get context :body)
+                      :on-complete
+                      (lambda (response)
+                        (condition-case err
+                            (progn
+                              (e-openai--emit-response-items response context on-item)
+                              (when on-done
+                                (funcall on-done '(:status done))))
+                          (error
+                           (when on-error
+                             (funcall on-error err)))))
+                      :on-error on-error)))
+                (setf (e-backend-request-metadata request)
+                      (append
+                       (list :provider (plist-get context :provider)
+                             :wire-api (plist-get context :wire-api))
+                       (plist-get context :metadata)
+                       (e-backend-request-metadata request)))
+                (when on-request-start
+                  (funcall on-request-start request))
+                request))))))))))
 
 (cl-defun e-openai-create-harness
     (&key provider auth-file base-url request-function model sessions)

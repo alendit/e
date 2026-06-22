@@ -2,7 +2,8 @@
 
 (define-package "e" "0.1.0"
   "Emacs-hosted agent runtime scaffold"
-  '((emacs "28.1"))
+  '((emacs "28.1")
+    (websocket "1.16"))
   :keywords '("tools")
   :url "https://github.com/dimitrivorona/e")
 

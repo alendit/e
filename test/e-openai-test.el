@@ -204,6 +204,52 @@
                      :role "user"
                      :content [(:type "input_text" :text "hello")])]))))
 
+(ert-deftest e-openai-test-request-body-websocket-defaults-to-store ()
+  "Responses WebSocket requests default to stored responses."
+  (let ((body (e-openai-codex-request-body
+               :messages '((:role user :content "hello"))
+               :options '(:model "gpt-test"
+                          :responses-transport websocket))))
+    (should (eq (plist-get body :store) t))))
+
+(ert-deftest e-openai-test-request-body-response-store-overrides-websocket-default ()
+  "Explicit response-store config overrides the WebSocket store default."
+  (let ((body (e-openai-codex-request-body
+               :messages '((:role user :content "hello"))
+               :options '(:model "gpt-test"
+                          :responses-transport websocket
+                          :response-store :json-false
+                          :provider-continuation t))))
+    (should (eq (plist-get body :store) :json-false))))
+
+(ert-deftest e-openai-test-request-body-websocket-store-false-ignores-durable-anchor ()
+  "Unstored WebSocket requests do not use persisted provider anchors."
+  (let ((body (e-openai-codex-request-body
+               :messages '((:role system :content "current instructions")
+                           (:role user :content "old prompt")
+                           (:role assistant :content "old answer")
+                           (:role user :content "new prompt"))
+               :options '(:model "gpt-test"
+                          :responses-transport websocket
+                          :response-store :json-false
+                          :provider-continuation t
+                          :provider-anchor (:provider-id openai
+                                            :metadata (:response-id "resp-1"))
+                          :provider-anchor-delta-messages
+                          ((:role user :content "new prompt"))))))
+    (should (eq (plist-get body :store) :json-false))
+    (should-not (plist-member body :previous_response_id))
+    (should (equal (plist-get body :input)
+                   [(:type "message"
+                     :role "user"
+                     :content [(:type "input_text" :text "old prompt")])
+                    (:type "message"
+                     :role "assistant"
+                     :content [(:type "output_text" :text "old answer")])
+                    (:type "message"
+                     :role "user"
+                     :content [(:type "input_text" :text "new prompt")])]))))
+
 (ert-deftest e-openai-test-request-context-reports-continuation-metadata ()
   "Request context metadata reports continuation mode without prompt content."
   (let* ((process-environment
@@ -259,6 +305,54 @@
       (should (equal (plist-get metadata :provider-continuation) 'full))
       (should (equal (plist-get metadata :provider-anchor-invalidation-reason)
                      'tools-changed)))))
+
+(ert-deftest e-openai-test-request-context-reports-responses-transport ()
+  "Responses request metadata reports the selected transport."
+  (let* ((process-environment
+          (cons "OPENAI_GATEWAY_API_KEY=test-gateway-token" process-environment))
+         (e-openai-model-providers
+          '((eng-responses
+             :name "Engineering Responses"
+             :base-url "https://gateway.example.test/v1"
+             :auth bearer
+             :env-key "OPENAI_GATEWAY_API_KEY"
+             :wire-api responses
+             :responses-transport websocket
+             :requires-openai-auth nil)))
+         (context
+          (e-openai--request-context
+           :provider 'eng-responses
+           :messages '((:role user :content "hello"))
+           :options '(:model "gpt-test")))
+         (metadata (plist-get context :metadata))
+         (body-data (json-parse-string
+                     (plist-get context :body)
+                     :object-type 'plist
+                     :array-type 'list
+                     :null-object nil
+                     :false-object :json-false)))
+    (should (eq (plist-get context :responses-transport) 'websocket))
+    (should (eq (plist-get metadata :responses-transport) 'websocket))
+    (should (eq (plist-get body-data :store) t))))
+
+(ert-deftest e-openai-test-request-context-rejects-websocket-chat-completions ()
+  "WebSocket transport is only valid for Responses profiles."
+  (let* ((process-environment
+          (cons "OPENAI_GATEWAY_API_KEY=test-gateway-token" process-environment))
+         (e-openai-model-providers
+          '((eng-chat
+             :name "Engineering Chat"
+             :base-url "https://gateway.example.test/v1"
+             :env-key "OPENAI_GATEWAY_API_KEY"
+             :wire-api chat-completion
+             :responses-transport websocket
+             :requires-openai-auth nil))))
+    (should-error
+     (e-openai--request-context
+      :provider 'eng-chat
+      :messages '((:role user :content "hello"))
+      :options '(:model "gpt-test"))
+     :type 'e-openai-provider-invalid)))
 
 (ert-deftest e-openai-test-request-body-preserves-explicit-reasoning-option ()
   "Explicit provider reasoning options take precedence over default effort."
@@ -490,43 +584,14 @@
                      :provider-continuation t
                      :provider-anchor-provider-id openai)))))
 
-(ert-deftest e-openai-test-normalizes-legacy-codex-continuation ()
-  "Reloaded legacy Codex defaults drop stored Responses continuation."
-  (should
-   (equal
-    (e-openai--normalize-model-providers
-     `((codex
-        :name "ChatGPT Codex"
-        :base-url ,(concat e-openai-codex-default-base-url "/codex")
-        :wire-api responses
-        :continuation t
-        :requires-openai-auth t)
-       (openai-continuation
-        :name "OpenAI Continuation"
-        :base-url "https://gateway.example.test"
-        :env-key "OPENAI_GATEWAY_API_KEY"
-        :wire-api responses
-        :requires-openai-auth nil
-        :continuation t)))
-    `((codex
-       :name "ChatGPT Codex"
-       :base-url ,(concat e-openai-codex-default-base-url "/codex")
-       :wire-api responses
-       :requires-openai-auth t)
-      (openai-continuation
-       :name "OpenAI Continuation"
-       :base-url "https://gateway.example.test"
-       :env-key "OPENAI_GATEWAY_API_KEY"
-       :wire-api responses
-       :requires-openai-auth nil
-       :continuation t)))))
-
-(ert-deftest e-openai-test-default-harness-uses-gpt55-high-effort ()
-  "The default OpenAI harness uses full replay with store disabled."
+(ert-deftest e-openai-test-default-harness-uses-codex-websocket-continuation ()
+  "The built-in Codex profile uses WebSocket continuation with store disabled."
   (should (equal (e-harness-default-options
                   (e-openai-create-harness :request-function #'ignore))
                  '(:model "gpt-5.5"
-                   :reasoning-effort "high"))))
+                   :reasoning-effort "high"
+                   :provider-continuation t
+                   :provider-anchor-provider-id openai))))
 
 (ert-deftest e-openai-test-responses-profile-can-disable-continuation ()
   "Responses profiles do not use provider continuation unless explicitly enabled."
@@ -1146,6 +1211,13 @@ data: {\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"delta\":{}}]}\n\n"
                                      (list :tokens
                                            (list :access_token token
                                                  :refresh_token "refresh")))))
+         (e-openai-model-providers
+          `((codex
+             :name "ChatGPT Codex HTTP"
+             :base-url ,(concat e-openai-codex-default-base-url "/codex")
+             :wire-api responses
+             :responses-transport http
+             :requires-openai-auth t)))
          (seen nil)
          (captured nil)
          (backend
@@ -1172,6 +1244,290 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
           (should (assoc "chatgpt-account-id" (plist-get captured :headers))))
       (delete-file auth-file))))
 
+(ert-deftest e-openai-test-websocket-backend-streams-response-events ()
+  "Responses WebSocket profiles stream JSON events through backend callbacks."
+  (let* ((process-environment
+          (cons "OPENAI_GATEWAY_API_KEY=test-gateway-token" process-environment))
+         (e-openai-model-providers
+          '((openai-websocket
+             :name "OpenAI WebSocket"
+             :base-url "https://gateway.example.test/v1"
+             :env-key "OPENAI_GATEWAY_API_KEY"
+             :wire-api responses
+             :responses-transport websocket
+             :requires-openai-auth nil)))
+         opened-url opened-headers sent on-message done-status error seen request)
+    (cl-letf (((symbol-function 'websocket-open)
+               (lambda (url &rest args)
+                 (setq opened-url url)
+                 (setq opened-headers (plist-get args :custom-header-alist))
+                 (setq on-message (plist-get args :on-message))
+                 'fake-websocket))
+              ((symbol-function 'websocket-send-text)
+               (lambda (websocket text)
+                 (should (eq websocket 'fake-websocket))
+                 (setq sent (json-parse-string text
+                                               :object-type 'plist
+                                               :array-type 'list
+                                               :null-object nil
+                                               :false-object :json-false))
+                 (funcall on-message
+                          websocket
+                          (json-encode
+                           '(:type "response.output_text.delta"
+                             :delta "ok")))
+                 (funcall on-message
+                          websocket
+                          (json-encode
+                           '(:type "response.completed"
+                             :response (:id "resp-ws-1"
+                                        :status "completed"))))))
+              ((symbol-function 'websocket-close) (lambda (&rest _args) t)))
+      (let ((backend (e-openai-backend-create :provider 'openai-websocket)))
+        (setq request
+              (e-backend-start backend
+                               :messages '((:role user :content "hello"))
+                               :options '(:model "gpt-test")
+                               :on-item (lambda (item) (push item seen))
+                               :on-done (lambda (status)
+                                          (setq done-status status))
+                               :on-error (lambda (err) (setq error err))))
+        (should (e-openai-test--wait-until (lambda () done-status) 0.2))
+        (should-not error)
+        (should (e-backend-request-p request))
+        (should (equal opened-url "wss://gateway.example.test/v1/responses"))
+        (should (equal (cdr (assoc "Authorization" opened-headers))
+                       "Bearer test-gateway-token"))
+        (should (equal (cdr (assoc "OpenAI-Beta" opened-headers))
+                       "responses_websockets=2026-02-06"))
+        (should (equal (plist-get sent :type) "response.create"))
+        (should (eq (plist-get sent :store) t))
+        (should (equal (nreverse seen)
+                       '((:type assistant-delta :content "ok")
+                         (:type provider-anchor-candidate
+                          :provider-id openai
+                          :metadata (:response-id "resp-ws-1"))
+                         (:type done :reason stop))))
+        (should (eq (plist-get (e-backend-request-metadata request)
+                               :transport)
+                    'websocket))))))
+
+(ert-deftest e-openai-test-websocket-buffers-assistant-message-candidates ()
+  "Responses WebSocket internals do not leak assistant-message-candidate items."
+  (let* ((process-environment
+          (cons "OPENAI_GATEWAY_API_KEY=test-gateway-token" process-environment))
+         (e-openai-model-providers
+          '((openai-websocket
+             :name "OpenAI WebSocket"
+             :base-url "https://gateway.example.test/v1"
+             :env-key "OPENAI_GATEWAY_API_KEY"
+             :wire-api responses
+             :responses-transport websocket
+             :requires-openai-auth nil)))
+         on-message done-status error seen)
+    (cl-letf (((symbol-function 'websocket-open)
+               (lambda (_url &rest args)
+                 (setq on-message (plist-get args :on-message))
+                 'fake-websocket))
+              ((symbol-function 'websocket-send-text)
+               (lambda (websocket _text)
+                 (funcall on-message
+                          websocket
+                          (json-encode
+                           '(:type "response.content_part.done"
+                             :part (:type "output_text"
+                                    :text "candidate answer"))))
+                 (funcall on-message
+                          websocket
+                          (json-encode
+                           '(:type "response.output_item.done"
+                             :item (:type "message"
+                                    :content
+                                    [(:type "output_text"
+                                      :text "candidate answer")]))))
+                 (funcall on-message
+                          websocket
+                          (json-encode
+                           '(:type "response.completed"
+                             :response (:id "resp-ws-1"
+                                        :status "completed"))))))
+              ((symbol-function 'websocket-close) (lambda (&rest _args) t)))
+      (let ((backend (e-openai-backend-create :provider 'openai-websocket)))
+        (e-backend-start backend
+                         :messages '((:role user :content "hello"))
+                         :options '(:model "gpt-test")
+                         :on-item (lambda (item) (push item seen))
+                         :on-done (lambda (status)
+                                    (setq done-status status))
+                         :on-error (lambda (err) (setq error err)))
+        (should (e-openai-test--wait-until (lambda () done-status) 0.2))
+        (should-not error)
+        (should (equal (nreverse seen)
+                       '((:type provider-anchor-candidate
+                          :provider-id openai
+                          :metadata (:response-id "resp-ws-1"))
+                         (:type assistant-message
+                          :content "candidate answer")
+                         (:type done :reason stop))))))))
+
+(ert-deftest e-openai-test-websocket-does-not-use-http-request-timeout ()
+  "Responses WebSocket requests do not inherit the HTTP whole-request timeout."
+  (let* ((e-openai-request-timeout-seconds 0.01)
+         (process-environment
+          (cons "OPENAI_GATEWAY_API_KEY=test-gateway-token" process-environment))
+         (e-openai-model-providers
+          '((openai-websocket
+             :name "OpenAI WebSocket"
+             :base-url "https://gateway.example.test/v1"
+             :env-key "OPENAI_GATEWAY_API_KEY"
+             :wire-api responses
+             :responses-transport websocket
+             :requires-openai-auth nil)))
+         on-message done-status error seen)
+    (cl-letf (((symbol-function 'websocket-open)
+               (lambda (_url &rest args)
+                 (setq on-message (plist-get args :on-message))
+                 'fake-websocket))
+              ((symbol-function 'websocket-send-text)
+               (lambda (&rest _args) t))
+              ((symbol-function 'websocket-close) (lambda (&rest _args) t)))
+      (let ((backend (e-openai-backend-create :provider 'openai-websocket)))
+        (e-backend-start backend
+                         :messages '((:role user :content "hello"))
+                         :options '(:model "gpt-test")
+                         :on-item (lambda (item) (push item seen))
+                         :on-done (lambda (status)
+                                    (setq done-status status))
+                         :on-error (lambda (err) (setq error err)))
+        (accept-process-output nil 0.05)
+        (should-not error)
+        (should-not done-status)
+        (funcall on-message
+                 'fake-websocket
+                 (json-encode
+                  '(:type "response.completed"
+                    :response (:id "resp-ws-1" :status "completed"))))
+        (should (e-openai-test--wait-until (lambda () done-status) 0.2))
+        (should-not error)
+        (should (equal (nreverse seen)
+                       '((:type provider-anchor-candidate
+                          :provider-id openai
+                          :metadata (:response-id "resp-ws-1"))
+                         (:type done :reason stop))))))))
+
+(ert-deftest e-openai-test-websocket-cancel-closes-request ()
+  "Responses WebSocket cancellation runs its cleanup path."
+  (let* ((process-environment
+          (cons "OPENAI_GATEWAY_API_KEY=test-gateway-token" process-environment))
+         (e-openai-model-providers
+          '((openai-websocket
+             :name "OpenAI WebSocket"
+             :base-url "https://gateway.example.test/v1"
+             :env-key "OPENAI_GATEWAY_API_KEY"
+             :wire-api responses
+             :responses-transport websocket
+             :requires-openai-auth nil)))
+         (close-count 0)
+         request)
+    (cl-letf (((symbol-function 'websocket-open)
+               (lambda (&rest _args) 'fake-websocket))
+              ((symbol-function 'websocket-send-text)
+               (lambda (&rest _args) t))
+              ((symbol-function 'websocket-close)
+               (lambda (&rest _args)
+                 (cl-incf close-count)
+                 t)))
+      (setq request
+            (e-backend-start (e-openai-backend-create :provider 'openai-websocket)
+                             :messages '((:role user :content "hello"))
+                             :options '(:model "gpt-test")
+                             :on-item (lambda (_item) nil)
+                             :on-done (lambda (_status) nil)
+                             :on-error (lambda (_err) nil)))
+      (should (e-backend-cancel-request request))
+      (should (= close-count 1)))))
+
+(ert-deftest e-openai-test-websocket-store-false-reuses-local-response-id ()
+  "Unstored WebSocket responses reuse previous_response_id only locally."
+  (let* ((process-environment
+          (cons "OPENAI_GATEWAY_API_KEY=test-gateway-token" process-environment))
+         (e-openai-model-providers
+          '((openai-websocket
+             :name "OpenAI WebSocket"
+             :base-url "https://gateway.example.test/v1"
+             :env-key "OPENAI_GATEWAY_API_KEY"
+             :wire-api responses
+             :responses-transport websocket
+             :response-store :json-false
+             :continuation t
+             :requires-openai-auth nil)))
+         sends on-message done-count seen)
+    (cl-letf (((symbol-function 'websocket-open)
+               (lambda (_url &rest args)
+                 (setq on-message (plist-get args :on-message))
+                 'fake-websocket))
+              ((symbol-function 'websocket-send-text)
+               (lambda (websocket text)
+                 (let* ((payload (json-parse-string text
+                                                    :object-type 'plist
+                                                    :array-type 'list
+                                                    :null-object nil
+                                                    :false-object :json-false))
+                        (index (length sends)))
+                   (push payload sends)
+                   (funcall on-message
+                            websocket
+                            (json-encode
+                             `(:type "response.output_text.done"
+                               :text ,(if (= index 0) "answer one" "answer two"))))
+                   (funcall on-message
+                            websocket
+                            (json-encode
+                             `(:type "response.completed"
+                               :response
+                               (:id ,(if (= index 0) "resp-local-1" "resp-local-2")
+                                :status "completed")))))))
+              ((symbol-function 'websocket-close) (lambda (&rest _args) t)))
+      (let ((backend (e-openai-backend-create :provider 'openai-websocket)))
+        (e-backend-start backend
+                         :messages '((:role user :content "one"))
+                         :options '(:model "gpt-test")
+                         :on-item (lambda (item) (push item seen))
+                         :on-done (lambda (_status)
+                                    (setq done-count (1+ (or done-count 0))))
+                         :on-error #'signal)
+        (should (e-openai-test--wait-until
+                 (lambda () (= (or done-count 0) 1))
+                 0.2))
+        (e-backend-start backend
+                         :messages '((:role user :content "one")
+                                     (:role assistant :content "answer one")
+                                     (:role user :content "two"))
+                         :options '(:model "gpt-test")
+                         :on-item (lambda (item) (push item seen))
+                         :on-done (lambda (_status)
+                                    (setq done-count (1+ (or done-count 0))))
+                         :on-error #'signal)
+        (should (e-openai-test--wait-until
+                 (lambda () (= (or done-count 0) 2))
+                 0.2))
+        (let* ((first (cadr sends))
+               (second (car sends))
+               (second-response second))
+          (should (eq (plist-get first :store) :json-false))
+          (should-not (plist-member first :previous_response_id))
+          (should (eq (plist-get second-response :store) :json-false))
+          (should (equal (plist-get second-response :previous_response_id)
+                         "resp-local-1"))
+          (should (equal (plist-get second-response :input)
+                         '((:type "message"
+                            :role "user"
+                            :content ((:type "input_text" :text "two")))))))
+        (should-not (seq-some (lambda (item)
+                                (eq (plist-get item :type)
+                                    'provider-anchor-candidate))
+                              seen))))))
+
 (ert-deftest e-openai-test-backend-default-request-is-cancellable ()
   "The default OpenAI request path exposes a cancellable url-retrieve handle."
   (let* ((token (e-openai-test--jwt))
@@ -1180,6 +1536,13 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
                                      (list :tokens
                                            (list :access_token token
                                                  :refresh_token "refresh")))))
+         (e-openai-model-providers
+          `((codex
+             :name "ChatGPT Codex HTTP"
+             :base-url ,(concat e-openai-codex-default-base-url "/codex")
+             :wire-api responses
+             :responses-transport http
+             :requires-openai-auth t)))
          (request nil)
          (buffer nil)
          (backend
@@ -1218,6 +1581,13 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
                                      (list :tokens
                                            (list :access_token token
                                                  :refresh_token "refresh")))))
+         (e-openai-model-providers
+          `((codex
+             :name "ChatGPT Codex HTTP"
+             :base-url ,(concat e-openai-codex-default-base-url "/codex")
+             :wire-api responses
+             :responses-transport http
+             :requires-openai-auth t)))
          (request nil)
          (buffer nil)
          (process nil)
