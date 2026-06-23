@@ -185,6 +185,43 @@
       (should-not (plist-member started-payload :url))
       (should-not (plist-member finished-payload :url)))))
 
+(ert-deftest e-loop-test-request-lifecycle-includes-scalar-diagnostics ()
+  "Provider request lifecycle payloads expose sanitized adapter diagnostics."
+  (let* ((request
+          (e-backend-request-create
+           :metadata
+           (list :provider 'codex
+                 :transport 'websocket
+                 :url-host "example.test"
+                 :url-path "/backend-api/codex/responses"
+                 :timeout-seconds 180
+                 :model "leaky-top-level"
+                 :diagnostics
+                 (list :model "gpt-5.5"
+                       :reasoning-effort "high"
+                       :response-store :json-false
+                       :prompt-cache-key-present t
+                       :provider-anchor-present nil
+                       :input-message-count 3
+                       :nested '(:unsafe "value")
+                       :vector ["unsafe"]
+                       :function (symbol-function 'ignore)))))
+         (payload (e-loop--request-lifecycle-payload request 'started))
+         (diagnostics (plist-get payload :diagnostics)))
+    (should (equal (plist-get payload :provider) 'codex))
+    (should (equal (plist-get payload :transport) 'websocket))
+    (should-not (plist-member payload :model))
+    (should (equal diagnostics
+                   '(:model "gpt-5.5"
+                     :reasoning-effort "high"
+                     :response-store :json-false
+                     :prompt-cache-key-present t
+                     :provider-anchor-present nil
+                     :input-message-count 3)))
+    (should-not (plist-member diagnostics :nested))
+    (should-not (plist-member diagnostics :vector))
+    (should-not (plist-member diagnostics :function))))
+
 (ert-deftest e-loop-test-emits-intermittent-reasoning-and-tool-call-events ()
   "Reasoning deltas and tool calls are surfaced before the final message."
   (let* ((calls 0)

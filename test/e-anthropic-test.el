@@ -397,9 +397,13 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
            :options
            '(:model "claude-test"
              :max-tokens 1024
+             :effort "low"
              :prompt-cache t
              :prompt-cache-ttl "1h"
              :anthropic-container-id "container-1"
+             :tools ((:name "lookup"
+                      :description "Lookup."
+                      :parameters (:type "object")))
              :segments ((:kind static-prefix
                          :id stable-instructions
                          :fingerprint "stable-fp"
@@ -427,7 +431,18 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
                    '("stable-fp" "current-fp")))
     (should (equal (plist-get metadata :anthropic-beta-headers) nil))
     (should (eq (plist-get metadata :full-history) t))
-    (should (= (plist-get metadata :segment-fingerprint-count) 2))))
+    (should (= (plist-get metadata :segment-fingerprint-count) 2))
+    (should (equal (plist-get metadata :diagnostics)
+                   '(:model "claude-test"
+                     :effort "low"
+                     :max-tokens 1024
+                     :prompt-cache t
+                     :anthropic-cache-mode explicit
+                     :anthropic-cache-breakpoint system-stable-prefix
+                     :anthropic-cache-ttl "1h"
+                     :anthropic-container-id-present t
+                     :input-message-count 1
+                     :tool-count 1)))))
 
 (ert-deftest e-anthropic-test-request-context-sends-gated-context-management ()
   "Raw Anthropic context_management is sent only with explicit beta headers."

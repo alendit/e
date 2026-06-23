@@ -423,15 +423,33 @@ When CODEX-HOME is nil, use the CODEX_HOME environment variable or
            (anchor-metadata (plist-get anchor :metadata))
            (response-id (plist-get anchor-metadata :response-id))
            (delta-messages (plist-get options :provider-anchor-delta-messages))
+           (responses-transport
+            (or (plist-get options :responses-transport) 'http))
            (continuation-state
             (cond
              ((not (plist-get options :provider-continuation)) 'disabled)
              ((plist-member body :previous_response_id) 'used)
              (t 'full)))
+           (reasoning (plist-get body :reasoning))
+           (diagnostics
+            (list :model (plist-get body :model)
+                  :reasoning-effort (plist-get reasoning :effort)
+                  :response-store (plist-get body :store)
+                  :prompt-cache-key-present
+                  (not (null (plist-member body :prompt_cache_key)))
+                  :prompt-cache-retention-present
+                  (not (null (plist-member body :prompt_cache_retention)))
+                  :provider-continuation continuation-state
+                  :previous-response-id-present
+                  (not (null (plist-member body :previous_response_id)))
+                  :provider-anchor-present
+                  (and (plist-get options :provider-anchor) t)
+                  :input-message-count (length (plist-get body :input))
+                  :tool-count (length (plist-get body :tools))
+                  :responses-transport responses-transport))
            (metadata (list :provider-continuation continuation-state
-                           :responses-transport
-                           (or (plist-get options :responses-transport)
-                               'http))))
+                           :responses-transport responses-transport
+                           :diagnostics diagnostics)))
       (when (and (eq continuation-state 'used)
                  (stringp response-id))
         (setq metadata

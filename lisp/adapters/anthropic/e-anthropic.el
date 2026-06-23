@@ -488,6 +488,29 @@ is no system prompt) so Anthropic caches tools + system on the prefix match.
                                     (plist-get segment :fingerprint))
                                   segments)
                           :segment-fingerprint-count (length segments)))))
+    (setq metadata
+          (append metadata
+                  (list :diagnostics
+                        (list :model (plist-get body :model)
+                              :effort (plist-get (plist-get body
+                                                             :output_config)
+                                                 :effort)
+                              :max-tokens (plist-get body :max_tokens)
+                              :prompt-cache
+                              (and (plist-get options :prompt-cache) t)
+                              :anthropic-cache-mode
+                              (plist-get metadata :anthropic-cache-mode)
+                              :anthropic-cache-breakpoint
+                              (plist-get metadata :anthropic-cache-breakpoint)
+                              :anthropic-cache-ttl
+                              (plist-get metadata :anthropic-cache-ttl)
+                              :anthropic-container-id-present
+                              (not (null (plist-get metadata
+                                                     :anthropic-container-id)))
+                              :input-message-count
+                              (length (plist-get body :messages))
+                              :tool-count
+                              (length (plist-get body :tools))))))
     metadata))
 
 (defun e-anthropic--beta-headers (value)

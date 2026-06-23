@@ -274,13 +274,30 @@
                        :covered-entry-id "entry-1"
                        :metadata (:response-id "resp-1"))
                       :provider-anchor-delta-messages
-                      ((:role user :content "new prompt")))))
+                      ((:role user :content "new prompt"))
+                      :prompt-cache-key "cache-key"
+                      :prompt-cache-retention "24h"
+                      :tools ((:name "lookup"
+                               :description "Lookup."
+                               :parameters (:type "object"))))))
          (metadata (plist-get context :metadata)))
     (should (equal (plist-get metadata :provider-continuation) 'used))
     (should (equal (plist-get metadata :provider-anchor-response-id) "resp-1"))
     (should (equal (plist-get metadata :provider-anchor-covered-entry-id)
                    "entry-1"))
-    (should (equal (plist-get metadata :provider-continuation-delta-count) 1))))
+    (should (equal (plist-get metadata :provider-continuation-delta-count) 1))
+    (should (equal (plist-get metadata :diagnostics)
+                   '(:model "gpt-test"
+                     :reasoning-effort "high"
+                     :response-store t
+                     :prompt-cache-key-present t
+                     :prompt-cache-retention-present t
+                     :provider-continuation used
+                     :previous-response-id-present t
+                     :provider-anchor-present t
+                     :input-message-count 1
+                     :tool-count 1
+                     :responses-transport http)))))
 
 (ert-deftest e-openai-test-request-context-reports-full-replay-metadata ()
   "Continuation metadata distinguishes enabled full replay from disabled mode."

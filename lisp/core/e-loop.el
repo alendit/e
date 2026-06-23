@@ -29,6 +29,27 @@
   "Report internal turn descriptor TYPE and PAYLOAD through ON-EVENT."
   (funcall on-event type payload))
 
+(defun e-loop--diagnostic-scalar-p (value)
+  "Return non-nil when VALUE is safe for lifecycle diagnostics."
+  (or (null value)
+      (stringp value)
+      (numberp value)
+      (symbolp value)))
+
+(defun e-loop--sanitize-diagnostics (diagnostics)
+  "Return scalar-only DIAGNOSTICS as a plist."
+  (when (listp diagnostics)
+    (let ((rest diagnostics)
+          sanitized)
+      (while (and (consp rest) (consp (cdr rest)))
+        (let ((key (car rest))
+              (value (cadr rest)))
+          (when (and (keywordp key)
+                     (e-loop--diagnostic-scalar-p value))
+            (setq sanitized (append sanitized (list key value)))))
+        (setq rest (cddr rest)))
+      sanitized)))
+
 (defun e-loop--request-lifecycle-payload (request status &optional started-at)
   "Return sanitized lifecycle payload for REQUEST with STATUS.
 STARTED-AT is the `float-time' value captured when the provider request was
@@ -42,6 +63,10 @@ published, used to calculate `:elapsed-seconds' for finished events."
                         :timeout-seconds (plist-get metadata
                                                      :timeout-seconds)
                         :status status)))
+    (when-let ((diagnostics
+                (e-loop--sanitize-diagnostics
+                 (plist-get metadata :diagnostics))))
+      (setq payload (append payload (list :diagnostics diagnostics))))
     (when started-at
       (plist-put payload
                  :elapsed-seconds
