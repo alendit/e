@@ -11,5 +11,13 @@
 
 (setf eldev-test-framework 'ert)
 
+;; Live e2e tests intentionally sit outside the default test fileset because
+;; they call real provider APIs.  Opt in with E_E2E=1 and load e2e files
+;; explicitly, for example:
+;;   E_E2E=1 eldev test -f e2e/e-live-e2e-test.el
+(when (getenv "E_E2E")
+  (setf eldev-test-fileset
+        (list :or eldev-test-fileset "./e2e/")))
+
 (eldev-use-package-archive 'melpa)
 (eldev-add-extra-dependencies 'test '(simply-annotate (2 3 0)))

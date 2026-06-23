@@ -1,0 +1,45 @@
+#+title: Live E2E Validation
+
+This suite exercises the real harness/backend/tool/session path against a live
+provider API.  It is not part of the default unit-test run.
+
+Run it only when live validation is explicitly desired:
+
+#+begin_src sh
+E_E2E=1 rtk eldev test -f e2e/e-live-e2e-test.el
+#+end_src
+
+The default provider is the ChatGPT-backed Codex profile using the normal Codex
+auth file.  To use a token-auth OpenAI Responses profile instead:
+
+#+begin_src sh
+E_E2E=1 E_E2E_PROVIDER=openai E_E2E_OPENAI_API_KEY="$OPENAI_API_KEY" rtk eldev test -f e2e/e-live-e2e-test.el
+#+end_src
+
+Useful environment variables:
+
+- =E_E2E_PROVIDER=: =codex= or =openai=; defaults to =codex=.
+- =E_E2E_MODEL=: model override for live requests.
+- =E_E2E_OPENAI_API_KEY=: bearer token for =E_E2E_PROVIDER=openai=.
+- =E_E2E_OPENAI_BASE_URL=: OpenAI-compatible base URL; defaults to =https://api.openai.com/v1=.
+- =E_E2E_TIMEOUT_SECONDS=: provider timeout override; defaults to =240=.
+
+* Scenarios
+
+1. A first user prompt returns a non-empty assistant message containing a
+   requested nonce.
+2. A follow-up prompt can use prior session context from the same live
+   transcript.
+3. The model can call a registered e tool, the harness executes it, and the
+   final answer uses the tool result.
+4. Provider lifecycle events are emitted and persisted around a live request.
+5. Token usage is surfaced as durable activity when the provider reports it.
+6. Live session messages survive persistence and reload from the session store.
+7. Manual compaction summarizes older transcript entries with the live backend
+   and records a durable compaction.
+8. Provider anchor candidates are recorded when the active provider supports
+   continuation anchors.
+9. An active live request can be cancelled through the harness and settles as a
+   cancellation.
+10. Live provider errors are surfaced as harness failures instead of empty
+    assistant output.
