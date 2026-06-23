@@ -474,8 +474,8 @@
           (kill-buffer buffer)))
       (delete-directory directory t))))
 
-(ert-deftest e-org-canvas-test-mode-owns-prompt-keys-and-suppresses-chat-context ()
-  "Org Canvas mode owns s-i/S-i without disabling chat context elsewhere."
+(ert-deftest e-org-canvas-test-mode-owns-context-keys-and-suppresses_global_context ()
+  "Org Canvas mode owns s-i/S-i with local session-context insertion."
   (with-temp-buffer
     (org-mode)
     (let ((global-map e-chat-context-mode-map))
@@ -485,9 +485,9 @@
       (should e-chat-context-mode-suppressed)
       (should (assq 'e-chat-context-mode minor-mode-overriding-map-alist))
       (should (eq (lookup-key e-org-canvas-mode-map (kbd "s-i"))
-                  'e-org-canvas-prompt-thread))
+                  'e-chat-add-context-to-latest))
       (should (eq (lookup-key e-org-canvas-mode-map (kbd "s-I"))
-                  'e-org-canvas-prompt-document))
+                  'e-chat-add-context-to-session))
       (e-org-canvas-mode -1)
       (should-not e-chat-context-mode-suppressed)
       (should-not (assq 'e-chat-context-mode
@@ -580,8 +580,8 @@
     (should (equal (length calls) 1))
     (should (equal (nth 1 (car calls)) "org-canvas-compact"))))
 
-(ert-deftest e-org-canvas-test-mode-installs-buffer-local-evil-prompt_keys ()
-  "Org Canvas mode overrides Evil normal-state chat context bindings locally."
+(ert-deftest e-org-canvas-test-mode-installs-buffer-local-evil-context_keys ()
+  "Org Canvas mode overrides Evil normal-state keys with session context insertion."
   (with-temp-buffer
     (org-mode)
     (let (calls)
@@ -591,11 +591,11 @@
         (e-org-canvas-mode 1)
         (should (member (list 'normal
                               (kbd "s-i")
-                              'e-org-canvas-prompt-thread)
+                              'e-chat-add-context-to-latest)
                         calls))
         (should (member (list 'normal
                               (kbd "s-I")
-                              'e-org-canvas-prompt-document)
+                              'e-chat-add-context-to-session)
                         calls))
         (setq calls nil)
         (e-org-canvas-mode -1)
@@ -615,11 +615,11 @@
         (e-org-canvas-startup)
         (should (member (list 'normal
                               (kbd "s-i")
-                              'e-org-canvas-prompt-thread)
+                              'e-chat-add-context-to-latest)
                         calls))
         (should (member (list 'normal
                               (kbd "s-I")
-                              'e-org-canvas-prompt-document)
+                              'e-chat-add-context-to-session)
                         calls))
         (should (equal mode-name "Org Canvas"))))))
 

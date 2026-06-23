@@ -163,8 +163,8 @@ Org Canvas status refreshes for the current buffer.")
 (defun e-org-canvas--make-mode-map ()
   "Return the Org Canvas minor-mode keymap."
   (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "s-i") #'e-org-canvas-prompt-thread)
-    (define-key map (kbd "s-I") #'e-org-canvas-prompt-document)
+    (define-key map (kbd "s-i") #'e-chat-add-context-to-latest)
+    (define-key map (kbd "s-I") #'e-chat-add-context-to-session)
     (define-key map (kbd "C-c C-m") #'e-org-canvas-compact)
     map))
 
@@ -172,16 +172,16 @@ Org Canvas status refreshes for the current buffer.")
   "Keymap for `e-org-canvas-mode'.")
 
 (defun e-org-canvas--set-evil-local-prompt-bindings (enable)
-  "Install or clear buffer-local Evil prompt bindings when ENABLE is non-nil."
+  "Install or clear buffer-local Evil context bindings when ENABLE is non-nil."
   (when (fboundp 'evil-local-set-key)
     (funcall #'evil-local-set-key
              'normal
              (kbd "s-i")
-             (and enable #'e-org-canvas-prompt-thread))
+             (and enable #'e-chat-add-context-to-latest))
     (funcall #'evil-local-set-key
              'normal
              (kbd "s-I")
-             (and enable #'e-org-canvas-prompt-document))))
+             (and enable #'e-chat-add-context-to-session))))
 
 (defun e-org-canvas--context-status-text ()
   "Return Org Canvas context-state status text for the current buffer."
@@ -582,7 +582,7 @@ the display to a normal window when the selected window is a side window."
      :scope 'thread
      :target-folder target-folder
      :needs-file-name needs-file-name)
-    (message "Org Canvas enabled for %s; use s-i to prompt the current topic"
+    (message "Org Canvas enabled for %s; use s-i to add context"
              (buffer-name buffer))
     (let ((chat-buffer (e-chat-open :harness harness :session-id session-id)))
       (e-buffer-set-workspace chat-buffer workspace)
@@ -622,7 +622,7 @@ the display to a normal window when the selected window is a side window."
                 (setq-local e-org-canvas-harness harness)
                 (setq-local e-org-canvas-session-id existing)
                 (e-org-canvas-mode 1))
-              (message "Org Canvas resumed for %s; use s-i to prompt the current topic"
+              (message "Org Canvas resumed for %s; use s-i to add context"
                        (buffer-name source))
               (let ((chat-buffer (e-chat-open :harness harness :session-id existing)))
                 (e-org-canvas--display-chat-buffer chat-buffer)
