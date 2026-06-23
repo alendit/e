@@ -1,0 +1,9 @@
+#+title: OpenAI WebSocket stalled active turns report
+#+startup: overview
+
+The user reported two active sessions that appeared to be moving in circles,
+possibly related to recent provider changes.
+
+Live inspection also showed the running Emacs was busy enough that even a
+scalar =emacsclient --eval "(+ 1 1)"= probe did not return within the bounded
+wait.  The required =e-dev-reload= probe blocked the same way.

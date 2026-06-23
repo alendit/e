@@ -1492,6 +1492,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
 (ert-deftest e-openai-test-websocket-does-not-use-http-request-timeout ()
   "Responses WebSocket requests do not inherit the HTTP whole-request timeout."
   (let* ((e-openai-request-timeout-seconds 0.01)
+         (e-openai-websocket-idle-timeout-seconds nil)
          (process-environment
           (cons "OPENAI_GATEWAY_API_KEY=test-gateway-token" process-environment))
          (e-openai-model-providers
@@ -1533,6 +1534,92 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
                           :provider-id openai
                           :metadata (:response-id "resp-ws-1"))
                          (:type done :reason stop))))))))
+
+(ert-deftest e-openai-test-websocket-completion-closes-request ()
+  "Responses WebSocket completion closes the transport after settling."
+  (let* ((process-environment
+          (cons "OPENAI_GATEWAY_API_KEY=test-gateway-token" process-environment))
+         (e-openai-model-providers
+          '((openai-websocket
+             :name "OpenAI WebSocket"
+             :base-url "https://gateway.example.test/v1"
+             :env-key "OPENAI_GATEWAY_API_KEY"
+             :wire-api responses
+             :responses-transport websocket
+             :requires-openai-auth nil)))
+         on-message done-status error late-seen (close-count 0))
+    (cl-letf (((symbol-function 'websocket-open)
+               (lambda (_url &rest args)
+                 (setq on-message (plist-get args :on-message))
+                 'fake-websocket))
+              ((symbol-function 'websocket-send-text)
+               (lambda (websocket _text)
+                 (funcall on-message
+                          websocket
+                          (json-encode
+                           '(:type "response.completed"
+                             :response (:id "resp-ws-1"
+                                        :status "completed"))))
+                 (funcall on-message
+                          websocket
+                          (json-encode
+                           '(:type "response.output_text.delta"
+                             :delta "late")))))
+              ((symbol-function 'websocket-close)
+               (lambda (&rest _args)
+                 (cl-incf close-count)
+                 t)))
+      (let ((backend (e-openai-backend-create :provider 'openai-websocket)))
+        (e-backend-start backend
+                         :messages '((:role user :content "hello"))
+                         :options '(:model "gpt-test")
+                         :on-item (lambda (item) (push item late-seen))
+                         :on-done (lambda (status)
+                                    (setq done-status status))
+                         :on-error (lambda (err) (setq error err)))
+        (should (e-openai-test--wait-until (lambda () done-status) 0.2))
+        (should-not error)
+        (should (= close-count 1))
+        (should (equal (nreverse late-seen)
+                       '((:type provider-anchor-candidate
+                          :provider-id openai
+                          :metadata (:response-id "resp-ws-1"))
+                         (:type done :reason stop))))))))
+
+(ert-deftest e-openai-test-websocket-idle-timeout-settles-error ()
+  "Responses WebSocket idle timeout settles stalled requests as errors."
+  (let* ((e-openai-websocket-idle-timeout-seconds 0.01)
+         (process-environment
+          (cons "OPENAI_GATEWAY_API_KEY=test-gateway-token" process-environment))
+         (e-openai-model-providers
+          '((openai-websocket
+             :name "OpenAI WebSocket"
+             :base-url "https://gateway.example.test/v1"
+             :env-key "OPENAI_GATEWAY_API_KEY"
+             :wire-api responses
+             :responses-transport websocket
+             :requires-openai-auth nil)))
+         error done-status (close-count 0))
+    (cl-letf (((symbol-function 'websocket-open)
+               (lambda (&rest _args) 'fake-websocket))
+              ((symbol-function 'websocket-send-text)
+               (lambda (&rest _args) t))
+              ((symbol-function 'websocket-close)
+               (lambda (&rest _args)
+                 (cl-incf close-count)
+                 t)))
+      (let ((backend (e-openai-backend-create :provider 'openai-websocket)))
+        (e-backend-start backend
+                         :messages '((:role user :content "hello"))
+                         :options '(:model "gpt-test")
+                         :on-item #'ignore
+                         :on-done (lambda (status)
+                                    (setq done-status status))
+                         :on-error (lambda (err) (setq error err)))
+        (should (e-openai-test--wait-until (lambda () error) 0.2))
+        (should-not done-status)
+        (should (eq (car error) 'e-openai-request-timeout))
+        (should (= close-count 1))))))
 
 (ert-deftest e-openai-test-websocket-cancel-closes-request ()
   "Responses WebSocket cancellation runs its cleanup path."

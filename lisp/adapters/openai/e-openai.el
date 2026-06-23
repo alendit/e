@@ -66,7 +66,7 @@ Set this to nil to deliberately disable provider HTTP request timeouts."
                  (number :tag "Seconds"))
   :group 'e-openai)
 
-(defcustom e-openai-websocket-idle-timeout-seconds nil
+(defcustom e-openai-websocket-idle-timeout-seconds 180
   "Seconds without Responses WebSocket events before a request fails.
 When nil, Responses WebSocket requests do not time out locally."
   :type '(choice (const :tag "No timeout" nil)
@@ -888,6 +888,7 @@ list.  Return a cancellable `e-backend-request' handle."
            (unless settled
              (setq settled t)
              (cancel-timeout)
+             (close-websocket)
              (when on-complete
                (funcall on-complete '(:status done)))))
          (emit-item (item)
@@ -913,23 +914,24 @@ list.  Return a cancellable `e-backend-request' handle."
               (when on-item
                 (funcall on-item item)))))
          (handle-message (_websocket frame)
-           (condition-case err
-               (let* ((text (e-openai-codex--websocket-frame-text frame))
-                      (event (e-openai-codex--parse-json text))
-                      (completed-event-p
-                       (member (plist-get event :type)
-                               '("response.completed" "response.done")))
-                      (emit-anchor
-                       (not (eq (plist-get body-data :store) :json-false))))
-                 (arm-timeout)
-                 (dolist (item (e-openai-codex--websocket-event-items
-                                event
-                                emit-anchor))
-                   (emit-item item))
-                 (when completed-event-p
-                   (settle-complete)))
-             (error
-              (settle-error err))))
+           (unless settled
+             (condition-case err
+                 (let* ((text (e-openai-codex--websocket-frame-text frame))
+                        (event (e-openai-codex--parse-json text))
+                        (completed-event-p
+                         (member (plist-get event :type)
+                                 '("response.completed" "response.done")))
+                        (emit-anchor
+                         (not (eq (plist-get body-data :store) :json-false))))
+                   (arm-timeout)
+                   (dolist (item (e-openai-codex--websocket-event-items
+                                  event
+                                  emit-anchor))
+                     (emit-item item))
+                   (when completed-event-p
+                     (settle-complete)))
+               (error
+                (settle-error err)))))
          (handle-close (&rest _args)
            (unless settled
              (settle-error '(error "Responses WebSocket closed before completion"))))

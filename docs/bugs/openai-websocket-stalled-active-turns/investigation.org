@@ -1,0 +1,40 @@
+#+title: OpenAI WebSocket stalled active turns investigation
+#+startup: overview
+
+* Symptoms
+
+- Two live sessions appeared to remain active instead of settling.
+- Bounded live probes through =emacsclient --eval= blocked, including a scalar
+  =(+ 1 1)= probe and the normal =e-dev-reload= expression.
+- The affected branch is provider-focused: =codex/openai-responses-websocket=.
+
+* Cause
+
+The new Responses WebSocket transport did not have a local idle timeout by
+default.  If the provider stopped sending frames before a terminal
+=response.completed= / =response.done= event, the request stayed live
+indefinitely and the harness kept the turn active.
+
+Successful WebSocket completion also called the backend completion callback
+without closing the underlying socket.  That left completed provider
+connections around after turn settlement and allowed late frames to reach the
+message handler.
+
+* Fix
+
+- Set =e-openai-websocket-idle-timeout-seconds= to the same default 180-second
+  envelope used by HTTP requests, while preserving =nil= as the explicit opt-out.
+- Close the WebSocket on normal completion.
+- Ignore late WebSocket frames after request settlement.
+
+* Verification
+
+- Focused adapter tests:
+  =rtk eldev test -f test/e-openai-test.el e-openai-test-websocket-does-not-use-http-request-timeout e-openai-test-websocket-completion-closes-request e-openai-test-websocket-idle-timeout-settles-error e-openai-test-websocket-cancel-closes-request=.
+- Full adapter suite:
+  =rtk eldev test -f test/e-openai-test.el=.
+- Focused async loop settlement tests:
+  =rtk eldev test -f test/e-loop-test.el e-loop-test-start-turn-settles-after-async-backend-done e-loop-test-start-turn-requeries-backend-after-async-tool-result e-loop-test-start-turn-waits-for-delayed-async-tool-result e-loop-test-start-turn-runs-async-tools-serially=.
+
+The live reload could not complete because the running Emacs did not respond to
+bounded =emacsclient --eval= calls during the investigation.
