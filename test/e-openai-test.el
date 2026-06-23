@@ -602,13 +602,91 @@
                      :provider-anchor-provider-id openai)))))
 
 (ert-deftest e-openai-test-default-harness-uses-codex-websocket-continuation ()
-  "The built-in Codex profile uses WebSocket continuation with store disabled."
+  "The built-in Codex profile uses stored WebSocket continuation."
   (should (equal (e-harness-default-options
                   (e-openai-create-harness :request-function #'ignore))
                  '(:model "gpt-5.5"
                    :reasoning-effort "high"
                    :provider-continuation t
                    :provider-anchor-provider-id openai))))
+
+(ert-deftest e-openai-test-codex-profile-stores-websocket-responses ()
+  "Codex WebSocket requests use the generic stored-response default."
+  (let* ((auth-file (make-temp-file "e-openai-auth" nil ".json"))
+         (auth (json-encode
+                (list :tokens
+                      (list :access_token (e-openai-test--jwt)
+                            :refresh_token "refresh")))))
+    (unwind-protect
+        (progn
+          (with-temp-file auth-file
+            (insert auth))
+          (let* ((context
+                  (e-openai--request-context
+                   :provider 'codex
+                   :auth-file auth-file
+                   :messages '((:role user :content "hello"))
+                   :options nil))
+                 (body (json-parse-string (plist-get context :body)
+                                          :object-type 'plist
+                                          :array-type 'list
+                                          :null-object nil
+                                          :false-object :json-false)))
+            (should (eq (plist-get context :responses-transport) 'websocket))
+            (should (eq (plist-get body :store) t))))
+      (when (file-exists-p auth-file)
+        (delete-file auth-file)))))
+
+(ert-deftest e-openai-test-normalizes-legacy-codex-response-store ()
+  "Reloaded legacy Codex defaults drop the obsolete store=false override."
+  (should
+   (equal
+    (e-openai--normalize-model-providers
+     `((codex
+        :name "ChatGPT Codex"
+        :base-url ,(concat e-openai-codex-default-base-url "/codex")
+        :wire-api responses
+        :responses-transport websocket
+        :response-store :json-false
+        :continuation t
+        :requires-openai-auth t)
+       (custom-codex
+        :name "Custom Codex"
+        :base-url ,(concat e-openai-codex-default-base-url "/codex")
+        :wire-api responses
+        :responses-transport websocket
+        :response-store :json-false
+        :continuation t
+        :requires-openai-auth t)))
+    `((codex
+       :name "ChatGPT Codex"
+       :base-url ,(concat e-openai-codex-default-base-url "/codex")
+       :wire-api responses
+       :responses-transport websocket
+       :continuation t
+       :requires-openai-auth t)
+      (custom-codex
+       :name "Custom Codex"
+       :base-url ,(concat e-openai-codex-default-base-url "/codex")
+       :wire-api responses
+       :responses-transport websocket
+       :response-store :json-false
+       :continuation t
+       :requires-openai-auth t)))))
+
+(ert-deftest e-openai-test-provider-profile-normalizes-legacy-codex-response-store ()
+  "Provider lookup repairs stale built-in Codex store overrides."
+  (let ((e-openai-model-providers
+         `((codex
+            :name "ChatGPT Codex"
+            :base-url ,(concat e-openai-codex-default-base-url "/codex")
+            :wire-api responses
+            :responses-transport websocket
+            :response-store :json-false
+            :continuation t
+            :requires-openai-auth t))))
+    (should-not
+     (plist-member (e-openai-provider-profile 'codex) :response-store))))
 
 (ert-deftest e-openai-test-responses-profile-can-disable-continuation ()
   "Responses profiles do not use provider continuation unless explicitly enabled."

@@ -73,13 +73,47 @@ When nil, Responses WebSocket requests do not time out locally."
                  (number :tag "Seconds"))
   :group 'e-openai)
 
+(defun e-openai--plist-without (plist key)
+  "Return PLIST without KEY."
+  (let (result)
+    (while plist
+      (let ((current-key (pop plist))
+            (value (pop plist)))
+        (unless (eq current-key key)
+          (setq result (append result (list current-key value))))))
+    result))
+
+(defun e-openai--legacy-codex-response-store-profile-p (provider-id profile)
+  "Return non-nil when PROFILE is the old built-in unstored Codex default."
+  (and (eq provider-id 'codex)
+       (equal (plist-get profile :name) "ChatGPT Codex")
+       (equal (plist-get profile :base-url)
+              (concat e-openai-codex-default-base-url "/codex"))
+       (eq (plist-get profile :wire-api) 'responses)
+       (eq (plist-get profile :responses-transport) 'websocket)
+       (eq (plist-get profile :response-store) :json-false)
+       (plist-get profile :continuation)
+       (plist-get profile :requires-openai-auth)))
+
+(defun e-openai--normalize-model-providers (providers)
+  "Return PROVIDERS with obsolete built-in Codex store overrides removed."
+  (mapcar (lambda (entry)
+            (let ((provider-id (car entry))
+                  (profile (cdr entry)))
+              (if (e-openai--legacy-codex-response-store-profile-p
+                   provider-id
+                   profile)
+                  (cons provider-id
+                        (e-openai--plist-without profile :response-store))
+                entry)))
+          providers))
+
 (defcustom e-openai-model-providers
   `((codex
      :name "ChatGPT Codex"
      :base-url ,(concat e-openai-codex-default-base-url "/codex")
      :wire-api responses
      :responses-transport websocket
-     :response-store :json-false
      :continuation t
      :requires-openai-auth t))
   "OpenAI-like model provider profiles keyed by provider symbol.
@@ -96,6 +130,9 @@ value.  Responses profiles can opt into provider continuation anchors with
 `:continuation' non-nil."
   :type '(alist :key-type symbol :value-type sexp)
   :group 'e-openai)
+
+(setq e-openai-model-providers
+      (e-openai--normalize-model-providers e-openai-model-providers))
 
 (defcustom e-openai-codex-debug nil
   "When non-nil, retain the last raw Codex response and event summaries."
@@ -114,6 +151,8 @@ value.  Responses profiles can opt into provider continuation anchors with
 (defun e-openai-provider-profile (&optional provider)
   "Return configured profile for PROVIDER.
 When PROVIDER is nil, use `e-openai-default-provider'."
+  (setq e-openai-model-providers
+        (e-openai--normalize-model-providers e-openai-model-providers))
   (let* ((provider (or provider e-openai-default-provider))
          (entry (assq provider e-openai-model-providers)))
     (unless entry
