@@ -66,11 +66,12 @@
                       (string-match-p
                        "reasoning explicitly and concretely"
                        text)
-                      (string-match-p "specific new information" text)
+                      (string-match-p "Use brief reasoning updates" text)
+                      (string-match-p "meaningful progress" text)
+                      (string-match-p "new context" text)
                       (string-match-p "one short sentence" text)
-                      (string-match-p "just to say you will continue" text)
+                      (string-match-p "Suppress only boilerplate" text)
                       (string-match-p "repeat prior reasoning" text)
-                      (string-match-p "otherwise continue without" text)
                       (not (string-match-p "as you work" text))))
                system-texts)))))
 

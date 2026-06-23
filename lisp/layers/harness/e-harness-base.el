@@ -18,7 +18,7 @@
 (require 'e-tool-output-truncation)
 
 (defconst e-harness-base-instructions
-  "Communicate reasoning explicitly and concretely: emit a reasoning message only when it conveys specific new information, such as a new decision, tradeoff, uncertainty, blocker, course correction, or result from inspected context. Keep it to one short sentence. Do not emit a reasoning message just to say you will continue, restate the plan, name the next routine step, or repeat prior reasoning; otherwise continue without one."
+  "Communicate reasoning explicitly and concretely: Use brief reasoning updates when they help the user follow meaningful progress or new context, such as what you learned, a decision, tradeoff, uncertainty, blocker, course correction, or why a non-obvious next action matters. Keep each update to one short sentence. Suppress only boilerplate updates that merely say you will continue, restate the same plan or status, name an obvious next step without new context, or repeat prior reasoning."
   "Base model-facing instructions contributed by the harness-base layer.")
 
 (defun e-harness-base-context-capability-create ()

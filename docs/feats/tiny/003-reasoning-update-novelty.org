@@ -7,13 +7,14 @@ Done
 
 * Summary
 
-Tighten the =harness-base= model-facing instruction so reasoning updates are
-only emitted when they convey specific new information: a decision, tradeoff,
-uncertainty, blocker, course correction, or result from inspected context.
+Balance the =harness-base= model-facing instruction so reasoning updates are
+brief but still emitted when they help the user follow meaningful progress or
+new context: what the agent learned, a decision, tradeoff, uncertainty, blocker,
+course correction, or why a non-obvious next action matters.
 
-The guidance explicitly rejects routine continuation updates, plan restatements,
-next-step narration, and repeated reasoning.  When an update is warranted, it
-should be one short sentence.
+The guidance suppresses only boilerplate continuation updates, repeated
+plan/status restatements, obvious next-step narration without new context, and
+repeated reasoning.  Each emitted update should be one short sentence.
 
 * Validation
 
