@@ -214,6 +214,11 @@ When PROVIDER is nil, use `e-openai-default-provider'."
     t)
    (t :json-false)))
 
+(defun e-openai--implicit-websocket-store-p (options)
+  "Return non-nil when OPTIONS use the WebSocket store default."
+  (and (eq (plist-get options :responses-transport) 'websocket)
+       (not (plist-member options :response-store))))
+
 (defun e-openai--unstored-websocket-options-p (options)
   "Return non-nil when OPTIONS describe an unstored WebSocket request."
   (and (eq (plist-get options :responses-transport) 'websocket)
@@ -422,17 +427,21 @@ When CODEX-HOME is nil, use the CODEX_HOME environment variable or
                       (when-let ((effort (or (plist-get options :reasoning-effort)
                                              e-openai-default-reasoning-effort)))
                         (list :effort effort))))
-         (body (list :model (or (plist-get options :model)
-                                e-openai-default-model)
-                     :store (e-openai--response-store-value options)
-                     :stream t
-                     :instructions (e-openai-codex--instructions
-                                    messages
-                                    options)
-                     :input (vconcat (mapcar #'e-openai-codex--input-message
-                                             input-messages))
-                     :tool_choice "auto"
-                     :parallel_tool_calls t)))
+         (store-value (e-openai--response-store-value options))
+         (body (append
+                (list :model (or (plist-get options :model)
+                                 e-openai-default-model))
+                (unless (and (e-openai--implicit-websocket-store-p options)
+                             (eq store-value t))
+                  (list :store store-value))
+                (list :stream t
+                      :instructions (e-openai-codex--instructions
+                                     messages
+                                     options)
+                      :input (vconcat (mapcar #'e-openai-codex--input-message
+                                              input-messages))
+                      :tool_choice "auto"
+                      :parallel_tool_calls t))))
     (when tools
       (setq body (append body (list :tools (vconcat tools)))))
     (when reasoning
@@ -473,7 +482,7 @@ When CODEX-HOME is nil, use the CODEX_HOME environment variable or
            (diagnostics
             (list :model (plist-get body :model)
                   :reasoning-effort (plist-get reasoning :effort)
-                  :response-store (plist-get body :store)
+                  :response-store (e-openai--response-store-value options)
                   :prompt-cache-key-present
                   (not (null (plist-member body :prompt_cache_key)))
                   :prompt-cache-retention-present

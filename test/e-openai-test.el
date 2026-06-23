@@ -204,13 +204,13 @@
                      :role "user"
                      :content [(:type "input_text" :text "hello")])]))))
 
-(ert-deftest e-openai-test-request-body-websocket-defaults-to-store ()
-  "Responses WebSocket requests default to stored responses."
+(ert-deftest e-openai-test-request-body-websocket-defaults-to-implicit-store ()
+  "Responses WebSocket requests default to stored responses without serializing true."
   (let ((body (e-openai-codex-request-body
                :messages '((:role user :content "hello"))
                :options '(:model "gpt-test"
                           :responses-transport websocket))))
-    (should (eq (plist-get body :store) t))))
+    (should-not (plist-member body :store))))
 
 (ert-deftest e-openai-test-request-body-response-store-overrides-websocket-default ()
   "Explicit response-store config overrides the WebSocket store default."
@@ -350,7 +350,10 @@
                      :false-object :json-false)))
     (should (eq (plist-get context :responses-transport) 'websocket))
     (should (eq (plist-get metadata :responses-transport) 'websocket))
-    (should (eq (plist-get body-data :store) t))))
+    (should-not (plist-member body-data :store))
+    (should (eq (plist-get (plist-get metadata :diagnostics)
+                           :response-store)
+                t))))
 
 (ert-deftest e-openai-test-request-context-rejects-websocket-chat-completions ()
   "WebSocket transport is only valid for Responses profiles."
@@ -610,8 +613,8 @@
                    :provider-continuation t
                    :provider-anchor-provider-id openai))))
 
-(ert-deftest e-openai-test-codex-profile-stores-websocket-responses ()
-  "Codex WebSocket requests use the generic stored-response default."
+(ert-deftest e-openai-test-codex-profile-uses-implicit-websocket-store ()
+  "Codex WebSocket requests use the generic stored-response default implicitly."
   (let* ((auth-file (make-temp-file "e-openai-auth" nil ".json"))
          (auth (json-encode
                 (list :tokens
@@ -633,7 +636,11 @@
                                           :null-object nil
                                           :false-object :json-false)))
             (should (eq (plist-get context :responses-transport) 'websocket))
-            (should (eq (plist-get body :store) t))))
+            (should-not (plist-member body :store))
+            (should (eq (plist-get (plist-get (plist-get context :metadata)
+                                              :diagnostics)
+                                   :response-store)
+                        t))))
       (when (file-exists-p auth-file)
         (delete-file auth-file)))))
 
@@ -1396,7 +1403,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
         (should (equal (cdr (assoc "OpenAI-Beta" opened-headers))
                        "responses_websockets=2026-02-06"))
         (should (equal (plist-get sent :type) "response.create"))
-        (should (eq (plist-get sent :store) t))
+        (should-not (plist-member sent :store))
         (should (equal (nreverse seen)
                        '((:type assistant-delta :content "ok")
                          (:type provider-anchor-candidate
