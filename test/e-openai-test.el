@@ -135,11 +135,12 @@
       :prompt_cache_retention "24h"))))
 
 (ert-deftest e-openai-test-request-body-uses-continuation-anchor ()
-  "Continuation sends previous_response_id with only the transcript delta."
+  "Continuation sends previous_response_id with fresh context and transcript delta."
   (should
    (equal
     (e-openai-codex-request-body
      :messages '((:role system :content "current instructions")
+                 (:role system :content "changed dynamic context")
                  (:role user :content "old prompt")
                  (:role assistant :content "old answer")
                  (:role user :content "new prompt"))
@@ -148,11 +149,12 @@
                 :provider-anchor (:provider-id openai
                                   :metadata (:response-id "resp-1"))
                 :provider-anchor-delta-messages
-                ((:role user :content "new prompt"))))
+                ((:role system :content "changed dynamic context")
+                 (:role user :content "new prompt"))))
     '(:model "gpt-test"
       :store t
       :stream t
-      :instructions "You are a helpful assistant.\n\ncurrent instructions"
+      :instructions "You are a helpful assistant.\n\ncurrent instructions\n\nchanged dynamic context"
       :input [(:type "message"
                :role "user"
                :content [(:type "input_text" :text "new prompt")])]

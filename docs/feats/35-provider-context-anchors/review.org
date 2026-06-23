@@ -394,6 +394,35 @@ feature-35 diff.
 Ready to merge? Yes.
 #+end_example
 
+** Dynamic context continuation correction
+
+*** Problem
+
+Live diagnostics showed that provider continuation was falling back to full
+replay when only late current-state context changed, such as org-canvas focus,
+visible buffers, or workspace awareness.  Those segments are deliberately late
+for prompt-cache reuse and should not make a stored provider anchor unusable
+when the stable instructions, model, tools, reasoning, provider options, active
+layers, and compaction boundary still match.
+
+*** Change
+
+Provider-anchor compatibility now treats =current-state= / =dynamic-context=
+segment fingerprints as soft identity.  The harness still sends fresh dynamic
+context by prepending current dynamic segment messages to the continuation
+delta, while session core continues to invalidate anchors for stable segment
+changes and other request-shaping changes.
+
+*** Evidence
+
+=e-harness-test-context-uses-provider-anchor-after-dynamic-state-change=
+proves that a changed dynamic segment reuses the anchor and includes fresh
+dynamic context in the delta.  The strict invalidation tests still cover stable
+context, tool, reasoning, active-layer, instruction, provider-option, and
+max-token changes.  =e-openai-test-request-body-uses-continuation-anchor=
+proves OpenAI continuation sends =previous_response_id= with fresh current
+instructions and only the non-system transcript delta in =input=.
+
 * Unresolved
 
 No unresolved findings remain.

@@ -1310,10 +1310,10 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
         (should (equal (mapcar (lambda (message)
                                  (plist-get message :content))
                                delta)
-                       '("new prompt")))))))
+                       '("dynamic context" "new prompt")))))))
 
-(ert-deftest e-harness-test-context-skips-provider-anchor-after-current-state-change ()
-  "Changed current-state fingerprints invalidate provider continuation anchors."
+(ert-deftest e-harness-test-context-uses-provider-anchor-after-dynamic-state-change ()
+  "Changed dynamic-context fingerprints keep provider continuation anchors usable."
   (let* ((current-state "dynamic context")
          (dynamic-provider
           (e-context-provider-create
@@ -1364,23 +1364,32 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
       (let ((options (plist-get
                       (e-harness-context harness "session-1" "turn-2")
                       :options)))
-        (should-not (plist-get options :provider-anchor))
-        (should-not (plist-get options :provider-anchor-delta-messages))))))
+        (should (equal (plist-get
+                        (plist-get
+                         (plist-get options :provider-anchor)
+                         :metadata)
+                        :response-id)
+                       "resp-1"))
+        (should (equal (mapcar (lambda (message)
+                                 (plist-get message :content))
+                               (plist-get options
+                                          :provider-anchor-delta-messages))
+                       '("changed dynamic context" "new prompt")))))))
 
 (ert-deftest e-harness-test-context-reports-provider-anchor-invalidation-reason ()
   "Context options report why an otherwise current provider anchor was skipped."
-  (let* ((current-state "dynamic context")
-         (dynamic-provider
+  (let* ((stable-state "stable context")
+         (stable-provider
           (e-context-provider-create
-           :name 'dynamic-provider
-           :cache-placement 'dynamic-context
+           :name 'stable-provider
+           :cache-placement 'stable-context
            :build (lambda (&rest _)
-                    (list (list :role 'system :content current-state)))))
+                    (list (list :role 'system :content stable-state)))))
          (capability
           (e-capability-create
            :id 'anchor-capability
            :instructions "capability instructions"
-           :context-providers (list dynamic-provider)))
+           :context-providers (list stable-provider)))
          (layer (e-layer-create
                  :id 'anchor-layer
                  :name "Anchor Layer"
@@ -1411,7 +1420,7 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
        :covered-entry-id (plist-get assistant :id)
        :fingerprints (e-harness--provider-anchor-fingerprints anchor-context)
        :metadata '(:response-id "resp-1"))
-      (setq current-state "changed dynamic context")
+      (setq stable-state "changed stable context")
       (e-session-append-message
        (e-harness-sessions harness)
        "session-1"

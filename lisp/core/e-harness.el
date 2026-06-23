@@ -1439,18 +1439,31 @@ When a turn produced multiple assistant messages, return the last one."
          fingerprints)
       'missing-anchor)))
 
+(defun e-harness--provider-anchor-dynamic-context-messages (context)
+  "Return backend-neutral dynamic-context messages from CONTEXT."
+  (cl-loop for segment in (plist-get context :segments)
+           when (memq (plist-get segment :kind)
+                      '(current-state dynamic-context))
+           append (mapcar #'e-context--backend-message
+                          (plist-get segment :messages))))
+
 (defun e-harness--provider-anchor-delta-messages
-    (harness session-id anchor)
-  "Return backend-neutral messages after ANCHOR coverage in SESSION-ID."
-  (let ((entries (cdr (e-session-entries-from
+    (harness session-id anchor &optional context)
+  "Return backend-neutral fresh messages after ANCHOR coverage in SESSION-ID."
+  (let ((dynamic-messages
+         (when context
+           (e-harness--provider-anchor-dynamic-context-messages context)))
+        (entries (cdr (e-session-entries-from
                        (e-harness-sessions harness)
                        session-id
                        (plist-get anchor :covered-entry-id)))))
-    (mapcar #'e-context--backend-message
-            (cl-remove-if-not
-             (lambda (entry)
-               (eq (plist-get entry :type) 'message))
-             entries))))
+    (append
+     dynamic-messages
+     (mapcar #'e-context--backend-message
+             (cl-remove-if-not
+              (lambda (entry)
+                (eq (plist-get entry :type) 'message))
+              entries)))))
 
 (defun e-harness--context-with-provider-anchor (harness session-id context)
   "Attach a compatible provider anchor to CONTEXT options when available."
@@ -1474,7 +1487,7 @@ When a turn produced multiple assistant messages, return the last one."
                      options
                      :provider-anchor-delta-messages
                      (e-harness--provider-anchor-delta-messages
-                      harness session-id anchor))))
+                      harness session-id anchor context))))
           (setq options
                 (plist-put
                  options

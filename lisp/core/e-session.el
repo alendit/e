@@ -518,6 +518,20 @@ and RECORD supplies persisted identity fields during replay."
           (e-session-compaction-boundary-valid-p store session-id entry)))
    (reverse (e-session-compactions store session-id))))
 
+(defun e-session--provider-anchor-dynamic-segment-p (segment)
+  "Return non-nil when SEGMENT is volatile current-state context."
+  (let ((kind (plist-get segment :kind)))
+    (or (eq kind 'current-state)
+        (eq kind 'dynamic-context)
+        (equal kind "current-state")
+        (equal kind "dynamic-context"))))
+
+(defun e-session--provider-anchor-stable-segments (fingerprints)
+  "Return provider-anchor hard-identity segments from FINGERPRINTS."
+  (cl-remove-if
+   #'e-session--provider-anchor-dynamic-segment-p
+   (plist-get fingerprints :segments)))
+
 (defun e-session-provider-anchor-incompatibility-reason
     (store session-id anchor provider-id model fingerprints)
   "Return why ANCHOR is not compatible, or nil when compatible."
@@ -533,8 +547,10 @@ and RECORD supplies persisted identity fields during replay."
       'provider-mismatch)
      ((not (equal (plist-get anchor :model) model))
       'model-mismatch)
-     ((not (equal (plist-get anchor-fingerprints :segments)
-                  (plist-get fingerprints :segments)))
+     ((not (equal (e-session--provider-anchor-stable-segments
+                   anchor-fingerprints)
+                  (e-session--provider-anchor-stable-segments
+                   fingerprints)))
       'segment-fingerprint-mismatch)
      ((not (equal (plist-get anchor-fingerprints :active-layer-ids)
                   (plist-get fingerprints :active-layer-ids)))
