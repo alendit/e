@@ -433,8 +433,15 @@ When CODEX-HOME is nil, use the CODEX_HOME environment variable or
   "Return Responses input messages from MESSAGES and OPTIONS."
   (let* ((response-id (e-openai-codex--continuation-response-id options))
          (delta-messages (plist-get options :provider-anchor-delta-messages))
+         (source-count
+          (plist-get options :provider-anchor-source-message-count))
+         (in-turn-messages
+          (when (and (integerp source-count)
+                     (>= source-count 0)
+                     (<= source-count (length messages)))
+            (nthcdr source-count messages)))
          (source (if (and response-id (listp delta-messages))
-                     delta-messages
+                     (append delta-messages in-turn-messages)
                    messages)))
     (seq-remove #'e-openai-codex--system-message-p source)))
 
@@ -537,6 +544,14 @@ When CODEX-HOME is nil, use the CODEX_HOME environment variable or
               (append metadata
                       (list :provider-continuation-delta-count
                             (length delta-messages)))))
+      (when (integerp (plist-get options
+                                 :provider-anchor-source-message-count))
+        (setq metadata
+              (append metadata
+                      (list :provider-anchor-source-message-count
+                            (plist-get
+                             options
+                             :provider-anchor-source-message-count)))))
       (when-let ((reason
                   (plist-get options :provider-anchor-invalidation-reason)))
         (setq metadata

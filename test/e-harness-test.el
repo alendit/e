@@ -1310,7 +1310,10 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
         (should (equal (mapcar (lambda (message)
                                  (plist-get message :content))
                                delta)
-                       '("dynamic context" "new prompt")))))))
+                       '("dynamic context" "new prompt")))
+        (should (equal (plist-get options
+                                  :provider-anchor-source-message-count)
+                       (length (plist-get context :messages))))))))
 
 (ert-deftest e-harness-test-context-uses-provider-anchor-after-dynamic-state-change ()
   "Changed dynamic-context fingerprints keep provider continuation anchors usable."

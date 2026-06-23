@@ -1487,7 +1487,12 @@ When a turn produced multiple assistant messages, return the last one."
                      options
                      :provider-anchor-delta-messages
                      (e-harness--provider-anchor-delta-messages
-                      harness session-id anchor context))))
+                      harness session-id anchor context)))
+              (setq options
+                    (plist-put
+                     options
+                     :provider-anchor-source-message-count
+                     (length (plist-get context :messages)))))
           (setq options
                 (plist-put
                  options

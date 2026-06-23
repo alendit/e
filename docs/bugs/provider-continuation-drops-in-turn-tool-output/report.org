@@ -1,0 +1,11 @@
+#+title: Provider Continuation Drops In-Turn Tool Output
+
+* Report
+
+Debug sessions can loop through the same tool call after recent provider
+continuation changes. The observed session repeatedly made near-identical Doom
+sync probes without progressing.
+
+The suspected cause was stale Responses API continuation state: follow-up
+requests used =previous_response_id= but did not send the new in-turn context,
+especially tool-call and tool-output messages produced after the turn started.

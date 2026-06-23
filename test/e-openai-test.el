@@ -185,6 +185,48 @@
       :reasoning (:effort "high")
       :previous_response_id "resp-1"))))
 
+(ert-deftest e-openai-test-request-body-continuation-includes-in-turn-tool-output ()
+  "Anchored follow-up requests include tool messages appended during the turn."
+  (let ((body
+         (e-openai-codex-request-body
+          :messages '((:role system :content "current instructions")
+                      (:role system :content "changed dynamic context")
+                      (:role user :content "old prompt")
+                      (:role assistant :content "old answer")
+                      (:role user :content "new prompt")
+                      (:role tool-call
+                       :content (:type tool-call
+                                 :id "call-1"
+                                 :name "inspect"
+                                 :arguments (:target "state")))
+                      (:role tool
+                       :content (:tool-call-id "call-1"
+                                 :name "inspect"
+                                 :status ok
+                                 :content "fresh state")))
+          :options '(:model "gpt-test"
+                     :provider-continuation t
+                     :provider-anchor (:provider-id openai
+                                       :metadata (:response-id "resp-1"))
+                     :provider-anchor-source-message-count 5
+                     :provider-anchor-delta-messages
+                     ((:role system :content "changed dynamic context")
+                      (:role user :content "new prompt"))))))
+    (should (equal (plist-get body :previous_response_id) "resp-1"))
+    (should
+     (equal
+      (plist-get body :input)
+      [(:type "message"
+        :role "user"
+        :content [(:type "input_text" :text "new prompt")])
+       (:type "function_call"
+        :call_id "call-1"
+        :name "inspect"
+        :arguments "{\"target\":\"state\"}")
+       (:type "function_call_output"
+        :call_id "call-1"
+        :output "fresh state")]))))
+
 (ert-deftest e-openai-test-request-body-full-replay-when-continuation-disabled ()
   "Provider anchors are ignored unless continuation mode is enabled."
   (should

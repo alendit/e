@@ -1,0 +1,37 @@
+#+title: Provider Continuation Drops In-Turn Tool Output Investigation
+
+* Finding
+
+The user theory was correct. Provider continuation requests were anchored with
+=previous_response_id=, but the request input was still the original anchored
+delta computed at turn start.
+
+During a tool turn, =e-loop= appends =tool-call= and =tool= messages to the
+turn-local message list before asking the provider to continue. However,
+=e-openai-codex--request-input-messages= selected only
+=:provider-anchor-delta-messages= when =previous_response_id= was present.
+Those delta messages were computed once by =e-harness--context-with-provider-anchor=
+before any in-turn tool messages existed.
+
+The persisted loop trace matched this failure mode: repeated provider requests
+reported =previous-response-id-present: true= and =input-message-count: 1= even
+after a tool result should have been available.
+
+* Fix
+
+=e-harness--context-with-provider-anchor= now records
+=:provider-anchor-source-message-count= when it computes the anchored delta.
+=e-openai-codex--request-input-messages= uses that count to append messages
+added later in the same turn to the anchored delta before building Responses
+API input items.
+
+This preserves provider-side continuation while still sending required fresh
+state such as =function_call= and =function_call_output= items.
+
+* Verification
+
+- =rtk eldev test -f test/e-openai-test.el e-openai-test-request-body-continuation-includes-in-turn-tool-output=
+- =rtk eldev test -f test/e-harness-test.el e-harness-test-context-attaches-compatible-provider-anchor=
+- =E_E2E=1 rtk eldev test -f e2e/e-provider-continuation-e2e-test.el=
+- =rtk eldev test -f test/e-openai-test.el=
+- =rtk eldev test -f test/e-harness-test.el=

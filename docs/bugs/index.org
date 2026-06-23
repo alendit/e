@@ -10,6 +10,7 @@ State values for coding agents:
 |--------+------+-------|
 | Closed | e-debug-session-root-home/ | e-debug session root uses home directory |
 | Closed | openai-websocket-stalled-active-turns/ | OpenAI WebSocket stalled active turns |
+| Closed | provider-continuation-drops-in-turn-tool-output/ | Provider continuation drops in-turn tool output |
 | Closed | e-debug-here-verbose-context/ | e-debug-here verbose context |
 | Closed | e-chat-reload-detaches-active-turn/ | e-chat reload detaches active turn |
 | Closed | e-debug-progress-ticks-after-settlement/ | e-debug progress ticks after settled turn |

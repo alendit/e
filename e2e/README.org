@@ -1,7 +1,15 @@
 #+title: Live E2E Validation
 
-This suite exercises the real harness/backend/tool/session path against a live
-provider API.  It is not part of the default unit-test run.
+This directory contains end-to-end harness/backend/tool/session validation.
+
+Deterministic provider-flow e2e tests run without live credentials:
+
+#+begin_src sh
+E_E2E=1 rtk eldev test -f e2e/e-provider-continuation-e2e-test.el
+#+end_src
+
+The live suite exercises the same runtime path against a real provider API.  It
+is not part of the default unit-test run.
 
 Run it only when live validation is explicitly desired:
 
