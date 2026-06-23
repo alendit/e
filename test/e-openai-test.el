@@ -210,7 +210,18 @@
                :messages '((:role user :content "hello"))
                :options '(:model "gpt-test"
                           :responses-transport websocket))))
-    (should-not (plist-member body :store))))
+    (should-not (plist-member body :store))
+    (should-not (plist-member body :stream))))
+
+(ert-deftest e-openai-test-request-body-websocket-store-true-is-implicit ()
+  "Responses WebSocket store=true uses the stored default wire shape."
+  (let ((body (e-openai-codex-request-body
+               :messages '((:role user :content "hello"))
+               :options '(:model "gpt-test"
+                          :responses-transport websocket
+                          :response-store t))))
+    (should-not (plist-member body :store))
+    (should-not (plist-member body :stream))))
 
 (ert-deftest e-openai-test-request-body-response-store-overrides-websocket-default ()
   "Explicit response-store config overrides the WebSocket store default."
@@ -220,7 +231,8 @@
                           :responses-transport websocket
                           :response-store :json-false
                           :provider-continuation t))))
-    (should (eq (plist-get body :store) :json-false))))
+    (should (eq (plist-get body :store) :json-false))
+    (should-not (plist-member body :stream))))
 
 (ert-deftest e-openai-test-request-body-websocket-store-false-ignores-durable-anchor ()
   "Unstored WebSocket requests do not use persisted provider anchors."
@@ -351,6 +363,7 @@
     (should (eq (plist-get context :responses-transport) 'websocket))
     (should (eq (plist-get metadata :responses-transport) 'websocket))
     (should-not (plist-member body-data :store))
+    (should-not (plist-member body-data :stream))
     (should (eq (plist-get (plist-get metadata :diagnostics)
                            :response-store)
                 t))))
@@ -637,6 +650,7 @@
                                           :false-object :json-false)))
             (should (eq (plist-get context :responses-transport) 'websocket))
             (should-not (plist-member body :store))
+            (should-not (plist-member body :stream))
             (should (eq (plist-get (plist-get (plist-get context :metadata)
                                               :diagnostics)
                                    :response-store)
@@ -1404,6 +1418,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
                        "responses_websockets=2026-02-06"))
         (should (equal (plist-get sent :type) "response.create"))
         (should-not (plist-member sent :store))
+        (should-not (plist-member sent :stream))
         (should (equal (nreverse seen)
                        '((:type assistant-delta :content "ok")
                          (:type provider-anchor-candidate

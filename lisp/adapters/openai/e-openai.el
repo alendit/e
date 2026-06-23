@@ -215,9 +215,13 @@ When PROVIDER is nil, use `e-openai-default-provider'."
    (t :json-false)))
 
 (defun e-openai--implicit-websocket-store-p (options)
-  "Return non-nil when OPTIONS use the WebSocket store default."
+  "Return non-nil when OPTIONS use WebSocket's stored-response default."
   (and (eq (plist-get options :responses-transport) 'websocket)
-       (not (plist-member options :response-store))))
+       (not (eq (e-openai--response-store-value options) :json-false))))
+
+(defun e-openai--websocket-request-p (options)
+  "Return non-nil when OPTIONS describe a Responses WebSocket request."
+  (eq (plist-get options :responses-transport) 'websocket))
 
 (defun e-openai--unstored-websocket-options-p (options)
   "Return non-nil when OPTIONS describe an unstored WebSocket request."
@@ -434,8 +438,9 @@ When CODEX-HOME is nil, use the CODEX_HOME environment variable or
                 (unless (and (e-openai--implicit-websocket-store-p options)
                              (eq store-value t))
                   (list :store store-value))
-                (list :stream t
-                      :instructions (e-openai-codex--instructions
+                (unless (e-openai--websocket-request-p options)
+                  (list :stream t))
+                (list :instructions (e-openai-codex--instructions
                                      messages
                                      options)
                       :input (vconcat (mapcar #'e-openai-codex--input-message
