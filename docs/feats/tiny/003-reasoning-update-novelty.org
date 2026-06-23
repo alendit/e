@@ -1,0 +1,23 @@
+#+title: Reasoning Update Novelty
+#+startup: overview
+
+* Status
+
+Done
+
+* Summary
+
+Tighten the =harness-base= model-facing instruction so reasoning updates are
+only emitted when they convey specific new information: a decision, tradeoff,
+uncertainty, blocker, course correction, or result from inspected context.
+
+The guidance explicitly rejects routine continuation updates, plan restatements,
+next-step narration, and repeated reasoning.  When an update is warranted, it
+should be one short sentence.
+
+* Validation
+
+- =rtk eldev test -f test/e-harness-base-test.el=
+- =git diff --check -- lisp/layers/harness/e-harness-base.el test/e-harness-base-test.el=
+- Reloaded the running Emacs with =e-dev-reload=.
+- Read back =e-harness-base-instructions= from the running Emacs after reload.
