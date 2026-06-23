@@ -73,6 +73,25 @@ When nil, Responses WebSocket requests do not time out locally."
                  (number :tag "Seconds"))
   :group 'e-openai)
 
+(defun e-openai--custom-override-p (symbol)
+  "Return non-nil when SYMBOL has a Custom override."
+  (or (get symbol 'saved-value)
+      (get symbol 'customized-value)
+      (get symbol 'theme-value)))
+
+(defun e-openai--migrate-websocket-idle-timeout-default ()
+  "Adopt the current WebSocket idle timeout default across live reloads.
+
+Reloading this file with an older live value leaves the defcustom variable
+bound to the old nil default.  Preserve real Custom/theme overrides, but move
+the uncustomized old default to the new bounded value."
+  (when (and (null e-openai-websocket-idle-timeout-seconds)
+             (not (e-openai--custom-override-p
+                   'e-openai-websocket-idle-timeout-seconds)))
+    (setq e-openai-websocket-idle-timeout-seconds 180)))
+
+(e-openai--migrate-websocket-idle-timeout-default)
+
 (defun e-openai--plist-without (plist key)
   "Return PLIST without KEY."
   (let (result)

@@ -46,6 +46,28 @@
     (should (equal (e-openai-codex-auth-file)
                    "/tmp/e-codex-home/auth.json"))))
 
+(ert-deftest e-openai-test-websocket-timeout-default-migrates-on-reload ()
+  "A live old nil WebSocket timeout default migrates when uncustomized."
+  (let* ((symbol 'e-openai-websocket-idle-timeout-seconds)
+         (saved (get symbol 'saved-value))
+         (customized (get symbol 'customized-value))
+         (theme (get symbol 'theme-value)))
+    (unwind-protect
+        (progn
+          (put symbol 'saved-value nil)
+          (put symbol 'customized-value nil)
+          (put symbol 'theme-value nil)
+          (let ((e-openai-websocket-idle-timeout-seconds nil))
+            (e-openai--migrate-websocket-idle-timeout-default)
+            (should (equal e-openai-websocket-idle-timeout-seconds 180)))
+          (put symbol 'saved-value '(nil))
+          (let ((e-openai-websocket-idle-timeout-seconds nil))
+            (e-openai--migrate-websocket-idle-timeout-default)
+            (should-not e-openai-websocket-idle-timeout-seconds)))
+      (put symbol 'saved-value saved)
+      (put symbol 'customized-value customized)
+      (put symbol 'theme-value theme))))
+
 (ert-deftest e-openai-test-read-auth-token-and-account-id ()
   "Auth parsing extracts the access token and account id."
   (let* ((token (e-openai-test--jwt))
