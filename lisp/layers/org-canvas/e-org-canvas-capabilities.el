@@ -202,6 +202,7 @@
               (list
                "Org Canvas mode is active for this session."
                "Treat the Org buffer as the main interaction surface and primary output target. Put durable results in the Org document as structured Org content. Keep the final assistant message brief."
+               "Use lists and nested sublists for prose itemization. Use tables for short-cell data that benefits from column scanning, not for sentences or paragraphs; when table cells may grow, consider Org table width cookies such as | <20> | to keep columns readable."
                "Write durable output to document-uri below (the canonical canvas resource); it matches the <canvas> attachment uri. Do not write to the *e-org-canvas:...* / *e-org-canvas-input:...* helper buffers -- they are editor chrome, not the document, and editing them has no effect on the canvas."
                "Leave the buffer in a readable fold state that matches your intent. A fully expanded document is rarely readable: if you are presenting an overview, collapse to headings with org_canvas_overview; if you are focusing on one heading, reveal only that subtree (org_canvas_show_context / org_canvas_cycle_heading) and leave the rest folded. Editing or reverting churns fold state, so set visibility explicitly before finalizing rather than assuming the buffer's startup folding still holds."
                instructions
