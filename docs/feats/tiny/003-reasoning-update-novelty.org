@@ -8,17 +8,25 @@ Done
 * Summary
 
 Balance the =harness-base= model-facing instruction so reasoning updates are
-brief but still emitted when they help the user follow meaningful progress or
-new context: what the agent learned, a decision, tradeoff, uncertainty, blocker,
-course correction, or why a non-obvious next action matters.
+brief checkpoint updates rather than per-command narration or total silence.
 
-The guidance suppresses only boilerplate continuation updates, repeated
-plan/status restatements, obvious next-step narration without new context, and
-repeated reasoning.  Each emitted update should be one short sentence.
+Codex's model prompt frames progress as keeping the user clearly informed without
+unnecessary detail, with plans and status transitions carrying much of the
+visible progress.  Pi's cc-connect adapter does not appear to tune this through a
+style prompt; it forwards native =thinking_delta= chunks as a single
+=EventThinking= at =thinking_end=.
+
+Use that as the calibration: emit one short sentence at meaningful checkpoints,
+such as a new phase, evidence that narrows the work, a decision/tradeoff, a
+blocker, a course correction, or a non-obvious next action.  Do not emit one for
+every command/tool call, repeated similar commands, visible plan restatements, or
+obvious continuation.
 
 * Validation
 
 - =rtk eldev test -f test/e-harness-base-test.el=
 - =git diff --check -- lisp/layers/harness/e-harness-base.el test/e-harness-base-test.el=
+- Inspected Codex prompt guidance in =projects/rust/codex/codex-rs/core/gpt_5_2_prompt.md=.
+- Inspected Pi thinking forwarding in =projects/agent/cc-connect/agent/pi/session.go=.
 - Reloaded the running Emacs with =e-dev-reload=.
 - Read back =e-harness-base-instructions= from the running Emacs after reload.
