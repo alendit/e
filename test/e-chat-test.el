@@ -5411,6 +5411,178 @@ the orphaned region and appeared to vanish."
         (delete-window window))
       (e-chat-test--kill-chat-buffers))))
 
+(ert-deftest e-chat-test-add-context-to-latest-prefers-visible-duplicate-session-buffer ()
+  "Latest context insertion ignores hidden duplicate buffers for the same session."
+  (let* ((store (e-session-store-create))
+         (backend (e-backend-fake-create :items nil))
+         (harness (e-chat-test--activate-chat-session
+                   (e-harness-create :backend backend :sessions store)))
+         visible-buffer
+         hidden-duplicate
+         window)
+    (unwind-protect
+        (e-chat-test--with-empty-harness-registry
+          (let ((e-chat-default-harness-id :chat-test))
+            (e-harness-registry-register :chat-test harness)
+            (e-session-create store :id "duplicate-session"
+                              :metadata '(:name "duplicate-session"))
+            (setq visible-buffer
+                  (e-chat-open :harness harness
+                               :session-id "duplicate-session"))
+            (setq window (display-buffer visible-buffer))
+            (setq hidden-duplicate
+                  (get-buffer-create "*e-chat:hidden duplicate-session*"))
+            (e-chat--attach-buffer hidden-duplicate harness "duplicate-session" nil)
+            ;; Model the observed bug: an undisplayed duplicate for the same
+            ;; session can appear earlier than the visible chat in `buffer-list'.
+            (with-temp-buffer
+              (insert "alpha\nbeta\ngamma\n")
+              (goto-char (point-min))
+              (forward-line 1)
+              (let ((orig-buffer-list (symbol-function 'buffer-list)))
+                (cl-letf (((symbol-function 'buffer-list)
+                           (lambda (&optional frame)
+                             (append (list hidden-duplicate visible-buffer)
+                                     (remove hidden-duplicate
+                                             (remove visible-buffer
+                                                     (funcall orig-buffer-list
+                                                              frame)))))))
+                  (let ((chat-buffer (e-chat-add-context-to-latest)))
+                    (should (eq chat-buffer visible-buffer))
+                    (with-current-buffer visible-buffer
+                      (should (string-match-p
+                               "@\\[.*:2 (context 1-3)\\]"
+                               (buffer-substring-no-properties
+                                e-chat--composer-start-marker
+                                (point-max)))))
+                    (with-current-buffer hidden-duplicate
+                      (should (string-empty-p
+                               (buffer-substring-no-properties
+                                e-chat--composer-start-marker
+                                (point-max)))))))))))
+      (when (and window (window-live-p window))
+        (delete-window window))
+      (e-chat-test--kill-chat-buffers))))
+
+(ert-deftest e-chat-test-find-session-buffer-uses_workspace_existing_buffer_helper ()
+  "Chat session lookup delegates existing-buffer preference to the workspace helper."
+  (let* ((store (e-session-store-create))
+         (backend (e-backend-fake-create :items nil))
+         (harness (e-chat-test--activate-chat-session
+                   (e-harness-create :backend backend :sessions store)))
+         (buffer (get-buffer-create "*e-chat:workspace helper target*"))
+         captured-prefer-visible
+         captured-result)
+    (unwind-protect
+        (progn
+          (e-chat--attach-buffer buffer harness "helper-session" nil)
+          (cl-letf (((symbol-function 'e-workspace-find-buffer)
+                     (cl-function
+                      (lambda (predicate &key prefer-visible workspace)
+                        (ignore workspace)
+                        (setq captured-prefer-visible prefer-visible)
+                        (setq captured-result
+                              (and (funcall predicate buffer)
+                                   buffer))))))
+            (should (eq (e-chat--find-session-buffer
+                         "helper-session"
+                         harness
+                         nil)
+                        buffer)))
+          (should captured-prefer-visible)
+          (should (eq captured-result buffer)))
+      (e-chat-test--kill-chat-buffers))))
+
+(ert-deftest e-chat-test-open-prunes-hidden-empty-duplicate-session-buffer ()
+  "Opening a session removes hidden empty duplicate buffers for that session."
+  (let* ((store (e-session-store-create))
+         (backend (e-backend-fake-create :items nil))
+         (harness (e-chat-test--activate-chat-session
+                   (e-harness-create :backend backend :sessions store)))
+         visible-buffer
+         hidden-duplicate
+         window)
+    (unwind-protect
+        (progn
+          (e-session-create store :id "dedupe-session"
+                            :metadata '(:name "dedupe-session"))
+          (setq visible-buffer
+                (e-chat-open :harness harness :session-id "dedupe-session"))
+          (setq window (display-buffer visible-buffer))
+          (setq hidden-duplicate
+                (get-buffer-create "*e-chat:hidden dedupe-session*"))
+          (e-chat--attach-buffer hidden-duplicate harness "dedupe-session" nil)
+          (should (buffer-live-p hidden-duplicate))
+          (should (eq (e-chat-open :harness harness
+                                   :session-id "dedupe-session")
+                      visible-buffer))
+          (should-not (buffer-live-p hidden-duplicate)))
+      (when (and window (window-live-p window))
+        (delete-window window))
+      (e-chat-test--kill-chat-buffers))))
+
+(ert-deftest e-chat-test-add-context-display-uses-source-workspace_below_selected ()
+  "Displayed context insertion uses the source workspace, not stale chat affinity."
+  (let* ((store (e-session-store-create))
+         (backend (e-backend-fake-create :items nil))
+         (harness (e-chat-test--activate-chat-session
+                   (e-harness-create :backend backend :sessions store)))
+         (source-workspace (make-e-workspace-token
+                            :backend 'single
+                            :id 'source
+                            :name "source"
+                            :frame (selected-frame)))
+         (foreign-workspace (make-e-workspace-token
+                             :backend 'single
+                             :id 'foreign
+                             :name "foreign"
+                             :frame (selected-frame)))
+         chat-buffer
+         captured-buffer
+         captured-workspace
+         captured-action
+         captured-select)
+    (unwind-protect
+        (e-chat-test--with-empty-harness-registry
+          (let ((e-chat-default-harness-id :chat-test))
+            (e-harness-registry-register :chat-test harness)
+            (e-session-create store :id "workspace-session"
+                              :metadata '(:name "workspace-session"))
+            (setq chat-buffer
+                  (e-chat-open :harness harness
+                               :session-id "workspace-session"))
+            (e-buffer-set-workspace chat-buffer foreign-workspace)
+            (with-temp-buffer
+              (insert "alpha
+beta
+gamma
+")
+              (let ((reference (e-chat--capture-context-reference-for-command)))
+                (cl-letf (((symbol-function 'e-workspace-display-buffer)
+                           (cl-function
+                            (lambda (buffer &key workspace action select
+                                            side-window-ok)
+                              (ignore side-window-ok)
+                              (setq captured-buffer buffer)
+                              (setq captured-workspace workspace)
+                              (setq captured-action action)
+                              (setq captured-select select)
+                              (selected-window)))))
+                  (should (eq (e-chat--add-context-reference-to-session
+                               reference
+                               harness
+                               "workspace-session"
+                               t
+                               nil
+                               source-workspace)
+                              chat-buffer)))))
+            (should (eq captured-buffer chat-buffer))
+            (should (eq captured-workspace source-workspace))
+            (should captured-select)
+            (should (memq 'display-buffer-below-selected captured-action))
+            (should-not (memq 'display-buffer-use-some-window captured-action))))
+      (e-chat-test--kill-chat-buffers))))
+
 (ert-deftest e-chat-test-add-context-to-latest-falls-back-to-most-recent-session ()
   "Latest context insertion opens the most recently updated chat session."
   (let* ((store (e-session-store-create))
@@ -6722,6 +6894,76 @@ The context-window denominator comes from the live provider lookup
       (should (equal (plist-get opened :session-id) "beta-session"))
       (should (eq (plist-get opened :display) t))
       (should (eq (plist-get opened :instance-id) :beta)))))
+
+(ert-deftest e-chat-test-active-session-open-ignores-preview-buffer-and-focuses_workspace ()
+  "Opening from active sessions ignores the picker preview and focuses session affinity."
+  (let* ((store (e-session-store-create))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :sessions store))
+         (target-workspace (make-e-workspace-token
+                            :backend 'single
+                            :id 'target
+                            :name "target"
+                            :frame (selected-frame)))
+         (current-workspace (make-e-workspace-token
+                             :backend 'single
+                             :id 'current
+                             :name "current"
+                             :frame (selected-frame)))
+         (session '(:id "workspace-active"
+                    :title "Workspace Active"
+                    :summary "Prompt text"
+                    :message-count 1
+                    :messages ((:role user :content "Prompt text"))
+                    :loaded t))
+         (candidate (list :harness harness
+                          :session session
+                          :session-id "workspace-active"))
+         canonical
+         preview
+         captured-buffer
+         captured-workspace)
+    (unwind-protect
+        (progn
+          (e-session-create store :id "workspace-active"
+                            :metadata '(:name "Workspace Active"))
+          (e-session-append-message
+           store
+           "workspace-active"
+           '(:id "msg-1" :role user :content "Prompt text"))
+          (setq canonical
+                (e-chat-open :harness harness
+                             :session-id "workspace-active"))
+          (e-buffer-set-workspace canonical target-workspace)
+          (setq preview (get-buffer-create " *e-chat-active-preview*"))
+          (e-chat--active-session-preview candidate preview)
+          (let ((orig-buffer-list (symbol-function 'buffer-list)))
+            (cl-letf (((symbol-function 'buffer-list)
+                       (lambda (&optional frame)
+                         (append (list preview canonical)
+                                 (remove preview
+                                         (remove canonical
+                                                 (funcall orig-buffer-list
+                                                          frame))))))
+                      ((symbol-function 'e-workspace-current)
+                       (lambda (&optional _frame) current-workspace))
+                      ((symbol-function 'e-workspace-display-buffer)
+                       (cl-function
+                        (lambda (buffer &key workspace action select
+                                        side-window-ok)
+                          (ignore action select side-window-ok)
+                          (setq captured-buffer buffer)
+                          (setq captured-workspace workspace)
+                          (selected-window)))))
+              (should (eq (e-chat--active-session-open candidate)
+                          canonical))))
+          (should (eq captured-buffer canonical))
+          (should (eq captured-workspace target-workspace)))
+      (when (buffer-live-p preview)
+        (kill-buffer preview))
+      (when (buffer-live-p canonical)
+        (kill-buffer canonical)))))
 
 (ert-deftest e-chat-test-active-sessions-filters-empty-sessions ()
   "The active sessions picker omits sessions with no user prompts."

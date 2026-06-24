@@ -343,7 +343,7 @@
                          :key #'e-capability-id))))
           (should (string-match-p "debug popup" instructions))
           (should (string-match-p "Do not treat the debug popup" instructions))
-          (should (string-match-p "dismiss the debug popup" instructions)))
+        (should (string-match-p "dismiss the debug popup" instructions)))
         (should-not (e-harness-layer-change-function harness))))))
 
 (ert-deftest e-defaults-test-chat-harness-enables-web-and-text-editing-by-default ()

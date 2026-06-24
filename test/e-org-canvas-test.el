@@ -436,6 +436,36 @@
       (e-org-canvas-test--kill-chat-buffers)
       (delete-directory directory t))))
 
+(ert-deftest e-org-canvas-test-session-buffer-uses_workspace_existing_buffer_helper ()
+  "Org Canvas session lookup delegates existing-buffer preference to the helper."
+  (let* ((harness (e-org-canvas-test--harness t))
+         (buffer (get-buffer-create "org-canvas-workspace-helper"))
+         captured-prefer-visible
+         captured-result)
+    (unwind-protect
+        (progn
+          (with-current-buffer buffer
+            (org-mode)
+            (insert "* Helper\nbody\n"))
+          (e-harness-create-session harness :id "helper-session")
+          (e-org-canvas--mark-session harness "helper-session" buffer)
+          (cl-letf (((symbol-function 'e-workspace-find-buffer)
+                     (cl-function
+                      (lambda (predicate &key prefer-visible workspace)
+                        (ignore workspace)
+                        (setq captured-prefer-visible prefer-visible)
+                        (setq captured-result
+                              (and (funcall predicate buffer)
+                                   buffer))))))
+            (should (eq (e-org-canvas-session-buffer
+                         harness
+                         "helper-session")
+                        buffer)))
+          (should captured-prefer-visible)
+          (should (eq captured-result buffer)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-org-canvas-test-new-file-directory-starts-unsaved-folder-canvas ()
   "Selecting a directory creates an unsaved Org Canvas targeting that folder."
   (let ((directory (file-name-as-directory

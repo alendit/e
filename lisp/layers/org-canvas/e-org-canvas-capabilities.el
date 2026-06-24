@@ -20,6 +20,7 @@
 (require 'e-layers)
 (require 'e-session)
 (require 'e-tools)
+(require 'e-workspaces)
 (require 'org)
 (require 'seq)
 (require 'subr-x)
@@ -55,7 +56,14 @@
 (defun e-org-canvas-session-buffer (harness session-id)
   "Return the live Org Canvas buffer for HARNESS SESSION-ID, if available."
   (when-let ((metadata (e-org-canvas-session-metadata harness session-id)))
-    (or (when-let ((buffer-name (plist-get metadata :buffer-name)))
+    (or (e-workspace-find-buffer
+         (lambda (buffer)
+           (with-current-buffer buffer
+             (and (bound-and-true-p e-org-canvas-mode)
+                  (eq e-org-canvas-harness harness)
+                  (equal e-org-canvas-session-id session-id))))
+         :prefer-visible t)
+        (when-let ((buffer-name (plist-get metadata :buffer-name)))
           (get-buffer buffer-name))
         (when-let ((file (e-org-canvas--uri-file-name
                           (plist-get metadata :uri))))

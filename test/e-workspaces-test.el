@@ -95,6 +95,66 @@
     (should (eq (e-workspace-visible-window buffer (e-workspace-current))
                 (selected-window)))))
 
+(ert-deftest e-workspaces-test-find-buffer-prefers-visible_match ()
+  "Existing-buffer lookup prefers an already visible matching buffer."
+  (let ((hidden (get-buffer-create "e-workspace-find-hidden"))
+        (visible (get-buffer-create "e-workspace-find-visible"))
+        window)
+    (unwind-protect
+        (progn
+          (setq window (display-buffer visible))
+          (let ((orig-buffer-list (symbol-function 'buffer-list)))
+            (cl-letf (((symbol-function 'buffer-list)
+                       (lambda (&optional frame)
+                         (append (list hidden visible)
+                                 (remove hidden
+                                         (remove visible
+                                                 (funcall orig-buffer-list
+                                                          frame)))))))
+              (should (eq (e-workspace-find-buffer
+                           (lambda (buffer)
+                             (member (buffer-name buffer)
+                                     '("e-workspace-find-hidden"
+                                       "e-workspace-find-visible")))
+                           :prefer-visible t)
+                          visible)))))
+      (when (and window (window-live-p window))
+        (delete-window window))
+      (dolist (buffer (list hidden visible))
+        (when (buffer-live-p buffer)
+          (kill-buffer buffer))))))
+
+(ert-deftest e-workspaces-test-find-buffer-prefers_workspace_affinity ()
+  "Existing-buffer lookup prefers the buffer already bound to the target workspace."
+  (let* ((other (get-buffer-create "e-workspace-find-other"))
+         (target (get-buffer-create "e-workspace-find-target"))
+         (workspace (make-e-workspace-token
+                     :backend 'single
+                     :id 'target
+                     :name "target"
+                     :frame (selected-frame))))
+    (unwind-protect
+        (progn
+          (e-buffer-set-workspace target workspace)
+          (let ((orig-buffer-list (symbol-function 'buffer-list)))
+            (cl-letf (((symbol-function 'buffer-list)
+                       (lambda (&optional frame)
+                         (append (list other target)
+                                 (remove other
+                                         (remove target
+                                                 (funcall orig-buffer-list
+                                                          frame)))))))
+              (should (eq (e-workspace-find-buffer
+                           (lambda (buffer)
+                             (member (buffer-name buffer)
+                                     '("e-workspace-find-other"
+                                       "e-workspace-find-target")))
+                           :workspace workspace)
+                          target)))))
+      (dolist (buffer (list other target))
+        (when (buffer-live-p buffer)
+          (kill-buffer buffer))))))
+
 (ert-deftest e-workspaces-test-display-buffer-switches-and-adds-target-workspace ()
   "Workspace display switches to and admits buffers into the target workspace."
   (let ((buffer (get-buffer-create "e-workspace-display-target"))

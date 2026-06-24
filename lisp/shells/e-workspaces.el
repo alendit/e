@@ -303,6 +303,34 @@ Return non-nil when the switch was accepted or no switch was required."
       (get-buffer-window buffer (or (e-workspace-token-frame token)
                                     (selected-frame))))))
 
+(cl-defun e-workspace-find-buffer
+    (predicate &key workspace prefer-visible buffers)
+  "Return an existing live buffer matching PREDICATE.
+
+PREDICATE is called with each live buffer.  When PREFER-VISIBLE is non-nil, an
+already visible matching buffer wins over hidden matches.  When WORKSPACE is a
+workspace token, a matching buffer already bound to that workspace wins over a
+generic hidden fallback.
+
+Presentation shells should use this before creating a new shell/helper buffer
+for an identity that may already be live in another workspace."
+  (let (fallback workspace-fallback)
+    (catch 'buffer
+      (dolist (buffer (or buffers (buffer-list)))
+        (when (and (buffer-live-p buffer)
+                   (funcall predicate buffer))
+          (unless fallback
+            (setq fallback buffer))
+          (when (and workspace
+                     (not workspace-fallback)
+                     (e-workspace-equal-p workspace
+                                          (e-buffer-workspace buffer)))
+            (setq workspace-fallback buffer))
+          (when (and prefer-visible
+                     (get-buffer-window buffer t))
+            (throw 'buffer buffer))))
+      (or workspace-fallback fallback))))
+
 (defun e-workspace--display-action (&optional action)
   "Return a workspace-scoped display ACTION."
   (let ((functions (or action

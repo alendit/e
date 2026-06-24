@@ -144,9 +144,12 @@ Before finalizing, verify presentation, not just content. Confirm the resource y
 
 (defun e-workspace-awareness--shell-buffer ()
   "Return the buffer that should be treated as the active shell buffer."
-  (let ((current (current-buffer))
-        (selected (window-buffer (selected-window))))
+  (let ((selected (window-buffer (selected-window)))
+        (current (current-buffer)))
     (cond
+     ((and (buffer-live-p selected)
+           (e-buffer-workspace selected))
+      selected)
      ((and (buffer-live-p current)
            (e-buffer-workspace current))
       current)
@@ -215,8 +218,8 @@ Before finalizing, verify presentation, not just content. Confirm the resource y
 
 (defun e-workspace-awareness--buffer-target-workspace (buffer)
   "Return the workspace target for BUFFER."
-  (or (plist-get (e-workspace-awareness--state) :shell)
-      (e-buffer-workspace buffer)
+  (or (e-buffer-workspace buffer)
+      (plist-get (e-workspace-awareness--state) :shell)
       (e-workspace-current)))
 
 (defun e-workspace-awareness--focus-buffer (buffer &optional add-to-workspace)

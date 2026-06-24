@@ -206,8 +206,8 @@
       (when (buffer-live-p shell)
         (kill-buffer shell)))))
 
-(ert-deftest e-emacs-capabilities-test-workspace-focus-buffer-targets-shell-workspace ()
-  "The focus action prefers the active shell workspace over buffer affinity."
+(ert-deftest e-emacs-capabilities-test-workspace-focus-buffer-preserves-target-affinity ()
+  "The focus action preserves a buffer's own workspace over stale shell state."
   (let* ((capability (e-workspace-awareness-capability-create))
          (registry (e-tools-registry-create))
          (buffer (get-buffer-create " *e-workspace-focus-owned*"))
@@ -239,7 +239,7 @@
                                :name "workspace_focus_buffer"
                                :arguments (:buffer " *e-workspace-focus-owned*")))))
                 (should (eq (plist-get result :status) 'ok))
-                (should (equal focused (list buffer shell-token)))))))
+                (should (equal focused (list buffer buffer-token)))))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer))
       (when (buffer-live-p shell)

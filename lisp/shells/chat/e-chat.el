@@ -417,6 +417,9 @@ The mode line uses this presentation-owned table for context usage display."
 (defvar-local e-chat-session-id nil
   "Session id used by the current chat buffer.")
 
+(defvar-local e-chat--preview-buffer nil
+  "Non-nil when this buffer is a transient chat preview, not a session shell.")
+
 (defun e-chat--mark-current-session-read-if-focused ()
   "Mark the current chat session read when this buffer is selected."
   (when (and e-chat-harness
@@ -1086,20 +1089,47 @@ name."
           (or (ignore-errors (e-harness-session-title harness session-id))
               (e-chat--short-session-id session-id))))
 
+(defun e-chat--matching-session-buffer-p
+    (buffer session-id &optional harness instance-id)
+  "Return non-nil when BUFFER is an e chat buffer for SESSION-ID.
+When HARNESS or INSTANCE-ID is non-nil, require the buffer to match it."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (and (eq major-mode 'e-chat-mode)
+           (equal e-chat-session-id session-id)
+           (not e-chat--preview-buffer)
+           (or (not harness)
+               (eq e-chat-harness harness))
+           (or (not instance-id)
+               (eq e-chat-harness-instance-id instance-id))))))
+
 (defun e-chat--find-session-buffer (session-id &optional harness instance-id)
   "Return an existing chat buffer for SESSION-ID.
-When HARNESS or INSTANCE-ID is non-nil, require the buffer to match it."
-  (catch 'buffer
-    (dolist (buffer (buffer-list))
-      (when (buffer-live-p buffer)
-        (with-current-buffer buffer
-          (when (and (eq major-mode 'e-chat-mode)
-                     (equal e-chat-session-id session-id)
-                     (or (not harness)
-                         (eq e-chat-harness harness))
-                     (or (not instance-id)
-                         (eq e-chat-harness-instance-id instance-id)))
-            (throw 'buffer buffer)))))))
+When HARNESS or INSTANCE-ID is non-nil, require the buffer to match it.
+Prefer visible matching buffers so duplicate hidden composers cannot steal
+context insertions from the chat buffer the user is looking at."
+  (e-workspace-find-buffer
+   (lambda (buffer)
+     (e-chat--matching-session-buffer-p
+      buffer session-id harness instance-id))
+   :prefer-visible t))
+
+(defun e-chat--empty-composer-p (buffer)
+  "Return non-nil when BUFFER has no composer draft text."
+  (with-current-buffer buffer
+    (or (not (e-chat--composer-active-p))
+        (string-empty-p (e-chat--composer-text)))))
+
+(defun e-chat--prune-duplicate-session-buffers
+    (keeper session-id &optional harness instance-id)
+  "Kill hidden empty duplicate chat buffers for SESSION-ID except KEEPER."
+  (dolist (buffer (buffer-list))
+    (when (and (not (eq buffer keeper))
+               (e-chat--matching-session-buffer-p
+                buffer session-id harness instance-id)
+               (not (get-buffer-window buffer t))
+               (e-chat--empty-composer-p buffer))
+      (kill-buffer buffer))))
 
 (defun e-chat--rename-buffer-for-session ()
   "Rename the current buffer from its attached session metadata."
@@ -4753,17 +4783,32 @@ display to a normal window and select it instead of erroring."
                     (e-workspace-current))))
   (e-chat--after-display-buffer buffer))
 
-(defun e-chat--pop-to-buffer (buffer)
+(defun e-chat--pop-to-buffer (buffer &optional workspace action)
   "Pop to BUFFER and restore chat-local editing invariants.
+WORKSPACE, when non-nil, overrides BUFFER's workspace affinity for this display.
+ACTION, when non-nil, is passed to `e-workspace-display-buffer'.
 From a side window, `pop-to-buffer' would try to split the side window and
 signal; route the display to a normal window in that case."
-  (if (e-chat--side-window-p)
-      (when-let ((window (e-chat--display-from-side-window buffer)))
-        (select-window window))
+  (cond
+   ((and (e-chat--side-window-p)
+         (not workspace)
+         (not action))
+    (when-let ((window (e-chat--display-from-side-window buffer)))
+      (select-window window)))
+   ((or workspace action)
+    (when-let ((window (e-workspace-display-buffer
+                       buffer
+                       :workspace (or workspace
+                                      (e-buffer-workspace buffer)
+                                      (e-workspace-current))
+                       :action action
+                       :select t)))
+      (select-window window)))
+   (t
     (e-workspace-pop-to-buffer
      buffer
      :workspace (or (e-buffer-workspace buffer)
-                    (e-workspace-current))))
+                    (e-workspace-current)))))
   (e-chat--after-display-buffer buffer))
 
 (defun e-chat--session-title ()
@@ -5344,6 +5389,8 @@ reload.  User-facing commands should call `e-chat-new' or `e-chat-resume'."
                        chat-session-id)))))
     (e-chat--attach-buffer
      buffer chat-harness chat-session-id chat-instance-id)
+    (e-chat--prune-duplicate-session-buffers
+     buffer chat-session-id chat-harness chat-instance-id)
     buffer))
 
 (cl-defun e-chat-create-session (&key harness metadata id)
@@ -5533,7 +5580,8 @@ HARNESS are internal test seams."
            (and (eq e-chat-harness harness)
                 (equal e-chat-session-id session-id)
                 (eq e-chat-harness-instance-id instance-id)
-                (e-chat--capture-composer-state))))
+                (e-chat--capture-composer-state)))
+          (existing-workspace (e-buffer-workspace buffer)))
       (e-chat-session-ensure-project-root
        harness session-id (e-chat--project-root default-directory))
       (e-chat--unsubscribe)
@@ -5545,9 +5593,13 @@ HARNESS are internal test seams."
       (setq-local e-chat-harness harness)
       (setq-local e-chat-harness-instance-id instance-id)
       (setq-local e-chat-session-id session-id)
-      (when (or e-workspace-rebind-shell-on-open
-                (null (e-buffer-workspace buffer)))
-        (e-buffer-set-workspace buffer (e-workspace-current)))
+      (setq-local e-chat--preview-buffer nil)
+      (e-buffer-set-workspace
+       buffer
+       (if e-workspace-rebind-shell-on-open
+           (e-workspace-current)
+         (or existing-workspace
+             (e-workspace-current))))
       (e-chat--rename-buffer-for-session)
       (e-chat--clear)
       (e-chat--render-session)
@@ -5657,6 +5709,7 @@ CATEGORY is exposed through completion metadata when non-nil."
         (e-chat--disable-completion)
         (setq-local e-chat-harness harness)
         (setq-local e-chat-session-id session-id)
+        (setq-local e-chat--preview-buffer t)
         (setq-local cursor-type nil)
         (e-chat--clear t)
         (if (plist-get session :loaded)
@@ -6012,10 +6065,18 @@ timestamp."
                                   (e-harness-instance-id instance))
                 :session-id (plist-get session :id)))))))
 
+(defconst e-chat--context-display-action
+  '(display-buffer-reuse-window
+    display-buffer-below-selected
+    display-buffer-pop-up-window)
+  "Display action used when source-buffer context insertion reveals a chat.")
+
 (defun e-chat--add-context-reference-to-session
-    (reference harness session-id &optional display instance-id)
+    (reference harness session-id &optional display instance-id source-workspace)
   "Insert REFERENCE into HARNESS SESSION-ID composer.
-When DISPLAY is non-nil, show the target chat buffer."
+When DISPLAY is non-nil, show the target chat buffer.  SOURCE-WORKSPACE, when
+non-nil, is the workspace that should receive the display for this context
+operation."
   (let ((buffer (e-chat--session-buffer-for-context
                  harness session-id instance-id)))
     (with-current-buffer buffer
@@ -6023,7 +6084,10 @@ When DISPLAY is non-nil, show the target chat buffer."
       (e-chat--insert-context-reference reference)
       (e-chat--show-composer))
     (when display
-      (e-chat--pop-to-buffer buffer))
+      (e-chat--pop-to-buffer
+       buffer
+       (or source-workspace (e-workspace-current))
+       e-chat--context-display-action))
     buffer))
 
 ;;;###autoload
@@ -6403,6 +6467,7 @@ face properties so the preview still reflects chat rendering."
         (e-chat--disable-completion)
         (setq-local e-chat-harness harness)
         (setq-local e-chat-session-id session-id)
+        (setq-local e-chat--preview-buffer t)
         (setq-local cursor-type nil)
         (e-chat--clear t)
         (erase-buffer)
@@ -6726,27 +6791,31 @@ When DISPLAY is non-nil, display the preview buffer."
 (defun e-chat-add-context-to-latest ()
   "Add current point or region to a visible, or latest, e chat session."
   (interactive)
-  (let* ((reference (e-chat--capture-context-reference-for-command))
+  (let* ((source-workspace (e-workspace-current))
+         (reference (e-chat--capture-context-reference-for-command))
          (target (e-chat--default-context-target)))
     (e-chat--add-context-reference-to-session
      reference
      (plist-get target :harness)
      (plist-get target :session-id)
      (called-interactively-p 'interactive)
-     (plist-get target :instance-id))))
+     (plist-get target :instance-id)
+     source-workspace)))
 
 ;;;###autoload
 (defun e-chat-add-context-to-session ()
   "Add the current point or active region to a selected e chat session."
   (interactive)
-  (let* ((reference (e-chat--capture-context-reference-for-command))
+  (let* ((source-workspace (e-workspace-current))
+         (reference (e-chat--capture-context-reference-for-command))
          (target (e-chat--context-session-target)))
     (e-chat--add-context-reference-to-session
      reference
      (plist-get target :harness)
      (plist-get target :session-id)
      (called-interactively-p 'interactive)
-     (plist-get target :instance-id))))
+     (plist-get target :instance-id)
+     source-workspace)))
 
 ;;;###autoload
 (defun e-chat-rename (name)
