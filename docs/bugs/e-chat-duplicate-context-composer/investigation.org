@@ -1,0 +1,29 @@
+#+title: e-chat duplicate context composer investigation
+#+startup: overview
+
+* Investigation
+
+Live inspection showed the Org Canvas buffer =2026-06-19-i-want-to-explore-the-options.org= was attached to session =20260621T193749-be80688bbb56=.
+The visible Rust/C++ interop chat buffer was attached to the same session, so the canvas-to-session mapping itself was correct.
+
+The mismatch came from a duplicate hidden chat buffer for the same session:
+
+- visible: =*e-chat:Grimoire: 2026-06-19 — Rust↔C++ interop options for stepwise C++→Rust migration*=
+- hidden duplicate: =*e-chat:Grimoire: 2026-06-19 — Rust↔C++ interop options for stepwise C++→Rust migration*<2>=
+
+=e-chat--find-session-buffer= walked =buffer-list= and returned the first matching session buffer.
+When the hidden duplicate appeared before the visible buffer, context insertion selected the hidden composer.
+
+* Fix
+
+=e-chat--find-session-buffer= now prefers a visible matching buffer before falling back to the first matching buffer.
+=e-chat-open= also prunes hidden duplicate buffers for the same session when their composers are empty, while preserving visible buffers and hidden buffers with draft text.
+
+* Verification
+
+- Added regression test =e-chat-test-add-context-to-latest-prefers-visible-duplicate-session-buffer=.
+- Added regression test =e-chat-test-open-prunes-hidden-empty-duplicate-session-buffer=.
+- Ran =emacs -Q --batch -L . -L lisp -L test -l test/e-chat-test.el --eval '(ert-run-tests-batch-and-exit "e-chat-test-add-context-to-latest")'=:
+  4 tests passed, 0 unexpected.
+- Ran =emacs -Q --batch -L . -L lisp -L test -l test/e-chat-test.el --eval '(ert-run-tests-batch-and-exit "e-chat-test-.*duplicate")'=:
+  8 tests passed, 0 unexpected.

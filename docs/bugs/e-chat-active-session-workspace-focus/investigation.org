@@ -1,0 +1,67 @@
+#+title: e-chat active session workspace focus investigation
+#+startup: overview
+
+* Investigation
+
+=e-chat-active-sessions= delegates candidate selection to
+=e-chat--active-session-open=, which calls =e-chat-open-session=.
+=e-chat-open-session= calls =e-chat-open= and then =e-chat--pop-to-buffer= when
+display is requested.
+
+Two root causes made this path select the wrong workspace:
+
+- =e-chat--active-session-preview= renders the picker preview in =e-chat-mode=
+  and sets =e-chat-harness= plus =e-chat-session-id=.  =e-chat--find-session-buffer=
+  accepted any matching =e-chat-mode= buffer, so the visible preview could be
+  mistaken for the canonical session shell.
+- Reattaching an existing chat buffer ran =e-chat-mode= before checking the
+  buffer's workspace affinity.  Since =e-buffer--workspace= is buffer-local,
+  that mode reset erased the old affinity and =e-chat--attach-buffer= rebound
+  the shell to the current workspace.
+
+* Fix
+
+=e-workspace-find-buffer= is now the shared helper for presentation shells that
+need to find an existing canonical buffer before creating or opening another
+one.  It accepts a predicate and centralizes preference for visible buffers and
+buffers already bound to the target workspace.
+
+Chat preview buffers now carry a buffer-local =e-chat--preview-buffer= marker.
+=e-chat--matching-session-buffer-p= excludes those transient previews from
+canonical session lookup, and =e-chat--find-session-buffer= delegates matching
+preference to =e-workspace-find-buffer=.
+
+=e-chat--attach-buffer= now captures the existing workspace token before
+reinitializing =e-chat-mode= and restores it unless
+=e-workspace-rebind-shell-on-open= explicitly requests rebinding.
+
+=e-org-canvas-session-buffer= also delegates live canonical canvas lookup to
+=e-workspace-find-buffer= before it falls back to buffer-name, file, or
+attachment-based recovery.
+
+* Verification
+
+- Added regression test
+  =e-chat-test-active-session-open-ignores-preview-buffer-and-focuses_workspace=.
+- Confirmed the new test failed before the fix because selection used the
+  preview/current-workspace path.
+- Ran =eldev test -f test/e-chat-test.el e-chat-test-active-session-open-ignores-preview-buffer-and-focuses_workspace=:
+  1 test passed, 0 unexpected.
+- Ran active-session preview/open focused tests:
+  =eldev test -f test/e-chat-test.el e-chat-test-active-sessions-builds-picker-spec e-chat-test-active-session-open-ignores-preview-buffer-and-focuses_workspace e-chat-test-active-session-preview-renders-index-session-tail e-chat-test-active-session-preview-loads-unloaded-index-session e-chat-test-active-session-preview-marks-session-read=:
+  5 tests passed, 0 unexpected.
+- Ran =eldev test -f test/e-workspaces-test.el=:
+  8 tests passed, 0 unexpected.
+- Ran =eldev test -f test/e-chat-test.el=:
+  231 tests passed, 1 skipped, 0 unexpected.
+- Added helper-focused regression tests:
+  =e-workspaces-test-find-buffer-prefers-visible_match=,
+  =e-workspaces-test-find-buffer-prefers_workspace_affinity=,
+  =e-chat-test-find-session-buffer-uses_workspace_existing_buffer_helper=, and
+  =e-org-canvas-test-session-buffer-uses_workspace_existing_buffer_helper=.
+- Ran =eldev test -f test/e-workspaces-test.el=:
+  10 tests passed, 0 unexpected.
+- Ran =eldev test -f test/e-chat-test.el=:
+  232 tests passed, 1 skipped, 0 unexpected.
+- Ran =eldev test -f test/e-org-canvas-test.el=:
+  57 tests passed, 0 unexpected.

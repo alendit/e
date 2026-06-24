@@ -1,0 +1,12 @@
+#+title: e-chat duplicate context composer
+#+startup: overview
+
+* Report
+
+The C++/Rust interop Org Canvas sent an =s-i= / contextual reference to the wrong chat composer.
+The visible canvas and visible backing chat were for the expected session, but the inserted reference appeared to target a different composer.
+
+* Impact
+
+Context insertion can silently update a hidden duplicate chat buffer instead of the composer the user is looking at.
+That makes the next prompt omit the intended reference unless the user discovers the hidden duplicate buffer.

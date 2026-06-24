@@ -1,0 +1,11 @@
+#+title: e-chat turn-finished misses final assistant report
+
+* Report
+
+The currently open =e-debug= session appeared hung in the UI after the agent
+finished.  The progress/status surface no longer represented provider work:
+the durable session had a final assistant message and a =turn-finished= event,
+but the visible =*e-chat:Debug Agent*= buffer did not show that final message.
+
+The user observed that the session still looked stuck and asked to inspect it
+with computer use.

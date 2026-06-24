@@ -1,0 +1,14 @@
+#+title: e-chat active session workspace focus
+#+startup: overview
+
+* Report
+
+Selecting a session from =e-chat-active-sessions= while a matching chat buffer
+already belongs to another workspace created or reused a chat buffer in the
+current workspace instead of focusing the owning workspace.
+
+* Impact
+
+The active-session picker could split one persisted session across workspace
+surfaces.  Users selecting a session from another workspace saw a new current
+workspace chat surface instead of returning to the existing bound chat buffer.

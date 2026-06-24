@@ -1,0 +1,62 @@
+#+title: e-chat turn-finished misses final assistant investigation
+
+* Evidence
+
+- Computer-use inspection showed the =Debug Agent= popup still displaying the
+  older reasoning/progress transcript rather than the final assistant answer.
+- The durable session
+  =~/.emacs.d/.local/cache/e/sessions/sessions/20260621T193605-da08c5bf25c1.jsonl=
+  had a final assistant message and =turn-finished= for turn
+  =01KVNXZ1AHZZCVACSDCACJDC71= at =2026-06-21T20:47:41Z=.
+- A live scalar probe before Emacs became unresponsive showed the harness was
+  idle: =:active-turn nil=, =:progress-turn nil=, =:progress-timer-live nil=,
+  and =:status "idle"=.
+- The visible chat buffer's turn registry had activity rendered for
+  =01KVNXZ1AHZZCVACSDCACJDC71=, but =:final-rendered nil=.  The buffer tail did
+  not include the durable final assistant text.
+
+* Root Cause
+
+The chat renderer relied on receiving and rendering the final assistant
+=message-added= event.  If that presentation event was missed, delayed, or
+lost across the reload/rebind churn, the later =turn-finished= event settled
+status and composer state without reconciling the transcript against durable
+session messages.
+
+The provider/session state was correct, but presentation did not catch up from
+the durable source of truth, so the UI could keep showing stale activity and
+look hung even though no turn was active.
+
+* Fix
+
+- Added =e-chat--final-assistant-message= to find the durable assistant message
+  for a turn in the attached session.
+- Added =e-chat--render-missed-final-assistant=.
+- Updated the =turn-finished= renderer to render that durable final assistant
+  when the turn record has not already marked =:final-rendered=.
+
+* Fix Evidence
+
+- Added =e-chat-test-turn-finished-renders-missed-final-assistant=.
+- Verified RED before the implementation: the test failed because only the
+  transient progress/composer text appeared in the buffer.
+- Verified focused GREEN:
+  =rtk eldev test -f test/e-chat-test.el e-chat-test-turn-finished-renders-missed-final-assistant=.
+- Verified adjacent selectors:
+  =rtk eldev test -f test/e-chat-test.el e-chat-test-turn-finished-renders-missed-final-assistant e-chat-test-final-message-preserves-follow-up-draft e-chat-test-final-turn-collapses-progress-to-summary e-chat-test-progress-timer-stops-when-harness-turn-settled e-chat-test-reload-buffers-keeps-active-turn-harness=.
+- Verified affected chat/debug tests:
+  =rtk eldev test -f test/e-chat-test.el -f test/e-debug-test.el=.
+  This passed with 253 expected results, 1 skipped markdown rendering test, and
+  0 unexpected results.
+- =git diff --check= passed before the documentation update.
+
+* Live Reload Status
+
+Live reload could not be completed for this slice because GUI Emacs became
+CPU-bound while servicing a diagnostic =emacsclient --eval= request.  A macOS
+=sample= of Emacs PID 5774 showed the main thread inside
+=server-eval-and-print=, =pp=, =pp-to-string=, and recursive =pp-fill= frames,
+which means Emacs was spending CPU pretty-printing a large eval result.
+
+No further =emacsclient= probes should be sent until that Emacs process is
+interrupted or restarted.
