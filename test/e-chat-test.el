@@ -3472,6 +3472,38 @@ the orphaned region and appeared to vanish."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-turn-finished-renders-missed-final-assistant ()
+  "Turn finished recovers a durable final assistant when its message event was missed."
+  (let ((buffer (e-chat-test--buffer nil "chat-missed-final")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat--render-event
+           (e-events-make :type 'turn-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 10))
+          (e-session-append-message
+           (e-harness-sessions e-chat-harness)
+           e-chat-session-id
+           '(:role assistant
+             :content "Recovered final answer."
+             :turn-id "turn-1"))
+          (e-chat--render-event
+           (e-events-make :type 'turn-finished
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 12
+                          :payload '(:reason stop)))
+          (should (string-match-p
+                   (concat (regexp-quote e-chat--assistant-glyph)
+                           " Recovered final answer\\.")
+                   (buffer-string)))
+          (should (plist-get
+                   (gethash "turn-1" e-chat--turn-registry)
+                   :final-rendered)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-running-activity-schedules-deferred-redraw ()
   "Running turn activity coalesces near-future redraw work."
   (let ((buffer (e-chat-test--buffer nil "chat-activity-redraw"))

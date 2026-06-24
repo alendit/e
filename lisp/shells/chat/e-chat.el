@@ -4983,6 +4983,36 @@ When REFRESH-MODE-LINE is non-nil, also refresh context-aware mode-line text."
       ('tool (cons "Tool" (format "%S" content)))
       (_ (cons (format "%s" role) (format "%S" content))))))
 
+(defun e-chat--final-assistant-message (turn-id)
+  "Return the final assistant message for TURN-ID in the attached session."
+  (car
+   (last
+    (cl-remove-if-not
+     (lambda (message)
+       (and (eq (plist-get message :role) 'assistant)
+            (equal (plist-get message :turn-id) turn-id)))
+     (e-harness-messages e-chat-harness e-chat-session-id)))))
+
+(defun e-chat--render-missed-final-assistant (turn-id created-at)
+  "Render TURN-ID's durable final assistant if its message event was missed."
+  (when-let ((message (e-chat--final-assistant-message turn-id)))
+    (let ((record (e-chat--turn-record turn-id)))
+      (unless (plist-get record :final-rendered)
+        (when created-at
+          (e-chat--set-turn-time turn-id :ended-at created-at))
+        (e-chat--cancel-pending-activity-redraw turn-id)
+        (e-chat--stop-progress-indicator turn-id)
+        (when-let ((activity-events
+                    (ignore-errors
+                      (e-harness-session-activity-events
+                       e-chat-harness
+                       e-chat-session-id))))
+          (e-chat--render-turn-activity-events turn-id activity-events))
+        (e-chat--finalize-turn-display turn-id)
+        (let ((entry (e-chat--message-entry message)))
+          (e-chat--insert-entry (car entry) (cdr entry) nil turn-id))
+        t))))
+
 (defun e-chat--render-event (event)
   "Render harness EVENT into the current chat buffer."
   (e-chat--profile-call
@@ -5005,6 +5035,9 @@ When REFRESH-MODE-LINE is non-nil, also refresh context-aware mode-line text."
                              :ended-at
                              (plist-get event :created-at))
      (e-chat--run-pending-activity-redraw)
+     (e-chat--render-missed-final-assistant
+      (plist-get event :turn-id)
+      (plist-get event :created-at))
      (e-chat--set-status "done")
      (e-chat--ensure-composer)
      (e-chat--refresh-composer-position))
