@@ -298,7 +298,8 @@ v1 reports an explicit unavailable shape."
 (defun e-context-inspection--pre-prompt-context (harness session-id turn-id)
   "Return context messages/options before transcript prompt messages."
   (let* ((messages (e-capabilities-context-messages
-                    (e-harness-active-capabilities harness)
+                    (e-harness-effective-capabilities
+                     harness session-id turn-id)
                     :harness harness
                     :session-id session-id
                     :turn-id turn-id))
@@ -327,17 +328,20 @@ v1 reports an explicit unavailable shape."
       (when turn-id
         (insert (format "Turn: `%s`\n\n" turn-id)))
       (insert (format "Default directory: `%s`\n\n" default-directory))
-      (insert (format "Layer count: %d\n\n"
-                      (length (e-harness-active-layers harness))))
+      (insert (format "Effective layer count: %d\n\n"
+                      (length (e-harness-effective-layer-ids
+                               harness session-id turn-id))))
       (insert (format "Backend-neutral context fragment count: %d\n\n"
                       (length messages)))
       (insert "System fragments may be mapped or collapsed by backend adapters before provider submission.\n\n")
       (when include-metadata
         (insert "## Export metadata\n\n")
         (insert (format "- Mode: `%s`\n" mode))
-        (insert (format "- Layers: `%S`\n"
-                        (mapcar #'e-layer-id
-                                (e-harness-active-layers harness))))
+        (insert (format "- Enabled layers: `%S`\n"
+                        (e-harness-enabled-layer-ids harness)))
+        (insert (format "- Effective layers: `%S`\n"
+                        (e-harness-effective-layer-ids
+                         harness session-id turn-id)))
         (insert (format "- Option keys: `%S`\n\n"
                         (cl-loop for (key _value) on options by #'cddr
                                  collect key))))

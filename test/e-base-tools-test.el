@@ -1006,9 +1006,10 @@ picker."
   (let* ((directory (make-temp-file "e-base-bash-session-tmp-" t))
          (harness (e-harness-create
                    :backend (e-backend-fake-create :items nil)
-                   :active-layers
-                   (list (e-harness-base-layer-create)
-                         (e-base-layer-create directory))))
+                   :intrinsic-capabilities
+                   (append
+                    (e-layer-capabilities (e-harness-base-layer-create))
+                    (e-layer-capabilities (e-base-layer-create directory)))))
          (result nil)
          request)
     (unwind-protect

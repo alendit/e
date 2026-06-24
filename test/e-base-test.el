@@ -27,7 +27,8 @@
          (layer (e-base-layer-create default-directory)))
     (should (eq (e-layer-id layer) 'os-base))
     (should (equal (e-layer-name layer) "OS Base"))
-    (e-harness-activate-layer harness layer)
+    (e-harness-set-intrinsic-capabilities
+     harness (e-layer-capabilities layer))
     (should (equal (mapcar (lambda (definition)
                              (plist-get definition :name))
                    (e-tools-definitions (e-harness-tools harness)))
@@ -65,7 +66,8 @@
     (unwind-protect
         (progn
           (write-region "captured" nil file nil 'silent)
-          (e-harness-activate-layer harness layer)
+          (e-harness-set-intrinsic-capabilities
+           harness (e-layer-capabilities layer))
           (should
            (equal (plist-get
                    (e-tools-execute

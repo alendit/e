@@ -45,7 +45,10 @@
                   :backend (e-backend-fake-create :items nil))))
     (e-harness-activate-capability harness (e-chat-session-capability-create))
     (when with-org-canvas
-      (e-harness-activate-layer harness (e-org-canvas-layer-create)))
+      (e-harness-set-intrinsic-capabilities
+       harness
+       (append (e-harness-intrinsic-capabilities harness)
+               (e-layer-capabilities (e-org-canvas-layer-create)))))
     harness))
 
 (defun e-org-canvas-test--kill-chat-buffers ()
@@ -157,15 +160,11 @@
                        (lambda (harness &optional _layer-ids directory)
                          (setq sync-called t)
                          (setq sync-directory directory)
-                         (e-harness-activate-layer
+                         (e-harness-set-intrinsic-capabilities
                           harness
-                          (e-layer-create
-                           :id 'synced-project
-                           :name "Synced Project"
-                           :capabilities
-                           (list (e-capability-create
-                                  :id 'synced-project
-                                  :name "Synced Project"))))
+                          (list (e-capability-create
+                                 :id 'synced-project
+                                 :name "Synced Project")))
                          harness)))
               (with-current-buffer (find-file-noselect file)
                 (let ((chat-buffer (e-org-canvas-open-for-current-buffer)))

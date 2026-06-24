@@ -64,8 +64,8 @@
                  (harness
                   (e-harness-create
                    :backend (e-backend-fake-create :items nil)
-                   :active-layers
-                   (list (e-agents-std-context-layer-create nested)))))
+                   :intrinsic-capabilities
+                   (e-layer-capabilities (e-agents-std-context-layer-create nested)))))
             (e-harness-create-session harness :id "session-1")
             (let* ((messages (plist-get
                               (e-harness-context harness "session-1")
@@ -110,8 +110,8 @@
                  (harness
                   (e-harness-create
                    :backend (e-backend-fake-create :items nil)
-                   :active-layers
-                   (list (e-agents-std-context-layer-create src))))
+                   :intrinsic-capabilities
+                   (e-layer-capabilities (e-agents-std-context-layer-create src))))
                  (_session (e-harness-create-session harness :id "session-1"))
                  (content
                   (e-agents-std-context-test--context-content
@@ -149,8 +149,8 @@
                  (harness
                   (e-harness-create
                    :backend (e-backend-fake-create :items nil)
-                   :active-layers
-                   (list (e-agents-std-context-layer-create project))))
+                   :intrinsic-capabilities
+                   (e-layer-capabilities (e-agents-std-context-layer-create project))))
                  (_session (e-harness-create-session harness :id "session-1"))
                  (context (e-harness-context harness "session-1"))
                  (content (mapconcat
@@ -201,8 +201,8 @@
                  (harness
                   (e-harness-create
                    :backend (e-backend-fake-create :items nil)
-                   :active-layers
-                   (list (e-agents-std-context-layer-create project))))
+                   :intrinsic-capabilities
+                   (e-layer-capabilities (e-agents-std-context-layer-create project))))
                  (_session (e-harness-create-session harness :id "session-1"))
                  (content
                   (e-agents-std-context-test--context-content
@@ -231,8 +231,8 @@
                  (harness
                   (e-harness-create
                    :backend (e-backend-fake-create :items nil)
-                   :active-layers
-                   (list (e-agents-std-context-layer-create project))))
+                   :intrinsic-capabilities
+                   (e-layer-capabilities (e-agents-std-context-layer-create project))))
                  (_session (e-harness-create-session harness :id "session-1"))
                  (content
                   (e-agents-std-context-test--context-content
@@ -262,8 +262,8 @@
                  (harness
                   (e-harness-create
                    :backend (e-backend-fake-create :items nil)
-                   :active-layers
-                   (list (e-agents-std-context-layer-create project))))
+                   :intrinsic-capabilities
+                   (e-layer-capabilities (e-agents-std-context-layer-create project))))
                  (_session (e-harness-create-session harness :id "session-1"))
                  (content
                   (e-agents-std-context-test--context-content
@@ -290,8 +290,8 @@
                  (harness
                   (e-harness-create
                    :backend (e-backend-fake-create :items nil)
-                   :active-layers
-                   (list (e-agents-std-context-layer-create project))))
+                   :intrinsic-capabilities
+                   (e-layer-capabilities (e-agents-std-context-layer-create project))))
                  (_session (e-harness-create-session harness :id "session-1"))
                  (content
                   (e-agents-std-context-test--context-content
@@ -344,8 +344,8 @@
                  (harness
                   (e-harness-create
                    :backend (e-backend-fake-create :items nil)
-                   :active-layers
-                   (list (e-agents-std-context-layer-create project))))
+                   :intrinsic-capabilities
+                   (e-layer-capabilities (e-agents-std-context-layer-create project))))
                  (_session (e-harness-create-session harness :id "session-1"))
                  (resources (e-harness-resources harness "session-1")))
             (should (equal
@@ -387,8 +387,8 @@
                  (harness
                   (e-harness-create
                    :backend (e-backend-fake-create :items nil)
-                   :active-layers
-                   (list (e-agents-std-context-layer-create nested))))
+                   :intrinsic-capabilities
+                   (e-layer-capabilities (e-agents-std-context-layer-create nested))))
                  (_session (e-harness-create-session harness :id "session-1"))
                  (store (e-harness-store harness)))
             (should (equal
@@ -429,8 +429,8 @@
                  (harness
                   (e-harness-create
                    :backend (e-backend-fake-create :items nil)
-                   :active-layers
-                   (list (e-agents-std-context-layer-create nested))))
+                   :intrinsic-capabilities
+                   (e-layer-capabilities (e-agents-std-context-layer-create nested))))
                  (_session (e-harness-create-session harness :id "session-1"))
                  (content
                   (e-agents-std-context-test--context-content
@@ -475,8 +475,8 @@
                  (harness
                   (e-harness-create
                    :backend (e-backend-fake-create :items nil)
-                   :active-layers
-                   (list (e-agents-std-context-layer-create project))))
+                   :intrinsic-capabilities
+                   (e-layer-capabilities (e-agents-std-context-layer-create project))))
                  (_session (e-harness-create-session harness :id "session-1"))
                  (resources (e-harness-resources harness "session-1"))
                  (uri "e://agents-std-context/skills/project/read-only"))
@@ -518,8 +518,8 @@
                  (harness
                   (e-harness-create
                    :backend (e-backend-fake-create :items nil)
-                   :active-layers
-                   (list (e-agents-std-context-layer-create project-a)))))
+                   :intrinsic-capabilities
+                   (e-layer-capabilities (e-agents-std-context-layer-create project-a)))))
             (e-harness-create-session
              harness
              :id "session-a"
@@ -598,8 +598,8 @@
                  (harness
                   (e-harness-create
                    :backend (e-backend-fake-create :items nil)
-                   :active-layers
-                   (list (e-agents-std-context-layer-create project))))
+                   :intrinsic-capabilities
+                   (e-layer-capabilities (e-agents-std-context-layer-create project))))
                  (_session (e-harness-create-session harness :id "session-1"))
                  (content
                   (e-agents-std-context-test--context-content
@@ -659,8 +659,8 @@
                  (harness
                   (e-harness-create
                    :backend (e-backend-fake-create :items nil)
-                   :active-layers
-                   (list (e-agents-std-context-layer-create project)))))
+                   :intrinsic-capabilities
+                   (e-layer-capabilities (e-agents-std-context-layer-create project)))))
             (e-harness-create-session harness :id "session-1")
             (let ((content
                    (e-agents-std-context-test--context-content
@@ -703,8 +703,8 @@
                  (harness
                   (e-harness-create
                    :backend (e-backend-fake-create :items nil)
-                   :active-layers
-                   (list (e-agents-std-context-layer-create project)))))
+                   :intrinsic-capabilities
+                   (e-layer-capabilities (e-agents-std-context-layer-create project)))))
             (e-harness-create-session harness :id "session-1")
             (let ((store (e-harness-store harness "session-1")))
               (should (string-match-p

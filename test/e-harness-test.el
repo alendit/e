@@ -42,6 +42,12 @@
     :validator #'e-capability-config-string-list-p))
   "Option specs for harness capability config tests.")
 
+(defmacro e-harness-test--with-empty-layer-registry (&rest body)
+  "Run BODY with an isolated layer registry."
+  (declare (indent 0) (debug t))
+  `(let ((e-layer--registry (make-hash-table :test 'eq)))
+     ,@body))
+
 (ert-deftest e-harness-test-capability-config-is-harness-local ()
   "Runtime capability config belongs to one harness."
   (let ((first (e-harness-create :backend (e-backend-fake-create :items nil)))
@@ -833,62 +839,68 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
 
 (ert-deftest e-harness-test-provider-anchor-candidates-are-persisted ()
   "Provider anchor candidates persist with covered entry and context metadata."
-  (let* ((dynamic-provider
-          (e-context-provider-create
-           :name 'visible-buffer
-           :build (lambda (&rest _)
-                    '((:role system :content "current state")))
-           :cache-placement 'dynamic-context))
-         (capability
-          (e-capability-create
-           :id 'context-anchor-capability
-           :instructions "stable instructions"
-           :context-providers (list dynamic-provider)))
-         (layer (e-layer-create
-                 :id 'context-anchor-layer
-                 :name "Context Anchor Layer"
-                 :capabilities (list capability)))
-         (backend (e-backend-fake-create
-                   :items '((:type assistant-message :content "answer")
-                            (:type provider-anchor-candidate
-                             :provider-id openai
-                             :metadata (:response-id "resp-1"))
-                            (:type done :reason stop))))
-         (harness (e-harness-create
-                   :backend backend
-                   :active-layers (list layer)
-                   :default-options '(:model "gpt-test"
-                                      :provider-continuation t
-                                      :provider-anchor-provider-id openai))))
-    (e-harness-create-session harness :id "session-1")
-    (e-harness-prompt harness "session-1" "question")
-    (let* ((messages (e-harness-messages harness "session-1"))
-           (assistant (cl-find 'assistant messages
-                               :key (lambda (message)
-                                      (plist-get message :role))))
-           (anchors (e-session-provider-anchors
-                     (e-harness-sessions harness)
-                     "session-1"))
-           (anchor (car anchors))
-           (fingerprints (plist-get anchor :fingerprints)))
-      (should (= (length anchors) 1))
-      (should (eq (plist-get anchor :provider-id) 'openai))
-      (should (equal (plist-get anchor :model) "gpt-test"))
-      (should (equal (plist-get anchor :covered-entry-id)
-                     (plist-get assistant :id)))
-      (should (equal (plist-get anchor :metadata)
-                     '(:response-id "resp-1")))
-      (should (equal (mapcar (lambda (fingerprint)
-                               (plist-get fingerprint :kind))
-                             (plist-get fingerprints :segments))
-                     '("static-prefix" "current-state")))
-      (should (equal (plist-get fingerprints :active-layer-ids)
-                     '("context-anchor-layer")))
-      (should (equal (plist-get fingerprints :reasoning)
-                     '(:reasoning nil :reasoning-effort nil :effort nil)))
-      (dolist (fingerprint (plist-get fingerprints :segments))
-        (should (stringp (plist-get fingerprint :id)))
-        (should (stringp (plist-get fingerprint :fingerprint)))))))
+  (e-harness-test--with-empty-layer-registry
+    (let* ((dynamic-provider
+            (e-context-provider-create
+             :name 'visible-buffer
+             :build (lambda (&rest _)
+                      '((:role system :content "current state")))
+             :cache-placement 'dynamic-context))
+           (capability
+            (e-capability-create
+             :id 'context-anchor-capability
+             :instructions "stable instructions"
+             :context-providers (list dynamic-provider)))
+           (backend (e-backend-fake-create
+                     :items '((:type assistant-message :content "answer")
+                              (:type provider-anchor-candidate
+                               :provider-id openai
+                               :metadata (:response-id "resp-1"))
+                              (:type done :reason stop))))
+           (harness (e-harness-create
+                     :backend backend
+                     :enabled-layer-ids '(context-anchor-layer)
+                     :default-options '(:model "gpt-test"
+                                        :provider-continuation t
+                                        :provider-anchor-provider-id openai))))
+      (e-layer-register
+       (e-layer-spec-create
+        :id 'context-anchor-layer
+        :name "Context Anchor Layer"
+        :factory (lambda ()
+                   (e-layer-create
+                    :id 'context-anchor-layer
+                    :name "Context Anchor Layer"
+                    :capabilities (list capability)))))
+      (e-harness-create-session harness :id "session-1")
+      (e-harness-prompt harness "session-1" "question")
+      (let* ((messages (e-harness-messages harness "session-1"))
+             (assistant (cl-find 'assistant messages
+                                 :key (lambda (message)
+                                        (plist-get message :role))))
+             (anchors (e-session-provider-anchors
+                       (e-harness-sessions harness)
+                       "session-1"))
+             (anchor (car anchors))
+             (fingerprints (plist-get anchor :fingerprints)))
+        (should (= (length anchors) 1))
+        (should (eq (plist-get anchor :provider-id) 'openai))
+        (should (equal (plist-get anchor :model) "gpt-test"))
+        (should (equal (plist-get anchor :covered-entry-id)
+                       (plist-get assistant :id)))
+        (should (equal (plist-get anchor :metadata)
+                       '(:response-id "resp-1")))
+        (should (equal (mapcar (lambda (fingerprint)
+                                 (plist-get fingerprint :kind))
+                               (plist-get fingerprints :segments))
+                       '("static-prefix" "current-state")))
+        (should (equal (plist-get fingerprints :active-layer-ids)
+                       '("context-anchor-layer")))
+        (should (equal (plist-get fingerprints :reasoning)
+                       '(:reasoning nil :reasoning-effort nil :effort nil)))
+        (dolist (fingerprint (plist-get fingerprints :segments))
+          (should (stringp (plist-get fingerprint :id)))
+          (should (stringp (plist-get fingerprint :fingerprint))))))))
 
 (ert-deftest e-harness-test-openai-anchor-candidates-require-continuation ()
   "OpenAI response ids are not persisted when the request was not store-enabled."
@@ -1185,7 +1197,7 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
          (harness (e-harness-create
                    :backend (e-backend-fake-create :items nil)
                    :default-options '(:model "default-model")
-                   :active-layers (list layer))))
+                   :intrinsic-capabilities (e-layer-capabilities layer))))
     (e-harness-create-session harness :id "session-1")
     (e-harness-set-session-model harness "session-1" "session-model")
     (e-session-append-message
@@ -1228,7 +1240,7 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
                  :capabilities (list capability)))
          (harness (e-harness-create
                    :backend (e-backend-fake-create :items nil)
-                   :active-layers (list layer))))
+                   :intrinsic-capabilities (e-layer-capabilities layer))))
     (e-harness-create-session harness :id "session-1")
     (e-session-append-message
      (e-harness-sessions harness)
@@ -1272,7 +1284,7 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
          (harness
           (e-harness-create
            :backend (e-backend-fake-create :items nil)
-           :active-layers (list layer)
+           :intrinsic-capabilities (e-layer-capabilities layer)
            :default-options '(:model "gpt-test"
                               :provider-continuation t
                               :provider-anchor-provider-id openai))))
@@ -1336,7 +1348,7 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
          (harness
           (e-harness-create
            :backend (e-backend-fake-create :items nil)
-           :active-layers (list layer)
+           :intrinsic-capabilities (e-layer-capabilities layer)
            :default-options '(:model "gpt-test"
                               :provider-continuation t
                               :provider-anchor-provider-id openai))))
@@ -1400,7 +1412,7 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
          (harness
           (e-harness-create
            :backend (e-backend-fake-create :items nil)
-           :active-layers (list layer)
+           :intrinsic-capabilities (e-layer-capabilities layer)
            :default-options '(:model "gpt-test"
                               :provider-continuation t
                               :provider-anchor-provider-id openai))))
@@ -1494,7 +1506,7 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
          (harness
           (e-harness-create
            :backend (e-backend-fake-create :items nil)
-           :active-layers (list layer)
+           :intrinsic-capabilities (e-layer-capabilities layer)
            :default-options '(:model "gpt-test"
                               :provider-continuation t
                               :provider-anchor-provider-id openai))))
@@ -1525,42 +1537,51 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
         (should (equal (plist-get options :provider-anchor-invalidation-reason)
                        'tools-changed))))))
 
-(ert-deftest e-harness-test-provider-anchor-invalidates-on-active-layer-change ()
-  "Provider continuation anchors include active layer ids in compatibility."
-  (let* ((layer (e-layer-create :id 'base-layer :name "Base Layer"))
-         (extra-layer (e-layer-create :id 'extra-layer :name "Extra Layer"))
-         (harness
-          (e-harness-create
-           :backend (e-backend-fake-create :items nil)
-           :active-layers (list layer)
-           :default-options '(:model "gpt-test"
-                              :provider-continuation t
-                              :provider-anchor-provider-id openai))))
-    (e-harness-create-session harness :id "session-1")
-    (e-session-append-message
-     (e-harness-sessions harness) "session-1"
-     '(:role user :content "old prompt"))
-    (let* ((assistant
-            (e-session-append-message
-             (e-harness-sessions harness) "session-1"
-             '(:role assistant :content "old answer")))
-           (anchor-context (e-harness-context harness "session-1" "turn-1")))
-      (e-session-append-provider-anchor
-       (e-harness-sessions harness) "session-1" 'openai
-       :model "gpt-test"
-       :covered-entry-id (plist-get assistant :id)
-       :fingerprints (e-harness--provider-anchor-fingerprints anchor-context)
-       :metadata '(:response-id "resp-1"))
-      (setf (e-harness-active-layers harness) (list layer extra-layer))
+(ert-deftest e-harness-test-provider-anchor-invalidates-on-effective-layer-id-change ()
+  "Provider continuation anchors include effective layer ids in compatibility."
+  (e-harness-test--with-empty-layer-registry
+    (let* ((harness
+            (e-harness-create
+             :backend (e-backend-fake-create :items nil)
+             :enabled-layer-ids '(base-layer)
+             :default-options '(:model "gpt-test"
+                                :provider-continuation t
+                                :provider-anchor-provider-id openai))))
+      (dolist (id '(base-layer extra-layer))
+        (e-layer-register
+         (let ((layer-id id))
+           (e-layer-spec-create
+            :id layer-id
+            :name (symbol-name layer-id)
+            :factory (lambda ()
+                       (e-layer-create
+                        :id layer-id
+                        :name (symbol-name layer-id)))))))
+      (e-harness-create-session harness :id "session-1")
       (e-session-append-message
        (e-harness-sessions harness) "session-1"
-       '(:role user :content "new prompt"))
-      (let ((options (plist-get
-                      (e-harness-context harness "session-1" "turn-2")
-                      :options)))
-        (should-not (plist-get options :provider-anchor))
-        (should (equal (plist-get options :provider-anchor-invalidation-reason)
-                       'active-layers-changed))))))
+       '(:role user :content "old prompt"))
+      (let* ((assistant
+              (e-session-append-message
+               (e-harness-sessions harness) "session-1"
+               '(:role assistant :content "old answer")))
+             (anchor-context (e-harness-context harness "session-1" "turn-1")))
+        (e-session-append-provider-anchor
+         (e-harness-sessions harness) "session-1" 'openai
+         :model "gpt-test"
+         :covered-entry-id (plist-get assistant :id)
+         :fingerprints (e-harness--provider-anchor-fingerprints anchor-context)
+         :metadata '(:response-id "resp-1"))
+        (e-harness-enable-layer-id harness 'extra-layer)
+        (e-session-append-message
+         (e-harness-sessions harness) "session-1"
+         '(:role user :content "new prompt"))
+        (let ((options (plist-get
+                        (e-harness-context harness "session-1" "turn-2")
+                        :options)))
+          (should-not (plist-get options :provider-anchor))
+          (should (equal (plist-get options :provider-anchor-invalidation-reason)
+                         'active-layers-changed)))))))
 
 (ert-deftest e-harness-test-provider-anchor-invalidates-on-provider-option-change ()
   "Provider continuation anchors include provider request-shaping options."
@@ -1746,13 +1767,13 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
                  :capabilities (list first-capability second-capability)))
          (harness (e-harness-create
                    :backend (e-backend-fake-create :items nil))))
-    (e-harness-activate-layer harness layer)
+    (e-harness-set-intrinsic-capabilities harness (e-layer-capabilities layer))
     (should (equal (mapcar #'e-capability-id
                            (e-harness-active-capabilities harness))
                    '(first-capability second-capability)))))
 
-(ert-deftest e-harness-test-tools-are-derived-from-active-layers ()
-  "The harness tool surface is rebuilt from active layers on demand."
+(ert-deftest e-harness-test-tools-are-derived-from-effective-capabilities ()
+  "The harness tool surface is rebuilt from effective capabilities on demand."
   (let* ((capability
           (e-capability-create
            :id 'tool-capability
@@ -1769,7 +1790,7 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
          (harness (e-harness-create
                    :backend (e-backend-fake-create :items nil)))
          (stale-tools (e-harness-tools harness)))
-    (e-harness-activate-layer harness layer)
+    (e-harness-set-intrinsic-capabilities harness (e-layer-capabilities layer))
     (should-not (e-tools-definitions stale-tools))
     (should (equal (mapcar (lambda (definition)
                              (plist-get definition :name))
@@ -1784,8 +1805,8 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
                     :content)
                    "derived"))))
 
-(ert-deftest e-harness-test-prompts-are-derived-from-active-layers ()
-  "Prompts are aggregated from active capability prompts in layer order."
+(ert-deftest e-harness-test-prompts-are-derived-from-effective-capabilities ()
+  "Prompts are aggregated from effective capability prompts in order."
   (let* ((first (e-prompt-spec-create
                  :name "explain"
                  :description "Explain."
@@ -1799,26 +1820,16 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
                      :description "Explain differently."
                      :template "Explain this differently."))
          (harness (e-harness-create :backend (e-backend-fake-create :items nil))))
-    (e-harness-activate-layer
+    (e-harness-set-intrinsic-capabilities
      harness
-     (e-layer-create
-      :id 'one
-      :name "One"
-      :capabilities
-      (list (e-capability-with-prompts-create
-             :id 'prompt-one
-             :name "Prompt One"
-             :prompts (list first second)))))
-    (e-harness-activate-layer
-     harness
-     (e-layer-create
-      :id 'two
-      :name "Two"
-      :capabilities
-      (list (e-capability-with-prompts-create
-             :id 'prompt-two
-             :name "Prompt Two"
-             :prompts (list duplicate)))))
+     (list (e-capability-with-prompts-create
+            :id 'prompt-one
+            :name "Prompt One"
+            :prompts (list first second))
+           (e-capability-with-prompts-create
+            :id 'prompt-two
+            :name "Prompt Two"
+            :prompts (list duplicate))))
     (should (equal (e-harness-prompts harness)
                    (list first second duplicate)))
     (should (eq (e-harness-prompt-by-name harness "explain") first))
@@ -1828,8 +1839,8 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
                            (e-harness-prompt-name-collisions harness))
                    '(("explain" 2))))))
 
-(ert-deftest e-harness-test-hooks-are-derived-from-active-layers ()
-  "Harness hook registries are derived from active capability layers."
+(ert-deftest e-harness-test-hooks-are-derived-from-effective-capabilities ()
+  "Harness hook registries are derived from effective capabilities."
   (should (require 'e-hooks nil t))
   (let* ((capability
           (e-capability-create
@@ -1842,11 +1853,7 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
                              (concat value "-hooked"))))))
          (harness (e-harness-create
                    :backend (e-backend-fake-create :items nil)
-                   :active-layers
-                   (list (e-layer-create
-                          :id 'hook-layer
-                          :name "Hook Layer"
-                          :capabilities (list capability))))))
+                   :intrinsic-capabilities (list capability))))
     (should (equal (e-hooks-run-reduce
                     (e-harness-hooks harness)
                     :post-tool-call
@@ -1914,12 +1921,7 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
     (setq harness
           (e-harness-create
            :backend backend
-           :active-layers
-           (list (e-layer-create
-                  :id 'tool-layer
-                  :name "Tool Layer"
-                  :capabilities (list tools-capability
-                                      hooks-capability)))))
+           :intrinsic-capabilities (list tools-capability hooks-capability)))
     (e-harness-create-session harness :id "session-1")
     (e-harness-prompt harness "session-1" "use tool")
     (let* ((messages (e-harness-messages harness "session-1"))
@@ -1992,12 +1994,7 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
     (setq harness
           (e-harness-create
            :backend (e-backend-fake-create :items nil)
-           :active-layers
-           (list (e-layer-create
-                  :id 'nested-layer
-                  :name "Nested Layer"
-                  :capabilities (list tools-capability
-                                      hooks-capability)))))
+           :intrinsic-capabilities (list tools-capability hooks-capability)))
     (e-harness-create-session harness :id "session-1")
     (e-harness-subscribe harness (lambda (event) (push event events)))
     (e-tool-lifecycle-start-call
@@ -2117,11 +2114,7 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
          (harness
           (e-harness-create
            :backend backend
-           :active-layers
-           (list (e-layer-create
-                  :id 'run-elisp-chain-layer
-                  :name "Run Elisp Chain Layer"
-                  :capabilities (list tools-capability))))))
+           :intrinsic-capabilities (list tools-capability))))
     (e-harness-create-session harness :id "session-1")
     (e-harness-subscribe harness (lambda (event) (push event events)))
     (e-harness-prompt harness "session-1" "chain tools")
@@ -2212,11 +2205,7 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
          (harness
           (e-harness-create
            :backend backend
-           :active-layers
-           (list (e-layer-create
-                  :id 'run-elisp-error-layer
-                  :name "Run Elisp Error Layer"
-                  :capabilities (list tools-capability))))))
+           :intrinsic-capabilities (list tools-capability))))
     (e-harness-create-session harness :id "session-1")
     (e-harness-prompt harness "session-1" "catch nested error")
     (should (equal calls 2))
@@ -2270,11 +2259,7 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
          (harness
           (e-harness-create
            :backend backend
-           :active-layers
-           (list (e-layer-create
-                  :id 'tool-layer
-                  :name "Tool Layer"
-                  :capabilities (list tools-capability))))))
+           :intrinsic-capabilities (list tools-capability))))
     (unwind-protect
         (progn
           (e-harness-create-session harness :id "session-1")
@@ -2286,8 +2271,8 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
             (should (alist-get "harness.tool-start" aggregates nil nil #'equal))))
       (delete-directory profile-directory t))))
 
-(ert-deftest e-harness-test-resources-are-derived-from-active-layers ()
-  "The harness resource surface is rebuilt from active layers on demand."
+(ert-deftest e-harness-test-resources-are-derived-from-effective-capabilities ()
+  "The harness resource surface is rebuilt from effective capabilities on demand."
   (let* ((capability
           (e-capability-create
            :id 'resource-capability
@@ -2307,7 +2292,7 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
          (harness (e-harness-create
                    :backend (e-backend-fake-create :items nil)))
          (stale-resources (e-harness-resources harness)))
-    (e-harness-activate-layer harness layer)
+    (e-harness-set-intrinsic-capabilities harness (e-layer-capabilities layer))
     (should-error (e-resources-read stale-resources "derived://value" nil)
                   :type 'e-resources-unknown-scheme)
     (should (equal (e-resources-read
@@ -2324,7 +2309,8 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
          (project-root (make-temp-file "e-harness-project-" t))
          (harness (e-harness-create
                    :backend (e-backend-fake-create :items nil)
-                   :active-layers (list (e-base-layer-create fallback-root)))))
+                   :intrinsic-capabilities
+                   (e-layer-capabilities (e-base-layer-create fallback-root)))))
     (unwind-protect
         (progn
           (e-harness-create-session
@@ -2348,7 +2334,8 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
          (nested (expand-file-name "docs/feature" project-root))
          (harness (e-harness-create
                    :backend (e-backend-fake-create :items nil)
-                   :active-layers (list (e-base-layer-create fallback-root)))))
+                   :intrinsic-capabilities
+                   (e-layer-capabilities (e-base-layer-create fallback-root)))))
     (unwind-protect
         (progn
           (make-directory nested t)
@@ -2432,7 +2419,7 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
                  :capabilities (list capability)))
          (harness (e-harness-create
                    :backend (e-backend-fake-create :items nil)
-                   :active-layers (list layer)))
+                   :intrinsic-capabilities (e-layer-capabilities layer)))
          (tools (e-harness-tools harness)))
     (should (equal (plist-get
                     (e-tools-execute
@@ -2521,7 +2508,7 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
                  :capabilities (list capability)))
          (harness (e-harness-create
                    :backend (e-backend-fake-create :items nil)
-                   :active-layers (list layer)))
+                   :intrinsic-capabilities (e-layer-capabilities layer)))
          (read-tool (seq-find (lambda (definition)
                                 (equal (plist-get definition :name) "read"))
                               (e-tools-definitions (e-harness-tools harness))))
@@ -2552,7 +2539,7 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
                  :capabilities (list capability)))
          (harness (e-harness-create
                    :backend (e-backend-fake-create :items nil)
-                   :active-layers (list layer)))
+                   :intrinsic-capabilities (e-layer-capabilities layer)))
          (write-tool (seq-find (lambda (definition)
                                  (equal (plist-get definition :name) "write"))
                                (e-tools-definitions (e-harness-tools harness))))
@@ -2570,14 +2557,12 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
          (harness (e-harness-create
                    :backend (e-backend-fake-create :items nil))))
     (e-harness-activate-capability harness capability)
-    (should (equal (mapcar #'e-layer-id
-                           (e-harness-active-layers harness))
-                   '(direct-capability)))
+    (should-not (e-harness-effective-layer-ids harness))
     (should (equal (mapcar #'e-capability-id
                            (e-harness-active-capabilities harness))
                    '(direct-capability)))))
 
-(ert-deftest e-harness-test-store-is-derived-from-active-layers ()
+(ert-deftest e-harness-test-store-is-derived-from-effective-capabilities ()
   "Harness e:// stores are derived from active capability resource contributions."
   (let* ((capability
           (e-capability-with-skills-create
@@ -2594,7 +2579,7 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
                  :capabilities (list capability)))
          (harness (e-harness-create
                    :backend (e-backend-fake-create :items nil))))
-    (e-harness-activate-layer harness layer)
+    (e-harness-set-intrinsic-capabilities harness (e-layer-capabilities layer))
     (should (equal (mapcar #'e-store-entry-uri
                            (e-store-list (e-harness-store harness)))
                    '("e://skill-capability/skills/focused-work")))))
@@ -2634,7 +2619,7 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
                  :name "Skill Layer"
                  :capabilities (list capability)))
          (harness (e-harness-create :backend backend)))
-    (e-harness-activate-layer harness layer)
+    (e-harness-set-intrinsic-capabilities harness (e-layer-capabilities layer))
     (e-harness-create-session harness :id "session-1")
     (e-harness-prompt harness "session-1" "question")
     (let ((preamble (seq-find
@@ -2676,7 +2661,7 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
          (read-call '(:id "call-1"
                       :name "read"
                       :arguments (:uri "e://skill-capability/skills/planner"))))
-    (e-harness-activate-layer harness layer)
+    (e-harness-set-intrinsic-capabilities harness (e-layer-capabilities layer))
     (let ((result (e-tools-execute (e-harness-tools harness) read-call)))
       (should (equal (plist-get result :status) 'ok))
       (should (equal (plist-get result :content)
@@ -2705,7 +2690,7 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
                       :name "read"
                       :arguments (:uri
                                   "e://reference-capability/refs/guide.md"))))
-    (e-harness-activate-layer harness layer)
+    (e-harness-set-intrinsic-capabilities harness (e-layer-capabilities layer))
     (let ((result (e-tools-execute (e-harness-tools harness) read-call)))
       (should (equal (plist-get result :status) 'ok))
       (should (equal (plist-get result :content)
@@ -2730,7 +2715,7 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
                  :capabilities (list capability)))
          (harness (e-harness-create
                    :backend (e-backend-fake-create :items nil))))
-    (e-harness-activate-layer harness layer)
+    (e-harness-set-intrinsic-capabilities harness (e-layer-capabilities layer))
     (should
      (equal (plist-get
              (e-tools-execute
@@ -2779,7 +2764,7 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
                  :capabilities (list capability)))
          (harness (e-harness-create
                    :backend (e-backend-fake-create :items nil))))
-    (e-harness-activate-layer harness layer)
+    (e-harness-set-intrinsic-capabilities harness (e-layer-capabilities layer))
     (should-error
      (e-resources-write (e-harness-resources harness)
                         "e://skill-capability/skills/readonly"
@@ -2825,7 +2810,7 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
                  :name "Noop Layer"
                  :capabilities (list capability)))
          (harness (e-harness-create :backend backend)))
-    (e-harness-activate-layer harness layer)
+    (e-harness-set-intrinsic-capabilities harness (e-layer-capabilities layer))
     (e-harness-create-session harness :id "session-1")
     (e-harness-prompt harness "session-1" "raw prompt")
     (let* ((tool (seq-find (lambda (definition)
@@ -2872,7 +2857,7 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
                    :backend backend
                    :default-options '(:model "default-model"
                                       :reasoning-effort "medium"))))
-    (e-harness-activate-layer harness layer)
+    (e-harness-set-intrinsic-capabilities harness (e-layer-capabilities layer))
     (e-harness-create-session harness :id "session-1")
     (e-harness-set-session-model harness "session-1" "session-model")
     (e-harness-set-session-reasoning-effort harness "session-1" "high")

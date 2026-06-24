@@ -28,13 +28,17 @@
 
 (defun e-layers--layer-label (spec harness)
   "Return completion label for SPEC in HARNESS."
-  (format "%s  [%s]%s"
-          (or (e-layer-spec-name spec)
-              (symbol-name (e-layer-spec-id spec)))
-          (e-layer-spec-id spec)
-          (if (e-harness-layer-active-p harness (e-layer-spec-id spec))
-              " active"
-            "")))
+  (let* ((id (e-layer-spec-id spec))
+         (enabled (e-harness-layer-enabled-p harness id))
+         (active (e-harness-layer-effective-p harness id)))
+    (format "%s  [%s]%s"
+            (or (e-layer-spec-name spec)
+                (symbol-name id))
+            id
+            (cond
+             (enabled " enabled")
+             (active " active")
+             (t "")))))
 
 (defun e-layers--spec-for-label (specs labels label)
   "Return the spec from SPECS corresponding to LABELS LABEL."

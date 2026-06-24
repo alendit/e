@@ -47,7 +47,8 @@
   (let* ((harness (e-harness-create
                    :backend (e-backend-fake-create :items nil)))
          (layer (e-core-layer-create)))
-    (e-harness-activate-layer harness layer)
+    (setf (e-harness-intrinsic-capabilities harness)
+          (e-layer-capabilities layer))
     (e-harness-create-session harness :id "session-1")
     (let ((content (mapconcat
                     (lambda (message)
@@ -81,21 +82,19 @@
                       (e-layer-selection-toggle harness 'optional)
                       :status)
                      'enabled))
-      (should (equal (mapcar #'e-layer-id
-                             (e-harness-active-layers harness))
+      (should (equal (e-harness-enabled-layer-ids harness)
                      '(optional)))
       (should (equal (plist-get
                       (e-layer-selection-enable harness 'optional)
                       :status)
                      'already-enabled))
-      (should (equal (mapcar #'e-layer-id
-                             (e-harness-active-layers harness))
+      (should (equal (e-harness-enabled-layer-ids harness)
                      '(optional)))
       (should (equal (plist-get
                       (e-layer-selection-toggle harness 'optional)
                       :status)
                      'disabled))
-      (should-not (e-harness-active-layers harness)))))
+      (should-not (e-harness-enabled-layer-ids harness)))))
 
 (provide 'e-layer-selection-test)
 

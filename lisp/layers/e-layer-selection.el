@@ -18,36 +18,30 @@
 (defun e-layer-selection-list (harness)
   "Return known layer state for HARNESS."
   (mapcar (lambda (spec)
-            (list :id (e-layer-spec-id spec)
-                  :name (e-layer-spec-name spec)
-                  :summary (e-layer-spec-summary spec)
-                  :active (e-harness-layer-active-p
-                           harness
-                           (e-layer-spec-id spec))))
+            (let ((id (e-layer-spec-id spec)))
+              (list :id id
+                    :name (e-layer-spec-name spec)
+                    :summary (e-layer-spec-summary spec)
+                    :enabled (e-harness-layer-enabled-p harness id)
+                    :active (e-harness-layer-effective-p harness id))))
           (e-layer-list)))
 
 (defun e-layer-selection-enable (harness layer-id)
   "Enable registered LAYER-ID in HARNESS."
-  (if (e-harness-layer-active-p harness layer-id)
+  (if (e-harness-layer-enabled-p harness layer-id)
       (list :status 'already-enabled
             :layer-id layer-id
-            :layer (e-harness-active-layer harness layer-id))
-    (let ((layer (e-layer-create-registered layer-id)))
-      (e-harness-activate-layer harness layer)
-      (list :status 'enabled
-            :layer-id layer-id
-            :layer layer))))
+            :enabled t
+            :active (e-harness-layer-effective-p harness layer-id))
+    (e-harness-enable-layer-id harness layer-id)))
 
 (defun e-layer-selection-disable (harness layer-id)
   "Disable LAYER-ID in HARNESS."
-  (let ((layer (e-harness-deactivate-layer harness layer-id)))
-    (if layer
-        (list :status 'disabled :layer-id layer-id :layer layer)
-      (list :status 'already-disabled :layer-id layer-id :layer nil))))
+  (e-harness-disable-layer-id harness layer-id))
 
 (defun e-layer-selection-toggle (harness layer-id)
   "Toggle registered LAYER-ID in HARNESS."
-  (if (e-harness-layer-active-p harness layer-id)
+  (if (e-harness-layer-enabled-p harness layer-id)
       (e-layer-selection-disable harness layer-id)
     (e-layer-selection-enable harness layer-id)))
 

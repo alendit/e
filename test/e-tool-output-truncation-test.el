@@ -23,11 +23,8 @@
   "Return a harness with tmp resources active."
   (e-harness-create
    :backend (e-backend-fake-create :items nil)
-   :active-layers
-   (list (e-layer-create
-          :id 'tmp-layer
-          :name "Tmp Layer"
-          :capabilities (list (e-session-tmp-capability-create))))))
+   :intrinsic-capabilities
+                   (list (e-session-tmp-capability-create))))
 
 (defun e-tool-output-truncation-test--context (harness)
   "Return hook context for HARNESS."

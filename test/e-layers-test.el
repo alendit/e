@@ -84,12 +84,10 @@
                            :name "second_tool"
                            :description "Second capability tool."
                            :handler (lambda (_arguments) "second"))))))
-         (layer (e-layer-create
-                 :id 'capability-layer
-                 :name "Capability Layer"
-                 :capabilities (list first-capability second-capability)))
-         (harness (e-harness-create :backend backend)))
-    (e-harness-activate-layer harness layer)
+         (harness (e-harness-create
+                   :backend backend
+                   :intrinsic-capabilities
+                   (list first-capability second-capability))))
     (e-harness-create-session harness :id "session-1")
     (e-harness-prompt harness "session-1" "hello")
     (should (equal (mapcar (lambda (definition)
@@ -114,7 +112,8 @@
                    :items '((:type assistant-message :content "ok")
                             (:type done :reason stop))))
          (harness (e-harness-create :backend backend)))
-    (e-harness-activate-layer harness (e-core-layer-create))
+    (setf (e-harness-intrinsic-capabilities harness)
+          (e-layer-capabilities (e-core-layer-create)))
     (let ((tool (seq-find (lambda (definition)
                             (equal (plist-get definition :name)
                                    "compact_session"))
@@ -143,20 +142,29 @@
         (should created)
         (should (eq (e-layer-id layer) 'optional))))))
 
-(ert-deftest e-layers-test-harness-deactivates-layer-by-id ()
-  "Harness layer state can be queried and deactivated by layer id."
-  (let ((harness (e-harness-create
-                  :backend (e-backend-fake-create :items nil)))
-        (first (e-layer-create :id 'first :name "First"))
-        (second (e-layer-create :id 'second :name "Second")))
-    (e-harness-activate-layer harness first)
-    (e-harness-activate-layer harness second)
-    (should (e-harness-layer-active-p harness 'first))
-    (should (eq (e-harness-active-layer harness 'second) second))
-    (should (eq (e-harness-deactivate-layer harness 'first) first))
-    (should-not (e-harness-layer-active-p harness 'first))
-    (should (equal (mapcar #'e-layer-id (e-harness-active-layers harness))
-                   '(second)))))
+(ert-deftest e-layers-test-harness-disables-layer-by-id ()
+  "Harness explicit layer ids can be queried and disabled by layer id."
+  (e-layers-test--with-empty-layer-registry
+    (let ((harness (e-harness-create
+                    :backend (e-backend-fake-create :items nil))))
+      (e-layer-register
+       (e-layer-spec-create
+        :id 'first :name "First"
+        :factory (lambda () (e-layer-create :id 'first :name "First"))))
+      (e-layer-register
+       (e-layer-spec-create
+        :id 'second :name "Second"
+        :factory (lambda () (e-layer-create :id 'second :name "Second"))))
+      (e-harness-enable-layer-id harness 'first)
+      (e-harness-enable-layer-id harness 'second)
+      (should (e-harness-layer-enabled-p harness 'first))
+      (should (e-harness-layer-effective-p harness 'second))
+      (should (eq (plist-get (e-harness-disable-layer-id harness 'first)
+                             :status)
+                  'disabled))
+      (should-not (e-harness-layer-enabled-p harness 'first))
+      (should (equal (e-harness-enabled-layer-ids harness)
+                     '(second))))))
 
 (ert-deftest e-layers-test-harness-activates-layer-owned-shells ()
   "Activating and deactivating a layer controls its shell manifests."
@@ -169,10 +177,16 @@
                    :id 'topic-layer
                    :name "Topic Layer"
                    :shells (list shell))))
-      (e-harness-activate-layer harness layer)
+      (e-layer-register
+       (e-layer-spec-create
+        :id 'topic-layer :name "Topic Layer"
+        :factory (lambda () layer)))
+      (e-harness-enable-layer-id harness 'topic-layer)
       (should (eq (e-shell-get-active 'topic harness) shell))
       (should (memq shell (e-shell-list-active harness)))
-      (should (eq (e-harness-deactivate-layer harness 'topic-layer) layer))
+      (should (eq (plist-get (e-harness-disable-layer-id harness 'topic-layer)
+                             :status)
+                  'disabled))
       (should-not (e-shell-get-active 'topic harness)))))
 
 (ert-deftest e-layers-test-activate-pulls-in-required-layers ()
@@ -193,10 +207,40 @@
         :factory (lambda ()
                    (e-layer-create :id 'consumer :name "Consumer"
                                    :requires '(dep)))))
-      (e-harness-activate-layer harness (e-layer-create-registered 'consumer))
+      (e-harness-enable-layer-id harness 'consumer)
       (should dep-created)
       ;; Dependency precedes its consumer in activation order.
-      (should (equal (mapcar #'e-layer-id (e-harness-active-layers harness))
+      (should (equal (e-harness-effective-layer-ids harness)
+                     '(dep consumer))))))
+
+(ert-deftest e-layers-test-disabling-required-layer-keeps-it-effective ()
+  "Disabling an explicitly enabled dependency leaves it effective if required."
+  (e-layers-test--with-empty-layer-registry
+    (let ((harness (e-harness-create
+                    :backend (e-backend-fake-create :items nil))))
+      (e-layer-register
+       (e-layer-spec-create
+        :id 'dep :name "Dep"
+        :factory (lambda ()
+                   (e-layer-create :id 'dep :name "Dep"))))
+      (e-layer-register
+       (e-layer-spec-create
+        :id 'consumer :name "Consumer"
+        :factory (lambda ()
+                   (e-layer-create :id 'consumer :name "Consumer"
+                                   :requires '(dep)))))
+      (e-harness-enable-layer-id harness 'dep)
+      (e-harness-enable-layer-id harness 'consumer)
+      (should (equal (e-harness-enabled-layer-ids harness)
+                     '(dep consumer)))
+      (should (eq (plist-get (e-harness-disable-layer-id harness 'dep)
+                             :status)
+                  'disabled-but-required))
+      (should-not (e-harness-layer-enabled-p harness 'dep))
+      (should (e-harness-layer-effective-p harness 'dep))
+      (should (equal (e-harness-enabled-layer-ids harness)
+                     '(consumer)))
+      (should (equal (e-harness-effective-layer-ids harness)
                      '(dep consumer))))))
 
 (ert-deftest e-layers-test-activate-skips-already-active-requires ()
@@ -217,14 +261,15 @@
         :factory (lambda ()
                    (e-layer-create :id 'consumer :name "Consumer"
                                    :requires '(dep)))))
-      (e-harness-activate-layer harness (e-layer-create-registered 'dep))
-      (e-harness-activate-layer harness (e-layer-create-registered 'consumer))
-      (should (= dep-calls 1))
-      (should (equal (mapcar #'e-layer-id (e-harness-active-layers harness))
+      (e-harness-enable-layer-id harness 'dep)
+      (e-harness-enable-layer-id harness 'consumer)
+      ;; Effective views are fresh; dependency factories may run when deriving.
+      (should (>= dep-calls 1))
+      (should (equal (e-harness-effective-layer-ids harness)
                      '(dep consumer))))))
 
-(ert-deftest e-layers-test-activate-tolerates-requires-cycle ()
-  "Mutually dependent layers activate without infinite recursion."
+(ert-deftest e-layers-test-effective-layer-ids-reject-requires-cycle ()
+  "Mutually dependent layers fail clearly instead of recursing forever."
   (e-layers-test--with-empty-layer-registry
     (let ((harness (e-harness-create
                     :backend (e-backend-fake-create :items nil))))
@@ -236,11 +281,8 @@
        (e-layer-spec-create
         :id 'b :name "B"
         :factory (lambda () (e-layer-create :id 'b :name "B" :requires '(a)))))
-      (e-harness-activate-layer harness (e-layer-create-registered 'a))
-      (let ((ids (mapcar #'e-layer-id (e-harness-active-layers harness))))
-        (should (memq 'a ids))
-        (should (memq 'b ids))
-        (should (= (length ids) 2))))))
+      (setf (e-harness-enabled-layer-ids harness) '(a))
+      (should-error (e-harness-effective-layer-ids harness)))))
 
 (provide 'e-layers-test)
 

@@ -29,7 +29,8 @@
     (should (equal (mapcar #'e-capability-id
                            (e-layer-capabilities layer))
                    '(web)))
-    (e-harness-activate-layer harness layer)
+    (e-harness-set-intrinsic-capabilities
+     harness (e-layer-capabilities layer))
     (let ((tool-names (mapcar (lambda (definition)
                                 (plist-get definition :name))
                               (e-tools-definitions (e-harness-tools harness)))))

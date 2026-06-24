@@ -135,47 +135,54 @@ attaches the internal chat-session layer and `e-default-chat-layer-ids'."
     e-default--chat-sessions))
 
 (defun e-default-chat--record-layer-ids (harness)
-  "Record HARNESS active registered layer ids as default chat config."
+  "Record HARNESS explicitly enabled registered layer ids as default chat config."
   (setq e-default-chat-layer-ids
-        (delq nil
-              (mapcar (lambda (layer)
-                        (let ((id (e-layer-id layer)))
-                          (and (not (eq id 'chat-session))
-                               (e-layer-get id)
-                               id)))
-                      (e-harness-active-layers harness))))
+        (copy-sequence (e-harness-enabled-layer-ids harness)))
   e-default-chat-layer-ids)
 
-(defun e-default-chat--activate-configured-layers
+(defun e-default-chat--set-configured-layer-ids
     (harness &optional layer-ids directory)
-  "Activate configured stateless LAYER-IDS in HARNESS.
+  "Set configured stateless LAYER-IDS on HARNESS.
 When LAYER-IDS is nil, use `e-default-chat-layer-ids'.
-DIRECTORY is passed to config-aware layer factories."
+DIRECTORY is passed to config-aware shell layer factories."
   (e-default-layers-register)
-  (dolist (layer-id (or layer-ids e-default-chat-layer-ids))
-    (e-harness-activate-layer
-     harness (e-layer-create-registered layer-id directory)))
+  (e-harness-set-enabled-layer-ids
+   harness
+   (or layer-ids e-default-chat-layer-ids))
+  (e-harness-sync-layer-shells harness directory)
   harness)
 
-(defun e-default-chat--chat-session-layer ()
-  "Return a fresh internal chat-session layer for default chat harnesses."
+(defun e-default-chat--chat-session-capabilities ()
+  "Return fresh internal chat-session capabilities for default chat harnesses."
   (require 'e-chat-session)
-  (e-layer-create
-   :id 'chat-session
-   :name "Chat Session"
-   :capabilities (list (e-chat-session-capability-create)
-                       (e-default-chat--prompt-capability))))
+  (list (e-chat-session-capability-create)
+        (e-default-chat--prompt-capability)))
 
-(defun e-default-debug--debug-layer ()
-  "Return a fresh internal debug guidance layer."
-  (e-layer-create
-   :id 'debug-agent
-   :name "Debug Agent"
-   :capabilities (list (e-capability-create
-                        :id 'debug-agent
-                        :name "Debug Agent"
-                        :instructions e-default-debug-instructions)
-                       (e-context-inspection-capability-create))))
+(defun e-default-harness--proper-list-p (value)
+  "Return non-nil when VALUE is a proper list."
+  (or (null value)
+      (and (listp value)
+           (ignore-errors
+             (length value)
+             t))))
+
+(defun e-default-harness--symbol-list-p (value)
+  "Return non-nil when VALUE is a proper list of symbols."
+  (and (e-default-harness--proper-list-p value)
+       (cl-every #'symbolp value)))
+
+(defun e-default-harness--capability-list-p (value)
+  "Return non-nil when VALUE is a proper list of capabilities."
+  (and (e-default-harness--proper-list-p value)
+       (cl-every #'e-capability-p value)))
+
+(defun e-default-debug--debug-capabilities ()
+  "Return fresh internal debug guidance capabilities."
+  (list (e-capability-create
+         :id 'debug-agent
+         :name "Debug Agent"
+         :instructions e-default-debug-instructions)
+        (e-context-inspection-capability-create)))
 
 (defun e-default-harness--debug-spec-p (spec)
   "Return non-nil when SPEC provides a debug default harness."
@@ -193,32 +200,50 @@ DIRECTORY is passed to config-aware layer factories."
 
 (defun e-default-chat-sync-harness-layers
     (harness &optional layer-ids directory)
-  "Reconcile default chat HARNESS layers from `e-default-chat-layer-ids'.
-The internal `chat-session' layer is recreated.  Other active layers are
-recreated from registered stateless layer specs in the configured order.
-DIRECTORY is passed to config-aware layer factories."
+  "Reconcile default chat HARNESS layer ids from `e-default-chat-layer-ids'.
+The internal chat-session capabilities are intrinsic to HARNESS.  Registered
+layer objects are created only as effective views or for shell sync.  DIRECTORY
+is passed to config-aware shell layer factories."
   (e-harness-refresh-default-context-strategy harness)
+  (when directory
+    (setf (e-harness-default-project-root harness)
+          (e-harness--normalize-project-root directory)))
   (let ((change-function (e-harness-layer-change-function harness)))
     (unwind-protect
         (progn
           (e-harness-set-layer-change-function harness nil)
-          (e-shell-clear-harness-shells harness)
-          (setf (e-harness-active-layers harness) nil)
-          (e-harness-activate-layer
-           harness (e-default-chat--chat-session-layer))
-          (e-default-chat--activate-configured-layers
+          (e-harness-set-intrinsic-capabilities
+           harness
+           (e-default-chat--chat-session-capabilities))
+          (e-default-chat--set-configured-layer-ids
            harness layer-ids directory))
       (e-harness-set-layer-change-function harness change-function)))
+  (e-harness--notify-layers-changed harness)
   harness)
 
 (defun e-default-harness--repair-shifted-session-store (harness)
-  "Repair HARNESS when a live reload shifted the session store slot."
+  "Repair HARNESS when a live reload shifted collection slots."
   (when (and (not (e-session-store-p (e-harness-sessions harness)))
              (e-session-store-p
               (e-harness-runtime-capability-config harness)))
     (setf (e-harness-sessions harness)
           (e-harness-runtime-capability-config harness))
     (setf (e-harness-runtime-capability-config harness) nil))
+  (unless (e-session-store-p (e-harness-sessions harness))
+    (setf (e-harness-sessions harness) (e-session-store-create)))
+  (unless (e-default-harness--symbol-list-p
+           (e-harness-enabled-layer-ids harness))
+    (setf (e-harness-enabled-layer-ids harness) nil))
+  (unless (e-default-harness--capability-list-p
+           (e-harness-intrinsic-capabilities harness))
+    (setf (e-harness-intrinsic-capabilities harness) nil))
+  (unless (e-default-harness--proper-list-p
+           (e-harness-subscribers harness))
+    (setf (e-harness-subscribers harness) nil))
+  (unless (hash-table-p (e-harness-active-turns harness))
+    (setf (e-harness-active-turns harness) (make-hash-table :test 'equal)))
+  (unless (hash-table-p (e-harness-prompt-queues harness))
+    (setf (e-harness-prompt-queues harness) (make-hash-table :test 'equal)))
   harness)
 
 (defun e-default-harness-sync-from-factory (harness spec)
@@ -283,8 +308,12 @@ hold HARNESS."
   "Reconcile default debug HARNESS layers from chat defaults and debug guidance."
   (e-harness-set-layer-change-function harness nil)
   (e-default-chat-sync-harness-layers harness layer-ids directory)
-  (e-harness-activate-layer harness (e-default-debug--debug-layer))
+  (e-harness-set-intrinsic-capabilities
+   harness
+   (append (e-default-chat--chat-session-capabilities)
+           (e-default-debug--debug-capabilities)))
   (e-harness-set-layer-change-function harness nil)
+  (e-harness--notify-layers-changed harness)
   harness)
 
 (defun e-default-harness--effective-chat-spec ()
@@ -352,10 +381,12 @@ with an explicit unconfigured backend and no provider."
                      :sessions store))))
     (unless (e-harness-p harness)
       (signal 'wrong-type-argument (list 'e-harness-p harness)))
-    (e-harness-activate-layer
+    (setf (e-harness-default-project-root harness)
+          (e-harness--normalize-project-root root))
+    (e-harness-set-intrinsic-capabilities
      harness
-     (e-default-chat--chat-session-layer))
-    (e-default-chat--activate-configured-layers harness layer-ids root)
+     (e-default-chat--chat-session-capabilities))
+    (e-default-chat--set-configured-layer-ids harness layer-ids root)
     (e-harness-set-layer-change-function
      harness #'e-default-chat--record-layer-ids)
     harness))
@@ -376,7 +407,11 @@ but keeps layer selection changes local to chat harnesses."
                         :capability-config
                         (copy-tree (e-harness-runtime-capability-config chat))
                         :sessions (or sessions (e-harness-sessions chat))
-                        :active-layers (e-harness-active-layers chat)
+                        :enabled-layer-ids
+                        (e-harness-enabled-layer-ids chat)
+                        :intrinsic-capabilities
+                        (append (e-default-chat--chat-session-capabilities)
+                                (e-default-debug--debug-capabilities))
                         :project-root
                         (or directory
                             (e-harness-default-project-root chat))))
@@ -385,8 +420,10 @@ but keeps layer selection changes local to chat harnesses."
                     :sessions sessions
                     :layer-ids layer-ids
                     :directory directory))))
-    (e-harness-set-layer-change-function harness nil)
-    (e-harness-activate-layer harness (e-default-debug--debug-layer))
+    (e-harness-set-intrinsic-capabilities
+     harness
+     (append (e-default-chat--chat-session-capabilities)
+             (e-default-debug--debug-capabilities)))
     (e-harness-set-layer-change-function harness nil)
     harness))
 

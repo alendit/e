@@ -190,7 +190,8 @@ SOURCE overrides the default layer source."
           (e-project-local-test--make-capability project 'topic)
           (let* ((harness (e-harness-create))
                  (layer (e-project-local-layer-create project)))
-            (e-harness-activate-layer harness layer)
+            (e-harness-set-intrinsic-capabilities
+             harness (e-layer-capabilities layer))
             (let ((tools (e-harness-tools harness))
                   (store (e-harness-store harness)))
               (should (member "topic_new" (e-tools-registry-order tools)))
@@ -245,7 +246,8 @@ SOURCE overrides the default layer source."
                            harness
                            :metadata (list :project-root second)))
                  (session-id (plist-get session :id)))
-            (e-harness-activate-layer harness layer)
+            (e-harness-set-intrinsic-capabilities
+             harness (e-layer-capabilities layer))
             (should (member "first_tool"
                             (e-tools-registry-order
                              (e-harness-tools harness))))
@@ -270,7 +272,8 @@ SOURCE overrides the default layer source."
            "---\nname: daily\ndescription: Run the daily ritual.\n---\nDaily steps.")
           (let* ((harness (e-harness-create))
                  (layer (e-project-local-layer-create project)))
-            (e-harness-activate-layer harness layer)
+            (e-harness-set-intrinsic-capabilities
+             harness (e-layer-capabilities layer))
             (let* ((store (e-harness-store harness))
                    (uri "e://topic/skills/project/daily")
                    (entry (cl-find uri (e-store-list store)
@@ -294,7 +297,8 @@ SOURCE overrides the default layer source."
            "---\nname: triage\ndescription: Triage project topics.\n---\nTriage steps.")
           (let* ((harness (e-harness-create))
                  (layer (e-project-local-layer-create project)))
-            (e-harness-activate-layer harness layer)
+            (e-harness-set-intrinsic-capabilities
+             harness (e-layer-capabilities layer))
             (let* ((store (e-harness-store harness))
                    (uri "e://project-local/layers/topic/skills/project/triage")
                    (entry (cl-find uri (e-store-list store)
@@ -314,7 +318,8 @@ SOURCE overrides the default layer source."
           (e-project-local-test--make-layer project 'topic)
           (let* ((harness (e-harness-create))
                  (layer (e-project-local-layer-create project)))
-            (e-harness-activate-layer harness layer)
+            (e-harness-set-intrinsic-capabilities
+             harness (e-layer-capabilities layer))
             (should (eq (e-layer-id layer) 'project-local))
             (should (member "topic_layer_tool"
                             (e-tools-registry-order
@@ -496,7 +501,8 @@ SOURCE overrides the default layer source."
                            harness
                            :metadata (list :project-root inner)))
                  (session-id (plist-get session :id)))
-            (e-harness-activate-layer harness layer)
+            (e-harness-set-intrinsic-capabilities
+             harness (e-layer-capabilities layer))
             (let ((messages (prin1-to-string
                              (plist-get
                               (e-harness-context harness session-id)

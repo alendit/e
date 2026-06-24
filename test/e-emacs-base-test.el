@@ -23,7 +23,8 @@
   (let* ((harness (e-harness-create
                    :backend (e-backend-fake-create :items nil)))
          (layer (e-emacs-base-layer-create)))
-    (e-harness-activate-layer harness layer)
+    (e-harness-set-intrinsic-capabilities
+     harness (e-layer-capabilities layer))
     (should (equal (mapcar (lambda (definition)
                              (plist-get definition :name))
                            (e-tools-definitions (e-harness-tools harness)))

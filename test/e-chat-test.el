@@ -7279,7 +7279,10 @@ The context-window denominator comes from the live provider lookup
                               :session-id "chat-mid-turn-compact")))
     (unwind-protect
         (with-current-buffer buffer
-          (e-harness-activate-layer e-chat-harness (e-core-layer-create))
+          (e-harness-set-intrinsic-capabilities
+           e-chat-harness
+           (append (e-harness-intrinsic-capabilities e-chat-harness)
+                   (e-layer-capabilities (e-core-layer-create))))
           (let ((store (e-harness-sessions e-chat-harness)))
             (e-session-append-message store e-chat-session-id
                                       '(:role user :content "old"))

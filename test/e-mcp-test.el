@@ -384,7 +384,7 @@
                    :capabilities (list capability)))
            (harness (e-harness-create
                      :backend (e-backend-fake-create :items nil))))
-      (e-harness-activate-layer harness layer)
+      (e-harness-set-intrinsic-capabilities harness (e-layer-capabilities layer))
       (let ((registry (e-harness-tools harness)))
         (should (equal (mapcar (lambda (definition)
                                  (plist-get definition :name))
@@ -598,8 +598,7 @@ echoed back on `tools/list' and `tools/call'."
               (e-harness-create
                :backend (e-backend-fake-create :items nil)
                :sessions (e-session-store-create))))
-         (e-harness-activate-layer
-          ,harness-var (e-layer-create-registered 'fixture-mcp))
+         (e-harness-enable-layer-id ,harness-var 'fixture-mcp)
          ,@body))))
 
 (ert-deftest e-mcp-test-eager-mode-registers-every-tool ()

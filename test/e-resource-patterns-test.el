@@ -87,12 +87,8 @@
          (file-registry (e-resources-registry-create))
          (tmp-harness (e-harness-create
                        :backend (e-backend-fake-create :items nil)
-                       :active-layers
-                       (list (e-layer-create
-                              :id 'tmp-layer
-                              :name "Tmp Layer"
-                              :capabilities
-                              (list (e-session-tmp-capability-create))))))
+                       :intrinsic-capabilities
+                   (list (e-session-tmp-capability-create))))
          (tmp-resources
           (e-harness-resources tmp-harness "pattern-session" "pattern-turn"))
          (buffer-registry (e-resources-registry-create))

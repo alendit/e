@@ -56,9 +56,9 @@
                    (lambda (_prompt collection &rest _args)
                      (car collection))))
           (e-layers-toggle)
-          (should (e-harness-layer-active-p harness 'optional))
+          (should (e-harness-layer-enabled-p harness 'optional))
           (e-layers-toggle)
-          (should-not (e-harness-layer-active-p harness 'optional)))))))
+          (should-not (e-harness-layer-enabled-p harness 'optional)))))))
 
 (ert-deftest e-layers-shell-test-interactive-commands-report-status ()
   "Interactive layer commands report status without failing."
@@ -83,11 +83,11 @@
                    (lambda (format-string &rest args)
                      (push (apply #'format format-string args) messages))))
           (call-interactively #'e-layers-enable)
-          (should (e-harness-layer-active-p harness 'optional))
+          (should (e-harness-layer-enabled-p harness 'optional))
           (call-interactively #'e-layers-disable)
-          (should-not (e-harness-layer-active-p harness 'optional))
+          (should-not (e-harness-layer-enabled-p harness 'optional))
           (call-interactively #'e-layers-toggle)
-          (should (e-harness-layer-active-p harness 'optional))
+          (should (e-harness-layer-enabled-p harness 'optional))
           (should (member "Enabled optional layer" messages))
           (should (member "Disabled optional layer" messages)))))))
 

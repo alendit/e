@@ -27,6 +27,7 @@
 (require 'e-prompts)
 (require 'e-session)
 (require 'e-shells)
+(require 'e-tools)
 
 (defmacro e-defaults-test--with-empty-harness-registry (&rest body)
   "Run BODY with an isolated harness registry."
@@ -294,9 +295,13 @@
   (e-defaults-test--with-configured-chat-factory
     (let ((e-default-chat-layer-ids '(agents-std-context harness-base e os-base emacs-base)))
       (let ((harness (e-default-chat-harness-create)))
-        (should (equal (mapcar #'e-layer-id
-                               (e-harness-active-layers harness))
-                       '(chat-session agents-std-context harness-base e os-base emacs-base)))
+        (should (equal (e-harness-enabled-layer-ids harness)
+                       '(agents-std-context harness-base e os-base emacs-base)))
+        (should (equal (e-harness-effective-layer-ids harness)
+                       '(agents-std-context harness-base e os-base emacs-base)))
+        (should (memq 'chat-session
+                      (mapcar #'e-capability-id
+                              (e-harness-active-capabilities harness))))
         (should (memq 'agents-std-context
                       (mapcar #'e-capability-id
                               (e-harness-active-capabilities harness))))
@@ -324,9 +329,10 @@
   (e-defaults-test--with-configured-chat-factory
     (let ((e-default-chat-layer-ids '(agents-std-context harness-base e)))
       (let ((harness (e-default-debug-harness-create)))
-        (should (equal (mapcar #'e-layer-id
-                               (e-harness-active-layers harness))
-                       '(chat-session agents-std-context harness-base e debug-agent)))
+        (should (equal (e-harness-enabled-layer-ids harness)
+                       '(agents-std-context harness-base e)))
+        (should (equal (e-harness-effective-layer-ids harness)
+                       '(agents-std-context harness-base e)))
         (should (memq 'chat-session
                       (mapcar #'e-capability-id
                               (e-harness-active-capabilities harness))))
@@ -351,11 +357,9 @@
   (e-defaults-test--with-configured-chat-factory
     (let ((harness (e-default-chat-harness-create)))
       (should (memq 'web
-                    (mapcar #'e-layer-id
-                            (e-harness-active-layers harness))))
+                    (e-harness-enabled-layer-ids harness)))
       (should (memq 'text-editing
-                    (mapcar #'e-layer-id
-                            (e-harness-active-layers harness))))
+                    (e-harness-enabled-layer-ids harness)))
       (should (memq 'web
                     (mapcar #'e-capability-id
                             (e-harness-active-capabilities harness))))
@@ -368,9 +372,8 @@
   (e-defaults-test--with-configured-chat-factory
     (let ((e-default-chat-layer-ids '(e os-base web)))
       (let ((harness (e-default-chat-harness-create)))
-        (should (equal (mapcar #'e-layer-id
-                               (e-harness-active-layers harness))
-                       '(chat-session e os-base web)))))))
+        (should (equal (e-harness-enabled-layer-ids harness)
+                       '(e os-base web)))))))
 
 (ert-deftest e-defaults-test-chat-harness-passes-directory-to-configured-layers ()
   "Default chat layer construction uses the requested project directory."
@@ -437,38 +440,30 @@
       (let ((e-default-chat-layer-ids '(e os-base)))
         (e-default-harnesses-register)
         (let ((harness (e-harness-registry-get-or-create :chat-default)))
-          (should (equal (mapcar #'e-layer-id
-                                 (e-harness-active-layers harness))
-                         '(chat-session e os-base)))
+          (should (equal (e-harness-enabled-layer-ids harness)
+                         '(e os-base)))
           (setq e-default-chat-layer-ids '(e web))
           (e-default-harnesses-startup)
           (should (eq (e-harness-registry-get :chat-default) harness))
-          (should (equal (mapcar #'e-layer-id
-                                 (e-harness-active-layers harness))
-                         '(chat-session e web))))))))
+          (should (equal (e-harness-enabled-layer-ids harness)
+                         '(e web))))))))
 
-(ert-deftest e-defaults-test-startup-refreshes-stale-chat-session-layer ()
-  "Startup sync replaces stale internal chat-session layers in place."
+(ert-deftest e-defaults-test-startup-refreshes-stale-chat-session-capability ()
+  "Startup sync replaces stale intrinsic chat-session capabilities in place."
   (e-defaults-test--with-empty-harness-registry
     (let* ((harness
             (e-harness-create
              :backend (e-backend-fake-create :items nil)))
-           (stale-layer
-            (e-layer-create
+           (stale-capability
+            (e-capability-create
              :id 'chat-session
-             :name "Chat Session"
-             :capabilities
-             (list (e-capability-create
-                    :id 'chat-session
-                    :name "Chat Session")))))
-      (e-harness-activate-layer harness stale-layer)
+             :name "Chat Session")))
+      (e-harness-set-intrinsic-capabilities harness (list stale-capability))
       (e-harness-registry-register :chat-default harness)
       (let ((e-default-chat-layer-ids nil))
         (e-default-harnesses-startup))
       (should (eq (e-harness-registry-get :chat-default) harness))
-      (should (equal (mapcar #'e-layer-id
-                             (e-harness-active-layers harness))
-                     '(chat-session)))
+      (should-not (e-harness-enabled-layer-ids harness))
       (let* ((capability
               (cl-find 'chat-session
                        (e-harness-active-capabilities harness)
@@ -515,6 +510,14 @@
                      :backend (e-backend-fake-create :items nil))))
       (setf (e-harness-runtime-capability-config harness) store)
       (setf (e-harness-sessions harness) bad-session-slot)
+      (setf (e-harness-enabled-layer-ids harness)
+            (make-hash-table :test 'equal))
+      (setf (e-harness-intrinsic-capabilities harness)
+            (make-hash-table :test 'equal))
+      (setf (e-harness-subscribers harness)
+            (make-hash-table :test 'equal))
+      (setf (e-harness-active-turns harness) bad-session-slot)
+      (setf (e-harness-prompt-queues harness) bad-session-slot)
       (e-harness-registry-register :chat-default harness)
       (let ((e-default-chat-harness-factory nil)
             (e-default-chat-layer-ids nil))
@@ -524,9 +527,13 @@
       (should (e-session-store-p (e-harness-sessions harness)))
       (should-not (e-session-store-p
                    (e-harness-runtime-capability-config harness)))
-      (should (equal (mapcar #'e-layer-id
-                             (e-harness-active-layers harness))
-                     '(chat-session))))))
+      (should-not (e-harness-enabled-layer-ids harness))
+      (should (listp (e-harness-subscribers harness)))
+      (should (hash-table-p (e-harness-active-turns harness)))
+      (should (hash-table-p (e-harness-prompt-queues harness)))
+      (should (memq 'chat-session
+                    (mapcar #'e-capability-id
+                            (e-harness-active-capabilities harness)))))))
 
 (ert-deftest e-defaults-test-sync-clears-stale-layer-owned-shells ()
   "Default harness layer sync removes old layer-owned shell registrations."
@@ -553,6 +560,106 @@
       (e-default-chat-sync-harness-layers harness '(shell-sync) nil)
       (should-not (e-shell-get-active 'old-topic harness))
       (should (e-shell-get-active 'new-topic harness)))))
+
+(ert-deftest e-defaults-test-sync-directory-does-not-change-session-root-context ()
+  "Default sync can rebuild shells from one root without changing session tools."
+  (let ((e-layer--registry (make-hash-table :test 'eq))
+        (e-shell--registry (make-hash-table :test 'eq))
+        (e-shell--scoped-registry (make-hash-table :test 'eq))
+        (sync-root (make-temp-file "e-default-sync-root-" t))
+        (session-root (make-temp-file "e-default-session-root-" t)))
+    (unwind-protect
+        (let ((harness (e-harness-create
+                        :backend (e-backend-fake-create :items nil))))
+          (e-layer-register
+           (e-layer-spec-create
+            :id 'root-sensitive
+            :name "Root Sensitive"
+            :factory
+            (lambda (&optional directory)
+              (let* ((session-root-p (and directory
+                                          (file-equal-p directory
+                                                        session-root)))
+                     (tool-name (if session-root-p
+                                    "session_root_tool"
+                                  "sync_root_tool"))
+                     (shell-id (if session-root-p
+                                   'session-root-shell
+                                 'sync-root-shell)))
+                (e-layer-create
+                 :id 'root-sensitive
+                 :name "Root Sensitive"
+                 :capabilities
+                 (list
+                  (e-capability-create
+                   :id 'root-sensitive
+                   :instructions "root sensitive instructions"
+                   :context-providers
+                   (list
+                    (e-context-provider-create
+                     :name 'root-sensitive
+                     :cache-placement 'dynamic-context
+                     :build (lambda (&rest _args)
+                              (list
+                               (list :role 'system
+                                     :content
+                                     (concat "model root: "
+                                             (file-name-nondirectory
+                                              (directory-file-name
+                                               directory))))))))
+                   :tools
+                   (list
+                    (lambda (registry)
+                      (e-tools-register
+                       registry
+                       :name tool-name
+                       :description "Root-sensitive test tool."
+                       :handler (lambda (_arguments) tool-name))))))
+                 :shells
+                 (list (e-shell-create
+                        :id shell-id
+                        :name (symbol-name shell-id))))))))
+          (e-default-chat-sync-harness-layers
+           harness '(root-sensitive) session-root)
+          (should (e-shell-get-active 'session-root-shell harness))
+          (let* ((session (e-harness-create-session
+                           harness
+                           :metadata (list :project-root session-root)))
+                 (session-id (plist-get session :id))
+                 (context-before (e-harness-context
+                                  harness session-id "turn-1"))
+                 (fingerprints-before
+                  (e-harness--provider-anchor-fingerprints context-before))
+                 (tool-names-before
+                  (mapcar (lambda (definition)
+                            (plist-get definition :name))
+                          (e-tools-definitions
+                           (e-harness-tools harness session-id "turn-1"))))
+                 (messages-before (plist-get context-before :messages)))
+            (e-default-chat-sync-harness-layers
+             harness '(root-sensitive) sync-root)
+            (should-not (e-shell-get-active 'session-root-shell harness))
+            (should (e-shell-get-active 'sync-root-shell harness))
+            (let* ((context-after (e-harness-context
+                                   harness session-id "turn-2"))
+                   (fingerprints-after
+                    (e-harness--provider-anchor-fingerprints context-after))
+                   (tool-names-after
+                    (mapcar (lambda (definition)
+                              (plist-get definition :name))
+                            (e-tools-definitions
+                             (e-harness-tools harness session-id "turn-2")))))
+              (should (member "session_root_tool" tool-names-before))
+              (should-not (member "sync_root_tool" tool-names-before))
+              (should (equal tool-names-after tool-names-before))
+              (should (equal (plist-get context-after :messages)
+                             messages-before))
+              (should (equal (plist-get fingerprints-after :segments)
+                             (plist-get fingerprints-before :segments)))
+              (should (equal (plist-get fingerprints-after :tools)
+                             (plist-get fingerprints-before :tools)))))))
+      (delete-directory sync-root t)
+      (delete-directory session-root t)))
 
 (ert-deftest e-defaults-test-startup-refreshes-default-backend-from-spec-factory ()
   "Startup sync replaces stale default backend closures through generic specs."

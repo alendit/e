@@ -60,7 +60,8 @@ Auto-compaction triggers when estimated context exceeds WINDOW minus this."
   default-project-root
   runtime-capability-config
   (sessions (e-session-store-create))
-  (active-layers nil)
+  (enabled-layer-ids nil)
+  (intrinsic-capabilities nil)
   (subscribers nil)
   active-turns
   prompt-queues)
@@ -124,15 +125,15 @@ Auto-compaction triggers when estimated context exceeds WINDOW minus this."
 
 (cl-defun e-harness-create
     (&key backend context-strategy default-options capability-config
-          sessions active-layers
+          sessions enabled-layer-ids intrinsic-capabilities
           project-root layer-change-function)
   "Create a core harness.
 BACKEND, CONTEXT-STRATEGY, DEFAULT-OPTIONS, CAPABILITY-CONFIG, SESSIONS,
-ACTIVE-LAYERS, PROJECT-ROOT, and LAYER-CHANGE-FUNCTION configure the
-provider-neutral runtime.
+ENABLED-LAYER-IDS, INTRINSIC-CAPABILITIES, PROJECT-ROOT, and
+LAYER-CHANGE-FUNCTION configure the provider-neutral runtime.
 
 When LAYER-CHANGE-FUNCTION is non-nil, it is called with HARNESS after public
-layer activation or deactivation APIs change the active layer set."
+layer selection APIs change the enabled layer set."
   (let ((harness
          (e-harness--make :backend backend
                           :context-strategy (or context-strategy
@@ -143,13 +144,13 @@ layer activation or deactivation APIs change the active layer set."
                           :runtime-capability-config
                           (copy-tree capability-config)
                           :sessions (or sessions (e-session-store-create))
-                          :active-layers nil
+                          :enabled-layer-ids (copy-sequence enabled-layer-ids)
+                          :intrinsic-capabilities
+                          (copy-sequence intrinsic-capabilities)
                           :active-turns (make-hash-table :test 'equal)
                           :prompt-queues (make-hash-table :test 'equal))))
     (when layer-change-function
       (e-harness-set-layer-change-function harness layer-change-function))
-    (dolist (layer active-layers)
-      (e-harness-activate-layer harness layer))
     harness))
 
 (defun e-harness-capability-config (harness capability-id)
@@ -183,22 +184,71 @@ runtime config, then explicit OVERRIDES."
    :runtime-config (e-harness-capability-config harness capability-id)
    :overrides overrides))
 
-(defun e-harness-active-capabilities (harness)
-  "Return HARNESS capabilities derived from its active layers."
-  (let (capabilities)
-    (dolist (layer (e-harness-active-layers harness))
+(defun e-harness--append-layer-id (ids id)
+  "Return IDS with ID appended once."
+  (if (memq id ids)
+      ids
+    (append ids (list id))))
+
+(defun e-harness--effective-layer-ids-for-root (layer-ids directory)
+  "Return dependency-expanded LAYER-IDS for DIRECTORY in deterministic order."
+  (let (resolved)
+    (cl-labels
+        ((visit (id visiting)
+          (unless (memq id resolved)
+            (when (memq id visiting)
+              (signal 'e-layer-registry-missing
+                      (list (format "cyclic layer dependency at %s" id))))
+            (let ((layer (e-layer-create-registered id directory)))
+              (dolist (required-id (e-layer-requires layer))
+                (visit required-id (cons id visiting)))
+              (setq resolved (e-harness--append-layer-id resolved id))))))
+      (dolist (id layer-ids)
+        (visit id nil)))
+    resolved))
+
+(defun e-harness-effective-layer-ids (harness &optional session-id turn-id)
+  "Return HARNESS enabled layer ids plus transitive requirements.
+SESSION-ID and TURN-ID identify the root used for config-aware layer factories."
+  (e-harness--effective-layer-ids-for-root
+   (e-harness-enabled-layer-ids harness)
+   (e-harness-project-root harness session-id turn-id)))
+
+(defun e-harness-effective-layers (harness &optional session-id turn-id)
+  "Return fresh effective layer objects for HARNESS SESSION-ID and TURN-ID."
+  (let ((directory (e-harness-project-root harness session-id turn-id)))
+    (mapcar (lambda (id)
+              (e-layer-create-registered id directory))
+            (e-harness-effective-layer-ids harness session-id turn-id))))
+
+(defun e-harness-effective-capabilities (harness &optional session-id turn-id)
+  "Return fresh model-facing capabilities for HARNESS SESSION-ID and TURN-ID."
+  (let ((capabilities (copy-sequence
+                       (or (e-harness-intrinsic-capabilities harness) nil))))
+    (dolist (layer (e-harness-effective-layers harness session-id turn-id))
       (setq capabilities
             (append capabilities
                     (copy-sequence (or (e-layer-capabilities layer) nil)))))
     capabilities))
 
+(defun e-harness-active-capabilities (harness)
+  "Return HARNESS capabilities for callers without session context."
+  (e-harness-effective-capabilities harness))
+
+(defun e-harness-set-intrinsic-capabilities (harness capabilities)
+  "Set HARNESS intrinsic CAPABILITIES."
+  (setf (e-harness-intrinsic-capabilities harness)
+        (copy-sequence capabilities))
+  capabilities)
+
 (defun e-harness-tools (harness &optional session-id turn-id)
-  "Return a fresh tool registry view over HARNESS active layers."
+  "Return a fresh tool registry view over HARNESS effective capabilities."
   (let ((registry (e-tools-registry-create)))
     (e-harness--register-resource-operation-tools
      registry
      (e-harness-resources harness session-id turn-id))
-    (dolist (capability (e-harness-active-capabilities harness))
+    (dolist (capability
+             (e-harness-effective-capabilities harness session-id turn-id))
       (e-capabilities-register-tools
        capability
        registry
@@ -208,9 +258,9 @@ runtime config, then explicit OVERRIDES."
     registry))
 
 (defun e-harness-prompts (harness)
-  "Return prompt specs contributed by HARNESS active capabilities."
+  "Return prompt specs contributed by HARNESS effective capabilities."
   (let (prompts)
-    (dolist (capability (e-harness-active-capabilities harness))
+    (dolist (capability (e-harness-effective-capabilities harness))
       (setq prompts
             (append prompts
                     (copy-sequence (or (e-capability-prompts capability)
@@ -241,17 +291,18 @@ order for PROMPTS."
     (nreverse collisions)))
 
 (defun e-harness-hooks (harness)
-  "Return a fresh hook registry view over HARNESS active layers."
+  "Return a fresh hook registry view over HARNESS effective capabilities."
   (let ((registry (e-hooks-registry-create)))
-    (dolist (capability (e-harness-active-capabilities harness))
+    (dolist (capability (e-harness-effective-capabilities harness))
       (e-capabilities-register-hooks capability registry))
     registry))
 
 (defun e-harness-store (harness &optional session-id turn-id)
-  "Return a fresh e:// store view over HARNESS active layers.
+  "Return a fresh e:// store view over HARNESS effective capabilities.
 SESSION-ID and TURN-ID are passed to context-aware resource providers."
   (let ((store (e-store-create)))
-    (dolist (capability (e-harness-active-capabilities harness))
+    (dolist (capability
+             (e-harness-effective-capabilities harness session-id turn-id))
       (e-capabilities-register-resources
        capability
        store
@@ -261,10 +312,11 @@ SESSION-ID and TURN-ID are passed to context-aware resource providers."
     store))
 
 (defun e-harness-resources (harness &optional session-id turn-id)
-  "Return a fresh resource registry view over HARNESS active layers."
+  "Return a fresh resource registry view over HARNESS effective capabilities."
   (let ((registry (e-resources-registry-create))
         (store (e-harness-store harness session-id turn-id)))
-    (dolist (capability (e-harness-active-capabilities harness))
+    (dolist (capability
+             (e-harness-effective-capabilities harness session-id turn-id))
       (e-capabilities-register-resource-methods
        capability
        registry
@@ -355,79 +407,82 @@ When FUNCTION is nil, clear any existing callback."
   function)
 
 (defun e-harness--notify-layers-changed (harness)
-  "Notify HARNESS that its active layer set changed."
+  "Notify HARNESS that its enabled layer set changed."
   (when-let ((function (e-harness-layer-change-function harness)))
     (funcall function harness))
   harness)
 
 (defun e-harness-activate-capability (harness capability)
-  "Activate CAPABILITY in HARNESS as an anonymous capability layer."
-  (e-harness-activate-layer
-   harness
-   (e-layer-create
-    :id (e-capability-id capability)
-    :name (e-capability-name capability)
-    :capabilities (list capability)))
+  "Activate CAPABILITY in HARNESS as an intrinsic capability."
+  (setf (e-harness-intrinsic-capabilities harness)
+        (append (e-harness-intrinsic-capabilities harness)
+                (list capability)))
   capability)
 
-(defvar e-harness--activating-layer-ids nil
-  "Layer ids whose activation is in progress, to break dependency cycles.")
+(defun e-harness-layer-enabled-p (harness layer-id)
+  "Return non-nil when LAYER-ID is explicitly enabled on HARNESS."
+  (memq layer-id (e-harness-enabled-layer-ids harness)))
 
-(defun e-harness--activate-layer-requires (harness layer)
-  "Ensure each layer id in LAYER's `requires' is active in HARNESS.
-Missing required layers are created from the known layer registry (which loads
-their feature) and activated first, so a layer can depend on another layer's
-code and runtime contributions declaratively rather than via explicit
-`require' calls in consumer code."
-  (dolist (required-id (e-layer-requires layer))
-    (unless (or (e-harness-layer-active-p harness required-id)
-                (memq required-id e-harness--activating-layer-ids))
-      (e-harness-activate-layer
-       harness
-       (e-layer-create-registered
-        required-id (e-harness-default-project-root harness))))))
+(defun e-harness-layer-effective-p (harness layer-id &optional session-id turn-id)
+  "Return non-nil when LAYER-ID is effective for HARNESS SESSION-ID TURN-ID."
+  (memq layer-id (e-harness-effective-layer-ids harness session-id turn-id)))
 
-(defun e-harness-activate-layer (harness layer)
-  "Activate LAYER in HARNESS.
-Required layers declared in LAYER's `requires' are activated first."
-  (let ((e-harness--activating-layer-ids
-         (cons (e-layer-id layer) e-harness--activating-layer-ids)))
-    (e-harness--activate-layer-requires harness layer))
-  (setf (e-harness-active-layers harness)
-        (append (e-harness-active-layers harness) (list layer)))
-  (when (e-layer-shells layer)
-    (e-shell-register-layer-shells
-     harness (e-layer-id layer) (e-layer-shells layer)
-     :project-root (e-harness-default-project-root harness)
-     :metadata (list :layer-id (e-layer-id layer))))
+(defun e-harness-set-enabled-layer-ids (harness layer-ids)
+  "Set HARNESS explicit enabled LAYER-IDS."
+  (setf (e-harness-enabled-layer-ids harness)
+        (copy-sequence layer-ids))
   (e-harness--notify-layers-changed harness)
-  layer)
+  (e-harness-enabled-layer-ids harness))
 
-(defun e-harness-active-layer (harness layer-id)
-  "Return HARNESS active layer matching LAYER-ID, or nil."
-  (cl-find layer-id
-           (e-harness-active-layers harness)
-           :key #'e-layer-id
-           :test #'eq))
+(defun e-harness-sync-layer-shells (harness &optional directory)
+  "Rebuild HARNESS presentation shells from enabled layers.
+DIRECTORY is used for config-aware shell layer factories; when nil, use the
+harness default project root."
+  (let ((root (or (e-harness--normalize-project-root directory)
+                  (e-harness-default-project-root harness))))
+    (e-shell-clear-harness-shells harness)
+    (dolist (id (e-harness--effective-layer-ids-for-root
+                 (e-harness-enabled-layer-ids harness)
+                 root))
+      (let ((layer (e-layer-create-registered id root)))
+        (when (e-layer-shells layer)
+          (e-shell-register-layer-shells
+           harness id (e-layer-shells layer)
+           :project-root root
+           :metadata (list :layer-id id))))))
+  harness)
 
-(defun e-harness-layer-active-p (harness layer-id)
-  "Return non-nil when HARNESS has an active layer matching LAYER-ID."
-  (and (e-harness-active-layer harness layer-id) t))
+(defun e-harness-enable-layer-id (harness layer-id &optional directory)
+  "Enable registered LAYER-ID on HARNESS and refresh layer shells."
+  (unless (e-harness-layer-enabled-p harness layer-id)
+    (setf (e-harness-enabled-layer-ids harness)
+          (e-harness--append-layer-id
+           (e-harness-enabled-layer-ids harness)
+           layer-id))
+    (e-harness-sync-layer-shells harness directory)
+    (e-harness--notify-layers-changed harness))
+  (list :status 'enabled
+        :layer-id layer-id
+        :enabled t
+        :active (e-harness-layer-effective-p harness layer-id)))
 
-(defun e-harness-deactivate-layer (harness layer-id)
-  "Deactivate HARNESS layer matching LAYER-ID and return it, or nil."
-  (let ((removed nil)
-        (layers nil))
-    (dolist (layer (e-harness-active-layers harness))
-      (if (and (not removed)
-               (eq (e-layer-id layer) layer-id))
-          (setq removed layer)
-        (push layer layers)))
-    (setf (e-harness-active-layers harness) (nreverse layers))
-    (when removed
-      (e-shell-unregister-layer-shells harness layer-id)
+(defun e-harness-disable-layer-id (harness layer-id &optional directory)
+  "Disable explicit LAYER-ID on HARNESS and refresh layer shells."
+  (let ((was-enabled (e-harness-layer-enabled-p harness layer-id)))
+    (when was-enabled
+      (setf (e-harness-enabled-layer-ids harness)
+            (delq layer-id (copy-sequence
+                            (e-harness-enabled-layer-ids harness))))
+      (e-harness-sync-layer-shells harness directory)
       (e-harness--notify-layers-changed harness))
-    removed))
+    (let ((effective (e-harness-layer-effective-p harness layer-id)))
+      (list :status (cond
+                     ((not was-enabled) 'already-disabled)
+                     (effective 'disabled-but-required)
+                     (t 'disabled))
+            :layer-id layer-id
+            :enabled nil
+            :active effective))))
 
 (cl-defun e-harness-create-session (harness &key id metadata)
   "Create session ID with METADATA in HARNESS."
@@ -858,13 +913,10 @@ The session must currently have a running active turn."
   "Return a deterministic LENGTH-character hash for VALUE."
   (substring (secure-hash 'sha256 (format "%S" value)) 0 length))
 
-(defun e-harness--active-layer-ids (harness)
-  "Return active layer ids for HARNESS."
-  (mapcar #'e-layer-id (e-harness-active-layers harness)))
-
-(defun e-harness--active-layer-id-strings (harness)
-  "Return JSON-stable active layer ids for HARNESS."
-  (mapcar #'symbol-name (e-harness--active-layer-ids harness)))
+(defun e-harness--effective-layer-id-strings (harness &optional session-id turn-id)
+  "Return JSON-stable effective layer ids for HARNESS SESSION-ID TURN-ID."
+  (mapcar #'symbol-name
+          (e-harness-effective-layer-ids harness session-id turn-id)))
 
 (defun e-harness--derived-prompt-cache-key (harness session-id options)
   "Return the default prompt cache key for HARNESS SESSION-ID OPTIONS.
@@ -878,7 +930,7 @@ built without those tools."
            (e-harness-project-root harness session-id)
            16)
           (e-harness--prompt-cache-hash
-           (e-harness--active-layer-ids harness)
+           (e-harness-effective-layer-ids harness session-id)
            16)
           (e-harness--prompt-cache-hash
            (mapcar (lambda (tool) (plist-get tool :name))
@@ -1071,7 +1123,7 @@ TURN-ID is passed to active capability context providers when present."
    (lambda ()
      (let ((capability-context
             (e-capabilities-context
-             (e-harness-active-capabilities harness)
+             (e-harness-effective-capabilities harness session-id turn-id)
              :harness harness
              :session-id session-id
              :turn-id turn-id)))
@@ -1085,7 +1137,8 @@ TURN-ID is passed to active capability context providers when present."
                :prefix-segments (plist-get capability-context :segments))))
          (plist-put context
                     :provider-anchor-active-layer-ids
-                    (e-harness--active-layer-id-strings harness))
+                    (e-harness--effective-layer-id-strings
+                     harness session-id turn-id))
          (plist-put context
                     :provider-anchor-compaction-boundary
                     (e-harness--provider-anchor-compaction-boundary

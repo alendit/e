@@ -22,12 +22,8 @@
   (should (require 'e-session-tmp-resources nil t))
   (let* ((harness (e-harness-create
                    :backend (e-backend-fake-create :items nil)
-                   :active-layers
-                   (list (e-layer-create
-                          :id 'tmp-layer
-                          :name "Tmp Layer"
-                          :capabilities
-                          (list (e-session-tmp-capability-create))))))
+                   :intrinsic-capabilities
+                   (list (e-session-tmp-capability-create))))
          (uri (e-session-tmp-write
                harness
                "session-1"
@@ -48,12 +44,8 @@ blocked on the interactive coding-system picker."
   (should (require 'e-session-tmp-resources nil t))
   (let* ((harness (e-harness-create
                    :backend (e-backend-fake-create :items nil)
-                   :active-layers
-                   (list (e-layer-create
-                          :id 'tmp-layer
-                          :name "Tmp Layer"
-                          :capabilities
-                          (list (e-session-tmp-capability-create))))))
+                   :intrinsic-capabilities
+                   (list (e-session-tmp-capability-create))))
          ;; Eight-bit content the prefer-utf-8 default coding cannot encode;
          ;; an unbound `coding-system-for-write' would route it through the
          ;; selector.
@@ -70,12 +62,8 @@ blocked on the interactive coding-system picker."
   (should (require 'e-session-tmp-resources nil t))
   (let* ((harness (e-harness-create
                    :backend (e-backend-fake-create :items nil)
-                   :active-layers
-                   (list (e-layer-create
-                          :id 'tmp-layer
-                          :name "Tmp Layer"
-                          :capabilities
-                          (list (e-session-tmp-capability-create))))))
+                   :intrinsic-capabilities
+                   (list (e-session-tmp-capability-create))))
          (resources (e-harness-resources harness "session-1" "turn-1")))
     (should (equal (e-resources-write resources
                                       "tmp://notes/new.txt"
@@ -89,12 +77,8 @@ blocked on the interactive coding-system picker."
   (should (require 'e-session-tmp-resources nil t))
   (let* ((harness (e-harness-create
                    :backend (e-backend-fake-create :items nil)
-                   :active-layers
-                   (list (e-layer-create
-                          :id 'tmp-layer
-                          :name "Tmp Layer"
-                          :capabilities
-                          (list (e-session-tmp-capability-create))))))
+                   :intrinsic-capabilities
+                   (list (e-session-tmp-capability-create))))
          (resources (e-harness-resources harness "session-1" "turn-1")))
     (e-resources-write resources "tmp://notes/edit.txt" "alpha beta alpha")
     (should (equal (e-resources-edit
@@ -120,12 +104,8 @@ blocked on the interactive coding-system picker."
   (should (require 'e-session-tmp-resources nil t))
   (let* ((harness (e-harness-create
                    :backend (e-backend-fake-create :items nil)
-                   :active-layers
-                   (list (e-layer-create
-                          :id 'tmp-layer
-                          :name "Tmp Layer"
-                          :capabilities
-                          (list (e-session-tmp-capability-create))))))
+                   :intrinsic-capabilities
+                   (list (e-session-tmp-capability-create))))
          (resources (e-harness-resources harness "session-1" "turn-1")))
     (e-resources-write resources "tmp://notes/one.txt" "Alpha needle\n")
     (e-resources-write resources "tmp://notes/two.log" "other\n")
@@ -192,12 +172,8 @@ blocked on the interactive coding-system picker."
   (should (require 'e-session-tmp-resources nil t))
   (let* ((harness (e-harness-create
                    :backend (e-backend-fake-create :items nil)
-                   :active-layers
-                   (list (e-layer-create
-                          :id 'tmp-layer
-                          :name "Tmp Layer"
-                          :capabilities
-                          (list (e-session-tmp-capability-create))))))
+                   :intrinsic-capabilities
+                   (list (e-session-tmp-capability-create))))
          (resources (e-harness-resources harness "session-1" "turn-1")))
     (should-error (e-resources-glob resources "tmp://../escape" "*.txt" 5)
                   :type 'e-session-tmp-resources-invalid-path)
@@ -213,12 +189,8 @@ blocked on the interactive coding-system picker."
   (should (require 'e-session-tmp-resources nil t))
   (let* ((harness (e-harness-create
                    :backend (e-backend-fake-create :items nil)
-                   :active-layers
-                   (list (e-layer-create
-                          :id 'tmp-layer
-                          :name "Tmp Layer"
-                          :capabilities
-                          (list (e-session-tmp-capability-create))))))
+                   :intrinsic-capabilities
+                   (list (e-session-tmp-capability-create))))
          (resources (e-harness-resources harness "session-1" "turn-1"))
          (original-executable-find (symbol-function 'executable-find)))
     (cl-letf (((symbol-function 'executable-find)
@@ -247,12 +219,8 @@ blocked on the interactive coding-system picker."
   (should (require 'e-session-tmp-resources nil t))
   (let* ((harness (e-harness-create
                    :backend (e-backend-fake-create :items nil)
-                   :active-layers
-                   (list (e-layer-create
-                          :id 'tmp-layer
-                          :name "Tmp Layer"
-                          :capabilities
-                          (list (e-session-tmp-capability-create))))))
+                   :intrinsic-capabilities
+                   (list (e-session-tmp-capability-create))))
          (resources (e-harness-resources harness "session-1" "turn-1")))
     (should-error (e-session-tmp-write harness "session-1" "../escape.txt" "x")
                   :type 'e-session-tmp-resources-invalid-path)
@@ -268,12 +236,8 @@ blocked on the interactive coding-system picker."
   (should (require 'e-session-tmp-resources nil t))
   (let* ((harness (e-harness-create
                    :backend (e-backend-fake-create :items nil)
-                   :active-layers
-                   (list (e-layer-create
-                          :id 'tmp-layer
-                          :name "Tmp Layer"
-                          :capabilities
-                          (list (e-session-tmp-capability-create))))))
+                   :intrinsic-capabilities
+                   (list (e-session-tmp-capability-create))))
          (resources (e-harness-resources harness "session-1" "turn-1")))
     (e-resources-write resources "tmp://notes/range.txt" "one\ntwo\nthree\n")
     (should (equal (e-resources-read

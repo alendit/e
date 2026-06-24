@@ -52,19 +52,15 @@
                     '((:role system :content "provider context")))))
          (harness (e-harness-create
                    :backend (e-backend-fake-create :items nil)
-                   :active-layers
-                   (list
-                    (e-layer-create
-                     :id 'context-layer
-                     :name "Context Layer"
-                     :capabilities
-                     (list
-                      (e-capability-create
-                       :id 'context-capability
-                       :instructions "capability instructions"
-                       :context-providers (list context-provider))))
-                    (e-harness-base-layer-create)
-                    (e-dev-layer-create)))))
+                   :intrinsic-capabilities
+                   (append
+                    (list
+                     (e-capability-create
+                      :id 'context-capability
+                      :instructions "capability instructions"
+                      :context-providers (list context-provider)))
+                    (e-layer-capabilities (e-harness-base-layer-create))
+                    (e-layer-capabilities (e-dev-layer-create))))))
     (e-harness-create-session harness :id "session-1")
     (e-session-append-message
      (e-harness-sessions harness)
@@ -99,16 +95,13 @@
   "export-context can include transcript messages when explicitly requested."
   (let* ((harness (e-harness-create
                    :backend (e-backend-fake-create :items nil)
-                   :active-layers
-                   (list (e-layer-create
-                          :id 'instructions-layer
-                          :name "Instructions Layer"
-                          :capabilities
-                          (list (e-capability-create
-                                 :id 'instructions-capability
-                                 :instructions "system guidance")))
-                         (e-harness-base-layer-create)
-                         (e-dev-layer-create)))))
+                   :intrinsic-capabilities
+                   (append
+                    (list (e-capability-create
+                           :id 'instructions-capability
+                           :instructions "system guidance"))
+                    (e-layer-capabilities (e-harness-base-layer-create))
+                    (e-layer-capabilities (e-dev-layer-create))))))
     (e-harness-create-session harness :id "session-1")
     (e-session-append-message
      (e-harness-sessions harness)

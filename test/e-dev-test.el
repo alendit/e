@@ -114,12 +114,14 @@
                  '(agents-std-context harness-base e os-base emacs-base web
                                       text-editing org-canvas project-local)))
   (should (eq e-debug-display-strategy 'popup))
-  (should (equal (mapcar #'e-layer-id
-                         (e-harness-active-layers
-                          (e-harness-registry-get-or-create :chat-default)))
-                 '(chat-session agents-std-context harness-base e os-base
-                                emacs-base web text-editing org-canvas
-                                project-local))))
+  (let ((harness (e-harness-registry-get-or-create :chat-default)))
+    (should (equal (e-harness-enabled-layer-ids harness)
+                   '(agents-std-context harness-base e os-base emacs-base web
+                                        text-editing org-canvas project-local)))
+    (should (equal (e-harness-effective-layer-ids harness)
+                   '(agents-std-context harness-base e os-base emacs-base web
+                                        text-editing org-canvas
+                                        project-local)))))
 
 (provide 'e-dev-test)
 

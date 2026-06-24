@@ -53,7 +53,8 @@
   (let* ((harness (e-harness-create
                    :backend (e-backend-fake-create :items nil)))
          (layer (e-harness-base-layer-create)))
-    (e-harness-activate-layer harness layer)
+    (e-harness-set-intrinsic-capabilities
+     harness (e-layer-capabilities layer))
     (e-harness-create-session harness :id "session-1")
     (let* ((context (e-harness-context harness "session-1" "turn-1"))
            (messages (plist-get context :messages))
@@ -82,7 +83,8 @@
   (let* ((harness (e-harness-create
                    :backend (e-backend-fake-create :items nil)))
          (layer (e-harness-base-layer-create)))
-    (e-harness-activate-layer harness layer)
+    (e-harness-set-intrinsic-capabilities
+     harness (e-layer-capabilities layer))
     (should (e-harness-base-test--tmp-read-method-p
              (e-harness-resources harness "session-1" "turn-1")))
     (should (equal (e-harness-base-test--tmp-operation-ids
@@ -93,7 +95,7 @@
                             (e-harness-hooks harness)
                             :post-tool-call))
                    '("50-tool-output-truncation")))
-    (e-harness-deactivate-layer harness 'harness-base)
+    (e-harness-set-intrinsic-capabilities harness nil)
     (should-not (e-harness-base-test--tmp-read-method-p
                  (e-harness-resources harness "session-1" "turn-1")))
     (should-not (e-hooks-for-point
