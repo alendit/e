@@ -534,13 +534,6 @@ duplicate ids (nearer directory wins)."
                     layers)))))))
     (nreverse layers)))
 
-(defun e-project-local--aggregate-capabilities (layers legacy-capabilities)
-  "Return aggregate project-local capabilities from LAYERS and LEGACY-CAPABILITIES."
-  (append
-   (list (e-project-local--guidance-capability))
-   (apply #'append (mapcar #'e-layer-capabilities layers))
-   legacy-capabilities))
-
 (defun e-project-local--aggregate-requires (layers)
   "Return de-duplicated layer ids required by discovered project LAYERS.
 A project layer declares dependencies via its `requires' slot; the aggregate
@@ -568,15 +561,133 @@ shells are used."
             (push shell shells)))))
     (nreverse shells)))
 
-;;;; Layer factory
+(defun e-project-local--discovered-capabilities (directory)
+  "Return project-local capabilities discovered for DIRECTORY without guidance."
+  (let* ((root (e-skills-normalize-directory directory))
+         (layers (e-project-local--discover-layers root))
+         (capabilities (e-project-local--discover-capabilities root)))
+    (append
+     (apply #'append (mapcar #'e-layer-capabilities layers))
+     capabilities)))
 
-(defun e-project-local--guidance-capability ()
-  "Return a small capability advertising that project-local capabilities exist."
-  (e-capability-create
-   :id 'project-local
-   :name "Project Local"
-   :instruction-priority 215
-   :instructions e-project-local-instructions))
+(defun e-project-local--context-directory (fallback context)
+  "Return session project root from CONTEXT, falling back to FALLBACK."
+  (let* ((harness (plist-get context :harness))
+         (session-id (plist-get context :session-id))
+         (turn-id (plist-get context :turn-id)))
+    (or (and (fboundp 'e-harness-project-root)
+             (ignore-errors
+               (e-harness-project-root harness session-id turn-id)))
+        fallback
+        default-directory)))
+
+(defun e-project-local--context-capabilities (fallback context)
+  "Return project-local capabilities for CONTEXT or FALLBACK."
+  (e-project-local--discovered-capabilities
+   (e-project-local--context-directory fallback context)))
+
+(defun e-project-local--register-context-tools
+    (fallback registry &rest context)
+  "Register project-local tools for CONTEXT, using FALLBACK when needed."
+  (dolist (capability (e-project-local--context-capabilities fallback context))
+    (apply #'e-capabilities-register-tools capability registry context)))
+
+(defun e-project-local--register-context-resources
+    (fallback store _capability &rest context)
+  "Register project-local resources for CONTEXT, using FALLBACK when needed."
+  (dolist (capability (e-project-local--context-capabilities fallback context))
+    (apply #'e-capabilities-register-resources capability store context)))
+
+(defun e-project-local--register-context-resource-methods
+    (fallback registry &rest context)
+  "Register project-local resource methods for CONTEXT, using FALLBACK when needed."
+  (dolist (capability (e-project-local--context-capabilities fallback context))
+    (apply #'e-capabilities-register-resource-methods
+           capability
+           registry
+           context)))
+
+(defun e-project-local--context-messages (fallback &rest context)
+  "Return project-local context messages for CONTEXT, using FALLBACK when needed."
+  (plist-get
+   (apply #'e-capabilities-context
+          (e-project-local--context-capabilities fallback context)
+          context)
+   :messages))
+
+(defun e-project-local--run-context-hooks
+    (fallback point value context)
+  "Run project-local hooks for POINT in CONTEXT, using FALLBACK when needed."
+  (let ((registry (e-hooks-registry-create)))
+    (dolist (capability (e-project-local--context-capabilities fallback context))
+      (e-capabilities-register-hooks capability registry))
+    (e-hooks-run-reduce registry point value context)))
+
+(defun e-project-local--dynamic-capability (directory)
+  "Return session-root-aware project-local capability with DIRECTORY fallback."
+  (let ((fallback (and directory (e-skills-normalize-directory directory))))
+    (e-capability-create
+     :id 'project-local
+     :name "Project Local"
+     :instruction-priority 215
+     :instructions e-project-local-instructions
+     :tools
+     (list (lambda (registry &rest context)
+             (apply #'e-project-local--register-context-tools
+                    fallback
+                    registry
+                    context)))
+     :resource-methods
+     (list
+      (e-capability-resource-method-provider-create
+       :handler
+       (lambda (registry &rest context)
+         (apply #'e-project-local--register-context-resource-methods
+                fallback
+                registry
+                context))))
+     :resources
+     (list (lambda (store capability &rest context)
+             (apply #'e-project-local--register-context-resources
+                    fallback
+                    store
+                    capability
+                    context)))
+     :context-providers
+     (list
+      (e-context-provider-create
+       :name 'project-local
+       :priority 215
+       :cache-placement 'stable-context
+       :build (lambda (&rest context)
+                (apply #'e-project-local--context-messages
+                       fallback
+                       context))))
+     :hooks
+     (list
+      (e-hook-create
+       :id "70-project-local-turn-finished"
+       :point :turn-finished
+       :description "Run session-root project-local turn-finished hooks."
+       :handler (lambda (value context)
+                  (e-project-local--run-context-hooks
+                   fallback :turn-finished value context)))
+      (e-hook-create
+       :id "70-project-local-pre-tool-call"
+       :point :pre-tool-call
+       :description "Run session-root project-local pre-tool-call hooks."
+       :handler (lambda (value context)
+                  (e-project-local--run-context-hooks
+                   fallback :pre-tool-call value context)))
+      (e-hook-create
+       :id "70-project-local-post-tool-call"
+       :point :post-tool-call
+       :description "Run session-root project-local post-tool-call hooks."
+       :handler (lambda (value context)
+                  (e-project-local--run-context-hooks
+                   fallback :post-tool-call value context)))))))
+
+;;;; Layer factory
 
 (defun e-project-local-capabilities (&optional directory)
   "Return capabilities discovered for DIRECTORY or `default-directory'."
@@ -586,18 +697,16 @@ shells are used."
 (defun e-project-local-layer-create (&optional directory)
   "Create the project-local aggregate layer rooted at DIRECTORY.
 
-Discovers `.e/layers/' and compatibility `.e/capabilities/' from the project
-root, loads allowlisted project loaders, and bundles the resulting
-capabilities and shells into a single `project-local' layer.  Returns a layer
-with only the guidance capability when no project extensions are discovered."
+Discovers `.e/layers/' from the project root for shell manifests and
+dependencies.  Model-facing project-local tools, resources, context providers,
+and hooks are resolved dynamically from the active session project root, with
+DIRECTORY used only as the fallback root outside a session."
   (let* ((root (e-skills-normalize-directory directory))
-         (layers (e-project-local--discover-layers root))
-         (capabilities (e-project-local--discover-capabilities root)))
+         (layers (e-project-local--discover-layers root)))
     (e-layer-create
      :id 'project-local
      :name "Project Local"
-     :capabilities (e-project-local--aggregate-capabilities
-                    layers capabilities)
+     :capabilities (list (e-project-local--dynamic-capability root))
      :shells (e-project-local--aggregate-shells layers)
      :requires (e-project-local--aggregate-requires layers))))
 

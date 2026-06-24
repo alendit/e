@@ -82,7 +82,14 @@ SOURCE overrides the default capability source."
     (list (e-capability-create
            :id '%s
            :name \"Topic\"
-           :instructions (format \"Topic rooted at %%s\" directory)))
+           :instructions (format \"Topic rooted at %%s\" directory)
+           :tools
+           (list (lambda (registry)
+                   (e-tools-register
+                    registry
+                    :name \"topic_layer_tool\"
+                    :description \"Layer tool.\"
+                    :handler (lambda (_args) \"ok\"))))))
     :shells
     (list (e-shell-create
            :id '%s
@@ -193,6 +200,63 @@ SOURCE overrides the default layer source."
                                :test #'string=)))))
       (delete-directory project t))))
 
+(ert-deftest e-project-local-test-tools-follow-session-root-not-layer-root ()
+  "Project-local tools are resolved from the session root, not shared layer state."
+  (let* ((first (make-temp-file "e-project-local-first-" t))
+         (second (make-temp-file "e-project-local-second-" t))
+         (e-project-local-allowed-roots (list first second)))
+    (unwind-protect
+        (progn
+          (e-project-local-test--make-capability
+           first 'first
+           "(e-project-capability-register
+             :id 'first
+             :factory
+             (lambda (_directory)
+               (e-capability-create
+                :id 'first
+                :name \"First\"
+                :tools
+                (list (lambda (registry)
+                        (e-tools-register
+                         registry
+                         :name \"first_tool\"
+                         :description \"First project tool.\"
+                         :handler (lambda (_args) \"first\")))))))")
+          (e-project-local-test--make-capability
+           second 'second
+           "(e-project-capability-register
+             :id 'second
+             :factory
+             (lambda (_directory)
+               (e-capability-create
+                :id 'second
+                :name \"Second\"
+                :tools
+                (list (lambda (registry)
+                        (e-tools-register
+                         registry
+                         :name \"second_tool\"
+                         :description \"Second project tool.\"
+                         :handler (lambda (_args) \"second\")))))))")
+          (let* ((harness (e-harness-create))
+                 (layer (e-project-local-layer-create first))
+                 (session (e-harness-create-session
+                           harness
+                           :metadata (list :project-root second)))
+                 (session-id (plist-get session :id)))
+            (e-harness-activate-layer harness layer)
+            (should (member "first_tool"
+                            (e-tools-registry-order
+                             (e-harness-tools harness))))
+            (let ((session-tools
+                   (e-tools-registry-order
+                    (e-harness-tools harness session-id))))
+              (should (member "second_tool" session-tools))
+              (should-not (member "first_tool" session-tools)))))
+      (delete-directory first t)
+      (delete-directory second t))))
+
 (ert-deftest e-project-local-test-folds-in-capability-skills ()
   "Capability-scoped skills register as read-only e:// resources."
   (let* ((project (make-temp-file "e-project-local-skills-" t))
@@ -242,17 +306,19 @@ SOURCE overrides the default layer source."
       (delete-directory project t))))
 
 (ert-deftest e-project-local-test-project-layer-contributes-capability-and-shell ()
-  "Trusted `.e/layers/' packages are flattened into the project-local layer."
+  "Trusted `.e/layers/' packages contribute shells and dynamic model tools."
   (let* ((project (make-temp-file "e-project-local-layer-" t))
          (e-project-local-allowed-roots (list project)))
     (unwind-protect
         (progn
           (e-project-local-test--make-layer project 'topic)
-          (let ((layer (e-project-local-layer-create project)))
+          (let* ((harness (e-harness-create))
+                 (layer (e-project-local-layer-create project)))
+            (e-harness-activate-layer harness layer)
             (should (eq (e-layer-id layer) 'project-local))
-            (should (cl-find 'topic
-                             (e-layer-capabilities layer)
-                             :key #'e-capability-id))
+            (should (member "topic_layer_tool"
+                            (e-tools-registry-order
+                             (e-harness-tools harness))))
             (should (cl-find 'topic
                              (e-layer-shells layer)
                              :key #'e-shell-id))))
@@ -424,14 +490,25 @@ SOURCE overrides the default layer source."
           (make-directory inner t)
           (e-project-local-test--make-layer outer 'topic)
           (e-project-local-test--make-layer inner 'topic)
-          (let* ((layer (e-project-local-layer-create inner))
-                 (topic (cl-find 'topic
-                                 (e-layer-capabilities layer)
-                                 :key #'e-capability-id)))
-            (should topic)
-            (should (string-match-p
-                     (regexp-quote inner)
-                     (e-capability-instructions topic)))))
+          (let* ((harness (e-harness-create))
+                 (layer (e-project-local-layer-create inner))
+                 (session (e-harness-create-session
+                           harness
+                           :metadata (list :project-root inner)))
+                 (session-id (plist-get session :id)))
+            (e-harness-activate-layer harness layer)
+            (let ((messages (prin1-to-string
+                             (plist-get
+                              (e-harness-context harness session-id)
+                              :messages))))
+              (should (string-match-p
+                       (regexp-quote
+                        (expand-file-name ".e/layers/topic" inner))
+                       messages))
+              (should-not (string-match-p
+                           (regexp-quote
+                            (expand-file-name ".e/layers/topic" outer))
+                           messages)))))
       (delete-directory outer t))))
 
 
