@@ -40,10 +40,11 @@ loads the pure core, loads defaults, loads presentation shells, and then runs
 startup hooks. Defaults register known layer specs and a lazy `:chat-default`
 harness factory. Shells register manifests against the generic shell registry.
 
-The harness is the stable application service. It creates sessions, tracks active
-turns, activates layers, derives active capabilities, builds provider-neutral
-context, dispatches a backend turn through the loop, executes tools, persists
-durable records, and publishes events for presentation shells.
+The harness is the stable application service. It creates sessions, tracks
+active turns, stores explicit enabled layer ids and intrinsic capabilities,
+derives fresh effective capabilities for each session root, builds
+provider-neutral context, dispatches a backend turn through the loop, executes
+tools, persists durable records, and publishes events for presentation shells.
 
 ```mermaid
 flowchart LR
@@ -70,7 +71,8 @@ The major runtime parts are:
   tools, compaction, stores, and startup hooks.
 - Capability system: behavior contracts that contribute instructions, context
   providers, tools, resources, hooks, actions, and configuration options.
-- Layer system: stateless presets over capability sets and defaults.
+- Layer system: immutable registered presets over capability sets, defaults, and
+  presentation shell manifests.
 - Defaults: lazy harness factories and built-in layer specs.
 - Backend adapters: OpenAI-like provider profiles, request mapping, auth, SSE
   parsing, timeout, and cancellation mechanics.
@@ -249,23 +251,27 @@ layer is actually created.
 
 `lisp/defaults/e-default-harnesses.el` registers the lazy `:chat-default` harness
 factory. The default chat harness uses the Anthropic Messages provider path,
-persistent sessions, an internal `chat-session` capability, and default layer
+persistent sessions, intrinsic `chat-session` capabilities, and default layer
 ids from `e-default-chat-layer-ids`. Runtime layer enable/disable operations
-update that custom option through the default harness sync path.
+mutate only the harness `enabled-layer-ids` list; effective layers and
+capabilities are rebuilt from registered layer specs using the session project
+root. The default harness sync path records explicit ids back to
+`e-default-chat-layer-ids` and rebuilds layer-owned presentation shells.
 
 #### Default Chat Layer Set
 
 `e-default-chat-layer-ids` is the source-of-truth preset attached to the default
-chat harness. It activates these registered layers in order:
+chat harness. It enables these registered layers in order:
 
 ```
 agents-std-context  harness-base  e  os-base  emacs-base
 web  text-editing  org-canvas  project-local
 ```
 
-The default chat harness additionally activates one non-registered internal
-layer, `chat-session` (the `chat-session` capability), which is always recreated
-by the factory and is excluded from the recorded `e-default-chat-layer-ids`.
+The default chat harness additionally installs non-registered internal
+`chat-session` capabilities in its intrinsic capability set. They are always
+recreated by the factory/sync path and are excluded from the recorded
+`e-default-chat-layer-ids`.
 
 #### Registered Layers And Their Capabilities
 
@@ -281,7 +287,7 @@ by the factory and is excluded from the recorded `e-default-chat-layer-ids`.
 | `text-editing` | Text Editing | yes | `annotations`, plus `annotation-tools` when the annotation backend is available |
 | `org-canvas` | Org Canvas | yes | `org-canvas` |
 | `project-local` | Project Local | yes | aggregate: discovered project `.e/layers/` capabilities plus a project guidance capability (varies per repository) |
-| `chat-session` | Chat Session | internal only | `chat-session` |
+| `chat-session` | Chat Session | intrinsic only | `chat-session` |
 
 The `e` layer is where runtime self-management lives: layer selection, context
 inspection, runtime context, and the `compact_session` tool. `harness-base`
@@ -322,7 +328,10 @@ is the only one of the three that contributes a lifecycle hook, and
 
 The layer-selection capability and shell provide operator commands for enabling,
 disabling, and toggling registered layers without making the chat shell own
-layer state.
+layer state. Selection list entries report both `:enabled` (explicitly present
+in `enabled-layer-ids`) and `:active` (present in the dependency-expanded
+effective layer ids). Disabling an enabled layer that remains required removes
+only the explicit id; it stays active through dependency closure.
 
 ### Context And Compaction
 
@@ -455,9 +464,12 @@ handle; an open tool call receives a durable cancelled tool result; the turn
 emits `turn-cancelled`.
 
 Layer selection flow stays outside presentation semantics. A shell command calls
-the `layer-selection` capability action, which creates or removes a registered
-layer on the target harness. The default harness sync path records changes back
-to `e-default-chat-layer-ids` for the default chat harness.
+the `layer-selection` capability action, which updates explicit enabled layer
+ids on the target harness. The default harness sync path records changes back to
+`e-default-chat-layer-ids` for the default chat harness and separately rebuilds
+layer-owned shell registrations. Model-facing tools, resources, prompts, hooks,
+stores, and context use fresh effective capabilities derived from the session
+project root, not from shell sync state.
 
 Live context attachment flow is session metadata, not transcript history. Canvas
 or file/buffer attachments are stored on the session, and the `chat-session`
@@ -486,7 +498,8 @@ The main public surfaces are:
 - Resource/tool API: `e-operation-*`, `e-resources-*`, `e-store-*`,
   `e-tools-*`, and `e-session-tmp-*`.
 - Layer API: layer specs, layer creation from registered specs, default layer
-  registration, and layer-selection actions.
+  registration, id-based harness enable/disable/effective queries, and
+  layer-selection actions.
 - Backend API: `e-backend-*`, `e-openai-backend-create`,
   `e-openai-create-harness`, and Codex compatibility wrappers.
 - Shell API: `e-shell-*`, `e-chat-shell`, `e-chat-starter-shell`,

@@ -149,9 +149,15 @@ Change `e-layer` toward:
 
 Keep the existing fields temporarily as a migration bridge so current layers do not break inside this slice.
 
+Current-state update: the bridge described below has been superseded. The
+harness no longer stores mutable layer instances as runtime source-of-truth.
+It stores explicit `enabled-layer-ids`, stores non-layer intrinsic capabilities
+separately, and derives fresh effective layers/capabilities from registered
+layer specs for each session/project root.
+
 - [ ] **Step 3: Add active capability state to the harness**
 
-Extend the harness struct to track active capabilities separately from active layers. `e-harness-activate-layer` should:
+Historical migration note only. The removed bridge design was:
 
 - append the layer to active layers
 - resolve capability objects from `(e-layer-capabilities layer)`
@@ -392,7 +398,11 @@ Remove or stop using direct layer-owned `:instructions`, `:tools`, and `:context
 
 - [ ] **Step 3: Update harness activation**
 
-`e-harness-activate-layer` should activate capability contributions only. If direct capability activation is useful, expose `e-harness-activate-capability`, accepting a harness and a capability and registering that capability's tools/context/action contributions.
+Current-state update: do not reintroduce `e-harness-activate-layer`.
+Registered layer state is id-based through `e-harness-enable-layer-id`,
+`e-harness-disable-layer-id`, `e-harness-layer-enabled-p`, and
+`e-harness-effective-layer-ids`. Direct capability activation is reserved for
+intrinsic/non-layer harness capabilities.
 
 - [ ] **Step 4: Verify**
 
