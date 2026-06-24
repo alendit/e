@@ -97,6 +97,24 @@
                           (e-tools-request-cancel request))))
     (funcall cancel)))
 
+(defun e-tools--unexpected-on-event-keyword-error-p (err)
+  "Return non-nil when ERR is a legacy start-function keyword rejection."
+  (and (eq (car err) 'error)
+       (string-match-p
+        "\\`Keyword argument :on-event not one of "
+        (error-message-string err))))
+
+(defun e-tools--apply-start-with-optional-event (start arguments on-event)
+  "Apply START to ARGUMENTS, passing ON-EVENT when accepted."
+  (if (not on-event)
+      (apply start arguments)
+    (condition-case err
+        (apply start (append arguments (list :on-event on-event)))
+      (error
+       (if (e-tools--unexpected-on-event-keyword-error-p err)
+           (apply start arguments)
+         (signal (car err) (cdr err)))))))
+
 (cl-defun e-tools-register
     (registry &key name description parameters handler start metadata)
   "Register tool NAME in REGISTRY.
@@ -427,11 +445,12 @@ Signal `e-tools-nested-tool-error' when the structured result is an error."
       (signal 'e-tools-nested-tool-error (list result)))))
 
 (cl-defun e-tools-start
-    (registry call &key on-done on-error on-request-start context)
+    (registry call &key on-done on-error on-request-start on-event context)
   "Start CALL against REGISTRY and report a structured result asynchronously.
 ON-DONE receives the structured result.  ON-ERROR receives unexpected Emacs
 condition lists.  ON-REQUEST-START receives an optional `e-tools-request'.
-CONTEXT is dynamically visible to tool start functions through
+ON-EVENT receives tool progress events as TYPE and PAYLOAD.  CONTEXT is
+dynamically visible to tool start functions through
 `e-tools-current-context'."
   (let* ((name (plist-get call :name))
          (nested-state (or (plist-get context :nested-tool-state)
@@ -493,16 +512,18 @@ CONTEXT is dynamically visible to tool start functions through
               (let ((e-tools--current-context tool-context))
                 (if (functionp start)
                     (let ((reported-request nil))
-                      (let ((request
-                             (funcall
-                              start
-                              :arguments (plist-get call :arguments)
-                              :on-done #'finish-ok
-                              :on-error #'finish-error
-                              :on-request-start
-                              (lambda (request)
-                                (setq reported-request request)
-                                (publish-request request)))))
+                      (let* ((start-arguments
+                              (list
+                               :arguments (plist-get call :arguments)
+                               :on-done #'finish-ok
+                               :on-error #'finish-error
+                               :on-request-start
+                               (lambda (request)
+                                 (setq reported-request request)
+                                 (publish-request request))))
+                             (request
+                              (e-tools--apply-start-with-optional-event
+                               start start-arguments on-event)))
                         (when (and request (not (eq request reported-request)))
                           (publish-request request))
                         request))

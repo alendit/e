@@ -1066,6 +1066,44 @@ picker."
             (should (equal (plist-get result :content) "done"))))
       (delete-directory directory t))))
 
+(ert-deftest e-base-tools-test-bash-publishes-streaming-progress ()
+  "The native bash tool publishes progress while output is still streaming."
+  (let* ((directory (make-temp-file "e-base-bash-progress-" t))
+         (registry (e-tools-registry-create))
+         result
+         events)
+    (unwind-protect
+        (progn
+          (e-base-tools-register-bash registry directory)
+          (let ((request
+                 (e-tools-start
+                  registry
+                  '(:id "call-1"
+                    :name "bash"
+                    :arguments (:command "printf 'one\\ntwo\\nthree\\n'"))
+                  :on-event (lambda (type payload)
+                              (push (list :type type :payload payload) events))
+                  :on-done (lambda (value) (setq result value)))))
+            (should (e-tools-request-p request))
+            (should (e-base-tools-test--wait-until
+                     (lambda () result)
+                     1.0))
+            (let ((progress (cl-find 'tool-progress events
+                                     :key (lambda (event)
+                                            (plist-get event :type)))))
+              (should progress)
+              (should (equal (plist-get (plist-get progress :payload)
+                                        :tool-call-id)
+                             "call-1"))
+              (should (> (plist-get (plist-get progress :payload)
+                                    :bytes)
+                         0))
+              (should (string-match-p
+                       "one"
+                       (plist-get (plist-get progress :payload)
+                                  :preview))))))
+      (delete-directory directory t))))
+
 (ert-deftest e-base-tools-test-bash-timeout-kills-process-asynchronously ()
   "The native bash timeout path kills the process and reports a tool error."
   (let* ((directory (make-temp-file "e-base-bash-timeout-" t))

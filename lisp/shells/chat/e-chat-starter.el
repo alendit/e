@@ -209,7 +209,7 @@ so a child-frame adapter can be added without changing controller logic."
       ('turn-finished
        (list (e-chat-starter--activity-event event 'turn-finished)))
       ((or 'provider-request-started 'provider-request-finished
-           'reasoning-delta 'tool-started 'tool-finished
+           'reasoning-delta 'tool-started 'tool-progress 'tool-finished
            'turn-failed 'turn-cancelled)
        (list (e-chat-starter--activity-event event (plist-get event :type))))
       (_ nil))))
@@ -410,6 +410,9 @@ the turn settles or the popup buffer dies."
        (e-chat-starter--record-activity-event state event))
       ('tool-started
        (setf (e-chat-starter-state-progress state) "using tool")
+       (e-chat-starter--record-activity-event state event))
+      ('tool-progress
+       (setf (e-chat-starter-state-progress state) "tool output")
        (e-chat-starter--record-activity-event state event))
       ('tool-finished
        (setf (e-chat-starter-state-progress state) "tool finished")

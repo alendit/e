@@ -2829,6 +2829,25 @@ When APPEND is non-nil, merge CONTENT into the previous reasoning child."
                  (e-chat--tool-result-display-text
                   (plist-get payload :result))))))
 
+(defun e-chat--record-round-tool-progress (record payload)
+  "Attach streaming tool progress PAYLOAD to a semantic tool item in RECORD."
+  (let* ((tool-id (or (plist-get payload :tool-call-id)
+                      (plist-get payload :id)
+                      (plist-get payload :call-id)))
+         (item (or (e-chat--find-round-tool-item record tool-id)
+                   (e-chat--latest-incomplete-tool-item record))))
+    (when item
+      (plist-put item :progress payload))))
+
+(defun e-chat--round-tool-progress-text (round)
+  "Return compact output progress text for ROUND, or nil."
+  (when-let* ((item (cl-find-if
+                     (lambda (candidate)
+                       (plist-get candidate :progress))
+                     (reverse (e-chat--round-tool-items round))))
+              (bytes (plist-get (plist-get item :progress) :bytes)))
+    (format "%s bytes output" bytes)))
+
 (defun e-chat--round-tool-count (round)
   "Return number of tool calls recorded for ROUND."
   (length (e-chat--round-tool-items round)))
@@ -2902,7 +2921,13 @@ ACTIVE-AT is used for active thinking duration."
   (let* ((thought (e-chat--round-thought-text round))
          (tool-count (e-chat--round-tool-count round))
          (tool-text (and (> tool-count 0)
-                         (e-chat--activity-tool-count-text tool-count)))
+                         (let ((count-text
+                                (e-chat--activity-tool-count-text tool-count))
+                               (progress-text
+                                (e-chat--round-tool-progress-text round)))
+                           (if progress-text
+                               (format "%s, %s" count-text progress-text)
+                             count-text))))
          (lines (and thought
                      (list (e-chat--activity-round-row-text
                             thought tool-text))))
@@ -3228,6 +3253,10 @@ STATUS defaults to `done'."
    (e-chat--tool-result-display-text (plist-get payload :result))
    nil
    source))
+
+(defun e-chat--record-tool-progress (record payload)
+  "Record streaming tool progress PAYLOAD in RECORD."
+  (e-chat--record-round-tool-progress record payload))
 
 (defun e-chat--intermittent-entry-exists-p (record title content &optional source)
   "Return non-nil when RECORD already has TITLE and CONTENT.
@@ -3757,6 +3786,10 @@ SOURCE identifies where the entry came from for duplicate suppression."
         record
         (plist-get activity-event :payload)
         'activity))
+      ('tool-progress
+       (e-chat--record-tool-progress
+        record
+        (plist-get activity-event :payload)))
       ('turn-failed
        (e-chat--settle-open-thinking
         turn-id
@@ -5118,6 +5151,12 @@ When REFRESH-MODE-LINE is non-nil, also refresh context-aware mode-line text."
         record
         (plist-get event :payload)
         'activity)
+       (e-chat--request-activity-redraw (plist-get event :turn-id))))
+    ('tool-progress
+     (e-chat--set-status "tool output")
+     (when-let ((record (e-chat--existing-turn-record
+                         (plist-get event :turn-id))))
+       (e-chat--record-tool-progress record (plist-get event :payload))
        (e-chat--request-activity-redraw (plist-get event :turn-id))))
     ('backend-empty-output
      (e-chat--cancel-pending-activity-redraw (plist-get event :turn-id))

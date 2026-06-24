@@ -2676,6 +2676,50 @@ the orphaned region and appeared to vanish."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-tool-progress-renders-on-running-tool-row ()
+  "Streaming tool progress updates the running activity row."
+  (let ((buffer (e-chat-test--buffer nil "chat-tool-progress-row")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat--render-event
+           (e-events-make :type 'turn-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 0))
+          (e-chat--render-event
+           (e-events-make :type 'provider-request-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 0
+                          :payload '(:status started)))
+          (e-chat--render-event
+           (e-events-make :type 'provider-request-finished
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 1
+                          :payload '(:status done)))
+          (e-chat--render-event
+           (e-events-make :type 'tool-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 1
+                          :payload '(:id "call-1" :name "bash")))
+          (e-chat--render-event
+           (e-events-make :type 'tool-progress
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 2
+                          :payload '(:tool-call-id "call-1"
+                                     :bytes 128
+                                     :lines 4
+                                     :preview "installing\n")))
+          (e-chat-test--flush-pending-activity-redraw)
+          (let ((content (buffer-string)))
+            (should (string-match-p
+                     "1 tool call, 128 bytes output" content))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-activity-rounds-have-subtle-separators ()
   "Multiple intermittent rounds are separated inside the activity block."
   (let ((buffer (e-chat-test--buffer nil "chat-activity-round-separators")))

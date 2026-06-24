@@ -241,6 +241,12 @@ Provider I/O, tool I/O, and turn settlement are callback-driven."
                                         (lambda (request)
                                           (setq active-tool request)
                                           (publish-request request))
+                                        :on-event
+                                        (lambda (type payload)
+                                          (e-loop--emit
+                                           :on-event on-event
+                                           :type type
+                                           :payload payload))
                                         :on-done
                                         (lambda (result)
                                           (finish-tool tool-call result))
@@ -252,6 +258,12 @@ Provider I/O, tool I/O, and turn settlement are callback-driven."
                                       (lambda (request)
                                         (setq active-tool request)
                                         (publish-request request))
+                                      :on-event
+                                      (lambda (type payload)
+                                        (e-loop--emit
+                                         :on-event on-event
+                                         :type type
+                                         :payload payload))
                                       :on-done
                                       (lambda (result)
                                         (finish-tool tool-call result))
@@ -262,11 +274,11 @@ Provider I/O, tool I/O, and turn settlement are callback-driven."
                          (fail err)))))
                   (enqueue-tool-call
                    (item)
-                    (setq tool-called t)
-                    (setq tool-queue
-                          (append tool-queue
-                                  (list (list :tool-call item))))
-                    (start-next-tool)))
+                   (setq tool-called t)
+                   (setq tool-queue
+                         (append tool-queue
+                                 (list (list :tool-call item))))
+                   (start-next-tool)))
               (setq
                active-request
                (condition-case err

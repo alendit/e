@@ -191,6 +191,32 @@
                      :content "preview"
                      :metadata (:truncated t))))))
 
+(ert-deftest e-tools-test-start-on-event-does-not-break-legacy-start-tools ()
+  "Progress callbacks do not break existing async tools."
+  (let ((registry (e-tools-registry-create))
+        result)
+    (e-tools-register registry
+                      :name "legacy"
+                      :description "Return without progress support."
+                      :start
+                      (cl-function
+                       (lambda (&key arguments on-done on-error
+                                      on-request-start)
+                         (ignore on-error on-request-start)
+                         (funcall on-done
+                                  (plist-get arguments :text)))))
+    (e-tools-start
+     registry
+     '(:id "call-1" :name "legacy" :arguments (:text "done"))
+     :on-event #'ignore
+     :on-done (lambda (value) (setq result value)))
+    (should (equal result
+                   '(:tool-call-id "call-1"
+                     :name "legacy"
+                     :status ok
+                     :content "done"
+                     :metadata nil)))))
+
 (ert-deftest e-tools-test-execute-waits-for-async-only-tool ()
   "The sync execute wrapper waits for async-only tools."
   (let ((registry (e-tools-registry-create)))

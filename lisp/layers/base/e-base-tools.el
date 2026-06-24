@@ -1303,6 +1303,17 @@ OK-STATUSES defaults to only zero."
             (string-trim-right (format "%s\n\n%s" content suffix))
           content)))))
 
+(defun e-base-tools--bash-progress-payload (collector call)
+  "Return compact streaming progress for COLLECTOR and tool CALL."
+  (let ((metadata (e-base-tools--bash-collector-metadata collector)))
+    (append
+     (list :tool-call-id (plist-get call :id)
+           :name (plist-get call :name)
+           :bytes (e-base-tools--bash-collector-total-bytes collector)
+           :lines (e-base-tools--bash-collector-original-lines collector)
+           :preview (e-base-tools--bash-collector-preview collector))
+     metadata)))
+
 (defun e-base-tools--bash-finish-value
     (collector call status &optional suffix)
   "Return final bash result value from COLLECTOR for CALL and STATUS."
@@ -1314,10 +1325,11 @@ OK-STATUSES defaults to only zero."
       content)))
 
 (cl-defun e-base-tools--run-shell-command-start
-    (command directory timeout &key on-done on-error on-request-start)
+    (command directory timeout &key on-done on-error on-request-start on-event)
   "Start shell COMMAND in DIRECTORY with optional TIMEOUT seconds.
 ON-DONE receives captured output.  ON-ERROR receives an Emacs condition list.
-ON-REQUEST-START receives the cancellable process request."
+ON-REQUEST-START receives the cancellable process request.  ON-EVENT receives
+streaming progress events."
   (let* ((default-directory directory)
          (command-prefix (e-base-tools--shell-command))
          (shell-command (format "{\n%s\n} 2>&1" command))
@@ -1367,7 +1379,12 @@ ON-REQUEST-START receives the cancellable process request."
              :noquery t
              :filter
              (lambda (_proc chunk)
-               (e-base-tools--bash-collector-append collector chunk))
+               (e-base-tools--bash-collector-append collector chunk)
+               (when on-event
+                 (funcall on-event
+                          'tool-progress
+                          (e-base-tools--bash-progress-payload
+                           collector call))))
              :sentinel
              (lambda (proc _event)
                (when (and (not settled)
@@ -1472,7 +1489,7 @@ ON-REQUEST-START receives the cancellable process request."
    :start
    (cl-function
     (lambda (&key arguments on-done on-error on-request-start
-                  &allow-other-keys)
+                  on-event &allow-other-keys)
       (let ((command (e-base-tools--argument-string arguments :command))
             (timeout (e-base-tools--optional-positive-number arguments :timeout)))
         (e-base-tools--run-shell-command-start
@@ -1480,6 +1497,7 @@ ON-REQUEST-START receives the cancellable process request."
          directory
          timeout
          :on-request-start on-request-start
+         :on-event on-event
          :on-done on-done
          :on-error on-error))))))
 

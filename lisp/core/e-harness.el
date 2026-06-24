@@ -1032,7 +1032,7 @@ compaction) where exposing tools risks a tool-call instead of a reply."
                    (context)))
        :start
        (cl-function
-        (lambda (tool-call &key on-request-start on-done on-error)
+        (lambda (tool-call &key on-request-start on-done on-error on-event)
           (e-harness--profile-call
            'harness.tool-start
            (list :session-id session-id
@@ -1044,6 +1044,7 @@ compaction) where exposing tools risks a tool-call instead of a reply."
               tool-call
               :context (context)
               :on-request-start on-request-start
+              :on-event on-event
               :on-done
               (lambda (result)
                 (condition-case err
