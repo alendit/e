@@ -103,3 +103,35 @@ updates =:latest-token-usage-event= when appending or replaying activity events
 and clears it when messages/activity are cleared.  =e-context-budget= reads that
 scalar through =e-session-latest-token-usage-event= instead of copying and
 scanning the activity list.
+
+* Follow-up: orphaned progress timers after buffer ownership loss
+
+After commit =28c37a5=, Activity Monitor still showed intermittent Emacs CPU.
+A native sample taken while Emacs was quiet no longer showed the previous
+=e_context_budget_status= websocket completion path.  A short Emacs native
+profiler window instead attributed CPU primarily to =redisplay_internal=:
+
+#+begin_example
+269  92% redisplay_internal
+ 20   6% timer-event-handler
+  3   1% server-process-filter
+#+end_example
+
+Memory allocation in that same quiet profiler window was mostly
+=server-process-filter= and =redisplay_internal=, which was expected from the
+profiling control requests and report redisplay.  The repo-specific
+=e-dev-profile= trace wrote no events during that quiet window because no
+instrumented =e= spans occurred.
+
+A scalar live timer probe then showed two repeating timer objects whose function
+called =e-chat--advance-progress-indicator= every 0.6 seconds, while the only
+live =e-chat-mode= buffer reported =:progress-turn nil= and =:timer-live nil=.
+That made the timers orphaned: they were no longer reachable through any live
+chat buffer's buffer-local =e-chat--progress-timer=.
+
+The timer closure created by =e-chat--ensure-progress-timer= checked only
+=buffer-live-p=.  If the captured buffer was dead, or if the buffer had lost
+ownership of that exact timer object, the callback did no useful work but also
+did not cancel itself.  The fix makes each progress timer cancel itself when its
+buffer is dead or when the buffer-local =e-chat--progress-timer= no longer points
+to the same timer object.

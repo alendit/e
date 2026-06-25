@@ -3657,14 +3657,19 @@ When TURN-ID is non-nil, cancel only a redraw for that turn."
         (setq e-chat--progress-frame 0))
       (setq e-chat--progress-next-tick-time
             (+ (float-time) e-chat-progress-interval))
-      (let ((buffer (current-buffer)))
-        (setq e-chat--progress-timer
+      (let ((buffer (current-buffer))
+            timer)
+        (setq timer
               (run-at-time e-chat-progress-interval
                            e-chat-progress-interval
                            (lambda ()
-                             (when (buffer-live-p buffer)
+                             (if (not (buffer-live-p buffer))
+                                 (cancel-timer timer)
                                (with-current-buffer buffer
-                                 (e-chat--advance-progress-indicator))))))))))
+                                 (if (eq e-chat--progress-timer timer)
+                                     (e-chat--advance-progress-indicator)
+                                   (cancel-timer timer)))))))
+        (setq e-chat--progress-timer timer)))))
 
 (defun e-chat--delete-progress-indicator ()
   "Delete the active assistant progress indicator."

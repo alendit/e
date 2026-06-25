@@ -2648,6 +2648,22 @@ the orphaned region and appeared to vanish."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-orphaned-progress-timer-cancels-itself ()
+  "A progress timer not owned by its buffer-local state cancels itself."
+  (let ((buffer (e-chat-test--buffer nil "chat-orphan-progress-timer"))
+        timer)
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat--start-progress-indicator "turn-1")
+          (setq timer e-chat--progress-timer)
+          (setq e-chat--progress-timer nil)
+          (funcall (timer--function timer))
+          (should-not (memq timer timer-list)))
+      (when (timerp timer)
+        (cancel-timer timer))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-tool-count-renders-on-thinking-row ()
   "A round's tool count renders on the same line as its thought row."
   (let ((buffer (e-chat-test--buffer nil "chat-tool-count-thinking-row")))
