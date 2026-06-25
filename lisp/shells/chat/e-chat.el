@@ -6903,46 +6903,56 @@ plain submit steers an active turn and prefix submit queues a follow-up."
          (intent (if explicit-prompt
                      'submit
                    (e-chat--submit-intent prefix))))
-    (condition-case err
-        (progn
-          (pcase intent
-            ('submit
-             (e-chat-session-submit
-              e-chat-harness e-chat-session-id prompt
-              :delay e-chat-submit-backend-delay
-              :references references))
-            ('steer
-             (e-chat-session-steer
-              e-chat-harness e-chat-session-id prompt
-              :metadata (e-chat--submit-metadata 'steering references)))
-            ('queue
-             (e-chat-session-queue
-              e-chat-harness e-chat-session-id prompt
-              :references references
-              :metadata (e-chat--submit-metadata 'queued references))))
-          (e-chat--delete-composer)
-          (e-chat--set-status
-           (pcase intent
-             ('steer "steered")
-             ('queue "queued")
-             (_ "queued")))
-          (e-chat--insert-composer)
-          (redisplay t))
-      (e-backend-steering-unsupported
-       (e-chat--set-status "steering unsupported")
-       (message "Steering unsupported: %s" (error-message-string err)))
-      (user-error
-       (if (memq intent '(steer queue))
+    (e-chat--profile-call
+     'chat.submit
+     (list :session-id e-chat-session-id
+           :buffer-name (buffer-name)
+           :metadata (list :intent (symbol-name intent)
+                           :prompt-chars (length prompt)
+                           :reference-count (length references)
+                           :explicit-prompt explicit-prompt
+                           :prefix-submit (and prefix t)))
+     (lambda ()
+       (condition-case err
            (progn
-             (e-chat--set-status "input rejected")
-             (message "%s" (error-message-string err)))
-         (signal (car err) (cdr err))))
-      (error
-       (if (memq intent '(steer queue))
-           (progn
-             (e-chat--set-status "input failed")
-             (message "%s" (error-message-string err)))
-         (signal (car err) (cdr err)))))))
+             (pcase intent
+               ('submit
+                (e-chat-session-submit
+                 e-chat-harness e-chat-session-id prompt
+                 :delay e-chat-submit-backend-delay
+                 :references references))
+               ('steer
+                (e-chat-session-steer
+                 e-chat-harness e-chat-session-id prompt
+                 :metadata (e-chat--submit-metadata 'steering references)))
+               ('queue
+                (e-chat-session-queue
+                 e-chat-harness e-chat-session-id prompt
+                 :references references
+                 :metadata (e-chat--submit-metadata 'queued references))))
+             (e-chat--delete-composer)
+             (e-chat--set-status
+              (pcase intent
+                ('steer "steered")
+                ('queue "queued")
+                (_ "queued")))
+             (e-chat--insert-composer)
+             (redisplay t))
+         (e-backend-steering-unsupported
+          (e-chat--set-status "steering unsupported")
+          (message "Steering unsupported: %s" (error-message-string err)))
+         (user-error
+          (if (memq intent '(steer queue))
+              (progn
+                (e-chat--set-status "input rejected")
+                (message "%s" (error-message-string err)))
+            (signal (car err) (cdr err))))
+         (error
+          (if (memq intent '(steer queue))
+              (progn
+                (e-chat--set-status "input failed")
+                (message "%s" (error-message-string err)))
+            (signal (car err) (cdr err)))))))))
 
 ;;;###autoload
 (defun e-chat-abort ()

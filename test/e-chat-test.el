@@ -6312,6 +6312,47 @@ The context-window denominator comes from the live provider lookup
         (kill-buffer buffer))
       (delete-directory profile-directory t))))
 
+(ert-deftest e-chat-test-profile-records-submit-action ()
+  "Enabled dev profiling records the chat submit command."
+  (let* ((profile-directory (make-temp-file "e-chat-profile-" t))
+         (e-dev-profile-directory profile-directory)
+         (e-dev-profile--enabled nil)
+         (e-dev-profile--current-file nil)
+         (e-dev-profile--latest-file nil)
+         (store (e-session-store-create))
+         (backend (e-backend-fake-create
+                   :items '((:type assistant-message :content "answer")
+                            (:type done :reason stop))))
+         (harness (e-harness-create :backend backend :sessions store))
+         (e-chat-submit-backend-delay 0)
+         (buffer (e-chat-open :harness harness
+                              :session-id "chat-submit-profile")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (goto-char (point-max))
+          (insert "profile submit")
+          (e-dev-profile-start)
+          (e-chat-submit)
+          (e-dev-profile-stop)
+          (let* ((report (e-dev-profile-report-data e-dev-profile--latest-file))
+                 (aggregates (plist-get report :aggregates))
+                 (records
+                  (e-dev-profile--read-json-lines e-dev-profile--latest-file))
+                 (submit-record
+                  (seq-find (lambda (record)
+                              (equal (alist-get 'event record) "chat.submit"))
+                            records))
+                 (metadata (alist-get 'metadata submit-record)))
+            (should (alist-get "chat.submit" aggregates nil nil #'equal))
+            (should submit-record)
+            (should (equal (alist-get 'session-id submit-record)
+                           "chat-submit-profile"))
+            (should (equal (alist-get 'intent metadata) "submit"))
+            (should (= (alist-get 'prompt-chars metadata) 14))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (delete-directory profile-directory t))))
+
 (ert-deftest e-chat-test-profile-records-render-ui-spans ()
   "Enabled dev profiling records chat render UI spans."
   (let* ((profile-directory (make-temp-file "e-chat-profile-" t))
