@@ -1572,12 +1572,27 @@ When a turn produced multiple assistant messages, return the last one."
                      'openai)))
            (_ t)))))
 
+(defun e-harness--latest-provider-anchor-candidates (candidates)
+  "Return the latest provider anchor candidate per provider from CANDIDATES."
+  (let ((latest-by-provider (make-hash-table :test #'equal))
+        result)
+    (dolist (candidate candidates)
+      (puthash (plist-get candidate :provider-id)
+               candidate
+               latest-by-provider))
+    (dolist (candidate candidates (nreverse result))
+      (when (eq candidate
+                (gethash (plist-get candidate :provider-id)
+                         latest-by-provider))
+        (push candidate result)))))
+
 (defun e-harness--persist-provider-anchor-candidates
     (harness session-id turn-id context candidates)
   "Persist provider anchor CANDIDATES for completed TURN-ID."
   (when-let ((assistant-message
               (e-harness--turn-assistant-message harness session-id turn-id)))
-    (dolist (candidate candidates)
+    (dolist (candidate
+             (e-harness--latest-provider-anchor-candidates candidates))
       (when (e-harness--provider-anchor-candidate-persistable-p
              context candidate)
         (e-session-append-provider-anchor

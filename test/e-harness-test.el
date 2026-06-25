@@ -902,6 +902,33 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
           (should (stringp (plist-get fingerprint :id)))
           (should (stringp (plist-get fingerprint :fingerprint))))))))
 
+(ert-deftest e-harness-test-provider-anchor-persistence-keeps-latest-candidate ()
+  "Provider anchor persistence keeps only the final candidate for a provider."
+  (e-harness-test--with-empty-layer-registry
+    (let* ((backend (e-backend-fake-create
+                     :items '((:type assistant-message :content "answer")
+                              (:type provider-anchor-candidate
+                               :provider-id openai
+                               :metadata (:response-id "resp-old"))
+                              (:type provider-anchor-candidate
+                               :provider-id openai
+                               :metadata (:response-id "resp-new"))
+                              (:type done :reason stop))))
+           (harness (e-harness-create
+                     :backend backend
+                     :default-options '(:model "gpt-test"
+                                        :provider-continuation t
+                                        :provider-anchor-provider-id openai))))
+      (e-harness-create-session harness :id "session-1")
+      (e-harness-prompt harness "session-1" "question")
+      (let ((anchors (e-session-provider-anchors
+                      (e-harness-sessions harness)
+                      "session-1")))
+        (should (= (length anchors) 1))
+        (should (equal (plist-get (plist-get (car anchors) :metadata)
+                                  :response-id)
+                       "resp-new"))))))
+
 (ert-deftest e-harness-test-openai-anchor-candidates-require-continuation ()
   "OpenAI response ids are not persisted when the request was not store-enabled."
   (let* ((backend (e-backend-fake-create
