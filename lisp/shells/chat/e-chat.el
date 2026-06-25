@@ -3623,25 +3623,6 @@ When TURN-ID is non-nil, cancel only a redraw for that turn."
   "Return non-nil when RECORD has an active provider activity round."
   (and record (e-chat--active-round-record record)))
 
-(defun e-chat--durable-progress-turn-p (turn-id)
-  "Return non-nil when TURN-ID is known to the attached durable session."
-  (and turn-id
-       e-chat-harness
-       e-chat-session-id
-       (or
-        (cl-some
-         (lambda (message)
-           (equal (plist-get message :turn-id) turn-id))
-         (ignore-errors
-           (e-harness-messages e-chat-harness e-chat-session-id)))
-        (cl-some
-         (lambda (event)
-           (equal (plist-get event :turn-id) turn-id))
-         (ignore-errors
-           (e-harness-session-activity-events
-            e-chat-harness
-            e-chat-session-id))))))
-
 (defun e-chat--stale-progress-turn-p (turn-id)
   "Return non-nil when TURN-ID no longer matches harness running state."
   (when (and turn-id
@@ -3653,8 +3634,7 @@ When TURN-ID is non-nil, cancel only a redraw for that turn."
        ((e-harness--active-turn-running-p entry)
         (not (equal turn-id (e-harness--active-turn-id entry))))
        (entry t)
-       ((e-chat--durable-progress-turn-p turn-id) t)
-       (t nil)))))
+       (t t)))))
 
 (defun e-chat--cancel-progress-timer ()
   "Cancel the active assistant progress timer."
@@ -5322,7 +5302,8 @@ When REFRESH-MODE-LINE is non-nil, also refresh context-aware mode-line text."
       (when (and record
                  (not (plist-get record :final-rendered))
                  (not (plist-get record :failure-rendered))
-                 (not (e-chat--terminal-activity-p events)))
+                 (not (e-chat--terminal-activity-p events))
+                 (not (e-chat--stale-progress-turn-p turn-id)))
         (e-chat--render-turn-activity-events turn-id activity-events)))))
 
 (defun e-chat--render-session (&optional messages)

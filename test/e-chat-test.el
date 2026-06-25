@@ -79,6 +79,12 @@
    (e-chat-session-capability-create))
   harness)
 
+(defun e-chat-test--mark-active-turn (turn-id &optional status)
+  "Mark TURN-ID as the current active turn in the test chat buffer."
+  (puthash e-chat-session-id
+           (list :id turn-id :status (or status 'running))
+           (e-harness-active-turns e-chat-harness)))
+
 (defun e-chat-test--register-chat-instance
     (id name harness &optional default)
   "Register chat instance ID named NAME backed by HARNESS."
@@ -2339,6 +2345,7 @@ inherited base, so the blocks stay distinguishable in any theme."
                           :session-id e-chat-session-id
                           :turn-id "turn-1"
                           :created-at 10))
+          (e-chat-test--mark-active-turn "turn-1")
           (let ((content (buffer-string)))
             (should (string-match-p
                      (concat (regexp-quote e-chat--assistant-glyph)
@@ -2526,6 +2533,7 @@ the orphaned region and appeared to vanish."
                             :session-id e-chat-session-id
                             :turn-id "turn-1"
                             :created-at 0))
+            (e-chat-test--mark-active-turn "turn-1")
             (e-chat--render-event
              (e-events-make :type 'provider-request-started
                             :session-id e-chat-session-id
@@ -2552,6 +2560,7 @@ the orphaned region and appeared to vanish."
                             :session-id e-chat-session-id
                             :turn-id "turn-1"
                             :created-at 0))
+            (e-chat-test--mark-active-turn "turn-1")
             (e-chat--render-event
              (e-events-make :type 'provider-request-started
                             :session-id e-chat-session-id
@@ -2583,6 +2592,7 @@ the orphaned region and appeared to vanish."
                             :session-id e-chat-session-id
                             :turn-id "turn-1"
                             :created-at 0))
+            (e-chat-test--mark-active-turn "turn-1")
             (e-chat--render-event
              (e-events-make :type 'provider-request-started
                             :session-id e-chat-session-id
@@ -3261,6 +3271,9 @@ the orphaned region and appeared to vanish."
           (e-session-append-activity-event
            store "chat-provider-active-replay" "turn-1" 'provider-request-started
            '(:status started))
+          (puthash "chat-provider-active-replay"
+                   '(:id "turn-1" :status running)
+                   (e-harness-active-turns harness))
           (setq buffer (e-chat-open :harness harness
                                     :session-id "chat-provider-active-replay"))
           (with-current-buffer buffer
@@ -3276,6 +3289,36 @@ the orphaned region and appeared to vanish."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-replayed-stale-provider-activity-stays-off-tail ()
+  "Replayed non-terminal provider activity is hidden when the turn is not active."
+  (let* ((store (e-session-store-create))
+         (backend (e-backend-fake-create :items nil))
+         (harness (e-harness-create :backend backend :sessions store))
+         (buffer nil))
+    (unwind-protect
+        (progn
+          (e-harness-create-session harness :id "chat-provider-stale-replay")
+          (e-session-append-message
+           store "chat-provider-stale-replay"
+           '(:role user :content "inspect" :turn-id "turn-1"))
+          (e-session-append-activity-event
+           store "chat-provider-stale-replay" "turn-1" 'turn-started nil)
+          (e-session-append-activity-event
+           store "chat-provider-stale-replay" "turn-1" 'provider-request-started
+           '(:status started))
+          (setq buffer (e-chat-open :harness harness
+                                    :session-id "chat-provider-stale-replay"))
+          (with-current-buffer buffer
+            (e-chat-test--flush-pending-activity-redraw)
+            (let ((content (buffer-string)))
+              (should (string-match-p "inspect" content))
+              (should-not (string-match-p "Thinking for" content)))
+            (should-not e-chat--progress-turn-id)
+            (should-not (timerp e-chat--progress-timer))
+            (should (e-chat--composer-active-p))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-late-progress-tick-shows-emacs-blocked-status ()
   "A delayed progress timer tick only reports a local Emacs stall."
   (let ((buffer (e-chat-test--buffer nil "chat-progress-stall"))
@@ -3287,6 +3330,7 @@ the orphaned region and appeared to vanish."
                           :session-id e-chat-session-id
                           :turn-id "turn-1"
                           :created-at 10))
+          (e-chat-test--mark-active-turn "turn-1")
           (setq e-chat--progress-next-tick-time
                 (- (float-time) 7.0))
           (e-chat--advance-progress-indicator)
@@ -3307,6 +3351,7 @@ the orphaned region and appeared to vanish."
                           :session-id e-chat-session-id
                           :turn-id "turn-1"
                           :created-at 10))
+          (e-chat-test--mark-active-turn "turn-1")
           (should (e-chat--composer-active-p))
           (goto-char (point-max))
           (insert "follow-up draft")
@@ -3330,6 +3375,7 @@ the orphaned region and appeared to vanish."
                             :session-id e-chat-session-id
                             :turn-id "turn-2"
                             :created-at 20))
+            (e-chat-test--mark-active-turn "turn-2")
             (goto-char (point-max))
             (insert "follow-up draft")
             (goto-char (point-min))
@@ -3359,6 +3405,7 @@ the orphaned region and appeared to vanish."
                           :session-id e-chat-session-id
                           :turn-id "turn-1"
                           :created-at 10))
+          (e-chat-test--mark-active-turn "turn-1")
           (should (e-chat--composer-active-p))
           (goto-char (point-max))
           (let ((start (point)))
@@ -3391,6 +3438,7 @@ the orphaned region and appeared to vanish."
                           :session-id e-chat-session-id
                           :turn-id "turn-1"
                           :created-at 10))
+          (e-chat-test--mark-active-turn "turn-1")
           (goto-char (point-max))
           (insert "Review ")
           (let ((reference
@@ -3625,6 +3673,7 @@ the orphaned region and appeared to vanish."
                           :session-id e-chat-session-id
                           :turn-id "turn-1"
                           :created-at 10))
+          (e-chat-test--mark-active-turn "turn-1")
           (cl-letf (((symbol-function 'e-chat--render-progress-indicator)
                      (lambda (&rest _args)
                        (setq redraws (1+ redraws)))))

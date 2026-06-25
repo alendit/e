@@ -92,6 +92,25 @@
     (should (equal (e-context-status-text harness "status-usage" :prefix "e-chat")
                    "e-chat gpt-5.5/high 78% (203k/258k tok)"))))
 
+(ert-deftest e-context-status-test-provider-usage-does-not-scan-activity-events ()
+  "Fresh provider usage is read from session-derived state."
+  (let* ((store (e-session-store-create))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :sessions store
+                   :default-options
+                   '(:model "gpt-5.5" :reasoning-effort "high"))))
+    (e-session-create store :id "status-usage-fast")
+    (e-session-append-activity-event
+     store "status-usage-fast" "turn-1" 'token-usage
+     '(:input-tokens 202598 :total-tokens 203017))
+    (cl-letf (((symbol-function 'e-harness-session-activity-events)
+               (lambda (&rest _args)
+                 (error "activity scan should be skipped"))))
+      (should (equal (e-context-status-text
+                      harness "status-usage-fast" :prefix "e-chat")
+                     "e-chat gpt-5.5/high 78% (203k/258k tok)")))))
+
 (ert-deftest e-context-status-test-text-ignores-usage-before-compaction ()
   "Provider usage before the latest valid compaction is treated as stale."
   (let* ((store (e-session-store-create))

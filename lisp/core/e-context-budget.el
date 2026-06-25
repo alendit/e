@@ -17,9 +17,9 @@
 (require 'e-session)
 
 (declare-function e-harness-context "e-harness")
-(declare-function e-harness-session-activity-events "e-harness")
 (declare-function e-harness-sessions "e-harness")
 (declare-function e-harness-turn-options "e-harness")
+(declare-function e-session-latest-token-usage-event "e-session")
 
 (defgroup e-context-budget nil
   "Core context budget accounting for e sessions."
@@ -82,12 +82,10 @@ BYTES-PER-TOKEN defaults to `e-context-budget-estimate-bytes-per-token'."
 (defun e-context-budget--latest-token-usage-event (harness session-id)
   "Return latest durable provider token usage event for SESSION-ID."
   (when (and harness session-id)
-    (let (usage-event)
-      (dolist (event (ignore-errors
-                       (e-harness-session-activity-events harness session-id))
-                     usage-event)
-        (when (eq (plist-get event :event-type) 'token-usage)
-          (setq usage-event event))))))
+    (ignore-errors
+      (e-session-latest-token-usage-event
+       (e-harness-sessions harness)
+       session-id))))
 
 (defun e-context-budget--latest-valid-compaction (harness session-id)
   "Return latest valid compaction for SESSION-ID."

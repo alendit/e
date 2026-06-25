@@ -699,6 +699,12 @@ and RECORD supplies persisted identity fields during replay."
              (e-session--known-event-type (plist-get event :event-type)))
   event)
 
+(defun e-session--update-activity-derived-fields (session event)
+  "Update derived SESSION fields for appended activity EVENT."
+  (when (eq (plist-get event :event-type) 'token-usage)
+    (plist-put session :latest-token-usage-event event))
+  event)
+
 (defun e-session--message-with-created-at (message timestamp)
   "Return normalized MESSAGE with TIMESTAMP as its creation time when missing."
   (let ((normalized (e-session--normalize-message (copy-sequence message))))
@@ -758,21 +764,21 @@ and RECORD supplies persisted identity fields during replay."
          (e-session--touch store session timestamp)))
       ("activity-event"
        (when session
-         (e-session--prepend-replayed-item
-          session
-          :activity-events
-          (e-session--normalize-entry-from-record
-           session
-           'activity-event
-           (e-session--normalize-activity-event
-            (list :id (plist-get record :id)
-                  :parent-id (plist-get record :parent-id)
-                  :turn-id (plist-get record :turn-id)
-                  :event-type (plist-get record :event-type)
-                  :payload (plist-get record :payload)
-                  :created-at timestamp))
-           timestamp
-           record))
+        (let ((event
+               (e-session--normalize-entry-from-record
+                session
+                'activity-event
+                (e-session--normalize-activity-event
+                 (list :id (plist-get record :id)
+                       :parent-id (plist-get record :parent-id)
+                       :turn-id (plist-get record :turn-id)
+                       :event-type (plist-get record :event-type)
+                       :payload (plist-get record :payload)
+                       :created-at timestamp))
+                timestamp
+                record)))
+          (e-session--prepend-replayed-item session :activity-events event)
+          (e-session--update-activity-derived-fields session event))
          (e-session--touch store session timestamp)))
       ("branch-summary"
        (when session
@@ -890,6 +896,7 @@ and RECORD supplies persisted identity fields during replay."
          (e-session--replace-list-field session :messages nil)
          (e-session--replace-list-field session :activity-events nil)
          (e-session--replace-list-field session :provider-anchors nil)
+         (plist-put session :latest-token-usage-event nil)
          (e-session--clear-message-derived-fields store session)
          (plist-put session :current-head-id (e-session--root-event-id session))
          (e-session--prepend-replayed-session-event
@@ -1176,6 +1183,10 @@ state are requested."
   "Return durable activity events for SESSION-ID in STORE in insertion order."
   (copy-sequence (plist-get (e-session-get store session-id) :activity-events)))
 
+(defun e-session-latest-token-usage-event (store session-id)
+  "Return the latest durable token usage event for SESSION-ID in STORE."
+  (plist-get (e-session-get store session-id) :latest-token-usage-event))
+
 (defun e-session-session-events (store session-id)
   "Return durable session events for SESSION-ID in STORE in insertion order."
   (copy-sequence (plist-get (e-session-get store session-id) :session-events)))
@@ -1289,6 +1300,7 @@ state are requested."
                        :created-at timestamp)
                  timestamp)))
     (e-session--append-list-item session :activity-events event)
+    (e-session--update-activity-derived-fields session event)
     (e-session--index-entry store session-id event)
     (e-session--touch store session timestamp)
     (e-session--append-record
@@ -1446,6 +1458,7 @@ provider-owned anchor.  FINGERPRINTS and METADATA are opaque to session core."
     (e-session--replace-list-field session :messages nil)
     (e-session--replace-list-field session :activity-events nil)
     (e-session--replace-list-field session :provider-anchors nil)
+    (plist-put session :latest-token-usage-event nil)
     (e-session--clear-message-derived-fields store session)
     (e-session--clear-entry-index store session-id)
     (dolist (entry (plist-get session :session-events))

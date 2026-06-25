@@ -871,6 +871,37 @@
                            (e-session-activity-events store "session-1"))
                    '(reasoning-delta tool-started)))))
 
+(ert-deftest e-session-test-latest-token-usage-event-is-derived-on-append-replay-and-clear ()
+  "Latest token usage is available without scanning durable activity events."
+  (let* ((directory (make-temp-file "e-session-token-usage-" t))
+         (store (e-session-persistent-store-create directory)))
+    (unwind-protect
+        (progn
+          (e-session-create store :id "session-1")
+          (e-session-append-activity-event
+           store "session-1" "turn-1" 'reasoning-delta '(:content "thinking"))
+          (e-session-append-activity-event
+           store "session-1" "turn-1" 'token-usage '(:input-tokens 10))
+          (e-session-append-activity-event
+           store "session-1" "turn-2" 'token-usage '(:input-tokens 20))
+          (should (equal (plist-get
+                          (plist-get
+                           (e-session-latest-token-usage-event store "session-1")
+                           :payload)
+                          :input-tokens)
+                         20))
+          (let ((loaded (e-session-persistent-store-create directory)))
+            (should (equal (plist-get
+                            (plist-get
+                             (e-session-latest-token-usage-event loaded "session-1")
+                             :payload)
+                            :input-tokens)
+                           20))
+            (e-session-clear-messages loaded "session-1")
+            (should-not
+             (e-session-latest-token-usage-event loaded "session-1"))))
+      (delete-directory directory t))))
+
 (ert-deftest e-session-test-profile-records-persistent-appends-and-index-writes ()
   "Enabled dev profiling records persistent append and index write spans."
   (let* ((directory (make-temp-file "e-session-profile-" t))

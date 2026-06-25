@@ -13,6 +13,7 @@ State values for coding agents:
 | Closed | provider-continuation-drops-in-turn-tool-output/ | Provider continuation drops in-turn tool output |
 | Closed | e-chat-active-session-workspace-focus/ | e-chat active session workspace focus |
 | Closed | e-chat-turn-finished-misses-final-assistant/ | e-chat turn finished misses final assistant |
+| Closed | e-chat-stale-replayed-activity-tail/ | e-chat stale replayed activity tail |
 | Closed | e-chat-duplicate-context-composer/ | e-chat duplicate context composer |
 | Closed | e-debug-here-verbose-context/ | e-debug-here verbose context |
 | Closed | e-chat-reload-detaches-active-turn/ | e-chat reload detaches active turn |

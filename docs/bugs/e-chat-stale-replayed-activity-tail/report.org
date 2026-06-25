@@ -1,0 +1,10 @@
+#+title: e-chat stale replayed activity tail report
+
+The chat buffer can appear to miss the final assistant message after a turn.
+The visible bottom of the buffer shows old activity such as =Thought for ...=
+and the composer, while the durable session already contains later assistant
+messages.
+
+The reported screenshot showed an idle chat buffer whose tail was occupied by a
+long-running =Thought for 1707min 52sec= activity row instead of the latest
+assistant response.

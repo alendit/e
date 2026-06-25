@@ -1,0 +1,105 @@
+#+title: e-chat stale replayed activity tail investigation
+
+* Evidence
+
+- Live scalar inspection of
+  =*e-chat:Grimoire: 2026-06-22 — Grimoire Quests And Questbook*= showed the
+  chat presentation was idle: no =e-chat--progress-turn-id= and no pending
+  activity redraw.
+- The latest durable assistant message for session
+  =20260622T202555-b808c4799bf7= was present and rendered, but it was above a
+  stale activity tail.
+- Several older turn records had =:final-rendered nil=, no assistant messages,
+  and durable activity ending in =provider-request-started= without a terminal
+  =turn-finished=, =turn-failed=, =turn-cancelled=, or =backend-empty-output=
+  event.
+- One stale turn had transient markers spanning from the old activity row to the
+  current buffer tail, so the old activity occupied the visual bottom and made
+  later final output look missing.
+
+* Root Cause
+
+=e-chat--render-replayed-active-activity= restored non-terminal durable activity
+whenever a replayed turn had no final or failure block.  It did not ask whether
+the attached harness still considered that turn active.
+
+The previous stale-progress fix reconciled this only from progress timer ticks.
+In this failure state there was no live timer, so the old replayed activity
+remained as ordinary bottom-of-buffer text.
+
+* Fix
+
+- Reused =e-chat--stale-progress-turn-p= in
+  =e-chat--render-replayed-active-activity=.
+- Replayed active activity now renders only when the harness still reports that
+  turn as running.
+- Updated the existing replay-active test to model the real active-turn
+  contract.
+- Added =e-chat-test-replayed-stale-provider-activity-stays-off-tail= to cover a
+  durable non-terminal activity turn with no active harness entry.
+
+* Fix Evidence
+
+- =rtk eldev test -f test/e-chat-test.el e-chat-test-replayed-active-provider-activity-restores-progress e-chat-test-replayed-stale-provider-activity-stays-off-tail e-chat-test-progress-timer-stops-when-harness-turn-settled=
+- =rtk eldev test -f test/e-chat-test.el e-chat-test-turn-finished-renders-missed-final-assistant e-chat-test-final-message-preserves-follow-up-draft e-chat-test-final-turn-collapses-progress-to-summary e-chat-test-replayed-active-provider-activity-restores-progress e-chat-test-replayed-stale-provider-activity-stays-off-tail e-chat-test-progress-timer-stops-when-harness-turn-settled e-chat-test-active-activity-restores-missing-progress-timer e-chat-test-running-activity-schedules-deferred-redraw e-chat-test-reload-buffers-keeps-active-turn-harness=
+
+* Follow-up: progress timer CPU runaway
+
+On 2026-06-25, live process inspection showed Emacs PID 84810 at roughly 98% CPU
+and 3.2GB RSS while the Grimoire chat buffer held a live
+=e-chat--progress-timer= for turn =01KVYV7D0WK895JE6MGXV8WYQW=.
+
+The timer-side stale check called =e-harness-messages= and
+=e-harness-session-activity-events= when no harness active-turn entry existed.
+For a large persistent session, this made a repeating 0.6s presentation timer
+scan or replay broad durable session history, increasing CPU and memory during
+what looked like a UI update.
+
+The follow-up fix makes =e-chat--stale-progress-turn-p= trust the harness
+active-turn table directly: a matching running entry keeps the timer alive, a
+different or settled entry is stale, and no entry is stale.  It removes the
+durable session scan from the timer path.  Tests that simulate running progress
+now explicitly mark the harness active-turn state, matching the production
+contract.
+
+Follow-up evidence:
+
+- =rtk eldev test -f test/e-chat-test.el e-chat-test-replayed-active-provider-activity-restores-progress e-chat-test-replayed-stale-provider-activity-stays-off-tail e-chat-test-progress-timer-stops-when-harness-turn-settled e-chat-test-active-activity-restores-missing-progress-timer e-chat-test-running-activity-schedules-deferred-redraw e-chat-test-reload-buffers-keeps-active-turn-harness e-chat-test-late-progress-tick-shows-emacs-blocked-status=
+- =rtk eldev test -f test/e-chat-test.el=
+
+* Follow-up: post-response context status CPU spike
+
+The progress-timer fix did not explain all post-response CPU.  A native sample
+of Emacs PID 2046 on 2026-06-25 captured the hot path while the Emacs server was
+not responsive to a scalar =emacsclient --timeout=2 --eval :ping=:
+
+#+begin_example
+websocket_outer_filter
+websocket_process_input_on_open_ws
+e_context_status_text
+e_context_budget_status
+Fmapc / Fwhile
+garbage_collect / mark_buffer / traverse_intervals_noorder
+#+end_example
+
+That grounds the remaining spike in the websocket completion path updating
+context status after provider output, not in default-harness immutability.  The
+source path was:
+
+- =e-openai-codex--websocket-event-items= emits a =token-usage= item for a
+  completed response before the =done= item.
+- =e-loop-start-turn= emits that as durable =token-usage= activity.
+- =e-chat--render-event= handles =token-usage= by refreshing the mode line with
+  =prefer-token-usage=.
+- =e-context-budget--latest-token-usage-event= still found the latest usage by
+  calling =e-harness-session-activity-events= and scanning the copied full
+  durable activity list.
+
+For large persistent sessions, the "cheap" provider-usage refresh still copied
+and walked all activity events, producing the sampled loop and GC pressure.
+
+The fix moves latest token-usage lookup into session-derived state.  =e-session=
+updates =:latest-token-usage-event= when appending or replaying activity events
+and clears it when messages/activity are cleared.  =e-context-budget= reads that
+scalar through =e-session-latest-token-usage-event= instead of copying and
+scanning the activity list.
