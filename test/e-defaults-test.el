@@ -561,6 +561,24 @@
       (should-not (e-shell-get-active 'old-topic harness))
       (should (e-shell-get-active 'new-topic harness)))))
 
+(ert-deftest e-defaults-test-sync-replaces-stale-layer-change-callback ()
+  "Default chat sync replaces old live callbacks before notifying changes."
+  (let ((e-default-chat-layer-ids nil)
+        (called-stale-callback nil)
+        (harness (e-harness-create
+                  :backend (e-backend-fake-create :items nil))))
+    (e-harness-set-layer-change-function
+     harness
+     (lambda (_harness)
+       (setq called-stale-callback t)
+       (error "stale callback should not run")))
+    (e-default-chat-sync-harness-layers harness nil nil)
+    (should-not called-stale-callback)
+    (should (eq (e-harness-layer-change-function harness)
+                #'e-default-chat--record-layer-ids))
+    (e-harness-set-enabled-layer-ids harness '(manual-layer))
+    (should (equal e-default-chat-layer-ids '(manual-layer)))))
+
 (ert-deftest e-defaults-test-sync-directory-does-not-change-session-root-context ()
   "Default sync can rebuild shells from one root without changing session tools."
   (let ((e-layer--registry (make-hash-table :test 'eq))

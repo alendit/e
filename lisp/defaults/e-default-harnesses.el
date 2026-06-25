@@ -208,16 +208,14 @@ is passed to config-aware shell layer factories."
   (when directory
     (setf (e-harness-default-project-root harness)
           (e-harness--normalize-project-root directory)))
-  (let ((change-function (e-harness-layer-change-function harness)))
-    (unwind-protect
-        (progn
-          (e-harness-set-layer-change-function harness nil)
-          (e-harness-set-intrinsic-capabilities
-           harness
-           (e-default-chat--chat-session-capabilities))
-          (e-default-chat--set-configured-layer-ids
-           harness layer-ids directory))
-      (e-harness-set-layer-change-function harness change-function)))
+  (e-harness-set-layer-change-function harness nil)
+  (e-harness-set-intrinsic-capabilities
+   harness
+   (e-default-chat--chat-session-capabilities))
+  (e-default-chat--set-configured-layer-ids
+   harness layer-ids directory)
+  (e-harness-set-layer-change-function
+   harness #'e-default-chat--record-layer-ids)
   (e-harness--notify-layers-changed harness)
   harness)
 

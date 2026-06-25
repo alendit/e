@@ -97,9 +97,48 @@
     e-base-tools)
   "Concrete shell, provider, and side-effect features excluded from e-core.")
 
+(defconst e-test--removed-harness-layer-apis
+  '("e-harness-active-layers"
+    "e-harness-active-layer"
+    "e-harness-activate-layer"
+    "e-harness-deactivate-layer"
+    "e-harness-layer-active-p")
+  "Removed mutable layer-object APIs that must not have Elisp callers.")
+
+(defun e-test--source-elisp-files ()
+  "Return runtime, test, and e2e Elisp source files for stale API scans."
+  (let ((roots '("lisp" "test" "e2e"))
+        (files nil))
+    (dolist (root roots)
+      (let ((directory (expand-file-name root default-directory)))
+        (when (file-directory-p directory)
+          (setq files
+                (append (directory-files-recursively directory "\\.el\\'")
+                        files)))))
+    files))
+
 (ert-deftest e-test-loads-feature ()
   "The package feature can be required from the project load path."
   (should (require 'e nil t)))
+
+(ert-deftest e-test-no-removed-harness-layer-api-callers ()
+  "Runtime, tests, and e2e sources do not call removed layer-object APIs."
+  (let ((this-file (file-truename (expand-file-name "test/e-test.el"
+                                                     default-directory)))
+        (matches nil))
+    (dolist (file (e-test--source-elisp-files))
+      (unless (and this-file (equal (file-truename file) this-file))
+        (with-temp-buffer
+          (insert-file-contents file)
+          (dolist (api e-test--removed-harness-layer-apis)
+            (goto-char (point-min))
+            (while (search-forward api nil t)
+              (push (format "%s:%d:%s"
+                            (file-relative-name file default-directory)
+                            (line-number-at-pos)
+                            api)
+                    matches))))))
+    (should-not (nreverse matches))))
 
 (ert-deftest e-test-core-loads-only-pure-runtime-features ()
   "Requiring e-core does not load shells, providers, or concrete tools."

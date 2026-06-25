@@ -223,7 +223,10 @@ SPEC is (HARNESS SESSION-ID &key LAYERS PERSISTENT)."
              (progn
                ,@(when (plist-get options :layers)
                    `((dolist (layer ,(plist-get options :layers))
-                       (e-harness-activate-layer ,harness layer))))
+                       (e-harness-set-intrinsic-capabilities
+                        ,harness
+                        (append (e-harness-intrinsic-capabilities ,harness)
+                                (e-layer-capabilities layer))))))
                ,@body)
            (ignore-errors (e-harness-unsubscribe ,harness ,subscription))
            (ignore-errors (delete-directory ,root t)))))))
