@@ -42,7 +42,11 @@
 (declare-function simply-annotate--file-key "simply-annotate")
 (declare-function simply-annotate--load-database "simply-annotate")
 (declare-function simply-annotate--make-context "simply-annotate")
+(declare-function simply-annotate--relocate-annotation "simply-annotate")
 (declare-function simply-annotate--update-database "simply-annotate")
+(defvar simply-annotate-mode)
+(defvar simply-annotate-mode-hook)
+(defvar simply-annotate-overlays)
 
 (defcustom e-annotation-tools-author "Agent"
   "Default author name recorded on annotation threads created by e."
