@@ -6402,6 +6402,7 @@ The context-window denominator comes from the live provider lookup
          (original-context (symbol-function 'e-harness-context)))
     (unwind-protect
         (with-current-buffer buffer
+          (e-chat--invalidate-mode-line-context-estimate)
           (cl-letf (((symbol-function 'e-harness-context)
                      (lambda (harness session-id)
                        (setq context-calls (1+ context-calls))
@@ -6434,6 +6435,35 @@ The context-window denominator comes from the live provider lookup
           (should (= context-calls 0))
           (should (equal mode-name
                          "e-chat gpt-5.5/high")))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-mode-line-status-reuses-fresh-estimate-cache ()
+  "Fresh mode-line estimate cache hits avoid context rebuilding."
+  (let* ((store (e-session-store-create))
+         (backend (e-backend-fake-create :items nil))
+         (harness (e-harness-create
+                   :backend backend
+                   :sessions store
+                   :default-options
+                   '(:model "gpt-5.5" :reasoning-effort "high")))
+         (buffer (e-chat-open :harness harness
+                              :session-id "chat-mode-line-cache"))
+         (context-calls 0))
+    (unwind-protect
+        (with-current-buffer buffer
+          (setq-local e-chat--mode-line-context-estimate-cache
+                      (cons 123 (float-time)))
+          (cl-letf (((symbol-function 'e-chat--model-context-window)
+                     (lambda (model) (and (equal model "gpt-5.5") 1000)))
+                    ((symbol-function 'e-harness-context)
+                     (lambda (&rest _args)
+                       (setq context-calls (1+ context-calls))
+                       (error "fresh estimate cache should skip context"))))
+            (e-chat--set-status "idle" t))
+          (should (= context-calls 0))
+          (should (equal mode-name
+                         "e-chat gpt-5.5/high ~13% (~123/1k tok)")))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 

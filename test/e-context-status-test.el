@@ -146,7 +146,8 @@
                    :sessions store
                    :default-options '(:model "gpt-5.5")))
          (cache (cons nil nil))
-         (calls 0))
+         (calls 0)
+         (context-calls 0))
     (e-session-create store :id "status-cache")
     (e-session-append-message
      store "status-cache" '(:role user :content "first"))
@@ -154,13 +155,19 @@
                ((symbol-function 'e-context-budget-context-token-estimate)
                 (lambda (&rest args)
                   (setq calls (1+ calls))
-                  (apply orig args))))
+                  (apply orig args)))
+               (orig-context (symbol-function 'e-harness-context))
+               ((symbol-function 'e-harness-context)
+                (lambda (&rest args)
+                  (setq context-calls (1+ context-calls))
+                  (apply orig-context args))))
       (let ((e-context-status-estimate-cache-seconds 100))
         (e-context-status-text harness "status-cache"
                                :prefix "e-chat" :estimate-cache cache)
         (e-context-status-text harness "status-cache"
                                :prefix "e-chat" :estimate-cache cache)))
-    (should (equal calls 1))))
+    (should (equal calls 1))
+    (should (equal context-calls 1))))
 
 (ert-deftest e-context-status-test-profile-records-status-text ()
   "Enabled dev profiling records context status text computation."

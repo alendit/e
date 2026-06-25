@@ -117,23 +117,29 @@ BYTES-PER-TOKEN defaults to `e-context-budget-estimate-bytes-per-token'."
                   (stringp compaction-id)
                   (string< usage-id compaction-id))))))
 
+(defun e-context-budget--fresh-cached-estimate (cache ttl &optional now)
+  "Return fresh cached approximate tokens from CACHE, or nil.
+CACHE is a caller-owned cons cell of (TOKENS . TIME) or nil.  TTL is the cache
+lifetime in seconds."
+  (let ((ttl (if (and (numberp ttl) (>= ttl 0)) ttl 2.0))
+        (now (or now (float-time))))
+    (when (and (consp cache)
+               (integerp (car cache))
+               (numberp (cdr cache))
+               (< (- now (cdr cache)) ttl))
+      (car cache))))
+
 (defun e-context-budget--cached-estimate (context cache bytes-per-token ttl)
   "Return cached approximate token estimate for CONTEXT.
 CACHE is a caller-owned cons cell of (TOKENS . TIME) or nil.  BYTES-PER-TOKEN
 is forwarded to the estimator.  TTL is the cache lifetime in seconds."
-  (let* ((now (float-time))
-         (ttl (if (and (numberp ttl) (>= ttl 0)) ttl 2.0)))
-    (if (and (consp cache)
-             (integerp (car cache))
-             (numberp (cdr cache))
-             (< (- now (cdr cache)) ttl))
-        (car cache)
+  (or (e-context-budget--fresh-cached-estimate cache ttl)
       (let ((tokens (e-context-budget-context-token-estimate
                      context bytes-per-token)))
         (when (consp cache)
           (setcar cache tokens)
-          (setcdr cache now))
-        tokens))))
+          (setcdr cache (float-time)))
+        tokens)))
 
 (cl-defun e-context-budget-used-tokens
     (harness session-id
@@ -151,11 +157,18 @@ compaction is ignored and the current model-facing context is estimated."
                    usage-event latest-compaction)
             (e-context-budget--token-usage-input-tokens
              (plist-get usage-event :payload))))
+         (cached-tokens
+          (and estimate-context
+               (not usage-tokens)
+               (e-context-budget--fresh-cached-estimate
+                estimate-cache estimate-cache-seconds)))
          (context (when (and estimate-context
+                             (not cached-tokens)
                              (not (and prefer-token-usage usage-tokens)))
                     (ignore-errors
                       (e-harness-context harness session-id)))))
     (or usage-tokens
+        cached-tokens
         (and context
              (ignore-errors
                (e-context-budget--cached-estimate
@@ -180,7 +193,13 @@ and `:approximate'."
                      usage-event latest-compaction)
               (e-context-budget--token-usage-input-tokens
                (plist-get usage-event :payload))))
+           (cached-tokens
+            (and estimate-context
+                 (not usage-tokens)
+                 (e-context-budget--fresh-cached-estimate
+                  estimate-cache estimate-cache-seconds)))
            (context (when (and estimate-context
+                               (not cached-tokens)
                                (not (and prefer-token-usage usage-tokens)))
                       (ignore-errors
                         (e-harness-context harness session-id))))
@@ -191,11 +210,12 @@ and `:approximate'."
            (effort (plist-get options :reasoning-effort))
            (estimated-tokens
             (and (not usage-tokens)
-                 context
-                 (ignore-errors
-                   (e-context-budget--cached-estimate
-                    context estimate-cache bytes-per-token
-                    estimate-cache-seconds))))
+                 (or cached-tokens
+                     (and context
+                          (ignore-errors
+                            (e-context-budget--cached-estimate
+                             context estimate-cache bytes-per-token
+                             estimate-cache-seconds))))))
            (window (or (and token-limit-function
                             (ignore-errors
                               (funcall token-limit-function model)))

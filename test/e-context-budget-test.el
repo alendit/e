@@ -11,6 +11,7 @@
 
 ;;; Code:
 
+(require 'cl-lib)
 (require 'ert)
 (require 'e)
 (require 'e-backend)
@@ -89,6 +90,35 @@
       (should (equal (plist-get status :window) 100))
       (should (integerp (plist-get status :used-tokens)))
       (should (plist-get status :approximate)))))
+
+(ert-deftest e-context-budget-test-fresh-estimate-cache-skips-context ()
+  "Fresh estimate cache hits avoid materializing full harness context."
+  (let* ((store (e-session-store-create))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :sessions store
+                   :default-options
+                   '(:model "gpt-5.5" :reasoning-effort "high")))
+         (cache (cons 321 (float-time)))
+         (context-calls 0))
+    (e-session-create store :id "budget-cache")
+    (cl-letf (((symbol-function 'e-harness-context)
+               (lambda (&rest _args)
+                 (setq context-calls (1+ context-calls))
+                 (error "fresh estimate cache should skip context"))))
+      (let ((status (e-context-budget-status
+                     harness "budget-cache"
+                     :estimate-cache cache
+                     :estimate-cache-seconds 100
+                     :token-limits '(("gpt-5.5" . 1000)))))
+        (should (equal (plist-get status :used-tokens) 321))
+        (should (plist-get status :approximate)))
+      (should (equal (e-context-budget-used-tokens
+                      harness "budget-cache"
+                      :estimate-cache cache
+                      :estimate-cache-seconds 100)
+                     321))
+      (should (= context-calls 0)))))
 
 (provide 'e-context-budget-test)
 
