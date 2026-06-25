@@ -1099,10 +1099,49 @@ picker."
               (should (> (plist-get (plist-get progress :payload)
                                     :bytes)
                          0))
-              (should (string-match-p
-                       "one"
-                       (plist-get (plist-get progress :payload)
-                                  :preview))))))
+	              (should (string-match-p
+	                       "one"
+	                       (plist-get (plist-get progress :payload)
+	                                  :preview))))))
+      (delete-directory directory t))))
+
+(ert-deftest e-base-tools-test-bash-coalesces-streaming-progress ()
+  "The native bash tool throttles progress without changing final output."
+  (let* ((directory (make-temp-file "e-base-bash-progress-coalesce-" t))
+         (registry (e-tools-registry-create))
+         (e-base-tools--bash-progress-interval 10)
+         result
+         events)
+    (unwind-protect
+        (progn
+          (e-base-tools-register-bash registry directory)
+          (let ((request
+                 (e-tools-start
+                  registry
+                  '(:id "call-1"
+                    :name "bash"
+                    :arguments
+                    (:command "for i in 1 2 3 4 5; do printf x; sleep 0.01; done"))
+                  :on-event (lambda (type payload)
+                              (push (list :type type :payload payload) events))
+                  :on-done (lambda (value) (setq result value)))))
+            (should (e-tools-request-p request))
+            (should (e-base-tools-test--wait-until
+                     (lambda () result)
+                     1.0))
+            (should (equal (plist-get result :status) 'ok))
+            (should (equal (plist-get result :content) "xxxxx"))
+            (let ((progress-events
+                   (cl-remove-if-not
+                    (lambda (event)
+                      (eq (plist-get event :type) 'tool-progress))
+                    events)))
+              (should progress-events)
+              (should (<= (length progress-events) 2))
+              (should (equal (plist-get
+                              (plist-get (car progress-events) :payload)
+                              :preview)
+                             "xxxxx")))))
       (delete-directory directory t))))
 
 (ert-deftest e-base-tools-test-bash-timeout-kills-process-asynchronously ()

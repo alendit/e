@@ -312,10 +312,13 @@ that survived the compaction boundary."
 
 (cl-defun e-compaction-prepare
     (store session-id &key keep-recent-tokens instructions allow-split-turn
-           (reason 'manual))
+           exclude-entry-ids (reason 'manual))
   "Prepare compaction data for SESSION-ID in STORE."
   (let* ((keep (or keep-recent-tokens e-compaction-keep-recent-tokens))
-         (entries (e-compaction--message-entries store session-id))
+         (entries (cl-remove-if
+                   (lambda (entry)
+                     (member (plist-get entry :id) exclude-entry-ids))
+                   (e-compaction--message-entries store session-id)))
          (previous (e-session-latest-valid-compaction store session-id))
          (previous-boundary (plist-get previous :first-kept-entry-id))
          (boundary-roles (if allow-split-turn

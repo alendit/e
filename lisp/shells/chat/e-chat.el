@@ -506,6 +506,9 @@ The mode line uses this presentation-owned table for context usage display."
 (defvar-local e-chat--context-reference-counter 0
   "Counter used to assign inline composer reference ids.")
 
+(defvar-local e-chat--pending-command-requests nil
+  "Alist of pending composer command-reference ids to cancellable requests.")
+
 (defvar-local e-chat--composer-restore-inhibited nil
   "Non-nil when transient chat rendering should not recreate a composer.")
 
@@ -860,6 +863,7 @@ In the composer, leading ! captures command output, @ inserts file context,
 and / expands available prompts."
   (add-hook 'kill-buffer-hook #'e-chat--unsubscribe nil t)
   (add-hook 'kill-buffer-hook #'e-chat--stop-progress-indicator nil t)
+  (add-hook 'kill-buffer-hook #'e-chat--cancel-pending-command-references nil t)
   (add-hook 'evil-local-mode-hook #'e-chat--enforce-modal-editing-policy nil t)
   (add-hook 'after-change-functions
             #'e-chat--mark-composer-scroll-needed nil t)
@@ -1572,43 +1576,128 @@ Keep point inside the composer when movement starts there."
   (concat "command://"
           (replace-regexp-in-string "[\n\r\t ]+" " " command)))
 
+(cl-defun e-chat--run-shell-command-start
+    (command directory &key on-done on-error on-request-start)
+  "Start shell COMMAND in DIRECTORY and report captured output asynchronously.
+ON-DONE receives the same result plist returned by `e-chat--run-shell-command'.
+ON-ERROR receives an Emacs condition list.  ON-REQUEST-START receives a
+cancellable process request."
+  (let* ((directory (file-name-as-directory (expand-file-name directory)))
+         (buffer (generate-new-buffer " *e-chat-command-output*"))
+         (settled nil)
+         process
+         timeout-timer
+         request)
+    (cl-labels
+        ((cleanup
+          ()
+          (when (timerp timeout-timer)
+            (cancel-timer timeout-timer))
+          (when (buffer-live-p buffer)
+            (kill-buffer buffer)))
+         (result
+          (&optional timed-out)
+          (when (buffer-live-p buffer)
+            (with-current-buffer buffer
+              (let* ((output (buffer-string))
+                     (truncated (> (string-bytes output)
+                                   e-chat-command-output-max-bytes))
+                     (output (if truncated
+                                 (concat
+                                  (e-chat--string-byte-prefix
+                                   output
+                                   e-chat-command-output-max-bytes)
+                                  "\n[Command output truncated]\n")
+                               output)))
+                (list :output output
+                      :exit (unless timed-out
+                              (and process (process-exit-status process)))
+                      :truncated truncated
+                      :timed-out timed-out)))))
+         (finish
+          (&optional timed-out)
+          (unless settled
+            (setq settled t)
+            (let ((value (result timed-out)))
+              (cleanup)
+              (when on-done
+                (funcall on-done value)))))
+         (fail
+          (err)
+          (unless settled
+            (setq settled t)
+            (cleanup)
+            (when on-error
+              (funcall on-error err))))
+         (cancel
+          ()
+          (unless settled
+            (setq settled t)
+            (when (timerp timeout-timer)
+              (cancel-timer timeout-timer))
+            (when (and process (process-live-p process))
+              (kill-process process))
+            (when (buffer-live-p buffer)
+              (kill-buffer buffer)))
+          t))
+      (condition-case err
+          (let ((default-directory directory))
+            (setq process
+                  (make-process
+                   :name "e-chat-command-output"
+                   :buffer buffer
+                   :stderr buffer
+                   :command (list shell-file-name shell-command-switch command)
+                   :connection-type 'pipe
+                   :noquery t
+                   :sentinel
+                   (lambda (proc _event)
+                     (when (and (not settled)
+                                (memq (process-status proc) '(exit signal)))
+                       (finish nil)))))
+            (set-process-query-on-exit-flag process nil)
+            (setq request
+                  (e-tools-request-create
+                   :cancel #'cancel
+                   :metadata (list :transport 'process
+                                   :process process
+                                   :command command
+                                   :cancellable t)))
+            (when on-request-start
+              (funcall on-request-start request))
+            (setq timeout-timer
+                  (run-at-time
+                   e-chat-command-output-timeout
+                   nil
+                   (lambda ()
+                     (unless settled
+                       (when (process-live-p process)
+                         (kill-process process))
+                       (finish t)))))
+            request)
+        (error
+         (fail err)
+         nil)))))
+
 (defun e-chat--run-shell-command (command directory)
   "Run shell COMMAND in DIRECTORY and return captured output metadata."
-  (let ((directory (file-name-as-directory (expand-file-name directory)))
-        (deadline (+ (float-time) e-chat-command-output-timeout))
-        process
-        timed-out)
-    (with-temp-buffer
-      (let ((default-directory directory))
-        (setq process
-              (make-process
-               :name "e-chat-command-output"
-               :buffer (current-buffer)
-               :stderr (current-buffer)
-               :command (list shell-file-name shell-command-switch command)
-               :connection-type 'pipe
-               :noquery t))
-        (while (and (process-live-p process)
-                    (< (float-time) deadline))
-          (accept-process-output process 0.05)))
-      (when (process-live-p process)
-        (setq timed-out t)
-        (delete-process process)
-        (accept-process-output process 0.05))
-      (let* ((output (buffer-string))
-             (truncated (> (string-bytes output)
-                           e-chat-command-output-max-bytes))
-             (output (if truncated
-                         (concat
-                          (e-chat--string-byte-prefix
-                           output
-                           e-chat-command-output-max-bytes)
-                          "\n[Command output truncated]\n")
-                       output)))
-        (list :output output
-              :exit (unless timed-out (process-exit-status process))
-              :truncated truncated
-              :timed-out timed-out)))))
+  (let ((done nil)
+        result
+        failure)
+    (e-chat--run-shell-command-start
+     command
+     directory
+     :on-done (lambda (value)
+                (setq result value)
+                (setq done t))
+     :on-error (lambda (err)
+                 (setq failure err)
+                 (setq done t)))
+    (while (not done)
+      (accept-process-output nil 0.05))
+    (when failure
+      (signal (car failure) (cdr failure)))
+    result))
 
 (defun e-chat--command-output-reference (command result)
   "Return a context reference for shell COMMAND RESULT."
@@ -2057,10 +2146,43 @@ Matching is case-insensitive."
         (let ((command (read-shell-command "! ")))
           (if (string-empty-p (string-trim command))
               (e-chat--insert-literal-prefix "!")
-            (e-chat--insert-context-reference
-             (e-chat--command-output-reference
-              command
-              (e-chat--run-shell-command command (e-chat--project-root))))))
+            (let* ((buffer (current-buffer))
+                   (pending (e-chat--insert-context-reference
+                             (list :uri (e-chat--command-uri command)
+                                   :label (format "$ %s (running)" command)
+                                   :text "Command output is still running."
+                                   :pending t
+                                   :command command)))
+                   (reference-id (plist-get pending :id))
+                   request)
+              (setq
+               request
+               (e-chat--run-shell-command-start
+                command
+                (e-chat--project-root)
+                :on-done
+                (lambda (result)
+                  (when (buffer-live-p buffer)
+                    (with-current-buffer buffer
+                      (e-chat--forget-pending-command-request reference-id)
+                      (e-chat--replace-context-reference
+                       reference-id
+                       (e-chat--command-output-reference command result)))))
+                :on-error
+                (lambda (err)
+                  (when (buffer-live-p buffer)
+                    (with-current-buffer buffer
+                      (e-chat--forget-pending-command-request reference-id)
+                      (e-chat--replace-context-reference
+                       reference-id
+                       (e-chat--command-output-reference
+                        command
+                        (list :output (error-message-string err)
+                              :exit "error"))))))))
+              (when request
+                (e-chat--remember-pending-command-request
+                 reference-id
+                 request)))))
       (quit (e-chat--insert-literal-prefix "!")))))
 
 (defun e-chat-composer-at ()
@@ -2227,6 +2349,72 @@ active.  It defaults to the historical chat context radius of two lines."
        rear-nonsticky t))
     reference))
 
+(defun e-chat--replace-context-reference (old-id new-reference)
+  "Replace inline composer reference OLD-ID with NEW-REFERENCE."
+  (when (and (e-chat--composer-active-p) old-id)
+    (let ((position (marker-position e-chat--composer-start-marker))
+          (end (point-max))
+          bounds
+          old-reference)
+      (while (and (< position end) (not bounds))
+        (let ((reference (get-text-property position 'e-chat-context-reference)))
+          (if (and reference (equal (plist-get reference :id) old-id))
+              (setq bounds (e-chat--context-reference-bounds-at position)
+                    old-reference reference)
+            (setq position
+                  (or (next-single-property-change
+                       position 'e-chat-context-reference nil end)
+                      end)))))
+      (when bounds
+        (let* ((new-reference (copy-sequence new-reference))
+               (new-reference (plist-put new-reference :id old-id))
+               (display (format "@[%s]" (plist-get new-reference :label)))
+               (inhibit-read-only t))
+          (when (plist-get old-reference :pending)
+            (setq new-reference (plist-put new-reference :pending nil)))
+          (save-excursion
+            (goto-char (car bounds))
+            (delete-region (car bounds) (cdr bounds))
+            (insert display)
+            (add-text-properties
+             (car bounds)
+             (point)
+             `(read-only t
+               e-chat-context-reference ,new-reference
+               font-lock-face e-chat-context-reference-face
+               help-echo ,(plist-get new-reference :uri)
+               front-sticky nil
+               rear-nonsticky t)))
+          new-reference)))))
+
+(defun e-chat--pending-context-reference-p (reference)
+  "Return non-nil when REFERENCE is still being populated."
+  (and (plist-get reference :pending) t))
+
+(defun e-chat--composer-pending-references ()
+  "Return pending inline references in the current composer."
+  (when (e-chat--composer-active-p)
+    (cl-remove-if-not
+     #'e-chat--pending-context-reference-p
+     (plist-get (e-chat--composer-document) :references))))
+
+(defun e-chat--remember-pending-command-request (reference-id request)
+  "Remember cancellable REQUEST for pending command REFERENCE-ID."
+  (when (and reference-id request)
+    (push (cons reference-id request) e-chat--pending-command-requests)))
+
+(defun e-chat--forget-pending-command-request (reference-id)
+  "Forget pending command request for REFERENCE-ID."
+  (setq e-chat--pending-command-requests
+        (assoc-delete-all reference-id e-chat--pending-command-requests)))
+
+(defun e-chat--cancel-pending-command-references ()
+  "Cancel pending command references owned by this chat buffer."
+  (dolist (entry e-chat--pending-command-requests)
+    (ignore-errors
+      (e-tools-cancel-request (cdr entry))))
+  (setq e-chat--pending-command-requests nil))
+
 (defun e-chat--context-reference-bounds-at (position)
   "Return bounds of the inline context reference adjacent to POSITION."
   (when (e-chat--composer-active-p)
@@ -2390,6 +2578,14 @@ KILLP is passed through to `delete-char' for normal text."
   (let* ((document (e-chat--composer-document))
          (text (plist-get document :text))
          (references (plist-get document :references)))
+    (when-let ((pending (e-chat--composer-pending-references)))
+      (user-error "Command output still running: %s"
+                  (mapconcat (lambda (reference)
+                               (or (plist-get reference :label)
+                                   (plist-get reference :id)
+                                   "pending command"))
+                             pending
+                             ", ")))
     (when references
       (setq text (e-chat-format-reference-prompt text references)))
     (list :prompt text :references references)))
@@ -4815,6 +5011,7 @@ signal; route the display to a normal window in that case."
 (defun e-chat--clear (&optional omit-composer)
   "Clear and initialize the current chat buffer.
 When OMIT-COMPOSER is non-nil, leave the buffer as transcript-only."
+  (e-chat--cancel-pending-command-references)
   (let ((inhibit-read-only t))
     (erase-buffer)
     (setq e-chat--transcript-end-marker nil)
@@ -6936,8 +7133,7 @@ plain submit steers an active turn and prefix submit queues a follow-up."
                 ('steer "steered")
                 ('queue "queued")
                 (_ "queued")))
-             (e-chat--insert-composer)
-             (redisplay t))
+             (e-chat--insert-composer))
          (e-backend-steering-unsupported
           (e-chat--set-status "steering unsupported")
           (message "Steering unsupported"))

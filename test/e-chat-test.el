@@ -63,6 +63,15 @@
         (when (derived-mode-p 'e-chat-mode)
           (kill-buffer buffer))))))
 
+(defun e-chat-test--wait-until (predicate &optional timeout)
+  "Wait until PREDICATE returns non-nil or TIMEOUT seconds elapse."
+  (let ((deadline (+ (float-time) (or timeout 1.0)))
+        value)
+    (while (and (not (setq value (funcall predicate)))
+                (< (float-time) deadline))
+      (accept-process-output nil 0.01))
+    value))
+
 (defmacro e-chat-test--with-empty-harness-registry (&rest body)
   "Run BODY with an isolated harness registry."
   (declare (indent 0) (debug t))
@@ -490,31 +499,52 @@
             (e-harness-abort harness e-chat-session-id)))
         (kill-buffer buffer)))))
 
-(ert-deftest e-chat-test-submit-forces-redisplay-after-human-turn ()
-  "Submitting forces the rendered human turn to display before timers run."
-  (let ((buffer (e-chat-test--buffer
-                 '((:type assistant-message :content "later")
-                   (:type done :reason stop))
-                 "chat-submit-redisplay"))
-        redisplayed)
+(ert-deftest e-chat-test-submit-defers-backend-start-until-after-command ()
+  "Positive-delay submit returns before backend context construction starts."
+  (let* ((backend-started nil)
+         (backend (e-backend-create
+                   :name "delayed-chat"
+                   :start
+                   (cl-function
+                    (lambda (&key messages options on-item on-done on-error
+                                   on-request-start)
+                      (ignore messages options on-item on-done on-error
+                              on-request-start)
+                      (setq backend-started t)
+                      nil))))
+         (harness (e-harness-create :backend backend))
+         (e-chat-submit-backend-delay 0.05)
+         (buffer (e-chat-open :harness harness
+                              :session-id "chat-submit-delayed"))
+         (context-calls 0)
+         (original-context (symbol-function 'e-harness-context)))
     (unwind-protect
         (with-current-buffer buffer
           (goto-char (point-max))
           (insert "send now")
-          (cl-letf (((symbol-function 'redisplay)
-                     (lambda (&optional force)
-                       (setq redisplayed force))))
-            (e-chat-submit))
-          (should (equal redisplayed t))
-          (should (string-match-p
-                   (concat (regexp-quote e-chat--user-glyph)
-                           " send now")
-                   (buffer-string)))
-          (should (string-match-p (regexp-quote e-chat--composer-separator)
-                                  (buffer-string)))
-          (should (e-chat--composer-active-p))
-          (should (equal (e-chat--composer-text) "")))
+          (cl-letf (((symbol-function 'e-harness-context)
+                     (lambda (&rest args)
+                       (setq context-calls (1+ context-calls))
+                       (apply original-context args))))
+            (e-chat-submit)
+            (should (= context-calls 0))
+            (should-not backend-started)
+            (should (string-match-p
+                     (concat (regexp-quote e-chat--user-glyph)
+                             " send now")
+                     (buffer-string)))
+            (should (string-match-p (regexp-quote e-chat--composer-separator)
+                                    (buffer-string)))
+            (should (e-chat--composer-active-p))
+            (should (equal (e-chat--composer-text) ""))
+            (should (e-chat-test--wait-until
+                     (lambda () backend-started)
+                     1.0))
+            (should (> context-calls 0))))
       (when (buffer-live-p buffer)
+        (with-current-buffer buffer
+          (ignore-errors
+            (e-harness-abort harness e-chat-session-id)))
         (kill-buffer buffer)))))
 
 (ert-deftest e-chat-test-submit-does-not-render-assistant-before-async-provider-completes ()
@@ -1433,31 +1463,103 @@
       (should (equal (buffer-string) before)))))
 
 (ert-deftest e-chat-test-composer-bang-inserts-command-output-reference ()
-  "Leading ! inserts captured command output as an inline context reference."
+  "Leading ! inserts pending output, then completes the context reference."
   (let (buffer)
     (unwind-protect
         (progn
           (setq buffer (e-chat-test--buffer nil "chat-prefix-bang"))
           (with-current-buffer buffer
-            (cl-letf (((symbol-function 'read-shell-command)
-                       (lambda (&rest _args) "printf hi"))
-                      ((symbol-function 'e-chat--run-shell-command)
-                       (lambda (command directory)
-                         (should (equal command "printf hi"))
-                         (should (file-directory-p directory))
-                         (list :output "hi\n" :exit 0))))
-              (e-chat-composer-bang))
+            (let (done)
+              (cl-letf (((symbol-function 'read-shell-command)
+                         (lambda (&rest _args) "printf hi"))
+                        ((symbol-function 'e-chat--run-shell-command-start)
+                         (lambda (command directory &rest args)
+                           (should (equal command "printf hi"))
+                           (should (file-directory-p directory))
+                           (setq done (plist-get args :on-done))
+                           (e-tools-request-create :cancel (lambda () t)))))
+                (e-chat-composer-bang))
+              (let* ((document (e-chat--composer-document))
+                     (references (plist-get document :references)))
+                (should (= (length references) 1))
+                (should (e-chat--pending-context-reference-p
+                         (car references)))
+                (should (string-match-p
+                         (regexp-quote
+                          "<reference id=\"ref-1\" label=\"$ printf hi (running)\">")
+                         (plist-get document :text))))
+              (funcall done (list :output "hi\n" :exit 0)))
             (let* ((document (e-chat--composer-document))
                    (references (plist-get document :references))
                    (submission (plist-get (e-chat--composer-submission)
                                           :prompt)))
               (should (= (length references) 1))
+              (should-not (e-chat--pending-context-reference-p
+                           (car references)))
               (should (string-match-p
                        (regexp-quote "<reference id=\"ref-1\" label=\"$ printf hi (exit 0)\">")
                        (plist-get document :text)))
               (should (string-match-p (regexp-quote "$ printf hi") submission))
               (should (string-match-p (regexp-quote "Status: exit 0") submission))
               (should (string-match-p (regexp-quote "hi") submission)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-submit-rejects-pending-command-reference ()
+  "Submitting with a pending ! reference preserves the composer and errors."
+  (let (buffer)
+    (unwind-protect
+        (progn
+          (setq buffer (e-chat-test--buffer nil "chat-prefix-pending-submit"))
+          (with-current-buffer buffer
+            (cl-letf (((symbol-function 'read-shell-command)
+                       (lambda (&rest _args) "printf hi"))
+                      ((symbol-function 'e-chat--run-shell-command-start)
+                       (lambda (&rest _args)
+                         (e-tools-request-create :cancel (lambda () t)))))
+              (e-chat-composer-bang))
+            (insert " use it")
+            (should-error (e-chat-submit) :type 'user-error)
+            (should (string-match-p
+                     (regexp-quote "@[$ printf hi (running)] use it")
+                     (e-chat--composer-text)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-pending-command-references-cancel-on-clear-and-kill ()
+  "Pending ! command processes are cancelled when chat buffers go away."
+  (let (buffer clear-cancelled kill-cancelled)
+    (unwind-protect
+        (progn
+          (setq buffer (e-chat-test--buffer nil "chat-prefix-clear-cancel"))
+          (with-current-buffer buffer
+            (cl-letf (((symbol-function 'read-shell-command)
+                       (lambda (&rest _args) "sleep 10"))
+                      ((symbol-function 'e-chat--run-shell-command-start)
+                       (lambda (&rest _args)
+                         (e-tools-request-create
+                          :cancel (lambda ()
+                                    (setq clear-cancelled t)
+                                    t)))))
+              (e-chat-composer-bang))
+            (e-chat--clear)
+            (should clear-cancelled))
+          (when (buffer-live-p buffer)
+            (kill-buffer buffer))
+          (setq buffer (e-chat-test--buffer nil "chat-prefix-kill-cancel"))
+          (with-current-buffer buffer
+            (cl-letf (((symbol-function 'read-shell-command)
+                       (lambda (&rest _args) "sleep 10"))
+                      ((symbol-function 'e-chat--run-shell-command-start)
+                       (lambda (&rest _args)
+                         (e-tools-request-create
+                          :cancel (lambda ()
+                                    (setq kill-cancelled t)
+                                    t)))))
+              (e-chat-composer-bang)))
+          (kill-buffer buffer)
+          (setq buffer nil)
+          (should kill-cancelled))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 

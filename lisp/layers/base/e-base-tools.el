@@ -1095,6 +1095,9 @@ OK-STATUSES defaults to only zero."
   (total-newlines 0)
   last-newline)
 
+(defvar e-base-tools--bash-progress-interval 0.1
+  "Minimum seconds between streaming bash progress events.")
+
 (defun e-base-tools--bash-max-bytes ()
   "Return the active bash output byte preview limit."
   (if (boundp 'e-tool-output-truncation-max-bytes)
@@ -1337,17 +1340,60 @@ streaming progress events."
          (call (plist-get tool-context :tool-call))
          (collector (e-base-tools--bash-collector-start tool-context))
          (settled nil)
+         (last-progress-time nil)
+         (progress-pending nil)
          process
+         progress-timer
          timeout-timer
          request)
     (cl-labels
         ((cleanup
           ()
           (when (timerp timeout-timer)
-            (cancel-timer timeout-timer)))
+            (cancel-timer timeout-timer))
+          (when (timerp progress-timer)
+            (cancel-timer progress-timer)))
+         (emit-progress
+          ()
+          (when (and on-event
+                     (> (e-base-tools--bash-collector-total-bytes collector) 0))
+            (when (timerp progress-timer)
+              (cancel-timer progress-timer))
+            (setq progress-timer nil)
+            (setq progress-pending nil)
+            (setq last-progress-time (float-time))
+            (funcall on-event
+                     'tool-progress
+                     (e-base-tools--bash-progress-payload collector call))))
+         (request-progress
+          ()
+          (when on-event
+            (setq progress-pending t)
+            (let* ((interval (max 0 e-base-tools--bash-progress-interval))
+                   (now (float-time))
+                   (elapsed (and last-progress-time
+                                 (- now last-progress-time))))
+              (cond
+               ((or (zerop interval)
+                    (not last-progress-time)
+                    (and elapsed (>= elapsed interval)))
+                (emit-progress))
+               ((not (timerp progress-timer))
+                (setq progress-timer
+                      (run-at-time
+                       (max 0 (- interval (or elapsed 0)))
+                       nil
+                       (lambda ()
+                         (setq progress-timer nil)
+                         (when (and progress-pending (not settled))
+                           (emit-progress))))))))))
          (finish
           (status &optional suffix)
           (unless settled
+            (when (and on-event
+                       (> (e-base-tools--bash-collector-total-bytes collector)
+                          0))
+              (emit-progress))
             (setq settled t)
             (let ((value (e-base-tools--bash-finish-value
                           collector
@@ -1367,6 +1413,8 @@ streaming progress events."
             (setq settled t)
             (when (timerp timeout-timer)
               (cancel-timer timeout-timer))
+            (when (timerp progress-timer)
+              (cancel-timer progress-timer))
             (when (and process (process-live-p process))
               (kill-process process)))
           t))
@@ -1380,11 +1428,7 @@ streaming progress events."
              :filter
              (lambda (_proc chunk)
                (e-base-tools--bash-collector-append collector chunk)
-               (when on-event
-                 (funcall on-event
-                          'tool-progress
-                          (e-base-tools--bash-progress-payload
-                           collector call))))
+               (request-progress))
              :sentinel
              (lambda (proc _event)
                (when (and (not settled)

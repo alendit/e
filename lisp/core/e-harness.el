@@ -1161,7 +1161,8 @@ TURN-ID is passed to active capability context providers when present."
 
 (cl-defun e-harness-compact-session
     (harness session-id &key instructions keep-recent-tokens allow-active-turn
-             turn-id (reason 'manual))
+             (allow-split-turn 'inherit-active-turn) exclude-entry-ids turn-id
+             (reason 'manual))
   "Manually compact SESSION-ID in HARNESS and append a durable record."
   (when (and (not allow-active-turn)
              (e-harness--active-turn-running-p
@@ -1186,7 +1187,11 @@ TURN-ID is passed to active capability context providers when present."
                  session-id
                  :instructions instructions
                  :keep-recent-tokens keep-recent-tokens
-                 :allow-split-turn allow-active-turn
+                 :allow-split-turn (if (eq allow-split-turn
+                                            'inherit-active-turn)
+                                       allow-active-turn
+                                     allow-split-turn)
+                 :exclude-entry-ids exclude-entry-ids
                  :reason reason))
           (e-harness--emit-turn-event
            harness session-id turn-id 'compaction-prepared
@@ -1309,11 +1314,20 @@ TURN-ID is passed to active capability context providers when present."
              (not (e-harness--auto-compaction-no-progress-p
                    harness session-id)))))))
 
-(defun e-harness--maybe-auto-compact-session (harness session-id)
+(defun e-harness--maybe-auto-compact-session
+    (harness session-id &optional active-turn-id exclude-entry-ids)
   "Best-effort auto-compact SESSION-ID when it is near the context window."
   (when (e-harness--auto-compaction-needed-p harness session-id)
     (condition-case nil
-        (e-harness-compact-session harness session-id :reason 'auto)
+        (let ((args (list :reason 'auto)))
+          (when active-turn-id
+            (setq args
+                  (append args
+                          (list :allow-active-turn t
+                                :allow-split-turn nil
+                                :exclude-entry-ids exclude-entry-ids
+                                :turn-id active-turn-id))))
+          (apply #'e-harness-compact-session harness session-id args))
       (e-compaction-error nil))))
 
 (defun e-harness--cancel-active-request (entry)
@@ -1716,7 +1730,6 @@ cancellation.  SESSION-ID identifies the session."
      (when (e-harness--active-turn-running-p
             (gethash session-id (e-harness-active-turns harness)))
        (signal 'e-harness-active-turn-exists (list session-id)))
-     (e-harness--maybe-auto-compact-session harness session-id)
      (let* ((turn-id (e-harness--next-turn-id))
             (entry (list :id turn-id
                          :status 'running
@@ -1728,8 +1741,12 @@ cancellation.  SESSION-ID identifies the session."
                          :request nil)))
        (puthash session-id entry (e-harness-active-turns harness))
        (condition-case err
-           (e-harness--append-user-message
-            harness session-id turn-id prompt metadata)
+           (plist-put entry
+                      :prompt-message-id
+                      (plist-get
+                       (e-harness--append-user-message
+                        harness session-id turn-id prompt metadata)
+                       :id))
          (error
           (let ((message (e-harness--backend-error-message err))
                 (details (e-harness--backend-error-details err)))
@@ -1805,6 +1822,11 @@ cancellation.  SESSION-ID identifies the session."
              ()
              (when (and (active-entry-p) (not (plist-get entry :cancelled)))
                (plist-put entry :timer nil)
+               (e-harness--maybe-auto-compact-session
+                harness
+                session-id
+                turn-id
+                (list (plist-get entry :prompt-message-id)))
                (plist-put entry
                           :context
                           (e-harness-context harness session-id turn-id))
