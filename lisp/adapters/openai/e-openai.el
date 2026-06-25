@@ -886,6 +886,7 @@ list.  Return a cancellable `e-backend-request' handle."
   (let ((timeout e-openai-websocket-idle-timeout-seconds)
         websocket
         timeout-timer
+        close-timer
         settled
         closed
         assistant-message-candidate
@@ -911,6 +912,18 @@ list.  Return a cancellable `e-backend-request' handle."
              (setq closed t)
              (when websocket
                (websocket-close websocket))))
+         (defer-close-websocket ()
+           (unless closed
+             (setq closed t)
+             (when websocket
+               (let ((socket websocket)
+                     (close-function (symbol-function 'websocket-close)))
+                 (setq close-timer
+                       (run-at-time
+                        0 nil
+                        (lambda ()
+                          (setq close-timer nil)
+                          (funcall close-function socket))))))))
          (settle-error (err)
            (unless settled
              (setq settled t)
@@ -922,9 +935,10 @@ list.  Return a cancellable `e-backend-request' handle."
            (unless settled
              (setq settled t)
              (cancel-timeout)
-             (close-websocket)
-             (when on-complete
-               (funcall on-complete '(:status done)))))
+             (unwind-protect
+                 (when on-complete
+                   (funcall on-complete '(:status done)))
+               (defer-close-websocket))))
          (emit-item (item)
            (pcase (plist-get item :type)
              ('assistant-message
@@ -990,6 +1004,9 @@ list.  Return a cancellable `e-backend-request' handle."
                  (unless settled
                    (setq settled t))
                  (cancel-timeout)
+                 (when (timerp close-timer)
+                   (cancel-timer close-timer))
+                 (setq close-timer nil)
                  (close-websocket)
                  t)
        :metadata (append

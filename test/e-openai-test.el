@@ -1638,11 +1638,14 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
                          :messages '((:role user :content "hello"))
                          :options '(:model "gpt-test")
                          :on-item (lambda (item) (push item late-seen))
-                         :on-done (lambda (status)
-                                    (setq done-status status))
-                         :on-error (lambda (err) (setq error err)))
+	                         :on-done (lambda (status)
+	                                    (setq done-status status))
+	                         :on-error (lambda (err) (setq error err)))
         (should (e-openai-test--wait-until (lambda () done-status) 0.2))
         (should-not error)
+        (should (e-openai-test--wait-until
+                 (lambda () (= close-count 1))
+                 0.2))
         (should (= close-count 1))
         (should (equal (nreverse late-seen)
                        '((:type provider-anchor-candidate
