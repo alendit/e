@@ -17,6 +17,7 @@
 (require 'e-session)
 
 (declare-function e-harness-context "e-harness")
+(declare-function e-harness-display-options "e-harness")
 (declare-function e-harness-sessions "e-harness")
 (declare-function e-harness-turn-options "e-harness")
 (declare-function e-session-latest-token-usage-event "e-session")
@@ -204,6 +205,8 @@ and `:approximate'."
                       (ignore-errors
                         (e-harness-context harness session-id))))
            (options (or (plist-get context :options)
+                        (ignore-errors
+                          (e-harness-display-options harness session-id))
                         (ignore-errors
                           (e-harness-turn-options harness session-id))))
            (model (plist-get options :model))

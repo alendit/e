@@ -5131,7 +5131,7 @@ When REFRESH-MODE-LINE is non-nil, also refresh context-aware mode-line text."
                                   e-chat-harness
                                   e-chat-session-id)))
                         (options (ignore-errors
-                                   (e-harness-turn-options
+                                   (e-harness-display-options
                                     e-chat-harness
                                     e-chat-session-id)))
                         (model (plist-get options :model))

@@ -1176,6 +1176,21 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
     (should (equal (e-harness-state harness "session-1")
                    '(:session-id "session-1" :active-turn nil :message-count 0)))))
 
+(ert-deftest e-harness-test-state-uses-cached-message-count ()
+  "Harness state does not copy the transcript to count messages."
+  (let* ((harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)))
+         (store (e-harness-sessions harness)))
+    (e-harness-create-session harness :id "session-1")
+    (e-session-append-message store "session-1" '(:role user :content "one"))
+    (cl-letf (((symbol-function 'e-harness-messages)
+               (lambda (&rest _args)
+                 (error "messages should not be copied"))))
+      (should (equal (e-harness-state harness "session-1")
+                     '(:session-id "session-1"
+                       :active-turn nil
+                       :message-count 1))))))
+
 (ert-deftest e-harness-test-prompt-uses-context-strategy ()
   "Prompting delegates backend message construction to the context strategy."
   (let* ((captured-messages nil)
@@ -2933,6 +2948,22 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
       (should (equal (plist-get options :model) "gpt-test"))
       (should-not (plist-get options :tools)))))
 
+(ert-deftest e-harness-test-display-options-skip-tool-definitions ()
+  "Display options merge model settings without materializing tools."
+  (let ((harness (e-harness-create
+                  :backend (e-backend-fake-create :items nil)
+                  :default-options '(:model "default-model"
+                                     :reasoning-effort "medium"))))
+    (e-harness-create-session harness :id "session-1")
+    (e-harness-set-session-model harness "session-1" "session-model")
+    (cl-letf (((symbol-function 'e-harness-tools)
+               (lambda (&rest _args)
+                 (error "tools should not be materialized"))))
+      (let ((options (e-harness-display-options harness "session-1")))
+        (should (equal (plist-get options :model) "session-model"))
+        (should (equal (plist-get options :reasoning-effort) "medium"))
+        (should-not (plist-get options :tools))))))
+
 (ert-deftest e-harness-test-persists-activity-events-and-tags_turn_messages ()
   "Harness turn events persist as activity, and messages keep their turn id."
   (let* ((backend (e-backend-fake-create
@@ -3231,6 +3262,38 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
                      (eq (plist-get event :type) 'compaction-failed))
                    events))
       (should (= (length (e-session-compactions store "session-1")) 1)))))
+
+(ert-deftest e-harness-test-auto-compaction-reuses-prompt-context-check ()
+  "Prompt start does not build context twice just to check auto-compaction."
+  (let* ((backend (e-backend-create
+                   :name 'single-context
+                   :stream
+                   (cl-function
+                    (lambda (&key messages options on-item)
+                      (ignore messages options)
+                      (funcall on-item
+                               '(:type assistant-message :content "Answer."))
+                      (funcall on-item '(:type done :reason stop))))))
+         (harness (e-harness-create
+                   :backend backend
+                   :default-options '(:model "auto-model")))
+         (e-context-budget-model-token-limits '(("auto-model" . 1000000)))
+         (context-calls 0)
+         (original-context (symbol-function 'e-harness-context)))
+    (e-harness-create-session harness :id "session-1")
+    (e-session-append-message
+     (e-harness-sessions harness)
+     "session-1"
+     '(:role user :content "short"))
+    (cl-letf (((symbol-function 'e-harness-context)
+               (lambda (&rest args)
+                 (setq context-calls (1+ context-calls))
+                 (apply original-context args))))
+      (e-harness-prompt-async harness "session-1" "fresh prompt")
+      (should (equal (plist-get (e-harness-wait harness "session-1" 1.0)
+                                :status)
+                     'done)))
+    (should (= context-calls 1))))
 
 (ert-deftest e-harness-test-auto-compaction_expected_failure_keeps_prompt ()
   "Expected auto-compaction preparation failures do not block the prompt."

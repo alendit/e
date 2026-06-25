@@ -875,6 +875,14 @@ The session must currently have a running active turn."
   "Return session-specific turn options for SESSION-ID in HARNESS."
   (e-session-turn-options (e-harness-sessions harness) session-id))
 
+(defun e-harness-display-options (harness session-id)
+  "Return lightweight display options for HARNESS SESSION-ID.
+This merges default and session options without deriving prompt-cache keys or
+materializing tool definitions.  Presentation code uses it for status text."
+  (e-harness--merge-turn-options
+   (e-harness-default-options harness)
+   (e-harness-session-options harness session-id)))
+
 (defun e-harness--set-session-options (harness session-id options)
   "Replace SESSION-ID turn OPTIONS in HARNESS and emit an update event."
   (let ((turn-options
@@ -1297,13 +1305,29 @@ TURN-ID is passed to active capability context providers when present."
                   20000)))
       (and suffix-tokens (< suffix-tokens keep)))))
 
-(defun e-harness--auto-compaction-needed-p (harness session-id)
+(defun e-harness--auto-compaction-needed-p (harness session-id &optional context)
   "Return non-nil when SESSION-ID should auto-compact before prompting."
   (when e-harness-auto-compaction-enabled
-    (when-let ((status (e-context-budget-status
-                        harness session-id
-                        :prefer-token-usage t
-                        :estimate-context t)))
+    (when-let*
+        ((usage-status
+          (e-context-budget-status
+           harness session-id
+           :prefer-token-usage t
+           :estimate-context nil))
+         (status
+          (if (plist-get usage-status :used-tokens)
+              usage-status
+            (or (and context
+                     (let* ((options (plist-get context :options))
+                            (model (plist-get options :model))
+                            (used
+                             (e-context-budget-context-token-estimate context))
+                            (window (e-context-budget-model-window model)))
+                       (list :used-tokens used :window window)))
+                (e-context-budget-status
+                 harness session-id
+                 :prefer-token-usage t
+                 :estimate-context t)))))
       (let ((used (plist-get status :used-tokens))
             (window (plist-get status :window))
             (reserve (e-harness--auto-compaction-reserve-tokens)))
@@ -1315,9 +1339,9 @@ TURN-ID is passed to active capability context providers when present."
                    harness session-id)))))))
 
 (defun e-harness--maybe-auto-compact-session
-    (harness session-id &optional active-turn-id exclude-entry-ids)
+    (harness session-id &optional active-turn-id exclude-entry-ids context)
   "Best-effort auto-compact SESSION-ID when it is near the context window."
-  (when (e-harness--auto-compaction-needed-p harness session-id)
+  (when (e-harness--auto-compaction-needed-p harness session-id context)
     (condition-case nil
         (let ((args (list :reason 'auto)))
           (when active-turn-id
@@ -1662,14 +1686,15 @@ When a turn produced multiple assistant messages, return the last one."
 
 (cl-defun e-harness--run-prompt-turn-async
     (harness session-id turn-id &key on-request-start on-done on-error
-             cancelled-p append-message on-event)
+             cancelled-p append-message on-event context)
   "Start a queued async prompt turn for SESSION-ID and TURN-ID in HARNESS."
   (e-harness--profile-call
    'harness.prompt-turn-async-start
    (list :session-id session-id
          :turn-id turn-id)
    (lambda ()
-     (let ((context (e-harness-context harness session-id turn-id)))
+     (let ((context (or context
+                        (e-harness-context harness session-id turn-id))))
        (e-loop-start-turn
         :session-id session-id
         :turn-id turn-id
@@ -1821,15 +1846,17 @@ cancellation.  SESSION-ID identifies the session."
             (start-turn
              ()
              (when (and (active-entry-p) (not (plist-get entry :cancelled)))
-               (plist-put entry :timer nil)
-               (e-harness--maybe-auto-compact-session
-                harness
-                session-id
-                turn-id
-                (list (plist-get entry :prompt-message-id)))
-               (plist-put entry
-                          :context
-                          (e-harness-context harness session-id turn-id))
+               (let ((context (e-harness-context harness session-id turn-id)))
+                 (plist-put entry :timer nil)
+                 (when (e-harness--maybe-auto-compact-session
+                        harness
+                        session-id
+                        turn-id
+                        (list (plist-get entry :prompt-message-id))
+                        context)
+                   (setq context
+                         (e-harness-context harness session-id turn-id)))
+                 (plist-put entry :context context))
                (plist-put entry :provider-anchor-candidates nil)
                (e-harness--run-prompt-turn-async
                 harness session-id turn-id
@@ -1865,7 +1892,8 @@ cancellation.  SESSION-ID identifies the session."
                   (when (and (active-entry-p)
                              (not (plist-get entry :cancelled)))
                     (e-harness--append-message
-                     harness session-id turn-id message)))))))
+                     harness session-id turn-id message)))
+                :context (plist-get entry :context)))))
          (if (and delay (> delay 0))
              (plist-put entry :timer (run-at-time delay nil #'start-turn))
            (start-turn)))
@@ -1890,12 +1918,14 @@ cancellation.  SESSION-ID identifies the session."
 
 (defun e-harness-state (harness session-id)
   "Return settled state for SESSION-ID in HARNESS."
-  (let ((entry (gethash session-id (e-harness-active-turns harness))))
+  (let* ((entry (gethash session-id (e-harness-active-turns harness)))
+         (session (ignore-errors
+                    (e-session-get (e-harness-sessions harness) session-id))))
     (list :session-id session-id
           :active-turn (when (or (not (listp entry))
                                  (eq (plist-get entry :status) 'running))
                          (e-harness--active-turn-id entry))
-          :message-count (length (e-harness-messages harness session-id)))))
+          :message-count (or (plist-get session :message-count) 0))))
 
 (defun e-harness-abort (harness session-id)
   "Abort the active turn for SESSION-ID in HARNESS."

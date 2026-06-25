@@ -6367,6 +6367,31 @@ The context-window denominator comes from the live provider lookup
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-set-status-skips-tool-option-materialization ()
+  "Ordinary status updates avoid building full turn options."
+  (let* ((store (e-session-store-create))
+         (backend (e-backend-fake-create :items nil))
+         (harness (e-harness-create
+                   :backend backend
+                   :sessions store
+                   :default-options
+                   '(:model "gpt-5.5" :reasoning-effort "high")))
+         (buffer (e-chat-open :harness harness
+                              :session-id "chat-status-lightweight"))
+         (turn-option-calls 0))
+    (unwind-protect
+        (with-current-buffer buffer
+          (cl-letf (((symbol-function 'e-harness-turn-options)
+                     (lambda (&rest _args)
+                       (setq turn-option-calls (1+ turn-option-calls))
+                       (error "full turn options should be skipped"))))
+            (e-chat--set-status "waiting for provider")
+            (e-chat--set-status "done"))
+          (should (= turn-option-calls 0))
+          (should (string-match-p "gpt-5.5/high" header-line-format)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-set-status-skips-duplicate-updates ()
   "Repeated ordinary status updates do not rewrite header-line state."
   (let* ((store (e-session-store-create))
@@ -6597,6 +6622,41 @@ The context-window denominator comes from the live provider lookup
                             :turn-id "turn-1"
                             :payload '(:input-tokens 1200
                                        :total-tokens 1300))))
+          (should (string-match-p "1.2k/258k tok" mode-name)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-token-usage-event-skips-tool-option-materialization ()
+  "Fresh token-usage mode-line refresh avoids full tool option materialization."
+  (let* ((store (e-session-store-create))
+         (backend (e-backend-fake-create :items nil))
+         (harness (e-harness-create
+                   :backend backend
+                   :sessions store
+                   :default-options
+                   '(:model "gpt-5.5" :reasoning-effort "high")))
+         (buffer (e-chat-open :harness harness
+                              :session-id "chat-token-usage-lightweight"))
+         (turn-option-calls 0))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-session-append-activity-event
+           store
+           e-chat-session-id
+           "turn-1"
+           'token-usage
+           '(:input-tokens 1200 :total-tokens 1300))
+          (cl-letf (((symbol-function 'e-harness-turn-options)
+                     (lambda (&rest _args)
+                       (setq turn-option-calls (1+ turn-option-calls))
+                       (error "full turn options should be skipped"))))
+            (e-chat--render-event
+             (e-events-make :type 'token-usage
+                            :session-id e-chat-session-id
+                            :turn-id "turn-1"
+                            :payload '(:input-tokens 1200
+                                       :total-tokens 1300))))
+          (should (= turn-option-calls 0))
           (should (string-match-p "1.2k/258k tok" mode-name)))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
