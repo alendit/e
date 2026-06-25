@@ -48,7 +48,9 @@
   (let ((steer (and (e-backend-request-p request)
                     (e-backend-request-steer request))))
     (unless (functionp steer)
-      (signal 'e-backend-steering-unsupported (list request)))
+      (signal 'e-backend-steering-unsupported
+              (when (e-backend-request-p request)
+                (list (e-backend-request-metadata request)))))
     (funcall steer :prompt prompt :metadata metadata)))
 
 (cl-defun e-backend-stream

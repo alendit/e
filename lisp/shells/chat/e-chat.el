@@ -6940,7 +6940,7 @@ plain submit steers an active turn and prefix submit queues a follow-up."
              (redisplay t))
          (e-backend-steering-unsupported
           (e-chat--set-status "steering unsupported")
-          (message "Steering unsupported: %s" (error-message-string err)))
+          (message "Steering unsupported"))
          (user-error
           (if (memq intent '(steer queue))
               (progn
