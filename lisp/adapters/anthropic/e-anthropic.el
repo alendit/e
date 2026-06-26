@@ -593,20 +593,68 @@ must sum all three."
       (e-anthropic--parse-json partial-json)
     nil))
 
-(defun e-anthropic--non-stream-error-item (stream-text)
+(defun e-anthropic--text-preview (text &optional limit)
+  "Return a compact single-line preview of TEXT.
+LIMIT defaults to 240 characters."
+  (let* ((limit (or limit 240))
+         (preview (string-trim
+                   (replace-regexp-in-string
+                    "[[:space:]\n\r\t]+" " " (or text "")))))
+    (if (> (length preview) limit)
+        (concat (substring preview 0 limit) "...")
+      preview)))
+
+(defun e-anthropic--html-text-preview (html &optional limit)
+  "Return a compact text preview for HTML.
+LIMIT defaults to 240 characters."
+  (e-anthropic--text-preview
+   (replace-regexp-in-string "<[^>]+>" " " (or html ""))
+   limit))
+
+(defun e-anthropic--non-stream-json-error-item (stream-text)
   "Return a backend error item when STREAM-TEXT is a non-stream JSON body."
-  (when (string-prefix-p "{" (string-trim-left stream-text))
-    (condition-case nil
-        (let* ((payload (e-anthropic--parse-json stream-text))
-               (error (plist-get payload :error))
-               (message (cond
-                         ((listp error) (plist-get error :message))
-                         ((stringp error) error))))
-          (when message
+  (condition-case nil
+      (let* ((payload (e-anthropic--parse-json stream-text))
+             (error (plist-get payload :error))
+             (message (cond
+                       ((listp error) (plist-get error :message))
+                       ((stringp error) error))))
+        (when message
+          (list :type 'backend-error
+                :content message
+                :payload payload)))
+    (error nil)))
+
+(defun e-anthropic--non-stream-error-item (stream-text)
+  "Return a backend error item for a non-empty, non-SSE STREAM-TEXT.
+JSON error bodies surface their `:error' message verbatim.  HTML or other
+non-JSON bodies (gateway/transport failures returning an error page instead of
+a Messages stream) are compacted into a single-line preview so the failure is
+visible rather than masked as empty assistant output."
+  (let ((trimmed (string-trim-left (or stream-text ""))))
+    (cond
+     ((string-empty-p (string-trim trimmed)) nil)
+     ((string-prefix-p "{" trimmed)
+      (or (e-anthropic--non-stream-json-error-item stream-text)
+          (let ((preview (e-anthropic--text-preview stream-text)))
             (list :type 'backend-error
-                  :content message
-                  :payload payload)))
-      (error nil))))
+                  :content (format "Provider returned non-stream JSON instead of a Messages stream: %s"
+                                   preview)
+                  :payload (list :response-kind 'json :preview preview)))))
+     ((string-prefix-p "<" trimmed)
+      (let ((preview (e-anthropic--html-text-preview stream-text)))
+        (when (not (string-empty-p preview))
+          (list :type 'backend-error
+                :content (format "Provider returned HTML instead of a Messages stream: %s"
+                                 preview)
+                :payload (list :response-kind 'html :preview preview)))))
+     (t
+      (let ((preview (e-anthropic--text-preview stream-text)))
+        (when (not (string-empty-p preview))
+          (list :type 'backend-error
+                :content (format "Provider returned non-stream text instead of a Messages stream: %s"
+                                 preview)
+                :payload (list :response-kind 'text :preview preview))))))))
 
 (defun e-anthropic-parse-stream (stream-text)
   "Parse Anthropic Messages STREAM-TEXT into backend-neutral items.

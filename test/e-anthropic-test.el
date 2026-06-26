@@ -304,6 +304,31 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"))
                  :error (:type "invalid_request_error"
                          :message "max_tokens is required")))))))
 
+(ert-deftest e-anthropic-test-parse-non-stream-html-error ()
+  "A non-stream HTML error body becomes a single backend error item."
+  (let* ((items (e-anthropic-parse-stream
+                 "<html><head><title>520</title></head><body><h1>Web server is returning an unknown error</h1></body></html>"))
+         (item (car items)))
+    (should (= (length items) 1))
+    (should (eq (plist-get item :type) 'backend-error))
+    (should (eq (plist-get (plist-get item :payload) :response-kind) 'html))
+    (should (string-match-p "HTML" (plist-get item :content)))
+    (should (string-match-p "unknown error" (plist-get item :content)))))
+
+(ert-deftest e-anthropic-test-parse-non-stream-text-error ()
+  "A non-stream, non-JSON text body becomes a single backend error item."
+  (let* ((items (e-anthropic-parse-stream "upstream connect error or disconnect/reset before headers"))
+         (item (car items)))
+    (should (= (length items) 1))
+    (should (eq (plist-get item :type) 'backend-error))
+    (should (eq (plist-get (plist-get item :payload) :response-kind) 'text))
+    (should (string-match-p "upstream connect error" (plist-get item :content)))))
+
+(ert-deftest e-anthropic-test-parse-empty-body-returns-no-items ()
+  "A truly empty body yields no items so the loop reports empty output."
+  (should (null (e-anthropic-parse-stream "")))
+  (should (null (e-anthropic-parse-stream "   \n  "))))
+
 (ert-deftest e-anthropic-test-parse-tool-use-stream ()
   "Messages tool_use blocks accumulate input JSON into a neutral tool call."
   (should

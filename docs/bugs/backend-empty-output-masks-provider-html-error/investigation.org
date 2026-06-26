@@ -140,6 +140,29 @@ The follow-up inspection slice is now implemented:
 - Retry, provider switching, transcript mutation, and raw response persistence
   changes remain out of scope for this slice.
 
+* Anthropic Adapter Recurrence (2026-06-26)
+
+The same empty-output masking recurred against =eng-ai-gateway-opus= on
+=/v1/messages= in session =20260626T103032-4019f2efd118=. The failing
+provider request finished in =1.414= seconds (real turns took 7-40s) with
+=status done= and no =token-usage= event, then =e-loop= emitted
+=backend-empty-output (:reason nil)= and =turn-failed=.
+
+Root cause is the same class as the OpenAI bug, but the parser fix never reached
+the Anthropic adapter: =e-anthropic-parse-stream= only classified non-stream
+bodies as =backend-error= when they parsed as JSON containing an =:error=
+message. HTML error pages, plain-text gateway/transport errors, and JSON bodies
+without an =:error= field all parsed to no SSE events and no JSON error message,
+so the parser returned =nil= and the loop degraded to the generic empty-output
+symptom.
+
+Fix: =e-anthropic--non-stream-error-item= now classifies any non-empty, non-SSE
+body. JSON-with-error keeps its verbatim message; HTML and other non-JSON bodies
+are compacted into a single-line preview tagged with
+=(:response-kind html|text|json :preview ...)=, mirroring the OpenAI adapter.
+Truly empty bodies still yield no items so the genuine empty-completion path
+remains intact.
+
 * Validation
 
 - Confirmed the new parser regression failed before the fix:
