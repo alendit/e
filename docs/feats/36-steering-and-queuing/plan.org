@@ -21,12 +21,10 @@ In-review.
 
 * Implementation Notes
 
-- The first implementation adds the backend-neutral steering contract and keeps
-  provider support explicit.  Current OpenAI Responses/Chat Completions and
-  Anthropic Messages adapters expose cancellable HTTP/timer request handles, but
-  no real mid-turn input mechanism.  They therefore leave request =:steer= nil
-  and plain active-turn submit reports unsupported steering without discarding
-  the composer draft.
+- The corrected implementation makes baseline steering harness-owned.  Plain
+  active-turn submit appends pending user input to the running turn; the turn
+  loop drains it into the same logical turn at the next backend request
+  boundary.  Provider-specific mid-stream mutation is not part of this slice.
 
 * Background
 
@@ -168,20 +166,20 @@ The harness owns turn lifecycle and provider request interaction:
   same state.
 - Active request entries should retain the provider request handle already
   published through =e-loop=.
-- =e-harness-steer-active-turn= should call an optional backend request steering
-  function and emit a durable activity event only after the provider accepts
-  the steering input.
+- =e-harness-steer-active-turn= should append pending user input to the active
+  turn, emit a durable steering activity event, and return the active turn id.
 - =e-harness-queue-prompt= should append a queue item without starting another
   turn while the active turn is running.
 - When a turn finishes, fails, or is cancelled, the harness should start the
   next queued prompt only after the active-turn entry is settled and cleared.
 
-The backend contract owns provider-specific steering capability:
+The loop owns same-turn drain points:
 
-- Extend =e-backend-request= with an optional =steer= function.
-- Add =e-backend-steer-request= as the only public helper that invokes it.
-- Providers that do not support steering leave the slot nil; callers receive a
-  specific unsupported steering error.
+- Drain pending steering input before each backend request.
+- After a normal assistant response, drain any input submitted during that
+  response; if present, start another backend request inside the same turn.
+- Append drained steering input as ordinary durable user messages using the
+  active turn id.
 
 ** Queue item shape
 
@@ -212,10 +210,9 @@ the chat UI and persisted activity history:
            :metadata (:source chat-composer :submit-mode steering)))
 #+end_src
 
-The full steering text should not be duplicated into the assistant transcript
-as a separate ordinary user prompt during the same turn unless the provider
-adapter explicitly requires that representation and the harness can guarantee
-the model saw it.
+The full steering text is appended as an ordinary user message when the running
+turn drains it into the next backend request.  The event remains a compact
+activity signal so the UI can show that steering was accepted immediately.
 
 ** Bottom chrome
 
@@ -265,35 +262,35 @@ Tests:
 - Multiple queued prompts drain in insertion order.
 - Metadata and references survive queueing and later submission.
 
-** Slice 2: Backend steering contract
+** Slice 2: Harness-owned steering contract
 
-Add an explicit, optional provider steering contract.
+Add harness-owned pending steering input for active turns.
 
 Files:
 
-- Modify =lisp/core/e-backend.el=.
 - Modify =lisp/core/e-harness.el=.
+- Modify =lisp/core/e-loop.el=.
 - Modify =test/e-harness-test.el=.
+- Modify =test/e-loop-test.el=.
 
 Work:
 
-1. Extend =e-backend-request= with a =steer= slot.
-2. Add =e-backend-steer-request= that calls the slot or signals
-   =e-backend-steering-unsupported=.
-3. Add =e-harness-steer-active-turn= that validates a running active turn,
-   extracts the active request handle, calls =e-backend-steer-request=, and emits
-   =turn-steered= only on success.
-4. Keep the active composer text intact when steering fails; the shell will own
-   that behavior, but the harness API must return errors precisely enough for
-   the shell to decide.
+1. Add active-turn pending steering storage.
+2. Add =e-harness-steer-active-turn= that validates a running active turn,
+   appends pending steering input, emits =turn-steered=, and returns the active
+   turn id.
+3. Extend =e-loop-start-turn= with a pending-input drain callback.
+4. Drain pending input before backend requests and after normal assistant
+   responses, continuing the same logical turn when input was drained.
+5. Keep provider request handles scoped to cancellation and metadata.
 
 Tests:
 
 - Steering with no active turn signals a no-active-turn error.
-- Steering with a running active turn and a request =steer= function calls that
-  function with the prompt and metadata.
-- Steering with a request lacking =steer= signals the unsupported steering
-  condition and does not append a transcript user message.
+- Steering with a running active turn stores pending input and emits
+  =turn-steered=.
+- Pending steering input is appended as a durable user message and included in a
+  follow-up backend request inside the same turn.
 - Successful steering emits =turn-steered= with the active turn id.
 
 ** Slice 3: Chat submit intent and prefix behavior
@@ -318,8 +315,8 @@ Work:
 5. With an active turn and no prefix, call =e-chat-session-steer=.
 6. With an active turn and =C-u= prefix, call =e-chat-session-queue=.
 7. Clear the composer only after the chosen operation succeeds.
-8. Keep the composer text and show a specific message when steering is
-   unsupported or queueing fails.
+8. Keep the composer text and show a specific message when active-turn steering
+   or queueing is rejected.
 
 Tests:
 
@@ -327,7 +324,7 @@ Tests:
 - Plain =C-c C-c= with an active turn calls steering and clears the composer on
   success.
 - =C-u C-c C-c= with an active turn queues and clears the composer on success.
-- Failed steering leaves the composer text unchanged.
+- Rejected steering leaves the composer text unchanged.
 - Noninteractive submit callers keep their existing behavior.
 
 ** Slice 4: Queue list rendering above the composer
@@ -427,8 +424,8 @@ Work:
 
 * Risks and Constraints
 
-- Provider support for true steering may be uneven.  The architecture must keep
-  unsupported steering explicit instead of papering over it with queueing.
+- Provider support for mid-stream request mutation may be uneven.  The baseline
+  steering path must remain harness-owned instead of falling back to queueing.
 - Queue draining must not start the next prompt before failure/cancellation
   rendering finishes and the previous active-turn entry is cleared.
 - Bottom-chrome rendering is already sensitive because composer spacer,
@@ -442,10 +439,10 @@ Work:
 
 1. If this work package stopped here, would the project be better off than if it
    had not been built?
-   Yes.  Even before provider-specific steering is broadly available, the plan
-   establishes a real queue model, keeps unsupported steering honest, and
-   clarifies the boundary between chat UI, session actions, harness lifecycle,
-   and backend requests.
+   Yes.  Even before provider-specific mid-stream mutation is available, the
+   plan establishes real queueing and harness-owned steering, and clarifies the
+   boundary between chat UI, session actions, harness lifecycle, and backend
+   requests.
 
 2. What final direction does this move toward?
    E chat becomes an interactive live agent surface where a user can steer

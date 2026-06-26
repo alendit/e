@@ -79,15 +79,16 @@ published, used to calculate `:elapsed-seconds' for finished events."
 (cl-defun e-loop-start-turn
     (&key session-id turn-id messages backend tools tool-lifecycle options on-event
           append-message refresh-messages on-request-start on-done on-error
-          cancelled-p)
+          cancelled-p drain-pending-input)
   "Start one async agent turn for SESSION-ID and TURN-ID.
 MESSAGES, BACKEND, TOOLS, TOOL-LIFECYCLE, and OPTIONS describe the turn input.
 ON-EVENT, APPEND-MESSAGE, REFRESH-MESSAGES, ON-REQUEST-START, ON-DONE,
-ON-ERROR, and CANCELLED-P receive turn progress, output, refreshed context,
-provider request handles, settlement, failures, and cancellation state.  The
-provider request is started through `e-backend-start'.  Tool execution is
-started through TOOL-LIFECYCLE when supplied, otherwise through `e-tools-start'.
-Provider I/O, tool I/O, and turn settlement are callback-driven."
+ON-ERROR, CANCELLED-P, and DRAIN-PENDING-INPUT receive turn progress, output,
+refreshed context, provider request handles, settlement, failures,
+cancellation state, and same-turn pending user input.  The provider request is
+started through `e-backend-start'.  Tool execution is started through
+TOOL-LIFECYCLE when supplied, otherwise through `e-tools-start'.  Provider I/O,
+tool I/O, and turn settlement are callback-driven."
   (ignore session-id turn-id)
   (let ((turn-messages (copy-sequence messages))
         (settled nil)
@@ -118,9 +119,19 @@ Provider I/O, tool I/O, and turn settlement are callback-driven."
           (setq active-request request)
           (when on-request-start
             (funcall on-request-start request)))
+         (drain-pending
+          ()
+          (let ((pending (and drain-pending-input
+                              (funcall drain-pending-input))))
+            (when pending
+              (dolist (message pending)
+                (setq turn-messages (append turn-messages (list message)))
+                (funcall append-message message))
+              t)))
          (start-request
           ()
           (unless (or settled (cancelled))
+            (drain-pending)
             (let ((tool-called nil)
                   (tool-queue nil)
                   (active-tool nil)
@@ -365,8 +376,10 @@ Provider I/O, tool I/O, and turn settlement are callback-driven."
                                                    (append turn-messages
                                                            (list message)))
                                              (funcall append-message message)
-                                             (finish done-reason
-                                                     (response-text))))))
+                                             (if (drain-pending)
+                                                 (start-request)
+                                               (finish done-reason
+                                                       (response-text)))))))
                                    (error
                                     (fail-provider err)))))
                              :on-error #'fail-provider)))

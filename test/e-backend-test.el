@@ -57,38 +57,6 @@
       (should (e-backend-cancel-request request))
       (should cancelled))))
 
-(ert-deftest e-backend-test-steer-request-calls-steering-function ()
-  "Request handles can expose a provider-specific steering function."
-  (let* ((seen nil)
-         (request (e-backend-request-create
-                   :steer (cl-function
-                           (lambda (&key prompt metadata)
-                             (setq seen (list prompt metadata))
-                             :accepted)))))
-    (should (eq (e-backend-steer-request
-                 request "focus here" :metadata '(:source chat-composer))
-                :accepted))
-    (should (equal seen '("focus here" (:source chat-composer))))))
-
-(ert-deftest e-backend-test-steer-request-signals-unsupported ()
-  "Request handles without steering support fail explicitly."
-  (let ((request (e-backend-request-create)))
-    (should-error
-     (e-backend-steer-request request "focus here")
-     :type 'e-backend-steering-unsupported)))
-
-(ert-deftest e-backend-test-steer-request-unsupported-uses-compact-payload ()
-  "Unsupported steering errors do not retain the live request object."
-  (let* ((request (e-backend-request-create
-                   :metadata '(:transport websocket
-                               :timeout-seconds 180)))
-         (err (should-error
-               (e-backend-steer-request request "focus here")
-               :type 'e-backend-steering-unsupported)))
-    (should (equal (cdr err)
-                   '((:transport websocket :timeout-seconds 180))))
-    (should-not (seq-some #'e-backend-request-p (cdr err)))))
-
 (ert-deftest e-backend-test-fake-starts-asynchronously ()
   "Fake backends can deliver stream items through the async start contract."
   (let* ((backend (e-backend-fake-create

@@ -861,6 +861,26 @@ The session must currently have a running active turn."
                (replace-regexp-in-string "[\n\r\t ]+" " " prompt))))
     (e-harness--string-byte-prefix text 160)))
 
+(defun e-harness--pending-steering-items (entry)
+  "Return pending steering items from active turn ENTRY."
+  (and (listp entry)
+       (plist-get entry :pending-steering-input)))
+
+(defun e-harness--append-pending-steering-item (entry prompt metadata)
+  "Append PROMPT and METADATA as pending steering input on ENTRY."
+  (plist-put entry
+             :pending-steering-input
+             (append (e-harness--pending-steering-items entry)
+                     (list (list :prompt prompt
+                                 :metadata (copy-sequence metadata))))))
+
+(defun e-harness--drain-pending-steering-input (entry)
+  "Return and clear pending steering items from active turn ENTRY."
+  (let ((items (e-harness--pending-steering-items entry)))
+    (when items
+      (plist-put entry :pending-steering-input nil)
+      items)))
+
 (cl-defun e-harness-steer-active-turn
     (harness session-id prompt &key metadata)
   "Steer SESSION-ID's running active turn with PROMPT in HARNESS."
@@ -869,15 +889,13 @@ The session must currently have a running active turn."
   (let ((entry (gethash session-id (e-harness-active-turns harness))))
     (unless (e-harness--active-turn-running-p entry)
       (signal 'e-harness-no-active-turn (list session-id)))
-    (let* ((turn-id (plist-get entry :id))
-           (request (plist-get entry :request))
-           (result (e-backend-steer-request
-                    request prompt :metadata metadata)))
+    (let ((turn-id (plist-get entry :id)))
+      (e-harness--append-pending-steering-item entry prompt metadata)
       (e-harness--emit-turn-event
        harness session-id turn-id 'turn-steered
        (list :prompt-preview (e-harness--steering-prompt-preview prompt)
              :metadata (copy-sequence metadata)))
-      result)))
+      turn-id)))
 
 (defun e-harness--drain-next-queued-prompt (harness session-id settled-entry)
   "Start SESSION-ID's next queued prompt after SETTLED-ENTRY clears."
@@ -1753,7 +1771,7 @@ When a turn produced multiple assistant messages, return the last one."
 
 (cl-defun e-harness--run-prompt-turn-async
     (harness session-id turn-id &key on-request-start on-done on-error
-             cancelled-p append-message on-event context)
+             cancelled-p append-message on-event context drain-pending-input)
   "Start a queued async prompt turn for SESSION-ID and TURN-ID in HARNESS."
   (e-harness--profile-call
    'harness.prompt-turn-async-start
@@ -1782,6 +1800,17 @@ When a turn produced multiple assistant messages, return the last one."
         (lambda ()
           (plist-get (e-harness-context harness session-id turn-id)
                      :messages))
+        :drain-pending-input
+        (or drain-pending-input
+            (lambda ()
+              (mapcar
+               (lambda (item)
+                 (list :role 'user
+                       :content (plist-get item :prompt)
+                       :metadata (plist-get item :metadata)))
+               (e-harness--drain-pending-steering-input
+                (gethash session-id
+                         (e-harness-active-turns harness))))))
         :append-message
         (or append-message
             (lambda (message)
@@ -1960,6 +1989,16 @@ cancellation.  SESSION-ID identifies the session."
                              (not (plist-get entry :cancelled)))
                     (e-harness--append-message
                      harness session-id turn-id message)))
+                :drain-pending-input
+                (lambda ()
+                  (when (and (active-entry-p)
+                             (not (plist-get entry :cancelled)))
+                    (mapcar
+                     (lambda (item)
+                       (list :role 'user
+                             :content (plist-get item :prompt)
+                             :metadata (plist-get item :metadata)))
+                     (e-harness--drain-pending-steering-input entry))))
                 :context (plist-get entry :context)))))
          (if (and delay (> delay 0))
              (plist-put entry :timer (run-at-time delay nil #'start-turn))

@@ -7179,9 +7179,6 @@ plain submit steers an active turn and prefix submit queues a follow-up."
                 ('queue "queued")
                 (_ "queued")))
              (e-chat--insert-composer))
-         (e-backend-steering-unsupported
-          (e-chat--set-status "steering unsupported")
-          (message "Steering unsupported"))
          (user-error
           (if (memq intent '(steer queue))
               (progn

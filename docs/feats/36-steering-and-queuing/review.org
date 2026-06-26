@@ -101,8 +101,8 @@ No output.
 
 * UX and performance playthrough
 
-- Unsupported steering: in a temporary running chat turn, plain active submit
-  reported =steering unsupported= and preserved the composer draft =steer draft=.
+- Steering: in a temporary running chat turn, plain active submit was accepted
+  as pending same-turn input and cleared the composer.
 - Queue display: =C-u C-c C-c= during that active turn rendered =Queued prompts=
   with =queued live follow-up= above the composer in the attached Emacs window.
 - Queue drain: finishing the first held turn started =queued live follow-up=,
@@ -125,8 +125,8 @@ emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona
 Bounded live probe result:
 
 #+begin_example
-(:unsupported-draft "steer draft"
- :unsupported-visible t
+(:steering-accepted t
+ :composer-after-steering ""
  :queue-visible t
  :queue-length 1
  :composer-after-queue ""
@@ -144,25 +144,25 @@ above the composer before the drain step.
 
 - Slice 1 is covered by harness/session queue APIs, queue storage,
   =queue-changed= events, FIFO drain, reset cleanup, and queue metadata tests.
-- Slice 2 is covered by the backend request =:steer= slot, explicit unsupported
-  steering condition, harness steering action, and steering event tests.
+- Slice 2 is covered by harness pending steering storage, same-turn loop drain,
+  harness steering action, and steering event tests.
 - Slice 3 is covered by active submit intent dispatch, prefix queueing, draft
-  preservation on unsupported steering, and noninteractive submit compatibility.
+  preservation on rejected steering/queueing, and noninteractive submit
+  compatibility.
 - Slice 4 is covered by queue chrome rendering above the composer and persistence
   across composer refresh, final insertion, failure/cancel rendering, and empty
   queue removal.
-- Slice 5 is covered by adapter inspection and the plan note that current
-  OpenAI Responses, OpenAI Chat Completions, and Anthropic Messages request
-  handles do not expose a real mid-turn input mechanism, so they intentionally
-  leave =:steer= unsupported.
+- Slice 5 is covered by adapter inspection and the corrected plan note that
+  provider-specific mid-stream mutation remains out of scope until a real
+  adapter implementation exists.
 
 * Architecture review
 
-The ownership follows the plan: the harness owns active-turn lifecycle and
-queue drain, the chat-session layer exposes semantic actions, the shell owns
-prefix handling and bottom chrome rendering, and the backend contract exposes
-only the optional request-level steering function.  Provider adapters do not
-fake steering through transcript append or queueing.
+The ownership follows the corrected plan: the harness owns active-turn
+lifecycle, queue drain, and pending steering input; the loop owns same-turn
+drain points; the chat-session layer exposes semantic actions; the shell owns
+prefix handling and bottom chrome rendering.  Provider adapters do not fake
+mid-stream mutation.
 
 * Design self-check
 
@@ -171,8 +171,8 @@ fake steering through transcript append or queueing.
    turns.
 2. It moves toward live-configurable chat workflows where mid-turn input and
    follow-up work are first-class harness/session behavior.
-3. Provider steering remains the uncertain decision and is localized to the
-   optional backend request =:steer= contract.
+3. Provider mid-stream mutation remains the uncertain decision and is out of
+   scope until a real adapter capability exists.
 4. Ownership is cohesive: lifecycle in harness, semantic actions in
    chat-session, presentation in chat shell, transport support in adapters.
 5. Coupling is reduced because shell code calls session actions instead of
@@ -182,13 +182,13 @@ fake steering through transcript append or queueing.
 7. Side effects stay at the shell and harness boundaries; provider transport
    remains behind backend requests.
 8. The new abstractions are semantically real: queueing and steering are
-   distinct operations with different provider requirements.
+   distinct operations with different turn-lifecycle behavior.
 9. Compatibility is explicit: ordinary submit and noninteractive prompt submit
    remain supported.
 10. No legacy path was introduced for fake steering.
-11. Expected unsupported steering surfaces through a specific condition; active
-    steering/queue failures preserve the draft and report a visible input
-    failure, while ordinary submit keeps its existing error behavior.
+11. Expected active steering/queue failures preserve the draft and report a
+    visible input failure, while ordinary submit keeps its existing error
+    behavior.
 12. Core behavior is proven by focused backend, harness, session, and chat tests,
     with live reload and visual verification for user-facing behavior.
 

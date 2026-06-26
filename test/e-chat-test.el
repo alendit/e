@@ -690,8 +690,8 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest e-chat-test-failed-active-steering-preserves-composer ()
-  "Unsupported steering keeps the user's draft in the composer."
+(ert-deftest e-chat-test-active-steering-stores-pending-input ()
+  "Plain active steering stores pending input and clears the composer."
   (let* ((backend (e-backend-create
                    :name "held-chat"
                    :start (cl-function
@@ -703,29 +703,23 @@
          (harness (e-harness-create :backend backend))
          (e-chat-submit-backend-delay 0)
          (buffer (e-chat-open :harness harness
-                              :session-id "chat-steer-failure"))
-         shown-message)
+                              :session-id "chat-steer-pending")))
     (unwind-protect
         (with-current-buffer buffer
           (goto-char (point-max))
           (insert "first")
-          (e-chat-submit)
+          (let ((turn-id (e-chat-submit)))
           (goto-char (point-max))
           (insert "focus here")
-	          (cl-letf (((symbol-function 'e-chat-session-steer)
-	                     (lambda (&rest _args)
-	                       (signal 'e-backend-steering-unsupported
-	                               (list (e-backend-request-create)))))
-	                    ((symbol-function 'error-message-string)
-	                     (lambda (&rest _args)
-	                       (error "error-message-string should not run")))
-	                    ((symbol-function 'message)
-	                     (lambda (format-string &rest args)
-	                       (setq shown-message
-	                             (apply #'format format-string args)))))
-            (e-chat-submit))
-          (should (equal (e-chat--composer-text) "focus here"))
-          (should (string-match-p "Steering unsupported" shown-message)))
+            (should (equal (e-chat-submit) turn-id))
+            (should (equal (e-chat--composer-text) ""))
+            (should (string-match-p "steered" (format "%s" header-line-format)))
+            (let ((entry (gethash e-chat-session-id
+                                  (e-harness-active-turns harness))))
+              (should (equal (e-harness--pending-steering-items entry)
+                             '((:prompt "focus here"
+                                :metadata (:source chat-composer
+                                           :submit-mode steering))))))))
       (when (buffer-live-p buffer)
         (with-current-buffer buffer
           (ignore-errors

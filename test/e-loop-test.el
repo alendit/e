@@ -774,6 +774,83 @@
                            (nreverse events))
                    '(turn-started tool-started tool-finished turn-finished)))))
 
+(ert-deftest e-loop-test-start-turn-requeries-backend-after-pending-input ()
+  "Async turn execution starts a follow-up request after pending user input."
+  (let* ((calls 0)
+         (pending nil)
+         (backend (e-backend-create
+                   :name "pending-input-followup"
+                   :start
+                   (cl-function
+                    (lambda (&key messages options on-item on-done on-error
+                                   on-request-start)
+                      (ignore options on-error on-request-start)
+                      (setq calls (1+ calls))
+                      (run-at-time
+                       0 nil
+                       (lambda ()
+                         (if (= calls 1)
+                             (progn
+                               (should (equal (mapcar (lambda (message)
+                                                        (plist-get message :role))
+                                                      messages)
+                                              '(user)))
+                               (funcall on-item
+                                        '(:type assistant-message
+                                          :content "first answer"))
+                               (setq pending
+                                     '((:role user
+                                        :content "steer here"
+                                        :metadata (:source chat-composer))))
+                               (funcall on-item
+                                        '(:type done :reason stop)))
+                           (should (equal (mapcar (lambda (message)
+                                                    (plist-get message :role))
+                                                  messages)
+                                          '(user assistant user)))
+                           (should (equal (plist-get (car (last messages))
+                                                     :content)
+                                          "steer here"))
+                           (funcall on-item
+                                    '(:type assistant-message
+                                      :content "final answer"))
+                           (funcall on-item
+                                    '(:type done :reason stop)))
+                         (funcall on-done '(:status done))))
+                      nil))))
+         (events nil)
+         (messages nil)
+         (settled nil))
+    (e-loop-start-turn
+     :session-id "session-1"
+     :turn-id "turn-1"
+     :messages '((:role user :content "hi"))
+     :backend backend
+     :tools (e-tools-registry-create)
+     :options nil
+     :on-event (lambda (type payload)
+                 (push (list :type type :payload payload) events))
+     :append-message (lambda (message) (push message messages))
+     :drain-pending-input (lambda ()
+                            (prog1 pending
+                              (setq pending nil)))
+     :on-done (lambda (result) (setq settled result))
+     :on-error (lambda (err) (setq settled (list :error err))))
+    (should (e-loop-test--wait-until (lambda () settled)))
+    (should (equal calls 2))
+    (should (equal (plist-get settled :status) 'done))
+    (let ((ordered-messages (nreverse messages))
+          (ordered-events (nreverse events)))
+      (should (equal (mapcar (lambda (message) (plist-get message :role))
+                             ordered-messages)
+                     '(assistant user assistant)))
+      (should (equal (mapcar (lambda (message) (plist-get message :content))
+                             ordered-messages)
+                     '("first answer" "steer here" "final answer")))
+      (should (equal (mapcar (lambda (event) (plist-get event :type))
+                             ordered-events)
+                     '(turn-started turn-finished))))))
+
 (ert-deftest e-loop-test-start-turn-persists-tool-result-when-tool-quits ()
   "Async turn execution records a tool result when tool execution quits."
   (let* ((calls 0)

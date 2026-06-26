@@ -759,33 +759,31 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
      (e-harness-steer-active-turn harness "session-1" "focus here")
      :type 'e-harness-no-active-turn)))
 
-(ert-deftest e-harness-test-steer-active-turn-calls-request-steer ()
-  "Successful steering delegates to the active provider request."
-  (let* ((seen nil)
-         (request (e-backend-request-create
-                   :steer (cl-function
-                           (lambda (&key prompt metadata)
-                             (setq seen (list prompt metadata))
-                             :accepted))))
-         (backend (e-backend-create
+(ert-deftest e-harness-test-steer-active-turn-stores-pending-input ()
+  "Successful steering stores pending input on the active turn."
+  (let* ((backend (e-backend-create
                    :name "steerable"
                    :start (cl-function
                            (lambda (&key messages options on-item on-done
                                           on-error on-request-start)
                              (ignore messages options on-item on-done
                                      on-error)
-                             (funcall on-request-start request)
+                             (funcall on-request-start
+                                      (e-backend-request-create))
                              nil))))
          (harness (e-harness-create :backend backend))
          (events nil))
     (e-harness-subscribe harness (lambda (event) (push event events)))
     (e-harness-create-session harness :id "session-1")
     (let ((turn-id (e-harness-prompt-async harness "session-1" "first")))
-      (should (eq (e-harness-steer-active-turn
-                   harness "session-1" "focus here"
-                   :metadata '(:source chat-composer))
-                  :accepted))
-      (should (equal seen '("focus here" (:source chat-composer))))
+      (should (equal (e-harness-steer-active-turn
+                      harness "session-1" "focus here"
+                      :metadata '(:source chat-composer))
+                     turn-id))
+      (let ((entry (gethash "session-1" (e-harness-active-turns harness))))
+        (should (equal (e-harness--pending-steering-items entry)
+                       '((:prompt "focus here"
+                          :metadata (:source chat-composer))))))
       (let ((steered (cl-find 'turn-steered events
                               :key (lambda (event)
                                      (plist-get event :type)))))
@@ -798,27 +796,65 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
                                   :metadata)
                        '(:source chat-composer)))))))
 
-(ert-deftest e-harness-test-steer-active-turn-unsupported-keeps-transcript ()
-  "Unsupported steering is explicit and does not append a user message."
-  (let* ((request (e-backend-request-create))
+(ert-deftest e-harness-test-steer-active-turn-drains-in-same-turn ()
+  "Pending steering input is sampled as a user message in the same turn."
+  (let* ((calls nil)
+         (finishers nil)
          (backend (e-backend-create
-                   :name "unsupported"
+                   :name "same-turn-steering"
                    :start (cl-function
                            (lambda (&key messages options on-item on-done
                                           on-error on-request-start)
-                             (ignore messages options on-item on-done
-                                     on-error)
-                             (funcall on-request-start request)
+                             (ignore options on-error)
+                             (funcall on-request-start
+                                      (e-backend-request-create))
+                             (push (copy-tree messages) calls)
+                             (let ((call-number (length calls)))
+                               (push
+                                (lambda ()
+                                  (funcall on-item
+                                           (list :type 'assistant-message
+                                                 :content
+                                                 (format "answer %d"
+                                                         call-number)))
+                                  (funcall on-item
+                                           '(:type done :reason stop))
+                                  (funcall on-done '(:status done)))
+                                finishers))
                              nil))))
          (harness (e-harness-create :backend backend)))
     (e-harness-create-session harness :id "session-1")
-    (e-harness-prompt-async harness "session-1" "first")
-    (should-error
-     (e-harness-steer-active-turn harness "session-1" "focus here")
-     :type 'e-backend-steering-unsupported)
-    (should (equal (mapcar (lambda (message) (plist-get message :content))
-                           (e-harness-messages harness "session-1"))
-                   '("first")))))
+    (let ((turn-id (e-harness-prompt-async harness "session-1" "first")))
+      (e-harness-steer-active-turn
+       harness "session-1" "focus here"
+       :metadata '(:source chat-composer))
+      (funcall (pop finishers))
+      (while (< (length calls) 2)
+        (accept-process-output nil 0.01))
+      (let ((follow-up (car calls)))
+        (should (equal (mapcar (lambda (message)
+                                 (plist-get message :role))
+                               follow-up)
+                       '(user assistant user)))
+        (should (equal (mapcar (lambda (message)
+                                 (plist-get message :content))
+                               follow-up)
+                       '("first" "answer 1" "focus here")))
+        (should (equal (plist-get (car (last follow-up)) :metadata)
+                       '(:source chat-composer))))
+      (should (equal (plist-get (e-harness-state harness "session-1")
+                                :active-turn)
+                     turn-id))
+      (funcall (pop finishers))
+      (let ((entry (e-harness-wait harness "session-1" 0.1)))
+        (should (eq (plist-get entry :status) 'done)))
+      (should (equal (mapcar (lambda (message)
+                               (plist-get message :content))
+                             (e-harness-messages harness "session-1"))
+                     '("first" "answer 1" "focus here" "answer 2")))
+      (should (equal (plist-get (nth 2 (e-harness-messages harness "session-1"))
+                                :turn-id)
+                     turn-id)))))
 
 
 (ert-deftest e-harness-test-tool-finished-activity-compacts-result-payload ()

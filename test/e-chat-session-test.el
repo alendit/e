@@ -84,34 +84,29 @@
 
 (ert-deftest e-chat-session-test-steer-validates-and-delegates ()
   "Steering validates prompt text and delegates to the active harness turn."
-  (let* ((seen nil)
-         (request (e-backend-request-create
-                   :steer (cl-function
-                           (lambda (&key prompt metadata)
-                             (setq seen (list prompt metadata))
-                             :accepted))))
-         (backend (e-backend-create
+  (let* ((backend (e-backend-create
                    :name "steerable"
                    :start (cl-function
                            (lambda (&key messages options on-item on-done
                                           on-error on-request-start)
                              (ignore messages options on-item on-done
                                      on-error)
-                             (funcall on-request-start request)
+                             (funcall on-request-start
+                                      (e-backend-request-create))
                              nil))))
          (harness (e-harness-create :backend backend)))
     (e-harness-create-session harness :id "session-1")
-    (e-chat-session-submit harness "session-1" "running" :delay 0)
+    (let ((turn-id (e-chat-session-submit harness "session-1" "running"
+                                          :delay 0)))
     (should-error
      (e-chat-session-steer harness "session-1" "")
      :type 'user-error)
-    (should (eq (e-chat-session-steer
-                 harness
-                 "session-1"
-                 "focus here"
-                 :metadata '(:source chat-composer))
-                :accepted))
-    (should (equal seen '("focus here" (:source chat-composer))))))
+      (should (equal (e-chat-session-steer
+                      harness
+                      "session-1"
+                      "focus here"
+                      :metadata '(:source chat-composer))
+                     turn-id)))))
 
 (ert-deftest e-chat-session-test-abort-reset-and-rename ()
   "Chat-session actions delegate abort, reset, and rename to the harness/store."
