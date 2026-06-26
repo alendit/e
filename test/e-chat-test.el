@@ -2521,6 +2521,28 @@ inherited base, so the blocks stay distinguishable in any theme."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-turn-steered-renders-immediate-indicator ()
+  "A steering event immediately adds a visible active-turn indicator."
+  (let ((buffer (e-chat-test--buffer nil "chat-steered-indicator")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat--render-event
+           (e-events-make :type 'turn-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 10))
+          (e-chat--render-event
+           (e-events-make :type 'turn-steered
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 11
+                          :payload '(:prompt-preview "focus on the count")))
+          (should (string-match-p "steered" header-line-format))
+          (should (string-match-p "Steered: focus on the count"
+                                  (buffer-string))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-format-duration-uses-minutes-and-seconds ()
   "Turn progress durations use minute/second labels."
   (should (equal (e-chat--format-duration 0 3) "0min 3sec"))

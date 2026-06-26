@@ -3517,6 +3517,16 @@ STATUS defaults to `done'."
   "Record streaming tool progress PAYLOAD in RECORD."
   (e-chat--record-round-tool-progress record payload))
 
+(defun e-chat--record-steering-input (record preview)
+  "Record accepted steering PREVIEW in RECORD's visible activity."
+  (when (and record preview (not (string-empty-p preview)))
+    (e-chat--add-intermittent-entry
+     record
+     "Steering"
+     (format "Steered: %s" preview)
+     nil
+     'steering)))
+
 (defun e-chat--intermittent-entry-exists-p (record title content &optional source)
   "Return non-nil when RECORD already has TITLE and CONTENT.
 When SOURCE is non-nil, only match entries from that source."
@@ -5426,7 +5436,14 @@ When REFRESH-MODE-LINE is non-nil, also refresh context-aware mode-line text."
      (e-chat--ensure-composer)
      (e-chat--refresh-composer-position))
     ('turn-steered
-     (e-chat--set-status "steered"))
+     (let* ((turn-id (plist-get event :turn-id))
+            (payload (plist-get event :payload))
+            (record (e-chat--turn-record turn-id)))
+       (e-chat--record-steering-input
+        record
+        (plist-get payload :prompt-preview))
+       (e-chat--set-status "steered")
+       (e-chat--render-running-status turn-id record)))
     ('assistant-delta
      (e-chat--set-status "streaming"))
     ('reasoning-delta
