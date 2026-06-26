@@ -554,6 +554,31 @@ invalidate it."
         cached
       (puthash key (e-mcp--list-tools-uncached servers) e-mcp--catalog-cache))))
 
+(defun e-mcp--warn-server-failure (server err)
+  "Emit a warning that SERVER discovery failed with ERR, then continue."
+  (display-warning
+   'e-mcp
+   (format "MCP server %s unavailable, skipping: %s"
+           (e-mcp-server-id server)
+           (error-message-string err))
+   :warning))
+
+(defun e-mcp--catalogs-safe (servers)
+  "Return a list of (SERVER . CATALOG) for SERVERS that discover successfully.
+Servers whose discovery signals an `e-mcp-backend-error' are logged and
+omitted so a single broken MCP server cannot block harness startup."
+  (let (pairs)
+    (dolist (server servers)
+      (condition-case err
+          (push (cons server (e-mcp-list-tools (list server))) pairs)
+        (e-mcp-backend-error
+         (e-mcp--warn-server-failure server err))))
+    (nreverse pairs)))
+
+(defun e-mcp--tools-safe (servers)
+  "Return discovered tools for SERVERS, skipping servers that fail discovery."
+  (apply #'append (mapcar #'cdr (e-mcp--catalogs-safe servers))))
+
 (defun e-mcp-call-tool (servers server-id tool-name arguments)
   "Call TOOL-NAME on SERVER-ID through SERVERS with ARGUMENTS."
   (let ((server (cl-find server-id servers
@@ -795,9 +820,10 @@ The callable tool name is the generated name the model invokes later."
 (defun e-mcp--register-resources (store capability servers)
   "Register Tier-1 MCP schema resources for SERVERS in STORE under CAPABILITY."
   (let ((capability-id (e-capability-id capability)))
-    (dolist (server servers)
-      (let* ((server-id (e-mcp-server-id server))
-             (catalog (e-mcp-list-tools (list server))))
+    (dolist (pair (e-mcp--catalogs-safe servers))
+      (let* ((server (car pair))
+             (server-id (e-mcp-server-id server))
+             (catalog (cdr pair)))
         (e-store-register
          store capability-id
          (format "mcp/%s/tools" server-id)
@@ -840,10 +866,10 @@ against ALL-OPTIONS."
 (defun e-mcp--cards-message (capability-id servers)
   "Return a single Tier-0 context message describing SERVERS for CAPABILITY-ID."
   (let ((cards (mapcar
-                (lambda (server)
+                (lambda (pair)
                   (e-mcp--server-card-text
-                   capability-id server (e-mcp-list-tools (list server))))
-                servers)))
+                   capability-id (car pair) (cdr pair)))
+                (e-mcp--catalogs-safe servers))))
     (when cards
       (list
        (list :role 'system
@@ -960,11 +986,11 @@ mcp_activate meta-tool plus only the tools the session has activated."
          (progn
            (e-mcp--register-meta-tool registry)
            (let ((active (e-mcp--active-set harness session-id)))
-             (dolist (tool (e-mcp-list-tools servers))
+             (dolist (tool (e-mcp--tools-safe servers))
                (when (e-mcp--tool-activated-p
                       active (e-mcp-tool-server-id tool) (e-mcp-tool-name tool))
                  (e-mcp--register-tool registry servers tool)))))
-       (dolist (tool (e-mcp-list-tools servers))
+       (dolist (tool (e-mcp--tools-safe servers))
          (e-mcp--register-tool registry servers tool))))))
 
 (cl-defun e-capability-with-mcp-create

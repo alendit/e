@@ -726,6 +726,34 @@ echoed back on `tools/list' and `tools/call'."
         (e-mcp-list-tools servers)
         (should (= calls 2))))))
 
+(defun e-mcp-test--broken-server ()
+  "Return a second stdio MCP server whose discovery fails."
+  (e-mcp-server-create :id "broken" :command '("node" "broken.mjs")))
+
+(ert-deftest e-mcp-test-catalogs-safe-skips-failing-servers ()
+  "A server that fails discovery is logged and omitted, others survive."
+  (e-mcp-test--with-transport
+      (lambda (request)
+        (let ((server-id (plist-get (aref (plist-get request :servers) 0) :id)))
+          (if (equal server-id "broken")
+              (list :ok :json-false :error "Bad url: 'https://example/mcp'")
+            (list :ok t
+                  :result (list :tools
+                                (vector (e-mcp-test--fake-tool
+                                         "echo" '(:type "object"))))))))
+    (let* ((servers (list (e-mcp-test--server) (e-mcp-test--broken-server)))
+           (warnings nil))
+      (cl-letf (((symbol-function 'display-warning)
+                 (lambda (&rest args) (push args warnings))))
+        ;; Strict discovery still propagates the broken server's error.
+        (should-error (e-mcp-list-tools (list (e-mcp-test--broken-server)))
+                      :type 'e-mcp-backend-error)
+        (let ((catalogs (e-mcp--catalogs-safe servers)))
+          (should (= (length catalogs) 1))
+          (should (equal (e-mcp-server-id (caar catalogs)) "fixture")))
+        (should (= (length (e-mcp--tools-safe servers)) 1))
+        (should warnings)))))
+
 (provide 'e-mcp-test)
 
 ;;; e-mcp-test.el ends here
