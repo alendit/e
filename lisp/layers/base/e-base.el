@@ -17,13 +17,17 @@
 (defconst e-base-instructions
   "Use OS base file and shell tools for workspace files and shell commands.
 
-Never run shell commands that search or traverse outside the current project. \
-This includes `find /`, `find ~`, `find $HOME`, `grep -r ~`, `ls -R /`, and any \
-recursive walk rooted at `/`, `~`, the home directory, or another broad ancestor. \
-They are slow, flood output, and almost never answer the question. Always scope a \
-search to the working directory or a known subdirectory, e.g. `find . -name ...` \
-or `grep -rn PATTERN lisp/`. When you do not know where something lives, search \
-the project root (`.`), not the filesystem or home directory."
+Never run a recursive search or traversal whose effective root is `/`, `~`, \
+`$HOME`, the home directory, or another broad ancestor. What matters is where \
+the walk actually reaches, not the literal argument. `find /`, `find ~`, \
+`find $HOME`, `grep -r ~`, and `ls -R /` are banned -- and so is a bare `find .` \
+or `grep -rn PATTERN .` when the working directory itself is the home directory \
+or another huge tree, because `.` then expands to exactly that broad walk. \
+They are slow, flood output, and almost never answer the question. Before any \
+recursive search, consider the working directory: a bare `.` is safe only inside \
+a bounded project directory. When the cwd is large or you do not know where \
+something lives, scope to a specific known subtree, e.g. `grep -rn PATTERN lisp/` \
+or `find ~/.config/doom -name ...`, rather than `.`, `~`, or the filesystem root."
   "Default instructions contributed by the OS base guidance capability.")
 
 (defun e-base-layer-create (&optional directory)

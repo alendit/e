@@ -60,14 +60,84 @@ Before finalizing, verify presentation, not just content. Confirm the resource y
                          :content
                          (e-emacs-capabilities-visible-buffer-context)))))))
 
+(defconst e-emacs-config-skill
+  (string-join
+   '("# Emacs and Doom configuration"
+     ""
+     "Use this guidance whenever the user asks about Emacs configuration files"
+     "(`init.el`, `early-init.el`, `config.el`, `config.org`, `packages.el`,"
+     "`custom.el`), why some config or library is or is not loaded, or where"
+     "a definition lives. You run inside Emacs: ask Emacs, do not shell-walk"
+     "the filesystem."
+     ""
+     "## What these files are"
+     ""
+     "- `init.el` / `early-init.el`: vanilla Emacs entry points under"
+     "  `user-emacs-directory` (usually `~/.emacs.d/` or `~/.config/emacs/`)."
+     "- Doom Emacs splits user config into a separate directory (`doom-user-dir`,"
+     "  a.k.a. `$DOOMDIR`, usually `~/.config/doom/` or `~/.doom.d/`):"
+     "  - `init.el`: enables Doom modules via the `doom!` block. A library that"
+     "    lives in a module that is NOT enabled here never loads."
+     "  - `packages.el`: declares packages with `package!`; new entries need"
+     "    `doom sync` before they are installed/available."
+     "  - `config.el`: the user's own load-time configuration."
+     "  - `config.org`: literate config. It is NOT loaded directly -- Doom tangles"
+     "    it to `config.el`. Edits to `config.org` do nothing until re-tangled"
+     "    (`org-babel-tangle`, `doom sync`, or the configured tangle-on-save)."
+     ""
+     "## Introspect from Elisp first (preferred over find/grep)"
+     ""
+     "- Where config lives: evaluate `user-emacs-directory`, and when Doom is"
+     "  present `doom-user-dir`, `doom-emacs-dir`, `(getenv \"DOOMDIR\")`."
+     "- Is a library loadable / where: `(locate-library \"NAME\")` returns its"
+     "  path on `load-path`, or nil if not findable."
+     "- Is it already loaded: `(featurep 'NAME)`, inspect `features`, or check"
+     "  `load-history` / `(symbol-file 'SOME-DEFUN)` for where a definition came"
+     "  from."
+     "- Is it on the path at all: inspect `load-path`."
+     "- Doom modules enabled: inspect `doom-modules` or read the `doom!` block in"
+     "  the Doom `init.el`."
+     ""
+     "## \"Referenced but not loaded\" checklist"
+     ""
+     "1. `(locate-library \"NAME\")` -> nil means the file's directory is not on"
+     "   `load-path`. Defining a prompt/library in `config.org`/`config.el` does"
+     "   not add its directory to `load-path`; the file must be `load`ed,"
+     "   `require`d, or placed on `load-path` and autoloaded."
+     "2. Library in `config.org`? Confirm it was tangled to `config.el` and that"
+     "   `config.el` is the file Doom actually loads. A stale tangle is the most"
+     "   common cause."
+     "3. Lives in a Doom module? Confirm the module is enabled in the Doom"
+     "   `init.el` `doom!` block; disabled modules are never loaded."
+     "4. Just added to `packages.el`? It needs `doom sync` (run by the user in a"
+     "   terminal) before it exists."
+     ""
+     "## Scoped filesystem search exception"
+     ""
+     "The no-broad-search rule still holds: never walk `/`, `~`, or `$HOME`."
+     "Config directories are bounded and known, so when Elisp introspection is"
+     "not enough you MAY search a specific config dir resolved above, e.g."
+     "`grep -rn PATTERN \"$DOOMDIR\"` or under `user-emacs-directory` -- never the"
+     "whole home directory.")
+   "\n")
+  "Discoverable guidance for Emacs and Doom configuration questions.")
+
 (defun e-emacs-awareness-capability-create ()
   "Create an Emacs awareness capability."
-  (e-capability-create
+  (e-capability-with-skills-create
    :id 'emacs-awareness
    :name "Emacs Awareness"
    :instruction-priority 300
    :instructions e-emacs-base-instructions
-   :context-providers (list (e-emacs-visible-buffers-context-provider))))
+   :context-providers (list (e-emacs-visible-buffers-context-provider))
+   :skills
+   (list
+    (e-skill-spec-create
+     :name "emacs-config"
+     :description (concat "Locate, understand, and debug loading of Emacs and "
+                          "Doom config files (init.el, config.org/el, "
+                          "packages.el) using Elisp introspection.")
+     :content e-emacs-config-skill))))
 
 (defun e-buffer-read-capability-create ()
   "Create a capability for reading live Emacs buffers."

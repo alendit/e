@@ -42,8 +42,8 @@
                     :harness nil
                     :session-id "session-1"
                     :turn-id "turn-1")))
-    (should (equal (plist-get (car messages) :content)
-                   e-emacs-base-instructions))
+    (should (string-prefix-p e-emacs-base-instructions
+                             (plist-get (car messages) :content)))
     (should (= (e-capability-instruction-priority capability) 300))
     (should (= (e-context-provider-priority
                 (car (e-capability-context-providers capability)))
@@ -262,6 +262,23 @@
       (should (string-match-p "e-workspace-pop-to-buffer" content))
       (should (string-match-p "Presentation shells own workspace affinity"
                               content)))))
+
+(ert-deftest e-emacs-capabilities-test-awareness-config-skill-is-readable ()
+  "Emacs awareness registers config guidance as an e:// skill."
+  (let* ((store (e-store-create))
+         (capability (e-emacs-awareness-capability-create)))
+    (e-capabilities-register-resources capability store)
+    (should (equal (mapcar #'e-store-entry-uri (e-store-list store))
+                   '("e://emacs-awareness/skills/emacs-config")))
+    (let ((content (e-store-read
+                    store
+                    "e://emacs-awareness/skills/emacs-config"
+                    nil)))
+      (should (string-match-p "Emacs and Doom configuration" content))
+      (should (string-match-p "config.org" content))
+      (should (string-match-p "locate-library" content))
+      (should (string-match-p "doom-user-dir" content))
+      (should (string-match-p "tangle" content)))))
 
 (ert-deftest e-emacs-capabilities-test-selection-context-placeholder ()
   "Selection context exists as a no-op capability placeholder."

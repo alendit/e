@@ -1508,7 +1508,7 @@ streaming progress events."
   (e-tools-register
    registry
    :name "bash"
-   :description "Execute a shell command in the current working directory and return captured stdout and stderr. Never search or traverse outside the current project: no `find /`, `find ~`, `find $HOME`, `grep -r ~`, `ls -R /`, or any recursive walk rooted at `/`, `~`, or the home directory. They are slow and flood output. Scope every search to the working directory or a known subtree, e.g. `find . -name ...` or `grep -rn PATTERN lisp/`."
+   :description "Execute a shell command in the current working directory and return captured stdout and stderr. Never start a recursive search or traversal whose effective root is `/`, `~`, `$HOME`, or any other large ancestor. This is about where the walk actually reaches, not the literal argument: `find ~`, `grep -r ~`, `ls -R /` are banned, and so is `find .` or `grep -rn PATTERN .` when the working directory itself is the home directory or another huge tree -- they are equally slow and flood output. Before a recursive search, check the working directory: if it is large or is the home directory, scope to a specific known subtree instead of `.`, e.g. `find ~/.config/doom -name ...` or `grep -rn PATTERN lisp/`. A bare `.` is only safe inside a bounded project directory."
    :parameters '(:type "object"
                  :properties (:command (:type "string")
                               :timeout (:type "number"
