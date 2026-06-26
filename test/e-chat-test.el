@@ -6914,6 +6914,54 @@ The context-window denominator comes from the live provider lookup
                             (equal (nth 2 call) (kbd "I")))
                           calls))))
 
+(ert-deftest e-chat-test-mode-map-binds-c-w-to-region-or-word-kill ()
+  "The composer keymap binds \\`C-w' to the region/word kill command."
+  (should (eq (lookup-key e-chat-mode-map (kbd "C-w"))
+              'e-chat-kill-region-or-backward-word)))
+
+(ert-deftest e-chat-test-c-w-kills-backward-word-without-region ()
+  "Without an active region, \\`C-w' kills the previous word."
+  (with-temp-buffer
+    (insert "hello world")
+    (deactivate-mark)
+    (e-chat-kill-region-or-backward-word 1)
+    (should (string= (buffer-string) "hello "))))
+
+(ert-deftest e-chat-test-c-w-kills-region-when-active ()
+  "With an active region, \\`C-w' kills the region."
+  (with-temp-buffer
+    (insert "hello world")
+    (goto-char (point-min))
+    (push-mark (point) t t)
+    (goto-char (+ (point-min) 5))
+    (activate-mark)
+    (e-chat-kill-region-or-backward-word 1)
+    (should (string= (buffer-string) " world"))))
+
+(ert-deftest e-chat-test-evil-composer-bindings-reclaim-c-w ()
+  "Evil insert and emacs states rebind \\`C-w' scoped to the composer map."
+  (let (calls)
+    (cl-letf (((symbol-function 'evil-define-key*)
+               (lambda (&rest args)
+                 (push args calls))))
+      (e-chat--configure-evil-composer-bindings))
+    (dolist (state '(insert emacs))
+      (should (member (list state
+                            e-chat-mode-map
+                            (kbd "C-w")
+                            #'e-chat-kill-region-or-backward-word)
+                      calls)))))
+
+(ert-deftest e-chat-test-evil-composer-bindings-noop-without-evil ()
+  "Composer Evil rebinding is a no-op when Evil is unavailable."
+  (let ((orig-fboundp (symbol-function 'fboundp)))
+    (cl-letf (((symbol-function 'fboundp)
+               (lambda (sym)
+                 (unless (eq sym 'evil-define-key*)
+                   (funcall orig-fboundp sym)))))
+      ;; Should not error when `evil-define-key*' is absent.
+      (should-not (e-chat--configure-evil-composer-bindings)))))
+
 (ert-deftest e-chat-test-keymap-preserves-host-alt-leader ()
   "The chat mode keymap preserves a host-provided alternate leader prefix."
   (let ((e-chat-mode-map (make-sparse-keymap))

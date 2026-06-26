@@ -747,6 +747,7 @@ progress redraws that never pass through harness event dispatch.")
     (define-key map (kbd "M-o") #'e-chat-open-latest-response)
     (define-key map (kbd "M-y") #'e-chat-copy-latest-response)
     (define-key map (kbd "C-c C-c") #'e-chat-submit)
+    (define-key map (kbd "C-w") #'e-chat-kill-region-or-backward-word)
     (define-key map (kbd "RET") #'newline)
     (define-key map (kbd "!") #'e-chat-composer-bang)
     (define-key map (kbd "@") #'e-chat-composer-at)
@@ -842,6 +843,21 @@ This leaves the global minor mode enabled for every other buffer."
           (kbd "s-I")
           #'e-chat-add-context-to-session))))))
 
+(defun e-chat--configure-evil-composer-bindings ()
+  "Reclaim \\`C-w' for the composer when Evil/Doom is active.
+Evil binds `C-w' as the window-command prefix in its insert and emacs
+states, shadowing the composer's own binding.  Define it directly in the
+relevant Evil state maps scoped to `e-chat-mode-map' so it wins locally
+without disturbing Evil's global `C-w' elsewhere.  A no-op when Evil is
+absent."
+  (when (fboundp 'evil-define-key*)
+    (dolist (state '(insert emacs))
+      (funcall #'evil-define-key*
+               state
+               e-chat-mode-map
+               (kbd "C-w")
+               #'e-chat-kill-region-or-backward-word))))
+
 (defun e-chat--refresh-keymaps ()
   "Refresh chat keymaps after live reload."
   (setq e-chat-response-navigation-mode-map
@@ -855,7 +871,8 @@ This leaves the global minor mode enabled for every other buffer."
         (e-chat--make-tool-output-mode-map e-chat-tool-output-mode-map))
   (setq e-chat-overview-mode-map
         (e-chat--make-overview-mode-map e-chat-overview-mode-map))
-  (setq e-chat-mode-map (e-chat--make-mode-map e-chat-mode-map)))
+  (setq e-chat-mode-map (e-chat--make-mode-map e-chat-mode-map))
+  (e-chat--configure-evil-composer-bindings))
 
 (define-derived-mode e-chat-mode text-mode "e-chat"
   "Major mode for e chat buffers.
@@ -942,8 +959,10 @@ and / expands available prompts."
     (evil-set-initial-state 'e-chat-overview-mode 'emacs)))
 
 (e-chat--configure-modal-editing-policy)
+(e-chat--configure-evil-composer-bindings)
 (with-eval-after-load 'evil
-  (e-chat--configure-modal-editing-policy))
+  (e-chat--configure-modal-editing-policy)
+  (e-chat--configure-evil-composer-bindings))
 
 (defun e-chat--disable-completion ()
   "Disable completion sources and completion UI in the chat composer."
@@ -2475,6 +2494,16 @@ KILLP is passed through to `delete-char' for normal text."
   (unless (and (= arg 1)
                (e-chat--delete-context-reference-at (point)))
     (delete-char arg killp)))
+
+(defun e-chat-kill-region-or-backward-word (arg)
+  "Kill the active region, or ARG words backward when no region is active.
+This gives the composer the readline-style \\`C-w' users expect in an
+input field while preserving standard `kill-region' behaviour on a
+selection."
+  (interactive "p")
+  (if (use-region-p)
+      (kill-region (region-beginning) (region-end))
+    (backward-kill-word arg)))
 
 (defun e-chat--xml-attribute-escape (value)
   "Return VALUE escaped for a compact XML-like attribute."
