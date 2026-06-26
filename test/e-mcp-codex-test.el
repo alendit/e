@@ -79,6 +79,33 @@ TOKEN = \"abc123\"
       (should (null (e-mcp-server-url server)))
       (should (= (e-mcp-server-timeout server) 5)))))
 
+(defconst e-mcp-codex-test--literal-config "\
+[mcp_servers.slack]
+url = 'https://mcp.slack.com/mcp'
+
+[mcp_servers.slack.http_headers]
+Authorization = 'Bearer xoxp-secret'
+
+[mcp_servers.local]
+command = 'node'
+args = ['server.mjs', '--flag']
+
+[mcp_servers.local.env]
+TOKEN = 'abc123'
+"
+  "Codex config using TOML literal (single-quoted) strings throughout.")
+
+(ert-deftest e-mcp-codex-test-reads-literal-single-quoted-strings ()
+  "TOML literal (single-quoted) values are unquoted for url, headers, args, env."
+  (e-mcp-codex-test--with-config e-mcp-codex-test--literal-config
+    (let ((http (e-mcp-codex-server "slack"))
+          (stdio (e-mcp-codex-server "local")))
+      (should (equal (e-mcp-server-url http) "https://mcp.slack.com/mcp"))
+      (should (equal (e-mcp-server-http-headers http)
+                     '(("Authorization" . "Bearer xoxp-secret"))))
+      (should (equal (e-mcp-server-command stdio) '("node" "server.mjs" "--flag")))
+      (should (equal (e-mcp-server-env stdio) '(("TOKEN" . "abc123")))))))
+
 (ert-deftest e-mcp-codex-test-missing-block-returns-nil ()
   "An absent server block yields nil rather than signaling."
   (e-mcp-codex-test--with-config e-mcp-codex-test--config

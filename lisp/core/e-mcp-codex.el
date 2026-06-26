@@ -32,11 +32,14 @@
   :group 'e)
 
 (defun e-mcp-codex--unquote (value)
-  "Return TOML string VALUE without surrounding double quotes."
+  "Return TOML string VALUE without surrounding quotes.
+Handles both basic (\") and literal (') TOML strings."
   (let ((trimmed (string-trim value)))
     (if (and (>= (length trimmed) 2)
-             (string-prefix-p "\"" trimmed)
-             (string-suffix-p "\"" trimmed))
+             (or (and (string-prefix-p "\"" trimmed)
+                      (string-suffix-p "\"" trimmed))
+                 (and (string-prefix-p "'" trimmed)
+                      (string-suffix-p "'" trimmed))))
         (substring trimmed 1 -1)
       trimmed)))
 
