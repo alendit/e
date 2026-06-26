@@ -160,11 +160,10 @@ DIRECTORY is passed to config-aware shell layer factories."
 
 (defun e-default-harness--proper-list-p (value)
   "Return non-nil when VALUE is a proper list."
-  (or (null value)
-      (and (listp value)
-           (ignore-errors
-             (length value)
-             t))))
+  (let ((tail value))
+    (while (consp tail)
+      (setq tail (cdr tail)))
+    (null tail)))
 
 (defun e-default-harness--symbol-list-p (value)
   "Return non-nil when VALUE is a proper list of symbols."

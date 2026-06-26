@@ -2046,16 +2046,20 @@ scan."
 Matching is case-insensitive."
   (let ((needle (downcase (or filter "")))
         (haystack (downcase (or label "")))
-        (start 0))
+        (start 0)
+        (index 0)
+        found)
     (catch 'missing
-      (dotimes (index (length needle) t)
-        (let ((found (string-match-p
-                      (regexp-quote (char-to-string (aref needle index)))
-                      haystack
-                      start)))
-          (unless found
-            (throw 'missing nil))
-          (setq start (1+ found)))))))
+      (while (< index (length needle))
+        (setq found (string-match-p
+                     (regexp-quote (char-to-string (aref needle index)))
+                     haystack
+                     start))
+        (unless found
+          (throw 'missing nil))
+        (setq start (1+ found))
+        (setq index (1+ index)))
+      t)))
 
 (defun e-chat--inline-completion-matches (candidates filter)
   "Return CANDIDATES whose labels fuzzily match FILTER."

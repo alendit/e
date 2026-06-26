@@ -346,9 +346,9 @@ was originally created with.  Only sync registered default chat instances, so
 ad-hoc test or caller-supplied harnesses keep their explicit layer state."
   (when-let* ((file (buffer-local-value 'buffer-file-name buffer))
               (instance (e-harness-instance-get e-chat-default-harness-id))
-              (_default (eq (e-harness-registry-get
-                             (e-harness-instance-harness-id instance))
-                            harness))
+              ((eq (e-harness-registry-get
+                    (e-harness-instance-harness-id instance))
+                   harness))
               (root (with-current-buffer buffer
                       (e-chat--project-root (file-name-directory file)))))
     (e-default-chat-sync-harness-layers harness nil root))

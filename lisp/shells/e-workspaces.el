@@ -53,6 +53,19 @@
 (defvar-local e-buffer--workspace nil
   "Workspace affinity token owned by an e presentation buffer.")
 
+(declare-function +workspace-current-name "ext:doom-workspaces")
+(declare-function +workspace-exists-p "ext:doom-workspaces")
+(declare-function +workspace-switch "ext:doom-workspaces")
+(declare-function +workspace-buffer-list "ext:doom-workspaces")
+(declare-function persp-current "ext:persp-mode")
+(declare-function persp-current-name "ext:persp-mode")
+(declare-function persp-name "ext:persp-mode")
+(declare-function persp-with-name-exists-p "ext:persp-mode")
+(declare-function persp-get-by-name "ext:persp-mode")
+(declare-function persp-switch "ext:persp-mode")
+(declare-function persp-contain-buffer-p "ext:persp-mode")
+(declare-function persp-buffer-list "ext:persp-mode")
+
 (defun e-workspace--frame (&optional frame)
   "Return FRAME or the currently selected frame."
   (or frame (selected-frame)))

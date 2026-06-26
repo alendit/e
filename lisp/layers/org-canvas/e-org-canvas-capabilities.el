@@ -33,6 +33,9 @@
   "Scope: document. Consider the whole Org document. Add, reorganize, summarize, or enrich information in the appropriate location across the document. Use visibility tools to inspect or reveal relevant sections as needed."
   "Model-facing instructions for Org Canvas document scope.")
 
+(defvar e-org-canvas-harness)
+(defvar e-org-canvas-session-id)
+
 (defun e-org-canvas--file-uri (file)
   "Return canonical file URI for FILE."
   (concat "file://" (expand-file-name file)))
