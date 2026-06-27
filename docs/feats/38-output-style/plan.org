@@ -17,7 +17,11 @@ cased.
 
 * Status
 
-Planned.
+In-progress. Implemented in =lisp/layers/base/e-output-style.el= (registry,
+resolver, capability, set/describe commands) and wired into the =os-base=
+layer. Built-in styles: =concise=, =explanatory=, =hemingway=. Tests in
+=test/e-output-style-test.el= and =test/e-base-test.el= pass; warning-as-error
+compile is green.
 
 * Key finding: the system channel already exists
 
