@@ -13,6 +13,7 @@
 
 (require 'e-file-capabilities)
 (require 'e-layers)
+(require 'e-output-style)
 
 (defconst e-base-instructions
   "Use OS base file and shell tools for workspace files and shell commands.
@@ -41,7 +42,8 @@ or `find ~/.config/doom -name ...`, rather than `.`, `~`, or the filesystem root
                           e-base-instructions
                           :instruction-priority 230)
                          (e-file-handling-capability-create root)
-                         (e-shell-process-capability-create root)))))
+                         (e-shell-process-capability-create root)
+                         (e-output-style-capability-create root)))))
 
 (provide 'e-base)
 

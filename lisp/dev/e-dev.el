@@ -118,6 +118,7 @@
                   "lisp/layers/agents/e-agent-shell-fleet.el"
                   "lisp/layers/base/e-base-tools.el"
                   "lisp/layers/base/e-file-capabilities.el"
+                  "lisp/layers/base/e-output-style.el"
                   "lisp/layers/base/e-base.el"
                   "lisp/layers/harness/e-session-tmp-resources.el"
                   "lisp/layers/harness/e-tool-output-truncation.el"
