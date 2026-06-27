@@ -1,0 +1,149 @@
+#+title: Ask User Question Tool
+#+startup: overview
+
+* Goal
+
+Add an =e= model-facing tool that lets an agent pause a turn, present one or
+more structured questions in the =e-chat= composer view, collect
+keyboard-driven answers, and resume the same turn with a structured tool
+result. The capability is generic (not Grimoire-specific); Grimoire is the
+first consumer.
+
+The user-facing goal is not a modal questionnaire. It should feel like the
+agent naturally asks for missing context, offers a small set of clear choices,
+and lets the user answer without leaving the chat keyboard flow.
+
+* Status
+
+Planned.
+
+* Background
+
+The semantic capability and tool contract belong in =e= core/layers; the
+rendering and keyboard interaction belong in =e-chat=. The mechanical pieces
+already exist across owners:
+
+- =lisp/core/e-loop.el= — owns a turn: receives backend items, enqueues tool
+  calls, executes tools, appends results, starts follow-up requests.
+- =lisp/core/e-tools.el= — async tools via =:start= handlers and request handles
+  with cancellation metadata. This is the hook the tool uses.
+- =lisp/core/e-harness.el= — session events, active-request tracking, abort,
+  prompt turns, durable activity events.
+- =lisp/shells/chat/e-chat.el= — interactive chat buffer, editable composer,
+  protected transcript regions, keymaps, activity rendering, abort/reset.
+- =lisp/layers/chat/e-chat-session.el= — chat-session capability boundary.
+
+Closest precedent: Claude Code's =AskUserQuestion= routes through the same
+callback path as approval requests, pauses execution until the host returns an
+answer, and sends questions as structured data (a =questions= array; each has
+full text, a short header, 2-4 options with labels/descriptions, and a
+=multiSelect= boolean) rather than prose to parse.
+
+* Tool contract
+
+Tool name: =ask_user_question= (name may change; keep it generic).
+
+Request: a =:questions= vector. Each question has a stable =:id=, a short
+=:header= (<=12 chars), the full =:question= text, =:select= (=single= or
+=multiple=), 2-5 =:options= (each =:id= / =:label= / =:description=, optional
+=:recommended=), and optional per-question =:allow-free-text=.
+
+Response: an =:answers= vector mapping each question =:id= to its selected
+option id(s) and label(s), an optional global =:free-text=, and an
+=:answered-at= timestamp.
+
+Design choices:
+
+- Stable question/option *ids* are the machine key — never option text (labels
+  get edited for UX; text-as-key is brittle).
+- 2-5 options in the e contract (Claude Code documents 2-4; 5 covers A-E
+  planning questions without inviting large menus).
+- Support both single and multi-select; support per-question free-text plus one
+  global "none of these" free-form.
+- Option previews (image/HTML) are a later extension; v1 is text-only cards
+  because =e-chat= is text-buffer-first.
+
+* e-chat UX
+
+Render a *protected question card* in the chat buffer immediately above the
+composer (not minibuffer-only — the user needs the conversational context and
+the choices together). Preserve and restore the composer draft, point, and
+window state around the question.
+
+Keyboard contract: =j=/=k= and arrows move; =1=-=9= jump; =SPC= select/toggle;
+=RET= submit current / advance / submit-all; =TAB=/=S-TAB= move between questions
+in a multi-question stack; =o= inline free-text when allowed; =C-c C-c= submit
+all valid answers; =C-g= cancel (returns a cancellation tool result);
+=e-chat-abort= still aborts the whole turn. Keyboard-first; mouse optional.
+
+After submission, replace the interactive card with a durable one-line
+transcript summary per question, then resume the turn with the structured
+result.
+
+* Runtime behavior
+
+Implement as an async =e-tools= =:start= handler. On call: create an
+=e-question-request=, publish a request handle, emit a lifecycle event
+(=user-question-started=), stay pending until the UI returns an answer. The
+harness/loop treat it like any active tool request: prior output stays in the
+transcript; status renders as "waiting for user answer"; the turn stays
+abortable; session cancel yields a cancelled result.
+
+Persistence (v1): store pending request metadata in session metadata / durable
+activity records; rehydrate the card in =e-chat-open-session= when a session has
+an unanswered request. No separate sidecar store. If persistence proves
+infeasible in v1, killing the buffer cancels with a clear result and resumable
+questions move to v2.
+
+* Build order
+
+1. =e-question= data module — request/answer validation, stable ids, single vs
+   multi-select, free-text, serialization helpers.
+2. =e-question-tools= capability — register =ask_user_question= as an async tool
+   with a pending request object, cancellation, structured result creation.
+3. Harness/session events — =user-question-started= / =-answered= /
+   =-cancelled=; active-request status renders as "waiting for answer".
+4. =e-chat= rendering — protected card region above composer; preserve composer
+   text/point/window; re-render on answer/cancel/session refresh.
+5. =e-chat-question-mode= (or local transient keymap) — movement, toggle,
+   submit, free-text escape, cancel, without breaking composer bindings.
+6. Session reopen — rehydrate pending cards from session metadata/activity, or
+   cancel stale v1 requests with a documented message.
+7. Docs — document the tool contract in e feature docs; link the Grimoire topic
+   from the project hub once accepted.
+
+* Test plan
+
+- Unit: request validation (missing/duplicate ids, bad select mode, too few/many
+  options, missing labels, invalid selected ids); result validation (single,
+  multi, free text, cancellation); async lifecycle (pending, answer, cancel,
+  result shape).
+- ERT: card rendering in a fake session buffer; keyboard behavior (single,
+  multi, numeric jump, free-text, submit, cancel).
+- Regression: composer preservation across render/answer/cancel/refresh; abort
+  while a question is pending; session reopen or documented stale-cancel.
+- Live: start an =e-chat= session, have the model call the tool, answer by
+  keyboard only, confirm the model receives the selected labels and continues.
+
+* Non-goals (v1)
+
+No image/HTML previews; no arbitrary forms / text fields / date pickers /
+sliders / nested questionnaires; no Grimoire-specific hard-coding in e; no
+modal-only minibuffer implementation; no model-side parsing of typed option
+letters as the primary path.
+
+* Open questions
+
+- Persist pending requests across Emacs restart, or only across buffer
+  close/reopen within one Emacs session?
+- May the model ask while another tool is pending, or does =e-loop= keep the
+  single-active-tool invariant?
+- Expose =ask_user_question= in all chat sessions by default, or only via a
+  =questions= capability/layer a host enables?
+- Should Grimoire agenda review reuse this tool, or stay with simply-annotate for
+  richer durable review traces?
+
+* Provenance
+
+Source plan: Grimoire topic =topics/2026-06-21-questions-tool-for-e-chat.org=
+(org-id =a390a8eb-3009-4787-9f94-7c3153508f64=).
