@@ -427,27 +427,68 @@
                      '(:provider-error full))))))
 
 (ert-deftest e-harness-test-retryable-error-detection ()
-  "Rate-limit errors are classified as retryable; others are not."
+  "Transient errors are classified as retryable; genuine faults are not."
+  ;; Rate limiting.
   (should (e-harness--retryable-error-p
            "429: Rate limit exceeded for api_key: abc. Limit type: requests."
            nil))
   (should (e-harness--retryable-error-p "Rate limit exceeded" nil))
   (should (e-harness--retryable-error-p "Too Many Requests" nil))
   (should (e-harness--retryable-error-p "quota hit" '(:status 429)))
+  ;; Provider overload.
+  (should (e-harness--retryable-error-p "529: overloaded_error" nil))
+  (should (e-harness--retryable-error-p "Overloaded" nil))
+  (should (e-harness--retryable-error-p "upstream failure" '(:status 529)))
+  (should (e-harness--retryable-error-p "service unavailable" '(:status 503)))
+  (should (e-harness--retryable-error-p "internal" '(:status 500)))
+  (should (e-harness--retryable-error-p "request timeout" '(:status 408)))
+  ;; Anthropic error-type is surfaced in the content, so the kind is matched
+  ;; even when the human-readable message does not name it.
+  (should (e-harness--retryable-error-p "overloaded_error: Overloaded" nil))
+  (should (e-harness--retryable-error-p "rate_limit_error: slow down" nil))
+  ;; Transport resets before/while the stream starts.
+  (should (e-harness--retryable-error-p
+           (concat "Provider returned non-stream text instead of a Messages "
+                   "stream: upstream connect error or disconnect/reset before "
+                   "headers. reset reason: connection termination")
+           '(:response-kind text)))
+  (should (e-harness--retryable-error-p "connection reset by peer" nil))
+  (should (e-harness--retryable-error-p "broken pipe" nil))
+  ;; A provider timeout is a genuine failure (the request ran its full budget),
+  ;; not a transport reset, so it is not retried here.
+  (should-not (e-harness--retryable-error-p "provider timed out" nil))
+  ;; Genuine faults are not retried.  A bare "500" in free text (no structured
+  ;; status) is not enough to retry; only a parsed :status of 5xx is.
   (should-not (e-harness--retryable-error-p "500: internal error" nil))
   (should-not (e-harness--retryable-error-p "provider failed" nil))
+  (should-not (e-harness--retryable-error-p "bad request" '(:status 400)))
+  (should-not (e-harness--retryable-error-p "not found" '(:status 404)))
   ;; A bare 429 inside an unrelated number run must not false-positive.
   (should-not (e-harness--retryable-error-p "served 14290 tokens" nil)))
 
 (ert-deftest e-harness-test-backoff-schedule-grows-and-caps ()
-  "Backoff grows by the multiplier and is capped."
+  "Backoff grows by the multiplier and is capped, with jitter when enabled."
   (let ((e-harness-retry-initial-backoff-seconds 2.0)
         (e-harness-retry-backoff-multiplier 2.0)
-        (e-harness-retry-max-backoff-seconds 20.0))
+        (e-harness-retry-max-backoff-seconds 20.0)
+        (e-harness-retry-jitter-fraction 0))
+    ;; With jitter disabled the schedule is deterministic.
     (should (= (e-harness--retry-backoff-seconds 1) 2.0))
     (should (= (e-harness--retry-backoff-seconds 2) 4.0))
     (should (= (e-harness--retry-backoff-seconds 3) 8.0))
-    (should (= (e-harness--retry-backoff-seconds 10) 20.0))))
+    (should (= (e-harness--retry-backoff-seconds 10) 20.0)))
+  (let ((e-harness-retry-initial-backoff-seconds 2.0)
+        (e-harness-retry-backoff-multiplier 2.0)
+        (e-harness-retry-max-backoff-seconds 20.0)
+        (e-harness-retry-jitter-fraction 0.25))
+    ;; Jitter only ever adds delay, never reduces below the base or past
+    ;; the cap plus the jitter fraction.
+    (let ((d (e-harness--retry-backoff-seconds 1)))
+      (should (>= d 2.0))
+      (should (<= d (* 2.0 1.25))))
+    (let ((d (e-harness--retry-backoff-seconds 10)))
+      (should (>= d 20.0))
+      (should (<= d (* 20.0 1.25))))))
 
 (defun e-harness-test--rate-limited-backend (failures)
   "Return a backend that fails with HTTP 429 FAILURES times, then succeeds.
@@ -513,12 +554,12 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
                     (mapcar (lambda (e) (plist-get e :type)) events)))))
 
 (ert-deftest e-harness-test-non-retryable-error-fails-immediately ()
-  "A non-rate-limit backend error settles without any retry."
+  "A genuine client-fault backend error settles without any retry."
   (let* ((e-harness-retry-max-elapsed-seconds 5.0)
          (backend (e-backend-fake-create
                    :items '((:type backend-error
-                              :content "500: internal error"
-                              :payload (:status 500)))))
+                              :content "400: invalid request"
+                              :payload (:status 400)))))
          (harness (e-harness-create :backend backend))
          (events nil))
     (e-harness-subscribe harness (lambda (event) (push event events)))

@@ -597,16 +597,18 @@ preview to avoid duplicating large outputs in session JSONL files."
   :type 'integer
   :group 'e)
 
-(defcustom e-harness-retry-max-elapsed-seconds 60.0
-  "Total wall-clock budget for retrying a rate-limited backend turn.
-Retries of a turn that keeps failing with a retryable error (e.g. HTTP 429)
-stop once this much time has elapsed since the first attempt; the turn then
-settles as `turn-failed' as before.  Set to 0 to disable retrying."
+(defcustom e-harness-retry-max-elapsed-seconds 600.0
+  "Total wall-clock budget for retrying a transient backend turn.
+Retries of a turn that keeps failing with a retryable error (rate limiting,
+overload, or a transport reset) stop once this much time has elapsed since the
+first attempt; the turn then settles as `turn-failed' as before.  The default
+mirrors Claude Code's patience: several minutes of backoff across roughly ten
+attempts.  Set to 0 to disable retrying."
   :type 'number
   :group 'e)
 
 (defcustom e-harness-retry-initial-backoff-seconds 2.0
-  "Initial delay before the first retry of a rate-limited backend turn."
+  "Initial delay before the first retry of a transient backend turn."
   :type 'number
   :group 'e)
 
@@ -615,29 +617,86 @@ settles as `turn-failed' as before.  Set to 0 to disable retrying."
   :type 'number
   :group 'e)
 
-(defcustom e-harness-retry-max-backoff-seconds 20.0
-  "Maximum delay between retries of a rate-limited backend turn."
+(defcustom e-harness-retry-max-backoff-seconds 60.0
+  "Maximum delay between retries of a transient backend turn."
   :type 'number
   :group 'e)
 
+(defcustom e-harness-retry-jitter-fraction 0.25
+  "Random fraction of the backoff added as jitter before each retry.
+Jitter spreads concurrent retries so a recovering backend is not hit by a
+synchronized burst.  A value of 0.25 adds up to 25% of the computed backoff.
+Set to 0 to disable jitter (backoff becomes fully deterministic)."
+  :type 'number
+  :group 'e)
+
+(defconst e-harness--retryable-error-patterns
+  '("rate limit"
+    "rate_limit_error"
+    "too many requests"
+    "overloaded"
+    "overloaded_error"
+    "api_error"
+    "internal_server_error"
+    "service unavailable"
+    "bad gateway"
+    "gateway time"
+    "connection termination"
+    "connection reset"
+    "reset by peer"
+    "connect error"
+    "before headers"
+    "disconnect"
+    "broken pipe"
+    "premature")
+  "Lower-cased substrings marking a transient, retryable backend error.
+These cover rate limiting, provider overload (HTTP 529 / `overloaded_error'),
+and transport-level failures such as the Envoy \"upstream connect error or
+disconnect/reset before headers\" body returned when a connection is reset
+before the Messages stream starts.")
+
+(defun e-harness--retryable-status-p (status)
+  "Return non-nil when HTTP STATUS marks a transient, retryable failure.
+408 (request timeout), 409 (conflict), 429 (rate limit), and every 5xx server
+error (500, 502, 503, 504, the 529 Anthropic overload code) are retryable, in
+line with the Anthropic SDK retry policy.  4xx client errors other than 408/409
+are genuine faults and are not retried."
+  (and (numberp status)
+       (or (= status 408)
+           (= status 409)
+           (= status 429)
+           (>= status 500))))
+
 (defun e-harness--retryable-error-p (message details)
   "Return non-nil when a backend error (MESSAGE, DETAILS) should be retried.
-Currently this is rate limiting: HTTP 429 or an explicit rate-limit message."
+Retryable errors are transient: rate limiting (HTTP 429), provider overload
+\(HTTP 529 / `overloaded_error'), and transport resets that drop the connection
+before or during the Messages stream.  Genuine faults (HTTP 500, malformed
+requests) are not retried."
   (let ((text (downcase (or message ""))))
     (or (string-match-p "\\(^\\|[^0-9]\\)429\\([^0-9]\\|$\\)" (or message ""))
-        (string-match-p "rate limit" text)
-        (string-match-p "too many requests" text)
+        (string-match-p "\\(^\\|[^0-9]\\)529\\([^0-9]\\|$\\)" (or message ""))
+        (seq-some (lambda (pat) (string-match-p (regexp-quote pat) text))
+                  e-harness--retryable-error-patterns)
         (let ((status (and (listp details)
                            (or (plist-get details :status)
                                (plist-get details :status-code)
                                (plist-get details :code)))))
-          (and (numberp status) (= status 429))))))
+          (e-harness--retryable-status-p status)))))
 
 (defun e-harness--retry-backoff-seconds (attempt)
-  "Return the backoff delay in seconds before retry ATTEMPT (1-based)."
-  (min e-harness-retry-max-backoff-seconds
-       (* e-harness-retry-initial-backoff-seconds
-          (expt e-harness-retry-backoff-multiplier (max 0 (1- attempt))))))
+  "Return the backoff delay in seconds before retry ATTEMPT (1-based).
+The delay grows geometrically and is capped at
+`e-harness-retry-max-backoff-seconds', then has up to
+`e-harness-retry-jitter-fraction' of itself added as random jitter."
+  (let* ((base (min e-harness-retry-max-backoff-seconds
+                    (* e-harness-retry-initial-backoff-seconds
+                       (expt e-harness-retry-backoff-multiplier
+                             (max 0 (1- attempt))))))
+         (jitter (if (> e-harness-retry-jitter-fraction 0)
+                     (* base e-harness-retry-jitter-fraction (/ (random 1000) 1000.0))
+                   0)))
+    (+ base jitter)))
 
 (defun e-harness--durable-activity-event-p (type)
   "Return non-nil when TYPE should be stored as session activity."
@@ -1389,12 +1448,20 @@ TURN-ID is passed to active capability context providers when present."
       (plist-put entry :open-tool-call nil))))
 
 (defun e-harness--backend-error-message (err)
-  "Return the compact user-visible error message for condition ERR."
-  (if (and (consp err)
-           (eq (car err) 'e-loop-backend-error)
-           (stringp (cadr err)))
-      (cadr err)
-    (error-message-string err)))
+  "Return the compact user-visible error message for condition ERR.
+For `e-compaction-error' return only the bare reason string; the
+`define-error' message and the presentation layer both add their own
+\"Context compaction failed\" prefix, so including it here triples it."
+  (cond
+   ((and (consp err)
+         (eq (car err) 'e-loop-backend-error)
+         (stringp (cadr err)))
+    (cadr err))
+   ((and (consp err)
+         (eq (car err) 'e-compaction-error)
+         (stringp (cadr err)))
+    (cadr err))
+   (t (error-message-string err))))
 
 (defun e-harness--backend-error-details (err)
   "Return structured provider details from condition ERR, or nil."

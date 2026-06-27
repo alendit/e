@@ -293,16 +293,28 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"))
         (:type done :reason stop))))))
 
 (ert-deftest e-anthropic-test-parse-non-stream-json-error ()
-  "A non-stream JSON error body becomes a backend error item."
-  (should
-   (equal
-    (e-anthropic-parse-stream
-     "{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"max_tokens is required\"}}")
-    '((:type backend-error
-       :content "max_tokens is required"
-       :payload (:type "error"
-                 :error (:type "invalid_request_error"
-                         :message "max_tokens is required")))))))
+  "A non-stream JSON error body becomes a backend error item.
+The error type is prefixed onto the content and folded into the payload so the
+retry classifier sees the kind even when the message does not name it."
+  (let* ((items (e-anthropic-parse-stream
+                 "{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"max_tokens is required\"}}"))
+         (item (car items)))
+    (should (= (length items) 1))
+    (should (eq (plist-get item :type) 'backend-error))
+    (should (equal (plist-get item :content)
+                   "invalid_request_error: max_tokens is required"))
+    (should (equal (plist-get (plist-get item :payload) :error-type)
+                   "invalid_request_error"))))
+
+(ert-deftest e-anthropic-test-parse-non-stream-overloaded-error ()
+  "An `overloaded_error' body surfaces its type so retries can fire."
+  (let* ((items (e-anthropic-parse-stream
+                 "{\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}"))
+         (item (car items)))
+    (should (eq (plist-get item :type) 'backend-error))
+    (should (string-match-p "overloaded_error" (plist-get item :content)))
+    (should (e-harness--retryable-error-p (plist-get item :content)
+                                          (plist-get item :payload)))))
 
 (ert-deftest e-anthropic-test-parse-non-stream-html-error ()
   "A non-stream HTML error body becomes a single backend error item."

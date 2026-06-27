@@ -612,17 +612,30 @@ LIMIT defaults to 240 characters."
    limit))
 
 (defun e-anthropic--non-stream-json-error-item (stream-text)
-  "Return a backend error item when STREAM-TEXT is a non-stream JSON body."
+  "Return a backend error item when STREAM-TEXT is a non-stream JSON body.
+The Anthropic error object carries the failure kind in `error.type'
+\(e.g. `rate_limit_error', `overloaded_error'); that type is folded into both
+the surfaced content and the payload so the harness retry classifier can act on
+it even when the human-readable message does not name the kind."
   (condition-case nil
       (let* ((payload (e-anthropic--parse-json stream-text))
              (error (plist-get payload :error))
+             (error-type (and (listp error) (plist-get error :type)))
              (message (cond
                        ((listp error) (plist-get error :message))
                        ((stringp error) error))))
         (when message
           (list :type 'backend-error
-                :content message
-                :payload payload)))
+                ;; Prefix the kind so an `overloaded_error' message of just
+                ;; "Overloaded" is unambiguous, and so the retry classifier
+                ;; matches on the type substring.
+                :content (if error-type
+                             (format "%s: %s" error-type message)
+                           message)
+                :payload (if error-type
+                             (plist-put (copy-sequence payload)
+                                        :error-type error-type)
+                           payload))))
     (error nil)))
 
 (defun e-anthropic--non-stream-error-item (stream-text)
