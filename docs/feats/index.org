@@ -48,4 +48,4 @@ Status values for coding agents:
 | 35 | In-review | 35-provider-context-anchors/ | Provider Context Anchors |
 | 36 | In-review | 36-steering-and-queuing/ | Steering and Queuing |
 | 37 | Planned | 37-ask-user-question/ | Ask User Question Tool |
-| 38 | In-progress | 38-output-style/ | Output Style |
+| 38 | Done | 38-output-style/ | Output Style |

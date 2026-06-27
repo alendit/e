@@ -281,7 +281,7 @@ recreated by the factory/sync path and are excluded from the recorded
 | `e-dev` | e Dev | no | `context-inspection` |
 | `agents-std-context` | Agents Std Context | yes | `agents-std-context` |
 | `harness-base` | Harness Base | yes | `harness-base-context`, `session-tmp-resources`, `tool-output-truncation` |
-| `os-base` | OS Base | yes | `base-guidance`, `file-handling`, `shell-process` |
+| `os-base` | OS Base | yes | `base-guidance`, `file-handling`, `shell-process`, `output-style` |
 | `emacs-base` | Emacs Base | yes | `emacs-awareness`, `buffer-read`, `selection-context`, `buffer-edit`, `elisp-eval` |
 | `web` | Web | yes | `web` (Web Access) |
 | `text-editing` | Text Editing | yes | `annotations`, plus `annotation-tools` when the annotation backend is available |
@@ -313,6 +313,7 @@ contributes:
 | `os-base` | `base-guidance` | Instructions only (priority 230): use workspace file/shell tools; never traverse outside the project. No tools/resources. |
 | `os-base` | `file-handling` | `resource_sync_status` tool + read/write/edit `file://` resource methods, scoped to workspace roots. |
 | `os-base` | `shell-process` | The `bash` tool, rooted at the workspace directory. |
+| `os-base` | `output-style` | Instructions only (priority 260): the active output style's prose, configured via `e-capability-config` (`:style`). Inert when no style is selected. No tools/resources. |
 | `emacs-base` | `emacs-awareness` | Instructions (priority 300) + a context provider injecting visible-buffer context. No tools. |
 | `emacs-base` | `buffer-read` | `list_buffers` tool + read-only `buffer://` resource method. |
 | `emacs-base` | `selection-context` | Nothing yet — placeholder capability reserved for future selection context. |
@@ -368,7 +369,7 @@ the chat shell, session store, or harness lifecycle policy.
 ### Execution Capabilities
 
 The base OS capabilities live under `lisp/layers/base/`. `os-base` packages
-`base-guidance`, `file-handling`, and `shell-process`.
+`base-guidance`, `file-handling`, `shell-process`, and `output-style`.
 `file://` read/write/edit methods enforce the resource operation contracts.
 The `bash` tool runs process commands and streams output through a file-backed
 collector so large output can be represented by bounded previews plus `tmp://`

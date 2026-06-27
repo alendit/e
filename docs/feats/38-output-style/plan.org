@@ -17,11 +17,13 @@ cased.
 
 * Status
 
-In-progress. Implemented in =lisp/layers/base/e-output-style.el= (registry,
-resolver, capability, set/describe commands) and wired into the =os-base=
-layer. Built-in styles: =concise=, =explanatory=, =hemingway=. Tests in
+Done. Implemented in =lisp/layers/base/e-output-style.el= (registry, resolver,
+capability, set/describe commands) and wired into the =os-base= layer. Built-in
+styles: =concise=, =explanatory=, =hemingway=. Tests in
 =test/e-output-style-test.el= and =test/e-base-test.el= pass; warning-as-error
-compile is green.
+compile is green; =docs/architecture.md= records =output-style= as an =os-base=
+capability (priority 260). Live Emacs reloaded and =e-output-style-ids= /
+=e-output-style--describe-string= verified against the running session.
 
 * Key finding: the system channel already exists
 
