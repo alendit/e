@@ -1,0 +1,310 @@
+#+title: Output Style
+#+startup: overview
+
+* Goal
+
+Let a user pick an *output style* that strongly shapes how the model writes its
+prose responses, the way Claude Code's "output style" feature does. An output
+style is a named block of behavioral guidance (terse, verbose, teach-me,
+caveman, custom) that is injected into the *system channel* of every request,
+ahead of conversation turns, so it conditions the whole turn rather than
+competing with it as a user message.
+
+The deliverable is a built-in =output-style= capability plus a small set of
+named styles, selectable globally and per project, with a command to switch the
+active style. It is generic e-core/layers work; no shell or provider is special
+cased.
+
+* Status
+
+Planned.
+
+* Key finding: the system channel already exists
+
+This feature does *not* need a new "system vs normal context" mechanism. e
+already separates a system channel from conversation turns end to end:
+
+- A capability with =:instructions= contributes a fragment with
+  =:role 'system= and segment kind =static-prefix=
+  (=lisp/core/e-capabilities.el:291-303=).
+- =e-capabilities--context-fragments= sorts fragments by
+  =(:cache-placement :priority :capability-index ...)= so =static-prefix=
+  system fragments lead, ordered by =instruction-priority=
+  (=lisp/core/e-capabilities.el:267-331=).
+- The Anthropic adapter pulls system fragments and the =:instructions= option
+  into the top-level Messages =:system= field, *out* of the =messages= array
+  (=lisp/adapters/anthropic/e-anthropic.el:255-273,378-403=,
+  =e-anthropic--system-message-p=, =e-anthropic--system=).
+- The OpenAI adapter emits a leading =(:role "system" :content ...)= message
+  for the same fragments (=lisp/adapters/openai/e-openai.el:606-615=).
+- The =os-base= layer already uses exactly this path: it builds a
+  =base-guidance= capability via =e-base-guidance-capability-create= with an
+  =:instruction-priority= of 230 (=lisp/layers/base/e-base.el:33-44=,
+  =lisp/layers/base/e-file-capabilities.el:47-54=).
+
+So output style rides the existing channel as a high-priority guidance
+capability. The only new machinery is: the style *content*, a *selection*
+mechanism (which style is active), and a *command* to switch it.
+
+* Decisions
+
+** Output style is a capability, configured via =e-capability-config=
+
+Model output style as one built-in capability =output-style= whose effective
+=:instructions= are the active style's prose. Selecting a style is capability
+*configuration*, so reuse feature 07's =e-capability-config= contract rather
+than inventing a parallel setting:
+
+#+begin_src emacs-lisp
+(setq e-capability-config
+      '((output-style :style hemingway)))
+#+end_src
+
+This gives global, project (directory-local), and construction-time precedence
+for free (=docs/feats/07-capability-config/plan.org=, "Override precedence"),
+plus Customize UI and the unknown-option error path. Per-project override uses
+directory-local variables exactly as feature 07 documents:
+
+#+begin_src emacs-lisp
+((nil . ((e-capability-config . ((output-style :style caveman))))))
+#+end_src
+
+** Styles are a registry of named prose blocks
+
+A style is =(:id symbol :name string :instructions string)=. Ship a small
+built-in registry keyed by id. Users add styles by pushing onto the registry
+variable (a =defcustom=), mirroring how Emacs themes are registered. The
+=:style= config option's value is a style id resolved against the registry at
+capability construction time. An unknown id is a clear error naming the id and
+the known ids; =nil= / unset means *no* output-style instructions (the model's
+default voice), so the feature is opt-in and inert until selected.
+
+** Built-in styles (v1)
+
+- =concise= :: short, direct, lead with the answer, minimal preamble.
+- =explanatory= :: teaching voice; explain reasoning and tradeoffs as it works.
+- =hemingway= :: plain declarative sentences, one idea each, strong verbs (the
+  style this plan models).
+
+Keep the set small in v1. The registry makes adding more cheap later. Do *not*
+hard-code provider- or shell-specific styles.
+
+** Placement and priority in the system prompt
+
+Output style is strong, late-binding voice guidance. It must sit *after* the
+operational guidance (file/shell safety, tool contracts) so it shapes prose
+without overriding correctness rules. Lower =instruction-priority= sorts
+earlier (=e-capabilities--fragment-less-p=). =os-base= guidance is 230 and the
+capability default is 200, so give =output-style= a priority of *260*: it lands
+after base/operational guidance but is still a leading =static-prefix= system
+fragment (good for prompt-cache stability, since the active style rarely changes
+mid-session). Document the chosen number in the plan as the contract.
+
+** Switching the active style interactively
+
+Add =M-x e-output-style-set=: completing-read over registered style names, sets
+the =:style= option in =e-capability-config= for =output-style=, and reports
+that new sessions/turns pick it up. Whether a *running* session re-reads it
+depends on whether config is resolved per turn or per session; v1 documents the
+observed behavior rather than forcing live re-resolution. Add
+=M-x e-output-style-describe= to print the active style id and its instructions
+for the current project directory.
+
+* Non-goals (v1)
+
+- No new context channel or backend wire change. The system channel already
+  exists; this rides it.
+- No per-message or per-turn style override syntax in the composer. Style is a
+  session/project setting in v1.
+- No style *composition* (stacking two styles). One active style at a time.
+- No shell-specific or provider-specific styles.
+- No automatic style inference from the prompt.
+- No live mid-turn restyling guarantee; document whatever the config-resolution
+  timing yields.
+
+* Design
+
+** New module: =lisp/layers/base/e-output-style.el=
+
+Owns the style registry, the =output-style= capability constructor, and the
+interactive commands. Lives in the =base= layer dir because output style is
+general guidance, not a domain capability. It must =require 'e-capabilities=
+and =e-capability-config=.
+
+Public surface:
+
+- =e-output-style-registry= :: =defcustom=, alist of
+  =(id . (:name string :instructions string))=. Seeded with the v1 styles.
+- =e-output-style-register= :: =(id &key name instructions)=; add/replace a
+  registry entry. Used by built-ins and by users.
+- =e-output-style--resolve= :: =(style-id)= -> instructions string or signal on
+  unknown id (error message lists known ids).
+- =e-output-style-capability-create= :: =(&optional directory)=; resolve the
+  =output-style= capability config for =directory= via =e-capability-config=,
+  read the =:style= option, and build an =e-capability= whose =:instructions=
+  are the resolved style prose (or no instructions when unset). Declares its
+  =:config-options= so feature 07 validation knows =:style= is the only legal
+  key. Uses =:instruction-priority 260=.
+- =e-output-style-set= :: interactive; completing-read style, write the
+  =:style= option into =e-capability-config=, message the result.
+- =e-output-style-describe= :: interactive; print active style + instructions
+  for current directory.
+
+** Wiring into the default layer set
+
+Add the =output-style= capability to the =os-base= layer alongside
+=base-guidance= (=lisp/layers/base/e-base.el:37-44=), or to whichever default
+layer assembly already runs for the chat harness. It is inert when no style is
+selected, so adding it by default is safe and makes the feature discoverable.
+
+** Config option declaration
+
+The =output-style= capability declares one config option following feature 07's
+spec shape (key, type, default, doc, validator):
+
+- =:style= :: symbol; default =nil=; "Active output style id; one of the ids in
+  =e-output-style-registry='"; validator checks membership in the registry when
+  non-nil.
+
+* Implementation Plan
+
+** Step 1: Style registry and resolver
+
+Files:
+
+- Create =lisp/layers/base/e-output-style.el= with
+  =e-output-style-registry= (=defcustom=, seeded with =concise=,
+  =explanatory=, =hemingway=), =e-output-style-register=, and
+  =e-output-style--resolve=.
+- Modify =e.el= require list / =lisp/dev/e-dev.el= reload list to include the
+  new module.
+- Create =test/e-output-style-test.el=.
+
+Acceptance:
+
+- =e-output-style--resolve= returns the instructions string for a known id.
+- =e-output-style--resolve= on an unknown id signals an error whose message
+  names the bad id and lists known ids.
+- =e-output-style-register= adds a new style that =--resolve= then finds.
+- The three v1 styles are present with non-empty instructions.
+
+** Step 2: =output-style= capability constructor
+
+Files:
+
+- Modify =lisp/layers/base/e-output-style.el= to add
+  =e-output-style-capability-create= and its =:config-options= declaration.
+- Modify =test/e-output-style-test.el=.
+
+Acceptance:
+
+- With no =:style= configured, the capability has nil/empty =:instructions=
+  (contributes nothing to the system channel).
+- With =:style hemingway= configured for the directory, the capability's
+  =:instructions= equal the =hemingway= style prose.
+- The capability declares =:style= as its only config option; an unknown option
+  key for =output-style= signals the feature-07 unknown-option error.
+- =:instruction-priority= is 260.
+
+** Step 3: Wire into the default layer
+
+Files:
+
+- Modify =lisp/layers/base/e-base.el= to add the =output-style= capability to
+  the =os-base= layer (resolved for the layer root directory).
+- Modify =test/e-base-test.el= (or the existing default-layer test) to assert
+  the capability is present.
+
+Acceptance:
+
+- A default chat harness's active capabilities include =output-style=.
+- With no style configured, the assembled system context is unchanged from
+  before this feature (no extra system fragment).
+- With =:style concise= configured, exactly one additional =static-prefix=
+  system fragment appears, sorted after =base-guidance= (priority 260 > 230).
+
+** Step 4: Interactive set/describe commands
+
+Files:
+
+- Modify =lisp/layers/base/e-output-style.el= to add =e-output-style-set= and
+  =e-output-style-describe=.
+- Modify =test/e-output-style-test.el= to cover the pure helpers behind the
+  commands (style listing, config-write helper, describe-string builder). Do
+  not test =completing-read= itself.
+
+Acceptance:
+
+- The set helper writes =(:style ID)= under =output-style= in
+  =e-capability-config= without disturbing other capabilities' config.
+- The describe helper returns a string naming the active style id and including
+  its instructions for a given directory.
+- Selecting an unknown style id via the helper signals the same error as
+  =--resolve=.
+
+** Step 5: End-to-end system-channel assertion
+
+Files:
+
+- Add a test in =test/e-output-style-test.el= (or the adapter test files) that
+  builds context from capabilities including a configured =output-style= and
+  asserts the style prose reaches the *system* channel, not a conversation
+  turn.
+
+Acceptance:
+
+- Anthropic: the style prose appears in the result of =e-anthropic--system= (or
+  the request body's top-level =:system=), and is absent from the =messages=
+  array.
+- OpenAI chat: the style prose appears in the leading =(:role "system")=
+  message.
+
+** Step 6: Document the contract
+
+Files:
+
+- Create =docs/feats/38-output-style/= notes if the contract shifts during
+  implementation; keep this =plan.org= current.
+- Update =docs/architecture.md= if it enumerates default capabilities or the
+  system-channel composition.
+- Add a row to =docs/feats/index.org=.
+
+Acceptance:
+
+- Docs state output style is a capability on the existing system channel,
+  configured via =e-capability-config=, priority 260.
+- Docs show a global example, a directory-local example, and the
+  =M-x e-output-style-set= flow.
+
+* Verification
+
+- Run focused ERT: =test/e-output-style-test.el=.
+- Run the default-layer test to confirm capability presence and inert-by-default
+  behavior.
+- After editing =lisp/*.el=, reload the running Emacs with =e-dev-reload=, then
+  =M-x e-output-style-set= -> =hemingway=, start an =e-chat= turn, and confirm
+  the model's prose follows the style and that =M-x e-output-style-describe=
+  reports the active style.
+
+* Risks
+
+- Choosing the wrong priority could let style guidance override correctness
+  rules. Keeping it at 260 (after operational guidance) mitigates this; the
+  number is documented as the contract.
+- If users expect per-turn restyling, the session/project-scoped model may
+  surprise them. Document the scope explicitly (non-goals).
+- Long style prose grows the cached system prefix. Styles are short and stable,
+  so prompt-cache impact is small; styles live in =static-prefix= so they cache.
+
+* Later Work
+
+- Composer-level one-off style override (a prefix shortcut, cf. feature 31).
+- Style composition / layering when a real need appears.
+- A richer style-management UI once the registry has many entries.
+
+* Provenance
+
+Requested feature: integrate Claude Code-style "output style" into e. Core
+finding established by exploration of =e-capabilities.el=, =e-anthropic.el=,
+=e-openai.el=, and the =os-base= layer: the system channel already exists, so
+output style is a guidance capability over it.
