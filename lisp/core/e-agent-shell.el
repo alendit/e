@@ -31,6 +31,13 @@
 (defvar agent-shell-preferred-agent-config)
 (defvar agent-shell--state)
 
+;; Agent Shell is an optional, source-version-sensitive dependency; every call
+;; below is guarded by `fboundp'.  Declare the functions so byte-compilation of
+;; this adapter does not warn when Agent Shell is absent from the build env.
+(declare-function agent-shell--start "agent-shell")
+(declare-function agent-shell-subscribe-to "agent-shell")
+(declare-function agent-shell-interrupt "agent-shell")
+
 (defconst e-agent-shell-events
   '(input-submitted permission-request permission-response tool-call-update
     file-write turn-complete error clean-up)
