@@ -3392,6 +3392,18 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
      :type 'user-error)
     (should-not (e-session-compactions store "session-1"))))
 
+(ert-deftest e-harness-test-compaction-error-message-is-not-prefixed ()
+  "Compaction-failed payload carries the bare reason, not a stacked prefix.
+Regression: `e-compaction-error''s `define-error' message already starts with
+\"Context compaction failed\", and the chat shell prepends it again, so the
+backend-error-message helper must return only the bare reason."
+  (let ((err (list 'e-compaction-error
+                   "No safe message boundary available for compaction")))
+    (should (equal (e-harness--backend-error-message err)
+                   "No safe message boundary available for compaction"))
+    (should-not (string-match-p "Context compaction failed"
+                                (e-harness--backend-error-message err)))))
+
 (ert-deftest e-harness-test-compaction-strips-tools-from-summary-request ()
   "Compaction omits the tool set so the model cannot answer with a tool-call.
 Regression: when tools were exposed the summary turn could come back as a
