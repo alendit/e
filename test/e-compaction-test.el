@@ -131,6 +131,32 @@
         (should (string-match-p "middle answer" prompt))
         (should-not (string-match-p "old" (plist-get preparation :summary-input)))))))
 
+(ert-deftest e-compaction-test-prepare-falls-back-to-split-turn-without-user-boundary ()
+  "A long single agentic turn compacts at a split-turn boundary, not failing.
+With one user message at the turn start and only assistant/tool entries after,
+a user-only boundary search returns nil; the fallback keeps a suffix from a
+later assistant/tool-call message instead of signalling no-boundary."
+  (let ((store (e-session-store-create)))
+    (e-session-create store :id "session-1")
+    (e-session-append-message store "session-1" '(:role user :content "start the agentic turn"))
+    (e-session-append-message store "session-1" '(:role assistant :content "early step"))
+    (e-session-append-message store "session-1" '(:role tool-call :content (:name "read_file")))
+    (e-session-append-message store "session-1" '(:role tool :content "early result"))
+    (e-session-append-message store "session-1" '(:role assistant :content "late step"))
+    (e-session-append-message store "session-1" '(:role tool-call :content (:name "grep")))
+    (e-session-append-message store "session-1" '(:role tool :content "late result"))
+    ;; allow-split-turn nil mirrors active-turn auto-compaction; fallback applies.
+    (let* ((preparation (e-compaction-prepare
+                         store "session-1"
+                         :keep-recent-tokens 1
+                         :allow-split-turn nil))
+           (metadata (plist-get preparation :metadata)))
+      (should (plist-get preparation :first-kept-entry-id))
+      (should (memq (plist-get metadata :boundary-role) '(assistant tool-call)))
+      (should (eq (plist-get metadata :split-turn) t))
+      (should (string-match-p "early step"
+                              (plist-get preparation :summary-input))))))
+
 (provide 'e-compaction-test)
 
 ;;; e-compaction-test.el ends here
