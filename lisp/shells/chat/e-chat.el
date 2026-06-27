@@ -4089,7 +4089,13 @@ SOURCE identifies where the entry came from for duplicate suppression."
      turn-id
      (and record (e-chat--turn-details-text turn-id record)))
     (when record
-      (plist-put record :failure-rendered t))))
+      (plist-put record :failure-rendered t))
+    ;; Re-render the settled activity summary ("Turn took ..., N tool calls")
+    ;; below the failure entry, so an abnormal end still surfaces duration and
+    ;; tool-call counts.  `finalize-turn-display' is a no-op when the turn did
+    ;; no provider work (`settled-activity-p' is nil), so failures before any
+    ;; round add no empty summary.
+    (e-chat--finalize-turn-display turn-id)))
 
 (defun e-chat--finalize-turn-display (turn-id)
   "Mark TURN-ID as having rendered its final response."
@@ -5310,18 +5316,24 @@ When REFRESH-MODE-LINE is non-nil, also refresh context-aware mode-line text."
       (plist-get event :payload)
       t))
     ('turn-cancelled
-     (e-chat--set-turn-time (plist-get event :turn-id)
-                             :ended-at
-                             (plist-get event :created-at))
-     (e-chat--settle-open-thinking
-      (plist-get event :turn-id)
-      (plist-get event :created-at)
-      'cancelled)
-     (e-chat--cancel-pending-activity-redraw (plist-get event :turn-id))
-     (e-chat--stop-progress-indicator (plist-get event :turn-id))
-     (e-chat--set-status "cancelled")
-     (e-chat--insert-entry "System" "Turn cancelled" t
-                           (plist-get event :turn-id)))
+     (let* ((turn-id (plist-get event :turn-id))
+            (created-at (plist-get event :created-at)))
+       (e-chat--set-turn-time turn-id :ended-at created-at)
+       (e-chat--settle-open-thinking turn-id created-at 'cancelled)
+       (e-chat--cancel-pending-activity-redraw turn-id)
+       (e-chat--stop-progress-indicator turn-id)
+       (when-let ((record (e-chat--existing-turn-record turn-id)))
+         (e-chat--delete-turn-transient record))
+       (e-chat--clear-running-status-markers)
+       (e-chat--set-status "cancelled")
+       (let ((record (e-chat--existing-turn-record turn-id)))
+         (e-chat--insert-entry
+          "System" "Turn cancelled" t turn-id
+          (and record (e-chat--turn-details-text turn-id record)))
+         ;; Persist the activity summary (duration, tool-call count) below the
+         ;; cancellation, matching the failed-turn path.  No-op when the turn
+         ;; did no provider work.
+         (e-chat--finalize-turn-display turn-id))))
     ('compaction-started
      (let ((payload (plist-get event :payload)))
        (e-chat--set-status "compacting")

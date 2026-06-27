@@ -2596,23 +2596,22 @@ the orphaned region and appeared to vanish."
                           :session-id e-chat-session-id
                           :turn-id "turn-1" :created-at 9
                           :payload '(:error "boom")))
-          ;; The transient activity is gone; the failure entry is shown.
+          ;; The live "Thinking" transient is gone; the failure entry plus the
+          ;; settled duration summary are shown.  The summary persists exactly
+          ;; like a normally-completed turn, so the abnormal end still reports
+          ;; duration and tool-call counts.
           (let ((content (buffer-string)))
             (should (string-match-p "Turn failed: boom" content))
+            (should (string-match-p "Turn took 0min 9sec\\." content))
             (should-not (string-match-p "Thinking for" content))
             (should-not (string-match-p "Thought for" content)))
-          ;; No dangling running-status markers survive the failure: a stale
-          ;; marker makes the next turn's running-status redraw delete a region
-          ;; that swallows freshly rendered content (the reported symptom).
-          (should-not (and (markerp e-chat--running-status-start-marker)
-                           (marker-position e-chat--running-status-start-marker)))
+          ;; The active progress indicator is genuinely stopped: a live progress
+          ;; marker would make the next turn's redraw delete a region that
+          ;; swallows freshly rendered content (the reported symptom).  The
+          ;; running-status/transient markers now point at the persistent
+          ;; summary, as they do for any settled turn, so they are not checked.
           (should-not (and (markerp e-chat--progress-start-marker)
                            (marker-position e-chat--progress-start-marker)))
-          (let ((record (e-chat--existing-turn-record "turn-1")))
-            (should-not (and record
-                             (markerp (plist-get record :transient-start-marker))
-                             (marker-position
-                              (plist-get record :transient-start-marker)))))
           ;; A new prompt for a fresh turn renders and stays visible.
           (e-chat--render-event
            (e-events-make :type 'message-added
@@ -3007,7 +3006,9 @@ the orphaned region and appeared to vanish."
                      (e-chat--activity-expanded-text record))))
           (let ((content (buffer-string)))
             (should (string-match-p "Turn failed: provider failed" content))
-            (should-not (string-match-p "Thinking\\.\\.\\." content))))
+            (should-not (string-match-p "Thinking\\.\\.\\." content))
+            ;; The abnormal end still surfaces the settled duration summary.
+            (should (string-match-p "Turn took 0min 12sec\\." content))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -3040,7 +3041,9 @@ the orphaned region and appeared to vanish."
                      (e-chat--activity-expanded-text record))))
           (let ((content (buffer-string)))
             (should (string-match-p "Turn cancelled" content))
-            (should-not (string-match-p "Thinking\\.\\.\\." content))))
+            (should-not (string-match-p "Thinking\\.\\.\\." content))
+            ;; The abnormal end still surfaces the settled duration summary.
+            (should (string-match-p "Turn took 0min 12sec\\." content))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
