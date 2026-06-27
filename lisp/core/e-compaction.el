@@ -321,12 +321,17 @@ that survived the compaction boundary."
                    (e-compaction--message-entries store session-id)))
          (previous (e-session-latest-valid-compaction store session-id))
          (previous-boundary (plist-get previous :first-kept-entry-id))
-         (boundary-roles (if allow-split-turn
-                             '(user assistant tool-call)
-                           '(user)))
+         ;; Prefer a clean user-message boundary.  When none is available, fall
+         ;; back to assistant/tool-call boundaries: a long single agentic turn
+         ;; has only one user message, so a user-only search returns nil and the
+         ;; context could never compact otherwise.  `allow-split-turn' is kept
+         ;; as a parameter for callers/tests but no longer gates the fallback.
          (boundary
-          (e-compaction--select-boundary
-           entries keep boundary-roles previous-boundary)))
+          (or (e-compaction--select-boundary
+               entries keep '(user) previous-boundary)
+              (e-compaction--select-boundary
+               entries keep '(user assistant tool-call) previous-boundary))))
+    (ignore allow-split-turn)
     (unless boundary
       (signal 'e-compaction-error
               (list "No safe message boundary available for compaction")))
