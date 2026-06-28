@@ -1,0 +1,44 @@
+#+title: Async Interactions Transition Review
+#+startup: overview
+
+* Phase 1 Review
+
+Status: in progress.
+
+** Scope reviewed
+
+- Added =e-request= as the request/job lifecycle contract module.
+- Added deterministic lifecycle tests in =test/e-request-test.el=.
+- Added tool blocking-class metadata and interactive rejection for long synchronous handlers.
+- Added tool-start profile span integration through the new request/profile helper.
+- Kept synchronous execution available for explicit batch/test paths while Phase 1 establishes guardrails.
+
+** Verification
+
+#+begin_src sh
+rtk eldev test test/e-request-test.el test/e-tools-test.el test/e-dev-perf-test.el
+#+end_src
+
+Result: passed before the final tool blocking test adjustment.
+
+#+begin_src sh
+rtk eldev test test/e-request-test.el test/e-tools-test.el
+#+end_src
+
+Result: passed after the final tool blocking test adjustment.
+
+** Findings
+
+*** DONE Live reload completed before closing Phase 1
+
+The Lisp changes were reloaded into the running Emacs with =e-dev-reload=.
+
+*** DONE Full Phase 1 review included compile gate
+
+Focused tests passed.
+The warning-as-error compile gate passed.
+
+*** TODO Perf before/after comparison waits on Feature 41 completion
+
+The request asked to evaluate before/after performance after Feature 41.
+Feature 41 is still =In-progress= in the index, so Phase 1 records profile span hooks now and defers reviewed before/after comparison until Feature 41 is done.

@@ -265,6 +265,44 @@
       (should (null called))
       (should (null result)))))
 
+(ert-deftest e-tools-test-long-sync-handler-rejected-in-interactive-context ()
+  "Long blocking classes must not enter interactive execution through handlers."
+  (let ((registry (e-tools-registry-create))
+        result)
+    (e-tools-register registry
+                      :name "network-only"
+                      :description "Pretend to wait on a network."
+                      :blocking-class 'network
+                      :handler (lambda (_arguments) "late"))
+    (e-tools-start
+     registry
+     '(:id "call-1" :name "network-only" :arguments nil)
+     :context '(:interactive t)
+     :on-done (lambda (value) (setq result value)))
+    (should (equal result
+                   '(:tool-call-id "call-1"
+                     :name "network-only"
+                     :status error
+                     :content "Tool network-only is network-class and must provide :start in interactive execution"
+                     :metadata (:error e-tools-blocking-handler-rejected))))))
+
+(ert-deftest e-tools-test-long-sync-handler-allowed-for-explicit-batch-execute ()
+  "Long blocking metadata only rejects marked interactive contexts in Phase 1."
+  (let ((registry (e-tools-registry-create)))
+    (e-tools-register registry
+                      :name "batch-network"
+                      :description "Pretend batch network work."
+                      :blocking-class 'network
+                      :handler (lambda (_arguments) "ok"))
+    (should (equal (e-tools-execute
+                    registry
+                    '(:id "call-1" :name "batch-network" :arguments nil))
+                   '(:tool-call-id "call-1"
+                     :name "batch-network"
+                     :status ok
+                     :content "ok"
+                     :metadata nil)))))
+
 (ert-deftest e-tools-test-handler-errors-return-structured-results ()
   "Tool handler errors remain structured tool results."
   (let ((registry (e-tools-registry-create)))

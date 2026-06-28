@@ -20,6 +20,7 @@
 (require 'e-resource-patterns)
 (require 'e-resources)
 (require 'e-resource-coherence)
+(require 'e-request)
 (require 'e-store)
 (require 'e-capability-config)
 (require 'e-capabilities)
@@ -53,6 +54,7 @@
         :operations t
         :resources t
         :resource-coherence t
+        :request-lifecycle t
         :store t
         :skills t
         :startup t
