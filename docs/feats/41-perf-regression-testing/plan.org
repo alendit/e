@@ -1,0 +1,647 @@
+#+title: Performance Regression Testing
+#+startup: overview
+
+* Status
+
+Planned.
+
+* Goal
+
+Build an opt-in performance regression testing framework that detects meaningful baseline changes for important =e= scenarios before they become user-visible latency regressions.
+
+The framework should make performance work repeatable: define scenarios once, run them from Emacs or batch, compare current measurements to an accepted baseline, and produce a compact report that explains regressions, improvements, and noisy measurements.
+
+* Motivation
+
+Features 16, 21, and 39 showed that =e= performance problems are easiest to fix when they are measured as named spans or bounded scenarios.
+Those features also left performance checks mostly manual: a developer captures a profile, eyeballs a hot path, and records selected numbers in review notes.
+That workflow finds known problems, but it does not protect important scenarios from regressing later.
+
+=e= needs a small regression framework that treats performance scenarios as first-class development artifacts without turning the normal ERT suite into a flaky wall-clock benchmark suite.
+
+* Non-goals
+
+- Do not make wall-clock thresholds part of the default unit test run.
+- Do not fail routine tests because a laptop is busy, thermally constrained, running under Rosetta, or doing background GC.
+- Do not record prompt text, assistant text, tool output bodies, full context payloads, or broad buffer state in performance artifacts.
+- Do not replace =e-dev-profile=.
+  This feature consumes or complements profile spans; it does not remove tracing.
+- Do not benchmark real provider latency, internet latency, live browser latency, or remote service speed.
+  Scenarios should isolate =e= overhead with fake providers, fake tools, local fixtures, or controlled asynchronous callbacks.
+- Do not optimize the measured scenarios in this feature except for tiny fixes required to make the harness deterministic.
+
+* Current behavior
+
+- =e-dev-profile= records JSONL timing spans and formats aggregate reports for live developer traces.
+- Feature 39 used a profile trace to identify chat hot paths and then added narrower spans for future profiling.
+- Some prior features include scalar benchmark snippets in review notes, but there is no reusable scenario registry, baseline file, or regression comparison command.
+- Normal tests mostly assert functional behavior and deterministic structural performance properties such as append shape or call counts.
+- Developers can use =benchmark-run= manually, but manual probes are easy to forget and hard to compare across commits.
+
+* Accepted decisions
+
+** Keep performance regression checks opt-in and explicit
+
+The regression suite should not run as part of ordinary =eldev test= by default.
+It should run through explicit developer commands and an explicit batch entrypoint, for example:
+
+#+begin_src sh
+eldev test -f test/e-dev-perf-regression-test.el
+emacs -Q --batch -L . -l test/e-dev-perf-runner.el --eval '(e-dev-perf-run-batch)'
+#+end_src
+
+The exact command can change during implementation, but the boundary must stay explicit.
+Routine correctness tests should remain deterministic and fast.
+
+** Reuse profiling spans but compare scenario metrics
+
+=e-dev-profile= is the low-level trace recorder.
+The new framework should own scenario definitions, repetition policy, baseline comparison, and reporting.
+
+A scenario can collect metrics from:
+
+- elapsed wall-clock measurements around the scenario body;
+- GC count and GC elapsed data from =benchmark-run= or equivalent controlled measurement;
+- =e-dev-profile= spans emitted during the scenario;
+- deterministic counters such as rendered redraw count, context builds, JSONL writes, index writes, tool lifecycle events, or duplicate string materialization counts.
+
+The baseline comparison should use named scenario metrics rather than raw trace files.
+Raw profile traces remain generated artifacts under ignored runtime paths.
+
+** Prefer stable local overhead scenarios over external latency
+
+Initial scenarios should use fake providers, fake tools, local temporary stores, and deterministic fixtures.
+They should measure =e= overhead, not network speed.
+
+Examples of acceptable scenario families:
+
+- turn startup with a fake backend that settles immediately or after a controlled callback;
+- context assembly for a fixture session with representative capabilities and prompt-cache anchors;
+- session append, index update, replay, and overview listing against a temporary store;
+- chat running activity burst rendering in a temporary buffer;
+- final assistant message insertion and Markdown presentation for bounded fixture content;
+- tool lifecycle dispatch with fake cheap and fake asynchronous tools;
+- resource glob/search over a small fixture tree, once feature 25 semantics are stable enough.
+
+Examples of unacceptable initial scenarios:
+
+- real OpenAI, Anthropic, web, browser, MCP, or shell service latency;
+- broad filesystem searches outside a test fixture;
+- user session replay from the developer's real session store;
+- scenarios that depend on a currently visible user buffer.
+
+** Baselines are reviewed artifacts, run outputs are generated artifacts
+
+Commit accepted baselines and threshold policy in the repository.
+Keep per-run results, raw traces, and local calibration output under an ignored path.
+
+Suggested paths:
+
+- =test/perf/scenarios/= for scenario support fixtures if separate files are useful;
+- =test/perf/baselines/default.json= for the reviewed baseline and thresholds;
+- =.e/perf-runs/YYYYMMDD-HHMMSS.json= for local run results;
+- =.e/perf-runs/YYYYMMDD-HHMMSS.org= for human-readable reports;
+- =.e/perf-baselines/local.json= for optional local calibration data.
+
+If =.e/perf-runs/= or =.e/perf-baselines/= are not ignored, add narrow ignore entries.
+
+** Treat baseline changes as review events, not automatic rewrites
+
+The runner should report three outcomes per metric:
+
+- =pass= :: current result is within the accepted threshold;
+- =regression= :: current result is meaningfully worse than baseline;
+- =improvement= :: current result is meaningfully better than baseline and may justify a baseline update;
+- =noisy= :: repeated samples exceed the configured variance limit, so the result is not trusted.
+
+Updating the committed baseline must be a separate explicit command, for example =e-dev-perf-update-baseline=.
+That command should require an input run result and should write a reviewable diff, not silently mutate baselines during ordinary runs.
+
+** Use threshold policy that resists small-number noise
+
+Each metric should compare with both relative and absolute thresholds.
+A regression should require both conditions when practical:
+
+- current median or selected percentile exceeds baseline by more than a configured ratio;
+- current value exceeds baseline by more than a configured absolute delta.
+
+For example, a 0.2 ms change on a 1 ms scenario should not fail unless that metric explicitly declares sub-millisecond sensitivity.
+Likewise, a 40 ms increase on a 400 ms scenario should be visible even if a broad percentage threshold might hide it.
+
+Each metric can define:
+
+- direction, such as =lower-is-better= or =higher-is-better=;
+- baseline value;
+- warning ratio;
+- failure ratio;
+- warning absolute delta;
+- failure absolute delta;
+- minimum measurable floor;
+- variance limit;
+- sample count.
+
+** Keep deterministic contracts in ERT and timing comparisons in the perf runner
+
+Normal tests should verify the framework and scenario mechanics with fake clocks, fake samples, and injected metrics.
+They should prove that comparison policy, report formatting, cleanup, and scenario isolation work.
+
+The perf runner should own real elapsed-time sampling.
+This keeps timing fragility out of the default correctness suite while still making regressions easy to run on demand.
+
+** Make scenario ownership explicit
+
+Every scenario should name the component that owns the measured behavior.
+That ownership should guide where regressions are investigated.
+
+Initial component ownership:
+
+| Scenario family | Owning component |
+|-----------------+------------------|
+| turn startup | =e-loop= and =e-harness= |
+| context assembly | =e-context=, =e-context-status=, and capability context providers |
+| session append/replay/index | =e-session= |
+| chat activity rendering | =e-chat= |
+| final assistant rendering | =e-chat= and markdown presentation helpers |
+| tool lifecycle dispatch | =e-tools= and =e-harness= |
+| resource fixture operations | =e-resources= and concrete resource adapters |
+
+The performance framework itself should live in the dev layer and should not become the owner of the optimized behavior.
+
+* Proposed architecture
+
+** Dev perf module
+
+Create =lisp/dev/e-dev-perf.el=.
+It owns:
+
+- scenario registry;
+- scenario data structure constructors;
+- sample collection helpers;
+- baseline loading and validation;
+- comparison policy;
+- run result serialization;
+- report formatting;
+- interactive commands.
+
+Candidate public developer commands:
+
+- =e-dev-perf-run= :: run selected scenarios interactively and open a report buffer.
+- =e-dev-perf-run-scenario= :: run one scenario by id.
+- =e-dev-perf-report= :: open a report for a saved run file.
+- =e-dev-perf-compare= :: compare a run file with a baseline file.
+- =e-dev-perf-update-baseline= :: intentionally update a baseline from a selected passing or reviewed run.
+- =e-dev-perf-list-scenarios= :: list registered scenarios and their owners.
+
+Candidate internal helpers:
+
+- =e-dev-perf-register-scenario=
+- =e-dev-perf-scenario=
+- =e-dev-perf-run-scenario-samples=
+- =e-dev-perf-summarize-samples=
+- =e-dev-perf-load-baseline=
+- =e-dev-perf-compare-metric=
+- =e-dev-perf-format-report=
+- =e-dev-perf-write-run-result=
+
+** Scenario shape
+
+A scenario should be a small plist or struct with stable fields:
+
+#+begin_src emacs-lisp
+(e-dev-perf-scenario
+ :id "chat.activity-burst"
+ :title "Chat activity burst redraw"
+ :owner 'e-chat
+ :description "Render a bounded burst of turn activity in a temporary chat buffer."
+ :setup #'e-dev-perf-scenario-chat-activity-setup
+ :run #'e-dev-perf-scenario-chat-activity-run
+ :teardown #'e-dev-perf-scenario-chat-activity-teardown
+ :metrics '((elapsed-ms :direction lower-is-better)
+            (chat.activity-redraw.count :direction lower-is-better)
+            (chat.composer-restore.count :direction lower-is-better))
+ :samples 9
+ :warmups 2)
+#+end_src
+
+The =:run= function should return a plist of scalar metric values.
+The runner can add elapsed metrics around it, but the scenario owns component-specific counters.
+
+Scenario setup must create isolated stores, buffers, fixtures, fake providers, and fake tool registries.
+Scenario teardown must kill temporary buffers, delete temporary stores, stop timers, disable profiling, and restore dynamic variables.
+
+** Baseline shape
+
+The reviewed baseline should be JSON so it is easy to inspect outside Emacs and easy to diff.
+
+Example shape:
+
+#+begin_src json
+{
+  "format": 1,
+  "created_at": "2026-06-28T00:00:00Z",
+  "source": "reviewed",
+  "environment_class": "default",
+  "scenarios": {
+    "chat.activity-burst": {
+      "owner": "e-chat",
+      "metrics": {
+        "elapsed-ms": {
+          "baseline": 35.0,
+          "direction": "lower-is-better",
+          "fail_ratio": 1.35,
+          "fail_delta": 15.0,
+          "warn_ratio": 1.20,
+          "warn_delta": 8.0,
+          "variance_ratio": 0.30,
+          "samples": 9
+        }
+      }
+    }
+  }
+}
+#+end_src
+
+The runner should include environment metadata in run results but should not require exact environment equality unless a baseline explicitly declares it.
+Useful metadata includes Emacs version, system type, native compilation availability, =e= commit, byte-compiled state when known, and selected feature flags.
+
+** Report shape
+
+The report should be compact enough to paste into =review.org=.
+
+Include:
+
+- run id, commit, timestamp, Emacs version, and baseline path;
+- summary counts for pass, warning, regression, improvement, noisy, and skipped;
+- worst regressions sorted by severity;
+- improvements sorted by magnitude;
+- per-scenario metric table with baseline, current median, delta, ratio, variance, and verdict;
+- artifact paths for run JSON, optional Org report, and optional profile trace;
+- scenario notes when setup skipped a scenario due to missing capability or unstable prerequisites.
+
+Do not include prompt text, assistant text, tool result bodies, full fixture contents, or raw profile payloads.
+
+* Initial scenario set
+
+** Scenario 1: Turn startup with fake backend
+
+Purpose: catch baseline changes in turn-start orchestration before provider latency hides them.
+
+Measured behavior:
+
+- create or reuse an isolated harness;
+- submit a small user message to a fake backend;
+- run through async turn startup until the fake backend is started;
+- settle the fake backend with a fixed assistant message;
+- record elapsed overhead and key profile spans such as =harness.prompt-turn-async-start=, =loop.backend-start=, and request-body construction spans when present.
+
+Metrics:
+
+- =elapsed-ms=;
+- =harness.prompt-turn-async-start.ms=;
+- =loop.backend-start.ms=;
+- =context-build.count=;
+- =session-message-append.count=.
+
+** Scenario 2: Context assembly fixture
+
+Purpose: detect context-building baseline changes independent of provider requests.
+
+Measured behavior:
+
+- build a fixture session with a representative message count, attachments, context anchors, and capability context providers;
+- call the same context assembly path used by a normal turn;
+- avoid real provider token estimation unless it is backed by a deterministic fake or cached local path.
+
+Metrics:
+
+- =elapsed-ms=;
+- =context.message-count=;
+- =context.provider-count=;
+- =context.bytes=;
+- =context-cache-hit.count= when applicable.
+
+** Scenario 3: Session append and index update
+
+Purpose: protect the session hot path that prior latency work optimized.
+
+Measured behavior:
+
+- create a temporary session store;
+- append a fixed sequence of user, assistant, and activity entries;
+- verify insertion order and index recency outside the timing result;
+- measure append and index-write overhead.
+
+Metrics:
+
+- =elapsed-ms=;
+- =session.append-message.ms= from profile spans;
+- =session.append-activity.ms= from profile spans;
+- =session.index-write.count=;
+- =gc-count=.
+
+** Scenario 4: Session replay and overview listing
+
+Purpose: detect regressions when loading existing session history and rendering session lists.
+
+Measured behavior:
+
+- generate a bounded JSONL fixture in a temporary store;
+- replay it into memory;
+- list sessions through the same API used by overview UI;
+- avoid real user session stores.
+
+Metrics:
+
+- =elapsed-ms=;
+- =session.replay.ms=;
+- =session-list.count=;
+- =entries-replayed.count=.
+
+** Scenario 5: Chat activity burst rendering
+
+Purpose: protect the progress redraw path identified by feature 39.
+
+Measured behavior:
+
+- create a temporary chat buffer with a fake harness/session;
+- emit a bounded burst of provider, reasoning, and tool activity events;
+- flush the deferred redraw path deterministically;
+- verify composer and navigation state outside the timing result.
+
+Metrics:
+
+- =elapsed-ms=;
+- =chat.activity-redraw.ms=;
+- =chat.activity-redraw.count=;
+- =chat.composer-restore.count=;
+- =chat.composer-insert.count=.
+
+** Scenario 6: Final assistant render fixture
+
+Purpose: detect regressions in final message insertion and Markdown presentation.
+
+Measured behavior:
+
+- create a temporary chat buffer;
+- insert a fixed assistant response containing headings, lists, code blocks, and links;
+- run the same final render path used by a settled turn;
+- avoid unbounded fontification by using a fixture with known size.
+
+Metrics:
+
+- =elapsed-ms=;
+- =assistant-render.ms=;
+- =markdown-fontify.ms= when a span exists;
+- =inserted-bytes.count=;
+- =buffer-modification-count= if cheaply available.
+
+** Scenario 7: Tool lifecycle dispatch fixture
+
+Purpose: detect overhead growth in harness/tool lifecycle without measuring external tools.
+
+Measured behavior:
+
+- register a fake cheap sync tool and a fake async tool;
+- dispatch each through normal harness tool lifecycle paths;
+- emit progress and terminal events through controlled callbacks;
+- verify final tool result shape outside the timing result.
+
+Metrics:
+
+- =elapsed-ms=;
+- =tool.dispatch.ms=;
+- =tool.lifecycle-event.count=;
+- =session.activity-append.count=.
+
+* Implementation slices
+
+** Slice 1: Framework core and comparison policy
+
+Files:
+
+- Create =lisp/dev/e-dev-perf.el=.
+- Modify =lisp/dev/e-dev.el= so =e-dev-reload= loads the new dev module.
+- Add =test/e-dev-perf-test.el=.
+
+Steps:
+
+1. Add scenario data structure helpers and a private registry.
+2. Add baseline JSON loading with format-version validation.
+3. Add metric comparison policy for lower-is-better and higher-is-better directions.
+4. Add tests with synthetic samples proving pass, warning, regression, improvement, and noisy verdicts.
+5. Add report formatting tests using fake run results.
+6. Keep all tests deterministic by injecting samples and avoiding real elapsed-time assertions.
+
+Acceptance:
+
+- The framework can compare a synthetic run to a synthetic baseline.
+- Reports identify the scenario, metric, baseline, current value, delta, ratio, variance, and verdict.
+- Invalid baseline files fail with clear errors.
+- No default test depends on machine speed.
+
+** Slice 2: Runner, artifacts, and baseline update command
+
+Files:
+
+- Modify =lisp/dev/e-dev-perf.el=.
+- Add =test/perf/baselines/default.json= with placeholder or generated initial values once scenarios exist.
+- Modify =.gitignore= if needed for =.e/perf-runs/= and =.e/perf-baselines/=.
+- Add tests in =test/e-dev-perf-test.el=.
+
+Steps:
+
+1. Implement scenario repetition with warmups and samples.
+2. Compute median, min, max, selected percentile, and variance ratio per metric.
+3. Write run result JSON under =.e/perf-runs/=.
+4. Write optional Org reports under =.e/perf-runs/=.
+5. Add =e-dev-perf-update-baseline= as an explicit command that writes a baseline from a selected run result.
+6. Add tests using fake scenarios that return deterministic sample sequences.
+
+Acceptance:
+
+- A developer can run one fake scenario and get a JSON result plus report.
+- The update command is explicit and produces a reviewable baseline file.
+- Generated run artifacts are ignored.
+- Teardown runs even when a scenario fails.
+
+** Slice 3: Profile span integration
+
+Files:
+
+- Modify =lisp/dev/e-dev-perf.el=.
+- Modify =lisp/dev/e-dev-profile.el= only if a small public helper is needed to start and stop trace capture without opening a report.
+- Add tests in =test/e-dev-perf-test.el= and possibly =test/e-dev-profile-test.el=.
+
+Steps:
+
+1. Add an option for scenarios to run with a temporary profile trace.
+2. Summarize selected profile spans into scalar metrics.
+3. Keep raw trace paths in the run artifact metadata.
+4. Ensure trace capture disables and restores prior profiling state after each scenario.
+5. Add tests with a fixture JSONL trace proving span aggregation and privacy filtering.
+
+Acceptance:
+
+- Scenarios can report metrics such as =chat.activity-redraw.ms= without parsing raw traces in the report.
+- Existing interactive profiling commands continue to work.
+- Prompt, assistant, and tool-result bodies are not copied into perf run artifacts.
+
+** Slice 4: Initial session and context scenarios
+
+Files:
+
+- Modify =lisp/dev/e-dev-perf.el= or add =lisp/dev/e-dev-perf-scenarios.el= if scenario code becomes large.
+- Add tests in =test/e-dev-perf-test.el= or focused scenario tests.
+
+Steps:
+
+1. Implement the session append and index update scenario.
+2. Implement the session replay and overview listing scenario.
+3. Implement the context assembly fixture scenario.
+4. Add functional tests proving setup, run, metric collection, and teardown isolation.
+5. Run the scenarios locally to generate initial candidate baseline values.
+
+Acceptance:
+
+- Session scenarios use temporary stores and never touch real user sessions.
+- Context scenario uses deterministic fixtures and fake provider/token behavior where needed.
+- Reports include meaningful metrics and verdicts for the first baseline file.
+
+** Slice 5: Initial turn, chat, and tool scenarios
+
+Files:
+
+- Modify scenario module files.
+- Add tests in =test/e-dev-perf-test.el= and existing focused tests only when scenario setup exposes missing test helpers.
+
+Steps:
+
+1. Implement fake backend turn-start scenario.
+2. Implement chat activity burst scenario.
+3. Implement final assistant render fixture scenario.
+4. Implement fake tool lifecycle dispatch scenario.
+5. Add deterministic flush helpers for deferred timers rather than sleeping.
+6. Run the full initial scenario suite locally and update candidate baseline values explicitly.
+
+Acceptance:
+
+- Chat scenarios use temporary buffers and clean them up.
+- Turn and tool scenarios do not call real provider, shell, web, MCP, or browser services.
+- Deferred rendering is flushed through controlled helpers.
+- Reports show all initial important scenarios.
+
+** Slice 6: Batch entrypoint and developer workflow docs
+
+Files:
+
+- Add or modify a batch runner file if direct command-line invocation needs setup glue.
+- Modify =docs/feats/41-perf-regression-testing/plan.org= only if implementation changes paths.
+- Create =docs/feats/41-perf-regression-testing/review.org= during implementation review.
+
+Steps:
+
+1. Add a documented batch command for running the suite from the repo root.
+2. Add a command for running only changed-component scenarios by owner or tag.
+3. Document the intended workflow:
+
+   #+begin_src sh
+   # Run all reviewed scenarios.
+   emacs -Q --batch -L . -l test/e-dev-perf-runner.el --eval '(e-dev-perf-run-batch)'
+
+   # Inspect report under .e/perf-runs/.
+
+   # If an improvement or intentional regression is accepted, update the baseline explicitly.
+   emacsclient --eval "(e-dev-perf-update-baseline)"
+   #+end_src
+
+4. Record first real scenario report excerpts in =review.org=.
+5. Explain which scenarios are strict gates and which are advisory until enough run history exists.
+
+Acceptance:
+
+- The feature has a repeatable command for local or CI-style use.
+- Review notes include the baseline source, scenario count, pass/regression/noisy counts, and any skipped scenarios.
+- Running Emacs is reloaded after code changes and the interactive commands are inspected live when available.
+
+* Testing plan
+
+Framework unit tests:
+
+#+begin_src sh
+eldev test -f test/e-dev-perf-test.el
+#+end_src
+
+Affected dev reload tests:
+
+#+begin_src sh
+eldev test -f test/e-dev-test.el
+#+end_src
+
+Scenario-adjacent tests as slices land:
+
+#+begin_src sh
+eldev test -f test/e-session-test.el
+eldev test -f test/e-harness-test.el
+eldev test -f test/e-chat-test.el
+eldev test -f test/e-tools-test.el
+#+end_src
+
+Opt-in perf run:
+
+#+begin_src sh
+emacs -Q --batch -L . -l test/e-dev-perf-runner.el --eval '(e-dev-perf-run-batch)'
+#+end_src
+
+The exact batch command may be adjusted during implementation, but it must remain explicit and documented.
+
+* Live verification
+
+After changing =lisp/*.el=, reload the running Emacs:
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Then verify:
+
+- =e-dev-perf-list-scenarios= shows the initial scenario registry;
+- =e-dev-perf-run-scenario= can run one lightweight scenario and open a report;
+- =e-dev-perf-report= can reopen a saved run result;
+- =e-dev-perf-update-baseline= requires an explicit selected run result and does not silently update baselines;
+- temporary buffers, stores, timers, and profile state are cleaned up after a scenario.
+
+* Compatibility expectations
+
+- Existing =e-dev-profile= commands and trace format continue to work.
+- Existing runtime behavior is unchanged when no perf command is running.
+- Existing ERT tests do not become timing-sensitive.
+- Generated performance artifacts are ignored by default.
+- Source-controlled baselines are updated only by explicit developer action.
+
+* Risks
+
+- Wall-clock measurements can be noisy across machines.
+  Mitigate with explicit opt-in runs, repeated samples, variance verdicts, and both absolute and relative thresholds.
+- Scenarios can accidentally measure fake setup cost instead of the target behavior.
+  Mitigate by separating setup, warmup, run, and teardown phases.
+- Baselines can become stale and hide real improvements.
+  Mitigate by reporting improvements and making baseline updates explicit but easy.
+- Scenario code can couple to private implementation details.
+  Mitigate by preferring public or test-supported seams and documenting owner responsibility when private spans are intentionally used.
+- Perf artifacts can leak content.
+  Mitigate by using fixed fixtures and scalar metrics only.
+
+* Review questions
+
+1. If this work package stopped here, would the project be better off than if it had not been built?
+2. What final direction does this move toward?
+3. Which decisions are likely to change, uncertain, or stable, and are uncertain ones local and reversible instead of hidden behind speculative abstraction?
+4. What component owns each measured behavior, and does that component still have one cohesive responsibility and one primary reason to change?
+5. Does this change increase or reduce coupling between dev tooling and runtime components?
+6. Are scenario interfaces narrow, consumer-shaped, and free of unused capabilities?
+7. Did any dependency start pointing from stable runtime policy toward dev tooling or presentation details?
+8. Could any side effect in scenario setup, trace capture, artifact writing, or reporting be moved outward into the dev runner?
+9. Are the scenario and baseline abstractions semantically real, and can scenarios substitute for each other without unsupported-operation branches?
+10. What compatibility expectations apply, and were obsolete benchmark snippets or ad hoc paths removed only when no longer useful?
+11. Where are expected noisy measurements handled, and where do unexpected scenario failures surface?
+12. What tests prove comparison and reporting behavior independently of real machine timing?
