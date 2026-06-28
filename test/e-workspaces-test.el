@@ -214,6 +214,56 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-workspaces-test-display-buffer-replaces-stale-workspace ()
+  "Workspace display falls back to the current workspace for dead affinities."
+  (let* ((buffer (get-buffer-create "e-workspace-stale-target"))
+         (stale (make-e-workspace-token
+                 :backend 'doom
+                 :id "e"
+                 :name "e"
+                 :frame (selected-frame)))
+         (current (make-e-workspace-token
+                   :backend 'doom
+                   :id "async"
+                   :name "async"
+                   :frame (selected-frame)))
+         switches
+         additions
+         display-workspace)
+    (unwind-protect
+        (cl-letf (((symbol-function 'e-workspace-current)
+                   (lambda (&optional _frame) current))
+                  ((symbol-function 'e-workspace-live-p)
+                   (lambda (workspace)
+                     (e-workspace-equal-p workspace current)))
+                  ((symbol-function 'e-workspace-visible-window)
+                   (lambda (_buffer _workspace) nil))
+                  ((symbol-function 'e-workspace-switch)
+                   (lambda (workspace)
+                     (when (e-workspace-equal-p workspace stale)
+                       (error "switched to stale workspace"))
+                     (push workspace switches)
+                     t))
+                  ((symbol-function 'e-workspace-buffer-member-p)
+                   (lambda (_candidate _workspace) nil))
+                  ((symbol-function 'e-workspace-add-buffer)
+                   (lambda (candidate workspace)
+                     (push (list candidate workspace) additions)
+                     candidate))
+                  ((symbol-function 'display-buffer)
+                   (lambda (candidate _action)
+                     (setq display-workspace
+                           (or (e-buffer-workspace candidate)
+                               current))
+                     (display-buffer-same-window candidate nil))))
+          (should (window-live-p
+                   (e-workspace-display-buffer buffer :workspace stale)))
+          (should (equal switches (list current)))
+          (should (equal additions (list (list buffer current))))
+          (should (e-workspace-equal-p display-workspace current)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-workspaces-test-visible-window-does-not-cross-workspaces ()
   "Visible window lookup does not reuse a current-workspace window for another token."
   (let* ((frame (selected-frame))

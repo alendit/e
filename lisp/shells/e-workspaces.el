@@ -245,6 +245,17 @@
          ('single t)
          (_ nil))))
 
+(defun e-workspace-live-or-current (&optional token)
+  "Return TOKEN when it is live, otherwise return the current workspace.
+Signal for non-nil non-token values so invalid callers do not silently fall
+back to the current workspace."
+  (cond
+   ((null token) (e-workspace-current))
+   ((not (e-workspace-token-p token))
+    (user-error "Invalid workspace token"))
+   ((e-workspace-live-p token) token)
+   (t (e-workspace-current))))
+
 (defun e-workspace-switch (token)
   "Switch to TOKEN when its backend supports switching.
 Return non-nil when the switch was accepted or no switch was required."
@@ -364,9 +375,9 @@ window.  SIDE-WINDOW-OK is accepted for callers that already handled side-window
 policy; the workspace service itself keeps displays frame-scoped."
   (ignore side-window-ok)
   (let* ((buffer (e-workspace--buffer buffer))
-         (workspace (or workspace
-                        (and buffer (e-buffer-workspace buffer))
-                        (e-workspace-current))))
+         (workspace (e-workspace-live-or-current
+                     (or workspace
+                         (and buffer (e-buffer-workspace buffer))))))
     (unless buffer
       (user-error "No such buffer"))
     (if-let ((window (e-workspace-visible-window buffer workspace)))

@@ -584,16 +584,15 @@ the display to a normal window when the selected window is a side window."
 
 (defun e-org-canvas--workspace-for-buffer (buffer)
   "Return the workspace that should own BUFFER's Org Canvas UI."
-  (or (and (buffer-live-p buffer)
-           (e-buffer-workspace buffer))
-      (e-workspace-current)))
+  (e-workspace-live-or-current
+   (and (buffer-live-p buffer)
+        (e-buffer-workspace buffer))))
 
 (defun e-org-canvas--open-session-for-buffer
     (buffer &optional needs-file-name target-folder)
   "Create and open an Org Canvas session for BUFFER."
   (e-org-canvas--ensure-org-buffer buffer)
-  (let* ((workspace (or (e-buffer-workspace buffer)
-                        (e-workspace-current)))
+  (let* ((workspace (e-org-canvas--workspace-for-buffer buffer))
          (harness (e-org-canvas--sync-default-harness-for-buffer
                    (e-org-canvas--default-harness)
                    buffer))

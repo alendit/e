@@ -51,3 +51,4 @@ State values for coding agents:
 | Closed | e-session-append-record-spams-echo-area/ | Session Append Record Spams Echo Area |
 | Closed | global-skills-duplicated-as-project/ | Global Skills Duplicated As Project Skills |
 | Closed | session-root-not-project-root/ | Session Root Uses Feature Directory Instead of Project Root |
+| Closed | org-canvas-stale-workspace-affinity/ | Org Canvas stale workspace affinity |

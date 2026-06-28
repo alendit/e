@@ -214,6 +214,48 @@
                            token)))))))
       (e-org-canvas-test--kill-chat-buffers))))
 
+(ert-deftest e-org-canvas-test-open-current-buffer-replaces-stale-workspace-affinity ()
+  "Opening an Org Canvas surface does not switch to a dead buffer workspace."
+  (let* ((harness (e-org-canvas-test--harness))
+         (stale (make-e-workspace-token
+                 :backend 'doom
+                 :id "e"
+                 :name "e"
+                 :frame (selected-frame)))
+         (current (make-e-workspace-token
+                   :backend 'doom
+                   :id "async"
+                   :name "async"
+                   :frame (selected-frame))))
+    (unwind-protect
+        (e-org-canvas-test--with-empty-harness-registry
+          (let ((e-chat-default-harness-id :org-canvas-test))
+            (e-harness-registry-register :org-canvas-test harness)
+            (cl-letf (((symbol-function 'e-workspace-current)
+                       (lambda (&optional _frame) current))
+                      ((symbol-function 'e-workspace-live-p)
+                       (lambda (workspace)
+                         (e-workspace-equal-p workspace current)))
+                      ((symbol-function 'e-workspace-switch)
+                       (lambda (workspace)
+                         (when (e-workspace-equal-p workspace stale)
+                           (error "switched to stale workspace"))
+                         t)))
+              (with-temp-buffer
+                (rename-buffer "org-canvas-stale-workspace-source" t)
+                (org-mode)
+                (insert "* Topic\nBody\n")
+                (e-buffer-set-workspace (current-buffer) stale)
+                (let ((chat-buffer (e-org-canvas-open-for-current-buffer))
+                      (source (current-buffer)))
+                  (should (e-workspace-equal-p
+                           (e-org-canvas-workspace source)
+                           current))
+                  (should (e-workspace-equal-p
+                           (e-chat-buffer-workspace chat-buffer)
+                           current)))))))
+      (e-org-canvas-test--kill-chat-buffers))))
+
 (ert-deftest e-org-canvas-test-open-existing-session-rebinds-chat-to-source-workspace ()
   "Reopening an Org Canvas session keeps chat display with the source workspace."
   (let* ((harness (e-org-canvas-test--harness))

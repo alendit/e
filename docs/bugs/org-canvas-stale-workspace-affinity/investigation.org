@@ -1,0 +1,43 @@
+#+title: Org Canvas stale workspace affinity investigation
+#+startup: overview
+
+* Investigation
+
+- Source search found no local definition of the exact message =e is not an
+  available workspace=, so the error came from the external Doom workspace
+  switcher called by =e-workspace-switch=.
+- =lisp/shells/e-org-canvas.el= reused =e-buffer-workspace= directly when
+  opening a new Org Canvas session.  If a file buffer carried a stale workspace
+  token, the source and backing chat were rebound to that stale token.
+- =lisp/shells/e-workspaces.el= also passed the requested workspace token to
+  =e-workspace-switch= without first checking that the token still named a live
+  workspace.
+- Live Emacs inspection of the reported async spec buffer showed:
+
+#+begin_example
+(:buffer "plan.org"
+ :affinity (:backend doom :id "e" :name "e" :live nil)
+ :current (:backend doom :id "async" :name "async" :live ...))
+#+end_example
+
+* Fix
+
+- Added =e-workspace-live-or-current= so workspace display keeps valid explicit
+  workspace tokens, rejects invalid non-token values, and falls back to the
+  current workspace when a token is dead.
+- Updated =e-workspace-display-buffer= to resolve stale target tokens before
+  switching, admitting, or displaying buffers.
+- Updated Org Canvas session opening to resolve the source buffer workspace
+  through the same live-token rule before marking the source and backing chat.
+
+* Validation
+
+- Added =e-workspaces-test-display-buffer-replaces-stale-workspace=.
+- Added =e-org-canvas-test-open-current-buffer-replaces-stale-workspace-affinity=.
+- Ran =rtk eldev test -f test/e-workspaces-test.el=: 11 tests passed.
+- Ran =rtk eldev test -f test/e-org-canvas-test.el=: 60 tests passed.
+- Ran =git diff --check= on the changed files.
+- Reloaded live Emacs with =e-dev-reload=.
+- After reload, invoking =e-org-canvas-open-for-current-buffer= for the reported
+  async spec buffer returned =*e-chat:Org Canvas: plan.org*= and rebound both
+  the source buffer and backing chat to live workspace =doom:async=.

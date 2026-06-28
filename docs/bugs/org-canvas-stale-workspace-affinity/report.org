@@ -1,0 +1,11 @@
+#+title: Org Canvas stale workspace affinity
+#+startup: overview
+
+The user reported that opening the async interaction spec as an e Org Canvas
+buffer failed with the echo-area error =e is not an available workspace=.
+
+The reported buffer was:
+
+#+begin_example
+docs/feats/40-async-interactions-transition/plan.org
+#+end_example
