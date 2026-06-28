@@ -1,0 +1,18 @@
+#+title: Investigation: Org Canvas open should focus chat
+#+startup: overview
+
+* Evidence
+
+- Live workspace state showed the active shell was an Org Canvas chat buffer in the =doom:e= workspace, matching the reported Org Canvas workflow.
+- Source inspection found =e-org-canvas-open-for-current-buffer= displayed the backing chat and then selected the source Org buffer via =e-org-canvas--select-org-buffer=.
+- Existing tests encoded that old behavior by asserting the selected window remained the source window after opening or reopening an Org Canvas session.
+
+* Conclusion
+
+The owning component is the Org Canvas presentation shell (=lisp/shells/e-org-canvas.el=). The smallest safe change is to select the chat window after displaying it for the current-buffer open/resume command, while leaving helper flows such as new-file/new-buffer unchanged unless separately requested.
+
+* Fix
+
+- Added =e-org-canvas--display-and-select-chat-buffer=.
+- Updated =e-org-canvas-open-for-current-buffer= to use it for both new and existing current-buffer sessions.
+- Updated Org Canvas tests so current-buffer open/resume expect the chat window to be selected.

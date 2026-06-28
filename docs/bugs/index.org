@@ -18,6 +18,7 @@ State values for coding agents:
 | Closed | e-debug-here-verbose-context/ | e-debug-here verbose context |
 | Closed | e-chat-reload-detaches-active-turn/ | e-chat reload detaches active turn |
 | Closed | e-debug-progress-ticks-after-settlement/ | e-debug progress ticks after settled turn |
+| Closed | org-canvas-open-focus-chat/ | Org Canvas open should focus chat |
 | Closed | org-canvas-open-existing-session-no-bottom-window/ | Org Canvas Open Existing Session No Bottom Window |
 | Closed | org-canvas-input-open-session-reuses-input-buffer/ | Org Canvas Input Open Session Reuses Input Buffer |
 | Closed | abort-url-network-process/ | Abort Url Network Process |

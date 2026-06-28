@@ -565,6 +565,13 @@ the display to a normal window when the selected window is a side window."
         (e-chat--after-display-buffer buffer))
       window)))
 
+(defun e-org-canvas--display-and-select-chat-buffer (buffer)
+  "Display Org Canvas backing chat BUFFER and select its window."
+  (when-let ((window (e-org-canvas--display-chat-buffer buffer)))
+    (when (window-live-p window)
+      (select-window window)))
+  buffer)
+
 (defun e-org-canvas--open-session-for-buffer
     (buffer &optional needs-file-name target-folder)
   "Create and open an Org Canvas session for BUFFER."
@@ -615,24 +622,26 @@ the display to a normal window when the selected window is a side window."
                            referenced-session source)
                           referenced))))
     (if existing
-        (prog1
-            (progn
-              (e-org-canvas--sync-default-harness-for-buffer harness source)
-              (with-current-buffer source
-                (setq-local e-org-canvas-harness harness)
-                (setq-local e-org-canvas-session-id existing)
-                (e-org-canvas-mode 1))
-              (message "Org Canvas resumed for %s; use s-i to add context"
-                       (buffer-name source))
-              (let ((chat-buffer (e-chat-open :harness harness :session-id existing)))
-                (e-org-canvas--display-chat-buffer chat-buffer)
-                chat-buffer))
-          (e-org-canvas--select-org-buffer source))
+        (progn
+          (e-org-canvas--sync-default-harness-for-buffer harness source)
+          (with-current-buffer source
+            (setq-local e-org-canvas-harness harness)
+            (setq-local e-org-canvas-session-id existing)
+            (e-org-canvas-mode 1))
+          (message "Org Canvas resumed for %s; use s-i to add context"
+                   (buffer-name source))
+          (let ((chat-buffer (e-chat-open :harness harness :session-id existing)))
+            (e-org-canvas--select-org-buffer source)
+            (e-org-canvas--display-and-select-chat-buffer chat-buffer)
+            chat-buffer))
       (when referenced
         (e-org-canvas--confirm-session-replacement
          source referenced
          (if referenced-session 'different-buffer 'missing)))
-      (e-org-canvas--open-session-for-buffer-and-display source))))
+      (let ((chat-buffer (e-org-canvas--open-session-for-buffer source)))
+        (e-org-canvas--select-org-buffer source)
+        (e-org-canvas--display-and-select-chat-buffer chat-buffer)
+        chat-buffer))))
 
 ;;;###autoload
 (defun e-org-canvas-new-file (file)

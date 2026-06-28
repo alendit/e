@@ -107,18 +107,20 @@
               (rename-buffer "org-canvas-source" t)
               (org-mode)
               (insert "* Topic\nBody\n")
-              (let ((chat-buffer (e-org-canvas-open-for-current-buffer)))
+              (let* ((source (current-buffer))
+                     (chat-buffer (e-org-canvas-open-for-current-buffer)))
                 (should (buffer-live-p chat-buffer))
                 (should (eq (window-buffer (selected-window))
-                            (current-buffer)))
-                (let ((source-window (get-buffer-window (current-buffer) t))
+                            chat-buffer))
+                (let ((source-window (get-buffer-window source t))
                       (chat-window (get-buffer-window chat-buffer t)))
                   (should (window-live-p source-window))
                   (should (window-live-p chat-window))
                   (should (> (nth 1 (window-edges chat-window))
                              (nth 1 (window-edges source-window)))))
-                (should e-org-canvas-mode)
-                (should e-chat-context-mode-suppressed)
+                (with-current-buffer source
+                  (should e-org-canvas-mode)
+                  (should e-chat-context-mode-suppressed))
                 (with-current-buffer chat-buffer
                   (let* ((session (e-session-get
                                    (e-harness-sessions e-chat-harness)
@@ -413,9 +415,8 @@
             (select-window original-window)
             (with-current-buffer source
               (e-org-canvas-open-for-current-buffer))
+            (select-window (get-buffer-window source t))
             (delete-other-windows)
-            (set-window-buffer original-window source)
-            (select-window original-window)
             (setq chat-buffer
                   (with-current-buffer source
                     (e-org-canvas-open-for-current-buffer)))
@@ -423,7 +424,7 @@
                   (chat-window (get-buffer-window chat-buffer t)))
               (should (window-live-p source-window))
               (should (window-live-p chat-window))
-              (should (eq (selected-window) source-window))
+              (should (eq (selected-window) chat-window))
               (should (> (nth 1 (window-edges chat-window))
                          (nth 1 (window-edges source-window)))))))
       (when (window-live-p original-window)

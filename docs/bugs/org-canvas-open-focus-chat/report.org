@@ -1,0 +1,6 @@
+#+title: Org Canvas open should focus chat
+#+startup: overview
+
+* Report
+
+After running =e-org-canvas-open-for-current-buffer= from the current Org buffer, focus should move to the newly created chat window instead of staying on the Org buffer.
