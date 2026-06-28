@@ -55,7 +55,8 @@
     e-openai-default-reasoning-effort
     e-default-layer-specs
     e-debug-display-strategy
-    e-default-chat-layer-ids)
+    e-default-chat-layer-ids
+    e-output-style-registry)
   "Uncustomized options whose changed defaults should apply after reload.")
 
 (defun e-dev--clear-obsolete-functions ()

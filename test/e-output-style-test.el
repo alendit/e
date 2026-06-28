@@ -108,7 +108,7 @@
     (unwind-protect
         (let ((text (e-output-style--describe-string directory)))
           (should (string-match-p "hemingway" text))
-          (should (string-match-p "plain declarative" text)))
+          (should (string-match-p "clean, strong prose" text)))
       (delete-directory directory t))))
 
 (ert-deftest e-output-style-test-describe-string-inactive ()

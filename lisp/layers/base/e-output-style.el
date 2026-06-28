@@ -53,10 +53,12 @@ explanations in the specifics at hand rather than abstractions."))
    (cons 'hemingway
          (list :name "Hemingway"
                :instructions
-               "Write like Hemingway.  Use plain declarative sentences.  Put
-one idea in each.  Choose short, common words over long ones.  Prefer strong
-verbs to adjectives and adverbs.  Cut every word that does not carry weight.
-Do not hedge or pad.  Let the facts stand on their own.")))
+               "Write in a clean, strong prose style.  This is not a request to
+imitate Ernest Hemingway, mention his works, or cosplay his voice.  Use plain
+declarative sentences.  Put one idea in each.  Choose short, common words over
+long ones.  Prefer strong verbs to adjectives and adverbs.  Avoid flowery,
+ornate, or unnecessary language.  Cut every word that does not carry weight.  Do
+not hedge or pad.  Let the facts stand on their own.")))
   "Registry of named output styles.
 Each entry maps a style id symbol to a plist with `:name' and `:instructions'.
 Users add styles by registering them via `e-output-style-register'."
