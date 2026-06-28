@@ -1,0 +1,73 @@
+#+title: Goal Capability
+#+startup: overview
+
+* Status
+
+Done.
+
+* Problem
+
+Long feature work needs a deterministic controller loop.
+The loop should track the goal, choose the next action, review the result, and decide whether to continue or stop.
+That process should work in the main agent without requiring subagents.
+A separate subagent capability can later execute a selected next action when the user asks for delegation.
+
+* Goal
+
+Add a harness-base Goal capability that provides:
+
+- compact model-facing guidance for the controller loop;
+- a durable =e://goal/refs/process.md= reference that explains the process;
+- Elisp capability actions for goal definition, next-action prompts, step recording, criterion verification, blockers, stopping, and achievement assessment;
+- a deterministic notion of goal achievement.
+
+* Design
+
+The capability belongs to the harness base layer because goal orchestration is a general agent runtime concern.
+It is not tied to OS tools, Emacs tools, project-local code, Org Canvas, or Agent Shell.
+
+The goal state is in-memory for now.
+It records goal id, title, objective, reference URI, ordered steps, success criteria, blockers, status, and history.
+The state shape is small enough for deterministic tests and can later gain persistence if the controller process needs to survive Emacs restarts.
+
+Achievement is deterministic:
+
+- every required step is =done= or explicitly =skipped=;
+- every success criterion is verified;
+- no unresolved blocker remains.
+
+Subagent spawning is not part of this capability.
+The =next-action= action returns an executor-neutral prompt.
+A separate subagent capability can consume that prompt later.
+
+* Implementation
+
+Implemented in =lisp/layers/harness/e-goal.el=.
+Integrated into =harness-base= through =e-harness-base-layer-create=.
+
+Actions:
+
+- =:define-goal=
+- =:list-goals=
+- =:goal-status=
+- =:next-action=
+- =:record-step=
+- =:record-criterion=
+- =:record-blocker=
+- =:clear-blocker=
+- =:assess-goal=
+- =:stop-goal=
+
+* Verification
+
+#+begin_src sh
+rtk eldev test test/e-goal-test.el
+#+end_src
+
+Result: passed.
+
+* Review
+
+The first version keeps the goal registry in memory.
+That is acceptable for the current request because the capability is about context and complexity management within an active controller flow.
+Persistence can be added as a later slice if goal state must survive Emacs restart.

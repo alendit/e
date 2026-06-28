@@ -1,0 +1,58 @@
+#+title: Goal Capability Review
+#+startup: overview
+
+* Review
+
+Status: done.
+
+** Scope reviewed
+
+- Added the harness-base =goal= capability.
+- Added compact model-facing instructions.
+- Added =e://goal/refs/process.md= as the process reference.
+- Added deterministic Elisp actions for goal definition, next action selection, result recording, blocker handling, stopping, and achievement assessment.
+- Added the achievement predicate: required steps complete or skipped, all success criteria verified, and no unresolved blockers.
+- Kept subagent spawning out of this capability.
+
+** Verification
+
+#+begin_src sh
+rtk eldev test test/e-goal-test.el
+#+end_src
+
+Result: passed.
+
+#+begin_src sh
+rtk eldev test test/e-goal-test.el test/e-defaults-test.el test/e-capabilities-test.el
+#+end_src
+
+Result: passed.
+
+#+begin_src sh
+rtk eldev compile --warnings-as-errors
+#+end_src
+
+Result: passed.
+
+** Findings
+
+*** DONE Goal belongs in harness-base
+
+The capability models a general controller loop for agent work.
+It does not depend on chat, Org Canvas, filesystem tools, web tools, or project-local code.
+
+*** DONE Subagent execution remains separate
+
+The capability returns executor-neutral next-action prompts.
+A separate subagent capability can consume those prompts later and own worker spawning, split display, callbacks, and transcript reading.
+
+*** DONE Achievement is deterministic
+
+The =:assess-goal= action computes achievement from steps, criteria, and blockers.
+Stopped or blocked goals are not treated as achieved.
+
+*** DONE Persistence is out of scope for the first version
+
+The current registry is in-memory.
+That is enough for active controller flows.
+If goals need to survive Emacs restart, add persistence in a separate slice.
