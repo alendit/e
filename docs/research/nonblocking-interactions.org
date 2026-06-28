@@ -1,0 +1,263 @@
+#+title: Research: Blocking interactions in e
+#+date: 2026-06-28
+
+* Goal
+Inventory interactions in =e= that can block Emacs, classify whether they are
+already callback-driven async or still synchronous, and identify the work needed
+to make long-running interactions non-blocking.
+
+This note focuses on runtime/user-facing paths under =lisp/=, not test-only
+wait loops. "Sync" includes direct blocking APIs such as
+=url-retrieve-synchronously= and =process-file=, explicit wait loops around
+=accept-process-output=, synchronous disk replay, and heavyweight computation on
+the UI thread.
+
+* Summary
+The normal chat submit path is mostly async:
+
+- =e-chat-session-submit= calls =e-harness-prompt-async=.
+- =e-harness-prompt-async= starts =e-harness--run-prompt-turn-async=.
+- =e-loop-start-turn= starts provider I/O with =e-backend-start= and tool I/O
+  with =e-tools-start=.
+- OpenAI and Anthropic ordinary request =:start= paths use async
+  =url-retrieve= / websocket callbacks with cancellable request handles.
+- The base =bash= tool is a real async process tool with progress events.
+
+The main blockers left are:
+
+1. Compaction is synchronous and can perform a backend summary request while
+   blocking the current command/tool path.
+2. Several tool families are registered as synchronous =:handler= tools even
+   though they do network, subprocess, helper, or browser work.
+3. File/resource discovery uses synchronous =process-file= for =fd= / =rg=.
+4. Context/status building is synchronous computation and may invoke context
+   providers, transcript walks, token estimates, and a hidden live Anthropic
+   model-info HTTP lookup.
+5. Session persistence and replay are synchronous disk I/O.
+6. Compatibility wrappers still expose blocking APIs and need to stay out of
+   interactive paths.
+
+* Overview Table
+| Area | Entry points | Current status | Blocking risk | Target shape |
+|---+---+---+---+---|
+| Chat submit | =e-chat-session-submit= -> =e-harness-prompt-async= -> =e-loop-start-turn= | Async | Low for provider/tool wait; start-time context compute is still sync | Keep async; make context prep budgeted/yielding |
+| Provider request, OpenAI | =e-openai-backend-create :start= | Async for real HTTP/websocket | Low; =:stream= and sync wrappers still block | Keep =:start= as only interactive path |
+| Provider request, Anthropic | =e-anthropic-backend-create :start= | Async for message POST | Low; context-window lookup is separate sync HTTP | Keep =:start= as only interactive path; async/cache model info |
+| Synchronous backend wrappers | =e-backend-stream=, provider =:stream=, =e-openai-codex--http-request=, =e-anthropic--http-request= | Sync wrappers over async primitives | Medium if used outside tests/batch | Mark compatibility/test-only or remove from interactive flows |
+| Turn wrappers | =e-loop-run-turn=, =e-harness-prompt=, =e-harness-follow-up=, =e-harness-wait= | Sync wrappers | Medium if called from UI or tools | Prefer async APIs everywhere interactive |
+| Compaction | =e-harness-compact-session=, =e-chat-session-compact=, =compact_session= tool, auto-compaction | Sync | High: can run backend summary request and transcript prep in foreground | Add =e-harness-compact-session-start= and make shell/tool callers async |
+| Tool execution framework | =e-tools-start= | Async-capable | Low when tools use =:start=; sync handlers are only timer-deferred | Require =:start= for long work |
+| Nested tool calls | =e-tools-call= / =e-tools-call!= through =e-harness--execute-nested-tool= | Sync wait | High for nested long tools from =run_elisp= | Add async nested tool contract or restrict nested sync calls to cheap tools |
+| Base bash tool | =bash= capability | Async process with progress | Low | Already acceptable |
+| Base file glob/search | =file://= resources, =fd= / =rg= | Sync subprocess via =process-file= | Medium/high on large roots | Convert resource methods to async process starts or precomputed index |
+| Tmp resource glob/search | =tmp://= resources, =fd= / =rg= | Sync subprocess via =process-file= | Medium for large generated outputs | Same async resource method shape |
+| Web search | =web_search= | Sync handler; subprocess with wait loop | High on network/tool latency | Register =:start= and return request handle |
+| Web fetch | =web_fetch= | Sync handler; =url-retrieve-synchronously= | High | Use async =url-retrieve= with timeout/cancel |
+| Web browser | =web_browser= | Sync handler; helper process request waits | High | Helper request table + callback dispatch |
+| MCP stdio | generated MCP tools | Sync handler; helper request waits | High | Helper request table + callback dispatch |
+| MCP HTTP | generated MCP tools | Sync handler; =url-retrieve-synchronously= | High | Async =url-retrieve= JSON-RPC client |
+| Composer =!= command | =e-chat-composer-bang= | Async process | Low | Already acceptable |
+| Composer =@= file references | =e-chat-composer-at= candidates and file insertion | Sync subprocess / recursive file walk / file read | Medium/high on large roots/files | Background candidate cache and bounded async file reads |
+| Session persistence | append, load, lazy replay, overview state | Sync disk I/O | Medium for large sessions or slow disks | Batch/queue writes; chunk lazy replay |
+| Context/status | =e-harness-context=, =e-context-budget-status=, =e-context-status-text= | Sync compute | Medium/high with huge transcripts/providers | Cache, budget, precompute, and forbid blocking provider work |
+| Org Canvas context | =e-org-canvas-context-provider= | Sync buffer scan | Medium on large Org buffers | Cache visibility/focus snapshots or scan incrementally |
+| Project-local context | =e-project-local= dynamic capability/context | Sync discovery/loading/hooks | Medium if project-local code is heavy | Prime/cache outside turn start; enforce provider budget |
+| Skills resources | =e-skills= discovery/readers | Sync directory/file reads | Low/medium | Lazy cached reads; async if remote/non-local ever appears |
+
+* Source Notes
+** Already async paths
+- =e-loop-start-turn= explicitly describes provider I/O, tool I/O, and
+  settlement as callback-driven, using =e-backend-start= and =e-tools-start=
+  (see =lisp/core/e-loop.el= lines 79-91 and 293-398).
+- =e-harness-prompt-async= creates an active-turn entry and starts the turn
+  without waiting. It schedules delayed queued turns with =run-at-time= and uses
+  async done/error callbacks (see =lisp/core/e-harness.el= lines 1842-2006).
+- OpenAI =:start= uses async websocket or =e-openai-codex--http-request-start=,
+  both returning cancellable =e-backend-request= handles (see
+  =lisp/adapters/openai/e-openai.el= lines 1593-1686).
+- Anthropic =:start= uses =e-anthropic--http-request-start=, returning a
+  cancellable =e-backend-request= (see =lisp/adapters/anthropic/e-anthropic.el=
+  lines 1030-1097).
+- The base =bash= tool registers with =:start= and uses =make-process=,
+  filters/sentinels, progress events, timeout timers, and cancellation (see
+  =lisp/layers/base/e-base-tools.el= lines 1330-1546).
+- Composer =!= shell context insertion uses =e-chat--run-shell-command-start=
+  and updates the pending context reference from callbacks (see
+  =lisp/shells/chat/e-chat.el= lines 1598-1699 and 2163-2209).
+
+** Synchronous compatibility wrappers
+These APIs intentionally block by spinning the event loop until async work
+settles:
+
+- =e-backend-stream= waits on =e-backend-start= with =accept-process-output=
+  when only a =:start= backend exists (=lisp/core/e-backend.el= lines 42-78).
+- =e-loop-run-turn= waits on =e-loop-start-turn= (=lisp/core/e-loop.el= lines
+  400-433).
+- =e-harness-prompt= calls =e-harness-prompt-async= and then =e-harness-wait=;
+  =e-harness-wait= loops until the active turn settles (=lisp/core/e-harness.el=
+  lines 1820-1840 and 2056-2070).
+- =e-tools-execute= and =e-tools--execute-with-context= wait on
+  =e-tools-start= (=lisp/core/e-tools.el= lines 367-406).
+- Provider sync request helpers wrap async starts and wait:
+  =e-openai-codex--http-request= (=lisp/adapters/openai/e-openai.el= lines
+  721-740) and =e-anthropic--http-request= (=lisp/adapters/anthropic/e-anthropic.el=
+  lines 905-916).
+
+These should remain test/batch conveniences only. The risk is not their
+existence; it is any interactive path calling them.
+
+** Compaction is the highest-risk sync path
+=e-harness-compact-session= prepares compaction synchronously, then calls
+=e-backend-stream= to ask the model for a summary (=lisp/core/e-harness.el=
+lines 1247-1351). Because =e-backend-stream= is a blocking wrapper when the
+backend only has =:start=, compaction blocks on network/model latency.
+
+Current user-facing callers:
+
+- Manual chat compaction: =e-chat-session-compact= calls
+  =e-harness-compact-session= directly (=lisp/layers/chat/e-chat-session.el=
+  lines 90-92).
+- Agent self-management tool: =compact_session= is registered as a synchronous
+  =:handler= and calls =e-harness-compact-session= with =:allow-active-turn t=
+  (=lisp/layers/e-layer.el= lines 42-88).
+- Auto-compaction: turn start calls =e-harness--maybe-auto-compact-session=,
+  which calls =e-harness-compact-session= before starting the model request
+  (=lisp/core/e-harness.el= lines 1418-1432 and 1942-1957).
+
+Target: split compaction into an async lifecycle:
+
+- =e-harness-compact-session-start= prepares bounded local data, emits
+  =compaction-*= events, starts summary through =e-backend-start=, appends the
+  record in =on-done=, and returns a cancellable request/turn handle.
+- Chat manual compaction should show pending progress and never block the
+  command.
+- The =compact_session= tool should register =:start= instead of =:handler=.
+- Auto-compaction should either become a pre-turn async phase in the active turn
+  state machine or enqueue the prompt behind a compaction phase.
+
+** Tool handlers that still do long work synchronously
+The tool framework supports async via =:start=, but long-running tools still
+registered as =:handler= block until they return. =e-tools-start= only defers
+sync handlers onto a zero-delay timer; it does not make their body non-blocking
+(see =lisp/core/e-tools.el= lines 447-563).
+
+Long-running sync handlers found:
+
+- MCP generated tools call =e-mcp-call-tool= inside a =:handler=. Stdio MCP
+  waits for a Node helper response with =accept-process-output=, and HTTP MCP
+  uses =url-retrieve-synchronously= (=lisp/core/e-mcp.el= lines 312-353,
+  432-517, 582-595, and 662-679).
+- Web search, fetch, and browser are all registered as =:handler=. Search uses
+  a subprocess helper with a wait loop, fetch uses =url-retrieve-synchronously=,
+  and browser waits for a Playwright helper response (=lisp/layers/web/e-web-tools.el=
+  lines 144-197, 315-355, 548-615, 706-737, and 800-855).
+- File resource glob/search and tmp resource glob/search invoke =fd= / =rg= via
+  =process-file= (=lisp/layers/base/e-base-tools.el= lines 596-609 and
+  639-773; =lisp/layers/harness/e-session-tmp-resources.el= lines 113-126 and
+  163-298).
+
+Target: require =:start= for any tool that can perform network, subprocess,
+helper, recursive filesystem, or large-buffer work. Resource methods may need an
+async resource-method contract, because the current resource method shape is
+synchronous.
+
+** Nested tool calls block by contract
+=e-tools-call= is synchronous and either calls the harness-supplied executor or
+falls back to =e-tools--execute-with-context= (=lisp/core/e-tools.el= lines
+416-437). The harness executor calls =e-harness--execute-nested-tool=, which
+starts the nested tool and waits until result or failure (=lisp/core/e-harness.el=
+lines 1085-1123 and 1125-1143).
+
+This is useful for model-written Elisp that wants a direct return value, but it
+means a nested long-running tool blocks the active Elisp tool call. If the goal
+is strict non-blocking behavior, nested tool chaining needs a new contract:
+
+- either expose =e-tools-call-async= and make =run_elisp= able to suspend/resume
+  around callbacks,
+- or restrict synchronous nested calls to explicitly cheap tools and require
+  long tools to be requested as top-level tool calls.
+
+** Context/status computation can still be heavyweight
+=e-harness-context= is fully synchronous. It gathers capability context, builds
+the transcript stack, computes options, and applies provider-anchor metadata
+(=lisp/core/e-harness.el= lines 1201-1234). =e-capabilities-context= calls each
+context provider synchronously and sorts all fragments (=lisp/core/e-capabilities.el=
+lines 226-353).
+
+Specific risks:
+
+- Context budget estimation serializes the model-facing context with
+  =prin1-to-string= and counts bytes (=lisp/core/e-context-budget.el= lines
+  60-74). =e-context-status-text= has cache and =prefer-token-usage= knobs, but
+  can still build full context when no fresh usage/cached estimate exists
+  (=lisp/shells/e-context-status.el= lines 120-159 and
+  =lisp/core/e-context-budget.el= lines 145-230).
+- Auto-compaction tries a cheap usage-only status first, but can estimate the
+  just-built context or call full =e-context-budget-status= if needed
+  (=lisp/core/e-harness.el= lines 1385-1416).
+- Anthropic context-window lookup used by chat status can synchronously query
+  the gateway's =/model/info= with =url-retrieve-synchronously= on first cache
+  miss (=lisp/adapters/anthropic/e-anthropic.el= lines 154-206 and
+  =lisp/shells/chat/e-chat.el= lines 5119-5146).
+- Org Canvas context scans headings in the target Org buffer
+  (=lisp/layers/org-canvas/e-org-canvas-capabilities.el= lines 146-230).
+- Project-local context can rediscover/register project-local capabilities and
+  run project-local providers/hooks synchronously (=lisp/layers/project-local/e-project-local.el=
+  lines 610-688).
+
+Target: context providers must be treated as cheap, synchronous snapshot
+providers. Anything that needs network, subprocess, recursive discovery, or
+large scans should maintain a cached snapshot asynchronously and have the
+provider only read that snapshot.
+
+** Session disk I/O is sync
+Persistent sessions append JSONL records with =write-region= and replay sessions
+with =insert-file-contents= in the current thread (=lisp/core/e-session.el=
+lines 177-191 and 910-1107). The index path avoids replaying every transcript
+up front, but first load of a large session is still synchronous. Overview read
+state also reads JSON synchronously (=lisp/shells/chat/e-chat.el= lines
+6369-6385).
+
+Target: keep append durable, but queue/batch writes where possible and chunk
+large session replay so resume/open operations cannot freeze Emacs.
+
+** Composer file references are sync UI work
+=e-chat-composer-at= builds candidates synchronously, using git or fd via
+=process-file= and falling back to recursive =directory-files= traversal. It
+then reads selected file content synchronously (=lisp/shells/chat/e-chat.el=
+lines 1749-1886 and 2211-2222).
+
+Target: maintain a background per-workspace candidate cache, cap synchronous
+fallbacks aggressively, and insert selected file content through an async read
+or bounded preview path.
+
+* Suggested Implementation Order
+1. Add a rule/test that interactive shell actions and capability tools with
+   network/process/browser/MCP behavior must register =:start=, not =:handler=.
+2. Convert compaction to an async lifecycle. This removes the largest known
+   provider-latency blocker.
+3. Convert MCP stdio/HTTP and web search/fetch/browser to =:start= tools with
+   cancellable request handles.
+4. Introduce async resource method support or a background resource index for
+   =file://= and =tmp://= glob/search.
+5. Replace synchronous Anthropic model-info status lookup with async prefetch,
+   stale cache, or a static/best-effort fallback.
+6. Put composer =@= discovery behind a background cache.
+7. Add profiling/tests that fail when known UI entry points run
+   =url-retrieve-synchronously=, =process-file= for unbounded commands, or
+   =accept-process-output= wait loops.
+8. Revisit nested tool chaining: either add a resumable async Elisp tool model
+   or explicitly constrain nested sync calls to cheap, local operations.
+
+* Acceptance Checklist For Non-Blocking Runtime
+- No interactive chat command waits for provider, MCP, web, browser, or shell
+  subprocess completion before returning.
+- No long-running tool is registered only as =:handler=.
+- Every network/process/browser/helper interaction returns a cancellable request
+  handle and reports progress or lifecycle events.
+- Context providers do no network or subprocess work and avoid unbounded scans.
+- Status rendering never builds full context repeatedly without a cache/usage
+  shortcut.
+- Large session resume/replay is incremental or visibly async.
+- Compatibility sync wrappers are covered by tests ensuring the normal chat UI
+  does not call them.
