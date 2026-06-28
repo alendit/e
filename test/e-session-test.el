@@ -61,6 +61,31 @@
                        (plist-get (cadr (plist-get session :messages))
                                   :created-at)))))))
 
+(ert-deftest e-session-test-append-message-tracks-latest-assistant-marker ()
+  "Message appends maintain the latest assistant marker for unread checks."
+  (let* ((store (e-session-store-create))
+         (session-id "session-assistant-marker"))
+    (e-session-create store :id session-id)
+    (e-session-append-message
+     store session-id
+     '(:id "user-1" :role user :content "hello"))
+    (should-not
+     (plist-get (e-session-get store session-id) :latest-assistant-marker))
+    (e-session-append-message
+     store session-id
+     '(:id "assistant-1" :role assistant :content "one"))
+    (should (equal
+             (plist-get (e-session-get store session-id)
+                        :latest-assistant-marker)
+             "assistant-1"))
+    (e-session-append-message
+     store session-id
+     '(:id "assistant-2" :role assistant :content "two"))
+    (should (equal
+             (plist-get (car (e-session-list store))
+                        :latest-assistant-marker)
+             "assistant-2"))))
+
 (ert-deftest e-session-test-append-message-stamps-created-at ()
   "Appended messages carry their creation timestamp."
   (let ((store (e-session-store-create)))

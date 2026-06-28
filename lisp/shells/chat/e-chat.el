@@ -77,13 +77,6 @@
   :type 'string
   :group 'e-chat)
 
-(defcustom e-chat-overview-state-file nil
-  "Optional JSON file used for chat overview read markers.
-When nil, read markers are stored in the active session store directory."
-  :type '(choice (const :tag "Use session store directory" nil)
-                 file)
-  :group 'e-chat)
-
 (defcustom e-chat-resume-preview-message-limit 2
   "Maximum number of transcript messages rendered in resume previews."
   :type 'integer
@@ -462,23 +455,44 @@ Each value is a cons cell (WORKSPACE-NAME . UNREAD-P).")
 (defvar e-chat--workspace-unread-cache-valid-p nil
   "Non-nil when workspace unread cache reflects live chat buffers.")
 
+(defvar e-chat--window-selection-hook-installed-p nil
+  "Non-nil when e-chat installed its window-selection hook.")
+
 (defun e-chat--workspace-unread-cache-invalidate ()
   "Mark the workspace unread cache stale."
   (setq e-chat--workspace-unread-cache-valid-p nil))
 
-(defun e-chat--mark-current-session-read-if-focused ()
-  "Mark the current chat session read when this buffer is selected."
-  (when (and e-chat-harness
-             e-chat-session-id
-             (eq (current-buffer) (window-buffer (selected-window))))
-    (when-let ((session (ignore-errors
-                          (e-chat-overview--session-for-id
-                           e-chat-harness
-                           e-chat-session-id))))
-      (e-chat-overview--mark-session-read
-       e-chat-harness
-       session
-       e-chat-harness-instance-id))))
+(defun e-chat--selected-chat-buffer ()
+  "Return the selected e-chat buffer, or nil."
+  (let ((buffer (window-buffer (selected-window))))
+    (and (buffer-live-p buffer)
+         (buffer-local-value 'e-chat-harness buffer)
+         (buffer-local-value 'e-chat-session-id buffer)
+         buffer)))
+
+(defun e-chat--mark-buffer-session-read-if-selected (&optional buffer)
+  "Mark BUFFER's latest assistant output read when BUFFER is selected."
+  (let ((buffer (or buffer (current-buffer))))
+    (when (and (eq buffer (e-chat--selected-chat-buffer))
+               (buffer-live-p buffer))
+      (with-current-buffer buffer
+        (when (and e-chat-harness e-chat-session-id)
+          (e-chat-overview--mark-session-read
+           e-chat-harness
+           e-chat-session-id
+           e-chat-harness-instance-id))))))
+
+(defun e-chat--mark-selected-session-read (&rest _)
+  "Mark the currently selected chat session read after focus changes."
+  (when-let ((buffer (e-chat--selected-chat-buffer)))
+    (e-chat--mark-buffer-session-read-if-selected buffer)))
+
+(defun e-chat--ensure-window-selection-hook ()
+  "Install the scalar chat read hook for selected-window changes."
+  (unless e-chat--window-selection-hook-installed-p
+    (add-hook 'window-selection-change-functions
+              #'e-chat--mark-selected-session-read)
+    (setq e-chat--window-selection-hook-installed-p t)))
 
 (defvar-local e-chat--transcript-end-marker nil
   "Marker at the end of the protected transcript region.")
@@ -940,8 +954,7 @@ and / expands available prompts."
             #'e-chat--mark-composer-scroll-needed nil t)
   (add-hook 'pre-command-hook #'e-chat--pre-command nil t)
   (add-hook 'post-command-hook #'e-chat--post-command nil t)
-  (add-hook 'post-command-hook
-            #'e-chat--mark-current-session-read-if-focused nil t))
+  (e-chat--ensure-window-selection-hook))
 
 (define-minor-mode e-chat-response-navigation-mode
   "Navigate rendered turn blocks in an e chat buffer."
@@ -5489,6 +5502,7 @@ When REFRESH-MODE-LINE is non-nil, also refresh context-aware mode-line text."
      (e-chat--render-missed-final-assistant
       (plist-get event :turn-id)
       (plist-get event :created-at))
+     (e-chat--mark-buffer-session-read-if-selected)
      (e-chat--set-status "done")
      (e-chat--ensure-composer)
      (e-chat--refresh-composer-position))
@@ -5594,6 +5608,8 @@ When REFRESH-MODE-LINE is non-nil, also refresh context-aware mode-line text."
            (when assistant-p
              (e-chat--finalize-turn-display turn-id))
            (e-chat--insert-entry (car entry) (cdr entry) nil turn-id)
+           (when assistant-p
+             (e-chat--mark-buffer-session-read-if-selected))
            (when (eq (plist-get message :role) 'user)
              (e-chat--refresh-session-display)))))))
     ('provider-request-started
@@ -5678,7 +5694,6 @@ When REFRESH-MODE-LINE is non-nil, also refresh context-aware mode-line text."
                 (or attempt 1) (or backoff 0)))))
     (_
      (e-chat--insert-entry "System" (format "Event: %S" event) t)))
-     (e-chat--mark-current-session-read-if-focused)
      (e-chat--workspace-unread-cache-update-buffer))))
 
 (defun e-chat--tail-messages (messages limit)
@@ -6027,6 +6042,7 @@ HARNESS are internal test seams."
       (e-chat--rename-buffer-for-session)
       (e-chat--clear)
       (e-chat--render-session)
+      (e-chat--mark-buffer-session-read-if-selected buffer)
       (when composer-state
         (e-chat--restore-composer-state composer-state))
       (e-chat--set-status "idle" t)
@@ -6536,89 +6552,63 @@ operation."
   (interactive)
   (e-chat-resume))
 
-(defun e-chat-overview--state-path (&optional harness)
-  "Return the JSON read-marker file for HARNESS."
-  (or e-chat-overview-state-file
-      (let* ((store (and harness (e-harness-sessions harness)))
-             (directory (or (and store (e-session-store-directory store))
-                            e-session-directory)))
-        (expand-file-name "chat-overview-state.json"
-                          (file-name-as-directory directory)))))
+(defun e-chat-overview--read-marker-key (&optional instance-id)
+  "Return the session-metadata read marker key for INSTANCE-ID."
+  (or instance-id "__default__"))
 
-(defun e-chat-overview--read-state (&optional harness)
-  "Return persisted overview read state for HARNESS."
-  (let ((file (e-chat-overview--state-path harness)))
-    (if (not (file-readable-p file))
-        nil
-      (with-temp-buffer
-        (let ((coding-system-for-read 'utf-8))
-          (insert-file-contents file))
-        (condition-case nil
-            (mapcar
-             (lambda (entry)
-               (cons (if (symbolp (car entry))
-                         (symbol-name (car entry))
-                       (car entry))
-                     (cdr entry)))
-             (json-parse-buffer :object-type 'alist
-                                :array-type 'list
-                                :null-object nil
-                                :false-object nil))
-          (json-parse-error nil))))))
+(defun e-chat-overview--session-read-marker (session &optional instance-id)
+  "Return SESSION's stored read marker for INSTANCE-ID."
+  (let ((markers (plist-get (plist-get session :metadata)
+                            :e-chat-read-markers)))
+    (alist-get (e-chat-overview--read-marker-key instance-id)
+               markers
+               nil nil #'equal)))
 
-(defun e-chat-overview--write-state (state &optional harness)
-  "Persist overview read STATE for HARNESS."
-  (let ((file (e-chat-overview--state-path harness)))
-    (make-directory (file-name-directory file) t)
-    (with-temp-file file
-      (let ((coding-system-for-write 'utf-8))
-        (insert (json-encode state))))))
-
-(defun e-chat-overview--state-session-id (session-id &optional instance-id)
-  "Return persisted overview key for SESSION-ID and INSTANCE-ID."
-  (if instance-id
-      (format "%s:%s" instance-id session-id)
-    session-id))
+(defun e-chat-overview--set-session-read-marker
+    (harness session-id marker &optional instance-id)
+  "Store SESSION-ID read MARKER in HARNESS metadata."
+  (e-chat-session-set-read-marker harness session-id marker instance-id))
 
 (defun e-chat-overview--read-marker
     (session-id &optional harness instance-id)
   "Return the stored read marker for SESSION-ID in HARNESS."
-  (alist-get
-   (e-chat-overview--state-session-id session-id instance-id)
-   (e-chat-overview--read-state harness)
-   nil nil #'equal))
+  (when-let ((session (e-chat-overview--session-for-id
+                       (or harness
+                           e-chat-overview--harness
+                           (e-chat--default-harness))
+                       session-id)))
+    (e-chat-overview--session-read-marker session instance-id)))
 
 (defun e-chat-overview--set-read-marker
     (session-id marker &optional harness instance-id)
   "Set SESSION-ID read marker to MARKER in HARNESS."
-  (let ((state (e-chat-overview--read-state harness)))
-    (setf (alist-get
-           (e-chat-overview--state-session-id session-id instance-id)
-           state nil nil #'equal)
-          marker)
-    (e-chat-overview--write-state state harness)
-    marker))
+  (when-let ((target-harness (or harness
+                                 e-chat-overview--harness
+                                 (e-chat--default-harness))))
+    (e-chat-overview--set-session-read-marker
+     target-harness
+     session-id
+     marker
+     instance-id)))
 
 (defun e-chat-overview--latest-assistant-marker (harness session)
   "Return SESSION's latest assistant message marker from HARNESS, if loaded."
-  (when (plist-get session :loaded)
-    (let ((session-id (plist-get session :id))
-          marker)
-      (dolist (message (reverse (e-harness-messages harness session-id)))
-        (when (and (not marker)
-                   (eq (plist-get message :role) 'assistant))
-          (setq marker (or (plist-get message :id)
-                           (plist-get message :created-at)))))
-      marker)))
+  (or (plist-get session :latest-assistant-marker)
+      (when (plist-get session :loaded)
+        (let ((session-id (plist-get session :id))
+              marker)
+          (dolist (message (reverse (e-harness-messages harness session-id)))
+            (when (and (not marker)
+                       (eq (plist-get message :role) 'assistant))
+              (setq marker (or (plist-get message :id)
+                               (plist-get message :created-at)))))
+          marker))))
 
 (defun e-chat-overview--session-unread-p (harness session &optional instance-id)
   "Return non-nil when SESSION has unread assistant output in HARNESS."
   (when-let ((marker (e-chat-overview--latest-assistant-marker harness session)))
     (not (equal marker
-                (e-chat-overview--read-marker
-                 (plist-get session :id)
-                 harness
-                 instance-id)))))
+                (e-chat-overview--session-read-marker session instance-id)))))
 
 (defun e-chat--workspace-name (workspace)
   "Return display name for WORKSPACE token or string."
@@ -6653,11 +6643,10 @@ operation."
                                  (e-chat-overview--session-for-id
                                   e-chat-harness
                                   e-chat-session-id))))
-             (ignore-errors
-               (e-chat-overview--session-unread-p
-                e-chat-harness
-                session
-                e-chat-harness-instance-id)))))))
+             (e-chat-overview--session-unread-p
+              e-chat-harness
+              session
+              e-chat-harness-instance-id))))))
 
 (defun e-chat--workspace-unread-cache-adjust (workspace delta)
   "Adjust cached unread count for WORKSPACE by DELTA."
@@ -7072,17 +7061,29 @@ face properties so the preview still reflects chat rendering."
     (goto-char (point-min))))
 
 (defun e-chat-overview--mark-session-read
-    (harness session &optional instance-id)
-  "Record SESSION's latest assistant message as read in HARNESS."
-  (when-let ((marker (e-chat-overview--latest-assistant-marker harness session)))
-    (let ((session-id (plist-get session :id)))
+    (harness session-or-id &optional instance-id)
+  "Record SESSION-OR-ID's latest assistant message as read in HARNESS."
+  (let* ((session (if (stringp session-or-id)
+                      (e-chat-overview--session-for-id harness session-or-id)
+                    session-or-id))
+         (session-id (plist-get session :id)))
+    (when-let ((marker (and session
+                            (e-chat-overview--latest-assistant-marker
+                             harness session))))
       (unless (equal marker
-                     (e-chat-overview--read-marker
-                      session-id harness instance-id))
-        (e-chat-overview--set-read-marker
+                      (e-chat-overview--session-read-marker
+                       session instance-id))
+        (let* ((metadata (copy-sequence (plist-get session :metadata)))
+               (markers (copy-sequence
+                         (plist-get metadata :e-chat-read-markers)))
+               (key (e-chat-overview--read-marker-key instance-id)))
+          (setf (alist-get key markers nil nil #'equal) marker)
+          (plist-put session :metadata
+                     (plist-put metadata :e-chat-read-markers markers)))
+        (e-chat-overview--set-session-read-marker
+         harness
          session-id
          marker
-         harness
          instance-id)
         (e-chat--workspace-unread-cache-invalidate)))))
 

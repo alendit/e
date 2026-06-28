@@ -5313,10 +5313,8 @@ the orphaned region and appeared to vanish."
   (let* ((directory (make-temp-file "e-chat-overview-" t))
          (store (e-session-persistent-store-create directory))
          (backend (e-backend-fake-create :items nil))
-         (harness (e-chat-test--activate-chat-session
-                   (e-harness-create :backend backend :sessions store)))
-         (e-chat-overview-state-file
-          (expand-file-name "overview-state.json" directory)))
+        (harness (e-chat-test--activate-chat-session
+                  (e-harness-create :backend backend :sessions store))))
     (unwind-protect
         (progn
           (e-session-create store :id "older-session"
@@ -5491,10 +5489,8 @@ the orphaned region and appeared to vanish."
   (let* ((directory (make-temp-file "e-chat-overview-" t))
          (store (e-session-persistent-store-create directory))
          (backend (e-backend-fake-create :items nil))
-         (harness (e-chat-test--activate-chat-session
-                   (e-harness-create :backend backend :sessions store)))
-         (e-chat-overview-state-file
-          (expand-file-name "overview-state.json" directory)))
+        (harness (e-chat-test--activate-chat-session
+                  (e-harness-create :backend backend :sessions store))))
     (unwind-protect
         (progn
           (e-session-create store :id "read-me"
@@ -5511,9 +5507,10 @@ the orphaned region and appeared to vanish."
                   (let ((chat-buffer (e-chat-overview-open-session)))
                     (with-current-buffer chat-buffer
                       (should (equal e-chat-session-id "read-me")))
-                    (should (equal
-                             (e-chat-overview--read-marker "read-me")
-                             "assistant-read"))
+                         (should (equal
+                                  (e-chat-overview--read-marker
+                                   "read-me" harness)
+                                  "assistant-read"))
                     (e-chat-overview--render harness)
                     (should-not (string-match-p
                                  "! Read Me"
@@ -7554,37 +7551,30 @@ The context-window denominator comes from the live provider lookup
 (ert-deftest e-chat-test-active-session-preview-marks-session-read ()
   "Showing a session in the active-session preview records its latest response."
   (let* ((store (e-session-store-create))
-         (harness (e-harness-create
-                   :backend (e-backend-fake-create :items nil)
-                   :sessions store))
-         (state-file (make-temp-file "e-chat-overview-state"))
-         candidate)
-    (delete-file state-file)
-    (let ((e-chat-overview-state-file state-file))
-      (unwind-protect
-          (progn
-            (e-session-create store :id "preview-read"
-                              :metadata '(:name "Preview read"))
-            (e-session-append-message
-             store "preview-read"
-             '(:id "msg-1" :role user :content "prompt"))
-            (e-session-append-message
-             store "preview-read"
-             '(:id "msg-2" :role assistant :content "response"))
-            (setq candidate
-                  (list :harness harness
-                        :session (car (e-harness-session-list harness))
-                        :session-id "preview-read"))
-            (should (e-chat-overview--session-unread-p
-                     harness
-                     (plist-get candidate :session)))
-            (with-temp-buffer
-              (e-chat--active-session-preview candidate (current-buffer)))
-            (should-not (e-chat-overview--session-unread-p
-                         harness
-                         (plist-get candidate :session))))
-        (when (file-exists-p state-file)
-          (delete-file state-file))))))
+        (harness (e-harness-create
+                  :backend (e-backend-fake-create :items nil)
+                  :sessions store))
+        candidate)
+    (e-session-create store :id "preview-read"
+                      :metadata '(:name "Preview read"))
+    (e-session-append-message
+     store "preview-read"
+     '(:id "msg-1" :role user :content "prompt"))
+    (e-session-append-message
+     store "preview-read"
+     '(:id "msg-2" :role assistant :content "response"))
+    (setq candidate
+          (list :harness harness
+                :session (car (e-harness-session-list harness))
+                :session-id "preview-read"))
+    (should (e-chat-overview--session-unread-p
+             harness
+             (plist-get candidate :session)))
+    (with-temp-buffer
+      (e-chat--active-session-preview candidate (current-buffer)))
+    (should-not (e-chat-overview--session-unread-p
+                 harness
+                 (plist-get candidate :session)))))
 
 (ert-deftest e-chat-test-workspace-unread-indicator-follows-chat-affinity ()
   "Workspace unread markers follow chat buffer workspace affinity."
@@ -7592,7 +7582,6 @@ The context-window denominator comes from the live provider lookup
          (harness (e-harness-create
                    :backend (e-backend-fake-create :items nil)
                    :sessions store))
-         (state-file (make-temp-file "e-chat-workspace-unread-state"))
          (workspace (make-e-workspace-token
                      :backend 'single
                      :id 'target
@@ -7604,49 +7593,45 @@ The context-window denominator comes from the live provider lookup
                            :name "other"
                            :frame (selected-frame)))
          (buffer (generate-new-buffer " *e-chat-workspace-unread-test*")))
-    (delete-file state-file)
-    (let ((e-chat-overview-state-file state-file))
-      (unwind-protect
-          (progn
-            (e-chat--workspace-unread-cache-invalidate)
-            (e-chat--refresh-face-specs)
-            (e-session-create store :id "workspace-unread"
-                              :metadata '(:name "Workspace unread"))
-            (e-session-append-message
-             store "workspace-unread"
-             '(:id "msg-1" :role user :content "prompt"))
-            (e-session-append-message
-             store "workspace-unread"
-             '(:id "msg-2" :role assistant :content "response"))
-            (with-current-buffer buffer
-              (e-chat-mode)
-              (setq-local e-chat-harness harness)
-              (setq-local e-chat-session-id "workspace-unread")
-              (e-buffer-set-workspace buffer workspace))
-            (should (e-chat-workspace-unread-p workspace))
-            (cl-letf (((symbol-function 'e-chat--buffer-unread-p)
-                       (lambda (&rest _args)
-                         (error "cached unread lookup should not scan buffers"))))
-              (should (e-chat-workspace-unread-p "target"))
-              (should-not (e-chat-workspace-unread-p other-workspace))
-              (should (equal (substring-no-properties
-                              (e-chat-workspace-unread-indicator workspace))
-                             "●"))
-              (should (eq (get-text-property
-                           0
-                           'font-lock-face
-                           (e-chat-workspace-unread-indicator workspace))
-                          'e-chat-workspace-unread-face)))
-            (e-chat-overview--mark-session-read
-             harness
-             (e-chat-overview--session-for-id harness "workspace-unread"))
-            (should-not (e-chat-workspace-unread-p workspace))
-            (should-not (e-chat-workspace-unread-indicator workspace)))
-        (when (buffer-live-p buffer)
-          (kill-buffer buffer))
-        (e-chat--workspace-unread-cache-invalidate)
-        (when (file-exists-p state-file)
-          (delete-file state-file))))))
+    (unwind-protect
+        (progn
+          (e-chat--workspace-unread-cache-invalidate)
+          (e-chat--refresh-face-specs)
+          (e-session-create store :id "workspace-unread"
+                            :metadata '(:name "Workspace unread"))
+          (e-session-append-message
+           store "workspace-unread"
+           '(:id "msg-1" :role user :content "prompt"))
+          (e-session-append-message
+           store "workspace-unread"
+           '(:id "msg-2" :role assistant :content "response"))
+          (with-current-buffer buffer
+            (e-chat-mode)
+            (setq-local e-chat-harness harness)
+            (setq-local e-chat-session-id "workspace-unread")
+            (e-buffer-set-workspace buffer workspace))
+          (should (e-chat-workspace-unread-p workspace))
+          (cl-letf (((symbol-function 'e-chat--buffer-unread-p)
+                     (lambda (&rest _args)
+                       (error "cached unread lookup should not scan buffers"))))
+            (should (e-chat-workspace-unread-p "target"))
+            (should-not (e-chat-workspace-unread-p other-workspace))
+            (should (equal (substring-no-properties
+                            (e-chat-workspace-unread-indicator workspace))
+                           "●"))
+            (should (eq (get-text-property
+                         0
+                         'font-lock-face
+                         (e-chat-workspace-unread-indicator workspace))
+                        'e-chat-workspace-unread-face)))
+          (e-chat-overview--mark-session-read
+           harness
+           (e-chat-overview--session-for-id harness "workspace-unread"))
+          (should-not (e-chat-workspace-unread-p workspace))
+          (should-not (e-chat-workspace-unread-indicator workspace)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (e-chat--workspace-unread-cache-invalidate))))
 
 (ert-deftest e-chat-test-focused-chat-buffer-marks-session-read ()
   "Focusing a chat buffer records the latest assistant response as read."
@@ -7654,41 +7639,48 @@ The context-window denominator comes from the live provider lookup
          (harness (e-harness-create
                    :backend (e-backend-fake-create :items nil)
                    :sessions store))
-         (state-file (make-temp-file "e-chat-overview-state"))
          (buffer (generate-new-buffer " *e-chat-focus-read-test*")))
-    (delete-file state-file)
-    (let ((e-chat-overview-state-file state-file))
-      (unwind-protect
-          (progn
-            (e-session-create store :id "focus-read"
-                              :metadata '(:name "Focus read"))
-            (e-session-append-message
-             store "focus-read"
-             '(:id "msg-1" :role user :content "prompt"))
-            (e-session-append-message
-             store "focus-read"
-             '(:id "msg-2" :role assistant :content "response"))
-            (should (e-chat-overview--session-unread-p
-                     harness
-                     (car (e-harness-session-list harness))))
-            (with-current-buffer buffer
-              (e-chat-mode)
-              (setq-local e-chat-harness harness)
-              (setq-local e-chat-session-id "focus-read")
-              (e-chat--mark-current-session-read-if-focused))
-            (should (e-chat-overview--session-unread-p
-                     harness
-                     (car (e-harness-session-list harness))))
-            (switch-to-buffer buffer)
-            (with-current-buffer buffer
-              (e-chat--mark-current-session-read-if-focused))
-            (should-not (e-chat-overview--session-unread-p
-                         harness
-                         (car (e-harness-session-list harness))))
-        (when (buffer-live-p buffer)
-          (kill-buffer buffer))
-        (when (file-exists-p state-file)
-          (delete-file state-file)))))))
+    (unwind-protect
+        (progn
+          (e-session-create store :id "focus-read"
+                            :metadata '(:name "Focus read"))
+          (e-session-append-message
+           store "focus-read"
+           '(:id "msg-1" :role user :content "prompt"))
+          (e-session-append-message
+           store "focus-read"
+           '(:id "msg-2" :role assistant :content "response"))
+          (should (e-chat-overview--session-unread-p
+                   harness
+                   (car (e-harness-session-list harness))))
+          (with-current-buffer buffer
+            (e-chat-mode)
+            (setq-local e-chat-harness harness)
+            (setq-local e-chat-session-id "focus-read")
+            (e-chat--mark-buffer-session-read-if-selected))
+          (should (e-chat-overview--session-unread-p
+                   harness
+                   (car (e-harness-session-list harness))))
+          (switch-to-buffer buffer)
+          (with-current-buffer buffer
+            (e-chat--mark-buffer-session-read-if-selected))
+          (should-not (e-chat-overview--session-unread-p
+                       harness
+                       (car (e-harness-session-list harness))))
+          (should (equal
+                   (e-chat-overview--read-marker "focus-read" harness)
+                   "msg-2")))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-mode-does-not-poll-read-state-after-commands ()
+  "Chat mode does not mark sessions read from `post-command-hook'."
+  (with-temp-buffer
+    (e-chat-mode)
+    (should-not (memq #'e-chat--mark-buffer-session-read-if-selected
+                      post-command-hook))
+    (should-not (memq #'e-chat--mark-selected-session-read
+                      post-command-hook))))
 
 (ert-deftest e-chat-test-active-sessions-errors-without-candidates ()
   "The active sessions command reports an empty session list."

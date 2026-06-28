@@ -280,6 +280,8 @@ appending."
     (plist-put session :summary (e-session--first-user-message messages))
     (plist-put session :message-count (length messages))
     (plist-put session :last-message-at (e-session--last-message-at session))
+    (plist-put session :latest-assistant-marker
+               (e-session--latest-assistant-marker session))
     (when (e-session--persistent-p store)
       (plist-put session :file
                  (e-session--session-file store (plist-get session :id)))))
@@ -312,6 +314,9 @@ appending."
     (when-let ((summary (e-session--message-summary message)))
       (plist-put session :summary summary)))
   (plist-put session :last-message-at (plist-get message :created-at))
+  (when (eq (plist-get message :role) 'assistant)
+    (plist-put session :latest-assistant-marker
+               (e-session--message-assistant-marker message)))
   (e-session--refresh-file-field store session))
 
 (defun e-session--clear-message-derived-fields (store session)
@@ -319,6 +324,7 @@ appending."
   (plist-put session :message-count 0)
   (plist-put session :summary nil)
   (plist-put session :last-message-at nil)
+  (plist-put session :latest-assistant-marker nil)
   (e-session--refresh-file-field store session))
 
 (defun e-session--display-title-for-session (session)
@@ -604,6 +610,20 @@ and RECORD supplies persisted identity fields during replay."
   (when-let ((message (car (last (plist-get session :messages)))))
     (plist-get message :created-at)))
 
+(defun e-session--message-assistant-marker (message)
+  "Return MESSAGE's stable assistant read marker."
+  (or (plist-get message :id)
+      (plist-get message :created-at)))
+
+(defun e-session--latest-assistant-marker (session)
+  "Return SESSION's latest assistant message marker."
+  (let (marker)
+    (dolist (message (reverse (plist-get session :messages)))
+      (when (and (not marker)
+                 (eq (plist-get message :role) 'assistant))
+        (setq marker (e-session--message-assistant-marker message))))
+    marker))
+
 (defun e-session--session-index-entry (store session)
   "Return public index metadata for SESSION in STORE."
   (e-session--refresh-file-field store session)
@@ -618,6 +638,9 @@ and RECORD supplies persisted identity fields during replay."
         :updated-seq (plist-get session :updated-seq)
         :last-message-at (or (plist-get session :last-message-at)
                              (e-session--last-message-at session))
+        :latest-assistant-marker
+        (or (plist-get session :latest-assistant-marker)
+            (e-session--latest-assistant-marker session))
         :file (plist-get session :file)
         :loaded (plist-get session :loaded)))
 

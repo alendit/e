@@ -79,6 +79,19 @@ PROJECT-ROOT."
           (e-session-set-metadata
            (e-harness-sessions harness) session-id metadata))))))
 
+(defun e-chat-session-set-read-marker
+    (harness session-id marker &optional instance-id)
+  "Persist SESSION-ID read MARKER for chat INSTANCE-ID."
+  (let* ((session (e-session-get (e-harness-sessions harness) session-id))
+         (metadata (copy-sequence (plist-get session :metadata)))
+         (markers (copy-sequence
+                   (plist-get metadata :e-chat-read-markers)))
+         (key (or instance-id "__default__")))
+    (setf (alist-get key markers nil nil #'equal) marker)
+    (setq metadata (plist-put metadata :e-chat-read-markers markers))
+    (e-session-set-metadata (e-harness-sessions harness) session-id metadata)
+    marker))
+
 (defun e-chat-session-abort (harness session-id)
   "Abort the active chat turn for SESSION-ID through HARNESS."
   (e-harness-abort harness session-id))
