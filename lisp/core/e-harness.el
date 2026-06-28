@@ -1154,12 +1154,16 @@ compaction) where exposing tools risks a tool-call instead of a reply."
 
 (defun e-harness-tool-lifecycle (harness session-id turn-id)
   "Return a harness-owned tool lifecycle for SESSION-ID and TURN-ID."
-  (let ((tools (e-harness-tools harness session-id turn-id)))
+  (let ((tools (e-harness-tools harness session-id turn-id))
+        hook-context)
     (cl-labels
         ((hooks ()
            (e-harness-hooks harness))
          (context ()
-           (e-harness--tool-hook-context harness session-id turn-id tools)))
+           (or hook-context
+               (setq hook-context
+                     (e-harness--tool-hook-context
+                      harness session-id turn-id tools)))))
       (e-tool-lifecycle-create
        :prepare (lambda (tool-call)
                   (e-hooks-run-reduce

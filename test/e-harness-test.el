@@ -2057,6 +2057,73 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
       (should (equal (plist-get (plist-get tool-result :content) :content)
                      "prepared-post")))))
 
+(ert-deftest e-harness-test-tool-lifecycle-reuses-hook-context ()
+  "A tool lifecycle builds its hook context once for prepare/start/post."
+  (should (require 'e-hooks nil t))
+  (let* ((tools-capability
+          (e-capability-create
+           :id 'echo-tool
+           :tools
+           (list (lambda (registry)
+                   (e-tools-register
+                    registry
+                    :name "echo"
+                    :description "Echo text."
+                    :handler (lambda (arguments)
+                               (plist-get arguments :text)))))))
+         (hooks-capability
+          (e-capability-create
+           :id 'tool-hooks
+           :hooks
+           (list
+            (e-hook-create
+             :id "10-prepare"
+             :point :pre-tool-call
+             :handler (lambda (tool-call _context)
+                        (plist-put (copy-sequence tool-call)
+                                   :arguments '(:text "prepared"))))
+            (e-hook-create
+             :id "50-result"
+             :point :post-tool-call
+             :handler (lambda (result _context)
+                        (plist-put (copy-sequence result)
+                                   :content
+                                   (concat (plist-get result :content)
+                                           "-post")))))))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :intrinsic-capabilities
+                   (list tools-capability hooks-capability)))
+         (context-calls 0)
+         result
+         failure)
+    (e-harness-create-session harness :id "session-1")
+    (let ((original (symbol-function 'e-harness--tool-hook-context)))
+      (cl-letf (((symbol-function 'e-harness--tool-hook-context)
+                 (lambda (&rest args)
+                   (setq context-calls (1+ context-calls))
+                   (apply original args))))
+        (let* ((lifecycle
+                (e-harness-tool-lifecycle harness "session-1" "turn-1"))
+               (prepared
+                (e-tool-lifecycle-prepare-call
+                 lifecycle
+                 '(:id "call-1" :name "echo" :arguments (:text "raw")))))
+          (e-tool-lifecycle-start-call
+           lifecycle
+           prepared
+           :on-done (lambda (value) (setq result value))
+           :on-error (lambda (err) (setq failure err))))))
+    (let ((deadline (+ (float-time) 1.0)))
+      (while (and (not (or result failure))
+                  (< (float-time) deadline))
+        (accept-process-output nil 0.01)))
+    (should (or result failure))
+    (when failure
+      (signal (car failure) (cdr failure)))
+    (should (equal (plist-get result :content) "prepared-post"))
+    (should (= context-calls 1))))
+
 (ert-deftest e-harness-test-nested-tool-calls-use-harness-lifecycle ()
   "Nested tool calls run hooks, emit activity, and do not append messages."
   (should (require 'e-hooks nil t))
