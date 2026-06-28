@@ -1358,6 +1358,27 @@ Return non-nil when a composer was removed."
       (setq position next))
     copy))
 
+(defun e-chat--composer-needs-sanitize-p ()
+  "Return non-nil when the active composer contains transient presentation props."
+  (when (e-chat--composer-active-p)
+    (let ((position (marker-position e-chat--composer-start-marker))
+          (end (point-max))
+          next
+          found)
+      (while (and (< position end) (not found))
+        (setq next (or (next-single-property-change
+                        position 'e-chat-context-reference nil end)
+                       end))
+        (let ((properties (if (get-text-property
+                               position 'e-chat-context-reference)
+                              e-chat--composer-reference-stripped-properties
+                            e-chat--composer-stripped-properties)))
+          (while (and properties (not found))
+            (when (get-text-property position (pop properties))
+              (setq found t))))
+        (setq position next))
+      found)))
+
 (defun e-chat--visible-height ()
   "Return the visible body height for the current chat buffer."
   (or e-chat--test-window-body-height
@@ -3689,8 +3710,8 @@ When RECORD is nil, clear only buffer-local status markers."
          (e-chat-response-navigation-mode 1)
          (e-chat--focus-block block-id)))))))
 
-(defun e-chat--render-running-status (turn-id record)
-  "Render TURN-ID's active progress and RECORD transient summary together."
+(defun e-chat--running-status-data (turn-id record)
+  "Return render data for TURN-ID's active progress and RECORD."
   (let* ((has-progress (and e-chat--progress-turn-id
                             (equal turn-id e-chat--progress-turn-id)))
          (final-rendered (and record (plist-get record :final-rendered)))
@@ -3702,78 +3723,114 @@ When RECORD is nil, clear only buffer-local status markers."
                    (or (and summary-text
                             (concat summary-text "\n\n"))
                        transient-text)
-                 transient-text))
-         (block-kind (if summary-text 'activity-summary 'activity))
-         (details-text (and summary-text
-                            (e-chat--activity-summary-details-text
-                             turn-id record)))
+                 transient-text)))
+    (list :has-progress has-progress
+          :final-rendered final-rendered
+          :summary-text summary-text
+          :text text
+          :block-kind (if summary-text 'activity-summary 'activity)
+          :details-text (and summary-text
+                             (e-chat--activity-summary-details-text
+                              turn-id record)))))
+
+(defun e-chat--insert-running-status-contents (turn-id record data)
+  "Insert running status contents for TURN-ID using RECORD and DATA.
+Point must be at the destination.  Return cons of inserted region bounds."
+  (let ((status-start (point))
+        (text (plist-get data :text)))
+    (when text
+      (let* ((transient-start (point))
+             (activity-block-id
+              (or (plist-get record :activity-block-id)
+                  (let ((id (e-chat--next-block-id)))
+                    (plist-put record :activity-block-id id)
+                    id))))
+        (e-chat--insert-protected
+         text
+         'e-chat-system-face
+         `(e-chat-transient-turn-id ,turn-id
+           e-chat-turn-id ,turn-id
+           e-chat-block-id ,activity-block-id))
+        (e-chat--apply-activity-separator-face
+         transient-start
+         (point))
+        (plist-put record
+                   :transient-start-marker
+                   (copy-marker transient-start nil))
+        (plist-put record
+                   :transient-end-marker
+                   (copy-marker (point) nil))
+        (when activity-block-id
+          (e-chat--update-block-bounds
+           activity-block-id
+           turn-id
+           transient-start
+           (point)
+           (plist-get data :block-kind)
+           (string-trim-right text)
+           transient-start
+           (point)
+           (e-chat--activity-tool-items record)
+           (plist-get data :details-text)))))
+    (when (and (plist-get data :has-progress) (not text))
+      (let ((progress-start (point)))
+        (e-chat--insert-protected
+         (e-chat--entry-text "Assistant" (e-chat--progress-dots))
+         'e-chat-assistant-face
+         `(e-chat-progress-turn-id ,turn-id))
+        (setq e-chat--progress-start-marker
+              (copy-marker progress-start nil))
+        (setq e-chat--progress-end-marker
+              (copy-marker (point) nil))))
+    (setq e-chat--running-status-start-marker
+          (copy-marker status-start nil))
+    (setq e-chat--running-status-end-marker
+          (copy-marker (point) nil))
+    (cons status-start (point))))
+
+(defun e-chat--replace-running-status (turn-id record data)
+  "Replace the visible running status for TURN-ID in place.
+Return non-nil when an existing status region was updated without rebuilding
+the composer."
+  (let* ((start (and (markerp e-chat--running-status-start-marker)
+                     (marker-position e-chat--running-status-start-marker)))
+         (end (and (markerp e-chat--running-status-end-marker)
+                   (marker-position e-chat--running-status-end-marker))))
+    (when (and start end (< start end)
+               (or (plist-get data :has-progress)
+                   (plist-get data :text))
+               (not (e-chat--composer-needs-sanitize-p)))
+      (let ((inhibit-read-only t))
+        (goto-char start)
+        (delete-region start end)
+        (e-chat--insert-running-status-contents turn-id record data))
+      t)))
+
+(defun e-chat--render-running-status (turn-id record)
+  "Render TURN-ID's active progress and RECORD transient summary together."
+  (let* ((data (e-chat--running-status-data turn-id record))
+         (has-progress (plist-get data :has-progress))
+         (text (plist-get data :text))
          (navigation-state
           (e-chat--capture-running-status-navigation-state))
          (composer-state (e-chat--capture-composer-state)))
     (when (and turn-id
-               (not final-rendered)
+               (not (plist-get data :final-rendered))
                (e-chat--active-activity-p record))
       (e-chat--ensure-progress-timer turn-id))
-    (e-chat--delete-running-status record)
-    (e-chat--delete-composer)
-    (if (or has-progress text)
-        (progn
+    (unless (e-chat--replace-running-status turn-id record data)
+      (e-chat--delete-running-status record)
+      (e-chat--delete-composer)
+      (if (or has-progress text)
+          (progn
           (let ((inhibit-read-only t))
             (goto-char (point-max))
             (unless (or (bobp) (bolp))
               (insert "\n"))
             (e-chat--maybe-insert-response-separator turn-id 'agent)
-            (let ((status-start (point)))
-              (when text
-                (let* ((transient-start (point))
-                       (activity-block-id
-                        (or (plist-get record :activity-block-id)
-                            (let ((id (e-chat--next-block-id)))
-                              (plist-put record :activity-block-id id)
-                              id))))
-                  (e-chat--insert-protected
-                   text
-                   'e-chat-system-face
-                   `(e-chat-transient-turn-id ,turn-id
-                     e-chat-turn-id ,turn-id
-                     e-chat-block-id ,activity-block-id))
-                  (e-chat--apply-activity-separator-face
-                   transient-start
-                   (point))
-                  (plist-put record
-                             :transient-start-marker
-                             (copy-marker transient-start nil))
-                  (plist-put record
-                             :transient-end-marker
-                             (copy-marker (point) nil))
-                  (when activity-block-id
-                    (e-chat--update-block-bounds
-                     activity-block-id
-                     turn-id
-                     transient-start
-                     (point)
-                     block-kind
-                     (string-trim-right text)
-                     transient-start
-                     (point)
-                     (e-chat--activity-tool-items record)
-                     details-text))))
-              (when (and has-progress (not text))
-                (let ((progress-start (point)))
-                  (e-chat--insert-protected
-                   (e-chat--entry-text "Assistant" (e-chat--progress-dots))
-                   'e-chat-assistant-face
-                   `(e-chat-progress-turn-id ,turn-id))
-                  (setq e-chat--progress-start-marker
-                        (copy-marker progress-start nil))
-                  (setq e-chat--progress-end-marker
-                        (copy-marker (point) nil))))
-              (setq e-chat--running-status-start-marker
-                    (copy-marker status-start nil))
-              (setq e-chat--running-status-end-marker
-                    (copy-marker (point) nil))))
+            (e-chat--insert-running-status-contents turn-id record data))
           (e-chat--restore-composer-state composer-state))
-      (e-chat--restore-composer-state composer-state))
+        (e-chat--restore-composer-state composer-state)))
     (e-chat--restore-running-status-navigation-state navigation-state)
     (run-hook-with-args 'e-chat--running-status-rendered-hook turn-id)))
 

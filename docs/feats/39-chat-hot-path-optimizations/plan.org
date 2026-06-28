@@ -1,0 +1,63 @@
+#+title: Chat Hot Path Optimizations
+#+startup: overview
+
+* Status
+
+In-progress.
+
+* Goal
+
+Reduce the measured chat hot paths from the 2026-06-28 developer profile:
+progress/activity redraw churn, repeated composer rebuild work, and opaque
+turn-start latency.
+
+* Profile Evidence
+
+Trace:
+=.e/dev-profiles/20260628-100941-000002.jsonl=
+
+Top relevant aggregates:
+
+- =chat.activity-redraw=: 153 calls, 1871.491ms total, 12.232ms average.
+- =chat.composer-restore=: 155 calls, 579.786ms total, 3.741ms average.
+- =chat.composer-insert=: 162 calls, 397.396ms total, 2.453ms average.
+- =harness.prompt-turn-async-start=: 1 call, 214.358ms.
+- =harness.context=: 3 calls, 145.505ms total.
+
+* Slices
+
+** DONE Slice 1: In-place running activity redraws
+
+Progress ticks update the existing running-status region when the composer is
+already clean.  Dirty composer text that needs presentation-property cleanup
+still falls back to the full restore path.
+
+Acceptance:
+
+- Progress redraws preserve drafts and context references.
+- Progress redraws preserve response-navigation, block-view, and tool-list
+  state.
+- Clean progress redraws do not delete or reinsert the composer.
+
+** TODO Slice 2: Cache composer spacer layout inputs
+
+Avoid repeating expensive composer spacer screen-line counts when the transcript
+and composer visual shape have not changed.
+
+Acceptance:
+
+- Window changes and multiline composer growth still recompute spacer lines.
+- Activity/progress redraws do not force unrelated composer spacer work.
+
+** TODO Slice 3: Break down turn-start latency
+
+Add narrower profile spans around async turn startup so future profiles show
+whether the 214ms startup outlier is request-body construction, backend start,
+or loop setup.
+
+Acceptance:
+
+- Existing =harness.prompt-turn-async-start= remains available.
+- New spans do not include prompt text, response text, tool output bodies, or
+  unbounded state.
+- Reports aggregate the new events without format changes.

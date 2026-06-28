@@ -3826,6 +3826,40 @@ the orphaned region and appeared to vanish."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-progress-redraw-updates-without-composer-rebuild ()
+  "Clean progress redraws update the running status without composer churn."
+  (let ((buffer (e-chat-test--buffer nil "chat-progress-no-composer-rebuild")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat--render-event
+           (e-events-make :type 'turn-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 10))
+          (e-chat-test--mark-active-turn "turn-1")
+          (goto-char (point-max))
+          (insert "follow-up draft")
+          (let ((delete-composer (symbol-function 'e-chat--delete-composer))
+                (insert-composer (symbol-function 'e-chat--insert-composer))
+                (deletes 0)
+                (inserts 0))
+            (cl-letf (((symbol-function 'e-chat--delete-composer)
+                       (lambda (&rest args)
+                         (setq deletes (1+ deletes))
+                         (apply delete-composer args)))
+                      ((symbol-function 'e-chat--insert-composer)
+                       (lambda (&rest args)
+                         (setq inserts (1+ inserts))
+                         (apply insert-composer args))))
+              (e-chat--advance-progress-indicator)
+              (e-chat-test--flush-pending-activity-redraw))
+            (should (= deletes 0))
+            (should (= inserts 0))
+            (should (e-chat--composer-active-p))
+            (should (equal (e-chat--composer-text) "follow-up draft"))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-final-response-uses-visual-marker-face ()
   "Final assistant output is visually distinguished without a text label."
   (let ((buffer (e-chat-test--buffer nil "chat-final-face")))
