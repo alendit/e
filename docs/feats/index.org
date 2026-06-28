@@ -50,5 +50,5 @@ Status values for coding agents:
 | 37 | Planned | 37-ask-user-question/ | Ask User Question Tool |
 | 38 | Done | 38-output-style/ | Output Style |
 | 39 | Done | 39-chat-hot-path-optimizations/ | Chat Hot Path Optimizations |
-| 40 | Planned | 40-async-interactions-transition/ | Async Interactions Transition |
+| 40 | In-review | 40-async-interactions-transition/ | Async Interactions Transition |
 | 41 | In-review | 41-perf-regression-testing/ | Performance Regression Testing |
