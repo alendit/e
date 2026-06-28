@@ -148,6 +148,7 @@
                   "lisp/shells/e-org-canvas.el"
                   "lisp/shells/e-debug.el"
                   "lisp/dev/e-dev-profile.el"
+                  "lisp/dev/e-dev-perf.el"
                   "lisp/dev/e-dev.el")))
     (dolist (file files)
       (load (expand-file-name file root) nil 'nomessage))

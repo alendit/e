@@ -1,0 +1,50 @@
+{
+  "format": 1,
+  "created_at": "2026-06-28T00:00:00Z",
+  "source": "initial-placeholder",
+  "environment_class": "default",
+  "scenarios": {
+    "turn.fake-backend": {
+      "owner": "e-harness",
+      "metrics": {
+        "elapsed-ms": { "baseline": 1000.0, "direction": "lower-is-better", "fail_ratio": 2.0, "fail_delta": 500.0, "warn_ratio": 1.5, "warn_delta": 250.0, "variance_ratio": 2.0, "samples": 5 }
+      }
+    },
+    "context.fixture": {
+      "owner": "e-context",
+      "metrics": {
+        "elapsed-ms": { "baseline": 1000.0, "direction": "lower-is-better", "fail_ratio": 2.0, "fail_delta": 500.0, "warn_ratio": 1.5, "warn_delta": 250.0, "variance_ratio": 2.0, "samples": 5 }
+      }
+    },
+    "session.append-index": {
+      "owner": "e-session",
+      "metrics": {
+        "elapsed-ms": { "baseline": 1000.0, "direction": "lower-is-better", "fail_ratio": 2.0, "fail_delta": 500.0, "warn_ratio": 1.5, "warn_delta": 250.0, "variance_ratio": 2.0, "samples": 5 }
+      }
+    },
+    "session.replay-list": {
+      "owner": "e-session",
+      "metrics": {
+        "elapsed-ms": { "baseline": 1000.0, "direction": "lower-is-better", "fail_ratio": 2.0, "fail_delta": 500.0, "warn_ratio": 1.5, "warn_delta": 250.0, "variance_ratio": 2.0, "samples": 5 }
+      }
+    },
+    "chat.activity-burst": {
+      "owner": "e-chat",
+      "metrics": {
+        "elapsed-ms": { "baseline": 1000.0, "direction": "lower-is-better", "fail_ratio": 2.0, "fail_delta": 500.0, "warn_ratio": 1.5, "warn_delta": 250.0, "variance_ratio": 2.0, "samples": 5 }
+      }
+    },
+    "chat.final-assistant-render": {
+      "owner": "e-chat",
+      "metrics": {
+        "elapsed-ms": { "baseline": 1000.0, "direction": "lower-is-better", "fail_ratio": 2.0, "fail_delta": 500.0, "warn_ratio": 1.5, "warn_delta": 250.0, "variance_ratio": 2.0, "samples": 5 }
+      }
+    },
+    "tool.lifecycle-dispatch": {
+      "owner": "e-tools",
+      "metrics": {
+        "elapsed-ms": { "baseline": 1000.0, "direction": "lower-is-better", "fail_ratio": 2.0, "fail_delta": 500.0, "warn_ratio": 1.5, "warn_delta": 250.0, "variance_ratio": 2.0, "samples": 5 }
+      }
+    }
+  }
+}

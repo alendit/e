@@ -143,6 +143,16 @@
 (autoload 'e-dev-profile-report "e-dev-profile" "Open an e developer profiling report." t)
 ;;;###autoload
 (autoload 'e-dev-profile-open-latest "e-dev-profile" "Open the latest e profiling trace." t)
+;;;###autoload
+(autoload 'e-dev-perf-run "e-dev-perf" "Run e performance regression scenarios." t)
+;;;###autoload
+(autoload 'e-dev-perf-run-scenario "e-dev-perf" "Run one e performance scenario." t)
+;;;###autoload
+(autoload 'e-dev-perf-report "e-dev-perf" "Open an e performance run report." t)
+;;;###autoload
+(autoload 'e-dev-perf-list-scenarios "e-dev-perf" "List e performance scenarios." t)
+;;;###autoload
+(autoload 'e-dev-perf-update-baseline "e-dev-perf" "Update an e performance baseline from a run." t)
 
 (provide 'e)
 

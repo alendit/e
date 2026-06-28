@@ -2,3 +2,5 @@
 *.elc
 dist/
 .e/dev-profiles/
+.e/perf-runs/
+.e/perf-baselines/

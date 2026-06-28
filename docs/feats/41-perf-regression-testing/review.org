@@ -1,0 +1,119 @@
+#+title: Performance Regression Testing Review
+#+startup: overview
+
+* Status
+
+In review.
+
+* Implementation summary
+
+Implemented the opt-in performance regression framework described in the plan.
+
+Added =lisp/dev/e-dev-perf.el= with:
+
+- scenario registry and default scenario registration;
+- sample collection with warmups and repeated runs;
+- deterministic summary statistics;
+- baseline loading and metric comparison;
+- pass, warning, regression, improvement, noisy, and skipped verdicts;
+- JSON and Org artifact writing under ignored =.e/perf-runs/= paths;
+- explicit baseline update command;
+- interactive commands for running, reporting, and listing scenarios.
+
+Added default scenario families for:
+
+1. Turn startup with fake backend.
+2. Context assembly fixture.
+3. Session append and index update.
+4. Session replay and overview listing.
+5. Chat activity burst rendering.
+6. Final assistant render fixture.
+7. Tool lifecycle dispatch fixture.
+
+* Files changed
+
+- =.gitignore=
+- =e.el=
+- =lisp/dev/e-dev.el=
+- =lisp/dev/e-dev-perf.el=
+- =test/e-dev-perf-test.el=
+- =test/e-dev-test.el=
+- =test/perf/baselines/default.json=
+- =docs/feats/index.org=
+
+* Verification
+
+#+begin_src sh
+eldev test -f test/e-dev-perf-test.el
+#+end_src
+
+Passed: 7 tests, 0 unexpected.
+
+#+begin_src sh
+eldev test -f test/e-dev-test.el
+#+end_src
+
+Passed: 2 tests, 0 unexpected.
+
+#+begin_src sh
+eldev compile --warnings-as-errors
+#+end_src
+
+Passed.
+
+#+begin_src sh
+eldev eval "(require 'e-dev-perf) (let ((e-dev-perf-run-directory (make-temp-file \"e-dev-perf-run-\" t))) (let ((run (e-dev-perf-run :write-artifacts t))) (prin1 (list :count (length (plist-get run :scenarios)) :json (plist-get run :json-file) :org (plist-get run :org-file)))))"
+#+end_src
+
+Passed and ran 7 scenarios with temporary JSON and Org artifacts.
+
+* Live verification
+
+Reloaded the running Emacs:
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Result:
+
+#+begin_example
+"/Users/dimitrivorona/projects/elisp/e/"
+#+end_example
+
+Inspected live scenario registration:
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev-perf) (e-dev-perf-register-default-scenarios) (prin1 (mapcar #'e-dev-perf-scenario-id (e-dev-perf-scenarios))))"
+#+end_src
+
+Result:
+
+#+begin_example
+("session.append-index" "session.replay-list" "context.fixture"
+ "turn.fake-backend" "chat.activity-burst" "chat.final-assistant-render"
+ "tool.lifecycle-dispatch")
+#+end_example
+
+* Notes
+
+The committed baseline file uses intentionally loose initial placeholder values.
+After several local runs on the target environment, update it explicitly with =e-dev-perf-update-baseline= from a reviewed run.
+
+The perf framework is opt-in.
+Default ERT tests cover framework behavior with fake samples and fake scenarios rather than asserting real wall-clock budgets.
+
+* Design self-check
+
+1. If this work package stopped here, the project is better off because important performance scenarios are now named, runnable, comparable, and reviewable.
+2. This moves toward repeatable performance governance instead of one-off benchmark snippets in review notes.
+3. Threshold values and baseline exact numbers are likely to change; those decisions are local to JSON baselines and comparison policy.
+4. =e-dev-perf= owns perf scenario orchestration, artifacts, baseline comparison, and reports; runtime components still own the measured behavior.
+5. Coupling is limited to dev/test seams and existing public or profile-supported runtime paths.
+6. Scenario interfaces are narrow: setup, run, teardown, scalar metrics, and metadata.
+7. Runtime policy does not depend on dev perf tooling.
+8. Artifact writing and baseline mutation are outward dev-runner side effects.
+9. Scenario and baseline abstractions are real because all scenarios share the same scalar metric comparison path.
+10. Existing =e-dev-profile= compatibility remains intact.
+11. Expected noisy measurements become =noisy= verdicts; unexpected scenario failures surface as errors.
+12. Unit tests prove comparison, summary statistics, teardown, artifacts, baseline validation, profile aggregation, and default registry behavior without timing thresholds.
