@@ -190,6 +190,8 @@ Org Canvas status refreshes for the current buffer.")
   (e-context-status-text
    e-org-canvas-harness e-org-canvas-session-id
    :prefix e-org-canvas--mode-name
+   :prefer-token-usage t
+   :estimate-context nil
    :estimate-cache e-org-canvas--status-estimate-cache))
 
 (defun e-org-canvas--set-mode-name-indicator (enable)

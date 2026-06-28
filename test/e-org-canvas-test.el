@@ -676,16 +676,15 @@
     (e-org-canvas-mode -1)
     (should (equal mode-name "Custom Org"))))
 
-(ert-deftest e-org-canvas-test-mode-shows-context-state-indicator ()
-  "Attached Org Canvas buffers show model, effort, and token context."
+(ert-deftest e-org-canvas-test-mode-shows-cheap-context-state-indicator ()
+  "Attached Org Canvas buffers show status without building full context."
   (let* ((store (e-session-store-create))
          (harness (e-harness-create
                    :backend (e-backend-fake-create :items nil)
                    :sessions store
                    :default-options
                    '(:model "gpt-5.5" :reasoning-effort "high")))
-         (e-context-status-model-token-limits '(("gpt-5.5" . 100)))
-         (e-context-status-estimate-bytes-per-token 1.0))
+         (context-calls 0))
     (e-harness-activate-capability harness (e-chat-session-capability-create))
     (with-temp-buffer
       (org-mode)
@@ -694,10 +693,13 @@
        store "org-canvas-status" '(:role user :content "context question"))
       (setq-local e-org-canvas-harness harness)
       (setq-local e-org-canvas-session-id "org-canvas-status")
-      (e-org-canvas-mode 1)
+      (cl-letf (((symbol-function 'e-harness-context)
+                 (lambda (&rest _args)
+                   (setq context-calls (1+ context-calls))
+                   (error "Org Canvas status should not build full context"))))
+        (e-org-canvas-mode 1))
       (should (string-match-p "Org Canvas gpt-5.5/high" mode-name))
-      (should (string-match-p "~[0-9]+%" mode-name))
-      (should (string-match-p "/100 tok" mode-name))
+      (should (= context-calls 0))
       (e-org-canvas-mode -1))))
 
 (ert-deftest e-org-canvas-test-mode-refreshes-indicator-on-token-usage ()
