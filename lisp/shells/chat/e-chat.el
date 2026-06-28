@@ -319,6 +319,11 @@ The mode line uses this presentation-owned table for context usage display."
   "Face used for unread markers in the chat session overview."
   :group 'e-chat)
 
+(defface e-chat-workspace-unread-face
+  '((t :inherit secondary-selection :weight bold))
+  "Face used for unread chat markers in workspace displays."
+  :group 'e-chat)
+
 (defface e-chat-overview-title-face
   '((t :inherit default :weight bold))
   "Face used for session titles in the chat session overview."
@@ -370,6 +375,25 @@ The mode line uses this presentation-owned table for context usage display."
   '((t :inherit warning :weight bold))
   "Default face spec for unread overview markers.")
 
+(defconst e-chat--workspace-unread-face-spec
+  '((t :inherit secondary-selection :weight bold))
+  "Default face spec for unread workspace markers.")
+
+(defun e-chat--face-color (face attribute)
+  "Return usable FACE ATTRIBUTE color, or nil."
+  (let ((color (face-attribute face attribute nil t)))
+    (when (and (stringp color)
+               (not (string-empty-p color))
+               (not (equal color "unspecified")))
+      color)))
+
+(defun e-chat--workspace-unread-color ()
+  "Return the theme secondary color for workspace unread markers."
+  (or (e-chat--face-color 'secondary-selection :background)
+      (e-chat--face-color 'secondary-selection :foreground)
+      (e-chat--face-color 'font-lock-keyword-face :foreground)
+      (e-chat--face-color 'default :foreground)))
+
 (defconst e-chat--overview-title-face-spec
   '((t :inherit default :weight bold))
   "Default face spec for overview session titles.")
@@ -399,6 +423,14 @@ The mode line uses this presentation-owned table for context usage display."
                  e-chat--activity-separator-face-spec)
   (face-spec-set 'e-chat-overview-unread-face
                  e-chat--overview-unread-face-spec)
+  (face-spec-set 'e-chat-workspace-unread-face
+                 e-chat--workspace-unread-face-spec)
+  (set-face-attribute 'e-chat-workspace-unread-face nil
+                      :foreground (or (e-chat--workspace-unread-color)
+                                      'unspecified)
+                      :background 'unspecified
+                      :inherit 'default
+                      :weight 'bold)
   (face-spec-set 'e-chat-overview-title-face
                  e-chat--overview-title-face-spec)
   (face-spec-set 'e-chat-overview-meta-face
@@ -419,6 +451,20 @@ The mode line uses this presentation-owned table for context usage display."
 
 (defvar-local e-chat--preview-buffer nil
   "Non-nil when this buffer is a transient chat preview, not a session shell.")
+
+(defvar e-chat--workspace-unread-counts (make-hash-table :test #'equal)
+  "Cached unread chat-buffer count by workspace display name.")
+
+(defvar e-chat--workspace-unread-buffer-state (make-hash-table :test #'eq)
+  "Cached unread state by chat buffer.
+Each value is a cons cell (WORKSPACE-NAME . UNREAD-P).")
+
+(defvar e-chat--workspace-unread-cache-valid-p nil
+  "Non-nil when workspace unread cache reflects live chat buffers.")
+
+(defun e-chat--workspace-unread-cache-invalidate ()
+  "Mark the workspace unread cache stale."
+  (setq e-chat--workspace-unread-cache-valid-p nil))
 
 (defun e-chat--mark-current-session-read-if-focused ()
   "Mark the current chat session read when this buffer is selected."
@@ -887,6 +933,8 @@ and / expands available prompts."
   (add-hook 'kill-buffer-hook #'e-chat--unsubscribe nil t)
   (add-hook 'kill-buffer-hook #'e-chat--stop-progress-indicator nil t)
   (add-hook 'kill-buffer-hook #'e-chat--cancel-pending-command-references nil t)
+  (add-hook 'kill-buffer-hook
+            #'e-chat--workspace-unread-cache-remove-buffer nil t)
   (add-hook 'evil-local-mode-hook #'e-chat--enforce-modal-editing-policy nil t)
   (add-hook 'after-change-functions
             #'e-chat--mark-composer-scroll-needed nil t)
@@ -5630,7 +5678,8 @@ When REFRESH-MODE-LINE is non-nil, also refresh context-aware mode-line text."
                 (or attempt 1) (or backoff 0)))))
     (_
      (e-chat--insert-entry "System" (format "Event: %S" event) t)))
-     (e-chat--mark-current-session-read-if-focused))))
+     (e-chat--mark-current-session-read-if-focused)
+     (e-chat--workspace-unread-cache-update-buffer))))
 
 (defun e-chat--tail-messages (messages limit)
   "Return at most LIMIT trailing MESSAGES."
@@ -5974,6 +6023,7 @@ HARNESS are internal test seams."
            (e-workspace-current)
          (or existing-workspace
              (e-workspace-current))))
+      (e-chat--workspace-unread-cache-update-buffer buffer)
       (e-chat--rename-buffer-for-session)
       (e-chat--clear)
       (e-chat--render-session)
@@ -6609,24 +6659,65 @@ operation."
                 session
                 e-chat-harness-instance-id)))))))
 
+(defun e-chat--workspace-unread-cache-adjust (workspace delta)
+  "Adjust cached unread count for WORKSPACE by DELTA."
+  (let* ((current (gethash workspace e-chat--workspace-unread-counts 0))
+         (next (+ current delta)))
+    (if (> next 0)
+        (puthash workspace next e-chat--workspace-unread-counts)
+      (remhash workspace e-chat--workspace-unread-counts))))
+
+(defun e-chat--workspace-unread-cache-remove-buffer (&optional buffer)
+  "Remove BUFFER's previous unread contribution from the workspace cache."
+  (let* ((buffer (or buffer (current-buffer)))
+         (previous (gethash buffer e-chat--workspace-unread-buffer-state)))
+    (when (and previous (cdr previous))
+      (e-chat--workspace-unread-cache-adjust (car previous) -1))
+    (remhash buffer e-chat--workspace-unread-buffer-state)))
+
+(defun e-chat--workspace-unread-cache-update-buffer (&optional buffer)
+  "Refresh BUFFER's unread contribution when the workspace cache is valid."
+  (when e-chat--workspace-unread-cache-valid-p
+    (let* ((buffer (or buffer (current-buffer)))
+           (workspace (and (buffer-live-p buffer)
+                           (e-buffer-workspace buffer)))
+           (workspace-name (and workspace
+                                (e-chat--workspace-name workspace)))
+           (unread (and workspace-name
+                        (e-chat--buffer-unread-p buffer))))
+      (e-chat--workspace-unread-cache-remove-buffer buffer)
+      (when workspace-name
+        (puthash buffer
+                 (cons workspace-name unread)
+                 e-chat--workspace-unread-buffer-state)
+        (when unread
+          (e-chat--workspace-unread-cache-adjust workspace-name 1))))))
+
+(defun e-chat--workspace-unread-cache-rebuild ()
+  "Rebuild cached unread chat-buffer counts by workspace."
+  (clrhash e-chat--workspace-unread-counts)
+  (clrhash e-chat--workspace-unread-buffer-state)
+  (setq e-chat--workspace-unread-cache-valid-p t)
+  (dolist (buffer (buffer-list))
+    (e-chat--workspace-unread-cache-update-buffer buffer)))
+
 ;;;###autoload
 (defun e-chat-workspace-unread-p (&optional workspace)
   "Return non-nil when WORKSPACE owns any unread e chat buffer.
 WORKSPACE may be an `e-workspace-token', a workspace name string, or nil for
 the current workspace."
-  (let ((workspace (or workspace (e-workspace-current))))
-    (cl-some
-     (lambda (buffer)
-       (and (e-chat--workspace-match-p (e-buffer-workspace buffer) workspace)
-            (e-chat--buffer-unread-p buffer)))
-     (buffer-list))))
+  (unless e-chat--workspace-unread-cache-valid-p
+    (e-chat--workspace-unread-cache-rebuild))
+  (> (gethash (e-chat--workspace-name workspace)
+              e-chat--workspace-unread-counts
+              0)
+     0))
 
 ;;;###autoload
 (defun e-chat-workspace-unread-indicator (&optional workspace)
-  "Return a propertized unread marker for WORKSPACE, or nil.
-The marker matches the unread indicator used by the active sessions picker."
+  "Return a propertized unread marker for WORKSPACE, or nil."
   (when (e-chat-workspace-unread-p workspace)
-    (propertize "●" 'font-lock-face 'e-chat-overview-unread-face)))
+    (propertize "●" 'font-lock-face 'e-chat-workspace-unread-face)))
 
 (defun e-chat-overview--session-id-at-point ()
   "Return overview session id at point, or nil."
@@ -6984,11 +7075,16 @@ face properties so the preview still reflects chat rendering."
     (harness session &optional instance-id)
   "Record SESSION's latest assistant message as read in HARNESS."
   (when-let ((marker (e-chat-overview--latest-assistant-marker harness session)))
-    (e-chat-overview--set-read-marker
-     (plist-get session :id)
-     marker
-     harness
-     instance-id)))
+    (let ((session-id (plist-get session :id)))
+      (unless (equal marker
+                     (e-chat-overview--read-marker
+                      session-id harness instance-id))
+        (e-chat-overview--set-read-marker
+         session-id
+         marker
+         harness
+         instance-id)
+        (e-chat--workspace-unread-cache-invalidate)))))
 
 (defun e-chat-overview--session-for-id (harness session-id)
   "Return HARNESS session metadata for SESSION-ID."

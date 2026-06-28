@@ -7608,6 +7608,8 @@ The context-window denominator comes from the live provider lookup
     (let ((e-chat-overview-state-file state-file))
       (unwind-protect
           (progn
+            (e-chat--workspace-unread-cache-invalidate)
+            (e-chat--refresh-face-specs)
             (e-session-create store :id "workspace-unread"
                               :metadata '(:name "Workspace unread"))
             (e-session-append-message
@@ -7622,16 +7624,19 @@ The context-window denominator comes from the live provider lookup
               (setq-local e-chat-session-id "workspace-unread")
               (e-buffer-set-workspace buffer workspace))
             (should (e-chat-workspace-unread-p workspace))
-            (should (e-chat-workspace-unread-p "target"))
-            (should-not (e-chat-workspace-unread-p other-workspace))
-            (should (equal (substring-no-properties
-                            (e-chat-workspace-unread-indicator workspace))
-                           "●"))
-            (should (eq (get-text-property
-                         0
-                         'font-lock-face
-                         (e-chat-workspace-unread-indicator workspace))
-                        'e-chat-overview-unread-face))
+            (cl-letf (((symbol-function 'e-chat--buffer-unread-p)
+                       (lambda (&rest _args)
+                         (error "cached unread lookup should not scan buffers"))))
+              (should (e-chat-workspace-unread-p "target"))
+              (should-not (e-chat-workspace-unread-p other-workspace))
+              (should (equal (substring-no-properties
+                              (e-chat-workspace-unread-indicator workspace))
+                             "●"))
+              (should (eq (get-text-property
+                           0
+                           'font-lock-face
+                           (e-chat-workspace-unread-indicator workspace))
+                          'e-chat-workspace-unread-face)))
             (e-chat-overview--mark-session-read
              harness
              (e-chat-overview--session-for-id harness "workspace-unread"))
@@ -7639,6 +7644,7 @@ The context-window denominator comes from the live provider lookup
             (should-not (e-chat-workspace-unread-indicator workspace)))
         (when (buffer-live-p buffer)
           (kill-buffer buffer))
+        (e-chat--workspace-unread-cache-invalidate)
         (when (file-exists-p state-file)
           (delete-file state-file))))))
 
