@@ -572,6 +572,22 @@ the display to a normal window when the selected window is a side window."
       (select-window window)))
   buffer)
 
+(defun e-org-canvas--restore-buffer-session (buffer harness session-id workspace)
+  "Restore BUFFER as HARNESS SESSION-ID Org Canvas source in WORKSPACE."
+  (with-current-buffer buffer
+    (unless (derived-mode-p 'org-mode)
+      (org-mode))
+    (setq-local e-org-canvas-harness harness)
+    (setq-local e-org-canvas-session-id session-id)
+    (e-buffer-set-workspace buffer workspace)
+    (e-org-canvas-mode 1)))
+
+(defun e-org-canvas--workspace-for-buffer (buffer)
+  "Return the workspace that should own BUFFER's Org Canvas UI."
+  (or (and (buffer-live-p buffer)
+           (e-buffer-workspace buffer))
+      (e-workspace-current)))
+
 (defun e-org-canvas--open-session-for-buffer
     (buffer &optional needs-file-name target-folder)
   "Create and open an Org Canvas session for BUFFER."
@@ -622,15 +638,13 @@ the display to a normal window when the selected window is a side window."
                            referenced-session source)
                           referenced))))
     (if existing
-        (progn
+        (let ((workspace (e-org-canvas--workspace-for-buffer source)))
           (e-org-canvas--sync-default-harness-for-buffer harness source)
-          (with-current-buffer source
-            (setq-local e-org-canvas-harness harness)
-            (setq-local e-org-canvas-session-id existing)
-            (e-org-canvas-mode 1))
+          (e-org-canvas--restore-buffer-session source harness existing workspace)
           (message "Org Canvas resumed for %s; use s-i to add context"
                    (buffer-name source))
           (let ((chat-buffer (e-chat-open :harness harness :session-id existing)))
+            (e-buffer-set-workspace chat-buffer workspace)
             (e-org-canvas--select-org-buffer source)
             (e-org-canvas--display-and-select-chat-buffer chat-buffer)
             chat-buffer))
@@ -1558,15 +1572,12 @@ prompt enumerating them, and leave the draft for review before submission."
 ;;;###autoload
 (defun e-org-canvas-resume-session (harness session-id)
   "Resume HARNESS SESSION-ID and return its Org canvas buffer."
-  (let ((buffer (or (e-org-canvas-session-buffer harness session-id)
-                    (user-error "Org Canvas session has no buffer"))))
-    (e-chat-open :harness harness :session-id session-id)
-    (with-current-buffer buffer
-      (unless (derived-mode-p 'org-mode)
-        (org-mode))
-      (setq-local e-org-canvas-harness harness)
-      (setq-local e-org-canvas-session-id session-id)
-      (e-org-canvas-mode 1))
+  (let* ((buffer (or (e-org-canvas-session-buffer harness session-id)
+                     (user-error "Org Canvas session has no buffer")))
+         (workspace (e-org-canvas--workspace-for-buffer buffer))
+         (chat-buffer (e-chat-open :harness harness :session-id session-id)))
+    (e-org-canvas--restore-buffer-session buffer harness session-id workspace)
+    (e-buffer-set-workspace chat-buffer workspace)
     (e-org-canvas--select-org-buffer buffer)
     buffer))
 

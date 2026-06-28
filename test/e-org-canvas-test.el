@@ -214,6 +214,63 @@
                            token)))))))
       (e-org-canvas-test--kill-chat-buffers))))
 
+(ert-deftest e-org-canvas-test-open-existing-session-rebinds-chat-to-source-workspace ()
+  "Reopening an Org Canvas session keeps chat display with the source workspace."
+  (let* ((harness (e-org-canvas-test--harness))
+         (source (get-buffer-create "org-canvas-existing-workspace-source"))
+         (target-workspace (make-e-workspace-token
+                            :backend 'single
+                            :id 'source-workspace
+                            :name "source"
+                            :frame (selected-frame)))
+         (foreign-workspace (make-e-workspace-token
+                             :backend 'single
+                             :id 'foreign-workspace
+                             :name "foreign"
+                             :frame (selected-frame)))
+         chat-buffer
+         display-workspace)
+    (unwind-protect
+        (e-org-canvas-test--with-empty-harness-registry
+          (let ((e-chat-default-harness-id :org-canvas-test))
+            (e-harness-registry-register :org-canvas-test harness)
+            (with-current-buffer source
+              (erase-buffer)
+              (org-mode)
+              (insert "* Topic\nBody\n")
+              (e-buffer-set-workspace source target-workspace))
+            (set-window-buffer (selected-window) source)
+            (e-harness-create-session harness :id "session-1")
+            (e-org-canvas--mark-session
+             harness "session-1" source :scope 'thread :target-folder nil)
+            (setq chat-buffer
+                  (e-chat-open :harness harness :session-id "session-1"))
+            (e-buffer-set-workspace chat-buffer foreign-workspace)
+            (cl-letf (((symbol-function 'e-workspace-display-buffer)
+                       (cl-function
+                        (lambda (buffer &key workspace action select
+                                        side-window-ok)
+                          (ignore action select side-window-ok)
+                          (setq display-workspace workspace)
+                          (display-buffer-same-window buffer nil)))))
+              (with-current-buffer source
+                (should (eq (e-org-canvas-open-for-current-buffer)
+                            chat-buffer))))
+            (should (e-workspace-equal-p
+                     (e-buffer-workspace source)
+                     target-workspace))
+            (should (e-workspace-equal-p
+                     (e-buffer-workspace chat-buffer)
+                     target-workspace))
+            (should (e-workspace-equal-p
+                     display-workspace
+                     target-workspace))))
+      (when (buffer-live-p source)
+        (kill-buffer source))
+      (when (buffer-live-p chat-buffer)
+        (kill-buffer chat-buffer))
+      (e-org-canvas-test--kill-chat-buffers))))
+
 (ert-deftest e-org-canvas-test-input-buffer-inherits-target-workspace ()
   "Transient Org Canvas input buffers inherit the target canvas workspace."
   (let* ((harness (e-org-canvas-test--harness))
@@ -465,6 +522,40 @@
           (should (eq captured-result buffer)))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
+
+(ert-deftest e-org-canvas-test-session-buffer-ignores_stale_buffer_name ()
+  "Session lookup does not recover a buffer-name match for a different URI."
+  (let* ((directory (make-temp-file "e-org-canvas-session-buffer-" t))
+         (file (e-org-canvas-test--org-file directory "target.org"))
+         (harness (e-org-canvas-test--harness t))
+         (stale (get-buffer-create "org-canvas-stale-buffer-name"))
+         recovered)
+    (unwind-protect
+        (progn
+          (with-current-buffer stale
+            (erase-buffer)
+            (org-mode)
+            (insert "* Stale\n"))
+          (e-harness-create-session
+           harness
+           :id "session-1"
+           :metadata
+           (list :org-canvas
+                 (list :uri (e-org-canvas--file-uri file)
+                       :buffer-name (buffer-name stale))))
+          (setq recovered (e-org-canvas-session-buffer harness "session-1"))
+          (should (buffer-live-p recovered))
+          (should-not (eq recovered stale))
+          (with-current-buffer recovered
+            (should (equal (expand-file-name buffer-file-name)
+                           (expand-file-name file)))))
+      (when (buffer-live-p stale)
+        (kill-buffer stale))
+      (dolist (buffer (buffer-list))
+        (when (and (buffer-file-name buffer)
+                   (file-in-directory-p (buffer-file-name buffer) directory))
+          (kill-buffer buffer)))
+      (delete-directory directory t))))
 
 (ert-deftest e-org-canvas-test-new-file-directory-starts-unsaved-folder-canvas ()
   "Selecting a directory creates an unsaved Org Canvas targeting that folder."

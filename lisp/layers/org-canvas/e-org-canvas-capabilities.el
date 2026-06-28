@@ -45,6 +45,15 @@
   (when (and (stringp uri) (string-prefix-p "file://" uri))
     (expand-file-name (substring uri (length "file://")))))
 
+(defun e-org-canvas--buffer-matches-uri-p (buffer uri)
+  "Return non-nil when BUFFER still represents Org Canvas URI."
+  (and (buffer-live-p buffer)
+       (with-current-buffer buffer
+         (equal (if buffer-file-name
+                    (e-org-canvas--file-uri buffer-file-name)
+                  (concat "buffer://" (buffer-name)))
+                uri))))
+
 (defun e-org-canvas-session-metadata (harness session-id)
   "Return Org Canvas metadata for HARNESS SESSION-ID, or nil."
   (plist-get
@@ -66,8 +75,12 @@
                   (eq e-org-canvas-harness harness)
                   (equal e-org-canvas-session-id session-id))))
          :prefer-visible t)
-        (when-let ((buffer-name (plist-get metadata :buffer-name)))
-          (get-buffer buffer-name))
+        (when-let* ((buffer-name (plist-get metadata :buffer-name))
+                    (buffer (get-buffer buffer-name)))
+          (and (e-org-canvas--buffer-matches-uri-p
+                buffer
+                (plist-get metadata :uri))
+               buffer))
         (when-let ((file (e-org-canvas--uri-file-name
                           (plist-get metadata :uri))))
           (or (find-buffer-visiting file)
