@@ -33,8 +33,12 @@ The main blockers left are:
 4. Context/status building is synchronous computation and may invoke context
    providers, transcript walks, token estimates, and a hidden live Anthropic
    model-info HTTP lookup.
-5. Session persistence and replay are synchronous disk I/O.
-6. Compatibility wrappers still expose blocking APIs and need to stay out of
+5. Chat presentation can block even when the underlying turn is async: running
+   activity redraw, final assistant Markdown presentation, tool-result
+   summarization, block details, and full session render all run synchronously
+   on the UI thread.
+6. Session persistence and replay are synchronous disk I/O.
+7. Compatibility wrappers still expose blocking APIs and need to stay out of
    interactive paths.
 
 * Overview Table
@@ -48,6 +52,11 @@ The main blockers left are:
 | Compaction | =e-harness-compact-session=, =e-chat-session-compact=, =compact_session= tool, auto-compaction | Sync | High: can run backend summary request and transcript prep in foreground | Add =e-harness-compact-session-start= and make shell/tool callers async |
 | Tool execution framework | =e-tools-start= | Async-capable | Low when tools use =:start=; sync handlers are only timer-deferred | Require =:start= for long work |
 | Nested tool calls | =e-tools-call= / =e-tools-call!= through =e-harness--execute-nested-tool= | Sync wait | High for nested long tools from =run_elisp= | Add async nested tool contract or restrict nested sync calls to cheap tools |
+| Running/intermediate response rendering | =e-chat--render-running-status=, =e-chat--request-activity-redraw= | Timer-coalesced, but redraw is synchronous buffer delete/insert work | High with frequent events, large reasoning text, or many tool items | Incremental in-place updates, render budgets, and stronger debounce/backpressure |
+| Final assistant rendering | =message-added= -> =e-chat--insert-entry= -> =e-chat--apply-assistant-markdown= | Sync insert plus full-message Markdown/font-lock presentation | High for long final responses | Insert plain text first; defer/chunk Markdown presentation |
+| Tool result presentation | =tool-finished= -> =e-chat--tool-result-display-text= | Sync result materialization, byte counting, preview construction, then redraw | High for huge outputs before truncation | Truncate/stream at source, store full output by reference, render compact summaries |
+| Activity details/block expansion | =e-chat--turn-details-text=, =e-chat--insert-block-details= | Sync details string construction and region insert/delete | Medium/high for many tool calls or huge provider details | Lazy details generation, caps, and chunked insertion |
+| Full chat session render | =e-chat--attach-buffer= -> =e-chat--clear= -> =e-chat--render-session= | Sync full-buffer rebuild | High on large transcripts/resume/reload | Tail-first or lazy rendering; chunk old turns |
 | Base bash tool | =bash= capability | Async process with progress | Low | Already acceptable |
 | Base file glob/search | =file://= resources, =fd= / =rg= | Sync subprocess via =process-file= | Medium/high on large roots | Convert resource methods to async process starts or precomputed index |
 | Tmp resource glob/search | =tmp://= resources, =fd= / =rg= | Sync subprocess via =process-file= | Medium for large generated outputs | Same async resource method shape |
@@ -177,6 +186,83 @@ is strict non-blocking behavior, nested tool chaining needs a new contract:
 - or restrict synchronous nested calls to explicitly cheap tools and require
   long tools to be requested as top-level tool calls.
 
+** Chat rendering is also a blocking surface
+The first pass focused on provider, tool, context, and disk waits. That is not
+enough for the freezes the user reports. The chat shell has several
+presentation paths where all work happens synchronously in the selected Emacs
+buffer, so async provider/tool execution can still feel frozen while the UI
+formats or rewrites text.
+
+Running/intermediate response rendering is coalesced, but still synchronous.
+=e-chat--request-activity-redraw= schedules one near-future redraw with
+=run-at-time=, which is good backpressure against event storms
+(=lisp/shells/chat/e-chat.el= lines 3836-3853). The redraw itself,
+=e-chat--render-running-status=, captures navigation and composer state,
+deletes the running status region, deletes the composer, rebuilds transient
+activity/progress text, updates block metadata, restores the composer, restores
+navigation state, and runs the rendered hook (=lisp/shells/chat/e-chat.el=
+lines 3692-3778). Frequent =reasoning-delta=, =tool-started=,
+=tool-finished=, and =tool-progress= events request this redraw
+(=lisp/shells/chat/e-chat.el= lines 5438-5482). Steering deliberately renders
+immediately for accept-time feedback, and progress start/stop also render
+immediately (=lisp/shells/chat/e-chat.el= lines 5438-5446 and 3949-3973).
+
+The progress timer already exposes one symptom: when
+=e-chat--advance-progress-indicator= notices the timer fired late, it reports
+"Emacs was blocked..." before requesting another redraw
+(=lisp/shells/chat/e-chat.el= lines 3926-3947). That warning should be treated
+as evidence that the UI thread was occupied, not just that provider/tool I/O was
+slow.
+
+Final assistant rendering is a separate high-risk path. On =message-added= for
+assistant output, the handler cancels pending activity redraw, stops progress,
+renders/finalizes activity, and calls =e-chat--insert-entry=
+(=lisp/shells/chat/e-chat.el= lines 5400-5422). =e-chat--insert-entry=
+captures composer state, deletes any active running status, deletes the
+composer, inserts the full entry, applies assistant Markdown, applies final
+assistant styling, updates block metadata, and restores/re-renders the composer
+(=lisp/shells/chat/e-chat.el= lines 4503-4564). When =markdown-mode= is
+available, =e-chat--apply-markdown-mode-properties= copies the assistant
+content into a temp buffer, enables =markdown-mode=, runs =font-lock-ensure= on
+the whole message, then copies relevant text properties back
+(=lisp/shells/chat/e-chat.el= lines 4340-4368). The fallback path is also
+synchronous regex/line scanning over the whole assistant range
+(=lisp/shells/chat/e-chat.el= lines 4387-4492).
+
+Tool-call presentation has its own blocking work. =tool-finished= records the
+result and requests a redraw (=lisp/shells/chat/e-chat.el= lines 5459-5482).
+Before truncating the display, =e-chat--tool-result-display-text= calls
+=e-tools-result-content-text=, computes =string-bytes= for the full text, and
+then builds the preview (=lisp/shells/chat/e-chat.el= lines 3053-3078 and
+3506-3514). If a tool result is huge, the expensive materialization can happen
+before the preview limit protects the UI. Activity summaries and navigation
+children also walk every round/tool item when building block metadata
+(=lisp/shells/chat/e-chat.el= lines 3305-3332 and 3347-3376).
+
+Expanded details are lazy by user action, but still synchronous once opened.
+=e-chat--turn-details-text= concatenates intermittent activity, failure
+details, and formatted timing text; failure details can pretty-print provider
+detail objects with =pp-to-string= (=lisp/shells/chat/e-chat.el= lines
+3334-3345 and 4245-4255). =e-chat--insert-block-details= then deletes/reinserts
+detail regions and may delete/reinsert the composer around the insertion
+(=lisp/shells/chat/e-chat.el= lines 4257-4289).
+
+Full session render is the largest presentation rebuild. =e-chat--attach-buffer=
+clears the buffer, calls =e-chat--render-session=, restores the composer, sets
+status, and subscribes to events (=lisp/shells/chat/e-chat.el= lines
+5820-5854). =e-chat--render-session= loops every message, replays activity
+events for assistant turns, finalizes turn display, and calls
+=e-chat--insert-entry= with composer recreation enabled
+(=lisp/shells/chat/e-chat.el= lines 5573-5607). Opening/resuming/reloading a
+large transcript can therefore rerun full Markdown presentation and block
+metadata construction for every visible assistant response.
+
+Target: treat chat presentation as an async-budgeted rendering pipeline, not as
+incidental string insertion. The UI should insert final plain text immediately,
+defer or chunk Markdown/font-lock work, cap or reference large tool outputs
+before materializing them, update active progress/tool rows in place where
+possible, and render old transcript turns lazily or in bounded chunks.
+
 ** Context/status computation can still be heavyweight
 =e-harness-context= is fully synchronous. It gathers capability context, builds
 the transcript stack, computes options, and applies provider-anchor metadata
@@ -238,15 +324,20 @@ or bounded preview path.
    provider-latency blocker.
 3. Convert MCP stdio/HTTP and web search/fetch/browser to =:start= tools with
    cancellable request handles.
-4. Introduce async resource method support or a background resource index for
+4. Add render-budget instrumentation around chat presentation paths:
+   final-response insert/Markdown, running activity redraw, tool-result
+   previewing, block-details expansion, and full session render.
+5. Defer/chunk final assistant Markdown presentation and lazy-render old
+   transcript turns so presentation cannot monopolize the UI thread.
+6. Introduce async resource method support or a background resource index for
    =file://= and =tmp://= glob/search.
-5. Replace synchronous Anthropic model-info status lookup with async prefetch,
+7. Replace synchronous Anthropic model-info status lookup with async prefetch,
    stale cache, or a static/best-effort fallback.
-6. Put composer =@= discovery behind a background cache.
-7. Add profiling/tests that fail when known UI entry points run
+8. Put composer =@= discovery behind a background cache.
+9. Add profiling/tests that fail when known UI entry points run
    =url-retrieve-synchronously=, =process-file= for unbounded commands, or
    =accept-process-output= wait loops.
-8. Revisit nested tool chaining: either add a resumable async Elisp tool model
+10. Revisit nested tool chaining: either add a resumable async Elisp tool model
    or explicitly constrain nested sync calls to cheap, local operations.
 
 * Acceptance Checklist For Non-Blocking Runtime
@@ -259,5 +350,9 @@ or bounded preview path.
 - Status rendering never builds full context repeatedly without a cache/usage
   shortcut.
 - Large session resume/replay is incremental or visibly async.
+- Final assistant rendering does not synchronously fontify long Markdown in one
+  foreground step.
+- Running activity/progress updates are coalesced and bounded by a render budget.
+- Tool outputs are capped or referenced before display text is materialized.
 - Compatibility sync wrappers are covered by tests ensuring the normal chat UI
   does not call them.
