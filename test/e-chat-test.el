@@ -1115,6 +1115,39 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-after-display-active-turn-focuses-latest-output ()
+  "Displaying a running chat tails to the active output, not stale scrollback."
+  (let ((buffer (e-chat-test--buffer nil "chat-display-active-output"))
+        (window nil))
+    (unwind-protect
+        (progn
+          (setq window (display-buffer buffer))
+          (with-current-buffer buffer
+            (e-chat--render-event
+             (e-events-make :type 'turn-started
+                            :session-id e-chat-session-id
+                            :turn-id "turn-1"
+                            :created-at 10))
+            (e-chat-test--mark-active-turn "turn-1")
+            (e-chat--render-event
+             (e-events-make :type 'provider-request-started
+                            :session-id e-chat-session-id
+                            :turn-id "turn-1"
+                            :created-at 11))
+            (e-chat-test--flush-pending-activity-redraw)
+            (goto-char (point-min))
+            (set-window-point window (point))
+            (set-window-start window (point))
+            (e-chat--after-display-buffer buffer)
+            (let ((latest-output-end (cdr (e-chat--running-status-bounds))))
+              (should latest-output-end)
+              (should (= (point) latest-output-end))
+              (should (= (window-point window) latest-output-end)))))
+      (when (window-live-p window)
+        (delete-window window))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-configures-evil-initial-state-as-emacs ()
   "Chat buffers declare a non-normal Evil state when Evil is available."
   (let (configured)
@@ -3531,6 +3564,54 @@ the orphaned region and appeared to vanish."
               (should (= (window-start window) before-window-start))
               (should (e-chat--composer-active-p))
               (should (equal (e-chat--composer-text) "follow-up draft")))))
+      (when (window-live-p window)
+        (delete-window window))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-activity-rerender-preserves-running-status-focus ()
+  "Activity redraws preserve point/window focus inside active output."
+  (let ((buffer (e-chat-test--buffer nil "chat-activity-status-focus"))
+        (window nil))
+    (unwind-protect
+        (progn
+          (setq window (display-buffer buffer))
+          (with-current-buffer buffer
+            (e-chat--render-event
+             (e-events-make :type 'turn-started
+                            :session-id e-chat-session-id
+                            :turn-id "turn-1"
+                            :created-at 10))
+            (e-chat-test--mark-active-turn "turn-1")
+            (e-chat--render-event
+             (e-events-make :type 'provider-request-started
+                            :session-id e-chat-session-id
+                            :turn-id "turn-1"
+                            :created-at 11))
+            (e-chat--render-event
+             (e-events-make :type 'reasoning-delta
+                            :session-id e-chat-session-id
+                            :turn-id "turn-1"
+                            :payload '(:content "first chunk")))
+            (e-chat-test--flush-pending-activity-redraw)
+            (goto-char (point-min))
+            (search-forward "first chunk")
+            (backward-word 1)
+            (set-window-point window (point))
+            (set-window-start window (point))
+            (let ((before-point (point))
+                  (before-window-point (window-point window))
+                  (before-window-start (window-start window)))
+              (e-chat--render-event
+               (e-events-make :type 'reasoning-delta
+                              :session-id e-chat-session-id
+                              :turn-id "turn-1"
+                              :payload '(:content "\nsecond chunk")))
+              (e-chat-test--flush-pending-activity-redraw)
+              (should (= (point) before-point))
+              (should (= (window-point window) before-window-point))
+              (should (= (window-start window) before-window-start))
+              (should (looking-at-p "chunk")))))
       (when (window-live-p window)
         (delete-window window))
       (when (buffer-live-p buffer)

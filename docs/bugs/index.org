@@ -37,6 +37,7 @@ State values for coding agents:
 | Closed | e-chat-starter-reuses-popup/ | e-chat starter reuses popup |
 | Closed | e-chat-starter-pinned-top/ | e-chat starter pinned top |
 | Closed | e-chat-progress-redraw-refocuses-composer/ | e-chat progress redraw refocuses composer |
+| Closed | e-chat-active-turn-scroll-and-cursor/ | e-chat active turn scroll and cursor jump |
 | Closed | e-chat-super-i-visible-session-target/ | e-chat s-i ignores visible session buffer |
 | Closed | base-guidance-mentions-emacs/ | Base Guidance Mentions Emacs |
 | Closed | bash-timeout-parameter-underdocumented/ | Bash timeout parameter is underdocumented |

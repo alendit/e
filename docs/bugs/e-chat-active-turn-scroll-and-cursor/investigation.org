@@ -1,0 +1,61 @@
+#+title: e-chat Active Turn Scroll and Cursor Jump Investigation
+#+startup: overview
+
+* Source inspected
+
+- =lisp/shells/chat/e-chat.el=: =e-chat--after-display-buffer= is the common
+  display boundary after workspace-aware chat display. It restored composer
+  input state, but did not explicitly tail to active output when the displayed
+  session still had a running turn.
+- =lisp/shells/chat/e-chat.el=: =window-selection-change-functions= already
+  marks selected chat sessions read. External workspace switching can select an
+  already visible chat buffer without going through =e-chat--pop-to-buffer=, so
+  this hook is the presentation-owned boundary for selected-window tailing.
+- =lisp/shells/chat/e-chat.el=: =e-chat--replace-running-status= deletes and
+  reinserts the active running-status region in place. When point or
+  =window-point= is inside that deleted region, normal marker preservation
+  collapses to the deletion boundary.
+- =lisp/shells/chat/e-chat.el=: =e-chat--run-pending-activity-redraw= also
+  restores point/window after the renderer returns. Without the same
+  active-status offset state, the scheduled redraw wrapper can undo a renderer
+  fix.
+
+* Conclusion
+
+There are two distinct behaviors to preserve:
+
+- Selecting or displaying a running chat should tail to the latest active output.
+- Redrawing active output while the user is reading should preserve the user's
+  point/window position, even when that position is inside the region being
+  replaced.
+
+The first belongs at chat presentation display/selection boundaries. The second
+belongs in the running-status redraw path and its deferred redraw wrapper.
+
+* Fix
+
+Implemented.
+
+- Added =e-chat--show-latest-output= and wired active-turn display/selection to
+  focus the end of the current running-status region instead of leaving stale
+  scrollback selected.
+- Added running-status display-state capture/restore helpers that preserve
+  point, =window-point=, and =window-start= as offsets inside the active
+  running-status region across delete/reinsert redraws.
+- Applied the same offset restoration in the deferred activity redraw wrapper so
+  timer-driven turn updates do not undo the renderer's preservation.
+
+Regression coverage:
+
+- =e-chat-test-after-display-active-turn-focuses-latest-output=
+- =e-chat-test-activity-rerender-preserves-running-status-focus=
+- Existing =e-chat-test-progress-rerender-preserves-scrollback-focus= continues
+  to cover deliberate scrollback outside the active block.
+
+Validation:
+
+- =rtk eldev test -f test/e-chat-test.el e-chat-test-after-display-active-turn-focuses-latest-output e-chat-test-activity-rerender-preserves-running-status-focus e-chat-test-progress-rerender-preserves-scrollback-focus=
+- =rtk eldev test -f test/e-chat-test.el=
+- Live after =e-dev-reload=: a temporary =e-chat= buffer with a running turn
+  confirmed =:tail-point t=, =:tail-window t=, =:preserve-point t=,
+  =:preserve-window-point t=, and =:preserve-window-start t=.

@@ -1,0 +1,12 @@
+#+title: e-chat Active Turn Scroll and Cursor Jump
+#+startup: overview
+
+* Report
+
+When switching to a workspace that already contains an active =e-chat= turn, the
+chat window can reopen at stale scrollback instead of showing the latest active
+output.
+
+During the same active turn, if the user manually scrolls into the active output
+or surrounding readback, turn updates can move point/window focus around. The
+cursor should not jump just because the running activity block was redrawn.

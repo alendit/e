@@ -487,11 +487,20 @@ Each value is a cons cell (WORKSPACE-NAME . UNREAD-P).")
   (when-let ((buffer (e-chat--selected-chat-buffer)))
     (e-chat--mark-buffer-session-read-if-selected buffer)))
 
+(defun e-chat--tail-selected-active-turn (&rest _)
+  "Show the latest active-turn output when selecting a running chat window."
+  (when-let ((buffer (e-chat--selected-chat-buffer)))
+    (with-current-buffer buffer
+      (when (e-chat--active-turn-running-p)
+        (e-chat--show-latest-output)))))
+
 (defun e-chat--ensure-window-selection-hook ()
   "Install the scalar chat read hook for selected-window changes."
   (unless e-chat--window-selection-hook-installed-p
     (add-hook 'window-selection-change-functions
               #'e-chat--mark-selected-session-read)
+    (add-hook 'window-selection-change-functions
+              #'e-chat--tail-selected-active-turn)
     (setq e-chat--window-selection-hook-installed-p t)))
 
 (defvar-local e-chat--transcript-end-marker nil
@@ -3823,6 +3832,72 @@ When RECORD is nil, clear only buffer-local status markers."
          (e-chat-response-navigation-mode 1)
          (e-chat--focus-block block-id)))))))
 
+(defun e-chat--running-status-bounds ()
+  "Return cons bounds for the visible running status, or nil."
+  (let ((start (and (markerp e-chat--running-status-start-marker)
+                    (marker-position e-chat--running-status-start-marker)))
+        (end (and (markerp e-chat--running-status-end-marker)
+                  (marker-position e-chat--running-status-end-marker))))
+    (when (and start end (< start end))
+      (cons start end))))
+
+(defun e-chat--position-running-offset (position bounds)
+  "Return POSITION's offset inside BOUNDS, or nil."
+  (when (and position
+             bounds
+             (<= (car bounds) position)
+             (<= position (cdr bounds)))
+    (- position (car bounds))))
+
+(defun e-chat--capture-running-status-display-state ()
+  "Capture point/window offsets when the user is reading active status."
+  (when-let ((bounds (e-chat--running-status-bounds)))
+    (let* ((window (e-chat--visible-window))
+           (point-offset (e-chat--position-running-offset (point) bounds))
+           (window-point-offset
+            (and (window-live-p window)
+                 (e-chat--position-running-offset (window-point window) bounds)))
+           (window-start-offset
+            (and (window-live-p window)
+                 (e-chat--position-running-offset (window-start window) bounds))))
+      (when (or point-offset window-point-offset window-start-offset)
+        (list :point-offset point-offset
+              :window window
+              :window-point-offset window-point-offset
+              :window-start-offset window-start-offset)))))
+
+(defun e-chat--running-status-position-from-offset (offset bounds)
+  "Return a position inside BOUNDS for OFFSET."
+  (when (and offset bounds)
+    (+ (car bounds)
+       (min offset
+            (max 0 (- (cdr bounds) (car bounds)))))))
+
+(defun e-chat--restore-running-status-display-state (state)
+  "Restore point/window offsets captured by STATE after active-status redraw."
+  (when state
+    (when-let ((bounds (e-chat--running-status-bounds)))
+      (let* ((window (plist-get state :window))
+             (point-position
+              (e-chat--running-status-position-from-offset
+               (plist-get state :point-offset)
+               bounds))
+             (window-point-position
+              (e-chat--running-status-position-from-offset
+               (plist-get state :window-point-offset)
+               bounds))
+             (window-start-position
+              (e-chat--running-status-position-from-offset
+               (plist-get state :window-start-offset)
+               bounds)))
+        (when point-position
+          (goto-char point-position))
+        (when (window-live-p window)
+          (when window-start-position
+            (set-window-start window window-start-position t))
+          (when window-point-position
+            (set-window-point window window-point-position)))))))
+
 (defun e-chat--running-status-data (turn-id record)
   "Return render data for TURN-ID's active progress and RECORD."
   (let* ((has-progress (and e-chat--progress-turn-id
@@ -3927,6 +4002,8 @@ the composer."
          (text (plist-get data :text))
          (navigation-state
           (e-chat--capture-running-status-navigation-state))
+         (display-state
+          (e-chat--capture-running-status-display-state))
          (composer-state (e-chat--capture-composer-state)))
     (when (and turn-id
                (not (plist-get data :final-rendered))
@@ -3946,6 +4023,8 @@ the composer."
           (e-chat--restore-composer-state composer-state))
         (e-chat--restore-composer-state composer-state)))
     (e-chat--restore-running-status-navigation-state navigation-state)
+    (unless navigation-state
+      (e-chat--restore-running-status-display-state display-state))
     (run-hook-with-args 'e-chat--running-status-rendered-hook turn-id)))
 
 (defun e-chat--render-turn-transient (turn-id record)
@@ -3977,6 +4056,7 @@ When TURN-ID is non-nil, cancel only a redraw for that turn."
         (kind e-chat--pending-activity-redraw-kind)
         (point-marker (copy-marker (point) nil))
         (window (e-chat--visible-window))
+        (display-state (e-chat--capture-running-status-display-state))
         (window-point nil)
         (window-start nil))
     (when (window-live-p window)
@@ -4009,7 +4089,8 @@ When TURN-ID is non-nil, cancel only a redraw for that turn."
            (when window-start
              (set-window-start window (min window-start (point-max)) t))
            (when window-point
-             (set-window-point window (min window-point (point-max))))))))))
+             (set-window-point window (min window-point (point-max)))))
+         (e-chat--restore-running-status-display-state display-state))))))
 
 (defun e-chat--activity-redraw-kind (existing requested)
   "Return coalesced redraw kind from EXISTING and REQUESTED kinds."
@@ -5129,6 +5210,17 @@ non-nil, is used by focused block activation."
       (ignore-errors
         (recenter -2)))))
 
+(defun e-chat--show-latest-output ()
+  "Move point and visible window focus to the latest chat output."
+  (let ((position (or (cdr (e-chat--running-status-bounds))
+                      (point-max))))
+    (goto-char position)
+    (when-let ((window (e-chat--visible-window)))
+      (set-window-point window (point))
+      (with-selected-window window
+        (ignore-errors
+          (recenter -2))))))
+
 (defun e-chat--enter-composer-input-state ()
   "Leave chat-local navigation states and focus editable composer input."
   (when (region-active-p)
@@ -5147,7 +5239,9 @@ non-nil, is used by focused block activation."
   (with-current-buffer buffer
     (e-chat--disable-modal-editing)
     (e-chat--disable-completion)
-    (e-chat--enter-composer-input-state))
+    (e-chat--enter-composer-input-state)
+    (when (e-chat--active-turn-running-p)
+      (e-chat--show-latest-output)))
   buffer)
 
 (defun e-chat--side-window-p (&optional window)
