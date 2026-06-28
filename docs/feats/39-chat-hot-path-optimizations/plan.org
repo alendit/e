@@ -3,7 +3,7 @@
 
 * Status
 
-In-progress.
+Done.
 
 * Goal
 
@@ -49,11 +49,19 @@ Acceptance:
 - Window changes and multiline composer growth still recompute spacer lines.
 - Activity/progress redraws do not force unrelated composer spacer work.
 
-** TODO Slice 3: Break down turn-start latency
+** DONE Slice 3: Break down turn-start latency
 
 Add narrower profile spans around async turn startup so future profiles show
 whether the 214ms startup outlier is request-body construction, backend start,
 or loop setup.
+
+Implemented spans:
+
+- =loop.backend-start=
+- =openai.request-context=
+- =openai.request-body=
+- =openai.request-json=
+- =openai.request-headers=
 
 Acceptance:
 

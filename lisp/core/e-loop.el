@@ -16,8 +16,23 @@
 (require 'e-backend)
 (require 'e-tools)
 
+(declare-function e-dev-profile-enabled-p "e-dev-profile")
+(declare-function e-dev-profile-measure-thunk "e-dev-profile")
+
 (define-error 'e-loop-backend-error "Backend returned an error")
 (define-error 'e-loop-empty-output "Backend returned no assistant output")
+
+(defun e-loop--profile-enabled-p ()
+  "Return non-nil when developer profiling is available and enabled."
+  (and (fboundp 'e-dev-profile-enabled-p)
+       (fboundp 'e-dev-profile-measure-thunk)
+       (e-dev-profile-enabled-p)))
+
+(defun e-loop--profile-call (event options thunk)
+  "Measure THUNK as EVENT with OPTIONS when dev profiling is enabled."
+  (if (e-loop--profile-enabled-p)
+      (e-dev-profile-measure-thunk event options thunk)
+    (funcall thunk)))
 
 (defun e-loop--assistant-message (content &optional metadata)
   "Return an assistant message with CONTENT and optional METADATA."
@@ -295,15 +310,23 @@ tool I/O, and turn settlement are callback-driven."
                (condition-case err
                    (let ((reported-request nil))
                      (let ((request
-                            (e-backend-start
-                             backend
-                             :messages turn-messages
-                             :options options
-                             :on-request-start
-                             (lambda (request)
-                               (setq reported-request request)
-                               (publish-provider-request request))
-                             :on-item
+                            (e-loop--profile-call
+                             'loop.backend-start
+                             (list :session-id session-id
+                                   :turn-id turn-id
+                                   :metadata
+                                   (list :message-count (length turn-messages)
+                                         :tool-count (length tools)))
+                             (lambda ()
+                               (e-backend-start
+                                backend
+                                :messages turn-messages
+                                :options options
+                                :on-request-start
+                                (lambda (request)
+                                  (setq reported-request request)
+                                  (publish-provider-request request))
+                                :on-item
                              (lambda (item)
                                (unless (or settled (cancelled))
                                  (condition-case err
@@ -382,7 +405,7 @@ tool I/O, and turn settlement are callback-driven."
                                                        (response-text)))))))
                                    (error
                                     (fail-provider err)))))
-                             :on-error #'fail-provider)))
+                             :on-error #'fail-provider)))))
                        (when (and request
                                   (not settled)
                                   (not (eq request reported-request)))

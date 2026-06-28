@@ -15,6 +15,7 @@
 (require 'seq)
 (require 'e)
 (require 'e-backend)
+(require 'e-dev-profile)
 (require 'e-loop)
 (require 'e-tools)
 
@@ -705,6 +706,39 @@
                      provider-request-started
                      provider-request-finished
                      turn-finished)))))
+
+(ert-deftest e-loop-test-profile-records-backend-start-span ()
+  "Enabled dev profiling records loop backend startup spans."
+  (let* ((profile-directory (make-temp-file "e-loop-profile-" t))
+         (e-dev-profile-directory profile-directory)
+         (e-dev-profile--enabled nil)
+         (e-dev-profile--current-file nil)
+         (e-dev-profile--latest-file nil)
+         (backend (e-backend-fake-create
+                   :items '((:type assistant-message :content "answer")
+                            (:type done :reason stop))))
+         (settled nil))
+    (unwind-protect
+        (progn
+          (e-dev-profile-start)
+          (e-loop-start-turn
+           :session-id "session-1"
+           :turn-id "turn-1"
+           :messages '((:role user :content "hi"))
+           :backend backend
+           :tools (e-tools-registry-create)
+           :options nil
+           :on-event (lambda (&rest _args))
+           :append-message (lambda (&rest _args))
+           :on-done (lambda (result) (setq settled result))
+           :on-error (lambda (err) (setq settled (list :error err))))
+          (should (e-loop-test--wait-until (lambda () settled)))
+          (e-dev-profile-stop)
+          (let* ((report (e-dev-profile-report-data e-dev-profile--latest-file))
+                 (aggregates (plist-get report :aggregates)))
+            (should (alist-get "loop.backend-start"
+                               aggregates nil nil #'equal))))
+      (delete-directory profile-directory t))))
 
 (ert-deftest e-loop-test-start-turn-requeries-backend-after-async-tool-result ()
   "Async turn execution starts a follow-up backend request after synchronous tool results."

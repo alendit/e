@@ -15,6 +15,7 @@
 (require 'json)
 (require 'e)
 (require 'e-backend)
+(require 'e-dev-profile)
 (require 'e-harness)
 (require 'e-openai)
 (require 'url-http)
@@ -376,6 +377,43 @@
                      :input-message-count 1
                      :tool-count 1
                      :responses-transport http)))))
+
+(ert-deftest e-openai-test-profile-records-request-context-spans ()
+  "Enabled dev profiling records OpenAI request construction subspans."
+  (let* ((profile-directory (make-temp-file "e-openai-profile-" t))
+         (e-dev-profile-directory profile-directory)
+         (e-dev-profile--enabled nil)
+         (e-dev-profile--current-file nil)
+         (e-dev-profile--latest-file nil)
+         (process-environment
+          (cons "OPENAI_GATEWAY_API_KEY=test-gateway-token" process-environment))
+         (e-openai-model-providers
+          '((eng-responses
+             :name "Engineering Responses"
+             :base-url "https://gateway.example.test/v1"
+             :auth bearer
+             :env-key "OPENAI_GATEWAY_API_KEY"
+             :wire-api responses
+             :requires-openai-auth nil))))
+    (unwind-protect
+        (progn
+          (e-dev-profile-start)
+          (e-openai--request-context
+           :provider 'eng-responses
+           :messages '((:role user :content "new prompt"))
+           :options '(:model "gpt-test"
+                      :tools ((:name "lookup"
+                               :description "Lookup."
+                               :parameters (:type "object")))))
+          (e-dev-profile-stop)
+          (let* ((report (e-dev-profile-report-data e-dev-profile--latest-file))
+                 (aggregates (plist-get report :aggregates)))
+            (dolist (event '("openai.request-context"
+                             "openai.request-body"
+                             "openai.request-json"
+                             "openai.request-headers"))
+              (should (alist-get event aggregates nil nil #'equal)))))
+      (delete-directory profile-directory t))))
 
 (ert-deftest e-openai-test-request-context-reports-full-replay-metadata ()
   "Continuation metadata distinguishes enabled full replay from disabled mode."

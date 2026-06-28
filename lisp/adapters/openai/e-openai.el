@@ -23,10 +23,25 @@
 (require 'e-harness)
 (require 'e-tools)
 
+(declare-function e-dev-profile-enabled-p "e-dev-profile")
+(declare-function e-dev-profile-measure-thunk "e-dev-profile")
+
 (define-error 'e-openai-auth-missing "OpenAI/Codex auth is missing")
 (define-error 'e-openai-auth-invalid "OpenAI/Codex auth is invalid")
 (define-error 'e-openai-provider-invalid "OpenAI provider profile is invalid")
 (define-error 'e-openai-request-timeout "OpenAI/Codex request timed out")
+
+(defun e-openai--profile-enabled-p ()
+  "Return non-nil when developer profiling is available and enabled."
+  (and (fboundp 'e-dev-profile-enabled-p)
+       (fboundp 'e-dev-profile-measure-thunk)
+       (e-dev-profile-enabled-p)))
+
+(defun e-openai--profile-call (event options thunk)
+  "Measure THUNK as EVENT with OPTIONS when dev profiling is enabled."
+  (if (e-openai--profile-enabled-p)
+      (e-dev-profile-measure-thunk event options thunk)
+    (funcall thunk)))
 
 (defconst e-openai-codex-default-base-url
   "https://chatgpt.com/backend-api"
@@ -1444,78 +1459,105 @@ LIMIT defaults to 240 characters."
   "Return adapter-local request context for PROVIDER request data.
 AUTH-FILE, BASE-URL, MODEL, MESSAGES, and OPTIONS contribute to the encoded
 OpenAI request and backend-neutral context."
-  (let* ((profile (e-openai-provider-profile provider))
-         (wire-api (e-openai--provider-wire-api profile))
-         (responses-transport (e-openai--profile-responses-transport profile))
-         (effective-options (copy-sequence options))
-         (_ (when (and (eq responses-transport 'websocket)
-                       (not (eq wire-api 'responses)))
-              (signal 'e-openai-provider-invalid
-                      '("WebSocket transport is only supported for Responses providers"))))
-         (_ (unless (plist-get effective-options :model)
-              (setq effective-options
-                    (plist-put effective-options
-                               :model
-                               (e-openai--provider-model profile model)))))
-         (_ (when (eq wire-api 'responses)
-              (setq effective-options
-                    (plist-put effective-options
-                               :responses-transport
-                               responses-transport))
-              (when (plist-member profile :response-store)
-                (setq effective-options
-                      (plist-put effective-options
-                                 :response-store
-                                 (plist-get profile :response-store))))))
-         (_ (when (and (eq wire-api 'responses)
-                       (plist-member effective-options :prompt-cache-retention)
-                       (not (e-openai--profile-prompt-cache-retention-supported-p
-                             profile)))
-              (cl-remf effective-options :prompt-cache-retention)))
-         (body-data
-          (pcase wire-api
-            ('responses
-             (e-openai-codex-request-body
-              :messages messages
-              :options effective-options
-              :tools (plist-get effective-options :tools)))
-            ('chat-completion
-             (e-openai-chat-completion-request-body
-              :messages messages
-              :options effective-options
-              :tools (plist-get effective-options :tools)))))
-         (metadata (e-openai--request-metadata
-                    wire-api effective-options body-data))
-         (body (json-encode body-data))
-         (session-id (plist-get effective-options :session-id))
-         (url (pcase wire-api
-                ('responses
-                 (let ((resolved-base-url
-                        (or base-url
-                            (e-openai--provider-base-url profile))))
-                   (if (eq responses-transport 'websocket)
-                       (e-openai-responses-websocket-url resolved-base-url)
-                     (e-openai-responses-url resolved-base-url))))
-                ('chat-completion
-                 (e-openai-chat-completion-url
-                  (or base-url
-                      (e-openai--provider-base-url profile))))))
-         (headers (e-openai--headers
-                   :profile profile
-                   :auth-file auth-file
-                   :session-id session-id))
-         (headers (if (and (eq wire-api 'responses)
-                           (eq responses-transport 'websocket))
-                      (e-openai--responses-websocket-headers headers)
-                    headers)))
-    (list :provider provider
-          :wire-api wire-api
-          :responses-transport responses-transport
-          :url url
-          :headers headers
-          :metadata metadata
-          :body-data body-data
-          :body body)))
+  (e-openai--profile-call
+   'openai.request-context
+   (list :metadata (list :provider provider
+                         :message-count (length messages)
+                         :tool-count (length (plist-get options :tools))))
+   (lambda ()
+     (let* ((profile (e-openai-provider-profile provider))
+            (wire-api (e-openai--provider-wire-api profile))
+            (responses-transport (e-openai--profile-responses-transport profile))
+            (effective-options (copy-sequence options))
+            (_ (when (and (eq responses-transport 'websocket)
+                          (not (eq wire-api 'responses)))
+                 (signal 'e-openai-provider-invalid
+                         '("WebSocket transport is only supported for Responses providers"))))
+            (_ (unless (plist-get effective-options :model)
+                 (setq effective-options
+                       (plist-put effective-options
+                                  :model
+                                  (e-openai--provider-model profile model)))))
+            (_ (when (eq wire-api 'responses)
+                 (setq effective-options
+                       (plist-put effective-options
+                                  :responses-transport
+                                  responses-transport))
+                 (when (plist-member profile :response-store)
+                   (setq effective-options
+                         (plist-put effective-options
+                                    :response-store
+                                    (plist-get profile :response-store))))))
+            (_ (when (and (eq wire-api 'responses)
+                          (plist-member effective-options :prompt-cache-retention)
+                          (not (e-openai--profile-prompt-cache-retention-supported-p
+                                profile)))
+                 (cl-remf effective-options :prompt-cache-retention)))
+            (body-data
+             (e-openai--profile-call
+              'openai.request-body
+              (list :metadata (list :provider provider
+                                    :wire-api wire-api
+                                    :message-count (length messages)
+                                    :tool-count
+                                    (length (plist-get effective-options :tools))))
+              (lambda ()
+                (pcase wire-api
+                  ('responses
+                   (e-openai-codex-request-body
+                    :messages messages
+                    :options effective-options
+                    :tools (plist-get effective-options :tools)))
+                  ('chat-completion
+                   (e-openai-chat-completion-request-body
+                    :messages messages
+                    :options effective-options
+                    :tools (plist-get effective-options :tools)))))))
+            (metadata (e-openai--request-metadata
+                       wire-api effective-options body-data))
+            (body
+             (e-openai--profile-call
+              'openai.request-json
+              (list :metadata (list :provider provider
+                                    :wire-api wire-api))
+              (lambda ()
+                (json-encode body-data))))
+            (session-id (plist-get effective-options :session-id))
+            (url (pcase wire-api
+                   ('responses
+                    (let ((resolved-base-url
+                           (or base-url
+                               (e-openai--provider-base-url profile))))
+                      (if (eq responses-transport 'websocket)
+                          (e-openai-responses-websocket-url resolved-base-url)
+                        (e-openai-responses-url resolved-base-url))))
+                   ('chat-completion
+                    (e-openai-chat-completion-url
+                     (or base-url
+                         (e-openai--provider-base-url profile))))))
+            (headers
+             (e-openai--profile-call
+              'openai.request-headers
+              (list :metadata (list :provider provider
+                                    :wire-api wire-api
+                                    :transport responses-transport))
+              (lambda ()
+                (e-openai--headers
+                 :profile profile
+                 :auth-file auth-file
+                 :session-id session-id))))
+            (headers (if (and (eq wire-api 'responses)
+                              (eq responses-transport 'websocket))
+                         (e-openai--responses-websocket-headers headers)
+                       headers)))
+       (list :provider provider
+             :wire-api wire-api
+             :responses-transport responses-transport
+             :url url
+             :headers headers
+             :metadata metadata
+             :body-data body-data
+             :body body)))))
 
 (defun e-openai--emit-response-items (response context on-item)
   "Parse RESPONSE for CONTEXT and emit backend-neutral items through ON-ITEM."
