@@ -449,6 +449,12 @@ The mode line uses this presentation-owned table for context usage display."
 (defvar-local e-chat--queue-end-marker nil
   "Marker at the end of the queued prompt list.")
 
+(defvar-local e-chat--composer-layout-cache nil
+  "Cached spacer layout for the current chat composer.")
+
+(defvar-local e-chat--transcript-layout-revision 0
+  "Revision incremented when transcript content before the composer changes.")
+
 (defvar-local e-chat--composer-scroll-needed nil
   "Non-nil when a composer edit should scroll input fully into view.")
 
@@ -1198,6 +1204,12 @@ FACE is applied when non-nil.  PROPERTIES are added with text properties."
     (when properties
       (add-text-properties start (point) properties))))
 
+(defun e-chat--note-transcript-layout-change ()
+  "Invalidate composer layout cached from transcript geometry."
+  (setq e-chat--transcript-layout-revision
+        (1+ e-chat--transcript-layout-revision))
+  (setq e-chat--composer-layout-cache nil))
+
 (defun e-chat--apply-activity-separator-face (start end)
   "Apply the quiet activity separator face between START and END."
   (when (< start end)
@@ -1414,6 +1426,46 @@ Return non-nil when a composer was removed."
                 (or composer-lines 2)
                 2)))))
 
+(defun e-chat--composer-layout-window-key ()
+  "Return visible window dimensions that affect composer layout."
+  (when-let ((window (e-chat--visible-window)))
+    (list :window window
+          :height (window-body-height window)
+          :width (window-body-width window))))
+
+(defun e-chat--composer-layout-queue-key ()
+  "Return queued prompt data that affects composer layout."
+  (mapcar (lambda (item)
+            (e-chat--queue-preview-text (plist-get item :prompt)))
+          (e-chat--queued-prompts)))
+
+(defun e-chat--composer-layout-key (transcript-end text)
+  "Return cache key for composer layout at TRANSCRIPT-END with TEXT."
+  (list :window (e-chat--composer-layout-window-key)
+        :test-height e-chat--test-window-body-height
+        :test-transcript-lines e-chat--test-transcript-screen-lines
+        :transcript-end transcript-end
+        :revision e-chat--transcript-layout-revision
+        :queue (e-chat--composer-layout-queue-key)
+        :text text))
+
+(defun e-chat--composer-spacer-lines-for-layout (key)
+  "Return cached or freshly computed spacer lines for composer layout KEY."
+  (if (equal key (plist-get e-chat--composer-layout-cache :key))
+      (plist-get e-chat--composer-layout-cache :spacer-lines)
+    (let* ((transcript-lines
+            (save-excursion
+              (goto-char e-chat--composer-spacer-marker)
+              (e-chat--transcript-screen-lines)))
+           (composer-lines
+            (e-chat--screen-lines e-chat--composer-spacer-marker (point-max)))
+           (spacer-lines
+            (e-chat--composer-spacer-lines transcript-lines composer-lines)))
+      (setq e-chat--composer-layout-cache
+            (list :key key
+                  :spacer-lines spacer-lines))
+      spacer-lines)))
+
 (defun e-chat--queued-prompts ()
   "Return queued prompt items for the attached chat session."
   (when (and e-chat-harness e-chat-session-id)
@@ -1463,7 +1515,8 @@ When PRESERVE-FOCUS is non-nil, do not move point or window focus to it."
    (lambda ()
      (e-chat--disable-completion)
      (let ((saved-point (point))
-           (saved-window (e-chat--visible-window)))
+           (saved-window (e-chat--visible-window))
+           (composer-text (and text (e-chat--sanitize-composer-text text))))
        (e-chat--delete-composer)
        (let ((inhibit-read-only t)
              (e-chat--composer-scroll-suppressed t))
@@ -1482,16 +1535,14 @@ When PRESERVE-FOCUS is non-nil, do not move point or window focus to it."
           '(e-chat-composer t))
          (setq e-chat--composer-start-marker (point-marker))
          (set-marker-insertion-type e-chat--composer-start-marker nil)
-         (when text
-           (insert (e-chat--sanitize-composer-text text)))
-         (let* ((transcript-lines
-                 (save-excursion
-                   (goto-char e-chat--composer-spacer-marker)
-                   (e-chat--transcript-screen-lines)))
-                (composer-lines
-                 (e-chat--screen-lines e-chat--composer-spacer-marker (point-max)))
+         (when composer-text
+           (insert composer-text))
+         (let* ((layout-key
+                 (e-chat--composer-layout-key
+                  (marker-position e-chat--composer-spacer-marker)
+                  composer-text))
                 (spacer-lines
-                 (e-chat--composer-spacer-lines transcript-lines composer-lines)))
+                 (e-chat--composer-spacer-lines-for-layout layout-key)))
            (goto-char e-chat--composer-spacer-marker)
            (when (> spacer-lines 0)
              (e-chat--insert-protected
@@ -3619,7 +3670,8 @@ When RECORD is nil, clear only buffer-local status markers."
                        (marker-position e-chat--progress-end-marker)))))
     (when (and start end (< start end))
       (let ((inhibit-read-only t))
-        (delete-region start end))))
+        (delete-region start end))
+      (e-chat--note-transcript-layout-change)))
   (setq e-chat--running-status-start-marker nil)
   (setq e-chat--running-status-end-marker nil)
   (setq e-chat--progress-start-marker nil)
@@ -3738,6 +3790,7 @@ When RECORD is nil, clear only buffer-local status markers."
 Point must be at the destination.  Return cons of inserted region bounds."
   (let ((status-start (point))
         (text (plist-get data :text)))
+    (e-chat--note-transcript-layout-change)
     (when text
       (let* ((transient-start (point))
              (activity-block-id
@@ -4582,6 +4635,7 @@ non-nil, is used by focused block activation."
          (e-chat--delete-running-status active-record))
        (setq had-composer (e-chat--delete-composer))
        (let ((inhibit-read-only t))
+         (e-chat--note-transcript-layout-change)
          (goto-char (point-max))
          (unless (or (bobp) (bolp))
            (insert "\n"))

@@ -39,7 +39,7 @@ Acceptance:
   state.
 - Clean progress redraws do not delete or reinsert the composer.
 
-** TODO Slice 2: Cache composer spacer layout inputs
+** DONE Slice 2: Cache composer spacer layout inputs
 
 Avoid repeating expensive composer spacer screen-line counts when the transcript
 and composer visual shape have not changed.

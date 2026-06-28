@@ -4654,6 +4654,38 @@ the orphaned region and appeared to vanish."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-composer-layout-cache-skips-repeated-line-counts ()
+  "Pure composer refreshes reuse cached spacer geometry."
+  (let ((buffer (e-chat-test--buffer nil "chat-bottom-cache"))
+        (transcript-line-counts 0)
+        (composer-line-counts 0))
+    (unwind-protect
+        (with-current-buffer buffer
+          (setq e-chat--composer-layout-cache nil)
+          (cl-letf (((symbol-function 'e-chat--transcript-screen-lines)
+                     (lambda ()
+                       (setq transcript-line-counts
+                             (1+ transcript-line-counts))
+                       4))
+                    ((symbol-function 'e-chat--screen-lines)
+                     (lambda (&rest _args)
+                       (setq composer-line-counts
+                             (1+ composer-line-counts))
+                       2)))
+            (let ((e-chat--test-window-body-height 12))
+              (e-chat--refresh-composer-position)
+              (e-chat--refresh-composer-position)
+              (should (= transcript-line-counts 1))
+              (should (= composer-line-counts 1))
+              (e-chat--insert-entry "System" "transcript changed" t)
+              (should (= transcript-line-counts 2))
+              (should (= composer-line-counts 2))
+              (e-chat--refresh-composer-position)
+              (should (= transcript-line-counts 2))
+              (should (= composer-line-counts 2)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-composer-skips-spacer-when-wrapped-content-fills-window ()
   "Wrapped long transcript content does not create a middle-of-buffer spacer."
   (let ((buffer (e-chat-test--buffer nil "chat-long"))
