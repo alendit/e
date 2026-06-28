@@ -6552,6 +6552,64 @@ operation."
                  harness
                  instance-id)))))
 
+(defun e-chat--workspace-name (workspace)
+  "Return display name for WORKSPACE token or string."
+  (cond
+   ((e-workspace-token-p workspace)
+    (format "%s" (or (e-workspace-token-name workspace)
+                     (e-workspace-token-id workspace))))
+   ((stringp workspace) workspace)
+   ((null workspace)
+    (e-chat--workspace-name (e-workspace-current)))
+   (t (format "%s" workspace))))
+
+(defun e-chat--workspace-match-p (buffer-workspace workspace)
+  "Return non-nil when BUFFER-WORKSPACE matches WORKSPACE."
+  (cond
+   ((e-workspace-token-p workspace)
+    (e-workspace-equal-p buffer-workspace workspace))
+   ((e-workspace-token-p buffer-workspace)
+    (equal (e-chat--workspace-name buffer-workspace)
+           (e-chat--workspace-name workspace)))
+   (t nil)))
+
+(defun e-chat--buffer-unread-p (buffer)
+  "Return non-nil when chat BUFFER has unread assistant output."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (and (derived-mode-p 'e-chat-mode)
+           (not e-chat--preview-buffer)
+           e-chat-harness
+           e-chat-session-id
+           (when-let ((session (ignore-errors
+                                 (e-chat-overview--session-for-id
+                                  e-chat-harness
+                                  e-chat-session-id))))
+             (ignore-errors
+               (e-chat-overview--session-unread-p
+                e-chat-harness
+                session
+                e-chat-harness-instance-id)))))))
+
+;;;###autoload
+(defun e-chat-workspace-unread-p (&optional workspace)
+  "Return non-nil when WORKSPACE owns any unread e chat buffer.
+WORKSPACE may be an `e-workspace-token', a workspace name string, or nil for
+the current workspace."
+  (let ((workspace (or workspace (e-workspace-current))))
+    (cl-some
+     (lambda (buffer)
+       (and (e-chat--workspace-match-p (e-buffer-workspace buffer) workspace)
+            (e-chat--buffer-unread-p buffer)))
+     (buffer-list))))
+
+;;;###autoload
+(defun e-chat-workspace-unread-indicator (&optional workspace)
+  "Return a propertized unread marker for WORKSPACE, or nil.
+The marker matches the unread indicator used by the active sessions picker."
+  (when (e-chat-workspace-unread-p workspace)
+    (propertize "●" 'font-lock-face 'e-chat-overview-unread-face)))
+
 (defun e-chat-overview--session-id-at-point ()
   "Return overview session id at point, or nil."
   (or (get-text-property (point) 'e-chat-session-id)

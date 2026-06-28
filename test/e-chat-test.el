@@ -7551,6 +7551,62 @@ The context-window denominator comes from the live provider lookup
         (when (file-exists-p state-file)
           (delete-file state-file))))))
 
+(ert-deftest e-chat-test-workspace-unread-indicator-follows-chat-affinity ()
+  "Workspace unread markers follow chat buffer workspace affinity."
+  (let* ((store (e-session-store-create))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :sessions store))
+         (state-file (make-temp-file "e-chat-workspace-unread-state"))
+         (workspace (make-e-workspace-token
+                     :backend 'single
+                     :id 'target
+                     :name "target"
+                     :frame (selected-frame)))
+         (other-workspace (make-e-workspace-token
+                           :backend 'single
+                           :id 'other
+                           :name "other"
+                           :frame (selected-frame)))
+         (buffer (generate-new-buffer " *e-chat-workspace-unread-test*")))
+    (delete-file state-file)
+    (let ((e-chat-overview-state-file state-file))
+      (unwind-protect
+          (progn
+            (e-session-create store :id "workspace-unread"
+                              :metadata '(:name "Workspace unread"))
+            (e-session-append-message
+             store "workspace-unread"
+             '(:id "msg-1" :role user :content "prompt"))
+            (e-session-append-message
+             store "workspace-unread"
+             '(:id "msg-2" :role assistant :content "response"))
+            (with-current-buffer buffer
+              (e-chat-mode)
+              (setq-local e-chat-harness harness)
+              (setq-local e-chat-session-id "workspace-unread")
+              (e-buffer-set-workspace buffer workspace))
+            (should (e-chat-workspace-unread-p workspace))
+            (should (e-chat-workspace-unread-p "target"))
+            (should-not (e-chat-workspace-unread-p other-workspace))
+            (should (equal (substring-no-properties
+                            (e-chat-workspace-unread-indicator workspace))
+                           "●"))
+            (should (eq (get-text-property
+                         0
+                         'font-lock-face
+                         (e-chat-workspace-unread-indicator workspace))
+                        'e-chat-overview-unread-face))
+            (e-chat-overview--mark-session-read
+             harness
+             (e-chat-overview--session-for-id harness "workspace-unread"))
+            (should-not (e-chat-workspace-unread-p workspace))
+            (should-not (e-chat-workspace-unread-indicator workspace)))
+        (when (buffer-live-p buffer)
+          (kill-buffer buffer))
+        (when (file-exists-p state-file)
+          (delete-file state-file))))))
+
 (ert-deftest e-chat-test-focused-chat-buffer-marks-session-read ()
   "Focusing a chat buffer records the latest assistant response as read."
   (let* ((store (e-session-store-create))
