@@ -12,6 +12,8 @@ Status: in progress.
 - Added tool blocking-class metadata and interactive rejection for long synchronous handlers.
 - Added tool-start profile span integration through the new request/profile helper.
 - Kept synchronous execution available for explicit batch/test paths while Phase 1 establishes guardrails.
+- Added a bounded display-preview path for structured tool results so chat activity does not force full model-visible result serialization.
+- Preserved scrollback point/window state across deferred activity redraws.
 
 ** Verification
 
@@ -26,6 +28,18 @@ rtk eldev test test/e-request-test.el test/e-tools-test.el
 #+end_src
 
 Result: passed after the final tool blocking test adjustment.
+
+#+begin_src sh
+rtk eldev test test/e-request-test.el test/e-tools-test.el test/e-chat-test.el
+#+end_src
+
+Result: passed after bounded structured previews and redraw preservation were added.
+
+#+begin_src sh
+rtk eldev compile --warnings-as-errors
+#+end_src
+
+Result: passed after bounded structured previews and redraw preservation were added.
 
 ** Findings
 

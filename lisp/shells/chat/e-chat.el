@@ -3127,13 +3127,13 @@ When APPEND is non-nil, merge CONTENT into the previous reasoning child."
   (let* ((content (if (e-tools-result-p result)
                       (plist-get result :content)
                     result))
-         (text (e-tools-result-content-text content))
-         (original-bytes (string-bytes text))
          (max-bytes (max 0 e-chat-tool-activity-preview-bytes))
-         (truncated (> original-bytes max-bytes))
-         (preview (if truncated
-                      (e-chat--string-byte-prefix text max-bytes)
-                    text))
+         (preview-data (e-tools-result-content-preview content max-bytes))
+         (preview (plist-get preview-data :text))
+         (shown-bytes (plist-get preview-data :shown-bytes))
+         (original-bytes (and (stringp content) (string-bytes content)))
+         (truncated (or (plist-get preview-data :truncated)
+                        (and original-bytes (> original-bytes max-bytes))))
          (metadata (and (e-tools-result-p result)
                         (plist-get result :metadata)))
          (uri (or (plist-get metadata :tmp-uri)
@@ -3142,12 +3142,12 @@ When APPEND is non-nil, merge CONTENT into the previous reasoning child."
         (string-trim-right
          (format "%s
 
-[Tool result preview truncated: showing %d of %d bytes%s]"
+[Tool result preview truncated: showing first %d%s bytes%s]"
                  preview
-                 (string-bytes preview)
-                 original-bytes
+                 shown-bytes
+                 (if original-bytes (format " of %d" original-bytes) "")
                  (if uri (format ". Full output: %s" uri) "")))
-      text)))
+      preview)))
 
 (defun e-chat--complete-round-tool-result (record payload)
   "Attach tool result PAYLOAD to the matching semantic tool item in RECORD."
@@ -3913,7 +3913,14 @@ When TURN-ID is non-nil, cancel only a redraw for that turn."
   "Run and clear the pending activity redraw for this chat buffer."
   (let ((turn-id e-chat--pending-activity-redraw-turn-id)
         (timer e-chat--pending-activity-redraw-timer)
-        (kind e-chat--pending-activity-redraw-kind))
+        (kind e-chat--pending-activity-redraw-kind)
+        (point-marker (copy-marker (point) nil))
+        (window (e-chat--visible-window))
+        (window-point nil)
+        (window-start nil))
+    (when (window-live-p window)
+      (setq window-point (window-point window))
+      (setq window-start (window-start window)))
     (e-chat--profile-call
      'chat.activity-redraw
      (list :session-id e-chat-session-id
@@ -3921,18 +3928,27 @@ When TURN-ID is non-nil, cancel only a redraw for that turn."
            :buffer-name (buffer-name)
            :metadata (list :kind (and kind (symbol-name kind))))
      (lambda ()
-       (when (timerp timer)
-         (cancel-timer timer))
-       (setq e-chat--pending-activity-redraw-turn-id nil)
-       (setq e-chat--pending-activity-redraw-timer nil)
-       (setq e-chat--pending-activity-redraw-kind nil)
-       (when turn-id
-         (pcase kind
-           ('progress
-            (e-chat--render-progress-indicator turn-id))
-           (_
-            (when-let ((record (e-chat--existing-turn-record turn-id)))
-              (e-chat--render-turn-transient turn-id record)))))))))
+       (unwind-protect
+           (progn
+             (when (timerp timer)
+               (cancel-timer timer))
+             (setq e-chat--pending-activity-redraw-turn-id nil)
+             (setq e-chat--pending-activity-redraw-timer nil)
+             (setq e-chat--pending-activity-redraw-kind nil)
+             (when turn-id
+               (pcase kind
+                 ('progress
+                  (e-chat--render-progress-indicator turn-id))
+                 (_
+                  (when-let ((record (e-chat--existing-turn-record turn-id)))
+                    (e-chat--render-turn-transient turn-id record))))))
+         (when (marker-position point-marker)
+           (goto-char (min (marker-position point-marker) (point-max))))
+         (when (window-live-p window)
+           (when window-start
+             (set-window-start window (min window-start (point-max)) t))
+           (when window-point
+             (set-window-point window (min window-point (point-max))))))))))
 
 (defun e-chat--activity-redraw-kind (existing requested)
   "Return coalesced redraw kind from EXISTING and REQUESTED kinds."
@@ -5517,20 +5533,21 @@ When REFRESH-MODE-LINE is non-nil, also refresh context-aware mode-line text."
          ;; activity is driven only by current durable activity events.
          nil)
         (t
-         (when (eq (plist-get message :role) 'assistant)
-           (e-chat--set-turn-time (plist-get event :turn-id)
-                                  :ended-at
-                                  (plist-get event :created-at))
-           (e-chat--cancel-pending-activity-redraw (plist-get event :turn-id))
-           (e-chat--stop-progress-indicator (plist-get event :turn-id))
-           (when-let ((record (e-chat--existing-turn-record
-                               (plist-get event :turn-id))))
-             (e-chat--render-turn-transient (plist-get event :turn-id) record))
-           (e-chat--finalize-turn-display (plist-get event :turn-id)))
-         (e-chat--insert-entry (car entry) (cdr entry) nil
-                               (plist-get event :turn-id))
-         (when (eq (plist-get message :role) 'user)
-           (e-chat--refresh-session-display))))))
+         (let ((assistant-p (eq (plist-get message :role) 'assistant))
+               (turn-id (plist-get event :turn-id)))
+           (when assistant-p
+             (e-chat--set-turn-time turn-id
+                                    :ended-at
+                                    (plist-get event :created-at))
+             (e-chat--cancel-pending-activity-redraw turn-id)
+             (e-chat--stop-progress-indicator turn-id)
+             (when-let ((record (e-chat--existing-turn-record turn-id)))
+               (e-chat--delete-turn-transient record)))
+           (when assistant-p
+             (e-chat--finalize-turn-display turn-id))
+           (e-chat--insert-entry (car entry) (cdr entry) nil turn-id)
+           (when (eq (plist-get message :role) 'user)
+             (e-chat--refresh-session-display)))))))
     ('provider-request-started
      (e-chat--set-status "waiting for provider")
      (e-chat--record-provider-started
@@ -5710,9 +5727,10 @@ attached session's full transcript."
       (unless (e-chat--tool-message-p message)
         (let ((entry (e-chat--message-entry message)))
           (when (eq (plist-get message :role) 'assistant)
-            (e-chat--render-turn-activity-events turn-id activity-events)
-            (e-chat--finalize-turn-display turn-id))
-          (e-chat--insert-entry (car entry) (cdr entry) t turn-id))))
+            (e-chat--render-turn-activity-events turn-id activity-events))
+          (e-chat--insert-entry (car entry) (cdr entry) t turn-id)
+          (when (eq (plist-get message :role) 'assistant)
+            (e-chat--finalize-turn-display turn-id)))))
     (e-chat--render-replayed-active-activity activity-events)
     (when turn-id
       (e-chat--render-replayed-terminal-event turn-id activity-events))))

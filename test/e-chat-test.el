@@ -6834,6 +6834,41 @@ The context-window denominator comes from the live provider lookup
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-tool-activity-uses-bounded-structured-preview ()
+  "Chat activity does not force full model text for structured tool results."
+  (let ((buffer (e-chat-test--buffer nil "chat-tool-structured-preview")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (let ((e-chat-tool-activity-preview-bytes 32))
+            (e-chat--render-event
+             (e-events-make :type 'turn-started
+                            :session-id e-chat-session-id
+                            :turn-id "turn-1"))
+            (e-chat--render-event
+             (e-events-make :type 'tool-started
+                            :session-id e-chat-session-id
+                            :turn-id "turn-1"
+                            :payload '(:id "call-1" :name "structured")))
+            (e-chat--render-event
+             (e-events-make :type 'tool-finished
+                            :session-id e-chat-session-id
+                            :turn-id "turn-1"
+                            :payload
+                            (list :tool-call '(:id "call-1" :name "structured")
+                                  :result
+                                  (list :tool-call-id "call-1"
+                                        :name "structured"
+                                        :status 'ok
+                                        :content (list :items (number-sequence 1 100)
+                                                       :body (make-string 200 ?x)))))))
+          (let* ((record (e-chat--existing-turn-record "turn-1"))
+                 (item (car (e-chat--activity-tool-items record)))
+                 (output (plist-get item :output)))
+            (should (string-match-p "Tool result preview truncated" output))
+            (should-not (string-match-p (make-string 80 ?x) output))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-token-usage-events-update-mode-line-without-transcript ()
   "Token usage events update status without rendering system transcript blocks."
   (let* ((store (e-session-store-create))

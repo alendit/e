@@ -84,6 +84,18 @@
   (should (equal (e-tools-result-content-text '(:ok t :items [1 2]))
                  "{\"items\":[1,2],\"ok\":true}")))
 
+(ert-deftest e-tools-test-result-content-preview-bounds-structured-materialization ()
+  "Display previews bound traversal without changing model-facing text."
+  (let* ((large (list :items (number-sequence 1 100)
+                      :body (make-string 200 ?x)))
+         (preview (e-tools-result-content-preview large 64 5 3)))
+    (should (plist-get preview :truncated))
+    (should (<= (plist-get preview :shown-bytes) 64))
+    (should-not (string-match-p (make-string 80 ?x)
+                                (plist-get preview :text)))
+    (should (string-match-p (make-string 80 ?x)
+                            (e-tools-result-content-text large)))))
+
 (ert-deftest e-tools-test-missing-tool-returns-structured-error ()
   "Unknown tools return structured error results."
   (let ((registry (e-tools-registry-create)))

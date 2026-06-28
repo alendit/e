@@ -13,6 +13,7 @@
 
 (require 'cl-lib)
 (require 'json)
+(require 'seq)
 (require 'subr-x)
 (require 'e-request)
 
@@ -243,6 +244,123 @@ implementation."
         (json-encode (e-tools--json-normalize content))
       (error
        (prin1-to-string content)))))
+
+(defun e-tools--string-byte-prefix (text max-bytes)
+  "Return TEXT prefix limited to MAX-BYTES UTF-8 bytes."
+  (let ((bytes 0)
+        (index 0)
+        (length (length text)))
+    (while (and (< index length)
+                (let ((next-bytes
+                       (string-bytes (substring text index (1+ index)))))
+                  (when (<= (+ bytes next-bytes) max-bytes)
+                    (setq bytes (+ bytes next-bytes))
+                    t)))
+      (setq index (1+ index)))
+    (substring text 0 index)))
+
+(defun e-tools--preview-note-truncated (state)
+  "Record truncation in preview STATE."
+  (plist-put state :truncated t))
+
+(defun e-tools--preview-normalize (value state depth)
+  "Return a bounded JSON-normalizable preview of VALUE.
+STATE carries shared truncation metadata.  DEPTH is the remaining traversal
+budget."
+  (let ((max-string-bytes (plist-get state :max-string-bytes))
+        (max-items (plist-get state :max-items)))
+    (cond
+     ((stringp value)
+      (if (> (string-bytes value) max-string-bytes)
+          (progn
+            (e-tools--preview-note-truncated state)
+            (concat (e-tools--string-byte-prefix value max-string-bytes)
+                    "…"))
+        value))
+     ((or (numberp value) (eq value t) (eq value :json-false) (null value))
+      value)
+     ((or (keywordp value) (symbolp value))
+      (symbol-name value))
+     ((<= depth 0)
+      (e-tools--preview-note-truncated state)
+      "…")
+     ((vectorp value)
+      (let* ((items (append value nil))
+             (limited (seq-take items max-items)))
+        (when (> (length items) max-items)
+          (e-tools--preview-note-truncated state))
+        (vconcat (mapcar (lambda (item)
+                           (e-tools--preview-normalize
+                            item state (1- depth)))
+                         limited))))
+     ((hash-table-p value)
+      (let (entries)
+        (maphash
+         (lambda (key item)
+           (push (cons (e-tools--json-key key) item) entries))
+         value)
+        (setq entries (e-tools--sort-json-object entries))
+        (when (> (length entries) max-items)
+          (e-tools--preview-note-truncated state))
+        (mapcar (lambda (entry)
+                  (cons (car entry)
+                        (e-tools--preview-normalize
+                         (cdr entry) state (1- depth))))
+                (seq-take entries max-items))))
+     ((e-tools--plist-p value)
+      (let (entries)
+        (while value
+          (push (cons (e-tools--json-key (pop value)) (pop value)) entries))
+        (setq entries (e-tools--sort-json-object entries))
+        (when (> (length entries) max-items)
+          (e-tools--preview-note-truncated state))
+        (mapcar (lambda (entry)
+                  (cons (car entry)
+                        (e-tools--preview-normalize
+                         (cdr entry) state (1- depth))))
+                (seq-take entries max-items))))
+     ((listp value)
+      (when (> (length value) max-items)
+        (e-tools--preview-note-truncated state))
+      (vconcat (mapcar (lambda (item)
+                         (e-tools--preview-normalize
+                          item state (1- depth)))
+                       (seq-take value max-items))))
+     (t
+      (let ((printed (prin1-to-string value)))
+        (if (> (string-bytes printed) max-string-bytes)
+            (progn
+              (e-tools--preview-note-truncated state)
+              (concat (e-tools--string-byte-prefix printed max-string-bytes)
+                      "…"))
+          printed))))))
+
+(defun e-tools-result-content-preview (content max-bytes &optional max-items max-depth)
+  "Return bounded display preview metadata for tool result CONTENT.
+MAX-BYTES bounds the returned text.  MAX-ITEMS and MAX-DEPTH bound structured
+content traversal so display paths do not force construction of unbounded model
+strings."
+  (let* ((limit (max 0 (or max-bytes 0)))
+         (depth (or max-depth 4))
+         (state (list :max-string-bytes limit
+                      :max-items (or max-items 40)
+                      :truncated nil))
+         (text (if (stringp content)
+                   content
+                 (condition-case nil
+                     (json-encode
+                      (e-tools--preview-normalize content state depth))
+                   (error
+                    (e-tools--preview-note-truncated state)
+                    (prin1-to-string content)))))
+         (bytes (string-bytes text)))
+    (when (> bytes limit)
+      (setq text (e-tools--string-byte-prefix text limit))
+      (setq bytes (string-bytes text))
+      (e-tools--preview-note-truncated state))
+    (list :text text
+          :truncated (plist-get state :truncated)
+          :shown-bytes bytes)))
 
 (defun e-tools--condition-message (err)
   "Return a concise message for condition ERR."
