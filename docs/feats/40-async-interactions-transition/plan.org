@@ -1,0 +1,597 @@
+#+title: Async Interactions Transition
+#+startup: overview
+
+* Status
+
+Planned.
+
+* Problem
+
+=e= already has an async turn spine for normal provider and top-level tool
+execution, but the runtime still has many user-visible paths that can block
+Emacs. Some are explicit waits around network/process/helper work. Others are
+CPU-heavy presentation or context work that runs on the UI thread.
+
+The result is that a turn can be architecturally "async" and still feel frozen
+when the shell renders progress, materializes a tool result, computes status,
+resumes a large session, or waits for a sync tool handler.
+
+This plan turns the research in =docs/research/nonblocking-interactions.org=
+into a complete implementation track for removing slow synchronous work from
+interactive paths.
+
+* Goal
+
+Make all slow interactions non-blocking in practice:
+
+- no interactive command waits for provider, MCP, web, browser, subprocess, or
+  helper completion before returning;
+- no long-running tool is exposed only as a synchronous =:handler=;
+- no network, helper, subprocess, recursive filesystem search, large transcript
+  replay, full Markdown fontification, or heavy context/status computation runs
+  unbounded on the Emacs command/UI thread;
+- every long operation has a lifecycle visible to the harness and presentation:
+  start, progress when useful, finish, failure, and cancellation;
+- compatibility sync wrappers remain batch/test conveniences only and are
+  guarded away from normal chat shells.
+
+* Non-goals
+
+- Do not make Emacs Lisp itself preemptively threaded. Heavy local computation
+  should be made cooperative, cached, or chunked with timers/request handles.
+- Do not change model/provider semantics unless required to make an existing
+  blocking lifecycle async.
+- Do not rewrite the chat UI wholesale. Presentation work should move behind a
+  render scheduler and incremental update points.
+- Do not remove sync wrappers immediately if tests or batch callers still need
+  them. First make interactive misuse detectable.
+- Do not solve all performance work in this feature. Feature 39 remains the
+  narrow chat hot-path optimization track; this feature owns the complete
+  non-blocking contract and migration.
+
+* Current State
+
+Already acceptable:
+
+- =e-chat-session-submit= -> =e-harness-prompt-async= -> =e-loop-start-turn= is
+  async in the normal chat path.
+- OpenAI and Anthropic ordinary =:start= paths use async request handles.
+- =bash= is an async process tool with progress and cancellation.
+- Composer =!= command insertion already uses an async process start.
+
+Still blocking or potentially blocking:
+
+- compaction calls =e-harness-compact-session= synchronously and can wait on a
+  backend summary request;
+- MCP, web search/fetch/browser, and some resource tools still use sync
+  handlers or sync helper/HTTP/subprocess waits;
+- =file://= and =tmp://= glob/search methods use synchronous =process-file=;
+- nested =e-tools-call= waits for the nested tool by contract;
+- running-status redraw, final assistant Markdown presentation, tool-result
+  previewing, block details, and full session render are synchronous buffer work;
+- context/status paths can build full context, run providers, estimate tokens,
+  or query Anthropic model info synchronously;
+- session append/load/replay and overview read state are synchronous disk I/O;
+- composer =@= candidates and file insertion do synchronous discovery/reads.
+
+* Design Direction
+
+The target contract is not "no synchronous code." The target is:
+
+1. Cheap synchronous snapshot reads are allowed.
+2. Slow or unbounded interactions must be represented as async requests.
+3. CPU-heavy local work must run in bounded chunks or against a cached snapshot.
+4. UI rendering must be scheduled and budgeted like runtime work, not treated as
+   incidental string insertion.
+
+The stable boundary is a request lifecycle:
+
+- =:start= creates work and returns a cancellable handle immediately.
+- callbacks/events report =started=, =progress=, =finished=, =failed=, and
+  =cancelled= states.
+- the harness owns turn/session lifecycle and durable activity.
+- presentation shells observe lifecycle events and schedule bounded rendering.
+- compatibility wrappers may wait only in tests, batch commands, or explicitly
+  non-interactive helper code.
+
+* Ownership
+
+| Component | Responsibility |
+|-----------+----------------|
+| =e-tools= | Generic async tool contract, sync-handler guardrails, cancellation/result shape |
+| =e-harness= | Turn lifecycle, compaction lifecycle, nested tool policy, event emission |
+| =e-loop= | Provider/tool continuation without blocking waits |
+| =e-mcp= | Async stdio/HTTP MCP request dispatch and cancellation |
+| =e-web-tools= | Async web fetch/search/browser helper operations |
+| =e-resources= / resource methods | Async resource operation dispatch or cached snapshots |
+| =e-chat= | Render scheduler, bounded presentation jobs, composer/nav preservation |
+| =e-context-status= / =e-context-budget= | Cached status snapshots and cheap formatting |
+| =e-capabilities= | Cheap context-provider contract and cache-facing providers |
+| =e-session= | Durable write queue and chunked replay/loading |
+| provider adapters | Async transport, cancellable request handles, async metadata prefetch |
+
+Dependency direction should stay from shells/harness toward core contracts and
+adapters. Core policy must not depend on concrete presentation details.
+
+* Implementation Slices
+
+** Slice 1: Instrumentation and blocking guardrails
+
+Purpose: make blocking paths measurable before refactoring them.
+
+Files likely touched:
+
+- =lisp/core/e-tools.el=
+- =lisp/core/e-harness.el=
+- =lisp/shells/chat/e-chat.el=
+- =lisp/shells/e-context-status.el=
+- =test/*=
+
+Work:
+
+1. Add a small "interactive hot path" guard used by tests/profile hooks to
+   detect calls to known blocking primitives from chat commands, turn startup,
+   tool execution, and status/render paths.
+2. Add profile spans for:
+   - tool handler execution vs async start;
+   - compaction prepare/start/finish;
+   - final assistant insert and Markdown presentation;
+   - running activity redraw;
+   - tool-result preview materialization;
+   - session render/replay;
+   - context/status estimate work.
+3. Add render-budget warnings that report when a presentation job exceeds the
+   configured foreground budget.
+4. Add regression tests proving ordinary chat submit does not call sync backend
+   wrappers.
+
+Acceptance:
+
+- A focused test fails if an interactive path calls
+  =url-retrieve-synchronously=, unbounded =process-file=, or a known
+  =accept-process-output= wait wrapper.
+- Profiles can distinguish provider wait, tool wait, context prep, and chat
+  rendering cost.
+- No prompt text, response text, tool output body, or full context body is
+  recorded in profile metadata.
+
+** Slice 2: Async tool contract and sync-handler policy
+
+Purpose: make the tool framework enforce the boundary that long tools must use
+=:start=.
+
+Files likely touched:
+
+- =lisp/core/e-tools.el=
+- =lisp/core/e-harness.el=
+- =test/e-tools-test.el=
+- =test/e-harness-test.el=
+
+Work:
+
+1. Add metadata for tool blocking class, for example =:blocking-class cheap=,
+   =network=, =process=, =helper=, =filesystem=, =render=, or =unknown=.
+2. Require long classes to register =:start=; allow =:handler= only for cheap,
+   bounded tools.
+3. Make =e-tools-start= report a structured error when a long tool lacks
+   =:start= in an interactive context.
+4. Standardize async result, failure, progress, and cancellation payloads.
+5. Keep compatibility behavior available for tests/batch where explicitly
+   requested.
+
+Acceptance:
+
+- A cheap synchronous tool still works.
+- A network/process/helper/filesystem-class =:handler= is rejected or warned in
+  interactive execution.
+- Async tools still receive harness/session/turn/call context and can emit
+  progress.
+- Existing =bash= tests continue to pass unchanged except for stricter metadata.
+
+** Slice 3: Async web and MCP operations
+
+Purpose: remove sync waits from web and MCP capability tools.
+
+Files likely touched:
+
+- =lisp/core/e-mcp.el=
+- =lisp/layers/web/e-web-tools.el=
+- =test/e-mcp-test.el=
+- =test/e-web-tools-test.el=
+
+Work:
+
+1. Convert MCP stdio helper calls from "send request then wait" to request-id
+   callback dispatch.
+2. Convert MCP HTTP JSON-RPC calls from =url-retrieve-synchronously= to async
+   =url-retrieve= with timeout and cancellation.
+3. Convert =web_search=, =web_fetch=, and =web_browser= to =:start= tools.
+4. Add progress events for long helper/browser work where useful.
+5. Ensure cancellation tears down timers, helper requests, and network
+   processes without relying on provider callbacks.
+
+Acceptance:
+
+- MCP stdio and HTTP tools return from =e-tools-start= immediately.
+- Web fetch/search/browser tools return cancellable handles.
+- Tool completion and failure still produce the same model-facing result shape.
+- Aborting an active turn cancels pending helper/network work and settles the
+  turn visibly.
+
+** Slice 4: Async compaction lifecycle
+
+Purpose: make manual, auto, and tool-triggered compaction non-blocking.
+
+Files likely touched:
+
+- =lisp/core/e-harness.el=
+- =lisp/core/e-compaction.el=
+- =lisp/layers/chat/e-chat-session.el=
+- =lisp/layers/e-layer.el=
+- =test/e-harness-test.el=
+- =test/e-compaction-test.el=
+- =test/e-chat-test.el=
+
+Work:
+
+1. Add =e-harness-compact-session-start=.
+2. Keep local compaction preparation bounded and visibly profiled.
+3. Start summary generation through =e-backend-start=.
+4. Emit =compaction-prepared=, =compaction-summary-started=,
+   =compaction-finished=, and =compaction-failed= from callbacks.
+5. Convert manual chat compaction to show progress and return immediately.
+6. Convert =compact_session= to an async =:start= tool.
+7. Convert auto-compaction into a pre-turn async phase instead of a synchronous
+   preflight.
+
+Acceptance:
+
+- Manual compaction command returns before the backend summary completes.
+- Auto-compaction does not block prompt submit before provider start.
+- The =compact_session= tool can run mid-turn without blocking the active tool
+  executor on backend latency.
+- Existing durable compaction record shapes remain readable.
+
+** Slice 5: Async resource operations and composer references
+
+Purpose: stop recursive file/search operations from blocking resource tools and
+composer =@=.
+
+Files likely touched:
+
+- =lisp/core/e-resources.el=
+- =lisp/layers/base/e-base-tools.el=
+- =lisp/layers/harness/e-session-tmp-resources.el=
+- =lisp/shells/chat/e-chat.el=
+- =test/e-resources-test.el=
+- =test/e-base-tools-test.el=
+- =test/e-chat-test.el=
+
+Work:
+
+1. Add async resource-operation support, or introduce a background per-scheme
+   index with cheap synchronous snapshot reads.
+2. Convert =file://= and =tmp://= glob/search =fd= / =rg= calls to async process
+   starts or cached results.
+3. Add size/time caps for fallback recursive directory scans.
+4. Build a workspace file-candidate cache for composer =@=.
+5. Read selected file references through an async or bounded preview path.
+
+Acceptance:
+
+- Resource glob/search tools do not call =process-file= on the UI thread.
+- Composer =@= opens candidate UI from cache or shows a loading state instead of
+  scanning synchronously.
+- Large files are previewed/capped unless explicitly attached through a
+  non-blocking reference path.
+
+** Slice 6: Presentation render scheduler
+
+Purpose: make chat rendering bounded and cooperative.
+
+Files likely touched:
+
+- =lisp/shells/chat/e-chat.el=
+- =test/e-chat-test.el=
+
+Work:
+
+1. Add a render job queue with a configurable foreground budget.
+2. Insert final assistant text immediately as plain protected text.
+3. Defer Markdown/font-lock presentation into chunks.
+4. Cap or reference tool output before =e-tools-result-content-text= can
+   materialize huge display strings.
+5. Update running activity/progress rows in place where possible.
+6. Lazy-generate expanded block details.
+7. Render old session turns tail-first or in bounded chunks.
+8. Preserve composer draft, references, point, response navigation, block view,
+   and tool-list state across every scheduled render step.
+
+Acceptance:
+
+- A long final assistant response appears promptly before Markdown presentation
+  finishes.
+- Markdown presentation can be cancelled/restarted if the buffer is killed or
+  rerendered.
+- Large tool outputs render as compact summaries with links/references to full
+  output.
+- Reopening a large session does not block Emacs until the whole transcript is
+  rendered.
+- Feature 39 hot-path improvements remain valid and are either reused or
+  superseded by this scheduler.
+
+** Slice 7: Cached context/status snapshots
+
+Purpose: keep status, mode-line, and turn-start context prep from doing hidden
+heavy work.
+
+Files likely touched:
+
+- =lisp/core/e-harness.el=
+- =lisp/core/e-capabilities.el=
+- =lisp/core/e-context-budget.el=
+- =lisp/shells/e-context-status.el=
+- =lisp/adapters/anthropic/e-anthropic.el=
+- =lisp/layers/org-canvas/e-org-canvas-capabilities.el=
+- =lisp/layers/project-local/e-project-local.el=
+- =test/e-context-budget-test.el=
+- =test/e-context-status-test.el=
+- =test/e-harness-test.el=
+
+Work:
+
+1. Define context providers as cheap snapshot providers.
+2. Move network/process/recursive/large-buffer work into async refresh jobs.
+3. Replace Anthropic model-info sync lookup with async prefetch plus stale cache
+   or static fallback.
+4. Cache context budget estimates and invalidate only on relevant transcript,
+   model, option, layer, or compaction changes.
+5. Make Org Canvas and project-local context providers read cached focus and
+   capability snapshots.
+6. Ensure turn startup builds context once unless compaction changes the
+   transcript.
+
+Acceptance:
+
+- Status/header-line/mode-line rendering never performs provider HTTP or full
+  context serialization on a cache miss.
+- Context providers that need heavy refresh have an explicit async refresh path.
+- A stale estimate is visibly marked or safely replaced by token usage when the
+  provider reports it.
+- Prompt submit still has a correct context even when optional snapshots are
+  stale.
+
+** Slice 8: Session I/O and replay scheduling
+
+Purpose: prevent persistence and replay from freezing chat buffers.
+
+Files likely touched:
+
+- =lisp/core/e-session.el=
+- =lisp/shells/chat/e-chat.el=
+- =test/e-session-test.el=
+- =test/e-chat-test.el=
+
+Work:
+
+1. Queue and batch non-critical session writes while preserving durability for
+   committed turn events.
+2. Add chunked session replay/loading for large JSONL transcripts.
+3. Add a lazy transcript render path that can show the latest turns first.
+4. Cache overview/read state and avoid repeated full JSON reads.
+5. Add recovery behavior for interrupted queued writes.
+
+Acceptance:
+
+- Opening a large session returns control quickly and renders progressively.
+- Recent turns are available before old transcript history finishes rendering.
+- Append durability remains sufficient for crash recovery.
+- Overview state reads are bounded or cached.
+
+** Slice 9: Nested tool async semantics
+
+Purpose: remove the remaining design-level wait in =e-tools-call= without
+breaking useful Elisp orchestration.
+
+Files likely touched:
+
+- =lisp/core/e-tools.el=
+- =lisp/core/e-harness.el=
+- =lisp/layers/emacs/e-emacs-tools.el=
+- =lisp/layers/emacs/e-emacs-capabilities.el=
+- =test/e-tools-test.el=
+- =test/e-harness-test.el=
+- =test/e-emacs-tools-test.el=
+
+Work:
+
+1. Classify nested sync calls as cheap-only by default.
+2. Add =e-tools-call-async= for nested long tools, returning a request handle or
+   continuation token.
+3. Decide whether =run_elisp= can suspend/resume around async nested calls. If
+   not, make long nested calls fail clearly and instruct the model to request
+   them as top-level tool calls.
+4. Preserve parent-call visibility with nested =tool-started=,
+   =tool-progress=, =tool-finished=, and =tool-failed= events.
+5. Keep recursion and fan-out budgets.
+
+Acceptance:
+
+- A long nested tool cannot silently block the parent =run_elisp= call.
+- Cheap nested tools keep the existing direct-return ergonomics.
+- Long nested tools either use a tested async continuation path or fail with a
+  clear, model-guiding error.
+- Activity remains visible under the parent tool call.
+
+** Slice 10: Compatibility cleanup and full non-blocking review
+
+Purpose: close the migration by proving interactive paths no longer use slow
+sync work.
+
+Files likely touched:
+
+- =docs/architecture.md=
+- =docs/feats/40-async-interactions-transition/review.org=
+- all changed implementation test files
+
+Work:
+
+1. Mark sync wrappers as compatibility/test-only in docs and docstrings.
+2. Remove obsolete fallback paths introduced during migration.
+3. Add a review checklist that exercises:
+   - provider submit;
+   - long MCP/web/browser tools;
+   - compaction;
+   - long final response rendering;
+   - noisy tool output;
+   - large session resume;
+   - context/status cache miss;
+   - composer =@= on a large workspace;
+   - nested tool attempts.
+4. Run focused tests per slice, then full serialized Eldev.
+5. Reload live Emacs after Lisp changes and run bounded scalar probes only.
+
+Acceptance:
+
+- No normal chat UI path calls known sync wrappers for slow work.
+- Every remaining synchronous call in an interactive path is documented as cheap
+  and bounded.
+- A =review.org= exists with live UX/performance findings resolved or tracked.
+- The final state is ready to mark =Done= only after review reaches fixpoint.
+
+* Cross-Slice Acceptance Criteria
+
+- Commands return promptly even when provider, MCP, web, browser, shell,
+  resource search, compaction, or render work continues.
+- Cancellation settles every active request type and leaves no stuck turn/tool
+  state.
+- Progress or lifecycle feedback is visible for long operations.
+- Chat drafts, references, point, navigation state, block view, and tool-list
+  state survive async rendering.
+- Status and mode-line updates are cache reads, not hidden context builds.
+- Large outputs and transcripts degrade into previews, references, or lazy
+  chunks instead of UI freezes.
+- Tests cover the core contracts independently of live providers.
+
+* Testing Plan
+
+Focused tests should land with each slice. The minimum suite before review:
+
+#+begin_src sh
+rtk eldev test test/e-tools-test.el
+rtk eldev test test/e-harness-test.el
+rtk eldev test test/e-mcp-test.el
+rtk eldev test test/e-web-tools-test.el
+rtk eldev test test/e-chat-test.el
+rtk eldev test test/e-session-test.el
+rtk eldev test test/e-context-budget-test.el test/e-context-status-test.el
+rtk eldev test
+#+end_src
+
+Performance/regression fixtures:
+
+- fake backend that delays provider callbacks;
+- fake MCP/web helpers that delay, stream progress, fail, and cancel;
+- synthetic long assistant responses with Markdown-heavy content;
+- synthetic large tool results;
+- large JSONL session replay;
+- context providers that deliberately sleep or attempt forbidden sync work in
+  tests.
+
+* Live Verification
+
+After any =lisp/*.el= change, reload the running Emacs:
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Bounded live probes:
+
+- submit a normal chat prompt and confirm command return/status progress without
+  broad state dumps;
+- run one delayed async tool and confirm progress plus cancellation;
+- trigger manual compaction and confirm the chat remains editable while the
+  summary runs;
+- render a long final response and confirm plain text appears before Markdown
+  presentation completes;
+- resume a large session and confirm latest turns appear before full history;
+- inspect only scalar profile counters and request states.
+
+Do not dump full registries, transcript bodies, tool outputs, context payloads,
+or arbitrary =e-*= locals in live probes.
+
+* Risks and Constraints
+
+- Emacs is single-threaded for normal UI work. "Async" CPU work must be
+  cooperative and budgeted.
+- Request state machines can race with cancellation, buffer kill, session reset,
+  and live reload. Each async request needs explicit settlement semantics.
+- Progressive rendering can reorder visible UI if not tied to stable block ids
+  and generation counters.
+- Cached context/status snapshots can become stale. Staleness must be visible or
+  safe, and correctness-critical turn context must still be rebuilt when needed.
+- Sync wrappers are useful for tests and batch commands. Removing them too early
+  would make verification harder.
+- Nested tool async semantics may require a larger =run_elisp= contract change;
+  the fallback is to forbid long nested calls clearly.
+
+* Compatibility Expectations
+
+- Existing provider =:start= contracts remain valid.
+- Existing tool names and model-facing result shapes remain stable where
+  possible.
+- Existing sessions and compaction records remain readable.
+- Sync wrappers stay available for explicit compatibility/test use until a
+  separate cleanup proves they are obsolete.
+- User-visible chat content should not change except for better progress,
+  previews, and visibly progressive rendering.
+
+* Architecture Self-check
+
+1. If this work package stopped here, would the project be better off than if it
+   had not been built?
+   - Yes. The plan defines the migration boundary and lets each slice remove a
+     concrete class of UI freezes without waiting for the whole transition.
+2. What final direction does this move toward?
+   - A runtime where harness lifecycle, tool execution, resource work, context
+     refresh, persistence, and presentation all use explicit non-blocking
+     contracts.
+3. Which decisions are likely to change, uncertain, or stable, and are
+   uncertain ones local and reversible instead of hidden behind speculative
+   abstraction?
+   - Stable: long work must not block interactive paths. Likely to change:
+     render budgets, cache invalidation details, and nested async syntax.
+     Uncertain choices are isolated in scheduler, cache, and nested-call
+     contracts.
+4. What component owns this behavior, and why?
+   - Each existing owner keeps its domain: tools own tool contracts, harness
+     owns lifecycle, chat owns rendering, resources own resource operations,
+     context modules own snapshots, and session owns persistence.
+5. Does this change increase or reduce coupling?
+   - It should reduce coupling by replacing ad hoc waits with request handles
+     and events. The risk is accidental coupling through shared scheduler state;
+     keep scheduler APIs narrow and consumer-shaped.
+6. Did any dependency start pointing the wrong way?
+   - The plan forbids core runtime code from depending on concrete chat
+     rendering. Shells observe events; core emits lifecycle.
+7. Could any side effect be moved outward into an adapter or shell?
+   - Network/helper/browser side effects belong in adapters/tools. Presentation
+     side effects belong in =e-chat=. Core policy should only decide and emit.
+8. Are the abstractions and interfaces semantically real?
+   - Yes: async request lifecycle, cheap snapshot provider, render job, and
+     durable session write are real contracts with distinct owners.
+9. What compatibility expectations apply?
+   - Existing names/results/sessions stay readable. Sync wrappers are retained
+     until interactive callers are migrated and tests can prove no dependency.
+10. What legacy code can we remove now?
+    - None in the planning slice. During implementation, remove obsolete sync
+      fallback paths once each async replacement is covered.
+11. Where are expected errors handled, and where do unexpected errors surface?
+    - Expected cancellation/timeouts/tool failures settle through lifecycle
+      events. Unexpected coding errors should surface through existing error
+      paths and not be swallowed by schedulers.
+12. What tests prove the core behavior independently of the full system?
+    - Tool, harness, resource, context, session, and chat scheduler tests use
+      fake backends/helpers and synthetic data; live probes only validate the
+      integrated user experience after reload.
