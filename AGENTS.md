@@ -70,8 +70,9 @@ For design-sensitive changes, add these review questions in the final note, PR d
 5. Does this change increase or reduce coupling? Are interfaces narrow, consumer-shaped, and free of unused capabilities?
 6. Did any dependency start pointing the wrong way, especially from stable policy toward concrete adapters, providers, UI, transport, persistence, or tool clients?
 7. Could any side effect be moved outward into an adapter or shell?
-8. Are the abstractions and interfaces semantically real, and can implementations substitute for each other without narrowed preconditions, weakened behavior, ignored requirements, or unsupported-operation errors?
-9. What compatibility expectations apply, and were obsolete paths removed unless required?
-10. What legacy code can we remove now?
-11. Where are expected errors handled, and where do unexpected errors surface?
-12. What tests prove the core behavior independently of the full system? If the design changed, would tests change narrowly, or would unrelated tests need rewrites?
+8. What is the performance impact of this change? Any regression must be justified from first principles by explaining why the correct approach fundamentally requires more work; do not accept regressions merely because the existing code structure makes them convenient.
+9. Are the abstractions and interfaces semantically real, and can implementations substitute for each other without narrowed preconditions, weakened behavior, ignored requirements, or unsupported-operation errors?
+10. What compatibility expectations apply, and were obsolete paths removed unless required?
+11. What legacy code can we remove now?
+12. Where are expected errors handled, and where do unexpected errors surface?
+13. What tests prove the core behavior independently of the full system? If the design changed, would tests change narrowly, or would unrelated tests need rewrites?
