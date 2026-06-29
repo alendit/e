@@ -3,13 +3,14 @@
 
 * Goal
 
-Track capability action calls as first-class activity and move UI, workflow, and
+Track capability action calls as first-class activity, make active actions easy
+to discover from Lisp, and move UI, workflow, orchestration, and
 capability-control verbs out of the default model-facing tool surface.
 
 The model should see a small set of primitive tools.  Semantic operations that
-belong to e capabilities, grimoire, or personal layers should be invoked through
-the unified action-call wrapper from =run_elisp= and reported as actions in
-usage summaries.
+belong to e capabilities, grimoire, personal layers, or runtime orchestration
+should be invoked through the unified action-call wrapper from =run_elisp= and
+reported as actions in usage summaries.
 
 * Status
 
@@ -33,8 +34,8 @@ model-facing tool has costs:
 - personal layers add ad hoc tool names instead of stable action contracts.
 
 The new action-call wrapper gives us the right execution path.  The missing
-piece is durable action telemetry and guidance that makes actions the default
-shape for these operations.
+pieces are durable action telemetry, Lisp-native action discovery, and guidance
+that makes actions the default shape for these operations.
 
 * Desired split
 
@@ -57,6 +58,7 @@ Move semantic or presentation operations to actions:
 - annotation list/add/resolve operations;
 - session compaction and context export;
 - e error/session diagnostics unless a debug layer deliberately exposes tools;
+- parallel tool orchestration such as =multi_tool_use.parallel=;
 - grimoire topic, quest, and dev-sync operations;
 - personal workflow operations.
 
@@ -98,6 +100,70 @@ When no harness/session/turn is available, dispatch should still work as it does
 now.  Durable activity should be skipped unless the dispatcher has enough
 session context to store it correctly.
 
+** Action discoverability
+
+Use gradually discoverable process descriptions as the primary discovery path.
+A capability that expects model use should document use cases, when to call its
+actions, and representative =e-actions-call= forms in its instructions, skill
+text, or linked =e://= resources.
+
+Do not make the model inspect a global action catalog before acting.  The usual
+path should be:
+
+1. read the relevant capability or use-case guidance already in context;
+2. follow the documented =e-actions-call= examples;
+3. read the action description resource only when guidance is missing or the
+   agent needs to inspect the active action surface.
+
+Expose action descriptions as a read-only resource type, not as public Lisp
+listing APIs.  Implement =read=, =glob=, and =search= for the =e-action= scheme.
+Do not implement =write= or =edit=.
+
+Suggested resource URIs:
+
+- =e-action://active= describes the active action surface, grouped by
+  capability.
+- =e-action://workspace-awareness= describes one capability's active actions.
+- =e-action://workspace-awareness/focus-buffer= describes one action contract.
+
+Resource operations:
+
+- =read e-action://active= returns a compact grouped overview.
+- =read e-action://CAPABILITY= returns one capability's active actions.
+- =read e-action://CAPABILITY/ACTION= returns one action contract.
+- =glob e-action://= lists active action description resources.
+- =search e-action:// QUERY= searches generated action description text.
+
+These resources are fallback aids for agents, shell/UI code, reports, and
+debugging.  They are not executable.  They should not replace human-written
+process descriptions.
+
+Use automatic links to use-case guidance rather than large prompt dumps or
+per-action links.  Tool guidance for =run_elisp= should explain only the generic
+action calling form:
+
+#+begin_src elisp
+(e-actions-call CAPABILITY ACTION ARGUMENTS)
+#+end_src
+
+Resource guidance should explain that action contracts can be read from the
+=e-action://= resource type when needed.
+
+Capability guidance may include compact skill-like links such as:
+
+#+begin_quote
+For workspace display changes, read =e://workspace-awareness/skills/workspace-display=.
+For annotation review workflows, read =e://annotations/skills/simply-annotate=.
+#+end_quote
+
+Each linked resource should describe a use case or process.  It may mention
+several actions when the process needs them.  Do not add a documentation URI to
+every action descriptor by default.  Action descriptors should stay focused on
+machine-call details; process resources own task guidance.
+
+Full schemas should stay out of default prompts unless a user asks for a surface
+report or the agent explicitly describes one action.
+
 ** Usage reporting
 
 Update session usage reports to produce separate sections:
@@ -121,8 +187,10 @@ Before removing a model-facing tool, ensure the equivalent action has:
 - a compact parameter schema;
 - a clear capability id and action key;
 - durable action telemetry through the dispatcher;
+- process guidance with exact =e-actions-call= examples and fallback read-only
+  action descriptions through the =e-action://= resource type;
 - updated instructions or skill text;
-- tests proving dispatch, errors, and telemetry.
+- tests proving dispatch, errors, introspection, and telemetry.
 
 Do not add a generic =call_action= model-facing tool.  =run_elisp= plus the
 action-call wrapper is the model-facing affordance.
@@ -132,10 +200,14 @@ action-call wrapper is the model-facing affordance.
 ** Core action dispatch
 
 1. Add telemetry hooks to action dispatch.
-2. Reuse existing result-preview and argument-preview logic where possible.
-3. Add action event types to durable activity storage.
-4. Add tests for successful, failed, and missing-context action calls.
-5. Add reporting helpers that aggregate =tool-started= and =action-started=
+2. Add a read-only action description resource method for active effective
+   capabilities.
+3. Reuse existing result-preview and argument-preview logic where possible.
+4. Add action event types to durable activity storage.
+5. Add tests for successful, failed, and missing-context action calls.
+6. Add tests for action description resources, including legacy raw function
+   actions.
+7. Add reporting helpers that aggregate =tool-started= and =action-started=
    separately.
 
 ** Workspace awareness
@@ -178,7 +250,7 @@ Migrate:
 Keep the existing safety model: adding annotations is non-destructive;
 resolving a thread records a verdict but does not apply domain mutations.
 
-** Session and diagnostics
+** Session, diagnostics, and orchestration
 
 Migrate or gate:
 
@@ -186,10 +258,18 @@ Migrate or gate:
 - =export-context= -> diagnostics or session action;
 - =e_error_recent_failures= -> diagnostics action;
 - =e_error_failure_detail= -> diagnostics action;
-- =e_error_raw_provider_preview= -> diagnostics action.
+- =e_error_raw_provider_preview= -> diagnostics action;
+- =multi_tool_use.parallel= -> runtime orchestration action, if parallel fan-out
+  remains a supported affordance.
 
 Expose diagnostics as model-facing tools only in a deliberate debug layer if a
 future workflow proves that direct tool access is worth the tool-surface cost.
+
+For =multi_tool_use.parallel=, keep nested tool activity visible.  The wrapper
+itself should appear as an action call, while each child tool call remains a
+normal nested tool event.  If implementation shows that =run_elisp= plus
+=e-tools-call= is enough for composed calls, remove the parallel wrapper instead
+of keeping it as a tool.
 
 ** Buffer save
 
@@ -234,6 +314,8 @@ Personal layers should follow the same contract as grimoire:
 - use tools only for primitive IO or external inspection that the model must
   request directly;
 - keep personal action names stable and capability-scoped;
+- provide process guidance, examples, descriptions, and schemas so action
+  description resources are useful without a large prompt dump;
 - document each action in the layer guidance with its =e-actions-call= form;
 - avoid exposing broad host or workflow commands as generic model-facing tools;
 - ensure action telemetry records enough evidence for later audits.
@@ -271,6 +353,7 @@ providers for passive state.
 Show examples:
 
 #+begin_src elisp
+;; Read e-action://workspace-awareness when the active action contract is needed.
 (e-actions-call 'workspace-awareness :focus-buffer '(:buffer "*scratch*"))
 (e-actions-call 'org-canvas :show-context '(:heading-path ["Project" "Next"]))
 (e-actions-call 'annotations :list '(:file "notes.org"))
@@ -278,9 +361,10 @@ Show examples:
 
 * Rollout phases
 
-** Phase 1: telemetry foundation
+** Phase 1: telemetry and discovery foundation
 
 - Add durable action activity events.
+- Add read-only action description resources.
 - Add tests.
 - Update usage aggregation to split tools and actions.
 - Keep existing tools unchanged.
@@ -313,16 +397,20 @@ Show examples:
   context.
 - Usage reports show tools and actions separately.
 - Existing action dispatch behavior remains compatible for callers.
-- Workspace, Org Canvas, annotations, diagnostics, grimoire, and personal layer
-  guidance point agents to =e-actions-call= instead of dedicated semantic tools.
+- Active action descriptions are discoverable through read-only action resource
+  URIs.
+- Workspace, Org Canvas, annotations, diagnostics, orchestration, grimoire, and
+  personal layer guidance point agents to =e-actions-call= instead of dedicated
+  semantic tools.
 - The default model-facing tool surface no longer includes migrated UI,
-  workflow, or project-local action verbs.
+  workflow, orchestration, or project-local action verbs.
 - Zero-use rows remain available for both tools and actions in full-surface
   reports.
 
 * Verification plan
 
 - Focused tests for action dispatch telemetry.
+- Focused tests for read-only action description resources.
 - Session-store replay test for =action-started= and terminal action events.
 - Usage aggregation test with mixed tool and action events.
 - Layer tests proving migrated actions are active when their capabilities are
