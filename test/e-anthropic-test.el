@@ -871,6 +871,57 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
       (should cancelled)))
   (e-anthropic-reset-context-window-cache))
 
+(ert-deftest e-anthropic-test-context-window-failure-is-negative-cached ()
+  "A failed gateway query is remembered, so repeated lookups query once."
+  (e-anthropic-reset-context-window-cache)
+  (let ((calls 0)
+        (e-anthropic-context-window-retry-cooldown 60))
+    (cl-letf (((symbol-function 'e-anthropic--headers) (lambda (&rest _) nil))
+              ((symbol-function 'e-anthropic--http-get)
+               (lambda (&rest _)
+                 (cl-incf calls)
+                 (signal 'e-anthropic-backend-error '("boom")))))
+      (should-not (e-anthropic-context-window "claude-opus-4-8"))
+      (should-not (e-anthropic-context-window "claude-opus-4-8"))
+      (should-not (e-anthropic-context-window "claude-opus-4-8"))
+      ;; The gateway is queried once; the cooldown suppresses the rest.
+      (should (= calls 1))))
+  (e-anthropic-reset-context-window-cache))
+
+(ert-deftest e-anthropic-test-context-window-retries-after-cooldown ()
+  "Once the failure cooldown elapses, the next lookup re-queries the gateway."
+  (e-anthropic-reset-context-window-cache)
+  (let ((calls 0)
+        (e-anthropic-context-window-retry-cooldown 60))
+    (cl-letf (((symbol-function 'e-anthropic--headers) (lambda (&rest _) nil))
+              ((symbol-function 'e-anthropic--http-get)
+               (lambda (&rest _)
+                 (cl-incf calls)
+                 (signal 'e-anthropic-backend-error '("boom")))))
+      (should-not (e-anthropic-context-window "claude-opus-4-8"))
+      (should (= calls 1))
+      ;; Backdate the recorded failure beyond the cooldown window.
+      (puthash 'gateway (- (float-time) 120)
+               e-anthropic--context-window-failure-cache)
+      (should-not (e-anthropic-context-window "claude-opus-4-8"))
+      (should (= calls 2))))
+  (e-anthropic-reset-context-window-cache))
+
+(ert-deftest e-anthropic-test-context-window-cooldown-zero-disables-negative-cache ()
+  "A zero cooldown disables negative caching and retries every lookup."
+  (e-anthropic-reset-context-window-cache)
+  (let ((calls 0)
+        (e-anthropic-context-window-retry-cooldown 0))
+    (cl-letf (((symbol-function 'e-anthropic--headers) (lambda (&rest _) nil))
+              ((symbol-function 'e-anthropic--http-get)
+               (lambda (&rest _)
+                 (cl-incf calls)
+                 (signal 'e-anthropic-backend-error '("boom")))))
+      (should-not (e-anthropic-context-window "claude-opus-4-8"))
+      (should-not (e-anthropic-context-window "claude-opus-4-8"))
+      (should (= calls 2))))
+  (e-anthropic-reset-context-window-cache))
+
 (provide 'e-anthropic-test)
 
 ;;; e-anthropic-test.el ends here

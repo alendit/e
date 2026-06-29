@@ -88,6 +88,23 @@ the gateway is unavailable, context-window lookups return nil.")
 (defvar e-anthropic--context-window-refresh-requests (make-hash-table :test 'equal)
   "In-flight async context-window catalog refresh requests keyed by provider.")
 
+(defvar e-anthropic--context-window-failure-cache (make-hash-table :test 'equal)
+  "In-memory record of failed context-window fetches.
+Keyed by provider symbol; each value is the `float-time' of the last failed
+gateway query.  A recent failure suppresses re-querying until
+`e-anthropic-context-window-retry-cooldown' elapses, so a slow or unavailable
+gateway cannot block every status render.  Cleared by
+`e-anthropic-reset-context-window-cache'.")
+
+(defcustom e-anthropic-context-window-retry-cooldown 300
+  "Seconds to wait before re-querying the gateway after a failed catalog fetch.
+A failed `/model/info' query is negative-cached for this many seconds so that
+repeated context-window lookups (for example mode-line status renders on every
+live reload) do not each block on a slow or unavailable gateway.  Set to 0 to
+disable negative caching and retry on every lookup."
+  :type 'natnum
+  :group 'e-anthropic)
+
 (defcustom e-anthropic-model-providers
   '((gateway
      :name "Anthropic via gateway"
@@ -211,11 +228,32 @@ Signals on transport, auth, or parse failure -- callers decide how to degrade."
                 (e-anthropic--model-info-url base-url) headers)))
     (e-anthropic--context-window-table-from-json text)))
 
+(defun e-anthropic--context-window-failure-fresh-p (key)
+  "Return non-nil when KEY has a failed fetch still within the retry cooldown."
+  (and (> e-anthropic-context-window-retry-cooldown 0)
+       (when-let ((failed-at (gethash key
+                                      e-anthropic--context-window-failure-cache)))
+         (< (- (float-time) failed-at)
+            e-anthropic-context-window-retry-cooldown))))
+
 (defun e-anthropic--context-window-table (provider)
-  "Return the cached context-window hash for PROVIDER.
-Returns nil when the gateway query fails (no static fallback)."
+  "Return the cached context-window hash for PROVIDER, fetching once.
+Returns nil when the gateway query fails (no static fallback).  A failed query
+is negative-cached for `e-anthropic-context-window-retry-cooldown' seconds so a
+slow or unavailable gateway is not re-queried on every lookup."
   (let ((key (or provider e-anthropic-default-provider)))
-    (gethash key e-anthropic--context-window-cache)))
+    (or (gethash key e-anthropic--context-window-cache)
+        (unless (e-anthropic--context-window-failure-fresh-p key)
+          (let ((table (ignore-errors
+                         (e-anthropic--fetch-context-windows provider))))
+            (if table
+                (progn
+                  (remhash key e-anthropic--context-window-failure-cache)
+                  (puthash key table e-anthropic--context-window-cache)
+                  table)
+              (puthash key (float-time)
+                       e-anthropic--context-window-failure-cache)
+              nil))))))
 
 ;;;###autoload
 (cl-defun e-anthropic-refresh-context-window-cache
@@ -243,6 +281,7 @@ the cache is populated.  ON-ERROR receives an Emacs condition list."
                        (let ((table
                               (e-anthropic--context-window-table-from-json
                                text)))
+                         (remhash key e-anthropic--context-window-failure-cache)
                          (puthash key table e-anthropic--context-window-cache)
                          (when on-done
                            (funcall on-done table)))
@@ -272,8 +311,9 @@ Returns nil when no cached catalog is available or MODEL is not listed."
 ;;;###autoload
 (defun e-anthropic-reset-context-window-cache ()
   "Clear the in-memory provider context-window cache.
-Cancel in-flight refreshes.  Future `e-anthropic-context-window' calls return
-nil until `e-anthropic-refresh-context-window-cache' repopulates the cache."
+Cancel in-flight refreshes and clear the negative cache of failed fetches.
+The next `e-anthropic-context-window' call re-queries the gateway, and
+`e-anthropic-refresh-context-window-cache' can repopulate the cache."
   (interactive)
   (maphash
    (lambda (_key request)
@@ -281,7 +321,8 @@ nil until `e-anthropic-refresh-context-window-cache' repopulates the cache."
        (e-backend-cancel-request request)))
    e-anthropic--context-window-refresh-requests)
   (clrhash e-anthropic--context-window-refresh-requests)
-  (clrhash e-anthropic--context-window-cache))
+  (clrhash e-anthropic--context-window-cache)
+  (clrhash e-anthropic--context-window-failure-cache))
 
 (defun e-anthropic-messages-url (base-url)
   "Return the Messages endpoint URL for BASE-URL."
