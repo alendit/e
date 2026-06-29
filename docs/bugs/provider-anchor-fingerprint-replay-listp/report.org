@@ -1,0 +1,19 @@
+#+title: Provider Anchor Fingerprint Replay Causes listp Error
+
+* Report
+
+After restarting Emacs, sending a prompt in an existing =e-chat= session failed
+with:
+
+#+begin_example
+Wrong type argument: listp, "01KW92NEZQHYRCDN2KH538MPCT"
+#+end_example
+
+The id in the error was the previous assistant message id covered by a persisted
+provider anchor.
+
+* Trigger
+
+The session had a persisted provider anchor with nested fingerprint fields such
+as =:segments= and =:tools=.  After restart, replay loaded those fields back from
+JSONL before the next prompt tried to reuse =previous_response_id=.

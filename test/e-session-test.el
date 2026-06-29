@@ -582,6 +582,91 @@
                          '(:response-id "resp-1"))))
       (delete-directory directory t))))
 
+(ert-deftest e-session-test-provider-anchor-persists-nested-fingerprints ()
+  "Provider-anchor fingerprint arrays of plists survive JSONL replay."
+  (let* ((directory (make-temp-file "e-session-" t))
+         (store (e-session-persistent-store-create directory))
+         (session-id (plist-get (e-session-create store :id "session-1") :id))
+         (fingerprints
+          '(:segments ((:kind "static-prefix"
+                        :id "(project-local instructions)"
+                        :fingerprint "static-fp")
+                       (:kind "current-state"
+                        :id "(visible-buffers 0)"
+                        :fingerprint "dynamic-fp"))
+            :active-layer-ids ("base" "project-local")
+            :tools ((:name "read" :fingerprint "read-fp")
+                    (:name "write" :fingerprint "write-fp"))
+            :reasoning (:reasoning nil
+                        :reasoning-effort "high"
+                        :effort nil)
+            :provider-options (:prompt-cache-key "cache-key"
+                               :prompt-cache-retention "24h")
+            :compaction-boundary nil)))
+    (unwind-protect
+        (let* ((message (e-session-append-message
+                         store session-id
+                         '(:role assistant :content "anchored")))
+               (anchor (e-session-append-provider-anchor
+                        store session-id 'openai
+                        :model "gpt-test"
+                        :covered-entry-id (plist-get message :id)
+                        :fingerprints fingerprints
+                        :metadata '(:response-id "resp-1")))
+               (loaded (e-session-persistent-store-create directory))
+               (replayed (car (e-session-provider-anchors
+                               loaded session-id))))
+          (should (equal (plist-get replayed :id)
+                         (plist-get anchor :id)))
+          (should (equal (plist-get replayed :fingerprints)
+                         fingerprints)))
+      (delete-directory directory t))))
+
+(ert-deftest e-session-test-provider-anchor-rejects-malformed-replayed-segments ()
+  "Malformed pre-fix provider-anchor segments invalidate without crashing."
+  (let ((store (e-session-store-create)))
+    (let* ((session-id (plist-get (e-session-create store :id "session-1") :id))
+           (message (e-session-append-message
+                     store session-id
+                     '(:role assistant :content "anchored")))
+           (malformed
+            '(:segments (:kind ("static-prefix"
+                                "id"
+                                "(project-local instructions)"
+                                "fingerprint"
+                                "static-fp"))
+              :active-layer-ids ("base" "project-local")
+              :tools (:name ("read" "fingerprint" "read-fp"))
+              :reasoning (:reasoning nil
+                          :reasoning-effort "high"
+                          :effort nil)
+              :provider-options (:prompt-cache-key "cache-key")
+              :compaction-boundary nil))
+           (current
+            '(:segments ((:kind "static-prefix"
+                          :id "(project-local instructions)"
+                          :fingerprint "static-fp"))
+              :active-layer-ids ("base" "project-local")
+              :tools ((:name "read" :fingerprint "read-fp"))
+              :reasoning (:reasoning nil
+                          :reasoning-effort "high"
+                          :effort nil)
+              :provider-options (:prompt-cache-key "cache-key")
+              :compaction-boundary nil)))
+      (e-session-append-provider-anchor
+       store session-id 'openai
+       :model "gpt-test"
+       :covered-entry-id (plist-get message :id)
+       :fingerprints malformed
+       :metadata '(:response-id "resp-1"))
+      (should (eq (e-session-provider-anchor-incompatibility-reason
+                   store session-id
+                   (car (e-session-provider-anchors store session-id))
+                   'openai
+                   "gpt-test"
+                   current)
+                  'segment-fingerprint-mismatch)))))
+
 (ert-deftest e-session-test-latest-provider-anchor-requires-current-path ()
   "Provider anchors are compatible only when their covered entry is current."
   (let ((store (e-session-store-create)))

@@ -454,6 +454,19 @@ and RECORD supplies persisted identity fields during replay."
                 (equal (plist-get entry :parent-id) parent-id))
               (e-session--entries store session-id)))
 
+(defun e-session--keyword-plist-p (value)
+  "Return non-nil when VALUE is a proper plist with keyword keys."
+  (and (proper-list-p value)
+       (let ((tail value)
+             (valid t))
+         (while (and valid tail)
+           (if (and (consp tail)
+                    (keywordp (car tail))
+                    (consp (cdr tail)))
+               (setq tail (cddr tail))
+             (setq valid nil)))
+         (and valid (null tail)))))
+
 (defun e-session-current-path (store session-id &optional head-id)
   "Return SESSION-ID current parent path ending at HEAD-ID or current head."
   (let* ((session (e-session-get store session-id))
@@ -526,17 +539,47 @@ and RECORD supplies persisted identity fields during replay."
 
 (defun e-session--provider-anchor-dynamic-segment-p (segment)
   "Return non-nil when SEGMENT is volatile current-state context."
-  (let ((kind (plist-get segment :kind)))
+  (let ((kind (and (e-session--keyword-plist-p segment)
+                   (plist-get segment :kind))))
     (or (eq kind 'current-state)
         (eq kind 'dynamic-context)
         (equal kind "current-state")
         (equal kind "dynamic-context"))))
 
+(defun e-session--provider-anchor-segment-list-p (segments)
+  "Return non-nil when SEGMENTS is a list of segment plists."
+  (and (proper-list-p segments)
+       (cl-every (lambda (segment)
+                   (and (e-session--keyword-plist-p segment)
+                        (plist-member segment :kind)))
+                 segments)))
+
 (defun e-session--provider-anchor-stable-segments (fingerprints)
   "Return provider-anchor hard-identity segments from FINGERPRINTS."
-  (cl-remove-if
-   #'e-session--provider-anchor-dynamic-segment-p
-   (plist-get fingerprints :segments)))
+  (let ((segments (and (e-session--keyword-plist-p fingerprints)
+                       (plist-get fingerprints :segments))))
+    (cond
+     ((null segments) nil)
+     ((e-session--provider-anchor-segment-list-p segments)
+      (cl-remove-if
+       #'e-session--provider-anchor-dynamic-segment-p
+       segments))
+     (t (list :invalid-provider-anchor-segments)))))
+
+(defun e-session--provider-anchor-fingerprints-for-json (fingerprints)
+  "Return FINGERPRINTS with list-of-plist fields encoded as JSON arrays."
+  (if (not (e-session--keyword-plist-p fingerprints))
+      fingerprints
+    (let ((copy (copy-sequence fingerprints)))
+      (when (plist-member copy :segments)
+        (setq copy (plist-put copy
+                              :segments
+                              (vconcat (plist-get copy :segments)))))
+      (when (plist-member copy :tools)
+        (setq copy (plist-put copy
+                              :tools
+                              (vconcat (plist-get copy :tools)))))
+      copy)))
 
 (defun e-session-provider-anchor-incompatibility-reason
     (store session-id anchor provider-id model fingerprints)
@@ -1443,7 +1486,8 @@ provider-owned anchor.  FINGERPRINTS and METADATA are opaque to session core."
            :provider-id provider-id
            :model model
            :covered-entry-id covered-entry-id
-           :fingerprints fingerprints
+           :fingerprints
+           (e-session--provider-anchor-fingerprints-for-json fingerprints)
            :metadata metadata))
     (e-session--write-index store)
     record))

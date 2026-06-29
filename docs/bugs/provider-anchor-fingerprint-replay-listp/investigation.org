@@ -1,0 +1,44 @@
+#+title: Provider Anchor Fingerprint Replay listp Investigation
+
+* Finding
+
+The live failed session file showed the previous assistant message:
+
+#+begin_example
+01KW92NEZQHYRCDN2KH538MPCT
+#+end_example
+
+The same id appeared as the =covered-entry-id= for the latest provider anchor.
+Immediately after restart, the next user prompt appended successfully, then the
+turn failed while building continuation context.
+
+The replayed provider anchor was malformed in memory: =:segments= loaded as a
+flat plist with repeated =:kind= keys, and =:tools= loaded as a flat plist with
+repeated =:name= keys.  This came from =json-encode= treating a list of plists as
+a JSON object instead of a JSON array.
+
+* Root Cause
+
+=e-session-append-provider-anchor= wrote opaque =:fingerprints= directly through
+=json-encode=.  Nested list-of-plist fields such as:
+
+#+begin_src elisp
+(:segments ((:kind "static-prefix" :id "..." :fingerprint "...")
+            (:kind "current-state" :id "..." :fingerprint "...")))
+#+end_src
+
+were persisted as an object with repeated keys rather than an array of objects.
+On replay, provider-anchor compatibility inspected malformed segments as if
+they were segment plists, so =plist-get= eventually saw a bare string and raised
+=wrong-type-argument listp=.
+
+* Fix
+
+- Persist provider-anchor =:segments= and =:tools= as vectors so JSONL stores
+  them as arrays of objects.
+- Treat malformed replayed segment structures as incompatible provider anchors
+  instead of raising.
+
+Old malformed anchors will be ignored and the next prompt will fall back to full
+context.  Newly written anchors replay with the original nested fingerprint
+shape.
