@@ -181,6 +181,9 @@
   (should (memq 'harness-base
                 (mapcar (lambda (spec) (plist-get spec :id))
                         e-default-layer-specs)))
+  (should (memq 'harness-advanced
+                (mapcar (lambda (spec) (plist-get spec :id))
+                        e-default-layer-specs)))
   (should (memq 'os-base
                 (mapcar (lambda (spec) (plist-get spec :id))
                         e-default-layer-specs)))
@@ -352,14 +355,19 @@
         (should (string-match-p "dismiss the debug popup" instructions)))
         (should-not (e-harness-layer-change-function harness))))))
 
-(ert-deftest e-defaults-test-chat-harness-enables-web-and-text-editing-by-default ()
-  "Default chat harness activation includes web and text-editing layers."
+(ert-deftest e-defaults-test-chat-harness-enables-advanced-web-and-text-editing-by-default ()
+  "Default chat harness activation includes advanced, web, and text-editing layers."
   (e-defaults-test--with-configured-chat-factory
     (let ((harness (e-default-chat-harness-create)))
+      (should (memq 'harness-advanced
+                    (e-harness-enabled-layer-ids harness)))
       (should (memq 'web
                     (e-harness-enabled-layer-ids harness)))
       (should (memq 'text-editing
                     (e-harness-enabled-layer-ids harness)))
+      (should (memq 'goal
+                    (mapcar #'e-capability-id
+                            (e-harness-active-capabilities harness))))
       (should (memq 'web
                     (mapcar #'e-capability-id
                             (e-harness-active-capabilities harness))))

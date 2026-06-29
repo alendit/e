@@ -13,7 +13,6 @@
 ;;; Code:
 
 (require 'e-capabilities)
-(require 'e-goal)
 (require 'e-layers)
 (require 'e-session-tmp-resources)
 (require 'e-tool-output-truncation)
@@ -36,7 +35,6 @@
    :id 'harness-base
    :name "Harness Base"
    :capabilities (list (e-harness-base-context-capability-create)
-                       (e-goal-capability-create)
                        (e-session-tmp-capability-create)
                        (e-tool-output-truncation-capability-create))))
 

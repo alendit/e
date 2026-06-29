@@ -7,14 +7,14 @@
 
 ;;; Commentary:
 
-;; ERT tests for the harness-base Goal capability.
+;; ERT tests for the harness-advanced Goal capability.
 
 ;;; Code:
 
 (require 'ert)
 (require 'e)
 (require 'e-goal)
-(require 'e-harness-base)
+(require 'e-harness-advanced)
 (require 'e-capabilities)
 (require 'e-store)
 
@@ -129,11 +129,12 @@
       (should (plist-get status :achieved))
       (should (eq (plist-get status :computed-status) 'achieved)))))
 
-(ert-deftest e-goal-test-harness-base-includes-goal-capability ()
-  "Harness base layer includes the Goal capability."
-  (let* ((layer (e-harness-base-layer-create))
+(ert-deftest e-goal-test-harness-advanced-includes-goal-capability ()
+  "Harness advanced layer includes the Goal capability."
+  (let* ((layer (e-harness-advanced-layer-create))
          (ids (mapcar #'e-capability-id (e-layer-capabilities layer))))
-    (should (memq 'goal ids))))
+    (should (memq 'goal ids))
+    (should (equal (e-layer-requires layer) '(harness-base)))))
 
 (provide 'e-goal-test)
 

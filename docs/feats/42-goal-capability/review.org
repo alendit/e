@@ -7,7 +7,7 @@ Status: done.
 
 ** Scope reviewed
 
-- Added the harness-base =goal= capability.
+- Added the default-enabled =harness-advanced= =goal= capability.
 - Added compact model-facing instructions.
 - Added =e://goal/refs/process.md= as the process reference.
 - Added deterministic Elisp actions for goal definition, next action selection, result recording, blocker handling, stopping, and achievement assessment.
@@ -36,9 +36,11 @@ Result: passed.
 
 ** Findings
 
-*** DONE Goal belongs in harness-base
+*** DONE Goal belongs in harness-advanced
 
 The capability models a general controller loop for agent work.
+It is a general harness concern, but not a minimal base guardrail.
+The =harness-advanced= layer packages it and remains enabled by default.
 It does not depend on chat, Org Canvas, filesystem tools, web tools, or project-local code.
 
 *** DONE Subagent execution remains separate

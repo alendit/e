@@ -36,6 +36,11 @@
      :summary "Harness-owned support resources and tool lifecycle guards."
      :feature e-harness-base
      :factory e-harness-base-layer-create)
+    (:id harness-advanced
+     :name "Harness Advanced"
+     :summary "Harness-owned controller-loop and advanced work-management capabilities."
+     :feature e-harness-advanced
+     :factory e-harness-advanced-layer-create)
     (:id os-base
      :name "OS Base"
      :summary "Workspace file and shell tools."
