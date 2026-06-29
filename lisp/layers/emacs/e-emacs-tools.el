@@ -436,7 +436,7 @@ When VISIBLE-ONLY is non-nil, include only buffers visible in windows."
    'e-emacs-tools-blocking-elisp-load
    (list
     (format
-     "%s is blocking in interactive run_elisp; inspect external Elisp with resource/file tools or use project-local actions for trusted activation"
+     "%s is blocking in interactive run_elisp; inspect external Elisp with resource/file tools, or use elisp_job operation=run-batch for expensive validation and byte-compilation that must not freeze the live UI Emacs"
      primitive))))
 
 (defmacro e-emacs-tools--with-run-elisp-load-guard (&rest body)

@@ -395,6 +395,12 @@ When READ-ONLY is non-nil, buffer resources only support reads."
                                   (format "%s" (plist-get result :content))))
           (should (string-match-p
                    "resource/file tools"
+                   (format "%s" (plist-get result :content))))
+          (should (string-match-p
+                   "elisp_job"
+                   (format "%s" (plist-get result :content))))
+          (should (string-match-p
+                   "operation=run-batch"
                    (format "%s" (plist-get result :content)))))))))
 
 (ert-deftest e-emacs-tools-test-run-elisp-allows-batch-loading ()
