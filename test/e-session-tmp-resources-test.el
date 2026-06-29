@@ -15,7 +15,16 @@
 (require 'e)
 (require 'e-backend)
 (require 'e-harness)
+(require 'e-request)
 (require 'e-resources)
+(require 'e-tools)
+
+(defun e-session-tmp-test--fake-executable (directory name body)
+  "Create executable NAME in DIRECTORY with shell BODY."
+  (let ((file (expand-file-name name directory)))
+    (write-region (concat "#!/bin/sh\n" body) nil file nil 'silent)
+    (set-file-modes file #o755)
+    file))
 
 (ert-deftest e-session-tmp-test-helper-writes-and-resource-read-recovers ()
   "The helper writes session tmp content and returns a readable tmp:// URI."
@@ -160,12 +169,58 @@ blocked on the interactive coding-system picker."
                           :text "needle again")]
               :truncated nil)))
     (should
-     (equal (e-resources-search
-             resources
-             "tmp://"
-             "missing"
-             nil)
-            '(:matches [] :truncated nil)))))
+	     (equal (e-resources-search
+	             resources
+	             "tmp://"
+	             "missing"
+	             nil)
+	            '(:matches [] :truncated nil)))))
+
+(ert-deftest e-session-tmp-test-glob-start-returns-before-fd-exits ()
+  "tmp:// glob starts a cancellable fd process without waiting for completion."
+  (should (require 'e-session-tmp-resources nil t))
+  (let* ((bin-dir (make-temp-file "e-session-tmp-bin-" t))
+         (_fd (e-session-tmp-test--fake-executable
+               bin-dir
+               "fd"
+               "sleep 5
+printf '%s\\n' notes/delayed.txt
+"))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :intrinsic-capabilities
+                   (list (e-session-tmp-capability-create))))
+         (resources (e-harness-resources harness "session-1" "turn-1"))
+         (tools (e-tools-registry-create))
+         result
+         failure
+         request)
+    (unwind-protect
+        (let ((exec-path (cons bin-dir exec-path)))
+          (e-harness--register-resource-tools tools resources)
+          (e-resources-write resources "tmp://notes/delayed.txt" "text")
+          (e-request-with-blocking-primitive-guard
+            (e-request-with-hot-path 'tmp-glob
+              (setq request
+                    (e-tools-start
+                     tools
+                     '(:id "call-1"
+                       :name "glob"
+                       :arguments (:uri "tmp://"
+                                   :pattern "**/*.txt"
+                                   :limit 5))
+                     :context '(:interactive t)
+	                     :on-done (lambda (value)
+	                                (setq result value))
+	                     :on-error (lambda (err)
+	                                 (setq failure err))))))
+          (should (e-tools-request-p request))
+          (should (process-live-p
+                   (plist-get (e-tools-request-metadata request) :process)))
+          (should-not result)
+          (should-not failure)
+          (should (e-tools-cancel-request request)))
+      (delete-directory bin-dir t))))
 
 (ert-deftest e-session-tmp-test-discovery-rejects-unsafe-paths ()
   "tmp:// glob/search roots stay inside the session tmp root."

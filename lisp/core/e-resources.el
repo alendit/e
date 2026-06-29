@@ -22,6 +22,7 @@
   scheme
   operation
   handler
+  start
   description
   uri-patterns
   range-modes

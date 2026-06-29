@@ -351,38 +351,93 @@ SESSION-ID and TURN-ID are passed to context-aware resource providers."
            ""
            "Active URI schemes:"
            (mapconcat #'e-harness--resource-method-description methods "\n"))
-     "\n")))
+	   "\n")))
+
+(defun e-harness--resource-operation-metadata (operation uri)
+  "Return compact resource usage metadata for OPERATION over URI."
+  (e-tools-resource-usage-metadata
+   (e-operation-tool-name operation)
+   (list (list :uri uri
+               :operation (e-operation-id-of operation)))))
+
+(defun e-harness--resource-operation-result (operation uri content)
+  "Return CONTENT as the current resource OPERATION tool result when possible."
+  (let ((call (plist-get (e-tools-current-context) :tool-call))
+        (metadata (e-harness--resource-operation-metadata operation uri)))
+    (if call
+        (e-tools-result-create call 'ok content metadata)
+      content)))
+
+(defun e-harness--resource-operation-call (resources operation uri arguments)
+  "Call resource OPERATION for URI with ARGUMENTS and wrap metadata."
+  (e-harness--resource-operation-result
+   operation
+   uri
+   (apply #'e-resources-call resources operation uri arguments)))
+
+(defun e-harness--resource-operation-start
+    (resources operation arguments on-done on-error on-event)
+  "Start async resource OPERATION over ARGUMENTS when its method supports it."
+  (let ((dispatch (e-operation-dispatch operation)))
+    (funcall
+     dispatch
+     (lambda (uri &rest operation-arguments)
+       (let* ((parsed-uri (e-resources-parse-uri uri))
+              (method (e-resources--method resources operation parsed-uri))
+              (start (e-resource-method-start method)))
+         (if (functionp start)
+             (funcall
+              start
+              parsed-uri
+              operation-arguments
+              :on-done (lambda (content)
+                         (when on-done
+                           (funcall
+                            on-done
+                            (e-harness--resource-operation-result
+                             operation uri content))))
+              :on-error on-error
+              :on-event on-event)
+           (when on-done
+             (funcall
+              on-done
+              (e-harness--resource-operation-call
+               resources operation uri operation-arguments)))
+           nil)))
+     arguments)))
+
+(defun e-harness--resource-operation-async-p (operation)
+  "Return non-nil when OPERATION should expose an async tool start."
+  (memq (e-operation-id-of operation) '(glob search)))
 
 (defun e-harness--register-resource-operation-tool (registry resources operation)
   "Register OPERATION in REGISTRY as a model-facing tool backed by RESOURCES."
   (let ((dispatch (e-operation-dispatch operation)))
     (when (functionp dispatch)
-      (e-tools-register
-       registry
-       :name (e-operation-tool-name operation)
-       :description (e-harness--resource-operation-description resources operation)
-       :parameters (e-operation-parameters operation)
-       :handler
-       (lambda (arguments)
-         (funcall dispatch
-                  (lambda (uri &rest operation-arguments)
-                    (let* ((content (apply #'e-resources-call
-                                           resources
-                                           operation
-                                           uri
-                                           operation-arguments))
-                           (call (plist-get (e-tools-current-context)
-                                            :tool-call))
-                           (metadata
-                            (e-tools-resource-usage-metadata
-                             (e-operation-tool-name operation)
-                             (list (list :uri uri
-                                         :operation
-                                         (e-operation-id-of operation))))))
-                      (if call
-                          (e-tools-result-create call 'ok content metadata)
-                        content)))
-                  arguments))))))
+      (let ((async-p (e-harness--resource-operation-async-p operation)))
+        (apply
+         #'e-tools-register
+         registry
+         :name (e-operation-tool-name operation)
+         :description (e-harness--resource-operation-description resources operation)
+         :parameters (e-operation-parameters operation)
+         :handler
+         (lambda (arguments)
+           (funcall dispatch
+                    (lambda (uri &rest operation-arguments)
+                      (e-harness--resource-operation-call
+                       resources operation uri operation-arguments))
+                    arguments))
+         (append
+          (when async-p
+            (list
+             :start
+             (cl-function
+              (lambda (&key arguments on-done on-error on-event
+                            &allow-other-keys)
+                (e-harness--resource-operation-start
+                 resources operation arguments on-done on-error on-event)))
+             :blocking-class 'process))))))))
 
 (defun e-harness--register-resource-operation-tools (registry resources)
   "Register active resource operation tools in REGISTRY backed by RESOURCES."
@@ -578,7 +633,8 @@ an already-removed record is a no-op."
 (defconst e-harness--durable-activity-event-types
   '(turn-started provider-request-started provider-request-finished
     reasoning-delta reasoning-raw-delta
-    tool-started tool-finished turn-finished token-usage
+    tool-started tool-finished action-started action-finished action-failed
+    turn-finished token-usage
     turn-failed turn-cancelled turn-steered backend-empty-output
     compaction-started compaction-prepared compaction-summary-started
     compaction-finished compaction-failed)
@@ -592,6 +648,9 @@ an already-removed record is a no-op."
     (reasoning-raw-delta . presentation-log)
     (tool-started . audit)
     (tool-finished . presentation-log)
+    (action-started . audit)
+    (action-finished . presentation-log)
+    (action-failed . audit)
     (turn-finished . replay)
     (token-usage . audit)
     (turn-failed . audit)

@@ -17,9 +17,17 @@
 (require 'e-base-tools)
 (require 'e-harness)
 (require 'e-harness-base)
+(require 'e-request)
 (require 'e-resources)
 (require 'e-tools)
 (require 'seq)
+
+(defun e-base-tools-test--fake-executable (directory name body)
+  "Create executable NAME in DIRECTORY with shell BODY."
+  (let ((file (expand-file-name name directory)))
+    (write-region (concat "#!/bin/sh\n" body) nil file nil 'silent)
+    (set-file-modes file #o755)
+    file))
 
 (defun e-base-tools-test--resource-tools (directory &optional read-only)
   "Return resource-backed tools rooted at DIRECTORY.
@@ -37,6 +45,47 @@ When READ-ONLY is non-nil, file resources only support reads."
   (e-tools-execute
    registry
    (list :id "call-1" :name name :arguments arguments)))
+
+(ert-deftest e-base-tools-test-glob-start-returns-before-fd-exits ()
+  "file:// glob starts a cancellable fd process without waiting for completion."
+  (let* ((directory (make-temp-file "e-base-glob-start-" t))
+         (bin-dir (make-temp-file "e-base-glob-bin-" t))
+         (_fd (e-base-tools-test--fake-executable
+               bin-dir
+               "fd"
+               "sleep 5
+printf '%s\\n' delayed.txt
+"))
+         result
+         failure
+         request)
+    (unwind-protect
+        (let ((exec-path (cons bin-dir exec-path)))
+          (write-region "text" nil (expand-file-name "delayed.txt" directory)
+                        nil 'silent)
+          (e-request-with-blocking-primitive-guard
+            (e-request-with-hot-path 'file-glob
+              (setq request
+                    (e-tools-start
+                     (e-base-tools-test--resource-tools directory)
+                     '(:id "call-1"
+                       :name "glob"
+                       :arguments (:uri "file://"
+                                   :pattern "*.txt"
+                                   :limit 5))
+                     :context '(:interactive t)
+	                     :on-done (lambda (value)
+	                                (setq result value))
+	                     :on-error (lambda (err)
+	                                 (setq failure err))))))
+          (should (e-tools-request-p request))
+          (should (process-live-p
+                   (plist-get (e-tools-request-metadata request) :process)))
+          (should-not result)
+          (should-not failure)
+          (should (e-tools-cancel-request request)))
+      (delete-directory directory t)
+      (delete-directory bin-dir t))))
 
 (defun e-base-tools-test--wait-until (predicate &optional timeout)
   "Wait until PREDICATE returns non-nil or TIMEOUT seconds elapse."

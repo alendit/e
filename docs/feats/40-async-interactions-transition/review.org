@@ -145,6 +145,57 @@ emacsclient --eval "...bounded web_browser registry probe..."
 
 Result: returned =(:has-start t :blocking-class process)=.
 
+* Phase 2 Resource Discovery Slice Review
+
+Status: in progress.
+
+** Scope reviewed
+
+- Added method-level async starts to the resource method contract.
+- Registered =glob= and =search= model-facing resource tools with async =:start= while preserving synchronous handlers for explicit batch execution.
+- Converted =file://= fd/rg-backed glob/search discovery to async process starts with cancellation and structured result preservation.
+- Converted =tmp://= fd/rg-backed glob/search discovery to async process starts with cancellation and structured result preservation.
+- Kept cheap in-memory and buffer resource methods on the existing synchronous method path when no async method start is provided.
+- Added deterministic coverage proving =file://= and =tmp://= glob return an =e-tools-request= before delayed =fd= exits under the hot-path blocking guard.
+
+** Verification
+
+#+begin_src sh
+rtk eldev test -f test/e-base-tools-test.el -f test/e-session-tmp-resources-test.el -B e-base-tools-test-glob-start-returns-before-fd-exits e-session-tmp-test-glob-start-returns-before-fd-exits
+#+end_src
+
+Result: passed for the focused file/tmp start-before-exit coverage.
+
+#+begin_src sh
+rtk eldev test --file test/e-base-tools-test.el --file test/e-session-tmp-resources-test.el --file test/e-harness-test.el --file test/e-tools-test.el --file test/e-request-test.el -B
+#+end_src
+
+Result: passed for the touched resource, harness, request, and tool contracts.
+
+#+begin_src sh
+git diff --check
+#+end_src
+
+Result: passed.
+
+#+begin_src sh
+rtk eldev emacs --batch --eval "(progn (setq byte-compile-error-on-warn t) (dolist (file '(\"lisp/core/e-resources.el\" \"lisp/core/e-harness.el\" \"lisp/layers/base/e-base-tools.el\" \"lisp/layers/harness/e-session-tmp-resources.el\")) (byte-compile-file file)))"
+#+end_src
+
+Result: passed for the touched resource and harness files.
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Result: returned the repository path after reloading changed Lisp.
+
+#+begin_src sh
+emacsclient --eval "...bounded resource glob registry probe..."
+#+end_src
+
+Result: returned =(:has-start t :blocking-class process)=.
+
 #+begin_src sh
 git diff --check
 #+end_src
