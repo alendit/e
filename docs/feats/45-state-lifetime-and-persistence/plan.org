@@ -14,7 +14,7 @@ requirement justifies a longer lifetime.
 
 * Status
 
-Planned.
+Ready.
 
 * Problem
 

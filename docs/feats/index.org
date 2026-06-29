@@ -55,4 +55,4 @@ Status values for coding agents:
 | 42 | Done | 42-goal-capability/ | Goal Capability |
 | 43 | Done | 43-action-dispatcher/ | Action Dispatcher |
 | 44 | Planned | 44-action-telemetry-tool-surface/ | Action Telemetry and Tool Surface Cleanup |
-| 45 | Planned | 45-state-lifetime-and-persistence/ | State Lifetime and Persistence Boundaries |
+| 45 | Ready | 45-state-lifetime-and-persistence/ | State Lifetime and Persistence Boundaries |
