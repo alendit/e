@@ -27,7 +27,9 @@
   "Resolving a known style returns its instructions string."
   (let ((instructions (e-output-style--resolve 'hemingway)))
     (should (stringp instructions))
-    (should (string-match-p "Hemingway" instructions))))
+    (should (string-match-p "Hemingway" instructions))
+    (should (string-match-p "one clear claim or action" instructions))
+    (should (string-match-p "needless jargon" instructions))))
 
 (ert-deftest e-output-style-test-resolve-unknown-id-signals ()
   "Resolving an unknown style signals an error naming it and the known ids."

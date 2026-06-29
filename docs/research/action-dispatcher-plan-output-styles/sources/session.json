@@ -1,0 +1,6 @@
+{
+  "codex_session": "/Users/dimitrivorona/.codex/sessions/2026/06/28/rollout-2026-06-28T20-53-49-019f0f94-aafb-7533-9051-952b4d411baa.jsonl",
+  "control_plan": "docs/feats/43-action-dispatcher/plan.org",
+  "commit": "41e7173 feat(actions): add context-bound dispatcher",
+  "cut_point": "before transcript idx 551/creation of repo-native feature artifact; no original plan text in replay prompt"
+}

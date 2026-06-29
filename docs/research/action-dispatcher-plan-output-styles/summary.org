@@ -1,0 +1,151 @@
+#+title: Action Dispatcher Plan Output Style Comparison
+#+startup: overview
+
+* Scope
+
+This comparison replays the Codex session that produced feature 43, =Action Dispatcher=.
+The fair control is the immediate Codex =plan.org= state created right after the replay cut point, before the user corrected the =call_action= tool scope.
+
+Important source points:
+
+- pre-action-dispatch commit: =839e9c8c00f15f9d10e4c11be165e9baad918f62=;
+- action-dispatch commit: =41e7173d7fbe9954b7a16abe9afaee4bd49c222d=;
+- source Codex session: =~/.codex/sessions/2026/06/28/rollout-2026-06-28T20-53-49-019f0f94-aafb-7533-9051-952b4d411baa.jsonl=;
+- replay cut point: immediately before Codex announced that it was creating the feature artifact;
+- immediate Codex artifact: =codex-immediate-after-replay-prompt/plan.org=;
+- final corrected Codex artifact: =codex-original/plan.org=.
+
+The replay prompt uses Codex transcript context up to the point just before Codex created the feature artifact.
+It withholds the original plan text.
+Each E run writes a fresh =plan.org= under this research directory.
+
+* Replay method
+
+The replay context lives at =sources/codex-replay-context.org=.
+The runner lives at =run-replay.el=.
+The runner uses the live =:chat-default= E backend through =emacsclient=.
+This is the paved path after interactive =run_elisp= rejected blocking loads.
+
+For each output style, the runner:
+
+- sets global =e-capability-config= before harness/session creation;
+- creates a fresh E harness and session;
+- verifies the effective =output-style= instructions;
+- asks for a =plan.org= matching the Codex replay cut point;
+- writes =prompt.txt=, =guidance.txt=, =effective-guidance.txt=, =metrics.json=, and =plan.org=.
+
+The =hemingway-suggested-v2= first attempt failed with a provider WebSocket close.
+The same paved runner was retried once and completed.
+
+* Artifacts
+
+| Variant | Artifact | Role |
+|-
+| Codex immediate | =codex-immediate-after-replay-prompt/plan.org= | Fair control for the replay cut point |
+| Codex final | =codex-original/plan.org= | Final corrected artifact after user removed =call_action= scope |
+| Hemingway current | =hemingway-current/plan.org= | Old default style replay |
+| Hemingway suggested v2 | =hemingway-suggested-v2/plan.org= | Candidate style replay |
+| Hemingway v3 | =hemingway-v3/plan.org= | Candidate style replay, adopted as default =hemingway= |
+| Caveman | =caveman/plan.org= | Compression stress test |
+
+* Metrics
+
+| Variant | Bytes | Lines | Words | Headings | Bullets | Src blocks | Mentions =call_action= | Duration s | Messages | Guidance verified |
+|-
+| codex-immediate-after-replay-prompt | 3298 | 96 | 389 | 8 | 19 | 3 | True | - | - | - |
+| codex-original | 3809 | 94 | 456 | 8 | 25 | 2 | False | - | - | - |
+| hemingway-current | 14473 | 368 | 1939 | 21 | 80 | 13 | True | 248.6 | 28 | True |
+| hemingway-suggested-v2 | 17212 | 475 | 2333 | 29 | 104 | 18 | True | 244.5 | 22 | True |
+| hemingway-v3 | 14023 | 416 | 1857 | 24 | 96 | 15 | True | 424.3 | 38 | True |
+| caveman | 12881 | 485 | 1607 | 28 | 139 | 14 | True | 270.4 | 32 | True |
+
+* Findings
+
+** Immediate Codex also added =call_action=
+
+The earlier analysis treated =call_action= in =hemingway-v3= as scope drift.
+That was wrong.
+The immediate Codex artifact at transcript idx 552 also added =call_action=.
+
+The immediate Codex plan says:
+
+- the goal covers calling actions from Elisp and from a model-facing tool;
+- the design adds a model-facing bridge;
+- the bridge is the =call_action= tool;
+- acceptance criteria require =call_action= dispatch and compact-session refresh metadata.
+
+The final committed Codex plan removed that scope only after the user corrected Codex:
+
+#+begin_quote
+Is it a tool? We don't need more tools, we already have elisp tool. It should just make the elisp interface nices for the agents to use
+#+end_quote
+
+So the fair replay control is =codex-immediate-after-replay-prompt/plan.org=, not =codex-original/plan.org=.
+
+** Replays kept the same broad feature idea but expanded it
+
+All replayed styles followed the same broad direction as immediate Codex: action descriptors, =e-actions-call=, standard action conversion, guidance updates, docs, tests, and the =call_action= bridge.
+
+The main difference is size and structure.
+Immediate Codex is 389 words.
+The smallest replay is =caveman= at 1,607 words.
+=hemingway-v3= is 1,857 words.
+
+The replayed plans read like pre-implementation implementation plans.
+Immediate Codex reads like a compact feature ledger artifact.
+
+** Hemingway v3 is the best default among the E styles
+
+=hemingway-v3= is not the closest artifact to immediate Codex by length.
+=caveman= is shorter.
+But =hemingway-v3= gives the best balance for general agent work:
+
+- clear prose;
+- low padding;
+- enough project terms to stay precise;
+- less verbosity than =hemingway-current= and =hemingway-suggested-v2=;
+- better readability than =caveman= for multi-step implementation plans.
+
+It produced a full plan rather than a compact ledger entry.
+That is a prompt/control issue, not mainly a prose-style failure.
+If we need Codex-like compact feature artifacts, the prompt should ask for a compact post-hoc ledger shape.
+
+** Caveman compresses words but increases fragmentation
+
+=caveman= has the fewest words among replayed outputs.
+It has the most lines and bullets.
+It compresses sentence content but expands visual structure.
+This makes it useful as a stress test, not as the default style.
+
+** Final Codex differs because of user correction, not initial model instinct
+
+The final =codex-original= artifact is not the fair control for replay generation at the cut point.
+It reflects a later human product decision: no generic model-facing action tool.
+
+That correction is important for the feature.
+It should not be counted as evidence that replay styles uniquely drifted into =call_action=.
+Immediate Codex drifted there too.
+
+* Recommendation
+
+Adopt =hemingway-v3= as the default =hemingway= style.
+Keep =hemingway-v3= as a named style for explicit comparisons and backward traceability.
+Keep =hemingway-suggested-v2= as a verbose planning style.
+Keep =caveman= as a compression stress test.
+
+For future feature-plan replay studies, compare against both controls when available:
+
+1. immediate Codex artifact at the same prompt point;
+2. final corrected artifact after human steering.
+
+Do not judge replay scope drift against final corrected artifacts unless the replay prompt includes the same human correction.
+
+* Notes on validity
+
+This is an approximate replay.
+It cannot reproduce Codex's hidden context or exact model state.
+It does preserve the visible request, diagnostic context, implementation trace before artifact creation, repository state, and output-style injection.
+Each run verified that the intended style guidance was active before prompting.
+
+The pre-action-dispatch commit =839e9c8= has no =e-actions-call=, no =e-action-create=, and no =call_action= matches in =lisp=, =docs=, or =test=.
+That commit is the correct implementation baseline for reasoning about what the model had to design.

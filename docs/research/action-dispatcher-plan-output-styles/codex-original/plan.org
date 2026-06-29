@@ -1,0 +1,93 @@
+#+title: Action Dispatcher
+#+startup: overview
+
+* Goal
+
+Add an ergonomic, context-bound way to call active capability actions from
+Elisp, aligned with the existing =e-tools-call= tool-chaining shape.
+
+* Status
+
+Done.
+
+* Problem
+
+Capability actions are first-class runtime behavior, but callers historically
+had only the low-level form:
+
+#+begin_src elisp
+(funcall (e-capabilities-action capability :compact) ...)
+#+end_src
+
+That forces generic callers to find the active capability, know the action's
+calling convention, inject harness/session state manually, and discover errors
+late.  It also made action guidance diverge from the existing
+=e-tools-call=/=e-tools-call!= shape used by =run_elisp=.
+
+* Design
+
+Add action descriptors while preserving direct function lookup:
+
+- =e-action-create= describes an action handler, optional dispatcher caller,
+  compact JSON-style parameter schema, and session requirement.
+- =e-capabilities-action= still returns the direct function for old shell code
+  and tests.
+- =e-capabilities-action-spec= returns the descriptor when a caller needs the
+  richer contract.
+
+Add =e-actions-call=:
+
+#+begin_src elisp
+(e-actions-call 'chat-session :compact)
+(e-actions-call 'chat-session :rename '(:name "Focused chat"))
+#+end_src
+
+The dispatcher resolves the active harness/session from =e-tools-current-context=
+unless explicit =:harness= and =:session-id= options are supplied.
+
+* Scope
+
+- Add the core descriptor and dispatcher.
+- Convert built-in action surfaces to descriptors where they are part of
+  standard layers: =chat-session=, =layer-selection=, =agent-shell-fleet=, and
+  =goal=.
+- Keep generated/dynamic project-local capabilities compatible with old plain
+  function actions.
+- Update =run_elisp= guidance to show both =e-tools-call= and =e-actions-call=.
+- Document the runtime vocabulary and new action call shape.
+
+* Non-goals
+
+- Do not make every shell action a dedicated first-level model tool.
+- Do not add a generic model-facing action tool; agents already have
+  =run_elisp=, and =e-actions-call= is the Elisp affordance for that tool.
+- Do not remove existing direct action functions.
+- Do not change action ownership; capabilities still own semantic actions and
+  the harness still owns lifecycle/state.
+
+* Acceptance Criteria
+
+- Elisp can call =(e-actions-call 'chat-session :rename '(:name "..."))= with
+  harness/session injected from context or explicit options.
+- Missing required action arguments produce clear =e-actions-invalid-arguments=
+  errors.
+- =chat-session :compact= remains callable through =e-actions-call= from
+  context-bound Elisp.
+- Existing direct =e-capabilities-action= callers continue to receive functions.
+- Runtime docs and =run_elisp= guidance show the aligned tool/action APIs.
+
+* Verification
+
+- Focused tests: =test/e-actions-test.el=, =test/e-capabilities-test.el=,
+  =test/e-chat-session-test.el=, =test/e-emacs-capabilities-test.el=,
+  =test/e-emacs-tools-test.el=.
+- Reload live Emacs with =e-dev-reload= because this changes loaded Lisp.
+
+Completed 2026-06-28:
+
+- =rtk eldev test -f test/e-actions-test.el test/e-capabilities-test.el test/e-chat-session-test.el test/e-emacs-capabilities-test.el test/e-emacs-tools-test.el test/e-layer-selection-test.el test/e-agent-shell-fleet-test.el test/e-goal-test.el test/e-test.el= passed 82/82.
+- =rtk eldev test -f test/e-tools-test.el test/e-harness-test.el= passed 124/124.
+- =rtk eldev test -f test/e-layers-test.el test/e-layer-selection-test.el test/e-loop-test.el= passed 34/34.
+- =git diff --check= passed.
+- =emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"= returned the repo path.
+- Live probe against a temporary harness/session returned ="Action probe"= from =(e-actions-call 'chat-session :rename ...)=.

@@ -1,0 +1,270 @@
+#+title: Action Dispatcher Codex Replay Context
+#+startup: overview
+
+* Source session
+
+- Codex JSONL: =/Users/dimitrivorona/.codex/sessions/2026/06/28/rollout-2026-06-28T20-53-49-019f0f94-aafb-7533-9051-952b4d411baa.jsonl=
+- Control artifact: =docs/feats/43-action-dispatcher/plan.org=
+- Replay cut point: immediately before Codex announced "I’m creating a repo-native feature artifact for this slice" and wrote feature 43 =plan.org=.
+- The original plan text is not included below. It is copied separately as the control.
+
+* Replay method
+
+To approximate the original Codex context, each E run gets:
+
+1. the initial user concern about insufficient action vocabulary;
+2. Codex’s diagnostic answer about durable documentation gaps;
+3. the user’s pasted design request for =(e-actions-call ...)= and aligned tool chaining;
+4. Codex’s implementation/design trace up to, but not including, creation of =plan.org=;
+5. the current repository source as available through normal E tools.
+
+Each output-style run must generate only its own comparison =plan.org= artifact.
+
+* Transcript excerpt
+
+** assistant idx=145 time=2026-06-28T18:57:48.807Z
+
+Yes. The gap is real: `action` is a first-class runtime concept, but the durable docs mostly name it rather than define it. The precise contract is currently in source like [e-capabilities.el](/Users/dimitrivorona/projects/elisp/e/lisp/core/e-capabilities.el:23) and [e-chat-session.el](/Users/dimitrivorona/projects/elisp/e/lisp/layers/chat/e-chat-session.el:21), plus older feature plans. That is too indirect for agent context.
+
+I would improve this in this order:
+
+1. Add a compact `docs/references/runtime_concepts.org`.
+   It should define the core vocabulary: harness, session, turn, capability, layer, context provider, resource method, model-facing tool, lifecycle hook, shell-facing action, presentation shell, backend adapter. Each entry should say: owner, caller, side effects allowed, model-facing or shell-facing, source files, and one canonical example.
+
+2. Add a short “Core Runtime Vocabulary” section to [AGENTS.md](/Users/dimitrivorona/projects/elisp/e/AGENTS.md:3).
+   Keep it small enough to always be useful in context. For `action`, something like:
+
+   `Action`: a shell-facing semantic operation contributed by a capability. Shells call actions to delegate behavior such as submit, steer, queue, compact, rename, layer selection, or agent-shell handoff. Actions are not model-facing tools by default. They should validate shell input, call the harness/application service that owns lifecycle/state, and return plain Elisp values/plists suitable for shell code or future wrappers.
+
+3. Promote stranded plan knowledge into architecture docs.
+   [README.org](/Users/dimitrivorona/projects/elisp/e/README.org:45) and [docs/architecture.md](/Users/dimitrivorona/projects/elisp/e/docs/architecture.md:211) currently list “shell-facing actions” but do not explain the contract. Historical docs like [docs/arch-align.md](/Users/dimitrivorona/projects/elisp/e/docs/arch-align.md:86) and [feature 34](/Users/dimitrivorona/projects/elisp/e/docs/feats/34-agent-shell-fleet/plan.org:243) have better contract details. Move the durable parts out of plans.
+
+4. Add a small comparison table: action vs tool vs resource method.
+   This is probably the most important bit for agents:
+   `action`: shell-facing, called by presentation or host code.
+   `tool`: model-facing, called by the LLM through backend/tool registry.
+   `resource method`: model/tool-facing operation over URI schemes.
+   `context provider`: contributes model input, should not be a command surface.
+
+5. Update the dev-work template/checklist.
+   Any feature that adds or changes a runtime primitive should answer: “Does this update the runtime concepts reference or AGENTS vocabulary?” That prevents concepts like steering, action, capability prompts, or async interaction state from living only in examples and reviews.
+
+I did not change files; this was an inspection pass. The main recommendation is to make `runtime_concepts.org` the deeper source of truth, and make `AGENTS.md` carry only the compact, high-value vocabulary agents need before they start reading examples.
+
+<oai-mem-citation>
+<citation_entries>
+MEMORY.md:44-49|note=[used prior e steering/action ownership context to frame doc gap]
+</citation_entries>
+<rollout_ids>
+</rollout_ids>
+</oai-mem-citation>
+
+** user idx=151 time=2026-06-28T19:26:06.775Z
+
+Accidentally, another session was discussing actions and their improvement. 
+
+Agent: No. If the agent already knows it wants the chat compact action, this is the direct form:
+(let ((ctx (e-tools-current-context)))
+  (e-chat-session-compact
+   (plist-get ctx :harness)
+   (plist-get ctx :session-id)))
+The long version is only necessary because there is no ergonomic “call active capability action” API. Today :actions are just a plist on each capability, so a generic caller has to find the capability, find the action, know the calling convention, and inject harness/session manually.
+The missing shape is something like:
+(e-actions-call 'chat-session :compact)
+or, if exposed as a model-facing tool:
+{"capability":"chat-session","action":"compact","arguments":{}}
+with the harness doing lookup, context injection, argument validation, and clear errors. Right now actions are callable by agents through run_elisp, but not pleasantly or safely.
+
+Human: Add the suggested shape. Go over the existing actions, both in the standard layers as well as in grimoire and in the doom config. Adjust the existing guidances to call actions, if any, to use this shape. There is also a "tool chaining" shape for elisp itself. Make sure the ergonomics of both of these align
+
+Implement the suggested improvements and document the new version.
+
+** assistant idx=156 time=2026-06-28T19:26:27.217Z
+
+I’ll implement this as a real feature slice in `e`: add the action dispatcher, align the Elisp/tool-chaining ergonomics, update guidance/docs, then verify and reload live Emacs if Lisp changes land. I’ll first map the current action surfaces and any guidance in `e`, Grimoire, and Doom before editing.
+
+** assistant idx=168 time=2026-06-28T19:26:46.518Z
+
+I see the worktree already has unrelated staged and unstaged changes, including feature 42 and org-canvas files. I’ll leave those alone and keep this slice limited to the action dispatcher/API, its tests, and docs.
+
+** assistant idx=181 time=2026-06-28T19:27:09.763Z
+
+The key design choice is to keep actions capability-owned and harness-resolved, not make the harness know Grimoire or Agent Shell specifics. The new API should mirror `e-tools-call`: context-bound by default, explicit override when shell code has a harness/session already.
+
+** assistant idx=197 time=2026-06-28T19:27:22.726Z
+
+I’m narrowing Grimoire and Doom searches now because the first broad search hit generated graph data. So far I see one Grimoire guidance with the old direct `e-chat-session-rename` form; I’ll exclude generated/cache files and inspect the actual guidance source.
+
+** assistant idx=209 time=2026-06-28T19:27:40.765Z
+
+Doom has no matching action guidance. Grimoire has one old direct `e-chat-session-rename` example in a Superpowers plan; I’ll inspect it before deciding whether it is active guidance or historical material that should be noted rather than rewritten.
+
+** assistant idx=225 time=2026-06-28T19:27:55.131Z
+
+I’m going to add a small core module rather than extending `e-tools.el` directly. That keeps tool execution and shell action dispatch separate while giving `run_elisp` a parallel `(e-actions-call ...)` API.
+
+** assistant idx=241 time=2026-06-28T19:28:13.671Z
+
+The existing action calling conventions are mixed: `chat-session` and `layer-selection` functions take harness/session arguments directly, while Agent Shell and Goal actions take an arguments plist. To make the dispatcher safe instead of guessing from function arity, I’ll introduce a canonical action descriptor shape while preserving the old plist lookup API.
+
+** assistant idx=259 time=2026-06-28T19:28:57.981Z
+
+I’ll expose both surfaces: `(e-actions-call 'chat-session :compact)` for `run_elisp`/Elisp chaining, and a generic `call_action` model tool using the same dispatcher. Existing direct functions stay available for shell code and tests.
+
+** assistant idx=265 time=2026-06-28T19:29:17.329Z
+
+For the tool surface I’ll keep the wire shape plain JSON (`capability`, `action`, `arguments`) and normalize internally to symbols/keywords. The Elisp surface will use the same names directly, so examples line up instead of teaching two conventions.
+
+** assistant idx=281 time=2026-06-28T19:30:11.118Z
+
+One subtlety: the existing `compact_session` tool carries `:refresh-context` metadata, while the old direct `e-chat-session-compact` call does not. I’m checking nested-tool metadata handling so `call_action` can preserve that behavior for compacting.
+
+** assistant idx=303 time=2026-06-28T19:31:15.733Z
+
+I’m going to make the action spec opt-in but backward compatible: plain function actions still work and are called with one arguments plist, while standard built-in actions get descriptors that declare their parameters, session requirement, and any tool-result metadata.
+
+** assistant idx=316 time=2026-06-28T19:31:21.468Z
+
+I’m about to edit the core action contract, add the dispatcher/tool, and update built-in action definitions. I’ll avoid the dirty feature 42/org-canvas files and only touch the files needed for this slice.
+
+** assistant idx=321 time=2026-06-28T19:31:29.814Z
+
+I have enough context for the implementation plan:
+
+1. Add `e-action` specs to the capability contract, preserving `e-capabilities-action` as the legacy “give me the function” lookup.
+2. Add `e-actions-call` / dispatcher that resolves the active capability from harness/session context, validates required arguments, injects harness/session, and reports clear errors.
+3. Add a `call_action` model-facing tool in the core layer, using the same dispatcher and preserving compact-session refresh metadata.
+4. Convert built-in actions (`chat-session`, `layer-selection`, `agent-shell-fleet`, `goal`) to action specs where appropriate.
+5. Update `run_elisp` guidance/docs/tests so action calls and tool calls are presented as aligned context-bound APIs.
+
+** assistant idx=327 time=2026-06-28T19:31:37.535Z
+
+I’m starting with the core contract and dispatcher. The compatibility rule is that old `:actions (list :x #'fn)` still works; descriptors are an additive shape for callers that want safe dispatch.
+
+** assistant idx=333 time=2026-06-28T19:31:51.214Z
+
+The first patch missed the exact local docstring, so I’m checking the target lines and applying a tighter patch.
+
+** assistant idx=340 time=2026-06-28T19:31:57.304Z
+
+The core action contract edit is next.
+
+** assistant idx=347 time=2026-06-28T19:32:08.835Z
+
+Now I’m adding the dispatcher module. It is deliberately small: normalize names/arguments, resolve against active capabilities, validate required parameters, then call either a descriptor caller or the legacy one-plist handler.
+
+** assistant idx=354 time=2026-06-28T19:32:57.139Z
+
+The dispatcher is in place. I’m wiring it into the core load list before converting built-in actions to descriptors.
+
+** assistant idx=361 time=2026-06-28T19:33:05.535Z
+
+Next I’m updating the package surface test expectation so `e-actions` is treated as part of core.
+
+** assistant idx=368 time=2026-06-28T19:33:16.390Z
+
+I’m adding focused capability-contract coverage before changing the action definitions, so any descriptor regression is caught close to the contract.
+
+** assistant idx=375 time=2026-06-28T19:33:34.321Z
+
+I’m converting `chat-session` first because it is the motivating case. The descriptors map JSON/Elisp arguments to the existing semantic functions and keep direct shell calls unchanged.
+
+** assistant idx=382 time=2026-06-28T19:34:11.034Z
+
+I noticed the generated `:submit` entry may have kept the old function before the descriptor. I’m checking and fixing that before moving on.
+
+** assistant idx=392 time=2026-06-28T19:34:24.374Z
+
+Fixing the `:submit` plist entry now.
+
+** assistant idx=399 time=2026-06-28T19:34:35.034Z
+
+I’m converting layer selection actions next. These are harness-scoped, not session-scoped, so the descriptor caller injects only the harness plus a normalized `layer` argument.
+
+** assistant idx=406 time=2026-06-28T19:34:50.583Z
+
+Agent Shell actions already use the one-plist convention, so their descriptors mostly document/mark the canonical shape without changing behavior.
+
+** assistant idx=412 time=2026-06-28T19:35:11.349Z
+
+The Agent Shell helper has slightly different local text; I’m opening that small section and applying the descriptor wrap there.
+
+** assistant idx=419 time=2026-06-28T19:35:16.495Z
+
+Applying the Agent Shell descriptor patch with the local function text.
+
+** assistant idx=426 time=2026-06-28T19:35:34.825Z
+
+Goal actions use the same plist convention as Agent Shell, so I’m wrapping them with descriptors as well.
+
+** assistant idx=433 time=2026-06-28T19:35:39.930Z
+
+Applying the goal action descriptor wrapper.
+
+** assistant idx=440 time=2026-06-28T19:35:59.861Z
+
+I’m adding the `call_action` model-facing bridge into the core layer now. It uses the dispatcher and wraps metadata so a `chat-session/compact` action still refreshes turn context like the existing compact tool.
+
+** assistant idx=446 time=2026-06-28T19:36:10.190Z
+
+I’m patching `e-layer.el` to register the new generic action bridge next to `compact_session`.
+
+** assistant idx=453 time=2026-06-28T19:36:26.559Z
+
+Now I’m aligning the `run_elisp` guidance with tool chaining: tool composition stays `e-tools-call`, action dispatch becomes `e-actions-call`, and the direct model-facing bridge is `call_action`.
+
+** assistant idx=460 time=2026-06-28T19:36:41.365Z
+
+Updating the `run_elisp` tool description so the model sees both APIs without opening the longer capability instruction.
+
+** assistant idx=467 time=2026-06-28T19:36:58.595Z
+
+I’m adding focused dispatcher tests now: explicit Elisp dispatch, required-argument errors, and the `call_action` tool’s metadata path.
+
+** assistant idx=474 time=2026-06-28T19:37:26.822Z
+
+I’m adding the missing `:compact` assertion to the chat-session action surface test while keeping its direct function lookup expectation intact.
+
+** assistant idx=481 time=2026-06-28T19:37:33.944Z
+
+I’m updating the existing guidance tests so they assert the new action-call wording, not just the old tool-chain wording.
+
+** assistant idx=486 time=2026-06-28T19:37:41.421Z
+
+Patching the guidance assertions for actions.
+
+** assistant idx=496 time=2026-06-28T19:38:01.038Z
+
+Updating the run_elisp description test to include `e-actions-call`.
+
+** assistant idx=503 time=2026-06-28T19:38:21.386Z
+
+I’m adding durable docs now: a compact runtime vocabulary reference plus updates to the bootstrap docs so “action” is immediately available in context.
+
+** assistant idx=510 time=2026-06-28T19:38:47.835Z
+
+I’m adding a compact AGENTS.md vocabulary entry so future agents do not have to infer actions from examples.
+
+** assistant idx=517 time=2026-06-28T19:38:59.098Z
+
+I’m updating the README capability section to distinguish actions from tools and to show the new call shape.
+
+** assistant idx=523 time=2026-06-28T19:39:09.437Z
+
+The README tool list has shifted; I’m opening the local section and applying a tighter update.
+
+** assistant idx=530 time=2026-06-28T19:39:17.594Z
+
+Applying the README update in the exact sections.
+
+** assistant idx=537 time=2026-06-28T19:39:28.153Z
+
+I’m updating the architecture doc where capabilities/actions are defined, and listing `call_action` in the core self-management surface.
+
+** assistant idx=544 time=2026-06-28T19:39:33.348Z
+
+Patching architecture docs with the new action dispatcher details.
+
+** assistant idx=551 time=2026-06-28T19:39:47.066Z
+
+I’m creating a repo-native feature artifact for this slice so the new action dispatcher has durable design notes, not just code and chat context.
