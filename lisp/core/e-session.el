@@ -289,8 +289,53 @@ writer cannot reinterpret a list of plists as one object."
     (setq value (e-session--plist-remove value :last-scope)))
   value)
 
-(defun e-session--normalize-metadata-for-replay (metadata)
+(defun e-session--legacy-metadata-key (value)
+  "Return schema metadata key named by legacy VALUE."
+  (let ((name (cond
+               ((keywordp value)
+                (string-remove-prefix ":" (symbol-name value)))
+               ((symbolp value) (symbol-name value))
+               ((stringp value) (string-remove-prefix ":" value)))))
+    (when name
+      (seq-some (lambda (descriptor)
+                  (let ((key (car descriptor)))
+                    (and (string= name
+                                  (string-remove-prefix
+                                   ":" (symbol-name key)))
+                         key)))
+                e-session-metadata-schema))))
+
+(defun e-session--normalize-legacy-metadata-array (metadata)
+  "Repair legacy JSON-array METADATA into a schema-keyed plist.
+This is only for replaying old persisted records that encoded metadata as
+arrays and sometimes inverted key/value pairs."
+  (if (or (null metadata)
+          (e-session--keyword-plist-shape-p metadata)
+          (not (proper-list-p metadata)))
+      metadata
+    (let ((tail metadata)
+          result
+          repaired)
+      (while (consp tail)
+        (let* ((first (pop tail))
+               (second (and (consp tail) (pop tail)))
+               (first-key (e-session--legacy-metadata-key first))
+               (second-key (e-session--legacy-metadata-key second)))
+          (cond
+           ((and first-key (not second-key))
+            (setq result (plist-put result first-key second)
+                  repaired t))
+           ((and second-key (not first-key))
+            (setq result (plist-put result second-key first)
+                  repaired t)))))
+      (if repaired result metadata))))
+
+(defun e-session--normalize-metadata-for-replay (metadata &optional legacy)
   "Return replayed METADATA without known transient state."
+  (when (and legacy
+             (consp metadata)
+             (not (keywordp (car metadata))))
+    (setq metadata (e-session--normalize-legacy-metadata-array metadata)))
   (when metadata
     (setq metadata (copy-sequence metadata))
     (dolist (key e-session--presentation-metadata-keys)
@@ -1037,7 +1082,8 @@ and RECORD supplies persisted identity fields during replay."
     (pcase type
       ("session"
        (let* ((metadata (e-session--normalize-metadata-for-replay
-                         (plist-get record :metadata)))
+                         (plist-get record :metadata)
+                         t))
               (session (list :id session-id
                             :metadata metadata
                             :session-events nil
@@ -1189,7 +1235,8 @@ and RECORD supplies persisted identity fields during replay."
              (setq fields (plist-put fields
                                      :metadata
                                      (e-session--normalize-metadata-for-replay
-                                      (plist-get record :metadata)))))
+                                      (plist-get record :metadata)
+                                      t))))
            (when (plist-member record :turn-options)
              (setq fields
                    (plist-put fields
@@ -1204,7 +1251,8 @@ and RECORD supplies persisted identity fields during replay."
            (plist-put session
                       :metadata
                       (e-session--normalize-metadata-for-replay
-                       (plist-get record :metadata))))
+                       (plist-get record :metadata)
+                       t)))
          (when (plist-member record :turn-options)
            (plist-put session
                       :turn-options

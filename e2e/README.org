@@ -8,6 +8,12 @@ Deterministic provider-flow e2e tests run without live credentials:
 E_E2E=1 rtk eldev test -f e2e/e-provider-continuation-e2e-test.el
 #+end_src
 
+Deterministic restart e2e tests run without live credentials:
+
+#+begin_src sh
+E_E2E=1 rtk eldev test -f e2e/e-session-restart-e2e-test.el
+#+end_src
+
 The live suite exercises the same runtime path against a real provider API.  It
 is not part of the default unit-test run.
 
@@ -51,3 +57,5 @@ Useful environment variables:
    cancellation.
 10. Live provider errors are surfaced as harness failures instead of empty
     assistant output.
+11. A restarted harness can reopen an existing persisted session and send a
+    prompt even when old on-disk metadata used a legacy JSON array shape.

@@ -464,10 +464,57 @@
 	                           "/tmp/wide/"))))
       (delete-directory directory t))))
 
+(ert-deftest e-session-test-replay-repairs-legacy-array-metadata ()
+  "Persistent replay repairs legacy metadata arrays without relaxing writes."
+  (let* ((directory (make-temp-file "e-session-legacy-array-metadata-" t))
+         (sessions-directory (expand-file-name "sessions" directory))
+         (session-file (expand-file-name "legacy-array.jsonl"
+                                         sessions-directory)))
+    (unwind-protect
+        (progn
+          (make-directory sessions-directory t)
+          (with-temp-file session-file
+            (insert
+             (json-encode
+              `(:type "session"
+                :session-id "legacy-array"
+                :id "root"
+                :timestamp "2026-06-29T00:00:00Z"
+                :metadata ["/tmp/project-a/"
+                           "project-root"
+                           "chat-default"
+                           "harness-instance-id"]))
+             "\n"
+             (json-encode
+              `(:type "session-info"
+                :session-id "legacy-array"
+                :id "info-1"
+                :parent-id "root"
+                :timestamp "2026-06-29T00:00:01Z"
+                :metadata ["/tmp/project-b/"
+                           "project-root"
+                           "chat-updated"
+                           "harness-instance-id"]))
+             "\n"))
+          (let* ((store (e-session-persistent-store-create directory))
+                 (metadata (plist-get (e-session-get store "legacy-array")
+                                      :metadata)))
+            (should (e-session--keyword-plist-shape-p metadata))
+            (should (equal (plist-get metadata :project-root)
+                           "/tmp/project-b/"))
+            (should (equal (plist-get metadata :harness-instance-id)
+                           "chat-updated"))))
+      (delete-directory directory t))))
+
 (ert-deftest e-session-test-metadata-schema-rejects-transient-and-unknown-keys ()
   "Generic metadata writes reject unowned or presentation-only state."
   (let ((store (e-session-store-create)))
     (e-session-create store :id "session-1")
+    (should-error
+     (e-session-create
+      store
+      :id "legacy-array"
+      :metadata '("project-root" "/tmp/project/")))
     (should-error
      (e-session-set-metadata store "session-1" '(:unknown t)))
     (should-error
