@@ -516,7 +516,9 @@ When VISIBLE-ONLY is non-nil, include only buffers visible in windows."
     "active tools with e-tools-call/e-tools-call! and active capability actions "
     "with e-actions-call. Inspect external Elisp with resource/file tools; do "
     "not load, require, byte-compile, or recursively scan external Elisp here "
-    "during an interactive turn.")
+    "during an interactive turn. Use elisp_job operation=run-batch for "
+    "expensive validation or byte-compilation that must not freeze the live "
+    "UI Emacs.")
    :parameters '(:type "object"
                  :properties (:code (:type "string"))
                  :required ["code"])

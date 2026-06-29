@@ -94,6 +94,7 @@
     e-tool-output-truncation
     e-layers-shell
     e-openai
+    e-elisp-job
     e-emacs-tools
     e-base-tools)
   "Concrete shell, provider, and side-effect features excluded from e-core.")

@@ -11,9 +11,13 @@
 
 ;;; Code:
 
+(require 'cl-lib)
 (require 'ert)
 (require 'seq)
 (require 'e)
+(require 'e-capabilities)
+(require 'e-elisp-job)
+(require 'e-emacs-capabilities)
 (require 'e-emacs-tools)
 (require 'e-harness)
 (require 'e-resources)
@@ -43,6 +47,15 @@ When READ-ONLY is non-nil, buffer resources only support reads."
     (while (not result)
       (accept-process-output nil 0.01))
     result))
+
+(defun e-emacs-tools-test--wait-until (predicate &optional timeout)
+  "Wait until PREDICATE returns non-nil or TIMEOUT seconds elapse."
+  (let ((deadline (+ (float-time) (or timeout 1.0)))
+        value)
+    (while (and (not (setq value (funcall predicate)))
+                (< (float-time) deadline))
+      (accept-process-output nil 0.01))
+    value))
 
 (ert-deftest e-emacs-tools-test-list-buffers-reports-buffer-metadata ()
   "The list-buffers tool returns live buffer metadata."
@@ -430,7 +443,100 @@ When READ-ONLY is non-nil, buffer resources only support reads."
       (should (string-match-p "Inspect external Elisp with resource/file tools"
                               description))
       (should (string-match-p "do not load, require, byte-compile"
-                              description)))))
+                              description))
+      (should (string-match-p "elisp_job" description))
+      (should (string-match-p "run-batch" description)))))
+
+(ert-deftest e-emacs-tools-test-elisp-job-starts-asynchronously ()
+  "elisp_job run-batch returns before worker completion."
+  (let ((registry (e-tools-registry-create))
+        result)
+    (e-elisp-job-register registry)
+    (let ((request
+           (e-tools-start
+            registry
+            '(:id "call-1"
+              :name "elisp_job"
+              :arguments
+              (:operation "run-batch"
+               :code "(progn (sleep-for 0.1) (princ \"done\"))"))
+            :on-done (lambda (value) (setq result value)))))
+      (should (e-tools-request-p request))
+      (should (null result))
+      (should (e-emacs-tools-test--wait-until
+               (lambda () result)
+               2.0))
+      (should (eq (plist-get result :status) 'ok))
+      (should (string-match-p "done" (plist-get result :content))))))
+
+(ert-deftest e-emacs-tools-test-elisp-job-publishes-progress ()
+  "elisp_job streams bounded progress from the worker process."
+  (let ((registry (e-tools-registry-create))
+        (e-elisp-job-progress-interval 0)
+        result
+        events)
+    (e-elisp-job-register registry)
+    (e-tools-start
+     registry
+     '(:id "call-1"
+       :name "elisp_job"
+       :arguments
+       (:operation "run-batch"
+        :code "(progn (princ \"one\\n\") (sleep-for 0.05) (princ \"two\\n\"))"))
+     :on-event (lambda (type payload)
+                 (push (list :type type :payload payload) events))
+     :on-done (lambda (value) (setq result value)))
+    (should (e-emacs-tools-test--wait-until
+             (lambda () result)
+             2.0))
+    (let ((progress (cl-find 'tool-progress events
+                             :key (lambda (event)
+                                    (plist-get event :type)))))
+      (should progress)
+      (should (equal (plist-get (plist-get progress :payload)
+                                :tool-call-id)
+                     "call-1"))
+      (should (string-match-p
+               "one"
+               (plist-get (plist-get progress :payload) :preview))))))
+
+(ert-deftest e-emacs-tools-test-elisp-job-timeout-kills-worker ()
+  "elisp_job kills timed-out worker processes and returns an error."
+  (let ((registry (e-tools-registry-create))
+        result
+        request)
+    (e-elisp-job-register registry)
+    (setq request
+          (e-tools-start
+           registry
+           '(:id "call-1"
+             :name "elisp_job"
+             :arguments
+             (:operation "run-batch"
+              :code "(sleep-for 2)"
+              :timeout 0.1))
+           :on-done (lambda (value) (setq result value))))
+    (should (e-tools-request-p request))
+    (should (e-emacs-tools-test--wait-until
+             (lambda () result)
+             2.0))
+    (should (eq (plist-get result :status) 'error))
+    (should (string-match-p "timed out after 0.1 seconds"
+                            (plist-get result :content)))
+    (when-let ((process (plist-get (e-tools-request-metadata request)
+                                   :process)))
+      (should-not (process-live-p process)))))
+
+(ert-deftest e-emacs-tools-test-elisp-eval-capability-registers-elisp-job ()
+  "The operator Elisp capability exposes elisp_job next to run_elisp."
+  (let ((registry (e-tools-registry-create)))
+    (e-capabilities-register-tools
+     (e-elisp-eval-capability-create)
+     registry)
+    (let ((names (mapcar (lambda (tool) (plist-get tool :name))
+                         (e-tools-definitions registry))))
+      (should (member "run_elisp" names))
+      (should (member "elisp_job" names)))))
 
 (ert-deftest e-emacs-tools-test-run-elisp-never-enters-debugger ()
   "run_elisp surfaces errors as tool errors without popping the debugger.

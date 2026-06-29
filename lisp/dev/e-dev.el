@@ -124,6 +124,7 @@
                   "lisp/layers/harness/e-session-tmp-resources.el"
                   "lisp/layers/harness/e-tool-output-truncation.el"
                   "lisp/layers/harness/e-harness-base.el"
+                  "lisp/layers/emacs/e-elisp-job.el"
                   "lisp/layers/emacs/e-emacs-tools.el"
                   "lisp/layers/emacs/e-emacs-capabilities.el"
                   "lisp/layers/emacs/e-emacs-base.el"

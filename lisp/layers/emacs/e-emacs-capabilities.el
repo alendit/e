@@ -15,6 +15,7 @@
 (require 'cl-lib)
 (require 'e-capabilities)
 (require 'e-context)
+(require 'e-elisp-job)
 (require 'e-emacs-tools)
 (require 'e-layers)
 (require 'e-skills)
@@ -172,6 +173,7 @@ Before finalizing, verify presentation, not just content. Confirm the resource y
      "(e-actions-call 'chat-session :rename '(:name \"Focused chat\"))"
      ""
      "Do not use run_elisp to load, require, byte-compile, or recursively scan external Elisp during an interactive turn. Inspect external Elisp with resource/file tools, and use an explicit project-local action when trusted project Elisp needs activation."
+     "Use the elisp_job tool with operation=run-batch for expensive validation, byte-compilation, or exploratory loading of external Elisp that must not freeze the live UI Emacs. elisp_job runs a separate emacs -Q --batch worker and does not activate code in the live Emacs."
      ""
      "Use this when several tool calls are needed to compute one answer, later calls depend on earlier results, many similar resources need the same read/search/edit operation, or the result should be filtered, grouped, or summarized before returning."
      ""
@@ -189,7 +191,8 @@ Before finalizing, verify presentation, not just content. Confirm the resource y
    :id 'elisp-eval
    :name "Elisp Eval"
    :instructions e-elisp-eval-instructions
-   :tools (list #'e-emacs-tools-register-elisp-eval)))
+   :tools (list #'e-emacs-tools-register-elisp-eval
+                #'e-elisp-job-register)))
 
 (defconst e-workspace-awareness-instructions
   "Workspace-aware Emacs shells carry a workspace affinity. Prefer workspace_state, workspace_focus_buffer, and workspace_show_shell before raw switch-to-buffer, pop-to-buffer, or display-buffer calls."
