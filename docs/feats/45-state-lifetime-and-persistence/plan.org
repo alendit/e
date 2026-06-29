@@ -1,0 +1,480 @@
+#+title: State Lifetime and Persistence Boundaries
+#+startup: overview
+
+* Goal
+
+Make state lifetime an explicit runtime contract instead of an implicit choice
+made by whichever component has a convenient write path.
+
+The runtime should persist durable facts, user intent, stable configuration,
+explicit replay/audit history, and restart-critical references.  It should keep
+derived, high-churn, presentation, focus, selection, progress, request, cache,
+and display state near the runtime that owns it unless a concrete cross-restart
+requirement justifies a longer lifetime.
+
+* Status
+
+Planned.
+
+* Problem
+
+The read-marker regression exposed a broader architectural problem: transient UI
+state could enter session metadata because the session store accepts a generic
+metadata bag.  That made a process-local display concern look like durable
+session state, survived Emacs restart, and then broke chat sends after reload.
+
+The immediate fix removed that bad state from persistence, but the same failure
+shape remains possible anywhere generic metadata, activity events, or provider
+anchors accept data without an owner and lifetime contract.
+
+This matters because persistence is not only about disk writes.  It changes the
+meaning of state:
+
+- it survives restart;
+- it becomes compatibility surface;
+- it can appear in indexes and overviews;
+- it can be replayed into live state;
+- it raises migration and corruption-recovery cost;
+- it often sits on hot paths such as prompt submit, session append, and session
+  listing.
+
+High mutability should raise the proof burden for persistence.  If state changes
+often, is derived from live buffers, or exists to render the UI, the default
+answer should be process-local, buffer-local, request-local, or rebuildable.
+
+* Non-goals
+
+- Do not rewrite the entire session store.
+- Do not remove durable session history, compaction records, or provider
+  continuation support.
+- Do not add broad compatibility shims for obsolete state unless a real
+  user-owned session requires them.
+- Do not accept performance regressions because the current metadata structure
+  makes a migration convenient.
+
+* Target state model
+
+Every new or changed stateful path should declare:
+
+- owner;
+- meaning;
+- mutability;
+- lifetime;
+- durability;
+- rebuild source;
+- persistence reason;
+- cleanup or migration rule.
+
+Use these state classes:
+
+** Durable session identity and config
+
+Stable facts and user intent that define the session across restart.
+
+Examples:
+
+- session id and title;
+- project root when the session is project-scoped;
+- harness instance id;
+- explicit model and effort turn options;
+- stable capability enablement chosen for the session.
+
+** Durable transcript and replay history
+
+Records needed to reconstruct conversation history, compaction boundaries,
+assistant output, tool activity summaries, and audit/debug history.
+
+This state can be append-only, but payload size and index-write behavior must be
+bounded.
+
+** Current-state references
+
+Durable references used to rebuild volatile context at request time.
+
+Examples:
+
+- file or buffer attachment references;
+- Org Canvas document identity;
+- workspace root references;
+- resource handles with owner, version, and cleanup semantics.
+
+The reference may persist.  The live view, focus, point, selection, and rendered
+status should not persist unless the feature explicitly needs restart recovery
+for that exact state.
+
+** Capability session state
+
+State owned by a capability and meaningful across turns or restart.
+
+This should be stored through a typed capability-state API with owner and
+version metadata, not by writing arbitrary keys into session metadata.
+
+** Active runtime state
+
+Request timers, active provider requests, open tool calls, queued prompts,
+pending steering input, retry counters, temporary process handles, and in-flight
+render jobs.
+
+This belongs in harness-local or process-local state and should not be replayed
+from disk.
+
+** Presentation state
+
+Buffer-local render caches, status text, read markers, expanded/collapsed UI
+state, selected windows, point, overlays, previews, and progress displays.
+
+This belongs in the shell or buffer that owns the presentation.  Persist only an
+explicit user setting or an explicit resume checkpoint.
+
+** Provider continuation state
+
+Provider anchors and continuation ids are durable enough to reuse provider-side
+context, but they should remain opaque session records.  Compatibility policy
+belongs to harness/provider-anchor code, not to arbitrary session metadata.
+
+Dynamic context and current-state segments should be attached fresh at request
+time and should not invalidate stable provider anchors by themselves.
+
+* Current architecture observations
+
+** Generic metadata is too broad
+
+=e-session-set-metadata= appends a =session-info= record and refreshes the
+session index.  That means every metadata key becomes durable state and can
+affect session listing, replay, and restart behavior.
+
+Callers currently use this path for different kinds of state:
+
+- chat session project root and harness identity;
+- chat context attachments;
+- Org Canvas metadata, including recent focus data;
+- MCP active server choices;
+- debug and shell-specific metadata.
+
+These do not all have the same lifetime.
+
+** Chat attach can mutate durable state
+
+Attaching an existing chat buffer can ensure or update project-root metadata.
+Opening a presentation shell should usually be a pure reattachment.  Durable
+session metadata should change during explicit session creation, import,
+migration, or user action, not as a side effect of displaying the buffer.
+
+** Org Canvas mixes stable document identity with high-churn focus
+
+Org Canvas stores stable document identity near recent focus/scope fields.
+Stable fields such as URI, root, mode, label, and target folder are valid
+session references.  Point, heading focus, subtree bounds, visibility, and
+window range are live focus state.  The prompt already carries focus as message
+metadata when the user submits; that is the right durable evidence for the
+turn.
+
+** Activity events need a persistence reason
+
+Durable activity currently covers useful replay/audit data, but the boundary is
+implicit.  Tool summaries and final turn status are different from transient
+progress.  Event classes should state why the event is persisted and what size
+budget applies.
+
+** Provider anchors point in the right direction
+
+Provider anchors already separate stable continuation state from fresh dynamic
+context.  Keep that direction.  The follow-up work is to make ownership clearer:
+the session store persists opaque anchor records; harness/provider-anchor code
+decides compatibility.
+
+* Design
+
+** State inventory
+
+Create a state inventory for the runtime before moving code.
+
+For each stateful path, record:
+
+- state name;
+- owning component;
+- current storage location;
+- intended state class;
+- mutation frequency;
+- rebuild source;
+- cross-restart requirement;
+- index exposure;
+- cleanup or migration rule;
+- current callers.
+
+Start with:
+
+- session metadata keys;
+- turn options;
+- provider anchors;
+- activity events;
+- chat read/unread and display caches;
+- chat attachments;
+- Org Canvas metadata and focus;
+- MCP process/catalog/active server state;
+- harness active turn and queue state;
+- context/status budget caches.
+
+** Metadata schema and typed write paths
+
+Replace generic metadata writes with typed paths:
+
+- =e-session-set-session-config= for stable session identity and config;
+- =e-session-set-context-references= for durable current-state references;
+- =e-session-set-capability-state= for capability-owned durable state;
+- =e-session-update-title= or existing narrow title APIs for presentation names;
+- =e-session-append-provider-anchor= for provider continuation records.
+
+Keep =e-session-set-metadata= internal or mark it as legacy.  If it remains
+public during migration, it should validate keys against the schema and reject
+unknown state without an owner and lifetime.
+
+Each schema entry should declare:
+
+- owner;
+- state class;
+- allowed value shape;
+- whether it may appear in the session index;
+- whether it may change during display attach;
+- migration behavior for missing or obsolete values.
+
+** Chat session cleanup
+
+Make chat attach and display refresh paths non-mutating by default.
+
+- Store project root at session creation or explicit migration.
+- Do not update project root during ordinary buffer attach unless the stored
+  value is absent.
+- Move context attachments to the current-state reference lane.
+- Keep read markers, unread indicators, previews, render caches, and status
+  estimates process-local or buffer-local.
+
+** Org Canvas cleanup
+
+Split Org Canvas state:
+
+- =org-canvas-ref= :: durable document/session reference with URI, root, mode,
+  label, target folder, and file identity;
+- =org-canvas-focus= :: live focus state held buffer-locally or process-locally;
+- prompt focus metadata :: durable evidence attached to the submitted user
+  message;
+- optional explicit resume checkpoint :: durable only if a concrete user flow
+  requires restoring focus after restart.
+
+The context provider should prefer:
+
+1. live focus from the current Org Canvas buffer;
+2. focus from the latest prompt message metadata;
+3. stable =org-canvas-ref=;
+4. no focus.
+
+It should not need high-churn session metadata to build normal current-state
+context.
+
+** Activity event classification
+
+Classify activity event types:
+
+- =audit= :: durable evidence of a user-visible or tool-visible operation;
+- =replay= :: needed to reconstruct session output;
+- =presentation-log= :: useful historical UI display, compact and bounded;
+- =transient-progress= :: never persisted.
+
+Add payload and write-frequency rules:
+
+- no raw provider deltas in durable activity unless compacted;
+- previews must carry truncation metadata;
+- high-volume events may not trigger index writes;
+- event batches should flush the index only on terminal turn/session events.
+
+** Provider anchor ownership
+
+Keep provider anchors durable, but make the boundary explicit:
+
+- session store persists opaque anchor records and compaction boundary metadata;
+- harness/provider-anchor code owns fingerprinting and compatibility;
+- dynamic/current-state context is prepended fresh on each request;
+- provider-anchor invalidation reasons are recorded for diagnostics, not hidden
+  in fallback behavior.
+
+* Implementation phases
+
+** Phase 1: Inventory and tests before migration
+
+1. Add =docs/feats/45-state-lifetime-and-persistence/state-inventory.org=.
+2. Inventory current session metadata keys and activity event types.
+3. Add regression tests proving presentation state is not persisted in session
+   metadata.
+4. Add tests for read markers and other known transient chat state.
+5. Add tests that session listing does not require materializing heavy dynamic
+   state.
+6. Add performance baselines or scenario hooks for metadata writes, session
+   append, session replay, and overview listing.
+
+** Phase 2: Session metadata schema and typed APIs
+
+1. Add a metadata schema module or section owned by =e-session=.
+2. Add narrow write helpers for session config, context references, and
+   capability state.
+3. Make generic metadata writes validate keys and state classes.
+4. Replace ad hoc metadata sanitizers with schema enforcement.
+5. Add compatibility readers only for real existing durable keys.
+6. Remove obsolete compatibility paths after migration tests pass.
+
+** Phase 3: Chat and context attachment migration
+
+1. Move chat attachments into the current-state reference lane.
+2. Make chat buffer attach avoid durable writes except for missing required
+   session config.
+3. Keep unread/read state process-local.
+4. Keep render/status estimates buffer-local and cheap.
+5. Add live reload verification that an existing chat can send after restart
+   and that no read-marker-like presentation key is written.
+
+** Phase 4: Org Canvas state split
+
+1. Introduce stable =org-canvas-ref= storage.
+2. Move recent focus/scope out of generic session metadata.
+3. Preserve prompt focus as user-message metadata.
+4. Update the Org Canvas context provider to use live focus first and prompt
+   focus as the durable fallback.
+5. Add tests for restart behavior with only stable canvas refs.
+
+** Phase 5: Activity and provider-anchor boundaries
+
+1. Classify durable activity event types.
+2. Add payload-size and index-write tests for high-volume activity.
+3. Move provider-anchor compatibility policy out of generic session concerns if
+   the inventory shows session code owning provider semantics directly.
+4. Preserve fresh dynamic/current-state context prepending.
+5. Add tests for provider-anchor reuse with changed dynamic context.
+
+** Phase 6: Documentation and cleanup
+
+1. Update =docs/architecture.md= with the state lifetime model.
+2. Update relevant developer guidance if the implementation finds a sharper
+   rule than the current AGENTS guidance.
+3. Remove legacy metadata keys and shims that have no real compatibility need.
+4. Add review notes for any unavoidable persisted high-churn state, including
+   why the correct behavior fundamentally requires persistence.
+
+* Acceptance criteria
+
+- No presentation, read/unread, focus, selection, transient progress, request,
+  timer, retry, or cache state can enter session metadata through an untyped
+  write path.
+- Every persisted state key has an owner, state class, lifetime, rebuild source,
+  and compatibility rule.
+- Chat session attach is not a normal durable-write path.
+- Org Canvas persists stable document identity separately from live focus.
+- Prompt-specific focus remains durable as message metadata when it explains
+  that prompt.
+- Activity events declare their persistence class and payload budget.
+- Provider anchors continue to reuse stable continuation state while dynamic
+  context is attached fresh.
+- Existing sessions with valid durable metadata continue to load.
+- Obsolete or invalid metadata is either migrated deliberately or rejected with
+  an obvious diagnostic.
+
+* Performance contract
+
+The implementation must prove that the new state model does not add steady-state
+cost to hot paths without a first-principles reason.
+
+Measure or assert:
+
+- number of session index writes per prompt;
+- number and size of JSONL records per prompt;
+- cost of listing sessions;
+- cost of attaching an existing chat buffer;
+- cost of Org Canvas prompt submit;
+- cost of provider-anchor compatibility checks;
+- cost of activity bursts.
+
+Any regression needs a direct explanation of why the correct behavior requires
+more work.  A regression caused only by generic validation, repeated metadata
+normalization, full-session scans, or convenient reuse of existing structures is
+not acceptable.
+
+* Verification plan
+
+- Focused ERT for metadata schema validation and typed write paths.
+- Focused ERT for chat attach without durable metadata writes.
+- Focused ERT for Org Canvas ref/focus split.
+- Focused ERT for activity classification and payload truncation.
+- Provider-anchor tests for dynamic/current-state changes that should not
+  invalidate stable anchors.
+- Performance scenarios from the perf-regression framework for session append,
+  session replay/listing, context assembly, and chat activity bursts.
+- =e-dev-reload= after Lisp changes.
+- Live Emacs probe: restart or reload, open an existing chat session, send a
+  prompt, and verify the session store has no presentation-state metadata.
+
+* Risks
+
+- Existing sessions may contain legacy metadata that needs one targeted reader
+  or migration.
+- A too-strict schema could block legitimate capability-owned state if the
+  capability-state lane is not ready before migration.
+- Moving Org Canvas focus out of session metadata may expose hidden reliance on
+  restart focus restoration.
+- Activity event classification may reveal that some events were doing both
+  presentation and replay work.
+- Provider-anchor ownership cleanup could grow if compatibility policy is more
+  tangled than expected.
+
+* Design self-check
+
+1. If this work package stopped here, would the project be better off than if it
+   had not been built?
+   Yes.  The first phase creates a state inventory and tests that make future
+   persistence mistakes visible before broad migration.
+2. What final direction does this move toward?
+   A runtime where state lifetime follows meaning: stable facts persist,
+   volatile state stays near its owner, and current context is rebuilt from
+   durable references instead of serialized UI state.
+3. Which decisions are likely to change, uncertain, or stable?
+   The stable decision is the lifetime model.  The uncertain decisions are the
+   exact API names and whether a few existing metadata keys become session
+   config, current-state references, or capability state.  Those decisions stay
+   local to the migration inventory.
+4. What component owns this behavior, and why?
+   =e-session= owns durable storage contracts.  Shells own presentation state.
+   Capabilities own capability session state.  Harness/provider-anchor code owns
+   continuation compatibility.  Context providers own rebuilding current state.
+5. Does this change increase or reduce coupling?
+   It reduces coupling by replacing one shared metadata bag with narrow,
+   owner-shaped write paths.
+6. Did any dependency start pointing the wrong way?
+   The intended direction is from shells and capabilities toward stable session
+   contracts, not from session storage back into UI, provider, or capability
+   details.
+7. Could any side effect be moved outward into an adapter or shell?
+   Yes.  Presentation writes, focus changes, and status caches move outward to
+   shells or buffers.  Durable writes stay in session-owned APIs.
+8. What state does this change add or mutate?
+   It adds schema state describing durable keys and mutates existing metadata
+   write paths.  Each new persisted key must justify owner, lifetime, rebuild
+   source, and smallest correct storage scope.
+9. What is the performance impact?
+   The target impact is neutral or positive on hot paths.  Validation must be
+   local and constant-time, avoid full-session scans, and reduce unnecessary
+   durable writes from attach/focus/display paths.
+10. Are the abstractions semantically real?
+    Yes.  Session config, current-state references, capability state,
+    presentation state, activity history, and provider anchors have different
+    lifetimes and owners.
+11. What compatibility expectations apply?
+    Valid existing sessions should load.  Obsolete metadata receives targeted
+    compatibility only when a real session requires it.
+12. What legacy code can we remove now?
+    Ad hoc metadata sanitizers, generic shell metadata writes, and compatibility
+    shims for transient state can be removed as each typed lane lands.
+13. Where are expected errors handled?
+    Invalid metadata writes fail at the typed API boundary with owner/key
+    diagnostics.  Unexpected corruption surfaces during session load or replay
+    instead of being silently swallowed.
+14. What tests prove the core behavior independently of the full system?
+    Metadata schema tests, typed write-path tests, chat attach tests, Org Canvas
+    focus/ref tests, activity classification tests, and provider-anchor dynamic
+    context tests prove the core without a full live session.
