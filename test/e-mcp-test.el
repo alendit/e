@@ -18,6 +18,7 @@
 (require 'e-harness)
 (require 'e-layer)
 (require 'e-mcp)
+(require 'e-request)
 (require 'e-tools)
 
 (defconst e-mcp-test--schema
@@ -170,7 +171,9 @@
         (should (equal (plist-get stored :metadata)
                        '(:kind mcp-tool
                          :server-id "fixture"
-                         :tool-name "echo")))))))
+                         :tool-name "echo"
+                         :blocking-class process)))
+        (should (functionp (plist-get stored :start)))))))
 
 (ert-deftest e-mcp-test-list-tools-keeps-multiple-server-catalogs-distinct ()
   "Flattened helper catalogs retain the originating MCP server id."
@@ -269,6 +272,59 @@
                                   :server-id "fixture"
                                   :tool-name "fail"
                                   :error mcp-execution-error)))))))
+
+(ert-deftest e-mcp-test-generated-tool-start-returns-before-helper-response ()
+  "Generated stdio MCP tools start without blocking on helper responses."
+  (let ((calls nil)
+        result
+        failure
+        request)
+    (e-mcp-test--with-transport
+        (lambda (payload)
+          (push (plist-get payload :op) calls)
+          (pcase (plist-get payload :op)
+            ("list-tools"
+             (list :ok t
+                   :result (list :tools
+                                 (vector (e-mcp-test--fake-tool
+                                          "echo"
+                                          e-mcp-test--schema)))))
+            ("call-tool"
+             '(:ok t :result (:content [(:type "text" :text "async")]
+                            :isError :json-false)))))
+      (let* ((capability
+              (e-capability-with-mcp-create
+               :id 'fixture-mcp
+               :mcp-servers (list (e-mcp-test--server))))
+             (registry (e-tools-registry-create)))
+        (e-capabilities-register-tools capability registry)
+        (e-request-with-blocking-primitive-guard
+          (e-request-with-hot-path 'mcp-tool
+            (setq request
+                  (e-tools-start
+                   registry
+                   '(:id "call-1"
+                     :name "mcp__fixture__echo"
+                     :arguments (:text "hi"))
+                   :context '(:interactive t)
+                   :on-done (lambda (value) (setq result value))
+                   :on-error (lambda (err) (setq failure err)))))))
+        (should (e-tools-request-p request))
+        (should-not result)
+        (should-not failure)
+        (let ((deadline (+ (float-time) 1)))
+          (while (and (not result) (< (float-time) deadline))
+            (accept-process-output nil 0.01)))
+        (should-not failure)
+        (should (equal (nreverse calls) '("list-tools" "call-tool")))
+        (should (equal result
+                       '(:tool-call-id "call-1"
+                         :name "mcp__fixture__echo"
+                         :status ok
+                         :content "async"
+                         :metadata (:kind mcp-tool
+                                    :server-id "fixture"
+                                    :tool-name "echo")))))))
 
 (ert-deftest e-mcp-test-generated-tool-summarizes-unsupported-content ()
   "Unsupported MCP content blocks are truthful model-visible summaries."
@@ -552,6 +608,60 @@ echoed back on `tools/list' and `tools/call'."
                           '(:text "over http"))
                          '(:content [(:type "text" :text "over http")]
                            :isError :json-false))))
+      (e-mcp-reset)
+      (when (process-live-p process)
+        (kill-process process))
+      (when (buffer-live-p (process-buffer process))
+        (kill-buffer (process-buffer process))))))
+
+(ert-deftest e-mcp-test-http-generated-tool-starts-asynchronously ()
+  "Generated HTTP MCP tools use async URL retrieval for tool calls."
+  (skip-unless (executable-find "node"))
+  (let* ((fixture (e-mcp-test--start-http-fixture))
+         (process (car fixture))
+         (url (cdr fixture))
+         (server (e-mcp-server-create :id "http-fixture" :url url))
+         result
+         failure
+         request)
+    (unwind-protect
+        (progn
+          (e-mcp-reset)
+          (let* ((capability
+                  (e-capability-with-mcp-create
+                   :id 'fixture-http-mcp
+                   :mcp-servers (list server)))
+                 (registry (e-tools-registry-create)))
+            (e-capabilities-register-tools capability registry)
+            (e-request-with-blocking-primitive-guard
+              (e-request-with-hot-path 'mcp-http-tool
+                (setq request
+                      (e-tools-start
+                       registry
+                       '(:id "call-1"
+                         :name "mcp__http-fixture__echo"
+                         :arguments (:text "over async http"))
+                       :context '(:interactive t)
+                       :on-done (lambda (value) (setq result value))
+                       :on-error (lambda (err) (setq failure err)))))))
+            (should (e-tools-request-p request))
+            (should (eq (plist-get (e-tools-request-metadata request)
+                                   :transport)
+                        'url))
+            (should-not result)
+            (should-not failure)
+            (let ((deadline (+ (float-time) 3)))
+              (while (and (not result) (< (float-time) deadline))
+                (accept-process-output nil 0.01)))
+            (should-not failure)
+            (should (equal result
+                           '(:tool-call-id "call-1"
+                             :name "mcp__http-fixture__echo"
+                             :status ok
+                             :content "over async http"
+                             :metadata (:kind mcp-tool
+                                        :server-id "http-fixture"
+                                        :tool-name "echo")))))
       (e-mcp-reset)
       (when (process-live-p process)
         (kill-process process))

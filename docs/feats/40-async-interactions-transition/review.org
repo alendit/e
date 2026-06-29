@@ -145,6 +145,57 @@ emacsclient --eval "...bounded web_browser registry probe..."
 
 Result: returned =(:has-start t :blocking-class process)=.
 
+* Phase 2 MCP Slice Review
+
+Status: in progress.
+
+** Scope reviewed
+
+- Added async helper request starts for stdio MCP calls using request-id polling, timeout settlement, cancellation, and late-result ignoring.
+- Added async HTTP JSON-RPC POST starts using =url-retrieve=, timeout settlement, cancellation, and shared response/session parsing.
+- Kept synchronous MCP discovery, refresh, and batch call wrappers for the current explicit batch paths.
+- Registered generated MCP tools with async =:start= and =:blocking-class= metadata: =process= for stdio servers and =network= for HTTP servers.
+- Reused the existing MCP result mapper for sync and async generated tool completion.
+- Added deterministic stdio and HTTP generated-tool coverage proving =e-tools-start= returns before helper/network completion under the hot-path blocking guard.
+
+** Verification
+
+#+begin_src sh
+rtk eldev test --file test/e-mcp-test.el -B
+#+end_src
+
+Result: passed for the focused MCP file, including stdio helper and HTTP generated-tool async starts.
+
+#+begin_src sh
+rtk eldev test --file test/e-mcp-test.el --file test/e-tools-test.el --file test/e-harness-test.el --file test/e-request-test.el -B
+#+end_src
+
+Result: passed for adjacent MCP, tool, harness, and request contracts.
+
+#+begin_src sh
+git diff --check
+#+end_src
+
+Result: passed.
+
+#+begin_src sh
+rtk eldev emacs --batch --eval "(progn (setq byte-compile-error-on-warn t) (byte-compile-file \"lisp/core/e-mcp.el\"))"
+#+end_src
+
+Result: passed for the touched MCP file.
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Result: returned the repository path after reloading changed Lisp.
+
+#+begin_src sh
+emacsclient --eval "...bounded generated MCP registry probe..."
+#+end_src
+
+Result: returned =(:has-start t :blocking-class process)=.
+
 * Phase 2 Resource Discovery Slice Review
 
 Status: in progress.

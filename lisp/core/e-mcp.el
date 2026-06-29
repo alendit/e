@@ -309,6 +309,16 @@ transport), but not both."
           (list (or (plist-get response :error) fallback)
                 (plist-get response :diagnostics))))
 
+(defun e-mcp--helper-result (response)
+  "Validate helper RESPONSE and return its result."
+  (unless (and (listp response) (plist-member response :ok))
+    (signal 'e-mcp-protocol-error
+            (list "MCP helper returned an invalid response" response)))
+  (setq e-mcp--latest-diagnostics (plist-get response :diagnostics))
+  (unless (e-mcp--truthy-p (plist-get response :ok))
+    (e-mcp--helper-error response "MCP helper returned an error"))
+  (plist-get response :result))
+
 (defun e-mcp--helper-request (op servers &rest args)
   "Send OP for SERVERS to the helper with keyword ARGS."
   (let* ((id (e-mcp--next-id))
@@ -342,15 +352,111 @@ transport), but not both."
                                               (e-mcp--stderr-string))
                                              ""
                                            (concat ": "
-                                                   (e-mcp--stderr-string)))))))))
+                                                  (e-mcp--stderr-string)))))))))
               response)))
-    (unless (and (listp response) (plist-member response :ok))
-      (signal 'e-mcp-protocol-error
-              (list "MCP helper returned an invalid response" response)))
-    (setq e-mcp--latest-diagnostics (plist-get response :diagnostics))
-    (unless (e-mcp--truthy-p (plist-get response :ok))
-      (e-mcp--helper-error response "MCP helper returned an error"))
-    (plist-get response :result)))
+    (e-mcp--helper-result response)))
+
+(cl-defun e-mcp--helper-request-start
+    (op servers args &key on-done on-error on-event &allow-other-keys)
+  "Start helper OP for SERVERS with keyword ARGS asynchronously."
+  (let* ((id (e-mcp--next-id))
+         (request (append (list :id id
+                                :op op
+                                :servers (e-mcp--servers-payload servers))
+                          args))
+         (timeout (or (plist-get args :timeout)
+                      e-mcp-helper-timeout))
+         (settled nil)
+         poll-timer
+         timeout-timer
+         transport-timer
+         process)
+    (cl-labels
+        ((cleanup ()
+           (when (timerp poll-timer)
+             (cancel-timer poll-timer))
+           (when (timerp timeout-timer)
+             (cancel-timer timeout-timer))
+           (when (timerp transport-timer)
+             (cancel-timer transport-timer)))
+         (fail (condition)
+           (unless settled
+             (setq settled t)
+             (cleanup)
+             (when on-error
+               (funcall on-error condition))))
+         (finish (response)
+           (unless settled
+             (condition-case condition
+                 (let ((result (e-mcp--helper-result response)))
+                   (setq settled t)
+                   (cleanup)
+                   (when on-done
+                     (funcall on-done result)))
+               (error
+                (fail condition)))))
+         (poll ()
+           (unless settled
+             (let ((response (e-mcp--response-for-id id)))
+               (cond
+                (response
+                 (finish response))
+                ((not (process-live-p process))
+                 (fail
+                  (list 'e-mcp-backend-error
+                        (string-trim
+                         (format "MCP helper exited%s"
+                                 (if (string-empty-p (e-mcp--stderr-string))
+                                     ""
+                                   (concat ": " (e-mcp--stderr-string))))))))
+                (t
+                 (setq poll-timer (run-at-time 0.01 nil #'poll)))))))
+         (timeout! ()
+           (fail
+            (list 'e-mcp-backend-timeout
+                  (format "MCP helper timed out after %s seconds"
+                          timeout)))))
+      (if e-mcp-helper-transport-function
+          (progn
+            (setq transport-timer
+                  (run-at-time
+                   0 nil
+                   (lambda ()
+                     (condition-case condition
+                         (finish
+                          (funcall e-mcp-helper-transport-function request))
+                       (error
+                        (fail condition))))))
+            (e-tools-request-create
+             :cancel (lambda ()
+                       (unless settled
+                         (setq settled t)
+                         (cleanup))
+                       t)
+             :metadata '(:transport timer :cancellable queued-only)))
+        (let ((started nil))
+          (unwind-protect
+              (progn
+                (setq process (e-mcp--helper-ensure))
+                (process-send-string process (concat (json-encode request) "\n"))
+                (when on-event
+                  (funcall on-event 'tool-progress
+                           (list :message "MCP helper request started")))
+                (setq timeout-timer (run-at-time timeout nil #'timeout!))
+                (setq poll-timer (run-at-time 0 nil #'poll))
+                (setq started t)
+                (e-tools-request-create
+                 :cancel (lambda ()
+                           (unless settled
+                             (setq settled t)
+                             (cleanup))
+                           t)
+                 :metadata (list :transport 'process
+                                 :process process
+                                 :helper 'mcp
+                                 :cancellable 'ignore-late-result)))
+            (unless started
+              (cleanup))))))))
 
 (defun e-mcp--tool-from-helper (server-id item)
   "Return an `e-mcp-tool' for SERVER-ID and helper catalog ITEM."
@@ -429,6 +535,26 @@ headers) is searched."
              header-end t)
         (match-string 1)))))
 
+(defun e-mcp--http-result-from-buffer (session buffer url)
+  "Return parsed JSON-RPC result for SESSION from response BUFFER at URL."
+  (let* ((body (e-mcp--http-response-body buffer))
+         (_ (unless (and body (not (string-empty-p (string-trim body))))
+              (signal 'e-mcp-backend-error
+                      (list (format "Empty response from MCP HTTP server %s"
+                                    url)))))
+         (response (e-mcp--parse-json body))
+         ;; Capture Mcp-Session-Id header so follow-up requests stay on
+         ;; the same MCP session.
+         (resp-session-id (e-mcp--http-session-header buffer)))
+    (when resp-session-id
+      (plist-put session :session-id resp-session-id))
+    (when (plist-get response :error)
+      (let ((err-obj (plist-get response :error)))
+        (signal 'e-mcp-backend-error
+                (list (or (plist-get err-obj :message)
+                          (format "%S" err-obj))))))
+    (plist-get response :result)))
+
 (defun e-mcp--http-post (session method params)
   "Send a JSON-RPC METHOD call with PARAMS to the MCP HTTP server in SESSION.
 Return the parsed JSON-RPC result on success, signal on error."
@@ -449,24 +575,87 @@ Return the parsed JSON-RPC result on success, signal on error."
                     (signal 'e-mcp-backend-error
                             (list (format "HTTP request to %s failed: %S" url err)))))))
     (unwind-protect
-        (let* ((body (e-mcp--http-response-body buffer))
-               (_ (unless (and body (not (string-empty-p (string-trim body))))
-                    (signal 'e-mcp-backend-error
-                            (list (format "Empty response from MCP HTTP server %s" url)))))
-               (response (e-mcp--parse-json body))
-               ;; Capture Mcp-Session-Id header so follow-up requests stay on
-               ;; the same MCP session.
-               (resp-session-id (e-mcp--http-session-header buffer)))
-          (when resp-session-id
-            (plist-put session :session-id resp-session-id))
-          (when (plist-get response :error)
-            (let ((err-obj (plist-get response :error)))
-              (signal 'e-mcp-backend-error
-                      (list (or (plist-get err-obj :message)
-                                (format "%S" err-obj))))))
-          (plist-get response :result))
+        (e-mcp--http-result-from-buffer session buffer url)
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
+
+(cl-defun e-mcp--http-post-start
+    (session method params &key on-done on-error on-event &allow-other-keys)
+  "Start a JSON-RPC METHOD call with PARAMS to HTTP SESSION."
+  (let* ((id (e-mcp--http-next-id session))
+         (url (plist-get session :url))
+         (timeout (or e-mcp-helper-timeout 10))
+         (payload (json-encode
+                   (list :jsonrpc "2.0"
+                         :id id
+                         :method method
+                         :params (or params (make-hash-table)))))
+         (settled nil)
+         timer
+         buffer)
+    (cl-labels
+        ((cleanup ()
+           (when (timerp timer)
+             (cancel-timer timer))
+           (when (buffer-live-p buffer)
+             (kill-buffer buffer)))
+         (fail (condition)
+           (unless settled
+             (setq settled t)
+             (cleanup)
+             (when on-error
+               (funcall on-error condition))))
+         (finish (status)
+           (unless settled
+             (condition-case condition
+                 (progn
+                   (when-let ((transport-error (plist-get status :error)))
+                     (signal 'e-mcp-backend-error
+                             (list (format "HTTP request to %s failed: %S"
+                                           url transport-error))))
+                   (let ((result (e-mcp--http-result-from-buffer
+                                  session (current-buffer) url)))
+                     (setq settled t)
+                     (cleanup)
+                     (when on-done
+                       (funcall on-done result))))
+               (error
+                (fail condition)))))
+         (timeout! ()
+           (fail
+            (list 'e-mcp-backend-timeout
+                  (format "MCP HTTP request timed out after %s seconds"
+                          timeout)))))
+      (let ((started nil)
+            (url-request-method "POST")
+            (url-request-extra-headers (e-mcp--http-request-headers session))
+            (url-request-data (encode-coding-string payload 'utf-8)))
+        (unwind-protect
+            (progn
+              (setq buffer
+                    (condition-case condition
+                        (url-retrieve url #'finish nil 'silent)
+                      (error
+                       (signal 'e-mcp-backend-error
+                               (list (format "HTTP request to %s failed: %S"
+                                             url condition))))))
+              (when on-event
+                (funcall on-event 'tool-progress
+                         (list :message "MCP HTTP request started")))
+              (setq timer (run-at-time timeout nil #'timeout!))
+              (setq started t)
+              (e-tools-request-create
+               :cancel (lambda ()
+                         (unless settled
+                           (setq settled t)
+                           (cleanup))
+                         t)
+               :metadata (list :transport 'url
+                               :url url
+                               :method method
+                               :cancellable 'ignore-late-result)))
+          (unless started
+            (cleanup)))))))
 
 (defun e-mcp--http-notify (session method params)
   "Send a JSON-RPC notification (no id, no response expected) to SESSION."
@@ -482,6 +671,24 @@ Return the parsed JSON-RPC result on success, signal on error."
                    (url-retrieve-synchronously url 'silent nil 5))))
     (when (buffer-live-p buffer)
       (kill-buffer buffer))))
+
+(defun e-mcp--http-notify-start (session method params)
+  "Send a JSON-RPC notification to SESSION asynchronously."
+  (let* ((url (plist-get session :url))
+         (payload (json-encode
+                   (list :jsonrpc "2.0"
+                         :method method
+                         :params (or params (make-hash-table)))))
+         (url-request-method "POST")
+         (url-request-extra-headers (e-mcp--http-request-headers session))
+         (url-request-data (encode-coding-string payload 'utf-8)))
+    (url-retrieve
+     url
+     (lambda (_status)
+       (when (buffer-live-p (current-buffer))
+         (kill-buffer (current-buffer))))
+     nil
+     'silent)))
 
 (defun e-mcp--http-initialize (session)
   "Send MCP initialize and initialized notification for SESSION."
@@ -510,6 +717,53 @@ Return the parsed JSON-RPC result on success, signal on error."
     (e-mcp--http-post session "tools/call"
                       (list :name tool-name
                             :arguments (or arguments nil)))))
+
+(cl-defun e-mcp--http-call-tool-start
+    (server tool-name arguments &key on-done on-error on-event &allow-other-keys)
+  "Start TOOL-NAME with ARGUMENTS on HTTP SERVER asynchronously."
+  (let ((session (e-mcp--http-session server))
+        child-request
+        cancelled)
+    (cl-labels
+        ((set-child (request)
+           (setq child-request request)
+           request)
+         (cancel-child ()
+           (setq cancelled t)
+           (when child-request
+             (e-tools-cancel-request child-request))
+           t)
+         (call-tool ()
+           (unless cancelled
+             (set-child
+              (e-mcp--http-post-start
+               session "tools/call"
+               (list :name tool-name
+                     :arguments (or arguments nil))
+               :on-done on-done
+               :on-error on-error
+               :on-event on-event)))))
+      (if (plist-get session :initialized)
+          (call-tool)
+        (set-child
+         (e-mcp--http-post-start
+          session "initialize"
+          (list :protocolVersion "2024-11-05"
+                :capabilities nil
+                :clientInfo (list :name "e-mcp" :version "0.1.0"))
+          :on-done (lambda (_result)
+                     (plist-put session :initialized t)
+                     (e-mcp--http-notify-start
+                      session "notifications/initialized" nil)
+                     (call-tool))
+          :on-error on-error
+          :on-event on-event)))
+      (e-tools-request-create
+       :cancel #'cancel-child
+       :metadata (list :transport 'url
+                       :url (plist-get session :url)
+                       :method "tools/call"
+                       :cancellable 'ignore-late-result)))))
 
 (defun e-mcp--http-refresh (server)
   "Refresh tool catalog for HTTP SERVER."
@@ -594,6 +848,31 @@ omitted so a single broken MCP server cannot block harness startup."
                              :tool tool-name
                              :arguments arguments))))
 
+(cl-defun e-mcp-call-tool-start
+    (servers server-id tool-name arguments
+             &key on-done on-error on-event &allow-other-keys)
+  "Start TOOL-NAME on SERVER-ID through SERVERS with ARGUMENTS."
+  (let ((server (cl-find server-id servers
+                         :key #'e-mcp-server-id :test #'equal)))
+    (unless server
+      (signal 'e-mcp-backend-error
+              (list (format "Unknown MCP server: %s" server-id))))
+    (if (e-mcp--server-http-p server)
+        (e-mcp--http-call-tool-start
+         server tool-name arguments
+         :on-done on-done
+         :on-error on-error
+         :on-event on-event)
+      (e-mcp--helper-request-start
+       "call-tool"
+       (cl-remove-if #'e-mcp--server-http-p servers)
+       (list :server server-id
+             :tool tool-name
+             :arguments arguments)
+       :on-done on-done
+       :on-error on-error
+       :on-event on-event))))
+
 (defun e-mcp-refresh (&optional servers)
   "Refresh tool catalogs for SERVERS.
 HTTP servers are refreshed in-process; stdio servers use the helper.
@@ -659,6 +938,18 @@ this string."
   "Return non-nil when MCP-RESULT is an MCP execution error."
   (e-mcp--truthy-p (plist-get mcp-result :isError)))
 
+(defun e-mcp--tool-result (call tool mcp-result)
+  "Return an e tool result for CALL, TOOL, and MCP-RESULT."
+  (let ((content (e-mcp--result-content mcp-result))
+        (metadata (e-mcp--tool-metadata tool)))
+    (if (e-mcp--result-error-p mcp-result)
+        (e-tools-result-create
+         call
+         'error
+         content
+         (append metadata (list :error 'mcp-execution-error)))
+      (e-tools-result-create call 'ok content metadata))))
+
 (defun e-mcp--tool-handler (servers tool)
   "Return a generated handler for MCP TOOL through SERVERS."
   (lambda (arguments)
@@ -667,16 +958,33 @@ this string."
                         servers
                         (e-mcp-tool-server-id tool)
                         (e-mcp-tool-name tool)
-                        arguments))
-           (content (e-mcp--result-content mcp-result))
-           (metadata (e-mcp--tool-metadata tool)))
-      (if (e-mcp--result-error-p mcp-result)
-          (e-tools-result-create
-           call
-           'error
-           content
-           (append metadata (list :error 'mcp-execution-error)))
-        (e-tools-result-create call 'ok content metadata)))))
+                        arguments)))
+      (e-mcp--tool-result call tool mcp-result))))
+
+(defun e-mcp--tool-start (servers tool)
+  "Return a generated async start function for MCP TOOL through SERVERS."
+  (cl-function
+   (lambda (&key arguments on-done on-error on-event &allow-other-keys)
+     (let ((call (plist-get (e-tools-current-context) :tool-call)))
+       (e-mcp-call-tool-start
+        servers
+        (e-mcp-tool-server-id tool)
+        (e-mcp-tool-name tool)
+        arguments
+        :on-done (lambda (mcp-result)
+                   (when on-done
+                     (funcall on-done
+                              (e-mcp--tool-result call tool mcp-result))))
+        :on-error on-error
+        :on-event on-event)))))
+
+(defun e-mcp--tool-blocking-class (servers tool)
+  "Return the blocking class for generated MCP TOOL through SERVERS."
+  (let ((server (cl-find (e-mcp-tool-server-id tool) servers
+                         :key #'e-mcp-server-id :test #'equal)))
+    (if (and server (e-mcp--server-http-p server))
+        'network
+      'process)))
 
 (defun e-mcp--register-tool (registry servers tool)
   "Register generated e TOOL in REGISTRY for SERVERS."
@@ -688,7 +996,9 @@ this string."
                         (e-mcp-tool-description tool))
    :parameters (e-mcp-tool-input-schema tool)
    :metadata (e-mcp--tool-metadata tool)
-   :handler (e-mcp--tool-handler servers tool)))
+   :handler (e-mcp--tool-handler servers tool)
+   :start (e-mcp--tool-start servers tool)
+   :blocking-class (e-mcp--tool-blocking-class servers tool)))
 
 (defun e-mcp--remember-servers (servers)
   "Remember SERVERS for interactive refresh without duplicates."
