@@ -47,6 +47,7 @@ Use this section to evaluate decomposition, dependency direction, side-effect pl
 
 - Shape work packages around useful stopping points that move toward the final direction. If work stopped after the package, the project should be better off than not building it; this does not need to hold for every internal slice.
 - Treat available information explicitly. Make likely changes easy, keep uncertain decisions local and reversible, and model stable behavior directly. Use small module, adapter, function, data-mapping, or config boundaries to keep uncertain decisions contained. Add an abstraction only when the contract is real, stable enough to name, and makes the next likely change cheaper.
+- Place state where its meaning lives. Use the lowest durability and smallest owning scope that meet the real requirement. Persist durable facts, user intent, and stable configuration. Keep derived, high-churn, presentation, focus, selection, progress, and cache state near the runtime that owns it unless cross-restart behavior is required.
 - Give each behavior a clear owning component with one cohesive responsibility and one primary reason to change. Split mixed policy, orchestration, UI, transport, persistence, provider, and tool concerns when they change for different reasons.
 - Prefer application services over putting business logic into UI, transport, webhook, or tool handlers.
 - Keep dependencies flowing from unstable code toward stable code. High-level policy and application code should depend on stable, domain-owned contracts at real adapter boundaries, not concrete UI, transport, persistence, provider, or tool clients.
@@ -70,9 +71,10 @@ For design-sensitive changes, add these review questions in the final note, PR d
 5. Does this change increase or reduce coupling? Are interfaces narrow, consumer-shaped, and free of unused capabilities?
 6. Did any dependency start pointing the wrong way, especially from stable policy toward concrete adapters, providers, UI, transport, persistence, or tool clients?
 7. Could any side effect be moved outward into an adapter or shell?
-8. What is the performance impact of this change? Any regression must be justified from first principles by explaining why the correct approach fundamentally requires more work; do not accept regressions merely because the existing code structure makes them convenient.
-9. Are the abstractions and interfaces semantically real, and can implementations substitute for each other without narrowed preconditions, weakened behavior, ignored requirements, or unsupported-operation errors?
-10. What compatibility expectations apply, and were obsolete paths removed unless required?
-11. What legacy code can we remove now?
-12. Where are expected errors handled, and where do unexpected errors surface?
-13. What tests prove the core behavior independently of the full system? If the design changed, would tests change narrowly, or would unrelated tests need rewrites?
+8. What state does this change add or mutate? Who owns it, how long should it live, how often does it change, can it be rebuilt, and why is this the smallest correct storage lifetime?
+9. What is the performance impact of this change? Any regression must be justified from first principles by explaining why the correct approach fundamentally requires more work; do not accept regressions merely because the existing code structure makes them convenient.
+10. Are the abstractions and interfaces semantically real, and can implementations substitute for each other without narrowed preconditions, weakened behavior, ignored requirements, or unsupported-operation errors?
+11. What compatibility expectations apply, and were obsolete paths removed unless required?
+12. What legacy code can we remove now?
+13. Where are expected errors handled, and where do unexpected errors surface?
+14. What tests prove the core behavior independently of the full system? If the design changed, would tests change narrowly, or would unrelated tests need rewrites?
