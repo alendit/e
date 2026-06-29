@@ -94,3 +94,53 @@ The warning-as-error compile gate passed.
 
 The request asked to evaluate before/after performance after Feature 41.
 Feature 41 is still =In-progress= in the index, so Phase 1 records profile span hooks now and defers reviewed before/after comparison until Feature 41 is done.
+
+* Phase 2 Fetch Slice Review
+
+Status: in progress.
+
+** Scope reviewed
+
+- Converted passive =web_fetch= registration to a long =network= class tool with async =:start=.
+- Replaced the interactive fetch path's =url-retrieve-synchronously= wait with async =url-retrieve= callback settlement.
+- Kept the synchronous handler for explicit batch execution while the rest of the web family is migrated.
+- Preserved bounded text, Markdown, HTML, links, header, unsupported-content, and truncation result shapes.
+- Added deterministic coverage proving =e-tools-start= returns an =e-tools-request= before the delayed fetch callback is released under the hot-path blocking guard.
+
+** Verification
+
+#+begin_src sh
+rtk eldev test --file test/e-web-tools-test.el -B
+#+end_src
+
+Result: passed for the async fetch conversion and existing web tool handler behavior.
+
+#+begin_src sh
+rtk eldev test --file test/e-web-tools-test.el --file test/e-tools-test.el --file test/e-request-test.el -B
+#+end_src
+
+Result: passed for the touched web behavior and adjacent request/tool contracts.
+
+#+begin_src sh
+git diff --check
+#+end_src
+
+Result: passed.
+
+#+begin_src sh
+rtk eldev compile --warnings-as-errors
+#+end_src
+
+Result: no pending compile work.
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Result: returned the repository path after reloading changed Lisp.
+
+#+begin_src sh
+emacsclient --eval "...bounded web_fetch registry probe..."
+#+end_src
+
+Result: returned =(:has-start t :blocking-class network)=.

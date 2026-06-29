@@ -614,6 +614,134 @@ operators because ddgr's --site accepts only a single domain."
           (setq content (append content (list :links links))))
         content))))
 
+(defun e-web-tools--fetch-content (arguments url response)
+  "Return web fetch content for ARGUMENTS, URL, and parsed RESPONSE."
+  (let* ((format (e-web-tools--fetch-format arguments))
+         (max-chars (or (e-web-tools--optional-number arguments :max_chars)
+                        50000))
+         (content-type (plist-get response :content-type))
+         (htmlp (e-web-tools--html-content-type-p content-type))
+         (body (plist-get response :body))
+         (title (and htmlp (e-web-tools--html-title body)))
+         (text (if htmlp
+                   (e-web-tools--strip-html body)
+                 body))
+         (links (and htmlp
+                     (e-web-tools--include-links-p arguments)
+                     (e-web-tools--html-links body url)))
+         (markdown (and (member format '("markdown" "both"))
+                        (e-web-tools--markdown title text links)))
+         (include-html (or (equal format "html")
+                           (e-web-tools--truthy-p
+                            (plist-get arguments :include_html))))
+         (diagnostics nil)
+         truncated)
+    (unless (e-web-tools--textual-content-type-p content-type)
+      (signal 'e-web-unsupported-content
+              (list (format "Unsupported content type: %s" content-type))))
+    (pcase-let ((`(,new-text ,text-truncated)
+                 (e-web-tools--truncate-value text max-chars))
+                (`(,new-markdown ,markdown-truncated)
+                 (e-web-tools--truncate-value markdown max-chars))
+                (`(,new-html ,html-truncated)
+                 (e-web-tools--truncate-value body max-chars)))
+      (setq text new-text)
+      (setq markdown new-markdown)
+      (setq body new-html)
+      (setq truncated (or text-truncated
+                          markdown-truncated
+                          html-truncated)))
+    (when truncated
+      (setq diagnostics (plist-put diagnostics :truncated t)))
+    (let ((content (list :capability "web.fetch"
+                         :backend "http"
+                         :url url
+                         :final_url url
+                         :status (plist-get response :status)
+                         :content_type content-type
+                         :headers (plist-get response :headers)
+                         :diagnostics diagnostics)))
+      (when (member format '("text" "both"))
+        (setq content (append content (list :text text))))
+      (when (member format '("markdown" "both"))
+        (setq content (append content (list :markdown markdown))))
+      (when (equal format "html")
+        (setq content (append content (list :html body))))
+      (when include-html
+        (setq content (append content (list :html body))))
+      (when (and links (e-web-tools--include-links-p arguments))
+        (setq content (append content (list :links links))))
+      content)))
+
+(cl-defun e-web-tools--fetch-start
+    (&key arguments on-done on-error on-event &allow-other-keys)
+  "Start passive HTTP fetch for ARGUMENTS asynchronously."
+  (let* ((url (e-web-tools--argument-string arguments :url))
+         (timeout (or (e-web-tools--optional-number arguments :timeout) 20))
+         (settled nil)
+         timer
+         response-buffer)
+    (e-web-tools--validate-http-url url)
+    (cl-labels
+        ((cleanup ()
+           (when (timerp timer)
+             (cancel-timer timer))
+           (when (buffer-live-p response-buffer)
+             (kill-buffer response-buffer)))
+         (fail (err)
+           (unless settled
+             (setq settled t)
+             (cleanup)
+             (when on-error
+               (funcall on-error err))))
+         (finish (buffer)
+           (unless settled
+             (setq response-buffer buffer)
+             (condition-case err
+                 (let* ((response (if (buffer-live-p buffer)
+                                      (with-current-buffer buffer
+                                        (e-web-tools--parse-http-buffer buffer))
+                                    (signal 'e-web-backend-error
+                                            (list (format "No response for URL: %s"
+                                                          url)))))
+                        (content (e-web-tools--fetch-content
+                                  arguments url response)))
+                   (setq settled t)
+                   (cleanup)
+                   (when on-done
+                     (funcall on-done content)))
+               (error
+                (fail err)))))
+         (timeout! ()
+           (fail
+            (list 'e-web-backend-timeout
+                  (format "HTTP fetch timed out after %s seconds" timeout)))))
+      (condition-case err
+          (progn
+            (when on-event
+              (funcall on-event 'tool-progress
+                       (list :message (format "Fetching %s" url))))
+            (setq timer (run-at-time timeout nil #'timeout!))
+            (setq response-buffer
+                  (url-retrieve
+                   url
+                   (lambda (_status)
+                     (finish (current-buffer)))
+                   nil
+                   t
+                   nil))
+            (e-tools-request-create
+             :cancel (lambda ()
+                       (unless settled
+                         (setq settled t)
+                         (cleanup))
+                       t)
+             :metadata (list :transport 'url
+                             :url url)))
+        (error
+         (fail err)
+         nil)))))
+
 (defun e-web-tools--browser-helper-script ()
   "Return bundled browser helper script path."
   (expand-file-name "e-web-browser-helper.mjs" e-web-tools--directory))
@@ -831,7 +959,9 @@ operators because ddgr's --site accepts only a single domain."
                               :timeout (:type "number"))
                  :required ["url"])
    :handler (lambda (arguments)
-              (e-web-tools--fetch arguments))))
+              (e-web-tools--fetch arguments))
+   :start #'e-web-tools--fetch-start
+   :blocking-class 'network))
 
 (defun e-web-tools-register-browser (registry)
   "Register the rendered browser entrypoint in REGISTRY."

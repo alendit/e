@@ -14,6 +14,7 @@
 (require 'cl-lib)
 (require 'ert)
 (require 'e)
+(require 'e-request)
 (require 'e-tools)
 (require 'e-web-tools)
 (require 'url-http)
@@ -109,13 +110,17 @@ JSON
 (ert-deftest e-web-tools-test-fetch-extracts-html-text-links-and-markdown ()
   "web_fetch reads passive HTML responses without browser rendering."
   (let ((captured nil))
-    (cl-letf (((symbol-function 'url-retrieve-synchronously)
-               (lambda (url _silent _inhibit-cookies timeout)
-                 (setq captured (list :url url :timeout timeout))
-                 (e-web-tools-test--http-buffer
-                  200
-                  '(("Content-Type" . "text/html; charset=utf-8"))
-                  "<html><head><title>Example Title</title><script>ignored()</script></head><body><h1>Hello</h1><p>Readable <b>text</b>.</p><a href=\"/next\">Next page</a></body></html>"))))
+    (cl-letf (((symbol-function 'url-retrieve)
+               (lambda (url callback &rest _args)
+                 (setq captured (list :url url))
+                 (let ((buffer
+                        (e-web-tools-test--http-buffer
+                         200
+                         '(("Content-Type" . "text/html; charset=utf-8"))
+                         "<html><head><title>Example Title</title><script>ignored()</script></head><body><h1>Hello</h1><p>Readable <b>text</b>.</p><a href=\"/next\">Next page</a></body></html>")))
+                   (with-current-buffer buffer
+                     (funcall callback nil))
+                   buffer))))
       (let* ((result (e-tools-execute
                       (e-web-tools-test--registry)
                       '(:id "call-1"
@@ -129,7 +134,7 @@ JSON
              (content (plist-get result :content)))
         (should (equal (plist-get result :status) 'ok))
         (should (equal captured
-                       '(:url "https://example.com/start" :timeout 12)))
+                       '(:url "https://example.com/start")))
         (should (equal (plist-get content :capability) "web.fetch"))
         (should (equal (plist-get content :backend) "http"))
         (should (equal (plist-get content :url) "https://example.com/start"))
@@ -150,14 +155,58 @@ JSON
         (should-not (plist-get (plist-get content :diagnostics)
                                :truncated))))))
 
+(ert-deftest e-web-tools-test-fetch-start-returns-before-callback ()
+  "web_fetch starts asynchronously and does not use guarded sync primitives."
+  (let ((callback nil)
+        (response-buffer (e-web-tools-test--http-buffer
+                          200
+                          '(("Content-Type" . "text/plain"))
+                          "delayed response"))
+        result
+        failure
+        request)
+    (unwind-protect
+        (cl-letf (((symbol-function 'url-retrieve)
+                   (lambda (_url cb &rest _args)
+                     (setq callback cb)
+                     response-buffer)))
+          (e-request-with-blocking-primitive-guard
+            (e-request-with-hot-path 'web-fetch
+              (setq request
+                    (e-tools-start
+                     (e-web-tools-test--registry)
+                     '(:id "call-1"
+                       :name "web_fetch"
+                       :arguments (:url "https://example.com/delayed"))
+                     :context '(:interactive t)
+                     :on-done (lambda (value)
+                                (setq result value))
+                     :on-error (lambda (err)
+                                 (setq failure err)))))))
+          (should (e-tools-request-p request))
+          (should callback)
+          (should-not result)
+          (should-not failure)
+          (with-current-buffer response-buffer
+            (funcall callback nil))
+          (should (equal (plist-get result :status) 'ok))
+          (should (equal (plist-get (plist-get result :content) :text)
+                         "delayed response")))
+      (when (buffer-live-p response-buffer)
+        (kill-buffer response-buffer))))
+
 (ert-deftest e-web-tools-test-fetch-truncates-text-and-rejects-unsupported-inputs ()
   "web_fetch truncates large text and rejects unsupported schemes/content."
-  (cl-letf (((symbol-function 'url-retrieve-synchronously)
-             (lambda (_url _silent _inhibit-cookies _timeout)
-               (e-web-tools-test--http-buffer
-                200
-                '(("Content-Type" . "text/plain"))
-                "abcdefghij"))))
+  (cl-letf (((symbol-function 'url-retrieve)
+             (lambda (_url callback &rest _args)
+               (let ((buffer
+                      (e-web-tools-test--http-buffer
+                       200
+                       '(("Content-Type" . "text/plain"))
+                       "abcdefghij")))
+                 (with-current-buffer buffer
+                   (funcall callback nil))
+                 buffer))))
     (let* ((result (e-tools-execute
                     (e-web-tools-test--registry)
                     '(:id "call-1"
@@ -177,12 +226,16 @@ JSON
     (should (equal (plist-get bad-scheme :status) 'error))
     (should (equal (plist-get (plist-get bad-scheme :metadata) :error)
                    'e-web-unsupported-url)))
-  (cl-letf (((symbol-function 'url-retrieve-synchronously)
-             (lambda (_url _silent _inhibit-cookies _timeout)
-               (e-web-tools-test--http-buffer
-                200
-                '(("Content-Type" . "image/png"))
-                "not really png"))))
+  (cl-letf (((symbol-function 'url-retrieve)
+             (lambda (_url callback &rest _args)
+               (let ((buffer
+                      (e-web-tools-test--http-buffer
+                       200
+                       '(("Content-Type" . "image/png"))
+                       "not really png")))
+                 (with-current-buffer buffer
+                   (funcall callback nil))
+                 buffer))))
     (let ((binary
            (e-tools-execute
             (e-web-tools-test--registry)

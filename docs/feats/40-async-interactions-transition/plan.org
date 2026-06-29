@@ -3,9 +3,51 @@
 
 * Status
 
-Planned.
+In-progress.
 
 * Problem
+
+** Implementation reality check
+
+As of this review, the feature is only partially implemented.
+The implemented part is mostly Phase 1 guardrail work, not the full non-blocking transition.
+
+Implemented:
+
+- =e-request= exists as a request lifecycle record with created, started, progress, finished, failed, and cancelled state helpers.
+- Deterministic request lifecycle tests exist in =test/e-request-test.el=.
+- Tool registration supports =:blocking-class= metadata.
+- Interactive execution rejects long synchronous =:handler= tools when they lack =:start=.
+- Tool start profile spans exist.
+- Structured tool-result display previews are bounded.
+- =web_fetch= starts through async =url-retrieve= with timeout/cancellation and deterministic callback-before-result coverage.
+- The Phase 1 review records focused tests, compile checks, and a live reload.
+
+Partly implemented:
+
+- Blocking primitive guardrails exist, but they are test and probe helpers rather than a complete proof over every interactive path.
+- Sync tool execution remains available for batch, tests, and nested call paths.
+- Some UI redraw preservation and preview cheapening landed, but this is not a render scheduler.
+
+Not yet implemented in the planned sense:
+
+- MCP still has synchronous helper waits and HTTP =url-retrieve-synchronously= paths.
+- =web_search= and =web_browser= still use synchronous process/helper waits.
+- =file://= resource glob/search still use foreground =process-file=.
+- Compaction still calls the synchronous =e-harness-compact-session= path.
+- There is no raw-result store or reference lifecycle.
+- There is no cooperative presentation render scheduler.
+- There is no cached context/status snapshot contract broad enough to satisfy Phase 3.
+- There is no queued session write and chunked replay scheduler.
+- Nested tool calls still have synchronous wait semantics for non-cheap work.
+- The final obsolete sync API sweep is not done.
+
+Practical status:
+
+- Roughly one early slice plus a few adjacent cheapening and safety items are implemented.
+- Most of the user-visible feature goal remains open.
+- A fair status label is =In-progress=, not close to =Done=.
+- The feature index now says =In-progress= to match the code evidence.
 
 =e= already has an async turn spine for ordinary provider and top-level tool execution, but several user-visible paths can still block Emacs.
 Some paths wait on external latency such as backend requests, MCP helpers, web requests, subprocesses, or browser helpers.
