@@ -584,6 +584,81 @@ shells are used."
         fallback
         default-directory)))
 
+(defun e-project-local--action-directory (fallback action-context arguments)
+  "Return project-local action directory from FALLBACK, ACTION-CONTEXT, ARGUMENTS."
+  (e-skills-normalize-directory
+   (or (plist-get arguments :directory)
+       (e-project-local--context-directory fallback action-context))))
+
+(defun e-project-local--extension-file-summary (directory file-name)
+  "Return summary for extension DIRECTORY containing FILE-NAME."
+  (let ((file (expand-file-name file-name directory)))
+    (list :id (file-name-nondirectory (directory-file-name directory))
+          :directory (e-skills-normalize-directory directory)
+          :file file
+          :allowed (and (e-project-local--root-allowed-p directory) t)
+          :readable (and (e-skills-readable-file-p file) t))))
+
+(defun e-project-local--inspection (directory)
+  "Return no-load project-local extension inspection for DIRECTORY."
+  (let* ((root (e-skills-normalize-directory directory))
+         (capability-directories (e-project-local--capability-directories root))
+         (layer-directories (e-project-local--layer-directories root))
+         (capabilities
+          (mapcar (lambda (dir)
+                    (e-project-local--extension-file-summary
+                     dir "capability.el"))
+                  capability-directories))
+         (layers
+          (mapcar (lambda (dir)
+                    (e-project-local--extension-file-summary dir "layer.el"))
+                  layer-directories)))
+    (list :directory root
+          :allowed (and (e-project-local--root-allowed-p root) t)
+          :has-extensions (and (or capability-directories layer-directories) t)
+          :capabilities capabilities
+          :layers layers)))
+
+(defun e-project-local--action-inspect (fallback action-context arguments)
+  "Return no-load project-local inspection for ACTION-CONTEXT."
+  (e-project-local--inspection
+   (e-project-local--action-directory fallback action-context arguments)))
+
+(defun e-project-local--action-prime (fallback action-context arguments)
+  "Prime trusted project-local extensions for ACTION-CONTEXT."
+  (let* ((directory
+          (e-project-local--action-directory fallback action-context arguments))
+         (inspection (e-project-local--inspection directory))
+         (layer (e-project-local-prime-project directory)))
+    (if layer
+        (append
+         (list :status "primed"
+               :layer-id (e-layer-id layer)
+               :capability-ids
+               (mapcar #'e-capability-id (e-layer-capabilities layer))
+               :required-layers (e-layer-requires layer)
+               :shell-ids (mapcar #'e-shell-id (e-layer-shells layer)))
+         inspection)
+      (append
+       (list :status "skipped"
+             :reason (cond
+                      ((not (plist-get inspection :has-extensions))
+                       "no project-local extensions")
+                      ((not (plist-get inspection :allowed))
+                       "project root is not allowlisted")
+                      (t "project-local extensions were not loaded")))
+       inspection))))
+
+(defun e-project-local--action-descriptor (caller description)
+  "Return project-local action descriptor for CALLER with DESCRIPTION."
+  (e-action-create
+   :caller caller
+   :handler (lambda (_arguments) nil)
+   :description description
+   :parameters '(:type "object"
+                 :properties (:directory (:type "string"))
+                 :required [])))
+
 (defun e-project-local--context-capabilities (fallback context)
   "Return project-local capabilities for CONTEXT or FALLBACK."
   (e-project-local--discovered-capabilities
@@ -634,6 +709,23 @@ shells are used."
      :name "Project Local"
      :instruction-priority 215
      :instructions e-project-local-instructions
+     :actions
+     (list :inspect
+           (e-project-local--action-descriptor
+            (lambda (action-context arguments)
+              (e-project-local--action-inspect
+               fallback action-context arguments))
+            "Inspect project-local extension files without loading them.")
+           :prime
+           (e-project-local--action-descriptor
+            (lambda (action-context arguments)
+              (e-project-local--action-prime fallback action-context arguments))
+            "Load trusted allowlisted project-local extensions explicitly.")
+           :refresh
+           (e-project-local--action-descriptor
+            (lambda (action-context arguments)
+              (e-project-local--action-prime fallback action-context arguments))
+            "Reload trusted allowlisted project-local extensions explicitly."))
      :tools
      (list (lambda (registry &rest context)
              (apply #'e-project-local--register-context-tools

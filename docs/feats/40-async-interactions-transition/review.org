@@ -14,6 +14,8 @@ Status: in progress.
 - Kept synchronous execution available for explicit batch/test paths while Phase 1 establishes guardrails.
 - Added a bounded display-preview path for structured tool results so chat activity does not force full model-visible result serialization.
 - Preserved scrollback point/window state across deferred activity redraws.
+- Added =run_elisp= guidance and runtime guardrails that reject blocking Elisp load/compile/recursive-scan primitives in interactive tool contexts.
+- Added =project-local= actions for no-load inspection and explicit trusted priming/refresh through the project-local allowlist.
 
 ** Verification
 
@@ -36,10 +38,46 @@ rtk eldev test test/e-request-test.el test/e-tools-test.el test/e-chat-test.el
 Result: passed after bounded structured previews and redraw preservation were added.
 
 #+begin_src sh
+eldev -p -dtT test -f test/e-emacs-tools-test.el
+#+end_src
+
+Result: passed after the interactive =run_elisp= load guard was added.
+
+#+begin_src sh
+eldev -p -dtT test -f test/e-project-local-test.el
+#+end_src
+
+Result: passed after the project-local inspect/prime actions were added.
+
+#+begin_src sh
+eldev -p -dtT test -f test/e-emacs-tools-test.el test/e-emacs-capabilities-test.el test/e-project-local-test.el
+#+end_src
+
+Result: passed for the focused touched suites.
+
+#+begin_src sh
 rtk eldev compile --warnings-as-errors
 #+end_src
 
 Result: passed after bounded structured previews and redraw preservation were added.
+
+#+begin_src sh
+eldev -p -dtT compile --warnings-as-errors
+#+end_src
+
+Result: passed after the =run_elisp= guard and project-local action surface were added.
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Result: returned the repository path after reloading changed Lisp.
+
+#+begin_src sh
+emacsclient --eval "...bounded interactive run_elisp load-file guard probe..."
+#+end_src
+
+Result: returned =(:status error :mentions-resource-tools t)=.
 
 ** Findings
 

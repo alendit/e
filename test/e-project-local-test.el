@@ -16,6 +16,7 @@
 (require 'ert)
 (require 'cl-lib)
 (require 'e)
+(require 'e-actions)
 (require 'e-capabilities)
 (require 'e-harness)
 (require 'e-project-local)
@@ -26,6 +27,8 @@
 (defvar projectile-after-switch-project-hook)
 (defvar projectile-find-dir-hook)
 (defvar projectile-find-file-hook)
+(defvar e-project-local-test--unexpected-inspect-load)
+(defvar e-project-local-test--prime-action-loaded)
 
 (defun e-project-local-test--write-file (path content)
   "Write CONTENT to PATH, creating parent directories."
@@ -544,7 +547,81 @@ SOURCE overrides the default layer source."
             (should (eq (e-layer-id layer) 'project-local))
             (should (cl-find 'topic
                              (e-layer-shells layer)
-                             :key #'e-shell-id))))
+	                             :key #'e-shell-id))))
+      (delete-directory project t))))
+
+(ert-deftest e-project-local-test-inspect-action-does-not-load-elisp ()
+  "The project-local inspect action reports extension files without loading them."
+  (let* ((project (make-temp-file "e-project-local-action-inspect-" t))
+         (e-project-local-allowed-roots (list project))
+         (e-project-local-test--unexpected-inspect-load nil))
+    (unwind-protect
+        (progn
+          (e-project-local-test--make-capability
+           project 'topic
+           (mapconcat #'identity
+                      '("(setq e-project-local-test--unexpected-inspect-load t)"
+                        "(e-project-capability-register"
+                        " :id 'topic"
+                        " :factory (lambda (_dir)"
+                        "            (e-capability-create :id 'topic :name \"Topic\")))")
+                      "\n"))
+          (let ((harness (e-harness-create)))
+            (e-harness-set-intrinsic-capabilities
+             harness
+             (list (e-project-local--dynamic-capability project)))
+            (let* ((result
+                    (e-actions-call
+                     'project-local
+                     :inspect
+                     (list :directory project)
+                     (list :harness harness)))
+                   (capability (car (plist-get result :capabilities))))
+              (should-not e-project-local-test--unexpected-inspect-load)
+              (should (equal (plist-get result :directory)
+                             (file-name-as-directory project)))
+              (should (plist-get result :allowed))
+              (should (plist-get result :has-extensions))
+              (should (equal (plist-get capability :id) "topic"))
+              (should (plist-get capability :allowed))
+              (should (plist-get capability :readable)))))
+      (delete-directory project t))))
+
+(ert-deftest e-project-local-test-prime-action-loads-allowed-extensions ()
+  "The project-local prime action explicitly loads trusted extension files."
+  (let* ((project (make-temp-file "e-project-local-action-prime-" t))
+         (e-project-local-allowed-roots (list project))
+         (e-project-local-test--prime-action-loaded nil))
+    (unwind-protect
+        (progn
+          (e-project-local-test--make-layer
+           project 'topic
+           (mapconcat #'identity
+                      '("(setq e-project-local-test--prime-action-loaded t)"
+                        "(e-project-layer-register"
+                        " :id 'topic"
+                        " :factory (lambda (_dir)"
+                        "            (e-layer-create"
+                        "             :id 'topic"
+                        "             :name \"Topic\""
+                        "             :shells (list (e-shell-create"
+                        "                            :id 'topic"
+                        "                            :name \"Topic\")))))")
+                      "\n"))
+          (let ((harness (e-harness-create)))
+            (e-harness-set-intrinsic-capabilities
+             harness
+             (list (e-project-local--dynamic-capability project)))
+            (let ((result
+                   (e-actions-call
+                    'project-local
+                    :prime
+                    (list :directory project)
+                    (list :harness harness))))
+              (should e-project-local-test--prime-action-loaded)
+              (should (equal (plist-get result :status) "primed"))
+              (should (eq (plist-get result :layer-id) 'project-local))
+              (should (member 'topic (plist-get result :shell-ids))))))
       (delete-directory project t))))
 
 (ert-deftest e-project-local-test-byte-compile-project-local-files ()
