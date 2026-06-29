@@ -1,0 +1,263 @@
+#+title: Review: Output Style
+#+author: e implementation
+#+date: 2026-06-28
+#+startup: overview
+
+* Status
+
+In-review.
+
+* Review summary
+
+The implementation delivers the main =output-style= feature contract: a base-layer capability with a named style registry, config-backed style resolution, inert default behavior, =os-base= wiring, interactive set/describe helpers, focused tests, and architecture documentation.
+
+Two review findings remain open:
+
+- Medium: fresh =e.el= package loads do not expose the new output-style commands or constructor.
+- Low: invalid configured style ids report a generic capability-config error instead of listing known style ids.
+
+* Scope reviewed
+
+Reviewed the attached feature plan in =docs/feats/38-output-style/plan.org=.
+Reviewed the feature review convention in =docs/agents/review.org=.
+
+Reviewed implementation files:
+
+- =lisp/layers/base/e-output-style.el=
+- =lisp/layers/base/e-base.el=
+- =lisp/dev/e-dev.el=
+- =e.el=
+- =test/e-output-style-test.el=
+- =test/e-base-test.el=
+- =docs/architecture.md=
+
+Checked supporting paths:
+
+- =lisp/core/e-capability-config.el=
+- =lisp/core/e-capabilities.el=
+- =lisp/adapters/anthropic/e-anthropic.el=
+- =lisp/adapters/openai/e-openai.el=
+- =test/e-openai-test.el=
+
+This review artifact was intentionally written to =docs/research/output-styles-review/concise/review.org= for the controlled comparison run, not to the feature directory.
+
+* What looks good
+
+- =e-output-style.el= owns one cohesive behavior: style registry, resolver, capability constructor, config helper, and user commands.
+- The feature reuses the existing capability instruction path instead of adding provider-specific prompt plumbing.
+- =e-output-style-capability-create= uses =:instruction-priority 260=, matching the plan's placement after base guidance.
+- The default behavior is inert.  With no configured =:style=, the capability contributes nil instructions.
+- =e-base-layer-create= includes =output-style= in =os-base= after base guidance, file handling, and shell process capabilities.
+- Focused tests cover registry resolution, unknown resolver ids, custom registration, built-ins, capability construction, unknown config options, helpers, default-layer presence, ordering, and system-fragment contribution.
+- Provider adapters already have the expected system-channel mechanics: Anthropic removes system messages from turn messages and puts them in top-level =:system=; OpenAI Chat Completions maps backend-neutral system messages to leading system messages.
+
+* Verification performed during this review pass
+
+** Focused ERT
+
+#+begin_src sh
+emacs -Q --batch -L lisp/core -L lisp/layers -L lisp/layers/base -L lisp/adapters/openai -L lisp/adapters/anthropic -L lisp/defaults -L lisp/shells -L lisp/shells/chat -L lisp/dev -l e.el -l test/e-output-style-test.el -l test/e-base-test.el -f ert-run-tests-batch-and-exit
+#+end_src
+
+#+begin_example
+Running 18 tests (2026-06-28 23:28:03+0200, selector ‘t’)
+...
+Ran 18 tests, 18 results as expected, 0 unexpected (2026-06-28 23:28:03+0200, 0.016910 sec)
+#+end_example
+
+** Warning-as-error compile
+
+#+begin_src sh
+emacs -Q --batch -L lisp/core -L lisp/layers -L lisp/layers/base -L lisp/layers/harness -L lisp/layers/emacs -L lisp/layers/evidence -L lisp/layers/web -L lisp/layers/text-editing -L lisp/layers/org-canvas -L lisp/layers/project-local -L lisp/layers/chat -L lisp/layers/agents -L lisp/defaults -L lisp/shells -L lisp/shells/chat -L lisp/adapters/openai -L lisp/adapters/anthropic -L lisp/dev -l e.el --eval '(setq byte-compile-error-on-warn t)' -f batch-byte-compile lisp/layers/base/e-output-style.el lisp/layers/base/e-base.el test/e-output-style-test.el test/e-base-test.el
+#+end_src
+
+#+begin_example
+No output.
+Exit status 0.
+#+end_example
+
+** Fresh package-load command probe
+
+#+begin_src sh
+emacs -Q --batch -L lisp/core -L lisp/layers -L lisp/layers/base -L lisp/layers/harness -L lisp/layers/emacs -L lisp/layers/evidence -L lisp/layers/web -L lisp/layers/text-editing -L lisp/layers/org-canvas -L lisp/layers/project-local -L lisp/layers/chat -L lisp/layers/agents -L lisp/defaults -L lisp/shells -L lisp/shells/chat -L lisp/adapters/openai -L lisp/adapters/anthropic -L lisp/dev -l e.el --eval "(princ (format \"%S\n\" (list :set (commandp 'e-output-style-set) :describe (commandp 'e-output-style-describe) :create (fboundp 'e-output-style-capability-create))))"
+#+end_src
+
+#+begin_example
+(:set nil :describe nil :create nil)
+#+end_example
+
+This proves the package entry path does not expose the new user-facing commands or constructor after loading only =e.el=.
+
+** Invalid configured style probe
+
+#+begin_src sh
+emacs -Q --batch -L lisp/core -L lisp/layers -L lisp/layers/base -L lisp/layers/harness -L lisp/layers/emacs -L lisp/layers/evidence -L lisp/layers/web -L lisp/layers/text-editing -L lisp/layers/org-canvas -L lisp/layers/project-local -L lisp/layers/chat -L lisp/layers/agents -L lisp/defaults -L lisp/shells -L lisp/shells/chat -L lisp/adapters/openai -L lisp/adapters/anthropic -L lisp/dev --eval "(require 'e-output-style)" --eval "(let ((e-capability-config '((output-style :style bogus)))) (condition-case err (e-output-style-capability-create default-directory) (error (princ (format \"%S\n%s\n\" (car err) (error-message-string err))))))"
+#+end_src
+
+#+begin_example
+e-capability-config-invalid-value
+Invalid capability config value: output-style, :style, bogus
+#+end_example
+
+This proves bad configured ids do not use the resolver's clearer message that lists known styles.
+
+** Loaded-module scalar behavior probe
+
+#+begin_src sh
+emacs -Q --batch -L lisp/core -L lisp/layers -L lisp/layers/base -L lisp/layers/harness -L lisp/layers/emacs -L lisp/layers/evidence -L lisp/layers/web -L lisp/layers/text-editing -L lisp/layers/org-canvas -L lisp/layers/project-local -L lisp/layers/chat -L lisp/layers/agents -L lisp/defaults -L lisp/shells -L lisp/shells/chat -L lisp/adapters/openai -L lisp/adapters/anthropic -L lisp/dev -l e.el --eval "(let ((e-capability-config '((output-style :style hemingway)))) (require 'e-base) (princ (format \"%S\n\" (list :ids (e-output-style-ids) :description (e-output-style--describe-string default-directory) :instructions-present (string-match-p \"clean, strong prose\" (or (e-capability-instructions (e-output-style-capability-create default-directory)) \"\"))))))"
+#+end_src
+
+#+begin_example
+(:ids (concise explanatory hemingway) :description "Active output style: hemingway
+
+Write in a clean, strong prose style.  This is not a request to
+imitate Ernest Hemingway, mention his works, or cosplay his voice.  Use plain
+declarative sentences.  Put one idea in each.  Choose short, common words over
+long ones.  Prefer strong verbs to adjectives and adverbs.  Avoid flowery,
+ornate, or unnecessary language.  Cut every word that does not carry weight.  Do
+not hedge or pad.  Let the facts stand on their own." :instructions-present 11)
+#+end_example
+
+** Live reload attempt
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+#+begin_example
+Server not responding; use Ctrl+C to break
+Command timed out after 60 seconds
+#+end_example
+
+Live reload was not available during this review pass.  No implementation files were changed by this review; only this research review artifact was written.
+
+* UX and performance playthrough
+
+- First use after a fresh package load is not coherent: =M-x e-output-style-set= and =M-x e-output-style-describe= are not commands after loading =e.el= alone.  This is finding 1.
+- Once the base module is loaded, the registry, describe helper, and capability constructor work and return scalar results immediately.
+- Bad config recovery is only partly helpful.  The generic config error names the bad value, but it does not list valid style ids.  This is finding 2.
+- No profiling was needed.  The feature performs small alist/plist lookups and does not add a redraw, network, transcript traversal, or provider hot path.
+
+* Findings
+
+** TODO Medium: Fresh package loads do not expose the output-style commands
+
+*** Expected
+
+The plan says the deliverable includes a command to switch the active style.
+Step 1 says to modify the =e.el= require list or the reload list for the new module.
+Step 4 adds =M-x e-output-style-set= and =M-x e-output-style-describe= as interactive entrypoints.
+
+*** Observed
+
+=e-dev.el= reloads =lisp/layers/base/e-output-style.el=, and =e-base.el= requires it, but =e.el= does not require it or autoload its commands.
+A fresh =-l e.el= package load leaves these entrypoints unavailable:
+
+#+begin_example
+(:set nil :describe nil :create nil)
+#+end_example
+
+*** Why it matters
+
+The feature is meant to be selectable by a global command.
+A user can start e and fail to discover =M-x e-output-style-set= until some other path has forced =e-base= to load.
+That misses the command-delivery part of the plan.
+
+*** Smallest useful fix
+
+Add package-level load ownership for the user commands.
+The simplest fix is to require =e-output-style= from =e.el= after load-path setup, or to add proper autoload cookies and ensure the package autoload path exposes =e-output-style-set= and =e-output-style-describe=.
+Keep =e-base= requiring =e-output-style= because the layer factory depends on the constructor.
+
+*** Verification needed after fix
+
+Run a fresh-load probe requiring only =e.el= and expect:
+
+#+begin_example
+(:set t :describe t :create t)
+#+end_example
+
+Then rerun focused ERT and warning-as-error compile.
+
+** TODO Low: Invalid configured style ids do not list known ids
+
+*** Expected
+
+The plan says an unknown style id should raise a clear error naming the unknown id and the known ids.
+=e-output-style--resolve= does this for direct resolver calls.
+=e-output-style--set-config= also does this before writing config.
+
+*** Observed
+
+When the unknown id comes from =e-capability-config=, the option validator rejects it before the resolver message can surface:
+
+#+begin_example
+e-capability-config-invalid-value
+Invalid capability config value: output-style, :style, bogus
+#+end_example
+
+*** Why it matters
+
+Global and directory-local config are core selection paths for this feature.
+A mistyped style id should tell the user how to recover without requiring them to inspect the registry separately.
+
+*** Smallest useful fix
+
+Validate configured non-nil style ids through a path that preserves the resolver's message.
+One direct approach is to use an option normalizer that accepts nil, checks symbol type, calls =e-output-style--resolve= for non-nil symbols, and returns the original style id.
+
+*** Verification needed after fix
+
+Add a test for =e-capability-config='((output-style :style bogus))= that asserts the error message contains =bogus= and a known id such as =hemingway=.
+Rerun focused ERT.
+
+* Plan coverage
+
+- Step 1, style registry and resolver: mostly covered.  Registry, resolver, register helper, and tests exist.  The module is included in live reload, but not in the fresh =e.el= package entry path.
+- Step 2, capability constructor: covered.  It resolves config, declares =:style=, is inert when unset, and uses priority 260.
+- Step 3, default layer wiring: covered.  =os-base= includes =output-style= and tests assert presence and ordering.
+- Step 4, interactive set/describe commands: implemented, but not reliably discoverable after a fresh package load.
+- Step 5, end-to-end system-channel assertion: covered at the backend-neutral capability-message level.  Adapter code already maps/removes system messages correctly, but there is no style-specific Anthropic/OpenAI adapter test.
+- Step 6, document the contract: covered in =docs/architecture.md=.  This review did not edit =docs/feats/index.org= by request.
+
+* Architecture review
+
+The design is sound overall.
+Output style is capability-owned, provider-neutral, and shell-independent.
+The base layer activates it without making provider adapters know about style ids.
+The only stateful side effect is the interactive helper writing =e-capability-config=, which is the right boundary.
+
+The main ownership gap is command load ownership.
+A lazy layer module can own capability construction, but a global user command needs either package-level loading or autoload exposure.
+
+* Design self-check
+
+1. If this work package stopped here, would the project be better off than if it had not been built?
+   Yes.  The core capability works and is tested, but command discoverability blocks full acceptance.
+2. What final direction does this move toward?
+   Provider-neutral system-channel guidance controlled by capability configuration.
+3. Which decisions are likely to change, uncertain, or stable?
+   The registry shape, one active style, config ownership, and priority are stable for v1.  Built-in styles and command UX can change locally in =e-output-style.el=.
+4. What component owns this behavior, and why?
+   =e-output-style.el= owns it because output style has its own registry, config option, resolver, and capability constructor.
+5. Does this change increase or reduce coupling?
+   It adds a narrow base-layer dependency and avoids provider coupling.
+6. Did any dependency start pointing the wrong way?
+   No provider, adapter, or shell depends on output-style-specific logic.
+7. Could any side effect be moved outward into an adapter or shell?
+   No.  The only new side effect is an interactive config write.
+8. Are the abstractions semantically real?
+   Yes.  Style registry, config option, and capability all map to current behavior.
+9. What compatibility expectations apply?
+   The capability is inert when unset, so default behavior is preserved.  No legacy compatibility path is needed.
+10. What legacy code can we remove now?
+    None found.
+11. Where are expected errors handled, and where do unexpected errors surface?
+    Direct unknown style errors surface through the resolver.  Config-path error quality needs the low-severity fix above.
+12. What tests prove the core behavior independently of the full system?
+    =test/e-output-style-test.el= covers registry, constructor, helpers, and system-fragment contribution.  =test/e-base-test.el= covers default-layer presence and ordering.
+
+* Unresolved
+
+- TODO Medium: Fresh package loads do not expose the output-style commands.
+- TODO Low: Invalid configured style ids do not list known ids.

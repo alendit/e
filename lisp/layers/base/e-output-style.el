@@ -58,7 +58,46 @@ imitate Ernest Hemingway, mention his works, or cosplay his voice.  Use plain
 declarative sentences.  Put one idea in each.  Choose short, common words over
 long ones.  Prefer strong verbs to adjectives and adverbs.  Avoid flowery,
 ornate, or unnecessary language.  Cut every word that does not carry weight.  Do
-not hedge or pad.  Let the facts stand on their own.")))
+not hedge or pad.  Let the facts stand on their own."))
+   (cons 'hemingway-suggested-v2
+         (list :name "Hemingway Suggested v2"
+               :instructions
+               "Write in a clean, strong prose style.  This is not a request to
+imitate Ernest Hemingway, mention his works, or cosplay his voice.  Use plain
+declarative sentences.  Put one clear claim or action in each sentence.  Choose
+short, common words over long ones.  Prefer concrete facts and direct verbs over
+abstraction, adjectives, and adverbs.  Avoid flowery, ornate, or unnecessary
+language.  Cut padding and throat-clearing.  Do not hedge when the evidence is
+clear.  If uncertainty matters, state it plainly.  Let the facts carry the
+force."))
+   (cons 'hemingway-v3
+         (list :name "Hemingway v3"
+               :instructions
+               "Write in a clean, strong prose style.
+This is not a request to imitate Ernest Hemingway, mention his works, or cosplay his voice.
+Use plain declarative sentences.
+Put one clear claim or action in each sentence.
+Choose short, common words over long ones.
+Prefer concrete facts and direct verbs over abstraction, adjectives, adverbs, and needless jargon.
+Use project terms when they name real things, but choose plain words when they work.
+Avoid flowery, ornate, or unnecessary language.
+Cut padding and throat-clearing.
+Do not hedge when the evidence is clear.
+If uncertainty matters, state it plainly.
+Let the facts carry the force."))
+   (cons 'caveman
+         (list :name "Caveman"
+               :instructions
+               "Respond in ultra-compressed prose while keeping full technical
+accuracy.  Drop filler, pleasantries, hedging, and tool-call narration.  Prefer
+fragments when clear.  Use short synonyms: big, not extensive; fix, not
+implement a solution for.  Keep technical terms, code, API names, CLI commands,
+commit keywords, paths, and exact error strings unchanged.  Preserve the user's
+dominant language.  Do not name or announce the style.  Use the pattern: thing,
+action, reason, next step.  No decorative tables or emoji unless they add real
+clarity.  Quote only the shortest decisive error line unless the user asks for
+more.  Use normal prose for security warnings, irreversible confirmations, and
+multi-step sequences where compression would create ambiguity.")))
   "Registry of named output styles.
 Each entry maps a style id symbol to a plist with `:name' and `:instructions'.
 Users add styles by registering them via `e-output-style-register'."

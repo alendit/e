@@ -1,0 +1,134 @@
+#+title: Hemingway Corpus Style Analysis
+#+startup: overview
+
+* Scope
+
+This analysis uses the larger EPUB corpus at =docs/research/output-styles-review/sources/hemingway.epub=.
+The goal is to compare =hemingway-current= with =hemingway-suggested-v2=.
+The comparison asks which guidance better matches Hemingway's prose without asking agents to cosplay it.
+The analysis also asks which guidance is more useful for E's technical agent prose.
+
+* Audit files
+
+The extracted prose is saved at =docs/research/output-styles-review/sources/hemingway-epub-extracted.txt=.
+The computed metrics are saved at =docs/research/output-styles-review/sources/hemingway-epub-analysis.json=.
+
+* Corpus shape
+
+The fiction-only corpus has 908,391 words.
+It has 61,570 sentences.
+Its average sentence length is 14.75 words.
+Its median sentence length is 11 words.
+Sentences of 8 words or fewer make up 35.6 percent of the corpus.
+Sentences of 25 words or more make up 14.4 percent of the corpus.
+The average word length is 3.88 letters.
+The word =and= appears 34.9 times per 1000 words.
+The word =because= appears 0.92 times per 1000 words.
+=-ly= adverbs appear 7.93 times per 1000 words.
+Abstract suffix words appear 5.06 times per 1000 words.
+Weak or simple verbs appear 62.3 times per 1000 words.
+Copulas appear 35.3 times per 1000 words.
+Quoted sentences make up 49.7 percent of the fiction corpus.
+
+* Corpus finding
+
+The larger corpus confirms the earlier smaller-corpus finding.
+Hemingway fiction is plain and short-worded.
+It is not always short-sentenced.
+It often builds through simple clauses joined by =and=.
+It uses many simple verbs and copulas.
+It is low in abstraction.
+It lets concrete action and fact carry the line.
+
+* Current prompt
+
+The current prompt says this.
+
+#+begin_quote
+Write in a clean, strong prose style.
+This is not a request to imitate Ernest Hemingway, mention his works, or cosplay his voice.
+Use plain declarative sentences.
+Put one idea in each.
+Choose short, common words over long ones.
+Prefer strong verbs to adjectives and adverbs.
+Avoid flowery, ornate, or unnecessary language.
+Cut every word that does not carry weight.
+Do not hedge or pad.
+Let the facts stand on their own.
+#+end_quote
+
+* Suggested v2 prompt
+
+The suggested v2 prompt says this.
+
+#+begin_quote
+Write in a clean, strong prose style.
+This is not a request to imitate Ernest Hemingway, mention his works, or cosplay his voice.
+Use plain declarative sentences.
+Put one clear claim or action in each sentence.
+Choose short, common words over long ones.
+Prefer concrete facts and direct verbs over abstraction, adjectives, and adverbs.
+Avoid flowery, ornate, or unnecessary language.
+Cut padding and throat-clearing.
+Do not hedge when the evidence is clear.
+If uncertainty matters, state it plainly.
+Let the facts carry the force.
+#+end_quote
+
+* Comparison
+
+Suggested v2 matches the corpus better.
+The main reason is the verb line.
+The phrase =strong verbs= is too vague.
+The corpus has many plain verbs.
+Examples include =was=, =were=, =had=, =said=, =went=, =came=, =saw=, and =looked=.
+These are not strong in a showy sense.
+They are direct.
+They say what happened.
+Suggested v2 captures that better with =direct verbs=.
+Suggested v2 also adds the missing corpus trait of concrete facts.
+That matters because fiction-only abstraction markers are low.
+Hemingway's force comes less from vivid verbs than from concrete nouns, plain action, and low explanation.
+
+* Where current is less faithful
+
+The current prompt says =Put one idea in each=.
+The corpus does not fully support that.
+There are many long sentences built from simple joined clauses.
+The common pattern is =X and Y and Z and then A and B=.
+That pattern is not ornate.
+It is plain accumulation.
+Suggested v2 improves this by saying =Put one clear claim or action in each sentence=.
+That remains useful for agents.
+It is also less false as a corpus claim.
+The current prompt also says =Cut every word that does not carry weight=.
+That is a good editing rule.
+It is too absolute as a corpus description.
+The corpus uses repetition and rhythm.
+Suggested v2 is better because it says =Cut padding and throat-clearing=.
+That targets the agent failure mode without banning useful repetition.
+
+* Where current may still work better for agents
+
+The current prompt has more force.
+It is stricter.
+That strictness helped the review-generation task.
+It pushed the model toward short claims and low hedging.
+Suggested v2 is more accurate to the corpus.
+It may be slightly softer as an instruction.
+The tradeoff is clear.
+Current has stronger operational pressure.
+Suggested v2 has better descriptive fit and safer technical wording.
+
+* Verdict
+
+Use =hemingway-suggested-v2= as the better style definition candidate.
+It matches the larger Hemingway corpus better.
+It says =concrete facts=.
+It says =direct verbs=.
+It avoids unnecessary abstraction.
+It preserves truthful uncertainty.
+It cuts padding rather than all repetition.
+It avoids the misleading phrase =strong verbs=.
+Current remains competitive if the only goal is forcing terse agent behavior.
+Suggested v2 is the better next candidate if the goal is both corpus fidelity and agent behavior.

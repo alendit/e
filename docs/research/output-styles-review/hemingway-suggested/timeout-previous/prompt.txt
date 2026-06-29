@@ -1,0 +1,7 @@
+Review the implementation of this feature based on the current code and create a review.org nach the pattern of review.org of other features.
+
+Use the attached plan.org as the feature plan.
+For this controlled output-style comparison run, write the resulting review.org to `docs/research/output-styles-review/hemingway-suggested/review.org`.
+Do not write to `docs/feats/38-output-style/review.org`.
+Do not write to `docs/feats/index.org`.
+Keep this as a single-turn review run; create the artifact and then summarize what you wrote.

@@ -1,0 +1,152 @@
+#+title: Output Style Review Analysis
+#+startup: overview
+
+* Scope
+
+This analysis compares the four verified =review.org= artifacts under =docs/research/output-styles-review/=.
+Each artifact reviewed the same =docs/feats/38-output-style/plan.org= feature.
+The focus is whether output-style guidance moved the generated review closer to E's desired prose style.
+The desired style is plain technical prose with direct claims, concrete evidence, little padding, few hedges, and no literary cosplay.
+
+* Method
+
+I compared both form and content.
+Form means structure, section rhythm, sentence shape, scanability, and amount of padding.
+Content means review completeness, evidence, finding quality, plan coverage, and architectural judgment.
+I also used rough style metrics from the generated files.
+The metrics are aids, not the final judge.
+They do not measure correctness or judgment by themselves.
+
+* Verification note
+
+The first comparison run was invalid.
+The output-style capability resolves its instructions from global or directory =e-capability-config= during layer creation.
+The first run tried to set style through harness-local runtime config.
+That meant the variants inherited the global =hemingway= style.
+Those invalid artifacts are archived under =invalid-runtime-override-20260628T211616Z/=.
+The current comparison reran all four variants with serialized global =e-capability-config= changes.
+Each current run wrote an effective guidance file.
+Each current metrics file records that the effective guidance matched the expected variant.
+
+* Overall ranking
+
+The best match for the desired style is =hemingway-current=.
+The second best match is =hemingway-suggested=.
+The =none= run is competent but more like ordinary agent prose.
+The =concise= run is shorter, but it is not closer to the desired style.
+
+* Finding: concise made the artifact shorter but not stronger
+
+The =concise= artifact has the fewest words and bytes.
+It also packs more content into long inventory sentences.
+Its average sentence length is the highest of the four runs.
+Its long-sentence share is also the highest.
+Its filler rate and =-ly= adverb rate are higher than the other runs.
+This means the concise guidance compressed the review rather than making it cleaner.
+Shorter output is not the same as strong prose.
+For this task, =concise= moved away from the desired style.
+
+* Finding: hemingway-current produced the strongest review prose
+
+The =hemingway-current= artifact has the clearest claim rhythm.
+It often states one claim, then gives evidence, then states the consequence.
+It has the lowest hedge rate.
+It has the lowest filler rate.
+It has the highest share of short sentences.
+It avoids literary imitation.
+It also avoids fake toughness and period voice.
+Its form is stronger because it breaks plan coverage into explicit step headings.
+Its content is stronger because it ties implementation facts to architectural judgment.
+It names the system-channel path as the right design choice.
+It also names the lazy =os-base= load path as the cause of the fresh-load finding.
+This makes the review more useful as a handoff.
+
+* Finding: hemingway-suggested is clean but weaker than hemingway-current
+
+The =hemingway-suggested= artifact is clear and usable.
+It opens with direct claims.
+It avoids parody.
+It preserves the two main findings.
+It is less forceful than =hemingway-current=.
+It uses more abstract framing.
+It gives less structural detail in plan coverage.
+It has fewer short sentences than =hemingway-current=.
+It has more hedging and more abstract-word markers than =hemingway-current=.
+The revised guidance seems better as a literary description than as an operational agent style.
+The phrase about longer sentences building through simple clauses may have given the model more permission to write broad explanatory prose.
+That permission is true to the corpus, but it is less useful for technical review artifacts.
+
+* Finding: none is solid but padded
+
+The =none= artifact follows the review convention well.
+It includes the expected status, summary, scope, verification, findings, plan coverage, architecture review, design self-check, and unresolved section.
+It identifies the same two core findings.
+It gives enough evidence to be useful.
+It also includes more meta-disclaimer text near the start.
+Its prose is more like default agent prose.
+It has more padding than =hemingway-current=.
+It uses softer phrases such as =main feature shape=.
+It is serviceable, but it has less force.
+
+* Finding: the guidance improved style without hurting content
+
+The Hemingway-guided runs did not lose the important review content.
+Both Hemingway-guided runs found the same two open contract gaps.
+Both kept the artifact in the requested research path.
+Both avoided mutating the canonical feature review and index.
+The =hemingway-current= run added useful detail rather than merely adding length.
+Its extra length bought clearer plan coverage and sharper design judgment.
+This is a good sign for output-style guidance.
+The desired agent style should not mean terse output at the cost of evidence.
+It should mean leaner claims and better evidence order.
+
+* Finding: the current Hemingway prompt is operationally better than the suggested prompt
+
+The current prompt is less faithful to the Hemingway corpus in one place.
+The clause =Put one idea in each= is too strict as a literary description.
+The corpus includes many longer sentences built from simple clauses.
+But that strictness helps agent review prose.
+It pushes the model to split technical judgments into clearer sentences.
+The suggested prompt is more corpus-aware.
+It mentions concrete prose, direct verbs, and longer sentences that build through simple clauses.
+That helped produce clean prose.
+It did not produce the strongest review artifact.
+For E's use case, operational force matters more than literary fidelity.
+
+* Recommendation
+
+Do not replace the current style with the suggested style as written.
+Keep the current prompt's pressure toward short declarative claims.
+Add a small truthfulness guard for uncertainty.
+Add a small concreteness guard from the corpus analysis.
+Avoid adding permission for longer clause chains in the default agent style.
+The current prompt says this.
+
+#+begin_quote
+Write in a clean, strong prose style.
+This is not a request to imitate Ernest Hemingway, mention his works, or cosplay his voice.
+Use plain declarative sentences.
+Put one idea in each.
+Choose short, common words over long ones.
+Prefer strong verbs to adjectives and adverbs.
+Avoid flowery, ornate, or unnecessary language.
+Cut every word that does not carry weight.
+Do not hedge or pad.
+Let the facts stand on their own.
+#+end_quote
+
+A better revised prompt would say this.
+
+#+begin_quote
+Write in a clean, strong prose style.
+This is not a request to imitate Ernest Hemingway, mention his works, or cosplay his voice.
+Use plain declarative sentences.
+Put one clear claim or action in each sentence.
+Choose short, common words over long ones.
+Prefer concrete facts and direct verbs over abstraction, adjectives, and adverbs.
+Avoid flowery, ornate, or unnecessary language.
+Cut padding and throat-clearing.
+Do not hedge when the evidence is clear.
+If uncertainty matters, state it plainly.
+Let the facts carry the force.
+#+end_quote

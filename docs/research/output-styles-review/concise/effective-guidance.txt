@@ -1,0 +1,7 @@
+(:global-config ((output-style :style concise)) :effective-output-style-instructions ("Write concise, direct prose.  Lead with the answer or
+conclusion, then add only the support that is needed.  Drop preamble,
+restatement of the question, and filler.  Prefer short sentences and tight
+paragraphs.  When a list is clearer than prose, use one.") :expected-guidance "Write concise, direct prose.  Lead with the answer or
+conclusion, then add only the support that is needed.  Drop preamble,
+restatement of the question, and filler.  Prefer short sentences and tight
+paragraphs.  When a list is clearer than prose, use one." :matches-expected t)

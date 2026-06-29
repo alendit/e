@@ -1,0 +1,170 @@
+#+title: Output Style Analysis Instructions
+#+startup: overview
+
+* Purpose
+
+Use this file to analyze output-style comparison runs in the same way across sessions.
+The goal is to judge whether a style helps E produce plain, concrete, useful agent prose.
+The goal is not to reward short output by itself.
+The goal is not to make agents imitate a literary voice.
+
+* Inputs
+
+Use the generated review artifact for each style.
+Use each style's =metrics.json= file.
+Use each style's =effective-guidance.txt= file.
+Use the shared task prompt when it exists.
+Use the source feature plan when judging review completeness.
+Use prior corpus notes when judging Hemingway-derived claims.
+
+* Validity checks
+
+Check that each run used a fresh session.
+Check that each run used the same task prompt.
+Check that each run used the same source plan.
+Check that each run wrote to its own artifact path.
+Check that =effective-guidance.txt= matches the intended style.
+Check that =metrics.json= records =matches-expected= as true.
+Flag the whole comparison as invalid if style guidance did not actually reach the session.
+Archive invalid runs instead of mixing them with valid runs.
+
+* Analysis dimensions
+
+Analyze form.
+Analyze content.
+Analyze prose.
+Analyze jargon pressure.
+Analyze token consumption.
+Analyze review handoff quality.
+Analyze safety and truthfulness.
+
+* Form rubric
+
+Form means the shape of the document.
+Check whether the artifact has the expected review sections.
+Check whether headings make the review easy to scan.
+Check whether findings use a stable pattern.
+Check whether plan coverage is explicit.
+Check whether the structure is durable enough for another agent to use later.
+Do not reward compression if it removes useful review structure.
+
+* Content rubric
+
+Content means the substance of the review.
+Check whether the artifact finds the same important issues as other runs.
+Check whether each finding has evidence.
+Check whether each finding explains why it matters.
+Check whether each finding gives a useful fix direction.
+Check whether each finding says how to verify the fix.
+Check whether the review ties facts to the feature plan.
+Check whether the review ties implementation choices to architecture.
+Do not reward a style that sounds clean but drops evidence.
+
+* Prose rubric
+
+Prose means how the artifact says what it says.
+Prefer direct claims.
+Prefer concrete nouns.
+Prefer direct verbs.
+Prefer short sentences when they keep meaning clear.
+Prefer facts before interpretation.
+Prefer plain uncertainty when uncertainty matters.
+Disfavor padding.
+Disfavor throat-clearing.
+Disfavor vague summary nouns.
+Disfavor ornate phrasing.
+Disfavor fake literary voice.
+Disfavor forced toughness.
+
+* Jargon rubric
+
+Jargon means needless specialist labels, metric shorthand, or writing-workshop terms where plain words would work better.
+Project terms are not jargon when they name real project concepts.
+Examples of valid project terms include =system-channel path=, =autoload=, =e-capability-config=, and =os-base=.
+Examples of avoidable jargon include =low filler=, =low hedging=, =register problem=, =artifact shape=, and =style pressure= when plainer words would work.
+Prefer =padding= over =low filler=.
+Prefer =hedges= over =hedging rate= when not discussing metrics.
+Prefer =compressed wording= over =compressed register=.
+Prefer =structure= over =artifact shape=.
+Prefer =the prompt pushes the model= over =style pressure= when the causal claim matters.
+Define any necessary specialist term once.
+Use the plainest stable name after that.
+Do not remove technical terms that make the analysis exact.
+
+* Token rubric
+
+Measure whole-turn token usage.
+Measure output tokens.
+Measure reasoning output tokens.
+Measure final artifact bytes.
+Measure final artifact words.
+Measure tool calls.
+Treat final artifact size as only one cost signal.
+Treat whole-turn token usage as the main cost signal for agentic tasks.
+Flag any style that compresses final text but increases total turn cost.
+
+* Handoff rubric
+
+A good review artifact should help another agent continue the work.
+It should name unresolved findings clearly.
+It should preserve evidence.
+It should preserve fix direction.
+It should preserve verification steps.
+It should not require the reader to reconstruct the reasoning from chat history.
+It should be useful even after the comparison experiment is forgotten.
+
+* Qualitative comparison procedure
+
+Start with a short validity note.
+Summarize the overall ranking.
+Compare form for each style.
+Compare content for each style.
+Compare prose for each style.
+Compare jargon pressure for each style.
+Compare token consumption for each style.
+State which style best balances cost and handoff quality.
+State which style is best only for compression.
+State what the next candidate should be.
+State what failure mode to watch in the next run.
+
+* Metrics to report
+
+Report session id.
+Report whether guidance was verified.
+Report duration.
+Report message count.
+Report tool-call count.
+Report output tokens.
+Report reasoning output tokens.
+Report total token usage sum.
+Report review bytes.
+Report review words.
+Report average sentence length.
+Report short-sentence share.
+Report long-sentence share.
+Report hedge or padding markers only as rough signals.
+Do not treat crude lexicon metrics as final truth.
+
+* High-confidence prompt adjustment for jargon
+
+Add a small plain-language guard to future Hemingway-derived style prompts.
+Use project terms when they name real things.
+Avoid analysis jargon and writing-workshop labels when plain words work.
+Say padding, not low filler.
+Say hedges, not hedging rate.
+Say compressed wording, not register problem.
+Define any necessary specialist term once, then use the plainest stable name.
+This will help, but it will not reliably remove all jargon.
+Some jargon comes from the task domain.
+Some jargon comes from the analyst's own framing.
+Some jargon is the clearest available name for a real concept.
+
+* Output format
+
+Write analysis in Org.
+Use one sentence per line when practical.
+Use headings for each analysis dimension.
+Keep tables narrow or transpose them.
+Keep claims tied to evidence.
+Separate measured facts from judgment.
+End with a clear recommendation.

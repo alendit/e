@@ -1,0 +1,32 @@
+{
+  "generated_at": "2026-06-29T05:40:12Z",
+  "root": "/Users/dimitrivorona/projects/elisp/e/",
+  "config_method": "serialized global e-capability-config binding, verified before each turn",
+  "note": "The runner wrote artifacts to the legacy output-style comparison root because the Emacs variable was already bound; files were copied into this empirical-v2-caveman directory after completion.",
+  "results": [
+    {
+      "variant": "hemingway-current",
+      "session_id": "20260629T050701-9322cad56c61",
+      "artifact": "docs/research/output-styles-review/empirical-v2-caveman/hemingway-current/review.org",
+      "metrics": "docs/research/output-styles-review/empirical-v2-caveman/hemingway-current/metrics.json",
+      "guidance_verified": true,
+      "error": null
+    },
+    {
+      "variant": "hemingway-suggested-v2",
+      "session_id": "20260629T051734-b7f5275d1131",
+      "artifact": "docs/research/output-styles-review/empirical-v2-caveman/hemingway-suggested-v2/review.org",
+      "metrics": "docs/research/output-styles-review/empirical-v2-caveman/hemingway-suggested-v2/metrics.json",
+      "guidance_verified": true,
+      "error": null
+    },
+    {
+      "variant": "caveman",
+      "session_id": "20260629T052333-d269895a2b9c",
+      "artifact": "docs/research/output-styles-review/empirical-v2-caveman/caveman/review.org",
+      "metrics": "docs/research/output-styles-review/empirical-v2-caveman/caveman/metrics.json",
+      "guidance_verified": true,
+      "error": null
+    }
+  ]
+}

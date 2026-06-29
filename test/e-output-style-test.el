@@ -47,7 +47,7 @@
 
 (ert-deftest e-output-style-test-builtin-styles-present ()
   "The v1 built-in styles are registered with non-empty instructions."
-  (dolist (id '(concise explanatory hemingway))
+  (dolist (id '(concise explanatory hemingway hemingway-suggested-v2 hemingway-v3 caveman))
     (let ((instructions (e-output-style--resolve id)))
       (should (stringp instructions))
       (should-not (string-empty-p instructions)))))

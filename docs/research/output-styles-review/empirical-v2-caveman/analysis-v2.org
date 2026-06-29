@@ -1,0 +1,215 @@
+#+title: Qualitative Analysis of Hemingway v2 and Caveman Review Outputs
+#+startup: overview
+
+* Scope
+
+This analysis compares the three review artifacts in =docs/research/output-styles-review/empirical-v2-caveman/=.
+The artifacts use =hemingway-current=, =hemingway-suggested-v2=, and =caveman=.
+The task was the same output-style feature review.
+The focus is qualitative form, qualitative content, jargon pressure, and whether each style moves E closer to the desired agent prose.
+The desired agent prose is plain, concrete, useful, technically exact, low in padding, low in needless specialist labels, and free of cosplay.
+
+* Run validity
+
+All three runs record that the effective guidance matched the expected style.
+Each run wrote an =effective-guidance.txt= file.
+Each run stores the same guidance preflight in =metrics.json=.
+The comparison is valid for style effects on this task.
+The comparison is still only one task and one run per style.
+
+* Summary judgment
+
+=hemingway-suggested-v2= is the best overall candidate from this round.
+It keeps professional review form.
+It preserves most of the content quality of =hemingway-current=.
+It uses far fewer output tokens than =hemingway-current=.
+It avoids the compressed wording problems visible in =caveman=.
+=hemingway-current= still cuts padding and hedges best.
+=caveman= is useful as a compression control, but it is not a good default review style.
+
+* Form comparison
+
+** hemingway-current
+
+The =hemingway-current= review has the strongest formal review shape.
+It uses many explicit subheadings.
+It breaks plan coverage into clear step sections.
+It gives each finding a full review template with expected behavior, observed behavior, impact, fix, and verification.
+The structure is easy to scan.
+The structure also costs tokens.
+The opening is clear, but it carries a longer controlled-run disclaimer.
+The prose often uses short declarative claims after a setup sentence.
+The form feels like a durable review handoff.
+
+** hemingway-suggested-v2
+
+The =hemingway-suggested-v2= review keeps nearly the same structure as current.
+It has the same major sections.
+It keeps the three findings.
+It keeps plan coverage by step.
+It is slightly leaner than current.
+It cuts some repetition without collapsing the review into notes.
+The opening is still formal and explicit.
+The sentence flow is smoother than current in places.
+The form is close enough to current to remain a good feature review artifact.
+
+** caveman
+
+The =caveman= review is visibly compressed.
+It uses shorter finding bodies.
+It drops the full expected, observed, why, fix, and verification substructure under each finding.
+It uses numbered lists and terse labels more often.
+It is easier to skim at first glance.
+It is less durable as a review handoff.
+Some sections read like compressed notes rather than review prose.
+The style does not announce itself as caveman.
+It still changes the register enough to feel unlike normal E documentation.
+
+* Content comparison
+
+** hemingway-current
+
+The =hemingway-current= review has the richest content.
+It explains the loading path behind the fresh-load finding.
+It names the lazy =os-base= path as the cause.
+It explains why the capability design is good.
+It ties the implementation to the system-channel architecture.
+It gives precise verification steps for each finding.
+It also identifies the new plan drift caused by adding extra built-in styles.
+The content is strong, but some material is repeated across summary, findings, and plan coverage.
+
+** hemingway-suggested-v2
+
+The =hemingway-suggested-v2= review preserves the important findings.
+It captures the same three open notes as current.
+It keeps the same causal explanation for the fresh-load gap.
+It keeps the same config-error diagnosis.
+It keeps the same plan-drift concern about the broader built-in registry.
+It is a little less exhaustive than current.
+It still gives enough evidence for a maintainer to act.
+It is the best balance between detail and cost.
+
+** caveman
+
+The =caveman= review captures the same three findings.
+It states the facts quickly.
+It gives enough evidence to understand the issue.
+It loses some of the review convention's explanatory scaffolding.
+The fresh-load finding is still clear.
+The invalid-style finding is still clear.
+The plan-drift finding is clear enough.
+The fix directions are shorter and less formal.
+The artifact is useful as notes, but weaker as an audit trail.
+
+* Prose comparison
+
+** hemingway-current
+
+The =hemingway-current= prose has the strongest claim rhythm.
+It favors direct claims.
+It has the lowest filler rate in this round.
+It has lower hedging than =hemingway-suggested-v2= by the crude lexicon.
+It sometimes becomes longer because it restates context for each section.
+It feels closest to the earlier preferred review style.
+It is strong but expensive.
+
+** hemingway-suggested-v2
+
+The =hemingway-suggested-v2= prose is clean and direct.
+It uses concrete technical nouns well.
+It avoids the vague =strong verbs= pressure.
+It keeps normal technical grammar.
+It has slightly shorter average sentences than current.
+It has fewer long sentences than current.
+It has more filler and hedging by the crude lexicon.
+The extra filler does not dominate the artifact.
+The prose feels professional and stable.
+
+** caveman
+
+The =caveman= prose is compressed but not always cleaner.
+It has the smallest final artifact.
+It also has the highest average word length and highest abstract-marker rate.
+This suggests compression did not simply make the prose more Hemingway-like.
+It often removes connective tissue.
+That helps quick reading in some places.
+That hurts order and emphasis in review findings.
+It reads more like terse operational notes than like durable project documentation.
+
+* Jargon comparison
+
+Jargon here means needless specialist labels, metric shorthand, or analysis terms where plain words would work better.
+Examples include phrases like =low filler=, =low hedging=, =register problems=, and =artifact shape= when the sentence can say =padding=, =hedges=, =compressed style=, or =structure=.
+Technical terms are not jargon when they name real project concepts.
+Examples include =system-channel path=, =autoload=, =e-capability-config=, and =os-base=.
+=hemingway-current= reduces ordinary padding, but it can still produce review jargon.
+=hemingway-suggested-v2= is not immune to jargon either.
+The phrase =direct verbs= is clear once explained, but it can read like a writing-class term without examples.
+=caveman= cuts many words, but it can create compressed technical shorthand that feels more jargony, not less.
+The style guidance can help by banning needless labels and asking for plain operational words.
+The style guidance cannot reliably remove all jargon because some jargon comes from the task domain and some comes from the analyst's own framing.
+A useful prompt change would say this.
+
+#+begin_quote
+Use project terms when they name real things.
+Avoid analysis jargon and writing-workshop labels when plain words work.
+Say padding, not low filler.
+Say hedges, not hedging rate.
+Say compressed style, not register problem.
+Define any necessary specialist term once, then use the plainest stable name.
+#+end_quote
+
+* Token-consumption comparison
+
+=hemingway-suggested-v2= used the fewest output tokens.
+It used 9,062 output tokens.
+=hemingway-current= used 15,272 output tokens.
+=caveman= used 15,125 output tokens.
+=caveman= produced the smallest final review artifact.
+=caveman= still used the most total token usage.
+=caveman= also used the most tool calls.
+This means final-text compression did not reduce agentic task cost in this run.
+The cost driver was the whole turn, not only the final file size.
+=hemingway-suggested-v2= was the only style that reduced both final size and total run cost in this round.
+
+* Finding: v2 improves the current style for this task
+
+=hemingway-suggested-v2= keeps the form that made =hemingway-current= useful.
+It preserves the same three findings.
+It keeps enough evidence and fix direction.
+It cuts the output-token cost sharply.
+It stays closer to the larger Hemingway corpus because it prefers concrete facts and direct verbs.
+It avoids the misleading pressure of =strong verbs=.
+It also avoids the too-absolute rule to cut every word that does not carry weight.
+The qualitative loss from current to v2 is small.
+The token win from current to v2 is large.
+
+* Finding: caveman is not the right default review style
+
+=caveman= is effective at compressing the final artifact.
+It is not effective at reducing total turn cost here.
+It changes the review into a note-like artifact.
+It weakens the durable handoff structure.
+It loses some explanatory scaffolding around findings.
+It is good for short answers, status notes, and quick operational comments.
+It is not good for canonical feature review artifacts by default.
+It should remain optional.
+
+* Finding: current still has one useful property v2 should protect
+
+=hemingway-current= applies stronger pressure against filler and hedging.
+That pressure remains useful for E.
+=v2= should not drift into explanatory softness.
+If v2 becomes the default candidate, its tests should check for padding and hedge creep.
+The prompt line about truthful uncertainty is right.
+The implementation should still discourage unnecessary uncertainty language.
+
+* Recommendation
+
+Keep =hemingway-current= available.
+Add =hemingway-suggested-v2= as the next serious candidate.
+Use =hemingway-suggested-v2= for the next empirical round.
+Keep =caveman= as an optional compression style and control.
+Do not make =caveman= the default style for feature reviews.
+Measure future rounds on whole-turn token usage, not only final artifact size.
+Also score final artifacts for review completeness and handoff quality.

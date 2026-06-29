@@ -1,0 +1,75 @@
+#+title: Empirical Output Style Comparison: Hemingway v2 and Caveman
+#+startup: overview
+
+* Scope
+
+This run compares three output styles on the same output-style feature review task.
+The styles are =hemingway-current=, =hemingway-suggested-v2=, and =caveman=.
+Each run started a fresh session from the default chat harness context.
+Each run set global =e-capability-config= before session creation and kept it set until the turn ended.
+Each run wrote =effective-guidance.txt= and records =matches-expected= in =metrics.json=.
+The Caveman source skill is saved at =../sources/caveman-SKILL.md=.
+The E-adapted Caveman guidance is saved at =../sources/caveman-derived-guidance.txt=.
+
+* Token and run metrics
+
+| Metric | hemingway-current | hemingway-suggested-v2 | caveman |
+|-
+| Session | 20260629T050701-9322cad56c61 | 20260629T051734-b7f5275d1131 | 20260629T052333-d269895a2b9c |
+| Guidance verified | True | True | True |
+| Duration s | 633.0 | 359.1 | 701.4 |
+| Messages | 70 | 46 | 82 |
+| Tool calls | 34 | 22 | 40 |
+| Token events | 26 | 12 | 31 |
+| Input tokens | 922635 | 364285 | 1072280 |
+| Cached input tokens | 377856 | 130560 | 530944 |
+| Output tokens | 15272 | 9062 | 15125 |
+| Reasoning output tokens | 5587 | 1218 | 8324 |
+| Total token usage sum | 937907 | 373347 | 1087405 |
+| Review bytes | 22173 | 19817 | 14478 |
+| Review words | 2419 | 2282 | 1624 |
+
+* Style metrics
+
+| Metric | hemingway-current | hemingway-suggested-v2 | caveman |
+|-
+| Average sentence words | 18.4 | 17.5 | 20.5 |
+| Median sentence words | 14 | 14.5 | 12.5 |
+| Sentences <= 8 words % | 23.7 | 23.8 | 28.2 |
+| Sentences >= 25 words % | 23.7 | 20.8 | 21.8 |
+| Average word length | 5.00 | 4.97 | 5.17 |
+| -ly adverbs / 1000 | 5.0 | 3.9 | 4.9 |
+| Hedges / 1000 | 3.3 | 4.4 | 3.1 |
+| Filler / 10k | 4.1 | 8.8 | 6.2 |
+| Abstract suffix words / 1000 | 42.2 | 41.6 | 53.0 |
+| and / 1000 | 28.9 | 29.4 | 25.9 |
+| because / 1000 | 2.5 | 2.6 | 0.0 |
+
+* Findings
+
+=hemingway-suggested-v2= used far fewer provider output tokens than =hemingway-current= in this run.
+=hemingway-suggested-v2= used 9,062 output tokens, while =hemingway-current= used 15,272 output tokens.
+=caveman= did not save provider output tokens on this task.
+=caveman= used 15,125 output tokens, close to =hemingway-current=.
+=caveman= produced the smallest final review file.
+The Caveman final review has 1,624 prose words, compared with 2,419 for current and 2,282 for v2.
+The Caveman turn still used the most tool calls and the most total token usage.
+This means Caveman compressed the final artifact but did not reduce total turn cost for this agentic review task.
+The extra cost likely came from more tool-use continuation and reasoning before the final artifact.
+=hemingway-suggested-v2= is the best token-consumption result in this run.
+It also kept style metrics close to =hemingway-current=.
+It had slightly shorter average sentences and fewer long sentences than =hemingway-current=.
+It had more filler and hedging than =hemingway-current= by the crude lexicon.
+Its final artifact is shorter than current while preserving the review structure.
+=hemingway-current= remains the strongest pressure toward low filler and low hedging.
+=caveman= is a useful compression control, but it is not a better E review style.
+Caveman makes the final text smaller, but it raises abstraction markers and hurts normal review prose shape.
+
+* Verdict
+
+Use =hemingway-suggested-v2= as the next candidate to test in E.
+It gives the best balance in this run.
+It cut output tokens and final artifact size compared with =hemingway-current=.
+It stays closer to the Hemingway corpus than =hemingway-current=.
+It avoids Caveman cosplay and keeps professional review form.
+Keep =caveman= as an optional compression style, not as the default review style.

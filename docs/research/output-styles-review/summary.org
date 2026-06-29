@@ -1,0 +1,40 @@
+#+title: Output Style Review Generation Comparison
+#+startup: overview
+
+* Scope
+
+Four fresh single-turn chat sessions generated a review artifact for =docs/feats/38-output-style/plan.org=. Each run used a fresh transcript from the default chat harness context and wrote into this research directory.
+
+Artifacts live under one subdirectory per variant. Each subdirectory contains =review.org=, =metrics.json=, =prompt.txt=, =guidance.txt=, and =effective-guidance.txt=.
+
+* Metrics
+
+| Metric | none | concise | hemingway-current | hemingway-suggested |
+|-
+| Session | 20260628T211846-daf3b78e39e9 | 20260628T212538-ca4a9422a4b3 | 20260628T213430-62fcb1cf155d | 20260628T215755-d7232ae7ebf2 |
+| Guidance verified | True | True | True | True |
+| Turns | 1 | 1 | 1 | 1 |
+| Duration s | 412.4 | 531.5 | 414.7 | 647.3 |
+| Messages | 54 | 70 | 50 | 58 |
+| Tool calls | 26 | 34 | 24 | 28 |
+| Token events | 19 | 22 | 16 | 16 |
+| Input tokens | 520335 | 888061 | 484516 | 482929 |
+| Cached input | 221184 | 239616 | 222208 | 229376 |
+| Output tokens | 8999 | 10408 | 10126 | 11232 |
+| Reasoning output | 2332 | 3312 | 1959 | 4107 |
+| Total tokens | 529334 | 898469 | 494642 | 494161 |
+| Review bytes | 15887 | 14338 | 20752 | 16841 |
+
+* Guidance Verification
+
+The first comparison was invalid. I had tried to set =output-style= through harness-local runtime config. The output-style capability resolves its instructions inside the layer factory from global or directory capability config, so every first-run variant inherited the global =hemingway= style. Those invalid artifacts are archived under =invalid-runtime-override-20260628T211616Z/=.
+
+The current runs were serialized. Before each harness and session were created, =e-capability-config= was set to that variant and kept set until =e-harness-prompt= returned. Each run wrote =effective-guidance.txt= and stores the same preflight in =metrics.json=. The preflight records the effective =output-style= capability instructions and whether they matched the expected guidance. All four current runs have =matches-expected: true=.
+
+* Notes
+
+- =token-usage-sum= adds every provider token-usage event emitted during the turn, including tool-continuation calls. It is useful for relative run cost, not a single request size.
+- The =none= run had effective =output-style= instructions of =nil=.
+- The =concise= run used the current registered =concise= style.
+- The =hemingway-current= run used the current registered =hemingway= style.
+- The =hemingway-suggested= run used the revised guidance proposed from the corpus check.

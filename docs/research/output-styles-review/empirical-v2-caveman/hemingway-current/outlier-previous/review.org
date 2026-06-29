@@ -1,0 +1,358 @@
+#+title: Review: Output Style
+#+author: e implementation
+#+date: 2026-06-28
+#+startup: overview
+
+* Status
+
+In-review.
+
+This is a controlled output-style comparison review artifact. It reviews the
+implemented feature against =docs/feats/38-output-style/plan.org= but is stored
+under =docs/research/output-styles-review/hemingway-current/= by request. It is
+not the canonical =docs/feats/38-output-style/review.org= file.
+
+* Review summary
+
+The implementation matches the main feature contract. =output-style= is a
+built-in =os-base= capability, resolves its active style through
+=e-capability-config=, contributes style prose through the existing system
+context path, stays inert when no style is selected, and ships the planned
+=concise=, =explanatory=, and =hemingway= styles.
+
+Focused tests and adapter-adjacent tests pass. The one open finding is a small
+plan-contract mismatch in the unknown configured style diagnostic: capability
+construction rejects the value, but the error does not list the registered style
+ids as the plan requested.
+
+* Scope reviewed
+
+Plan and review pattern:
+
+- =docs/feats/38-output-style/plan.org=, attached as the feature plan.
+- =docs/agents/review.org=.
+- Existing feature review examples under =docs/feats/*/review.org=.
+
+Implementation files:
+
+- =lisp/layers/base/e-output-style.el=
+- =lisp/layers/base/e-base.el=
+- =lisp/dev/e-dev.el=
+- =lisp/defaults/e-default-layers.el=
+- =lisp/defaults/e-default-harnesses.el=
+- =lisp/core/e-capability-config.el=
+- =lisp/core/e-capabilities.el=
+- =lisp/adapters/anthropic/e-anthropic.el=
+- =lisp/adapters/openai/e-openai.el=
+- =docs/architecture.md=
+
+Tests:
+
+- =test/e-output-style-test.el=
+- =test/e-base-test.el=
+- =test/e-openai-test.el=
+- =test/e-anthropic-test.el=
+
+Live/runtime checks:
+
+- Focused ERT for output style and base layer.
+- Broader adapter-adjacent ERT for output style, base, OpenAI, and Anthropic.
+- A bounded live Elisp probe for active style resolution and system fragment
+  ordering.
+- Attempted =emacsclient= live reload; it timed out because the server did not
+  respond.
+
+* What looks good
+
+- The feature uses the existing capability/system-context path instead of adding
+  a new prompt channel. This matches the plan's key finding.
+- The new behavior has a clear owner: =e-output-style.el= owns the registry,
+  resolver, capability constructor, and commands.
+- =os-base= wires the capability by default, but the capability contributes no
+  instructions when no style is configured.
+- The configured style sorts after =base-guidance= because it uses priority 260.
+- The tests cover registry behavior, command helpers, capability construction,
+  default-layer presence, inert-by-default behavior, and system-fragment routing.
+- =docs/architecture.md= records =output-style= as an =os-base= capability and
+  states its priority and =e-capability-config= option.
+
+* Verification performed during this review pass
+
+** Focused output-style and base-layer tests
+
+#+begin_src sh
+rtk eldev test test/e-output-style-test.el test/e-base-test.el
+#+end_src
+
+#+begin_example
+Ran 18 tests, 18 results as expected, 0 unexpected (2026-06-28 22:28:13+0200, 0.022296 sec)
+#+end_example
+
+** Adapter-adjacent focused tests
+
+#+begin_src sh
+rtk eldev test test/e-output-style-test.el test/e-base-test.el test/e-openai-test.el test/e-anthropic-test.el
+#+end_src
+
+#+begin_example
+Ran 127 tests, 127 results as expected, 0 unexpected (2026-06-28 22:34:46+0200, 0.218793 sec)
+#+end_example
+
+This run includes existing Anthropic and OpenAI request-body tests that prove
+system messages stay out of Anthropic conversation turns and are moved into
+OpenAI Responses instructions.
+
+** Live reload attempt
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+#+begin_example
+Server not responding; use Ctrl+C to break
+
+Command timed out after 60 seconds
+#+end_example
+
+No code was changed during this review. The timed-out reload means this review
+cannot claim that the running Emacs was refreshed by =e-dev-reload=.
+
+** Bounded live probe
+
+#+begin_src emacs-lisp
+(progn
+  (require 'seq)
+  (require 'e-output-style)
+  (require 'e-base)
+  (let* ((e-capability-config '((output-style :style hemingway)))
+         (layer (e-base-layer-create "/Users/dimitrivorona/projects/elisp/e/"))
+         (caps (e-layer-capabilities layer))
+         (style (seq-find (lambda (cap) (eq (e-capability-id cap) 'output-style)) caps))
+         (messages (e-capabilities-context-messages caps))
+         (system (seq-filter (lambda (message) (eq (plist-get message :role) 'system)) messages)))
+    (list :ids (e-output-style-ids)
+          :describe (e-output-style--describe-string "/Users/dimitrivorona/projects/elisp/e/")
+          :style-instructions-present (and style (string-match-p "clean, strong prose" (or (e-capability-instructions style) "")))
+          :system-count (length system)
+          :style-system-position (seq-position (mapcar (lambda (m) (plist-get m :content)) system)
+                                               (e-output-style--resolve 'hemingway)))))
+#+end_src
+
+#+begin_example
+(:ids (hemingway-suggested concise explanatory hemingway)
+ :describe "Active output style: hemingway
+
+Write in a clean, strong prose style.  This is not a request to
+imitate Ernest Hemingway, mention his works, or cosplay his voice.  Use plain
+declarative sentences.  Put one idea in each.  Choose short, common words over
+long ones.  Prefer strong verbs to adjectives and adverbs.  Avoid flowery,
+ornate, or unnecessary language.  Cut every word that does not carry weight.  Do
+not hedge or pad.  Let the facts stand on their own."
+ :style-instructions-present 11
+ :system-count 2
+ :style-system-position 1)
+#+end_example
+
+The live runtime has an extra registered custom style, =hemingway-suggested=,
+which is acceptable because the registry is intentionally user-extensible. The
+configured built-in =hemingway= style resolved, described itself, and appeared as
+the second system fragment after =base-guidance=.
+
+** OpenAI shape spot check
+
+#+begin_src emacs-lisp
+(progn
+  (require 'e-openai)
+  (require 'e-output-style)
+  (let* ((style (e-output-style--resolve 'hemingway))
+         (messages (list (list :role 'system :content style)
+                         (list :role 'user :content "Hi")))
+         (chat (append (e-openai-chat-completion--messages messages nil) nil))
+         (codex (e-openai-codex-request-body :messages messages :options nil :tools nil)))
+    (list :chat-first (car chat)
+          :chat-second (cadr chat)
+          :codex-instructions-has-style (string-match-p "clean, strong prose" (plist-get codex :instructions))
+          :codex-input-roles (mapcar (lambda (m) (plist-get m :role)) (append (plist-get codex :input) nil)))))
+#+end_src
+
+#+begin_example
+(:chat-first (:role "system" :content "You are a helpful assistant.")
+ :chat-second (:role "system" :content "Write in a clean, strong prose style.  This is not a request to
+imitate Ernest Hemingway, mention his works, or cosplay his voice.  Use plain
+declarative sentences.  Put one idea in each.  Choose short, common words over
+long ones.  Prefer strong verbs to adjectives and adverbs.  Avoid flowery,
+ornate, or unnecessary language.  Cut every word that does not carry weight.  Do
+not hedge or pad.  Let the facts stand on their own.")
+ :codex-instructions-has-style 41
+ :codex-input-roles ("user"))
+#+end_example
+
+This confirms the style guidance stays before the user turn for Chat
+Completions and moves into top-level =:instructions= for OpenAI Responses.
+
+* UX and performance playthrough
+
+- First use with no style: tested through =e-base-test-layer-output-style-inert-by-default= and =e-output-style-test-capability-inert-by-default=. The capability is present but contributes no prompt text.
+- Active style description: the live probe called =e-output-style--describe-string= for the project root and got the expected active =hemingway= prose.
+- Style switching helper: =e-output-style-test-set-config-writes-style= proves the helper writes =(:style ID)= under =output-style= without disturbing other capability config.
+- Error recovery: unknown ids are rejected. The user-facing diagnostic for configured unknown ids is the only open issue below.
+- Responsiveness: the feature does constant-size registry lookup and ordinary context-fragment assembly. No profiling was needed.
+
+The interactive =M-x e-output-style-set= UI itself was not driven visually in
+this pass. Its pure helper and describe text are covered, and the command uses
+standard =completing-read= plus =message=.
+
+* Findings
+
+** TODO Low: Configured unknown style error does not list known style ids
+
+The plan says an unknown style id should produce a clear error naming the bad id
+and the known ids. The resolver itself does this:
+=e-output-style--resolve= signals =Unknown output style `ID'; known styles: ...=,
+and the tests cover that path.
+
+The capability construction path rejects unknown configured styles earlier,
+inside =e-capability-config-resolve= value validation. A configured value such as
+=(:style bogus)= signals the generic capability-config invalid-value error:
+
+#+begin_src emacs-lisp
+(progn
+  (require 'e-output-style)
+  (let ((e-capability-config '((output-style :style bogus))))
+    (condition-case err
+        (e-output-style-capability-create default-directory)
+      (error (list :type (car err) :message (error-message-string err) :data (cdr err))))))
+#+end_src
+
+#+begin_example
+(:type e-capability-config-invalid-value
+ :message "Invalid capability config value: output-style, :style, bogus"
+ :data (output-style :style bogus))
+#+end_example
+
+This still rejects the invalid config, so the runtime does not silently use a bad
+style. The gap is diagnostic quality and plan fidelity. A user who misspells a
+style in =e-capability-config= does not see the registered alternatives.
+
+Smallest useful fix direction: move style-id validation for =:style= into a
+normalizer or validator path that can signal the resolver's message, or let the
+capability constructor call =e-output-style--resolve= for non-nil ids before a
+generic invalid-value error wins. Preserve the typed
+=e-capability-config-invalid-value= error only if the message still includes the
+known ids.
+
+* Plan coverage
+
+** Step 1: Style registry and resolver
+
+Covered.
+
+=e-output-style-registry= is a =defcustom= seeded with =concise=,
+=explanatory=, and =hemingway=. =e-output-style-register= adds or replaces
+entries. =e-output-style--resolve= returns prose for known ids and signals a
+clear unknown-style error for direct resolver calls. =e-dev-reload= includes the
+new module and re-evaluates uncustomized =e-output-style-registry= defaults.
+
+** Step 2: =output-style= capability constructor
+
+Mostly covered.
+
+=e-output-style-capability-create= declares the =:style= config option, resolves
+configuration through =e-capability-config-resolve= for the given directory, and
+creates =output-style= with priority 260. With no style configured, instructions
+are nil. With =:style hemingway=, instructions match the style prose. Unknown
+option keys signal =e-capability-config-unknown-option=.
+
+The only gap is the open diagnostic finding for unknown configured style ids.
+
+** Step 3: Wire into the default layer
+
+Covered.
+
+=e-base-layer-create= includes =e-output-style-capability-create= after
+=base-guidance=, file handling, and shell process capabilities. =test/e-base-test.el=
+asserts =output-style= appears in =os-base=, remains inert by default, and sorts
+after =base-guidance= when configured.
+
+** Step 4: Interactive set/describe commands
+
+Covered for helpers and command construction.
+
+=e-output-style-set= uses =completing-read= over registered style ids and clears
+on empty input. =e-output-style--set-config= writes the =:style= option under
+=output-style= without disturbing other capability config. =e-output-style-describe=
+prints the active style text in a help window when interactive and returns the
+text when called noninteractively.
+
+** Step 5: End-to-end system-channel assertion
+
+Covered in the backend-neutral context layer and adapter-adjacent checks.
+
+=e-output-style-test-style-prose-is-system-fragment= proves the style prose is a
+system message and not a non-system conversation turn. Existing adapter tests
+plus the live spot check show Anthropic removes system messages from the turns
+array, OpenAI Responses moves them into =:instructions=, and OpenAI Chat
+Completions keeps them as system-role messages before the user turn.
+
+** Step 6: Document the contract
+
+Covered in architecture documentation.
+
+=docs/architecture.md= lists =output-style= under =os-base= with priority 260,
+configuration through =e-capability-config=, inert default behavior, and no
+tools/resources.
+
+* Architecture review
+
+The design follows the repository's capability-first direction.
+
+- Ownership is cohesive. =e-output-style.el= owns style registry, config
+  resolution, capability construction, and user commands.
+- The harness does not gain style-specific logic. It only rebuilds layer-owned
+  capabilities for the effective session root, which is the existing runtime
+  config path.
+- Provider adapters do not gain style-specific branches. They keep handling
+  backend-neutral system messages.
+- Layers stay presets. =os-base= wires the capability but does not own style
+  policy.
+- Side effects are narrow: the command mutates =e-capability-config=; context
+  assembly only reads configured style state.
+- The extension point is real. Additional styles are data in
+  =e-output-style-registry= and do not require a new capability or adapter path.
+
+The priority choice is sound. Style prose sorts after operational guidance, so
+it shapes response voice without being positioned ahead of safety and tool-use
+rules.
+
+* Design self-check
+
+1. If this work stopped here, the project would be better off because users can
+   select a stable output voice through the existing capability and system
+   prompt path.
+2. It moves toward live-configurable agent behavior that is expressed as
+   capability-owned guidance, not shell or provider special cases.
+3. The likely changing decision is the set of built-in styles. That decision is
+   local to the registry. The stable decision is that style is one active
+   capability config value.
+4. =e-output-style.el= owns the behavior because it is the capability owner for
+   style prose and style selection.
+5. Coupling stays low. The public surface is small: registry, resolver,
+   constructor, set, and describe.
+6. Stable core policy does not depend on concrete providers. Existing adapters
+   consume system messages as before.
+7. Side effects are already outward: the command writes config, and adapters
+   handle provider wire shapes.
+8. The abstraction is semantically real. A style is named guidance. A capability
+   contributes the active guidance.
+9. Compatibility expectations are explicit. Nil style preserves the old default
+   voice and contributes no extra system fragment.
+10. No legacy output-style path exists to remove.
+11. Expected errors are handled by config validation and resolver errors.
+    Unexpected errors surface.
+12. Core behavior is proven by focused registry/config/context tests and
+    adapter-adjacent request-body tests.
+
+* Unresolved
+
+- TODO Low: Configured unknown style ids reject correctly, but the error does
+  not list known style ids as the plan requested.
