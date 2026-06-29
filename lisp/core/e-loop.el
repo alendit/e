@@ -208,6 +208,7 @@ tool I/O, and turn settlement are callback-driven."
                          :type 'reasoning-delta
                          :payload
                          (list :type 'reasoning-delta
+                               :stream-kind 'summary
                                :content (response-text))))
                       (start-request)))
                    (finish-tool
@@ -344,6 +345,10 @@ tool I/O, and turn settlement are callback-driven."
                                        ('reasoning-delta
                                         (e-loop--emit :on-event on-event
                                                       :type 'reasoning-delta
+                                                      :payload item))
+                                       ('reasoning-raw-delta
+                                        (e-loop--emit :on-event on-event
+                                                      :type 'reasoning-raw-delta
                                                       :payload item))
                                        ('tool-call
                                         (enqueue-tool-call item))

@@ -1,0 +1,179 @@
+#+title: Reasoning Progress Codex Delta Investigation
+#+startup: overview
+
+* Symptoms
+
+- The user observed repeated visible reasoning blocks in =e-chat=, with multiple
+  consecutive =Thought for ...= entries saying nearly the same thing.
+- The user explicitly rejected a UI-only fix that hides reasoning.  The target is
+  visible reasoning with better source semantics and lower repetition, matching
+  Codex more closely.
+- The user also clarified that Codex does emit visible reasoning summaries on
+  =gpt-5.5= by default, so the comparison must not reduce to
+  =reasoning.summary= set to =none=.
+
+* Evidence from Codex and Pi
+
+External source snapshots inspected during this investigation:
+
+- Codex clone: =/private/tmp/codex-research= at
+  =e428a12d2235fe2bc10b10bc45d245d1f491f3c7=.
+- Pi clone: =/private/tmp/pi-research= at
+  =54113731b2e70ceb61ea1948fdfe83395ff2fd90=.
+
+Codex differs from =e= in three relevant ways:
+
+1. Codex sends GPT-5 verbosity from model metadata.  The bundled =gpt-5.5=
+   metadata sets =support_verbosity= to true and =default_verbosity= to =low=
+   in =codex-rs/models-manager/models.json=.  Request construction applies
+   =self.state.model_verbosity= or =model_info.default_verbosity= when the model
+   supports verbosity in =codex-rs/core/src/client.rs=.
+
+2. Codex preserves summary reasoning and raw reasoning as distinct event kinds.
+   =ResponseEvent::ReasoningSummaryDelta= becomes
+   =EventMsg::ReasoningContentDelta=, and raw
+   =ResponseEvent::ReasoningContentDelta= becomes
+   =EventMsg::ReasoningRawContentDelta= in
+   =codex-rs/core/src/session/turn.rs=.  The app-server protocol maps these to
+   separate notifications, =ReasoningSummaryTextDelta= and
+   =ReasoningTextDelta=, in
+   =codex-rs/app-server-protocol/src/protocol/event_mapping.rs=.
+
+3. Codex's live TUI consumes summary deltas for visible reasoning status and
+   only consumes raw reasoning deltas when =show_raw_agent_reasoning= is enabled.
+   See =codex-rs/tui/src/chatwidget/protocol.rs=.  The streaming UI accumulates
+   the current reasoning block and adds final transcript content once; there is
+   an explicit regression test,
+   =live_reasoning_summary_is_not_rendered_twice_when_item_completes=, in
+   =codex-rs/tui/src/chatwidget/tests/history_replay.rs=.
+
+Pi's coding agent has a similar semantic direction even though the names differ:
+it emits structured =thinking_start=, =thinking_delta=, and =thinking_end=
+events with a =contentIndex=, updates the current assistant message while a turn
+is live, and persists the final assistant message only on =message_end=.
+
+* Evidence from e
+
+OpenAI request construction in =lisp/adapters/openai/e-openai.el= currently adds
+=:reasoning (:effort ...)=, but does not add a GPT-5 =text.verbosity= setting.
+Live Emacs inspection confirmed the loaded defaults are:
+
+#+begin_example
+(:openai-model "gpt-5.5"
+ :openai-reasoning-effort "high")
+#+end_example
+
+The same live probe confirmed that the loaded =harness-base= guidance tells the
+model to emit one short reasoning sentence at meaningful checkpoints.  That
+instruction is well intentioned, but in practice it can encourage the model to
+produce repeated status narration such as "I found X and will do Y" at every
+small step.
+
+The OpenAI stream mapping in =lisp/adapters/openai/e-openai.el= collapses both
+=response.reasoning_summary_text.delta= and =response.reasoning_text.delta= into
+the same backend-neutral =reasoning-delta= item.  After that point the shell can
+no longer tell whether visible content came from the provider's summary stream
+or raw reasoning stream.
+
+The chat shell records =reasoning-delta= through
+=e-chat--record-reasoning-delta= in =lisp/shells/chat/e-chat.el=.  That function
+adds the content to the current round and to the intermittent activity records.
+This makes stream-kind loss visible in the chat transcript and activity model.
+
+* Anthropic backend risk
+
+=lisp/adapters/anthropic/e-anthropic.el= already sends:
+
+#+begin_src emacs-lisp
+:thinking (list :type "adaptive")
+:output_config (list :effort effort)
+#+end_src
+
+However, =e-anthropic-parse-stream= currently handles =content_block_delta= only
+for =text_delta= and =input_json_delta=.  It turns =text_delta= into
+=assistant-delta= and does not emit a first-class =reasoning-delta= or
+provider-specific thinking event for Anthropic thinking deltas.
+
+That means Anthropic can be affected by the same architectural issue in one of
+two ways:
+
+- If Anthropic thinking/progress is surfaced as ordinary text by a gateway or
+  future event shape, =e= may mix progress narration into assistant output rather
+  than visible reasoning.
+- If Anthropic exposes separate thinking deltas, =e= currently lacks the
+  provider-neutral event vocabulary to preserve summary-vs-raw or
+  thinking-vs-answer identity cleanly across backends.
+
+So the fix should not be OpenAI-only.  The backend-neutral event model should
+represent reasoning/progress stream kind and identity in a way both OpenAI and
+Anthropic adapters can map into.
+
+* Suggested fix direction
+
+1. Add request-level GPT-5 verbosity support to the OpenAI adapter and default
+   =gpt-5.5= to =text.verbosity= =low=, matching Codex's model metadata.
+
+2. Split backend-neutral reasoning events so provider adapters can distinguish at
+   least:
+
+   - visible reasoning summary/progress deltas;
+   - raw reasoning/thinking deltas;
+   - reasoning section/block boundaries;
+   - stable item or block identity when the provider supplies it.
+
+3. Update =e-chat= to render visible reasoning from the summary/progress stream,
+   not from a collapsed mix of summary and raw deltas.  This is not hiding
+   reasoning; it is showing the provider's visible reasoning stream instead of
+   treating every reasoning-like byte as the same UI artifact.
+
+4. Rework =harness-base= reasoning guidance so it does not train the model into
+   checkpoint narration on every small action.  Keep the concise/non-repetitive
+   intent, but avoid a formula that rewards repeated "I found X and will Y"
+   status sentences.
+
+5. Extend the Anthropic adapter plan at the same time.  Either map future
+   Anthropic thinking deltas into the new reasoning event vocabulary or document
+   that Anthropic currently has no visible thinking stream in =e= and should not
+   leak such text into =assistant-delta=.
+
+* Verification targets
+
+- OpenAI request-body tests should assert =text.verbosity= is sent for GPT-5.5
+  when supported and configurable.
+- OpenAI stream parser tests should assert summary and raw reasoning events do
+  not collapse into the same backend-neutral event.
+- Chat rendering tests should assert a live reasoning summary delta and final
+  reasoning item do not duplicate visible content.
+- Anthropic parser tests should cover the current absence of thinking-delta
+  handling and the intended behavior once the event vocabulary exists.
+- A bounded live =e-chat= probe should verify that visible reasoning remains
+  present but repeated checkpoint narration no longer accumulates into the
+  transcript.
+
+* Fix evidence
+
+- Added =e-openai-default-text-verbosity= and request-body mapping for
+  =:text (:verbosity ...)=.  GPT-5 models default to =low=, matching the Codex
+  model metadata behavior, while callers can override with =:text-verbosity= or
+  =:model-verbosity=.
+- Split OpenAI reasoning stream handling so
+  =response.reasoning_summary_text.delta= remains the visible
+  =reasoning-delta= stream and =response.reasoning_text.delta= becomes
+  =reasoning-raw-delta=.
+- Added backend-neutral =reasoning-raw-delta= handling in the loop and durable
+  activity event list so providers can preserve raw thinking without routing it
+  through visible summary/progress rendering.
+- Added Anthropic =thinking_delta= parsing to =reasoning-raw-delta= so Anthropic
+  thinking bytes do not leak into =assistant-delta= and do not break the generic
+  event path.
+- Reworded =harness-base= guidance to keep concise visible reasoning while
+  avoiding the formulaic "one short sentence at meaningful checkpoints" pattern
+  that encouraged repetitive checkpoint narration.
+
+Verified:
+
+- =rtk eldev test -f test/e-openai-test.el=
+- =rtk eldev test -f test/e-anthropic-test.el=
+- =rtk eldev test -f test/e-loop-test.el=
+- =rtk eldev test -f test/e-harness-test.el=
+- =rtk eldev test -f test/e-harness-base-test.el=

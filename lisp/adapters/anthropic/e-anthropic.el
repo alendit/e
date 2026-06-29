@@ -742,6 +742,14 @@ instead of a stream (the failure mode this adapter was built to make visible)."
                 (when text
                   (push text text-parts)
                   (push (list :type 'assistant-delta :content text) items))))
+             ("thinking_delta"
+              (let ((thinking (plist-get delta :thinking)))
+                (when thinking
+                  (push (list :type 'reasoning-raw-delta
+                              :stream-kind 'raw
+                              :content thinking
+                              :content-index (plist-get event :index))
+                        items))))
              ("input_json_delta"
               (let* ((index (plist-get event :index))
                      (entry (assoc index blocks)))

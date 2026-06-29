@@ -278,6 +278,45 @@
                        provider-request-finished
                        turn-finished))))))
 
+(ert-deftest e-loop-test-emits-raw-reasoning-events-without-assistant-text ()
+  "Raw reasoning events are surfaced without becoming assistant output."
+  (let* ((backend (e-backend-create
+                   :name "fake-raw-reasoning"
+                   :stream (cl-function
+                            (lambda (&key messages options on-item)
+                              (ignore messages options)
+                              (funcall on-item
+                                       '(:type reasoning-raw-delta
+                                         :stream-kind raw
+                                         :content "raw thinking"))
+                              (funcall on-item
+                                       '(:type assistant-message
+                                         :content "done"))
+                              (funcall on-item
+                                       '(:type done :reason stop))))))
+         (events nil)
+         (messages nil))
+    (e-loop-run-turn
+     :session-id "session-1"
+     :turn-id "turn-1"
+     :messages '((:role user :content "hi"))
+     :backend backend
+     :tools (e-tools-registry-create)
+     :options nil
+     :on-event (lambda (type payload)
+                 (push (list :type type :payload payload) events))
+     :append-message (lambda (message)
+                       (push message messages)))
+    (let ((events (nreverse events)))
+      (should (memq 'reasoning-raw-delta
+                    (mapcar (lambda (event)
+                              (plist-get event :type))
+                            events)))
+      (should (equal (mapcar (lambda (message)
+                               (plist-get message :content))
+                             (nreverse messages))
+                     '("done"))))))
+
 (ert-deftest e-loop-test-tool-finished-includes-call-and-result ()
   "Tool-finished descriptors include the original call and executed result."
   (let* ((calls 0)

@@ -577,7 +577,8 @@ an already-removed record is a no-op."
 
 (defconst e-harness--durable-activity-event-types
   '(turn-started provider-request-started provider-request-finished
-    reasoning-delta tool-started tool-finished turn-finished token-usage
+    reasoning-delta reasoning-raw-delta
+    tool-started tool-finished turn-finished token-usage
     turn-failed turn-cancelled turn-steered backend-empty-output
     compaction-started compaction-prepared compaction-summary-started
     compaction-finished compaction-failed)

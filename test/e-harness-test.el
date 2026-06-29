@@ -3112,6 +3112,7 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
   "Harness turn events persist as activity, and messages keep their turn id."
   (let* ((backend (e-backend-fake-create
                    :items '((:type reasoning-delta :content "thinking")
+                            (:type reasoning-raw-delta :content "raw thinking")
                             (:type assistant-message :content "done")
                             (:type done :reason stop))))
          (store (e-session-store-create))
@@ -3131,6 +3132,7 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
                      '(turn-started
                        provider-request-started
                        reasoning-delta
+                       reasoning-raw-delta
                        provider-request-finished
                        turn-finished))))))
 

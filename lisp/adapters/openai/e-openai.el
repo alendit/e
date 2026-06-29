@@ -69,6 +69,12 @@
                  (string :tag "Effort"))
   :group 'e-openai)
 
+(defcustom e-openai-default-text-verbosity "low"
+  "Default GPT-5 Responses text verbosity for OpenAI-like requests."
+  :type '(choice (const :tag "Unset" nil)
+                 (string :tag "Verbosity"))
+  :group 'e-openai)
+
 (defcustom e-openai-default-provider 'codex
   "Default provider profile used by generic OpenAI harness helpers."
   :type 'symbol
@@ -460,11 +466,22 @@ When CODEX-HOME is nil, use the CODEX_HOME environment variable or
                    messages)))
     (seq-remove #'e-openai-codex--system-message-p source)))
 
+(defun e-openai-codex--text-verbosity (model options)
+  "Return Responses text verbosity for MODEL under OPTIONS."
+  (or (plist-get options :text-verbosity)
+      (plist-get options :model-verbosity)
+      (when (and (stringp model)
+                 (string-prefix-p "gpt-5" model))
+        e-openai-default-text-verbosity)))
+
 (cl-defun e-openai-codex-request-body (&key messages options tools)
   "Build a Codex Responses request body from MESSAGES, OPTIONS, and TOOLS."
   (let* ((input-messages (e-openai-codex--request-input-messages
                           messages
                           options))
+         (model (or (plist-get options :model)
+                    e-openai-default-model))
+         (text-verbosity (e-openai-codex--text-verbosity model options))
          (continuation-response-id
           (e-openai-codex--continuation-response-id options))
          (reasoning (if (plist-member options :reasoning)
@@ -474,8 +491,7 @@ When CODEX-HOME is nil, use the CODEX_HOME environment variable or
                         (list :effort effort))))
          (store-value (e-openai--response-store-value options))
          (body (append
-                (list :model (or (plist-get options :model)
-                                 e-openai-default-model))
+                (list :model model)
                 (unless (and (e-openai--implicit-websocket-store-p options)
                              (eq store-value t))
                   (list :store store-value))
@@ -490,6 +506,8 @@ When CODEX-HOME is nil, use the CODEX_HOME environment variable or
                       :parallel_tool_calls t))))
     (when tools
       (setq body (append body (list :tools (vconcat tools)))))
+    (when text-verbosity
+      (setq body (append body (list :text (list :verbosity text-verbosity)))))
     (when reasoning
       (setq body (append body (list :reasoning reasoning))))
     (when continuation-response-id
@@ -1191,9 +1209,14 @@ LIMIT defaults to 240 characters."
      ((equal type "response.output_text.done")
       (list :type 'assistant-message
             :content (plist-get event :text)))
-     ((member type '("response.reasoning_summary_text.delta"
-                     "response.reasoning_text.delta"))
+     ((equal type "response.reasoning_summary_text.delta")
       (list :type 'reasoning-delta
+            :stream-kind 'summary
+            :content (or (plist-get event :delta)
+                         (plist-get event :text))))
+     ((equal type "response.reasoning_text.delta")
+      (list :type 'reasoning-raw-delta
+            :stream-kind 'raw
             :content (or (plist-get event :delta)
                          (plist-get event :text))))
      ((and (equal type "response.output_item.done")

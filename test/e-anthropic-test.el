@@ -248,6 +248,22 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
                :total-tokens nil))
       (:type done :reason stop)))))
 
+(ert-deftest e-anthropic-test-parse-thinking-delta-as-raw-reasoning ()
+  "Anthropic thinking deltas become generic raw reasoning items."
+  (should
+   (equal
+    (e-anthropic-parse-stream
+     "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}\n\n\
+event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"checking\"}}\n\n\
+event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n\
+event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}\n\n\
+event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+    '((:type reasoning-raw-delta
+       :stream-kind raw
+       :content "checking"
+       :content-index 0)
+      (:type done :reason stop)))))
+
 (ert-deftest e-anthropic-test-parse-stream-maps-cache-tokens ()
   "Cache read and creation token counts map into neutral usage."
   (should

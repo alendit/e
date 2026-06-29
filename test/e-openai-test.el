@@ -115,6 +115,26 @@
                :content [(:type "input_text" :text "hello")])]
       :tool_choice "auto"
       :parallel_tool_calls t
+      :text (:verbosity "low")
+      :reasoning (:effort "high")))))
+
+(ert-deftest e-openai-test-request-body-maps-explicit-text-verbosity ()
+  "OpenAI request bodies map backend-neutral text verbosity."
+  (should
+   (equal
+    (e-openai-codex-request-body
+     :messages '((:role user :content "hello"))
+     :options '(:model "gpt-test" :text-verbosity "high"))
+    '(:model "gpt-test"
+      :store :json-false
+      :stream t
+      :instructions "You are a helpful assistant."
+      :input [(:type "message"
+               :role "user"
+               :content [(:type "input_text" :text "hello")])]
+      :tool_choice "auto"
+      :parallel_tool_calls t
+      :text (:verbosity "high")
       :reasoning (:effort "high")))))
 
 (ert-deftest e-openai-test-request-body-maps-reasoning-effort-option ()
@@ -909,7 +929,19 @@ event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{
    (equal
     (e-openai-codex-parse-stream
      "data: {\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"checking context\"}\n\n")
-    '((:type reasoning-delta :content "checking context")))))
+    '((:type reasoning-delta
+       :stream-kind summary
+       :content "checking context")))))
+
+(ert-deftest e-openai-test-parse-raw-reasoning-delta ()
+  "Responses raw reasoning deltas remain distinct from visible summary deltas."
+  (should
+   (equal
+    (e-openai-codex-parse-stream
+     "data: {\"type\":\"response.reasoning_text.delta\",\"delta\":\"private details\"}\n\n")
+    '((:type reasoning-raw-delta
+       :stream-kind raw
+       :content "private details")))))
 
 (ert-deftest e-openai-test-parse-message-output-item ()
   "Responses message output items become assistant messages."

@@ -1,0 +1,19 @@
+#+title: Reasoning Progress Codex Delta
+#+startup: overview
+
+* Report
+
+The user reported that =e-chat= reasoning/progress output is too verbose and
+repetitive compared with Codex and Pi.  In the observed chat buffer, consecutive
+=Thought for ...= blocks repeatedly restated the same action, for example
+finding the same persistent session store and planning the same count/parsing
+step.
+
+The desired behavior is not to hide reasoning.  =e= should continue to surface
+reasoning/progress, but it should close the delta to Codex: visible reasoning
+should be concise, should not repeat near-identical checkpoint narration, and
+should preserve provider stream semantics well enough that raw reasoning and
+summary/progress text are not collapsed into one undifferentiated visible path.
+
+The investigation should also consider whether the same class of issue can
+affect the Anthropic backend, especially as Anthropic thinking support evolves.
