@@ -995,6 +995,15 @@ operators because ddgr's --site accepts only a single domain."
                         "browser helper returned an error"))))
     (plist-get response :result)))
 
+(defun e-web-tools--browser-content (operation request-arguments result)
+  "Return browser content for OPERATION, REQUEST-ARGUMENTS, and RESULT."
+  (list :capability (format "web.browser.%s" operation)
+        :backend "playwright"
+        :operation operation
+        :requested request-arguments
+        :result result
+        :diagnostics (list :stderr (e-web-tools--browser-stderr-string))))
+
 (defun e-web-tools--browser-arguments (operation arguments)
   "Return protocol arguments for browser OPERATION from tool ARGUMENTS."
   (pcase operation
@@ -1044,12 +1053,89 @@ operators because ddgr's --site accepts only a single domain."
                   operation
                   request-arguments
                   timeout)))
-    (list :capability (format "web.browser.%s" operation)
-          :backend "playwright"
-          :operation operation
-          :requested request-arguments
-          :result result
-          :diagnostics (list :stderr (e-web-tools--browser-stderr-string)))))
+    (e-web-tools--browser-content operation request-arguments result)))
+
+(cl-defun e-web-tools--browser-start
+    (&key arguments on-done on-error on-event &allow-other-keys)
+  "Start rendered browser operation for ARGUMENTS asynchronously."
+  (let* ((operation (e-web-tools--argument-string arguments :operation))
+         (request-arguments
+          (or (e-web-tools--browser-arguments operation arguments) nil))
+         (timeout (or (e-web-tools--optional-number arguments :timeout)
+                      e-web-browser-helper-timeout))
+         (process (e-web-tools--browser-helper-ensure))
+         (id (e-web-tools--browser-next-id))
+         (request (append (list :id id :op operation) request-arguments))
+         (deadline (+ (float-time) timeout))
+         (settled nil)
+         timer)
+    (cl-labels
+        ((cleanup ()
+           (when (timerp timer)
+             (cancel-timer timer)))
+         (fail (condition)
+           (unless settled
+             (setq settled t)
+             (cleanup)
+             (when on-error
+               (funcall on-error condition))))
+         (finish (result)
+           (unless settled
+             (setq settled t)
+             (cleanup)
+             (when on-done
+               (funcall on-done
+                        (e-web-tools--browser-content
+                         operation request-arguments result)))))
+         (schedule ()
+           (setq timer (run-at-time 0.01 nil #'check)))
+         (check ()
+           (unless settled
+             (condition-case condition
+                 (let ((response (e-web-tools--browser-response-for-id id)))
+                   (cond
+                    (response
+                     (if (e-web-tools--truthy-p (plist-get response :ok))
+                         (finish (plist-get response :result))
+                       (fail
+                        (list 'e-web-backend-error
+                              (or (plist-get response :error)
+                                  "browser helper returned an error")))))
+                    ((not (process-live-p process))
+                     (fail
+                      (list 'e-web-backend-error
+                            (string-trim
+                             (format "browser helper exited%s"
+                                     (if (string-empty-p
+                                          (e-web-tools--browser-stderr-string))
+                                         ""
+                                       (concat ": "
+                                               (e-web-tools--browser-stderr-string))))))))
+                    ((>= (float-time) deadline)
+                     (fail
+                      (list 'e-web-backend-timeout
+                            (format "browser helper timed out after %s seconds"
+                                    timeout))))
+                    (t
+                     (schedule))))
+               (error
+                (fail condition))))))
+      (process-send-string process (concat (json-encode request) "\n"))
+      (when on-event
+        (funcall on-event 'tool-progress
+                 (list :message (format "Browser %s started" operation))))
+      (schedule)
+      (e-tools-request-create
+       :cancel (lambda ()
+                 (unless settled
+                   (setq settled t)
+                   (cleanup))
+                 t)
+       :metadata (list :transport 'process
+                       :process process
+                       :backend "playwright"
+                       :operation operation
+                       :request-id id)))))
 
 (defun e-web-tools--unimplemented (operation _arguments)
   "Signal that OPERATION is not implemented yet."
@@ -1115,7 +1201,9 @@ operators because ddgr's --site accepts only a single domain."
    :handler (lambda (arguments)
               (e-web-tools--browser
                (e-web-tools--argument-string arguments :operation)
-               arguments))))
+               arguments))
+   :start #'e-web-tools--browser-start
+   :blocking-class 'process))
 
 (provide 'e-web-tools)
 

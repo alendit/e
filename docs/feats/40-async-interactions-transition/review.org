@@ -140,10 +140,60 @@ emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona
 Result: returned the repository path after reloading changed Lisp.
 
 #+begin_src sh
+emacsclient --eval "...bounded web_browser registry probe..."
+#+end_src
+
+Result: returned =(:has-start t :blocking-class process)=.
+
+#+begin_src sh
+git diff --check
+#+end_src
+
+Result: passed.
+
+#+begin_src sh
+rtk eldev emacs --batch --eval "(progn (setq byte-compile-error-on-warn t) (byte-compile-file \"lisp/layers/web/e-web-tools.el\"))"
+#+end_src
+
+Result: passed for the touched web layer.
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Result: returned the repository path after reloading changed Lisp.
+
+#+begin_src sh
 emacsclient --eval "...bounded web_search registry probe..."
 #+end_src
 
 Result: returned =(:has-start t :blocking-class process)=.
+
+* Phase 2 Browser Slice Review
+
+Status: in progress.
+
+** Scope reviewed
+
+- Converted =web_browser= registration to a long =process= class tool with async =:start=.
+- Kept the persistent NDJSON helper process and synchronous handler for explicit batch execution.
+- Added async request settlement that sends one helper request, checks stdout for the matching response id from a timer, and ignores late replies after cancellation.
+- Preserved browser operation argument mapping, result content shape, helper stderr diagnostics, unavailable-helper errors, timeout errors, and helper response errors.
+- Added deterministic coverage proving =e-tools-start= returns an =e-tools-request= before a delayed browser helper reply under the hot-path blocking guard.
+
+** Verification
+
+#+begin_src sh
+rtk eldev test --file test/e-web-tools-test.el -B
+#+end_src
+
+Result: passed for all nine web tool tests, including browser success, unavailable helper, and async start-before-reply coverage.
+
+#+begin_src sh
+rtk eldev test --file test/e-web-tools-test.el --file test/e-tools-test.el --file test/e-request-test.el -B
+#+end_src
+
+Result: passed for the touched web behavior and adjacent request/tool contracts.
 
 #+begin_src sh
 git diff --check

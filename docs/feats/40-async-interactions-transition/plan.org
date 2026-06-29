@@ -22,6 +22,7 @@ Implemented:
 - Structured tool-result display previews are bounded.
 - =web_fetch= starts through async =url-retrieve= with timeout/cancellation and deterministic callback-before-result coverage.
 - =web_search= starts through async process execution with timeout/cancellation and deterministic start-before-exit coverage.
+- =web_browser= starts rendered-browser helper requests asynchronously with timeout/cancellation and deterministic start-before-reply coverage.
 - The Phase 1 review records focused tests, compile checks, and a live reload.
 
 Partly implemented:
@@ -33,7 +34,6 @@ Partly implemented:
 Not yet implemented in the planned sense:
 
 - MCP still has synchronous helper waits and HTTP =url-retrieve-synchronously= paths.
-- =web_browser= still uses synchronous helper waits.
 - =file://= resource glob/search still use foreground =process-file=.
 - Compaction still calls the synchronous =e-harness-compact-session= path.
 - There is no raw-result store or reference lifecycle.
@@ -108,7 +108,7 @@ Already acceptable:
 Still blocking or potentially blocking:
 
 - compaction calls =e-harness-compact-session= synchronously and can wait on a backend summary request;
-- MCP, web browser, and some resource tools still use sync helper/HTTP/subprocess waits; =web_search= and =web_fetch= keep sync handlers for explicit batch execution;
+- MCP and some resource tools still use sync helper/HTTP/subprocess waits; web tools keep sync handlers for explicit batch execution;
 - =file://= and =tmp://= glob/search methods use synchronous =process-file=;
 - nested =e-tools-call= waits for the nested tool by contract;
 - running-status redraw, final assistant Markdown presentation, tool-result previewing, block details, and full session render are synchronous buffer work;

@@ -136,14 +136,14 @@ JSON
                      :on-done (lambda (value)
                                 (setq result value))
                      :on-error (lambda (err)
-                                 (setq failure err)))))))
+                                 (setq failure err))))))
           (should (e-tools-request-p request))
           (should (process-live-p
                    (plist-get (e-tools-request-metadata request) :process)))
           (should-not result)
           (should-not failure)
           (should (e-tools-cancel-request request)))
-      (delete-directory directory t)))
+      (delete-directory directory t))))
 
 (ert-deftest e-web-tools-test-fetch-extracts-html-text-links-and-markdown ()
   "web_fetch reads passive HTML responses without browser rendering."
@@ -220,7 +220,7 @@ JSON
                      :on-done (lambda (value)
                                 (setq result value))
                      :on-error (lambda (err)
-                                 (setq failure err)))))))
+                                 (setq failure err))))))
           (should (e-tools-request-p request))
           (should callback)
           (should-not result)
@@ -231,7 +231,7 @@ JSON
           (should (equal (plist-get (plist-get result :content) :text)
                          "delayed response")))
       (when (buffer-live-p response-buffer)
-        (kill-buffer response-buffer))))
+        (kill-buffer response-buffer)))))
 
 (ert-deftest e-web-tools-test-fetch-truncates-text-and-rejects-unsupported-inputs ()
   "web_fetch truncates large text and rejects unsupported schemes/content."
@@ -383,6 +383,49 @@ done
                             "screenshot" "close"))
                 (should (string-match-p (format "\"op\":\"%s\"" op)
                                         lines))))))
+      (e-web-tools-browser-reset)
+      (delete-directory directory t))))
+
+(ert-deftest e-web-tools-test-browser-start-returns-before-helper-replies ()
+  "web_browser starts a cancellable helper request without waiting for a reply."
+  (let* ((directory (make-temp-file "e-web-browser-delay-" t))
+         (helper (e-web-tools-test--fake-executable
+                  directory
+                  "browser-helper-delay"
+                  "while IFS= read -r line; do
+  id=$(printf '%s' \"$line\" | sed -n 's/.*\"id\":\\([0-9][0-9]*\\).*/\\1/p')
+  sleep 5
+  printf '{\"id\":%s,\"ok\":true,\"result\":{\"session\":\"session-1\"}}\\n' \"$id\"
+done
+"))
+         result
+         failure
+         request)
+    (unwind-protect
+        (let ((e-web-browser-helper-program helper)
+              (e-web-browser-helper-args nil)
+              (e-web-browser-helper-timeout 10))
+          (e-web-tools-browser-reset)
+          (e-request-with-blocking-primitive-guard
+            (e-request-with-hot-path 'web-browser
+              (setq request
+                    (e-tools-start
+                     (e-web-tools-test--registry)
+                     '(:id "call-1"
+                       :name "web_browser"
+                       :arguments (:operation "open"
+                                   :url "https://example.com"))
+                     :context '(:interactive t)
+                     :on-done (lambda (value)
+                                (setq result value))
+                     :on-error (lambda (err)
+                                 (setq failure err))))))
+          (should (e-tools-request-p request))
+          (should (process-live-p
+                   (plist-get (e-tools-request-metadata request) :process)))
+          (should-not result)
+          (should-not failure)
+          (should (e-tools-cancel-request request)))
       (e-web-tools-browser-reset)
       (delete-directory directory t))))
 
