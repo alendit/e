@@ -3663,6 +3663,57 @@ the orphaned region and appeared to vanish."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-active-focus-tail-survives-late-window-restore ()
+  "Active chat focus tails again after workspace code restores old point."
+  (let ((buffer (e-chat-test--buffer nil "chat-active-focus-tail-late"))
+        (window nil))
+    (unwind-protect
+        (progn
+          (setq window (display-buffer buffer))
+          (select-window window)
+          (with-current-buffer buffer
+            (e-chat--render-event
+             (e-events-make :type 'turn-started
+                            :session-id e-chat-session-id
+                            :turn-id "turn-1"
+                            :created-at 10))
+            (e-chat-test--mark-active-turn "turn-1")
+            (e-chat--render-event
+             (e-events-make :type 'provider-request-started
+                            :session-id e-chat-session-id
+                            :turn-id "turn-1"
+                            :created-at 11))
+            (e-chat--render-event
+             (e-events-make :type 'reasoning-delta
+                            :session-id e-chat-session-id
+                            :turn-id "turn-1"
+                            :payload '(:content "first chunk\nsecond chunk")))
+            (e-chat-test--flush-pending-activity-redraw)
+            (goto-char (point-min))
+            (search-forward "first chunk")
+            (let ((stale-point (point))
+                  (tail (cdr (e-chat--running-status-bounds))))
+              (should tail)
+              (set-window-point window stale-point)
+              (set-window-start window stale-point)
+              (goto-char stale-point)
+              (e-chat--tail-selected-active-turn)
+              (should (= (window-point window) tail))
+              ;; Doom workspace restoration can put the old point back after
+              ;; focus hooks run.  The deferred tail must win that race.
+              (set-window-point window stale-point)
+              (set-window-start window stale-point)
+              (goto-char stale-point)
+              (should
+               (e-chat-test--wait-until
+                (lambda ()
+                  (= (window-point window) tail))
+                0.2)))))
+      (when (window-live-p window)
+        (delete-window window))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-activity-rerender-does-not-delete-whole-status ()
   "Streamed activity redraws update changed status text without full deletion."
   (let ((buffer (e-chat-test--buffer nil "chat-activity-status-minimal-delete")))

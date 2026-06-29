@@ -470,6 +470,9 @@ intentionally not persisted in session metadata.")
 (defvar e-chat--window-selection-hook-installed-p nil
   "Non-nil when e-chat installed its window-selection hook.")
 
+(defvar-local e-chat--tail-active-turn-timer nil
+  "Deferred timer used to tail active output after window focus settles.")
+
 (defun e-chat--workspace-unread-cache-invalidate ()
   "Mark the workspace unread cache stale."
   (setq e-chat--workspace-unread-cache-valid-p nil))
@@ -510,12 +513,37 @@ intentionally not persisted in session metadata.")
   (when-let ((buffer (e-chat--selected-chat-buffer)))
     (e-chat--mark-buffer-session-read-if-selected buffer)))
 
-(defun e-chat--tail-selected-active-turn (&rest _)
-  "Show the latest active-turn output when selecting a running chat window."
-  (when-let ((buffer (e-chat--selected-chat-buffer)))
+(defun e-chat--tail-active-turn-buffer-if-selected (buffer)
+  "Show BUFFER's active-turn tail when BUFFER is still selected."
+  (when (and (buffer-live-p buffer)
+             (eq buffer (e-chat--selected-chat-buffer)))
     (with-current-buffer buffer
       (when (e-chat--active-turn-running-p)
         (e-chat--show-latest-output)))))
+
+(defun e-chat--schedule-tail-active-turn-buffer (buffer)
+  "Schedule a post-focus active-turn tail check for BUFFER."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (when (timerp e-chat--tail-active-turn-timer)
+        (cancel-timer e-chat--tail-active-turn-timer))
+      (setq e-chat--tail-active-turn-timer
+            (run-at-time
+             0
+             nil
+             (lambda (target-buffer)
+               (when (buffer-live-p target-buffer)
+                 (with-current-buffer target-buffer
+                   (setq e-chat--tail-active-turn-timer nil))
+                 (e-chat--tail-active-turn-buffer-if-selected
+                  target-buffer)))
+             buffer)))))
+
+(defun e-chat--tail-selected-active-turn (&rest _)
+  "Show the latest active-turn output when selecting a running chat window."
+  (when-let ((buffer (e-chat--selected-chat-buffer)))
+    (e-chat--tail-active-turn-buffer-if-selected buffer)
+    (e-chat--schedule-tail-active-turn-buffer buffer)))
 
 (defun e-chat--ensure-window-selection-hook ()
   "Install chat focus hooks for window and workspace changes."
