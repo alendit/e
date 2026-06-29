@@ -11,7 +11,7 @@ worker output without evaluating expensive top-level forms in the live UI Emacs.
 
 * Status
 
-In-progress.
+Done.
 
 * Problem
 

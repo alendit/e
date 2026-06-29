@@ -1,0 +1,91 @@
+#+title: Review: Elisp Batch Job Tool
+#+author: e implementation
+#+date: 2026-06-29
+#+startup: overview
+
+* Status
+
+Done.
+
+* Review result
+
+No unresolved findings.
+
+The implementation matches the plan's first slice: =elisp_job= exposes
+=operation= =run-batch= as a model-facing tool, starts a separate
+=emacs -Q --batch= worker with =make-process=, streams progress through the
+tool lifecycle, supports timeout cancellation, and is advertised as the
+replacement path for expensive external Elisp validation from interactive
+=run_elisp=.
+
+* Scope reviewed
+
+- =lisp/layers/emacs/e-elisp-job.el=
+- =lisp/layers/emacs/e-emacs-capabilities.el=
+- =lisp/layers/emacs/e-emacs-tools.el=
+- =lisp/dev/e-dev.el=
+- =test/e-emacs-tools-test.el=
+- =test/e-test.el=
+
+* Verification
+
+#+begin_src sh
+emacs -Q --batch --eval '(setq load-prefer-newer t)' -L . -l e.el -l test/e-emacs-tools-test.el -f ert-run-tests-batch-and-exit
+#+end_src
+
+#+begin_example
+Ran 21 tests, 21 results as expected, 0 unexpected
+#+end_example
+
+#+begin_src sh
+emacs -Q --batch -L . -l e.el -l test/e-emacs-tools-test.el -f ert-run-tests-batch-and-exit
+#+end_src
+
+#+begin_example
+Ran 21 tests, 21 results as expected, 0 unexpected
+#+end_example
+
+#+begin_src sh
+emacs -Q --batch --eval '(setq load-prefer-newer t)' -L . -l e.el --eval '(setq byte-compile-error-on-warn t)' -f batch-byte-compile lisp/layers/emacs/e-elisp-job.el lisp/layers/emacs/e-emacs-tools.el lisp/layers/emacs/e-emacs-capabilities.el test/e-emacs-tools-test.el
+#+end_src
+
+#+begin_example
+No warnings or errors.
+#+end_example
+
+#+begin_src sh
+emacs -Q --batch -L . -l e.el -l test/e-test.el -l test/e-emacs-tools-test.el -f ert-run-tests-batch-and-exit
+#+end_src
+
+#+begin_example
+Ran 37 tests, 37 results as expected, 0 unexpected
+#+end_example
+
+#+begin_src sh
+emacs -Q --batch --eval '(setq load-prefer-newer t)' -L . -l e.el --eval '(setq byte-compile-error-on-warn t)' -f batch-byte-compile lisp/dev/e-dev.el
+#+end_src
+
+#+begin_example
+No warnings or errors.
+#+end_example
+
+#+begin_src sh
+git diff --check
+#+end_src
+
+#+begin_example
+No whitespace errors.
+#+end_example
+
+* Live reload
+
+Skipped by explicit user request.  The implementation still wires
+=lisp/layers/emacs/e-elisp-job.el= into =e-dev-reload= so a later reload will
+pick up the new module, but this review did not execute =e-dev-reload= or any
+live =emacsclient= probe.
+
+* Notes
+
+Compiling =test/e-test.el= with =byte-compile-error-on-warn= still trips its
+existing =autoload= deprecation warning.  That warning is unrelated to this
+feature and was not changed here.
