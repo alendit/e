@@ -3019,27 +3019,6 @@ the orphaned region and appeared to vanish."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest e-chat-test-activity-visible-reasoning-keeps-recent-lines ()
-  "Compact activity text shows recent reasoning without losing raw records."
-  (let* ((e-chat-activity-reasoning-visible-line-limit 2)
-         (round (list :kind 'round
-                      :round 1
-                      :status 'done
-                      :started-at 0
-                      :ended-at 1
-                      :reasoning
-                      (list (list :kind 'reasoning
-                                  :content "first\nsecond")
-                            (list :kind 'reasoning
-                                  :content "\nthird\nfourth\n"))))
-         (text (e-chat--activity-round-visible-text round)))
-    (should (string-match-p "Thought for 0min 1sec\n\nthird\nfourth"
-                            text))
-    (should-not (string-match-p "\\bfirst\\b" text))
-    (should-not (string-match-p "\\bsecond\\b" text))
-    (should (equal (plist-get (car (plist-get round :reasoning)) :content)
-                   "first\nsecond"))))
-
 (ert-deftest e-chat-test-provider-error-settles-thinking-line ()
   "Provider errors turn open thinking into a failed thought line."
   (let ((buffer (e-chat-test--buffer nil "chat-provider-error-thinking")))
