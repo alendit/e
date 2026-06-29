@@ -3019,6 +3019,27 @@ the orphaned region and appeared to vanish."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-activity-visible-reasoning-keeps-recent-lines ()
+  "Compact activity text shows recent reasoning without losing raw records."
+  (let* ((e-chat-activity-reasoning-visible-line-limit 2)
+         (round (list :kind 'round
+                      :round 1
+                      :status 'done
+                      :started-at 0
+                      :ended-at 1
+                      :reasoning
+                      (list (list :kind 'reasoning
+                                  :content "first\nsecond")
+                            (list :kind 'reasoning
+                                  :content "\nthird\nfourth\n"))))
+         (text (e-chat--activity-round-visible-text round)))
+    (should (string-match-p "Thought for 0min 1sec\n\nthird\nfourth"
+                            text))
+    (should-not (string-match-p "\\bfirst\\b" text))
+    (should-not (string-match-p "\\bsecond\\b" text))
+    (should (equal (plist-get (car (plist-get round :reasoning)) :content)
+                   "first\nsecond"))))
+
 (ert-deftest e-chat-test-provider-error-settles-thinking-line ()
   "Provider errors turn open thinking into a failed thought line."
   (let ((buffer (e-chat-test--buffer nil "chat-provider-error-thinking")))
@@ -3660,6 +3681,51 @@ the orphaned region and appeared to vanish."
                 (should (= (window-point window) new-tail))))))
       (when (window-live-p window)
         (delete-window window))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-activity-rerender-does-not-delete-whole-status ()
+  "Streamed activity redraws update changed status text without full deletion."
+  (let ((buffer (e-chat-test--buffer nil "chat-activity-status-minimal-delete")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat--render-event
+           (e-events-make :type 'turn-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 10))
+          (e-chat-test--mark-active-turn "turn-1")
+          (e-chat--render-event
+           (e-events-make :type 'provider-request-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 11))
+          (e-chat--render-event
+           (e-events-make :type 'reasoning-delta
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :payload '(:content "first chunk")))
+          (e-chat-test--flush-pending-activity-redraw)
+          (let ((bounds (e-chat--running-status-bounds))
+                (delete-region-fn (symbol-function 'delete-region))
+                (full-status-deletes 0))
+            (should bounds)
+            (cl-letf (((symbol-function 'delete-region)
+                       (lambda (start end)
+                         (when (and (= start (car bounds))
+                                    (= end (cdr bounds)))
+                           (setq full-status-deletes
+                                 (1+ full-status-deletes)))
+                         (funcall delete-region-fn start end))))
+              (e-chat--render-event
+               (e-events-make :type 'reasoning-delta
+                              :session-id e-chat-session-id
+                              :turn-id "turn-1"
+                              :payload '(:content "\nsecond chunk")))
+              (e-chat-test--flush-pending-activity-redraw))
+            (should (= full-status-deletes 0))
+            (should (string-match-p "first chunk\nsecond chunk"
+                                    (buffer-string)))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 

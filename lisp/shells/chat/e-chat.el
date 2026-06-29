@@ -123,6 +123,12 @@
   :type 'number
   :group 'e-chat)
 
+(defcustom e-chat-activity-reasoning-visible-line-limit 3
+  "Maximum non-empty reasoning lines shown in compact activity summaries.
+The complete reasoning text remains available from response details."
+  :type 'natnum
+  :group 'e-chat)
+
 (defcustom e-chat-model-context-token-limits
   '(("gpt-5.5" . 258400)
     ("gpt-5.4" . 1050000)
@@ -3348,6 +3354,27 @@ ACTIVE-AT is used for active thinking duration."
               right)
     left))
 
+(defun e-chat--activity-round-visible-reasoning-lines (round)
+  "Return compact visible reasoning lines for semantic activity ROUND."
+  (let ((lines nil))
+    (dolist (reasoning (plist-get round :reasoning))
+      (when-let ((content (plist-get reasoning :content)))
+        (dolist (line (string-lines content))
+          (setq line (string-trim line))
+          (unless (string-empty-p line)
+            (push line lines)))))
+    (setq lines (nreverse lines))
+    (let ((limit e-chat-activity-reasoning-visible-line-limit))
+      (cond
+       ((and (integerp limit) (= limit 0))
+        nil)
+       ((and (integerp limit)
+             (> limit 0)
+             (> (length lines) limit))
+        (last lines limit))
+       (t
+        lines)))))
+
 (defun e-chat--activity-round-visible-text (round)
   "Return visible text for semantic activity ROUND."
   (let* ((thought (e-chat--round-thought-text round))
@@ -3363,11 +3390,8 @@ ACTIVE-AT is used for active thinking duration."
          (lines (and thought
                      (list (e-chat--activity-round-row-text
                             thought tool-text))))
-         (reasoning-lines nil))
-    (dolist (reasoning (plist-get round :reasoning))
-      (when-let ((content (plist-get reasoning :content)))
-        (unless (string-empty-p content)
-          (setq reasoning-lines (append reasoning-lines (list content))))))
+         (reasoning-lines
+          (e-chat--activity-round-visible-reasoning-lines round)))
     (when reasoning-lines
       (setq lines (append lines (list "") reasoning-lines)))
     (when lines
@@ -3958,78 +3982,165 @@ When RECORD is nil, clear only buffer-local status markers."
                              (e-chat--activity-summary-details-text
                               turn-id record)))))
 
+(defun e-chat--running-status-display-text (data)
+  "Return the buffer text represented by running-status DATA."
+  (or (plist-get data :text)
+      (and (plist-get data :has-progress)
+           (e-chat--entry-text "Assistant" (e-chat--progress-dots)))))
+
+(defun e-chat--copy-running-status-display-properties (start text)
+  "Copy display properties from TEXT into the buffer at START."
+  (let ((index 0)
+        (limit (length text)))
+    (while (< index limit)
+      (let* ((next (or (next-property-change index text) limit))
+             (display (get-text-property index 'display text))
+             (buffer-start (+ start index))
+             (buffer-end (+ start next)))
+        (if display
+            (add-text-properties buffer-start buffer-end
+                                 `(display ,display))
+          (remove-text-properties buffer-start buffer-end
+                                  '(display nil)))
+        (setq index next)))))
+
+(defun e-chat--running-status-activity-block-id (record)
+  "Return RECORD's activity block id, creating it when needed."
+  (or (plist-get record :activity-block-id)
+      (let ((id (e-chat--next-block-id)))
+        (plist-put record :activity-block-id id)
+        id)))
+
+(defun e-chat--apply-running-status-region (turn-id record data start end)
+  "Apply running status metadata for TURN-ID and RECORD to START through END."
+  (setq e-chat--running-status-start-marker
+        (copy-marker start nil))
+  (setq e-chat--running-status-end-marker
+        (copy-marker end nil))
+  (when (< start end)
+    (e-chat--copy-running-status-display-properties
+     start
+     (e-chat--running-status-display-text data))
+    (e-chat--mark-protected start end)
+    (remove-text-properties
+     start end
+     '(font-lock-face nil
+       e-chat-progress-turn-id nil
+       e-chat-transient-turn-id nil
+       e-chat-turn-id nil
+       e-chat-block-id nil))
+    (if-let ((text (plist-get data :text)))
+        (let* ((activity-block-id
+                (and record
+                     (e-chat--running-status-activity-block-id record)))
+               (properties `(e-chat-transient-turn-id ,turn-id
+                             e-chat-turn-id ,turn-id)))
+          (setq e-chat--progress-start-marker nil)
+          (setq e-chat--progress-end-marker nil)
+          (when activity-block-id
+            (setq properties
+                  (append properties
+                          `(e-chat-block-id ,activity-block-id))))
+          (add-text-properties start end
+                               `(font-lock-face e-chat-system-face
+                                 ,@properties))
+          (e-chat--apply-activity-separator-face start end)
+          (when record
+            (plist-put record :transient-start-marker
+                       (copy-marker start nil))
+            (plist-put record :transient-end-marker
+                       (copy-marker end nil)))
+          (when activity-block-id
+            (e-chat--update-block-bounds
+             activity-block-id
+             turn-id
+             start
+             end
+             (plist-get data :block-kind)
+             (string-trim-right text)
+             start
+             end
+             (e-chat--activity-tool-items record)
+             (plist-get data :details-text))))
+      (setq e-chat--progress-start-marker
+            (copy-marker start nil))
+      (setq e-chat--progress-end-marker
+            (copy-marker end nil))
+      (when record
+        (plist-put record :transient-start-marker nil)
+        (plist-put record :transient-end-marker nil))
+      (add-text-properties start end
+                           `(font-lock-face e-chat-assistant-face
+                             e-chat-progress-turn-id ,turn-id)))))
+
+(defun e-chat--common-prefix-length (old-text new-text)
+  "Return common prefix length for OLD-TEXT and NEW-TEXT."
+  (let ((index 0)
+        (limit (min (length old-text) (length new-text))))
+    (while (and (< index limit)
+                (= (aref old-text index) (aref new-text index)))
+      (setq index (1+ index)))
+    index))
+
+(defun e-chat--common-suffix-length (old-text new-text prefix-length)
+  "Return common suffix length after PREFIX-LENGTH has been reserved."
+  (let* ((old-length (length old-text))
+         (new-length (length new-text))
+         (limit (min (- old-length prefix-length)
+                     (- new-length prefix-length)))
+         (suffix 0))
+    (while (and (< suffix limit)
+                (= (aref old-text (- old-length suffix 1))
+                   (aref new-text (- new-length suffix 1))))
+      (setq suffix (1+ suffix)))
+    suffix))
+
+(defun e-chat--replace-region-text-minimally (start end new-text)
+  "Replace START through END with NEW-TEXT by touching only changed text.
+Return the new end position."
+  (let* ((old-text (buffer-substring-no-properties start end))
+         (prefix-length (e-chat--common-prefix-length old-text new-text))
+         (suffix-length
+          (e-chat--common-suffix-length old-text new-text prefix-length))
+         (replace-start (+ start prefix-length))
+         (replace-end (- end suffix-length))
+         (new-replace-end (- (length new-text) suffix-length)))
+    (unless (and (= replace-start replace-end)
+                 (= prefix-length new-replace-end))
+      (goto-char replace-start)
+      (delete-region replace-start replace-end)
+      (insert (substring new-text prefix-length new-replace-end)))
+    (+ start (length new-text))))
+
 (defun e-chat--insert-running-status-contents (turn-id record data)
   "Insert running status contents for TURN-ID using RECORD and DATA.
 Point must be at the destination.  Return cons of inserted region bounds."
   (let ((status-start (point))
-        (text (plist-get data :text)))
+        (text (e-chat--running-status-display-text data)))
     (e-chat--note-transcript-layout-change)
     (when text
-      (let* ((transient-start (point))
-             (activity-block-id
-              (or (plist-get record :activity-block-id)
-                  (let ((id (e-chat--next-block-id)))
-                    (plist-put record :activity-block-id id)
-                    id))))
-        (e-chat--insert-protected
-         text
-         'e-chat-system-face
-         `(e-chat-transient-turn-id ,turn-id
-           e-chat-turn-id ,turn-id
-           e-chat-block-id ,activity-block-id))
-        (e-chat--apply-activity-separator-face
-         transient-start
-         (point))
-        (plist-put record
-                   :transient-start-marker
-                   (copy-marker transient-start nil))
-        (plist-put record
-                   :transient-end-marker
-                   (copy-marker (point) nil))
-        (when activity-block-id
-          (e-chat--update-block-bounds
-           activity-block-id
-           turn-id
-           transient-start
-           (point)
-           (plist-get data :block-kind)
-           (string-trim-right text)
-           transient-start
-           (point)
-           (e-chat--activity-tool-items record)
-           (plist-get data :details-text)))))
-    (when (and (plist-get data :has-progress) (not text))
-      (let ((progress-start (point)))
-        (e-chat--insert-protected
-         (e-chat--entry-text "Assistant" (e-chat--progress-dots))
-         'e-chat-assistant-face
-         `(e-chat-progress-turn-id ,turn-id))
-        (setq e-chat--progress-start-marker
-              (copy-marker progress-start nil))
-        (setq e-chat--progress-end-marker
-              (copy-marker (point) nil))))
-    (setq e-chat--running-status-start-marker
-          (copy-marker status-start nil))
-    (setq e-chat--running-status-end-marker
-          (copy-marker (point) nil))
+      (insert text))
+    (e-chat--apply-running-status-region turn-id record data status-start (point))
     (cons status-start (point))))
 
 (defun e-chat--replace-running-status (turn-id record data)
-  "Replace the visible running status for TURN-ID in place.
+  "Update the visible running status for TURN-ID in place.
 Return non-nil when an existing status region was updated without rebuilding
 the composer."
   (let* ((start (and (markerp e-chat--running-status-start-marker)
                      (marker-position e-chat--running-status-start-marker)))
          (end (and (markerp e-chat--running-status-end-marker)
-                   (marker-position e-chat--running-status-end-marker))))
+                   (marker-position e-chat--running-status-end-marker)))
+         (text (e-chat--running-status-display-text data)))
     (when (and start end (< start end)
-               (or (plist-get data :has-progress)
-                   (plist-get data :text))
+               text
                (not (e-chat--composer-needs-sanitize-p)))
-      (let ((inhibit-read-only t))
-        (goto-char start)
-        (delete-region start end)
-        (e-chat--insert-running-status-contents turn-id record data))
+      (let ((inhibit-read-only t)
+            (new-end nil))
+        (setq new-end
+              (e-chat--replace-region-text-minimally start end text))
+        (e-chat--note-transcript-layout-change)
+        (e-chat--apply-running-status-region turn-id record data start new-end))
       t)))
 
 (defun e-chat--render-running-status (turn-id record)
