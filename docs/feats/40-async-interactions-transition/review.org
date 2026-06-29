@@ -145,6 +145,56 @@ emacsclient --eval "...bounded web_browser registry probe..."
 
 Result: returned =(:has-start t :blocking-class process)=.
 
+* Phase 2 Core Compaction Start Slice Review
+
+Status: in progress.
+
+** Scope reviewed
+
+- Added =e-harness-compact-session-start= as the harness-owned async compaction lifecycle API.
+- Kept the existing synchronous =e-harness-compact-session= wrapper unchanged for current callers.
+- The async API emits existing compaction lifecycle events, starts summary generation through =e-backend-start=, returns an =e-backend-request= immediately, and reports completion through callbacks.
+- Cancellation cancels the backend request when possible, emits a visible =compaction-failed= event, and ignores late backend items/completion.
+- Added focused tests in =test/e-harness-compaction-async-test.el= without editing the already-dirty broader harness test file.
+
+** Verification
+
+#+begin_src sh
+rtk eldev test --file test/e-harness-compaction-async-test.el -B
+#+end_src
+
+Result: passed for async compaction start, completion, cancellation, and late-callback protection.
+
+#+begin_src sh
+rtk eldev test --file test/e-harness-test.el --file test/e-harness-compaction-async-test.el -B
+#+end_src
+
+Result: passed for the existing harness compaction coverage plus the new async lifecycle tests.
+
+#+begin_src sh
+git diff --check
+#+end_src
+
+Result: passed.
+
+#+begin_src sh
+rtk eldev emacs --batch --eval "(progn (setq byte-compile-error-on-warn t) (dolist (file '(\"lisp/core/e-harness.el\" \"test/e-harness-compaction-async-test.el\")) (byte-compile-file file)))"
+#+end_src
+
+Result: passed for the touched harness and async compaction test files.
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Result: returned the repository path after reloading changed Lisp.
+
+#+begin_src sh
+emacsclient --eval "...bounded async compaction start probe..."
+#+end_src
+
+Result: returned =(:fboundp t :request t :operation compaction)=.
+
 * Phase 2 MCP Slice Review
 
 Status: in progress.

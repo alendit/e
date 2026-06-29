@@ -1443,6 +1443,153 @@ TURN-ID is passed to active capability context providers when present."
           (list :message message :details details :reason reason))
          (signal (car err) (cdr err)))))))
 
+(cl-defun e-harness-compact-session-start
+    (harness session-id &key instructions keep-recent-tokens allow-active-turn
+             (allow-split-turn 'inherit-active-turn) exclude-entry-ids turn-id
+             (reason 'manual) on-done on-error)
+  "Start compacting SESSION-ID in HARNESS and return a cancellable request.
+ON-DONE receives the durable compaction record.  ON-ERROR receives an Emacs
+condition list.  Preparation errors are reported before return by signaling and
+also emitting the normal compaction failure event."
+  (when (and (not allow-active-turn)
+             (e-harness--active-turn-running-p
+              (gethash session-id (e-harness-active-turns harness))))
+    (signal 'e-harness-active-turn-exists (list session-id)))
+  (let ((turn-id (or turn-id (e-harness--next-turn-id)))
+        preparation
+        summary-parts
+        summary-message
+        summary-item-types
+        backend-request
+        settled
+        cancelled)
+    (cl-labels
+        ((record-failure (err)
+           (let ((message (e-harness--backend-error-message err))
+                 (details (e-harness--backend-error-details err)))
+             (e-harness--emit-turn-event
+              harness session-id turn-id 'compaction-failed
+              (list :message message :details details :reason reason))
+             (when on-error
+               (funcall on-error err))))
+         (finish-error (err)
+           (unless settled
+             (setq settled t)
+             (when (and backend-request (e-backend-request-p backend-request))
+               (ignore-errors (e-backend-cancel-request backend-request)))
+             (record-failure err)))
+         (finish-done (_result)
+           (unless (or settled cancelled)
+             (condition-case err
+                 (let* ((summary
+                         (string-trim
+                          (or summary-message
+                              (string-join (nreverse summary-parts) "")))))
+                   (when (string-empty-p summary)
+                     (signal 'e-compaction-error
+                             (list
+                              "Compaction backend returned an empty summary"
+                              (list :request-started
+                                    (and backend-request t)
+                                    :item-types
+                                    (nreverse (delq nil summary-item-types))
+                                    :summary-source
+                                    'none))))
+                   (let* ((metadata (plist-get preparation :metadata))
+                          (record
+                           (e-session-append-compaction
+                            (e-harness-sessions harness)
+                            session-id
+                            summary
+                            :first-kept-entry-id
+                            (plist-get preparation :first-kept-entry-id)
+                            :tokens-before
+                            (plist-get preparation :tokens-before)
+                            :tokens-kept
+                            (plist-get preparation :tokens-kept)
+                            :metadata metadata)))
+                     (setq settled t)
+                     (e-harness--emit-turn-event
+                      harness session-id turn-id 'compaction-finished
+                      (list :compaction-id (plist-get record :id)
+                            :reason
+                            (plist-get (plist-get record :metadata) :reason)
+                            :first-kept-entry-id
+                            (plist-get record :first-kept-entry-id)
+                            :tokens-before (plist-get record :tokens-before)
+                            :tokens-kept (plist-get record :tokens-kept)))
+                     (when on-done
+                       (funcall on-done record))))
+               (error
+                (finish-error err)))))
+         (cancel ()
+           (unless settled
+             (setq cancelled t)
+             (setq settled t)
+             (when (and backend-request (e-backend-request-p backend-request))
+               (ignore-errors (e-backend-cancel-request backend-request)))
+             (record-failure
+              (list 'quit "Context compaction cancelled")))
+           t))
+      (condition-case err
+          (progn
+            (e-harness--emit-turn-event
+             harness session-id turn-id 'compaction-started
+             (list :instructions instructions
+                   :reason reason
+                   :active-turn allow-active-turn))
+            (setq preparation
+                  (e-compaction-prepare
+                   (e-harness-sessions harness)
+                   session-id
+                   :instructions instructions
+                   :keep-recent-tokens keep-recent-tokens
+                   :allow-split-turn (if (eq allow-split-turn
+                                              'inherit-active-turn)
+                                         allow-active-turn
+                                       allow-split-turn)
+                   :exclude-entry-ids exclude-entry-ids
+                   :reason reason))
+            (e-harness--emit-turn-event
+             harness session-id turn-id 'compaction-prepared
+             (list :first-kept-entry-id
+                   (plist-get preparation :first-kept-entry-id)
+                   :reason reason
+                   :tokens-before (plist-get preparation :tokens-before)
+                   :tokens-kept (plist-get preparation :tokens-kept)))
+            (e-harness--emit-turn-event
+             harness session-id turn-id 'compaction-summary-started
+             (list :backend t :reason reason))
+            (setq backend-request
+                  (e-backend-start
+                   (e-harness-backend harness)
+                   :messages (e-compaction-summary-messages preparation)
+                   :options (e-harness--options-without-tools
+                             (e-harness-turn-options harness session-id))
+                   :on-request-start (lambda (value)
+                                       (setq backend-request value))
+                   :on-item
+                   (lambda (item)
+                     (unless (or settled cancelled)
+                       (push (plist-get item :type) summary-item-types)
+                       (pcase (plist-get item :type)
+                         ('assistant-message
+                          (setq summary-message (plist-get item :content)))
+                         ('assistant-delta
+                          (push (or (plist-get item :content) "")
+                                summary-parts)))))
+                   :on-done #'finish-done
+                   :on-error #'finish-error))
+            (e-backend-request-create
+             :cancel #'cancel
+             :metadata (list :operation 'compaction
+                             :session-id session-id
+                             :turn-id turn-id
+                             :request backend-request)))
+        (error
+         (record-failure err)
+         (signal (car err) (cdr err)))))))
+
 (defun e-harness--auto-compaction-reserve-tokens ()
   "Return a normalized auto-compaction reserve."
   (if (and (integerp e-harness-auto-compaction-reserve-tokens)
