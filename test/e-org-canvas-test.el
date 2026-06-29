@@ -869,7 +869,11 @@
         ;; pointing at table affordances for compact data.
         (should (string-match-p "lists and nested sublists" content))
         (should (string-match-p "short-cell data" content))
-        (should (string-match-p "width cookies" content))))))
+        (should (string-match-p "width cookies" content))
+        ;; Org prose should use sentence-per-line source formatting rather
+        ;; than hard wrapping sentences to a fill column.
+        (should (string-match-p "sentence-per-line" content))
+        (should (string-match-p "do not hard-wrap" content))))))
 
 (ert-deftest e-org-canvas-test-submit-records-scope-focus-and_canvas_metadata ()
   "Prompt submission records Org Canvas turn metadata through chat-session."

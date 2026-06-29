@@ -1,0 +1,17 @@
+#+title: Org Canvas Sentence-Per-Line Guidance
+#+startup: overview
+
+* Change
+
+Added Org Canvas context guidance that Org prose edits should use sentence-per-line source formatting.
+The guidance explicitly says not to hard-wrap sentences to an artificial fill column and to let Emacs visual-line/display wrapping handle width.
+
+* Why tiny
+
+This is a prompt/context wording change plus a focused regression assertion.
+It does not change runtime behavior beyond the instructions supplied to agents in Org Canvas sessions.
+
+* Validation
+
+- Added an assertion in =test/e-org-canvas-test.el= that generated Org Canvas context contains the sentence-per-line guidance.
+- Focused test command to run: =rtk eldev test test/e-org-canvas-test.el=.
