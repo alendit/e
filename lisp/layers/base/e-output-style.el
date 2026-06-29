@@ -64,7 +64,7 @@ Avoid flowery, ornate, or unnecessary language.
 Cut padding and throat-clearing.
 Do not hedge when the evidence is clear.
 If uncertainty matters, state it plainly.
-Let the facts carry the force."))
+Let the facts make the point."))
    (cons 'hemingway-suggested-v2
          (list :name "Hemingway Suggested v2"
                :instructions
@@ -90,7 +90,7 @@ Avoid flowery, ornate, or unnecessary language.
 Cut padding and throat-clearing.
 Do not hedge when the evidence is clear.
 If uncertainty matters, state it plainly.
-Let the facts carry the force."))
+Let the facts make the point."))
    (cons 'caveman
          (list :name "Caveman"
                :instructions

@@ -46,18 +46,27 @@ The same paved runner was retried once and completed.
 | Hemingway current | =hemingway-current/plan.org= | Old default style replay |
 | Hemingway suggested v2 | =hemingway-suggested-v2/plan.org= | Candidate style replay |
 | Hemingway v3 | =hemingway-v3/plan.org= | Candidate style replay, adopted as default =hemingway= |
+| Hemingway v3 rerun | =hemingway-v3-rerun/plan.org= | Repeat run to test whether v3 token use was a fluke |
+| Hemingway v3 sans project terms | =hemingway-v3-sans-project-terms/plan.org= | v3 with the project-terms sentence removed |
+| Hemingway v3 sans uncertainty | =hemingway-v3-sans-uncertainty/plan.org= | v3 with the uncertainty sentence removed |
+| Hemingway v3.5 | =hemingway-v3.5/plan.org= | v3 with plain final sentence: "Let the facts make the point." |
 | Caveman | =caveman/plan.org= | Compression stress test |
 
 * Metrics
 
-| Variant | Bytes | Lines | Words | Headings | Bullets | Src blocks | Mentions =call_action= | Duration s | Messages | Guidance verified |
+| Metric | Codex immediate | Codex final | Hemingway current | Hemingway suggested v2 | Hemingway v3 | Caveman |
 |-
-| codex-immediate-after-replay-prompt | 3298 | 96 | 389 | 8 | 19 | 3 | True | - | - | - |
-| codex-original | 3809 | 94 | 456 | 8 | 25 | 2 | False | - | - | - |
-| hemingway-current | 14473 | 368 | 1939 | 21 | 80 | 13 | True | 248.6 | 28 | True |
-| hemingway-suggested-v2 | 17212 | 475 | 2333 | 29 | 104 | 18 | True | 244.5 | 22 | True |
-| hemingway-v3 | 14023 | 416 | 1857 | 24 | 96 | 15 | True | 424.3 | 38 | True |
-| caveman | 12881 | 485 | 1607 | 28 | 139 | 14 | True | 270.4 | 32 | True |
+| Artifact | =codex-immediate-after-replay-prompt/plan.org= | =codex-original/plan.org= | =hemingway-current/plan.org= | =hemingway-suggested-v2/plan.org= | =hemingway-v3/plan.org= | =caveman/plan.org= |
+| Bytes | 3298 | 3809 | 14473 | 17212 | 14023 | 12881 |
+| Lines | 96 | 94 | 368 | 475 | 416 | 485 |
+| Words | 389 | 456 | 1939 | 2333 | 1857 | 1607 |
+| Headings | 8 | 8 | 21 | 29 | 24 | 28 |
+| Bullets | 19 | 25 | 80 | 104 | 96 | 139 |
+| Src blocks | 3 | 2 | 13 | 18 | 15 | 14 |
+| Mentions =call_action= | True | False | True | True | True | True |
+| Duration s | - | - | 248.6 | 244.5 | 424.3 | 270.4 |
+| Messages | - | - | 28 | 22 | 38 | 32 |
+| Guidance verified | - | - | True | True | True | True |
 
 * Findings
 
@@ -126,10 +135,35 @@ That correction is important for the feature.
 It should not be counted as evidence that replay styles uniquely drifted into =call_action=.
 Immediate Codex drifted there too.
 
+** V3 follow-up runs isolated style-line effects
+
+A later comparison reran =hemingway-v3= and tested two single-line removals plus one wording change.
+The rerun confirmed that high token use was not a one-off.
+The final artifact size still varied a lot by run.
+The total token cost mostly tracked model/tool rounds, not artifact length.
+
+| Variant | Words | Bytes | Lines | Headings | Bullets | Src blocks | Messages | Usage events | Total tokens |
+|-
+| hemingway-v3 | 1752 | 14023 | 415 | 24 | 96 | 15 | 38 | 14 | 310202 |
+| hemingway-v3-rerun | 1285 | 9855 | 247 | 14 | 44 | 5 | 46 | 18 | 432200 |
+| hemingway-v3-sans-project-terms | 763 | 5675 | 214 | 8 | 10 | 5 | 46 | 17 | 404078 |
+| hemingway-v3-sans-uncertainty | 1803 | 14718 | 465 | 22 | 104 | 17 | 36 | 10 | 220534 |
+| hemingway-v3.5 | 1910 | 14440 | 342 | 20 | 83 | 7 | 34 | 9 | 179711 |
+
+The =Use project terms when they name real things...= sentence was the strongest artifact-size lever.
+Removing it produced the shortest plan, but the plan also lost useful implementation anchors and felt less repo-native.
+Removing =If uncertainty matters, state it plainly.= did not compress the output.
+It produced the largest line and bullet count in this follow-up set.
+
+The old final sentence, =Let the facts carry the force.=, was not plain language.
+It used a literary metaphor while telling the model to avoid ornament.
+The clearer replacement is =Let the facts make the point.=.
+The =hemingway-v3.5= run showed that the wording change is a clarity fix, not a compression fix.
+
 * Recommendation
 
-Adopt =hemingway-v3= as the default =hemingway= style.
-Keep =hemingway-v3= as a named style for explicit comparisons and backward traceability.
+Adopt the =hemingway-v3.5= wording for the default =hemingway= and named =hemingway-v3= styles.
+Keep =hemingway-v3= as the named style for explicit comparisons and backward traceability, but with the clearer final sentence.
 Keep =hemingway-suggested-v2= as a verbose planning style.
 Keep =caveman= as a compression stress test.
 

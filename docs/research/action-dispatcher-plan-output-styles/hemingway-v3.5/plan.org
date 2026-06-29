@@ -1,0 +1,342 @@
+#+title: Action Dispatcher
+#+startup: overview
+
+* Status
+
+In-progress.
+
+* Problem
+
+Capability actions are a runtime concept, but they do not have a stable caller API.
+
+Today a caller can find action functions on a capability plist, but that is not enough for safe use from agents or shells.  Generic callers must know which capability owns the action, how that action expects arguments, whether the current harness or session must be passed, and how to format errors.
+
+That creates three concrete problems.
+
+- Agents using =run_elisp= must call implementation functions directly, such as =e-chat-session-compact=, and must manually pull harness and session ids from the tool context.
+- Existing capabilities use mixed action calling conventions.  Some actions take harness and session arguments.  Some take only an argument plist.
+- The tool-chaining API gives agents a clean context-bound shape for tools, but actions do not have the matching shape.
+
+The result is that actions are nominally available, but not pleasant or safe to call.
+
+* Goal
+
+Add a small action dispatcher for active capabilities.
+
+The main Elisp shape is:
+
+#+begin_src elisp
+(e-actions-call 'chat-session :compact)
+(e-actions-call 'chat-session :rename '(:name "Focused chat"))
+#+end_src
+
+The dispatcher should:
+
+- resolve the action from the active capability set;
+- use the current harness, session, and turn context when called from =run_elisp= or another tool;
+- accept explicit context options for shell or test callers;
+- validate required arguments for described actions;
+- call old one-plist actions for compatibility;
+- report clear errors for missing context, missing capabilities, missing actions, and missing arguments;
+- align with the existing =e-tools-call= and =e-tools-call!= API.
+
+* Non-goals
+
+- Do not replace direct shell functions such as =e-chat-session-compact=.
+- Do not make tools and actions the same runtime primitive.
+- Do not require every action owner to migrate in one patch.
+- Do not infer action calling conventions from arbitrary function arity.
+- Do not add provider-specific action behavior.
+- Do not make action dispatch a stronger security boundary than the active capability set.
+
+* Design
+
+** Action descriptors
+
+Keep capability ownership unchanged.  A capability still contributes actions through its =:actions= field.
+
+Add a descriptor shape for canonical actions.  A descriptor names the action handler, declares whether harness or session context is required, and may list required arguments.
+
+Legacy action entries remain valid.  If an action entry is a plain function, the dispatcher calls it with one argument plist.  This preserves existing project-local and old built-in actions while giving standard actions a safer contract.
+
+The descriptor should support at least:
+
+- =:function=, the function to call;
+- =:requires=, such as =(:harness :session)=;
+- =:required-arguments=, a list of keyword arguments;
+- optional metadata for tool-result behavior.
+
+Do not guess from function arity.  The descriptor is the contract.
+
+** Dispatcher
+
+Add =lisp/core/e-actions.el=.
+
+It owns:
+
+- action name normalization;
+- current-context lookup;
+- active capability lookup;
+- descriptor validation;
+- required-context validation;
+- required-argument validation;
+- legacy function dispatch;
+- public errors;
+- the public =e-actions-call= API.
+
+The public shape should mirror tool chaining:
+
+#+begin_src elisp
+(e-actions-call CAPABILITY ACTION &optional ARGUMENTS OPTIONS)
+#+end_src
+
+=CAPABILITY= is a symbol or string.  =ACTION= is a keyword, symbol, or string.  =ARGUMENTS= is a plist.  =OPTIONS= is a plist for explicit context or future dispatcher controls.
+
+By default the dispatcher reads =e-tools-current-context=, as =e-tools-call= does.  This lets code evaluated by =run_elisp= call active actions without manually extracting harness or session ids.
+
+Options should allow explicit context for shell and test code:
+
+- =:harness=
+- =:session-id=
+- =:turn-id=
+- =:capabilities=
+
+The dispatcher should use the active capabilities from context when present.  It should not scan global capability definitions.
+
+** Built-in action migration
+
+Convert the standard action surfaces to descriptors where the calling convention is known.
+
+Chat session actions:
+
+- =:submit=
+- =:steer=
+- =:queue=
+- =:compact=
+- =:rename=
+
+These are session actions.  Their descriptors should inject harness and session context and pass normalized arguments to the existing chat-session functions.
+
+Layer selection actions:
+
+- enable layer;
+- disable layer;
+- select layer or equivalent existing verbs.
+
+These are harness actions.  Their descriptors should require a harness and a layer argument where needed.
+
+Agent Shell actions already use one plist.  Wrap them with descriptors to document the canonical shape without changing their behavior.
+
+Goal actions also use one plist.  Wrap them with descriptors for the same reason.
+
+Keep existing direct functions and legacy lookup behavior.  This is an additive dispatcher.
+
+** Model-facing bridge
+
+Add a small generic =call_action= tool only if a model-facing bridge is needed for parity with the proposed JSON shape:
+
+#+begin_src json
+{"capability":"chat-session","action":"compact","arguments":{}}
+#+end_src
+
+The tool must use the same dispatcher as =e-actions-call=.  It must not implement a second lookup path.
+
+The tool result should preserve any metadata required by existing tool behavior.  In particular, =chat-session/:compact= must keep the context-refresh behavior that =compact_session= has today.
+
+If later design moves semantic operations out of the model-facing tool list, this bridge can be removed or gated.  The core contract is still the Elisp dispatcher.
+
+** Guidance alignment
+
+Update =run_elisp= guidance so agents see both context-bound APIs together:
+
+#+begin_src elisp
+(e-tools-call NAME ARGUMENTS &optional OPTIONS)
+(e-tools-call! NAME ARGUMENTS &optional OPTIONS)
+(e-actions-call CAPABILITY ACTION &optional ARGUMENTS OPTIONS)
+#+end_src
+
+Guidance should say:
+
+- use =e-tools-call= for model-facing tools;
+- use =e-actions-call= for active capability actions;
+- do not add a separate model-facing tool merely to call an action;
+- inspect external Elisp with resource/file tools before loading it;
+- keep nested tool calls visible through the harness lifecycle.
+
+Update durable runtime vocabulary docs so future agents understand the split:
+
+- action: shell-facing semantic capability operation;
+- tool: model-facing operation exposed through provider tool calls;
+- resource method: URI-addressed read/write/search surface;
+- context provider: passive model input.
+
+* Implementation plan
+
+** Slice 1: core action contract
+
+Files:
+
+- =lisp/core/e-capabilities.el=
+- =lisp/core/e-actions.el=
+- =lisp/e.el= or the core load list
+- =test/e-capabilities-test.el=
+- =test/e-actions-test.el=
+
+Work:
+
+1. Add an action descriptor constructor or predicate.
+2. Preserve legacy =e-capabilities-action= behavior for plain function lookup.
+3. Add =e-actions-call= and helper functions for normalization and validation.
+4. Add public error symbols with clear messages.
+5. Load the new core module.
+6. Test descriptor lookup, legacy lookup, missing actions, missing context, and missing required arguments.
+
+** Slice 2: built-in descriptors
+
+Files:
+
+- =lisp/layers/chat/e-chat-session.el=
+- =lisp/layers/harness/e-layer-selection.el=
+- =lisp/layers/agent-shell/e-agent-shell-fleet.el=
+- =lisp/layers/harness/e-goal.el=
+- related tests for each action surface
+
+Work:
+
+1. Convert chat-session actions to descriptors.
+2. Convert layer-selection actions to descriptors.
+3. Wrap Agent Shell actions with descriptors.
+4. Wrap Goal actions with descriptors.
+5. Keep direct functions unchanged.
+6. Keep existing action surface tests passing.
+7. Add tests for dispatcher calls against at least chat-session and one plist-style action.
+
+** Slice 3: model-facing action bridge
+
+Files:
+
+- =lisp/core/e-layer.el= or the core tool registration module
+- =test/e-actions-test.el= or a focused core-layer test
+
+Work:
+
+1. Add a =call_action= tool with arguments =capability=, =action=, and =arguments=.
+2. Normalize JSON strings to capability ids and action keys.
+3. Delegate to =e-actions-call=.
+4. Preserve =:refresh-context= metadata for compaction.
+5. Test success, missing action, required argument errors, and compact metadata.
+
+** Slice 4: guidance and docs
+
+Files:
+
+- =lisp/layers/emacs/e-emacs-tools.el=
+- =lisp/layers/emacs/e-emacs-capabilities.el=
+- =docs/references/runtime_concepts.org=
+- =AGENTS.md=
+- =README.org=
+- =docs/architecture.md=
+- relevant guidance tests
+
+Work:
+
+1. Add =e-actions-call= to the =run_elisp= tool description.
+2. Add capability guidance that explains actions next to tool chaining.
+3. Add or update the runtime vocabulary reference.
+4. Update bootstrap docs so action semantics are not stranded in feature plans.
+5. Search Grimoire and Doom guidance for direct action calls.
+6. Rewrite active guidance to use =e-actions-call=.
+7. Leave historical plans alone unless they are current instructions.
+
+** Slice 5: verification and live reload
+
+Run focused tests first:
+
+#+begin_src sh
+rtk eldev test test/e-capabilities-test.el test/e-actions-test.el
+rtk eldev test test/e-emacs-tools-test.el test/e-emacs-capabilities-test.el
+#+end_src
+
+Then run the broader affected set:
+
+#+begin_src sh
+rtk eldev test
+#+end_src
+
+Because this changes loaded core and layer behavior, reload the running Emacs:
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+After reload, run a bounded live probe from =run_elisp= or =emacsclient --eval= that proves one active action can be called through =e-actions-call= with current context.
+
+* Acceptance criteria
+
+- =e-actions-call= can dispatch an active capability action from =run_elisp= without manual harness/session extraction.
+- The dispatcher rejects inactive capabilities and unknown actions with clear errors.
+- Descriptor actions can require harness, session, and named arguments.
+- Legacy one-plist action functions still work.
+- Chat-session compaction can be invoked through the dispatcher.
+- If =call_action= is present, it delegates to the dispatcher and keeps compact-session refresh metadata.
+- Built-in action definitions use descriptors where their calling convention is known.
+- Guidance presents =e-tools-call= and =e-actions-call= as aligned APIs.
+- Runtime vocabulary docs define actions as distinct from tools, resources, and context providers.
+- Grimoire and Doom active guidance no longer tells agents to use old direct action function calls.
+
+* Verification notes
+
+Use focused tests for the core contract before broad tests.  Most failures should be local to action lookup, descriptor validation, or guidance string expectations.
+
+The live probe should be small.  It should not mutate user buffers or start real chat turns.  A harmless rename or fake capability action is enough if it proves the dispatcher sees active context.
+
+* Open questions
+
+- Should =call_action= remain a default model-facing tool, or should =run_elisp= be the only model-facing path for action dispatch?
+- Should action descriptors later carry richer argument schemas, or are required keyword lists enough for the first slice?
+- Should action calls emit their own durable activity events, separate from nested =run_elisp= tool activity?
+- Should project-local capabilities get a helper macro for action descriptors after this contract settles?
+
+* Design self-check
+
+1. If this work package stopped here, would the project be better off than if it had not been built?
+   Yes.  It gives actions a real dispatch contract while preserving existing direct functions and legacy capability action entries.
+
+2. What final direction does this move toward?
+   A runtime where tools are model-facing primitives, actions are capability-owned semantic operations, and agents can call both through aligned context-bound Elisp APIs.
+
+3. Which decisions are likely to change, uncertain, or stable?
+   The stable decision is capability-owned action dispatch.  The uncertain decisions are the long-term model-facing =call_action= tool and richer action schemas.  Both are local to the dispatcher and tool registration.
+
+4. What component owns this behavior, and why?
+   =e-actions.el= owns dispatch because it is the boundary between active capability contracts and generic callers.  Each capability still owns its action behavior.
+
+5. Does this change increase or reduce coupling?
+   It reduces coupling.  Agents and shells no longer need to know chat-session, layer-selection, Agent Shell, or Goal implementation function signatures.
+
+6. Did any dependency start pointing the wrong way?
+   No.  The dispatcher depends on generic capability contracts and current execution context.  It does not make core code know domain behavior beyond descriptors supplied by capabilities.
+
+7. Could any side effect be moved outward into an adapter or shell?
+   The dispatcher should not own side effects beyond validation and calling the action.  UI and lifecycle side effects remain in the owning capability or shell.
+
+8. What state does this change add or mutate?
+   It adds no durable state.  It reads current harness/session context and active capabilities during a call.
+
+9. What is the performance impact?
+   The dispatcher does one active capability lookup and one action lookup per call.  That cost is small and bounded.
+
+10. Are the abstractions semantically real?
+    Yes.  Actions already exist as capability-owned semantic operations.  The descriptor only makes their calling contract explicit.
+
+11. What compatibility expectations apply?
+    Existing direct functions and legacy plist action entries must continue to work.  Obsolete guidance can be updated, but historical plans need not be rewritten.
+
+12. What legacy code can we remove now?
+    None in the first slice.  Later slices can remove direct guidance that teaches manual context extraction.
+
+13. Where are expected errors handled?
+    The dispatcher handles missing context, missing capabilities, missing actions, and missing arguments.  Unexpected action failures should surface to the caller.
+
+14. What tests prove the core behavior independently of the full system?
+    Core action tests with fake capabilities prove descriptor dispatch, legacy dispatch, validation, and error behavior without running a full provider loop.
