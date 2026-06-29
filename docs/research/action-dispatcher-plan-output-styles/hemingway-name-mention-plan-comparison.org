@@ -1,0 +1,86 @@
+#+title: Hemingway Name Mention Plan Replay Comparison
+#+startup: overview
+
+* Scope
+
+This note compares three =plan.org= replay runs for the Action Dispatcher benchmark.
+The shared prompt was the Codex replay prompt for feature 43.
+Each run wrote under =docs/research/action-dispatcher-plan-output-styles/<variant>/plan.org=.
+
+The compared variants are:
+
+- =hemingway-v3.5-plan-rerun= :: current default =hemingway= wording before the no-name change.
+- =hemingway-v3.5-named-no-guard-plan= :: first sentence says =like Ernest Hemingway's= and has no anti-imitation guard.
+- =hemingway-v3.5-named-no-imitate-plan= :: first sentence says =like Ernest Hemingway's= and second sentence only prevents mentioning works or cosplay.
+
+* Mechanical metrics
+
+| Metric | v3.5 | Named no guard | Named no imitate |
+|-
+| Artifact | =hemingway-v3.5-plan-rerun/plan.org= | =hemingway-v3.5-named-no-guard-plan/plan.org= | =hemingway-v3.5-named-no-imitate-plan/plan.org= |
+| Words | 1982 | 2004 | 1204 |
+| Bytes | 14754 | 15315 | 9214 |
+| Lines | 364 | 401 | 220 |
+| Headings | 21 | 22 | 15 |
+| Bullets | 82 | 80 | 35 |
+| Src blocks | 8 | 7 | 8 |
+| Mentions =call_action= | True | True | True |
+| Duration s | 276.7 | 263.4 | 198.4 |
+| Messages | 34 | 30 | 30 |
+| Usage events | 9 | 10 | 8 |
+| Input tokens | 208297 | 240846 | 152737 |
+| Cached input | 52736 | 115200 | 56320 |
+| Output tokens | 6912 | 6400 | 4816 |
+| Reasoning output | 2250 | 1668 | 1718 |
+| Total tokens | 215209 | 247246 | 157553 |
+
+* Qualitative comparison
+
+** V3.5
+
+=v3.5= produced a full design-review style plan.
+It included open questions and a long design self-check.
+It was useful, but heavier than needed for a compact plan artifact.
+
+** Named no guard
+
+=named-no-guard= produced the largest plan.
+It added extra sections such as =Grimoire and Doom Review= and =Rollout Notes=.
+It did not cause literary cosplay.
+It did not improve compression.
+
+** Named no imitate
+
+=named-no-imitate= produced the best result on this benchmark.
+It was much shorter.
+It kept the core design, files, acceptance criteria, verification, and design self-check.
+It used the fewest total tokens.
+It did not drift into fake literary voice.
+
+* Interpretation
+
+The plan benchmark does not prove a stable winner.
+The same family of prompts has shown large run-to-run variance.
+It does show that mentioning Hemingway did not cause cosplay in these runs.
+It also shows that small guidance changes can move artifact size a lot.
+
+The no-name version remains the cleaner durable contract because it says the desired behavior directly and avoids both imitation and anti-imitation wording.
+The named variants are useful experiments, not the best default wording.
+
+* Recommendation
+
+Adopt the no-name wording for the default =hemingway= style:
+
+#+begin_example
+Write in a clean, strong prose style.
+Use plain declarative sentences.
+Put one clear claim or action in each sentence.
+Choose short, common words over long ones.
+Prefer concrete facts and direct verbs over abstraction, adjectives, adverbs, and needless jargon.
+Use project terms when they name real things, but choose plain words when they work.
+Avoid flowery, ornate, or unnecessary language.
+Cut padding and throat-clearing.
+Do not hedge when the evidence is clear.
+If uncertainty matters, state it plainly.
+Let the facts make the point.
+#+end_example

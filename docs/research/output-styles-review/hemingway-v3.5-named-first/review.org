@@ -1,0 +1,525 @@
+#+title: Review: Output Style
+#+author: e implementation
+#+date: 2026-06-29
+#+startup: overview
+
+* Status
+
+In-review.
+
+This is a controlled output-style comparison review.
+It uses the =hemingway-v3.5-named-first= guidance and writes the artifact to
+=docs/research/output-styles-review/hemingway-v3.5-named-first/review.org= by
+request.
+
+It is not the canonical =docs/feats/38-output-style/review.org= file.
+It does not update =docs/feats/index.org=.
+
+* Review summary
+
+The implementation delivers the core =output-style= capability design.
+
+It adds a built-in output-style capability, a style registry, config-backed
+style resolution, inert default behavior, =os-base= layer wiring, set and
+describe commands, focused tests, and architecture documentation. The
+capability uses the existing system-channel path. It does not add
+provider-specific prompt logic.
+
+Three review findings remain open.
+
+First, a fresh =e.el= package load does not expose the output-style commands or
+constructor. The module is loaded through the lazy =os-base= layer path, not
+from the package entry path or package autoloads.
+
+Second, invalid style ids configured through =e-capability-config= are rejected,
+but the error does not list the known style ids as the plan requested.
+
+Third, the source registry ships more built-in styles than the v1 plan named.
+That may be intentional later work, but it changes the user-visible product
+surface and should be documented or trimmed.
+
+* Scope reviewed
+
+Plan and convention files:
+
+- Attached =Output Style= plan.
+- =docs/agents/review.org=.
+- Existing feature reviews under =docs/feats/*/review.org=.
+
+Implementation files:
+
+- =lisp/layers/base/e-output-style.el=
+- =lisp/layers/base/e-base.el=
+- =lisp/dev/e-dev.el=
+- =e.el=
+- =lisp/defaults/e-default-layers.el=
+- =lisp/core/e-capability-config.el=
+- =lisp/core/e-capabilities.el=
+- =docs/architecture.md=
+
+Tests:
+
+- =test/e-output-style-test.el=
+- =test/e-base-test.el=
+
+Runtime checks:
+
+- Focused ERT for output style and base layer.
+- Warning-as-error byte compilation for output-style files and tests.
+- Fresh-load command availability probe.
+- Invalid configured style probe.
+- Clean batch source probe.
+- Bounded live Emacs probe.
+
+* What looks good
+
+- The feature uses the existing system-channel path. It does not add a new
+  context channel or provider-specific output-style branch.
+- Ownership is clear. =e-output-style.el= owns the registry, resolver,
+  capability constructor, config helper, and commands.
+- The default layer wiring is correct. =e-base-layer-create= includes
+  =output-style= in =os-base= after =base-guidance=, =file-handling=, and
+  =shell-process=.
+- The feature is inert by default. With no =:style= config, the capability has
+  nil instructions and contributes no system fragment.
+- The configured style uses priority 260, so it sorts after =base-guidance=
+  priority 230.
+- Tests cover the main pure paths: registry lookup, unknown resolver ids,
+  registering a style, built-in style presence, capability construction,
+  unknown option rejection, set and describe helpers, system-fragment routing,
+  default-layer presence, inert behavior, and ordering.
+- =docs/architecture.md= records =output-style= as an =os-base= capability and
+  states its priority and config option.
+
+* Verification performed during this review pass
+
+** Focused ERT
+
+#+begin_src sh
+emacs -Q --batch --eval '(setq load-prefer-newer t)' -L lisp/core -L lisp/layers -L lisp/layers/base -L lisp/layers/harness -L lisp/layers/emacs -L lisp/layers/evidence -L lisp/layers/web -L lisp/layers/text-editing -L lisp/layers/org-canvas -L lisp/layers/project-local -L lisp/layers/chat -L lisp/layers/agents -L lisp/defaults -L lisp/shells -L lisp/shells/chat -L lisp/adapters/openai -L lisp/adapters/anthropic -L lisp/dev -l e.el -l test/e-output-style-test.el -l test/e-base-test.el -f ert-run-tests-batch-and-exit
+#+end_src
+
+#+begin_example
+Running 18 tests (2026-06-29 19:27:26+0200, selector ‘t’)
+   passed   1/18  e-base-test-guidance-stays-os-focused (0.000257 sec)
+   passed   2/18  e-base-test-layer-activates-file-capabilities (0.000119 sec)
+   passed   3/18  e-base-test-layer-captures-directory-for-relative-paths (0.016594 sec)
+   passed   4/18  e-base-test-layer-output-style-activates (0.000208 sec)
+   passed   5/18  e-base-test-layer-output-style-inert-by-default (0.000107 sec)
+   passed   6/18  e-base-test-layer-registers-os-base-tools (0.000154 sec)
+   passed   7/18  e-output-style-test-builtin-styles-present (0.000020 sec)
+   passed   8/18  e-output-style-test-capability-inert-by-default (0.000317 sec)
+   passed   9/18  e-output-style-test-capability-rejects-unknown-option (0.000291 sec)
+   passed  10/18  e-output-style-test-capability-uses-configured-style (0.000279 sec)
+   passed  11/18  e-output-style-test-describe-string-active (0.000280 sec)
+   passed  12/18  e-output-style-test-describe-string-inactive (0.000308 sec)
+   passed  13/18  e-output-style-test-register-adds-style (0.000014 sec)
+   passed  14/18  e-output-style-test-resolve-known-id (0.000022 sec)
+   passed  15/18  e-output-style-test-resolve-unknown-id-signals (0.000021 sec)
+   passed  16/18  e-output-style-test-set-config-rejects-unknown (0.000013 sec)
+   passed  17/18  e-output-style-test-set-config-writes-style (0.000012 sec)
+   passed  18/18  e-output-style-test-style-prose-is-system-fragment (0.000337 sec)
+
+Ran 18 tests, 18 results as expected, 0 unexpected (2026-06-29 19:27:26+0200, 0.019610 sec)
+#+end_example
+
+=load-prefer-newer= was set because ignored byte-compiled files can lag source
+in this checkout. The review result is based on current source.
+
+** Warning-as-error byte compile
+
+#+begin_src sh
+emacs -Q --batch --eval '(setq load-prefer-newer t)' -L lisp/core -L lisp/layers -L lisp/layers/base -L lisp/layers/harness -L lisp/layers/emacs -L lisp/layers/evidence -L lisp/layers/web -L lisp/layers/text-editing -L lisp/layers/org-canvas -L lisp/layers/project-local -L lisp/layers/chat -L lisp/layers/agents -L lisp/defaults -L lisp/shells -L lisp/shells/chat -L lisp/adapters/openai -L lisp/adapters/anthropic -L lisp/dev -l e.el --eval '(setq byte-compile-error-on-warn t)' -f batch-byte-compile lisp/layers/base/e-output-style.el lisp/layers/base/e-base.el test/e-output-style-test.el test/e-base-test.el
+#+end_src
+
+#+begin_example
+No output.
+Exit status 0.
+#+end_example
+
+** Fresh-load command availability probe
+
+#+begin_src sh
+emacs -Q --batch --eval '(setq load-prefer-newer t)' -L lisp/core -L lisp/layers -L lisp/layers/base -L lisp/layers/harness -L lisp/layers/emacs -L lisp/layers/evidence -L lisp/layers/web -L lisp/layers/text-editing -L lisp/layers/org-canvas -L lisp/layers/project-local -L lisp/layers/chat -L lisp/layers/agents -L lisp/defaults -L lisp/shells -L lisp/shells/chat -L lisp/adapters/openai -L lisp/adapters/anthropic -L lisp/dev -l e.el --eval "(princ (format \"%S\\n\" (list :set (commandp 'e-output-style-set) :describe (commandp 'e-output-style-describe) :create (fboundp 'e-output-style-capability-create))))"
+#+end_src
+
+#+begin_example
+(:set nil :describe nil :create nil)
+#+end_example
+
+This proves a fresh package load does not make the user-facing output-style
+commands available. It also leaves the capability constructor undefined until a
+later path loads =e-base= or =e-output-style=.
+
+** Invalid configured style probe
+
+#+begin_src sh
+emacs -Q --batch --eval '(setq load-prefer-newer t)' -L lisp/core -L lisp/layers -L lisp/layers/base -L lisp/layers/harness -L lisp/layers/emacs -L lisp/layers/evidence -L lisp/layers/web -L lisp/layers/text-editing -L lisp/layers/org-canvas -L lisp/layers/project-local -L lisp/layers/chat -L lisp/layers/agents -L lisp/defaults -L lisp/shells -L lisp/shells/chat -L lisp/adapters/openai -L lisp/adapters/anthropic -L lisp/dev --eval "(require 'e-output-style)" --eval "(let ((e-capability-config '((output-style :style bogus)))) (condition-case err (e-output-style-capability-create default-directory) (error (princ (format \"%S\\n%s\\n\" (car err) (error-message-string err))))))"
+#+end_src
+
+#+begin_example
+e-capability-config-invalid-value
+Invalid capability config value: output-style, :style, bogus
+#+end_example
+
+The invalid style is rejected. The message does not list known styles.
+
+** Clean batch source probe
+
+#+begin_src sh
+emacs -Q --batch --eval '(setq load-prefer-newer t)' -L lisp/core -L lisp/layers -L lisp/layers/base -L lisp/layers/harness -L lisp/layers/emacs -L lisp/layers/evidence -L lisp/layers/web -L lisp/layers/text-editing -L lisp/layers/org-canvas -L lisp/layers/project-local -L lisp/layers/chat -L lisp/layers/agents -L lisp/defaults -L lisp/shells -L lisp/shells/chat -L lisp/adapters/openai -L lisp/adapters/anthropic -L lisp/dev --eval "(require 'e-output-style)" --eval "(let ((e-capability-config '((output-style :style hemingway-v3)))) (princ (format \"%S\\n\" (list :ids (e-output-style-ids) :describe (e-output-style--describe-string default-directory) :instructions (e-capability-instructions (e-output-style-capability-create default-directory))))))"
+#+end_src
+
+#+begin_example
+(:ids (concise explanatory hemingway hemingway-suggested-v2 hemingway-v3 caveman) :describe "Active output style: hemingway-v3
+
+Write in a clean, strong prose style.
+This is not a request to imitate Ernest Hemingway, mention his works, or cosplay his voice.
+Use plain declarative sentences.
+Put one clear claim or action in each sentence.
+Choose short, common words over long ones.
+Prefer concrete facts and direct verbs over abstraction, adjectives, adverbs, and needless jargon.
+Use project terms when they name real things, but choose plain words when they work.
+Avoid flowery, ornate, or unnecessary language.
+Cut padding and throat-clearing.
+Do not hedge when the evidence is clear.
+If uncertainty matters, state it plainly.
+Let the facts make the point." :instructions "Write in a clean, strong prose style.
+This is not a request to imitate Ernest Hemingway, mention his works, or cosplay his voice.
+Use plain declarative sentences.
+Put one clear claim or action in each sentence.
+Choose short, common words over long ones.
+Prefer concrete facts and direct verbs over abstraction, adjectives, adverbs, and needless jargon.
+Use project terms when they name real things, but choose plain words when they work.
+Avoid flowery, ornate, or unnecessary language.
+Cut padding and throat-clearing.
+Do not hedge when the evidence is clear.
+If uncertainty matters, state it plainly.
+Let the facts make the point.")
+#+end_example
+
+This confirms the source default registry and configured style description path
+from a clean batch process.
+
+** Bounded live Emacs probe
+
+#+begin_src emacs-lisp
+(let ((e-capability-config '((output-style :style hemingway-v3))))
+  (list :feature (featurep 'e-output-style)
+        :set-command (commandp 'e-output-style-set)
+        :describe-command (commandp 'e-output-style-describe)
+        :ids (and (fboundp 'e-output-style-ids) (e-output-style-ids))
+        :describe (and (fboundp 'e-output-style--describe-string)
+                       (e-output-style--describe-string "/Users/dimitrivorona/projects/elisp/e"))))
+#+end_src
+
+#+begin_example
+(:feature t :set-command t :describe-command t :ids (hemingway-v3.5-no-name hemingway-v3.5-named-first concise explanatory hemingway hemingway-suggested-v2 hemingway-v3 caveman) :describe "Active output style: hemingway-v3
+
+Write in a clean, strong prose style.
+This is not a request to imitate Ernest Hemingway, mention his works, or cosplay his voice.
+Use plain declarative sentences.
+Put one clear claim or action in each sentence.
+Choose short, common words over long ones.
+Prefer concrete facts and direct verbs over abstraction, adjectives, adverbs, and needless jargon.
+Use project terms when they name real things, but choose plain words when they work.
+Avoid flowery, ornate, or unnecessary language.
+Cut padding and throat-clearing.
+Do not hedge when the evidence is clear.
+If uncertainty matters, state it plainly.
+Let the facts make the point.")
+#+end_example
+
+The running Emacs session already had =e-output-style= loaded, so the commands
+were present there. It also had extra comparison styles registered in the live
+registry for this output-style experiment. The clean batch probes above are the
+authoritative evidence for source defaults.
+
+** Live reload
+
+No live reload was required for this review pass because no loaded Emacs Lisp
+behavior changed. This pass only created this research review artifact.
+
+* UX and performance playthrough
+
+- First use after a fresh package load is not coherent. The planned command
+  entrypoints are not available until another path loads =e-output-style=. This
+  is finding 1.
+- First use with no style is coherent after the module is loaded. The capability
+  exists in =os-base= but contributes no instructions.
+- Active style description is clear. The clean batch probe reported active
+  =hemingway-v3= and included the expected prose.
+- Style switching helper is covered by tests. It writes =(:style ID)= under
+  =output-style= without disturbing other capability config.
+- Error recovery for a bad configured style is safe but incomplete. The bad
+  value is rejected, but the message does not show valid choices. This is
+  finding 2.
+- The built-in style list is broader than the v1 plan. That affects
+  completing-read choices and documented defaults. This is finding 3.
+- Responsiveness is acceptable. The feature performs small alist and plist
+  lookups and adds no redraw, network, or transcript hot path. Profiling was not
+  needed.
+
+The interactive =M-x e-output-style-set= UI itself was not driven visually in
+this pass. Its pure helper and describe text are covered, and the command uses
+standard =completing-read= plus =message=.
+
+* Findings
+
+** TODO Medium: Fresh package loads do not expose the output-style commands
+
+*** Expected
+
+The plan says the deliverable includes a command to switch the active style. It
+names =M-x e-output-style-set= and =M-x e-output-style-describe= as user-facing
+entrypoints.
+
+Step 1 also says to modify the =e.el= require list or the live reload list to
+include the new module.
+
+*** Observed
+
+=e-dev-reload= includes =lisp/layers/base/e-output-style.el=, but =e.el= does
+not require =e-output-style= and the command definitions do not have package
+autoload cookies.
+
+A fresh =-l e.el= package load returns:
+
+#+begin_example
+(:set nil :describe nil :create nil)
+#+end_example
+
+for:
+
+#+begin_src emacs-lisp
+(list :set (commandp 'e-output-style-set)
+      :describe (commandp 'e-output-style-describe)
+      :create (fboundp 'e-output-style-capability-create))
+#+end_src
+
+*** Why it matters
+
+The feature is meant to be selectable by command. A user can start e, try
+=M-x e-output-style-set=, and fail to find it unless another workflow has
+already loaded =e-base= or =e-output-style=. That makes the feature feel absent
+and misses a direct plan contract.
+
+*** Smallest useful fix
+
+Load or autoload the command-owning module from the package entry path.
+
+The direct fix is to add =(require 'e-output-style)= to =e.el= after load-path
+setup and before startup finishes. Another acceptable fix is to add proper
+autoload cookies for =e-output-style-set= and =e-output-style-describe= and make
+sure package autoload generation installs them. Keep =e-base= requiring
+=e-output-style= because the layer factory depends on the constructor.
+
+*** Verification needed after fix
+
+Run a fresh-load probe that requires only =e.el= and confirms all entrypoints
+exist:
+
+#+begin_src emacs-lisp
+(list :set (commandp 'e-output-style-set)
+      :describe (commandp 'e-output-style-describe)
+      :create (fboundp 'e-output-style-capability-create))
+#+end_src
+
+Expected result:
+
+#+begin_example
+(:set t :describe t :create t)
+#+end_example
+
+Then rerun focused ERT and warning-as-error compile.
+
+** TODO Low: Configured unknown style error does not list known style ids
+
+*** Expected
+
+The plan says an unknown style id should raise a clear error naming the bad id
+and the known ids.
+
+The direct resolver path meets this contract. =e-output-style--resolve= signals
+an error like:
+
+#+begin_example
+Unknown output style `nonesuch'; known styles: concise, explanatory, hemingway, hemingway-suggested-v2, hemingway-v3, caveman
+#+end_example
+
+*** Observed
+
+When the bad id comes through =e-capability-config=, the config option validator
+rejects it before =e-output-style--resolve= can emit the specific message.
+
+The error is generic:
+
+#+begin_example
+e-capability-config-invalid-value
+Invalid capability config value: output-style, :style, bogus
+#+end_example
+
+*** Why it matters
+
+Global and directory-local config are core selection paths for this feature.
+When a user mistypes a style id there, the error should show valid choices. The
+current message names the bad value but does not help recovery.
+
+*** Smallest useful fix
+
+Preserve capability-config validation while moving style-id validation through
+the resolver.
+
+One direct approach is to use an option normalizer for =:style= that accepts
+nil, requires a symbol, calls =e-output-style--resolve= for non-nil values, and
+returns the original symbol. Then the resolver message can surface for unknown
+ids.
+
+*** Verification needed after fix
+
+Add a test with =e-capability-config='((output-style :style bogus))= that
+asserts the error message contains =bogus= and at least one known id such as
+=hemingway=.
+
+Rerun focused ERT.
+
+** TODO Low: Source ships extra built-in styles beyond the v1 plan
+
+*** Expected
+
+The plan's v1 built-in style set is small:
+
+- =concise=
+- =explanatory=
+- =hemingway=
+
+It says to keep the set small in v1. The registry exists so more styles can be
+added later.
+
+*** Observed
+
+=e-output-style-registry= currently includes six source-default styles:
+
+#+begin_example
+(concise explanatory hemingway hemingway-suggested-v2 hemingway-v3 caveman)
+#+end_example
+
+=test/e-output-style-test.el= also treats all six as built-ins.
+
+*** Why it matters
+
+The style registry is user-visible through =e-output-style-set=. Extra built-ins
+change the product surface, completion choices, and documentation burden. They
+also make the implementation drift from the v1 acceptance text.
+
+This may be intended follow-up work from output-style experiments, but the code
+should make that decision explicit.
+
+*** Smallest useful fix
+
+Pick one of two paths:
+
+- trim source defaults and tests back to =concise=, =explanatory=, and
+  =hemingway=; or
+- update the feature contract and documentation to state that =caveman=,
+  =hemingway-suggested-v2=, and =hemingway-v3= are now shipped built-ins.
+
+Do not leave the tests as the only record of the expanded public surface.
+
+*** Verification needed after fix
+
+If trimming, assert =e-output-style-ids= only includes the three v1 ids by
+default.
+
+If documenting, update architecture or feature notes and keep the built-in
+style test aligned with the documented list.
+
+* Plan coverage
+
+- Step 1, style registry and resolver: mostly covered. The registry, resolver,
+  register helper, and tests exist. The module is in =e-dev-reload=, but it is
+  not loaded or autoloaded by =e.el= for fresh command discovery.
+- Step 2, capability constructor: covered. The constructor resolves config,
+  declares the =:style= option, is inert when unset, and uses priority 260.
+- Step 3, default layer wiring: covered. =os-base= includes =output-style= and
+  tests assert presence and ordering after base guidance.
+- Step 4, set and describe commands: implemented but not reliably available
+  from a fresh package load. The pure helpers are tested.
+- Step 5, end-to-end system-channel assertion: covered at the backend-neutral
+  context level. There is no style-specific Anthropic or OpenAI adapter test,
+  but the implementation uses the same system-message path that existing
+  adapter code consumes.
+- Step 6, documentation: mostly covered. =docs/architecture.md= records
+  =output-style= as an =os-base= capability. This controlled review did not
+  modify =docs/feats/index.org= by request.
+
+* Architecture review
+
+The ownership and dependency direction are sound. The output-style behavior
+lives in a base-layer capability module. That module depends on stable
+capability and config contracts. No shell, provider adapter, or core harness
+code knows about specific style ids.
+
+The feature adds one narrow dependency from =e-base.el= to
+=e-output-style.el=. That is appropriate because =os-base= assembles the
+capability set.
+
+The side effect in =e-output-style--set-config= sits at the interactive/config
+boundary. The resolver and constructor stay small and testable.
+
+The main architectural issue is load ownership. The command-owning module is
+behind a lazy layer feature, but the commands are global package entrypoints.
+Global entrypoints need package-level load ownership or autoload ownership.
+
+* Design self-check
+
+1. If this work package stopped here, would the project be better off than if it
+   had not been built?
+   Yes. The core provider-neutral style capability works and is tested, but
+   command discoverability still needs a fix.
+2. What final direction does this move toward?
+   It moves toward configurable system-channel guidance owned by capabilities,
+   not providers or shells.
+3. Which decisions are likely to change, uncertain, or stable?
+   The registry shape, single active style, config ownership, and priority
+   contract are stable enough for v1. The built-in style set and command UX may
+   change, and both remain local to =e-output-style.el=.
+4. What component owns this behavior, and why?
+   =e-output-style.el= owns it because output style is a base guidance
+   capability with its own registry and config contract.
+5. Does this change increase or reduce coupling?
+   It adds a narrow =os-base= dependency and avoids provider coupling.
+6. Did any dependency start pointing the wrong way?
+   No. Core and adapters do not depend on output-style-specific behavior.
+7. Could any side effect be moved outward into an adapter or shell?
+   No. The only new side effect is writing =e-capability-config= from an
+   interactive command.
+8. What state does this change add or mutate?
+   It adds the customizable registry and mutates =e-capability-config= when the
+   set command runs. That is the right storage lifetime for user-selected style
+   config.
+9. What is the performance impact?
+   It adds small alist and plist lookups during capability construction. There
+   is no meaningful hot-path risk.
+10. Are the abstractions semantically real?
+    Yes. Style registry, config option, and capability are real extension seams
+    tied to current behavior.
+11. What compatibility expectations apply?
+    The capability is inert when unset, so adding it to =os-base= preserves
+    default behavior. No legacy path is needed.
+12. What legacy code can we remove now?
+    None found.
+13. Where are expected errors handled, and where do unexpected errors surface?
+    Direct unknown style ids surface through the resolver. Config-path unknown
+    ids currently surface through generic capability-config validation; finding
+    2 asks to improve that expected error.
+14. What tests prove the core behavior independently of the full system?
+    =test/e-output-style-test.el= proves the registry, constructor, helpers,
+    and system-message contribution. =test/e-base-test.el= proves default-layer
+    presence and ordering.
+
+* Unresolved
+
+- TODO Medium: Fresh package loads do not expose the output-style commands.
+- TODO Low: Configured unknown style error does not list known style ids.
+- TODO Low: Source ships extra built-in styles beyond the v1 plan.

@@ -54,7 +54,6 @@ explanations in the specifics at hand rather than abstractions."))
          (list :name "Hemingway"
                :instructions
                "Write in a clean, strong prose style.
-This is not a request to imitate Ernest Hemingway, mention his works, or cosplay his voice.
 Use plain declarative sentences.
 Put one clear claim or action in each sentence.
 Choose short, common words over long ones.
@@ -80,7 +79,6 @@ force."))
          (list :name "Hemingway v3"
                :instructions
                "Write in a clean, strong prose style.
-This is not a request to imitate Ernest Hemingway, mention his works, or cosplay his voice.
 Use plain declarative sentences.
 Put one clear claim or action in each sentence.
 Choose short, common words over long ones.

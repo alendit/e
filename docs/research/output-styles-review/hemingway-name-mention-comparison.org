@@ -1,0 +1,226 @@
+#+title: Hemingway Name Mention Comparison
+#+startup: overview
+
+* Scope
+
+This note compares three controlled =review.org= runs for the output-style review task.
+
+The shared task was to review =docs/feats/38-output-style/plan.org= and write a review artifact under =docs/research/output-styles-review/<variant>/review.org=.
+
+The compared variants are:
+
+- =hemingway-v3.5= :: current default =hemingway= wording after replacing =Let the facts carry the force.= with =Let the facts make the point.=.
+- =hemingway-v3.5-named-first= :: same wording, but first sentence says =Write in a clean, strong prose style like Ernest Hemingway's.=.
+- =hemingway-v3.5-no-name= :: same wording, but removes the negative Hemingway sentence and does not mention Hemingway at all.
+
+The =hemingway-v3.5-no-name= first attempt failed with a provider WebSocket close.
+It was rerun once with the same style and completed.
+
+* Guidance variants
+
+** Hemingway v3.5
+
+#+begin_example
+Write in a clean, strong prose style.
+This is not a request to imitate Ernest Hemingway, mention his works, or cosplay his voice.
+Use plain declarative sentences.
+Put one clear claim or action in each sentence.
+Choose short, common words over long ones.
+Prefer concrete facts and direct verbs over abstraction, adjectives, adverbs, and needless jargon.
+Use project terms when they name real things, but choose plain words when they work.
+Avoid flowery, ornate, or unnecessary language.
+Cut padding and throat-clearing.
+Do not hedge when the evidence is clear.
+If uncertainty matters, state it plainly.
+Let the facts make the point.
+#+end_example
+
+** Hemingway v3.5 named first
+
+#+begin_example
+Write in a clean, strong prose style like Ernest Hemingway's.
+This is not a request to imitate Ernest Hemingway, mention his works, or cosplay his voice.
+Use plain declarative sentences.
+Put one clear claim or action in each sentence.
+Choose short, common words over long ones.
+Prefer concrete facts and direct verbs over abstraction, adjectives, adverbs, and needless jargon.
+Use project terms when they name real things, but choose plain words when they work.
+Avoid flowery, ornate, or unnecessary language.
+Cut padding and throat-clearing.
+Do not hedge when the evidence is clear.
+If uncertainty matters, state it plainly.
+Let the facts make the point.
+#+end_example
+
+** Hemingway v3.5 no name
+
+#+begin_example
+Write in a clean, strong prose style.
+Use plain declarative sentences.
+Put one clear claim or action in each sentence.
+Choose short, common words over long ones.
+Prefer concrete facts and direct verbs over abstraction, adjectives, adverbs, and needless jargon.
+Use project terms when they name real things, but choose plain words when they work.
+Avoid flowery, ornate, or unnecessary language.
+Cut padding and throat-clearing.
+Do not hedge when the evidence is clear.
+If uncertainty matters, state it plainly.
+Let the facts make the point.
+#+end_example
+
+* Mechanical metrics
+
+| Metric | v3.5 | v3.5 named first | v3.5 no name |
+|-
+| Artifact | =hemingway-v3.5/review.org= | =hemingway-v3.5-named-first/review.org= | =hemingway-v3.5-no-name/review.org= |
+| Session | =output-style-review-hemingway-v3.5-20260629T191304= | =output-style-review-hemingway-v3.5-named-first-20260629T192523= | =output-style-review-hemingway-v3.5-no-name-20260629T193755= |
+| Guidance verified | True | True | True |
+| Duration s | 738.9 | 473.8 | 486.7 |
+| Messages | 74 | 66 | 72 |
+| Tool calls | 36 | 32 | 35 |
+| Token events | 29 | 21 | 22 |
+| Input tokens | 1122411 | 844912 | 794665 |
+| Cached input | 571392 | 474624 | 441344 |
+| Output tokens | 17816 | 11282 | 11598 |
+| Reasoning output | 7103 | 2075 | 1950 |
+| Total tokens | 1140227 | 856194 | 806263 |
+| Review bytes | 25327 | 23607 | 25397 |
+| Review lines | 579 | 526 | 580 |
+| Review words | 3180 | 2973 | 3188 |
+| Headings | 42 | 36 | 42 |
+| Bullets | 43 | 47 | 44 |
+| Src blocks | 9 | 8 | 9 |
+| Sentences | 228 | 216 | 229 |
+| Average words per sentence | 13.36 | 13.29 | 13.34 |
+| Short sentence share | 0.636 | 0.644 | 0.638 |
+| Long sentence share | 0.083 | 0.083 | 0.083 |
+
+* Findings compared
+
+All three runs found the same three issues:
+
+1. Fresh package loads do not expose the output-style commands.
+2. Configured unknown style errors do not list known style ids.
+3. The built-in style set is broader than the v1 plan.
+
+All three runs kept the same high-level review structure:
+
+- =Status=
+- =Review summary=
+- =Scope reviewed=
+- =What looks good=
+- =Verification performed during this review pass=
+- =UX and performance playthrough=
+- =Findings=
+- =Plan coverage=
+- =Architecture review=
+- =Design self-check=
+- =Unresolved=
+
+The named-first run is the only one that materially shortened the artifact.
+It still preserved the same findings and sections.
+
+* Qualitative comparison
+
+** Hemingway v3.5
+
+=v3.5= is complete and conservative.
+It gives a full handoff.
+It includes evidence, commands, expected results, and fix directions.
+It is also the most expensive run by a large margin.
+
+The prose is plain.
+It does not drift into literary imitation.
+The negative Hemingway sentence seems to prevent cosplay without making the review awkward.
+
+Its main weakness is cost.
+The run used 1,140,227 total tokens and 7,103 reasoning output tokens.
+That is high for a review artifact whose final size is close to the no-name variant.
+
+** Hemingway v3.5 named first
+
+The named-first variant is the shortest and cheapest successful artifact in this three-run set.
+It used 856,194 total tokens, about 25 percent less than v3.5.
+It also used much less reasoning output.
+
+It did not produce obvious Hemingway cosplay.
+The review did not mention Hemingway, literary voice, fiction, or period style in the body except through the variant path near the top.
+It stayed technical and direct.
+
+The first sentence is still conceptually mixed.
+It tells the model to write like Ernest Hemingway, then the next sentence says not to imitate him.
+That contradiction did not hurt this run, but it is not clean guidance.
+It relies on the model resolving tension in the intended way.
+
+The artifact is somewhat leaner.
+It has fewer headings, fewer source blocks, fewer words, and the same findings.
+That is a good result for this task.
+It is only one run, so the cost win should not be overread.
+
+** Hemingway v3.5 no name
+
+The no-name variant is almost the same size as v3.5.
+It has 3,188 words versus 3,180 for v3.5, and 580 lines versus 579.
+The review structure and findings are effectively unchanged.
+
+It cost less than v3.5.
+It used 806,263 total tokens, about 29 percent less than v3.5.
+It had much lower reasoning output.
+
+Removing the negative Hemingway sentence did not cause style drift in this run.
+The review stayed plain, concrete, and technical.
+It also avoided the oddity of telling the model not to mention a person while using that person's name.
+
+The no-name wording is the cleanest instruction set.
+It names the desired behavior directly.
+It avoids both positive imitation and negative anti-imitation.
+
+* Interpretation
+
+The name mention itself is not needed for this task.
+Both the named-first and no-name variants produced useful reviews.
+Neither created a fake literary voice.
+
+The no-name variant is the cleanest style contract.
+It says what to do and avoids what to avoid without invoking an author.
+That matches the project goal better: plain agent prose, not literary imitation.
+
+The named-first variant had the best measured cost and shortest artifact.
+But its first two sentences conflict:
+
+#+begin_quote
+Write in a clean, strong prose style like Ernest Hemingway's.
+This is not a request to imitate Ernest Hemingway...
+#+end_quote
+
+That is not ideal durable guidance.
+It may work because the model has seen many anti-style disclaimers, but it is less plain than the no-name form.
+
+The current v3.5 negative sentence is safe, but it is probably unnecessary.
+It spends prompt space preventing a failure that did not appear in the no-name run.
+
+* Recommendation
+
+Prefer the no-name direction for the next candidate style.
+
+Use this core wording:
+
+#+begin_example
+Write in a clean, strong prose style.
+Use plain declarative sentences.
+Put one clear claim or action in each sentence.
+Choose short, common words over long ones.
+Prefer concrete facts and direct verbs over abstraction, adjectives, adverbs, and needless jargon.
+Use project terms when they name real things, but choose plain words when they work.
+Avoid flowery, ornate, or unnecessary language.
+Cut padding and throat-clearing.
+Do not hedge when the evidence is clear.
+If uncertainty matters, state it plainly.
+Let the facts make the point.
+#+end_example
+
+Do not adopt the named-first sentence despite its good metrics in this run.
+It is less plain and internally tense.
+
+If more evidence is needed, rerun no-name and v3.5 once more on a different task.
+The main risk is run variance: total token use changed a lot across runs even when final artifact shape stayed close.

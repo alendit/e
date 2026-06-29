@@ -27,7 +27,7 @@
   "Resolving a known style returns its instructions string."
   (let ((instructions (e-output-style--resolve 'hemingway)))
     (should (stringp instructions))
-    (should (string-match-p "Hemingway" instructions))
+    (should (string-match-p "clean, strong prose" instructions))
     (should (string-match-p "one clear claim or action" instructions))
     (should (string-match-p "needless jargon" instructions))))
 
