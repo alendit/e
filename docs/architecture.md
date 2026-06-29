@@ -215,6 +215,12 @@ contribute instructions, context providers, model-facing tools, resource methods
 read-only `e://` resources, lifecycle hooks, shell-facing actions, configuration
 options, and capability-local defaults.
 
+Shell-facing actions are semantic operations for presentation shells and host
+Elisp. `e-actions-call` resolves an active capability action from the current
+harness/session context, validates descriptor-required arguments, injects
+harness/session state, and calls the action. Agents use it from `run_elisp`;
+actions do not get a separate generic model-facing tool.
+
 Resource operations are generic contracts over URI schemes. `e-resources`
 registers methods for operations such as `read`, `write`, and `edit`; the
 harness exposes a model-facing operation tool only when active capabilities
@@ -230,6 +236,7 @@ than silently removing protection.
 Important source paths:
 
 - `lisp/core/e-capabilities.el`
+- `lisp/core/e-actions.el`
 - `lisp/core/e-resources.el`
 - `lisp/core/e-store.el`
 - `lisp/core/e-tools.el`
@@ -298,12 +305,12 @@ buffers/elisp). `project-local` is an aggregate layer whose capabilities are
 discovered from the project root, so its concrete capability set is
 repository-dependent rather than fixed.
 
-#### Capabilities In `harness-base`, `os-base`, And `emacs-base`
+#### Capabilities In Support And Self-Management Layers
 
-The three support/execution layers above are defined in
-`lisp/layers/harness/e-harness-base.el`, `lisp/layers/base/e-base.el`, and
-`lisp/layers/emacs/e-emacs-base.el`. What each of their capabilities actually
-contributes:
+The main support/execution layers are defined in
+`lisp/layers/harness/e-harness-base.el`, `lisp/layers/base/e-base.el`,
+`lisp/layers/emacs/e-emacs-base.el`, and `lisp/layers/e-layer.el`. What each of
+their capabilities actually contributes:
 
 | Layer | Capability (`:id`) | Contributes |
 | --- | --- | --- |
@@ -318,7 +325,8 @@ contributes:
 | `emacs-base` | `buffer-read` | `list_buffers` tool + read-only `buffer://` resource method. |
 | `emacs-base` | `selection-context` | Nothing yet — placeholder capability reserved for future selection context. |
 | `emacs-base` | `buffer-edit` | `save_buffer` tool + writable `buffer://` resource method (live buffer mutation). |
-| `emacs-base` | `elisp-eval` | The `run_elisp` tool for explicit Emacs Lisp evaluation. |
+| `emacs-base` | `elisp-eval` | The `run_elisp` tool for explicit Emacs Lisp evaluation, with context-bound `e-tools-call` and `e-actions-call` guidance. |
+| `e` | `session-compaction` | `compact_session` for active-turn context compaction. |
 
 The contribution shape is consistent across the three layers: `*-context` /
 `*-guidance` / `*-awareness` capabilities carry only instructions or a read-only

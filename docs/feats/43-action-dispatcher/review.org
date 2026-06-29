@@ -1,0 +1,92 @@
+#+title: Review: Action Dispatcher
+#+author: e implementation
+#+date: 2026-06-28
+#+startup: overview
+
+* Status
+
+Done.
+
+* Review summary
+
+The implementation satisfies the plan contract.  Active capability actions now
+have a descriptor shape and a context-bound Elisp dispatcher.  Existing direct
+=e-capabilities-action= callers still receive functions.
+
+* Scope reviewed
+
+- Core action descriptors and dispatch: =lisp/core/e-capabilities.el=,
+  =lisp/core/e-actions.el=, =lisp/core/e-core.el=.
+- Standard action owners: =chat-session=, =layer-selection=,
+  =agent-shell-fleet=, and =goal=.
+- Elisp guidance: =lisp/layers/emacs/e-emacs-capabilities.el=,
+  =lisp/layers/emacs/e-emacs-tools.el=.
+- Documentation: =AGENTS.md=, =README.org=, =docs/architecture.md=,
+  =docs/arch-align.md=, =docs/references/runtime_concepts.org=.
+- External guidance search: Grimoire had one old direct rename snippet and it
+  now uses =e-actions-call= with explicit =:harness= and =:session-id=; Doom
+  config had no matching action guidance.
+
+* Findings
+
+No unresolved findings.
+
+* Verification
+
+- =rtk eldev test -f test/e-actions-test.el test/e-capabilities-test.el test/e-chat-session-test.el test/e-emacs-capabilities-test.el test/e-emacs-tools-test.el test/e-layer-selection-test.el test/e-agent-shell-fleet-test.el test/e-goal-test.el test/e-test.el= passed 82/82.
+- =rtk eldev test -f test/e-tools-test.el test/e-harness-test.el= passed 124/124.
+- =rtk eldev test -f test/e-layers-test.el test/e-layer-selection-test.el test/e-loop-test.el= passed 34/34.
+- =git diff --check= passed.
+
+* Live reload
+
+- =emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"= returned ="/Users/dimitrivorona/projects/elisp/e/"=.
+- Bounded live probe created a temporary harness/session and returned ="Action probe"= from =(e-actions-call 'chat-session :rename ...)=.
+
+* Plan coverage
+
+- =e-action-create= now carries handler, caller, parameters, and
+  session-requirement.
+- =e-capabilities-action= preserves legacy direct function lookup, while
+  =e-capabilities-action-spec= exposes the descriptor.
+- =e-actions-call= resolves active capability actions from the tool context or
+  explicit =:harness= / =:session-id= options.
+- =chat-session :compact= preserves active-turn compaction behavior and
+  is callable from context-bound Elisp.
+- =run_elisp= guidance now shows both =e-tools-call= / =e-tools-call!= and
+  =e-actions-call=.
+
+* Design self-check
+
+1. If this stopped here, the project is better off: agents have a stable,
+   documented action API and do not need to rediscover calling conventions from
+   examples.
+2. This moves toward capability-owned semantic operations with the harness
+   injecting runtime context.
+3. Stable behavior is modeled directly.  The uncertain parts stay local in
+   descriptor fields such as =:caller= instead of leaking per-action
+   conventions to callers.
+4. Capabilities still own their actions.  The dispatcher owns lookup,
+   context-injection, argument validation, and common errors.
+5. Coupling is reduced for callers.  Interfaces stay narrow:
+   capability/action/arguments/options for Elisp.
+6. Dependency direction remains correct: generic dispatch depends on stable
+   capability and harness contracts, not on concrete shells.
+7. Side effects remain in capability handlers and harness/session services; the
+   dispatcher only resolves and invokes them.
+8. The descriptor abstraction is semantically real because every implementation
+   can expose the same handler/caller/schema contract without unsupported
+   operations.
+9. Compatibility is explicit: old plain function actions still work and direct
+   =e-capabilities-action= callers still receive functions.
+10. No legacy code is removable yet because shell/tests still intentionally use
+    direct action functions.
+11. Expected errors surface as typed =e-actions-*= conditions; unexpected
+    handler errors are not swallowed by the dispatcher.
+12. Focused tests prove dispatcher behavior independently of full runtime, and
+    harness/tool tests prove it remains aligned with nested =e-tools-call=
+    behavior.
+
+* Unresolved
+
+None.

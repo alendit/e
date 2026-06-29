@@ -468,7 +468,8 @@ When VISIBLE-ONLY is non-nil, include only buffers visible in windows."
    (concat
     "Evaluate explicit Emacs Lisp in Emacs and return the printed result. "
     "When this tool runs in an active e tool context, code may call currently "
-    "active tools with e-tools-call and e-tools-call!.")
+    "active tools with e-tools-call/e-tools-call! and active capability actions "
+    "with e-actions-call.")
    :parameters '(:type "object"
                  :properties (:code (:type "string"))
                  :required ["code"])

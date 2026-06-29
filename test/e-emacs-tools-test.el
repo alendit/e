@@ -348,14 +348,16 @@ When READ-ONLY is non-nil, buffer resources only support reads."
                    'error))))
 
 (ert-deftest e-emacs-tools-test-run-elisp-description-names-tool-chaining-api ()
-  "run_elisp tells models about context-bound active tool calls."
+  "run_elisp tells models about context-bound tool/action calls."
   (let ((registry (e-tools-registry-create)))
     (e-emacs-tools-register-run-elisp registry)
     (let* ((definition (car (e-tools-definitions registry)))
            (description (plist-get definition :description)))
       (should (string-match-p "e-tools-call" description))
       (should (string-match-p "e-tools-call!" description))
-      (should (string-match-p "active tools" description)))))
+      (should (string-match-p "e-actions-call" description))
+      (should (string-match-p "active tools" description))
+      (should (string-match-p "active capability actions" description)))))
 
 (ert-deftest e-emacs-tools-test-run-elisp-never-enters-debugger ()
   "run_elisp surfaces errors as tool errors without popping the debugger.

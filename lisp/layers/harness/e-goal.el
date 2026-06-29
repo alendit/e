@@ -512,6 +512,10 @@
      :description "Goal controller loop and achievement predicate."
      :content e-goal-process-reference)))
 
+(defun e-goal--action (handler)
+  "Return goal action descriptor for HANDLER."
+  (e-action-create :handler handler))
+
 (cl-defun e-goal-capability-create
     (&key (id 'goal) (name "Goal") registry)
   "Create the Goal capability.
@@ -525,35 +529,45 @@ REGISTRY defaults to `e-goal-default-registry'."
      :resources (list (e-goal--resource-provider))
      :actions
      (list :define-goal
-           (lambda (arguments)
-             (e-goal-define registry arguments))
+           (e-goal--action
+            (lambda (arguments)
+              (e-goal-define registry arguments)))
            :list-goals
-           (lambda (arguments)
-             (e-goal-list registry arguments))
+           (e-goal--action
+            (lambda (arguments)
+              (e-goal-list registry arguments)))
            :goal-status
-           (lambda (arguments)
-             (e-goal-status registry arguments))
+           (e-goal--action
+            (lambda (arguments)
+              (e-goal-status registry arguments)))
            :next-action
-           (lambda (arguments)
-             (e-goal-next-action registry arguments))
+           (e-goal--action
+            (lambda (arguments)
+              (e-goal-next-action registry arguments)))
            :record-step
-           (lambda (arguments)
-             (e-goal-record-step registry arguments))
+           (e-goal--action
+            (lambda (arguments)
+              (e-goal-record-step registry arguments)))
            :record-criterion
-           (lambda (arguments)
-             (e-goal-record-criterion registry arguments))
+           (e-goal--action
+            (lambda (arguments)
+              (e-goal-record-criterion registry arguments)))
            :record-blocker
-           (lambda (arguments)
-             (e-goal-record-blocker registry arguments))
+           (e-goal--action
+            (lambda (arguments)
+              (e-goal-record-blocker registry arguments)))
            :clear-blocker
-           (lambda (arguments)
-             (e-goal-clear-blocker registry arguments))
+           (e-goal--action
+            (lambda (arguments)
+              (e-goal-clear-blocker registry arguments)))
            :assess-goal
-           (lambda (arguments)
-             (e-goal-assess registry arguments))
+           (e-goal--action
+            (lambda (arguments)
+              (e-goal-assess registry arguments)))
            :stop-goal
-           (lambda (arguments)
-             (e-goal-stop registry arguments))))))
+           (e-goal--action
+            (lambda (arguments)
+              (e-goal-stop registry arguments)))))))
 
 (provide 'e-goal)
 

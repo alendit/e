@@ -6,6 +6,12 @@
 - Keep the harness and presentation separate. The harness owns agent lifecycle, sessions, model routing, tool execution, resources, and architectural policy. Presentation shells own buffers, commands, keymaps, rendering, and user interaction.
 - The first backend target is OpenAI API access through ChatGPT subscription auth where available, but the LLM backend must stay generic. Provider auth, request shapes, retry behavior, and model-specific features belong behind backend adapters.
 
+## Runtime Vocabulary
+
+- A capability action is a shell-facing semantic operation contributed by an active capability. Actions are not model-facing tools. Agents call them from `run_elisp` with `(e-actions-call 'capability :action ARGUMENTS)`.
+- Use `e-tools-call` / `e-tools-call!` for model-facing tools and `e-actions-call` for capability actions. Both APIs resolve through the current harness/session context; pass `:harness` and `:session-id` explicitly only when no tool context is active.
+- See `docs/references/runtime_concepts.org` for the durable definitions of harness, session, turn, capability, layer, tool, resource method, context provider, hook, action, shell, and backend adapter.
+
 ## Interactive Development
 
 - Strive to develop interactively against the running Emacs whenever the change affects runtime behavior, chat presentation, tools, backend requests, reload behavior, or buffer state. Batch tests are necessary but not sufficient for live agent workflows.

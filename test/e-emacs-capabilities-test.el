@@ -115,16 +115,19 @@
                  '("run_elisp"))))
 
 (ert-deftest e-emacs-capabilities-test-elisp-eval-documents-tool-chaining ()
-  "Elisp eval contributes guidance for chaining active tools from Lisp."
+  "Elisp eval contributes guidance for chaining active tools/actions from Lisp."
   (let* ((capability (e-elisp-eval-capability-create))
          (instructions (e-capability-instructions capability)))
     (should (string-match-p "(e-tools-call NAME ARGUMENTS" instructions))
     (should (string-match-p "(e-tools-call! NAME ARGUMENTS" instructions))
+    (should (string-match-p "(e-actions-call CAPABILITY ACTION" instructions))
+    (should (string-match-p "Do not add a separate action tool" instructions))
     (should (string-match-p "e-tools-call! \"search\"" instructions))
     (should (string-match-p "e-tools-call! \"read\"" instructions))
-    (should (string-match-p "currently active tools" instructions))
+    (should (string-match-p "e-actions-call 'chat-session :rename" instructions))
+    (should (string-match-p "currently active tools and actions" instructions))
     (should (string-match-p "several tool calls" instructions))
-    (should (string-match-p "single direct tool call" instructions))
+    (should (string-match-p "single direct tool/action call" instructions))
     (should (string-match-p "visible as activity" instructions))))
 
 (ert-deftest e-emacs-capabilities-test-workspace-awareness-context ()

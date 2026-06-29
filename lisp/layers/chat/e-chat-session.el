@@ -100,9 +100,16 @@ PROJECT-ROOT."
   "Reset SESSION-ID through HARNESS."
   (e-harness-reset harness session-id))
 
-(cl-defun e-chat-session-compact (harness session-id &key instructions)
+(cl-defun e-chat-session-compact
+    (harness session-id &key instructions keep-recent-tokens
+             allow-active-turn turn-id)
   "Compact SESSION-ID through HARNESS."
-  (e-harness-compact-session harness session-id :instructions instructions))
+  (e-harness-compact-session
+   harness session-id
+   :instructions instructions
+   :keep-recent-tokens keep-recent-tokens
+   :allow-active-turn allow-active-turn
+   :turn-id turn-id))
 
 (defun e-chat-session-rename (harness session-id name)
   "Rename SESSION-ID to NAME through HARNESS session storage."
@@ -217,6 +224,22 @@ is non-nil, ATTACHMENT replaces the session's primary canvas attachment."
                 attachments)))
     (e-chat-session--set-attachments harness session-id next)
     next))
+
+(defun e-chat-session--action-harness (context)
+  "Return CONTEXT harness for a chat-session action."
+  (plist-get context :harness))
+
+(defun e-chat-session--action-session-id (context)
+  "Return CONTEXT session id for a chat-session action."
+  (plist-get context :session-id))
+
+(defun e-chat-session--action (handler caller &optional parameters)
+  "Return chat-session action descriptor for HANDLER."
+  (e-action-create
+   :handler handler
+   :caller caller
+   :parameters parameters
+   :requires-session t))
 
 (defun e-chat-session--uri-file-name (uri)
   "Return local filename for file URI, or nil."
@@ -334,18 +357,144 @@ in the next turn's context."
           :priority 120
           :cache-placement 'dynamic-context
           :build #'e-chat-session-context-attachments-provider))
-   :actions (list :submit #'e-chat-session-submit
-                  :steer #'e-chat-session-steer
-                  :queue #'e-chat-session-queue
-                  :abort #'e-chat-session-abort
-                  :reset #'e-chat-session-reset
-                  :compact #'e-chat-session-compact
-                  :rename #'e-chat-session-rename
-                  :set-model #'e-chat-session-set-model
-                  :set-effort #'e-chat-session-set-effort
-                  :attach-context #'e-chat-session-attach-context
-                  :detach-context #'e-chat-session-detach-context
-                  :context #'e-chat-session-context)))
+   :actions (list :submit
+                  (e-chat-session--action
+                   #'e-chat-session-submit
+                   (lambda (context arguments)
+                     (e-chat-session-submit
+                      (e-chat-session--action-harness context)
+                      (e-chat-session--action-session-id context)
+                      (plist-get arguments :prompt)
+                      :references (plist-get arguments :references)
+                      :metadata (plist-get arguments :metadata)))
+                   '(:type "object"
+                     :properties (:prompt (:type "string")
+                                  :references (:type "array")
+                                  :metadata (:type "object"))
+                     :required ["prompt"]))
+                  :steer
+                  (e-chat-session--action
+                   #'e-chat-session-steer
+                   (lambda (context arguments)
+                     (e-chat-session-steer
+                      (e-chat-session--action-harness context)
+                      (e-chat-session--action-session-id context)
+                      (plist-get arguments :prompt)
+                      :metadata (plist-get arguments :metadata)))
+                   '(:type "object"
+                     :properties (:prompt (:type "string")
+                                  :metadata (:type "object"))
+                     :required ["prompt"]))
+                  :queue
+                  (e-chat-session--action
+                   #'e-chat-session-queue
+                   (lambda (context arguments)
+                     (e-chat-session-queue
+                      (e-chat-session--action-harness context)
+                      (e-chat-session--action-session-id context)
+                      (plist-get arguments :prompt)
+                      :references (plist-get arguments :references)
+                      :metadata (plist-get arguments :metadata)))
+                   '(:type "object"
+                     :properties (:prompt (:type "string")
+                                  :references (:type "array")
+                                  :metadata (:type "object"))
+                     :required ["prompt"]))
+                  :abort
+                  (e-chat-session--action
+                   #'e-chat-session-abort
+                   (lambda (context _arguments)
+                     (e-chat-session-abort
+                      (e-chat-session--action-harness context)
+                      (e-chat-session--action-session-id context))))
+                  :reset
+                  (e-chat-session--action
+                   #'e-chat-session-reset
+                   (lambda (context _arguments)
+                     (e-chat-session-reset
+                      (e-chat-session--action-harness context)
+                      (e-chat-session--action-session-id context))))
+                  :compact
+                  (e-chat-session--action
+                   #'e-chat-session-compact
+                   (lambda (context arguments)
+                     (e-chat-session-compact
+                      (e-chat-session--action-harness context)
+                      (e-chat-session--action-session-id context)
+                      :instructions (plist-get arguments :instructions)
+                      :keep-recent-tokens
+                      (plist-get arguments :keep_recent_tokens)
+                      :allow-active-turn
+                      (and (plist-get context :turn-id) t)
+                      :turn-id (plist-get context :turn-id)))
+                   '(:type "object"
+                     :properties (:instructions (:type "string")
+                                  :keep_recent_tokens (:type "integer"))
+                     :required []))
+                  :rename
+                  (e-chat-session--action
+                   #'e-chat-session-rename
+                   (lambda (context arguments)
+                     (e-chat-session-rename
+                      (e-chat-session--action-harness context)
+                      (e-chat-session--action-session-id context)
+                      (plist-get arguments :name)))
+                   '(:type "object"
+                     :properties (:name (:type "string"))
+                     :required ["name"]))
+                  :set-model
+                  (e-chat-session--action
+                   #'e-chat-session-set-model
+                   (lambda (context arguments)
+                     (e-chat-session-set-model
+                      (e-chat-session--action-harness context)
+                      (e-chat-session--action-session-id context)
+                      (plist-get arguments :model)))
+                   '(:type "object"
+                     :properties (:model (:type "string"))
+                     :required ["model"]))
+                  :set-effort
+                  (e-chat-session--action
+                   #'e-chat-session-set-effort
+                   (lambda (context arguments)
+                     (e-chat-session-set-effort
+                      (e-chat-session--action-harness context)
+                      (e-chat-session--action-session-id context)
+                      (plist-get arguments :effort)))
+                   '(:type "object"
+                     :properties (:effort (:type "string"))
+                     :required ["effort"]))
+                  :attach-context
+                  (e-chat-session--action
+                   #'e-chat-session-attach-context
+                   (lambda (context arguments)
+                     (e-chat-session-attach-context
+                      (e-chat-session--action-harness context)
+                      (e-chat-session--action-session-id context)
+                      (plist-get arguments :attachment)
+                      :canvas (plist-get arguments :canvas)))
+                   '(:type "object"
+                     :properties (:attachment (:type "object")
+                                  :canvas (:type "boolean"))
+                     :required ["attachment"]))
+                  :detach-context
+                  (e-chat-session--action
+                   #'e-chat-session-detach-context
+                   (lambda (context arguments)
+                     (e-chat-session-detach-context
+                      (e-chat-session--action-harness context)
+                      (e-chat-session--action-session-id context)
+                      (plist-get arguments :attachment)))
+                   '(:type "object"
+                     :properties (:attachment (:type "string"))
+                     :required ["attachment"]))
+                  :context
+                  (e-chat-session--action
+                   #'e-chat-session-context
+                   (lambda (context _arguments)
+                     (e-chat-session-context
+                      (e-chat-session--action-harness context)
+                      (e-chat-session--action-session-id context)))))))
 
 (provide 'e-chat-session)
 

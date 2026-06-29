@@ -87,7 +87,11 @@ Add helpers with these contracts:
 
 - `e-capabilities-register-tools`: accepts one capability and one tool registry, then calls each function in `(e-capability-tools capability)` with the registry.
 - `e-capabilities-context-messages`: accepts a capability list plus `:harness`, `:session-id`, and `:turn-id`, then returns instruction messages followed by provider-built messages.
-- `e-capabilities-action`: accepts one capability and an action keyword, then returns the function stored in `(e-capability-actions capability)`.
+- `e-actions-call`: accepts a capability id, action keyword, optional arguments,
+  and optional explicit harness/session options, then resolves the active
+  action through the current runtime context. `e-capabilities-action` remains
+  the compatibility helper for callers that already have a capability object
+  and need the direct function.
 
 Do not add permission/audit fields in this pass.
 

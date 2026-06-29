@@ -281,6 +281,20 @@
     (should (eq (e-capabilities-action capability :submit) action))
     (should-not (e-capabilities-action capability :missing))))
 
+(ert-deftest e-capabilities-test-action-descriptor-preserves-function-lookup ()
+  "Action descriptors keep direct function lookup backward compatible."
+  (let* ((handler #'ignore)
+         (descriptor (e-action-create
+                      :handler handler
+                      :description "Submit."
+                      :parameters '(:type "object")))
+         (capability
+          (e-capability-create
+           :id 'actions
+           :actions (list :submit descriptor))))
+    (should (eq (e-capabilities-action capability :submit) handler))
+    (should (eq (e-capabilities-action-spec capability :submit) descriptor))))
+
 (provide 'e-capabilities-test)
 
 ;;; e-capabilities-test.el ends here

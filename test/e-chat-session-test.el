@@ -156,7 +156,7 @@
   "The chat-session capability exposes stable shell action names."
   (let ((capability (e-chat-session-capability-create)))
     (should (eq (e-capability-id capability) 'chat-session))
-    (dolist (action '(:submit :steer :queue :abort :reset :rename
+    (dolist (action '(:submit :steer :queue :abort :reset :compact :rename
                       :set-model :set-effort
                       :attach-context :detach-context :context))
       (should (functionp (e-capabilities-action capability action))))))

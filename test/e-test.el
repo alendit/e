@@ -74,6 +74,7 @@
     e-loop
     e-layers
     e-harness
+    e-actions
     e-harness-instances
     e-harness-registry
     e-core)

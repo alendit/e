@@ -42,6 +42,18 @@
   config
   prompts)
 
+(cl-defstruct (e-action
+               (:constructor e-action-create
+                             (&key handler caller description parameters
+                                   requires-session tool-metadata)))
+  handler
+  caller
+  description
+  parameters
+  requires-session
+  ;; Kept for live reload compatibility with earlier action descriptors.
+  tool-metadata)
+
 (defun e-capability-id (capability)
   "Return CAPABILITY id."
   (e-capability--id capability))
@@ -364,7 +376,16 @@ HARNESS, SESSION-ID, and TURN-ID are passed to context providers."
              :messages))
 
 (defun e-capabilities-action (capability action)
-  "Return CAPABILITY function for ACTION."
+  "Return CAPABILITY function for ACTION.
+When the action entry is an `e-action' descriptor, return its handler to
+preserve the historical direct lookup contract."
+  (let ((entry (plist-get (e-capability-actions capability) action)))
+    (if (e-action-p entry)
+        (e-action-handler entry)
+      entry)))
+
+(defun e-capabilities-action-spec (capability action)
+  "Return CAPABILITY action descriptor or raw function for ACTION."
   (plist-get (e-capability-actions capability) action))
 
 (provide 'e-capabilities)

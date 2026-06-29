@@ -51,6 +51,16 @@ Capabilities are the semantic behavior units. A capability can contribute:
 - lifecycle hooks
 - shell-facing actions
 
+Actions are semantic shell/host operations, not model-facing tools by default.
+Shell code or evaluated Elisp can call active actions through =e-actions-call=:
+
+#+begin_src elisp
+(e-actions-call 'chat-session :compact)
+#+end_src
+
+Agents should use =run_elisp= for action calls; =e-actions-call= is the
+ergonomic Elisp interface for that tool.
+
 Examples:
 
 - =chat-session=

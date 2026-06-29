@@ -45,15 +45,62 @@
       (e-layer-selection-disable harness layer-id)
     (e-layer-selection-enable harness layer-id)))
 
+(defun e-layer-selection--action-layer-id (arguments)
+  "Return layer id from action ARGUMENTS."
+  (let ((layer (plist-get arguments :layer)))
+    (cond
+     ((symbolp layer) layer)
+     ((stringp layer) (intern layer))
+     (t (user-error "Layer action requires :layer")))))
+
+(defun e-layer-selection--action (handler caller &optional parameters)
+  "Return layer-selection action descriptor for HANDLER."
+  (e-action-create
+   :handler handler
+   :caller caller
+   :parameters parameters))
+
 (defun e-layer-selection-capability-create ()
   "Create the generic layer-selection capability."
   (e-capability-create
    :id 'layer-selection
    :name "Layer Selection"
-   :actions (list :list #'e-layer-selection-list
-                  :enable #'e-layer-selection-enable
-                  :disable #'e-layer-selection-disable
-                  :toggle #'e-layer-selection-toggle)))
+   :actions
+   (list :list
+         (e-layer-selection--action
+          #'e-layer-selection-list
+          (lambda (context _arguments)
+            (e-layer-selection-list (plist-get context :harness))))
+         :enable
+         (e-layer-selection--action
+          #'e-layer-selection-enable
+          (lambda (context arguments)
+            (e-layer-selection-enable
+             (plist-get context :harness)
+             (e-layer-selection--action-layer-id arguments)))
+          '(:type "object"
+            :properties (:layer (:type "string"))
+            :required ["layer"]))
+         :disable
+         (e-layer-selection--action
+          #'e-layer-selection-disable
+          (lambda (context arguments)
+            (e-layer-selection-disable
+             (plist-get context :harness)
+             (e-layer-selection--action-layer-id arguments)))
+          '(:type "object"
+            :properties (:layer (:type "string"))
+            :required ["layer"]))
+         :toggle
+         (e-layer-selection--action
+          #'e-layer-selection-toggle
+          (lambda (context arguments)
+            (e-layer-selection-toggle
+             (plist-get context :harness)
+             (e-layer-selection--action-layer-id arguments)))
+          '(:type "object"
+            :properties (:layer (:type "string"))
+            :required ["layer"])))))
 
 (provide 'e-layer-selection)
 

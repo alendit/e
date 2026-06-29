@@ -34,6 +34,7 @@
 (require 'e-loop)
 (require 'e-layers)
 (require 'e-harness)
+(require 'e-actions)
 (require 'e-harness-registry)
 (require 'e-harness-instances)
 
@@ -64,6 +65,7 @@
         :loop t
         :layers t
         :harness t
+        :actions t
         :harness-registry t
         :harness-instances t))
 

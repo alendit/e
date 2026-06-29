@@ -1,0 +1,94 @@
+#+title: e Runtime Concepts
+#+startup: overview
+
+* Purpose
+
+This reference defines the small runtime vocabulary agents should know before
+reading feature plans or examples.
+
+* Core concepts
+
+- =harness= :: The application service for agent runtime state. It owns
+  sessions, turns, layer activation, effective capabilities, model/tool
+  lifecycle, resource registries, compaction, durable records, and events.
+
+- =session= :: Durable conversation/runtime state owned by a harness. Session
+  metadata carries the project root, display title, model/effort overrides,
+  attachments, queued prompts, branch/compaction records, and transcript
+  records.
+
+- =turn= :: One backend interaction loop for a submitted prompt. A turn may
+  stream assistant output, execute model-facing tools, append tool results,
+  refresh context, re-query the backend, compact itself, or settle/fail/cancel.
+
+- =capability= :: A named semantic behavior bundle. A capability can contribute
+  instructions, context providers, model-facing tools, resource methods,
+  read-only =e://= resources, lifecycle hooks, prompts, shell-facing actions,
+  and configuration options.
+
+- =layer= :: A preset over capabilities and shell manifests. Layers package
+  useful capability sets but do not own durable behavior.
+
+- =context provider= :: A capability contribution that builds backend-neutral
+  model context from harness/session state. Context providers are not command
+  surfaces.
+
+- =model-facing tool= :: A backend-visible function the model may call during a
+  turn. Tools run through =e-tools= and the harness lifecycle, produce structured
+  tool results, and may attach metadata such as resource usage or
+  =:refresh-context=.
+
+- =resource method= :: A scheme-specific implementation behind generic
+  operations such as =read=, =write=, =edit=, =glob=, or =search=. The harness
+  exposes an operation as a model-facing tool only when active capabilities
+  provide matching methods.
+
+- =lifecycle hook= :: Capability-owned policy around tool or turn lifecycle
+  points. Hooks run under harness control; unexpected hook failures should fail
+  visibly rather than silently weakening policy.
+
+- =shell-facing action= :: A semantic operation contributed by a capability for
+  shell or host code. Actions are not model-facing tools by default. They
+  validate action arguments, receive harness/session context from the dispatcher
+  when needed, and call the owning application service or adapter.
+
+- =presentation shell= :: A UI host such as =e-chat=, =e-canvas=, or
+  =e-org-canvas=. Shells own buffers, keymaps, rendering, window behavior, and
+  user interaction. They delegate semantic behavior to capability actions and
+  harness APIs.
+
+- =backend adapter= :: Provider-specific request, auth, retry, streaming, and
+  response translation code behind the generic backend contract.
+
+* Action Calls
+
+Use =e-actions-call= when evaluated Elisp needs to call an active capability
+action from the current harness/session context:
+
+#+begin_src elisp
+(e-actions-call 'chat-session :rename '(:name "Focused chat"))
+#+end_src
+
+When no tool context is active, pass the context explicitly:
+
+#+begin_src elisp
+(e-actions-call
+ 'chat-session
+ :rename
+ '(:name "Focused chat")
+ (list :harness harness :session-id session-id))
+#+end_src
+
+Use =e-tools-call= and =e-tools-call!= for active model-facing tools. Use
+=e-actions-call= for active capability actions. These are context-bound APIs
+for code running under =run_elisp=, and they keep the tool/action boundary
+explicit without adding a separate action tool.
+
+* Boundary Table
+
+| Surface | Caller | Visible to model by default | Context injection | Typical owner |
+|---------+--------+-----------------------------+-------------------+---------------|
+| Action | Shell/host Elisp through =run_elisp= | No | =e-actions-call= | Capability |
+| Tool | Backend/model turn | Yes | Harness tool lifecycle | Capability/tool module |
+| Resource method | Generic operation tool | Only through operation tool | Harness resource registry | Capability/resource module |
+| Context provider | Harness context build | As model input | Harness context strategy | Capability |

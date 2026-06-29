@@ -157,21 +157,27 @@ Before finalizing, verify presentation, not just content. Confirm the resource y
 
 (defconst e-elisp-eval-instructions
   (string-join
-   '("When using run_elisp, evaluated code may compose currently active tools through the context-bound API:"
+   '("When using run_elisp, evaluated code may compose currently active tools and actions through context-bound APIs:"
      ""
      "(e-tools-call NAME ARGUMENTS &optional OPTIONS)"
      "(e-tools-call! NAME ARGUMENTS &optional OPTIONS)"
+     "(e-actions-call CAPABILITY ACTION &optional ARGUMENTS OPTIONS)"
      ""
-     "Example:"
+     "Tool example:"
      "(let* ((hits (e-tools-call! \"search\" '(:uri \"file://\" :query \"TODO\" :literal t :limit 5))))"
      "  (mapcar (lambda (hit) (e-tools-call! \"read\" (list :uri (plist-get hit :uri))))"
      "          (plist-get hits :matches)))"
      ""
+     "Action example:"
+     "(e-actions-call 'chat-session :rename '(:name \"Focused chat\"))"
+     ""
      "Use this when several tool calls are needed to compute one answer, later calls depend on earlier results, many similar resources need the same read/search/edit operation, or the result should be filtered, grouped, or summarized before returning."
      ""
-     "Do not use nested tool calls when a single direct tool call is enough, when the user should see each mutating decision before the next step, or when an ordinary top-level tool sequence would be clearer."
+     "Use e-actions-call from run_elisp for capability actions. Do not add a separate action tool just to call an action; run_elisp is the agent-facing tool and e-actions-call is the ergonomic Elisp action API."
      ""
-     "Only currently active tools are callable. Nested tool calls are visible as activity and run through the harness lifecycle.")
+     "Do not use nested calls when a single direct tool/action call is enough, when the user should see each mutating decision before the next step, or when an ordinary top-level tool sequence would be clearer."
+     ""
+     "Only currently active tools and capability actions are callable. Nested tool calls are visible as activity and run through the harness lifecycle.")
    "\n")
   "Instructions for explicit Elisp evaluation and active tool chaining.")
 
