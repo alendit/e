@@ -28,6 +28,8 @@ There are two distinct behaviors to preserve:
 - Redrawing active output while the user is reading should preserve the user's
   point/window position, even when that position is inside the region being
   replaced.
+- If point/window focus was already at the active output tail, redraw should
+  keep following the new tail instead of preserving the old end offset.
 
 The first belongs at chat presentation display/selection boundaries. The second
 belongs in the running-status redraw path and its deferred redraw wrapper.
@@ -39,9 +41,16 @@ Implemented.
 - Added =e-chat--show-latest-output= and wired active-turn display/selection to
   focus the end of the current running-status region instead of leaving stale
   scrollback selected.
+- Installed the active-turn tail hook for Doom/persp workspace activation as
+  well as selected-window changes, because workspace switching can preserve the
+  selected window without firing the selected-window hook.
 - Added running-status display-state capture/restore helpers that preserve
   point, =window-point=, and =window-start= as offsets inside the active
   running-status region across delete/reinsert redraws.
+- Marked display-state as tailing when point/window was at the old
+  running-status end, then restored to the new end after redraw. This keeps a
+  bottom-following active turn at the bottom while still preserving deliberate
+  readback positions.
 - Applied the same offset restoration in the deferred activity redraw wrapper so
   timer-driven turn updates do not undo the renderer's preservation.
 
@@ -49,6 +58,8 @@ Regression coverage:
 
 - =e-chat-test-after-display-active-turn-focuses-latest-output=
 - =e-chat-test-activity-rerender-preserves-running-status-focus=
+- =e-chat-test-activity-rerender-keeps-running-status-tail=
+- =e-chat-test-installs-workspace-switch-read-hook=
 - Existing =e-chat-test-progress-rerender-preserves-scrollback-focus= continues
   to cover deliberate scrollback outside the active block.
 
@@ -59,3 +70,8 @@ Validation:
 - Live after =e-dev-reload=: a temporary =e-chat= buffer with a running turn
   confirmed =:tail-point t=, =:tail-window t=, =:preserve-point t=,
   =:preserve-window-point t=, and =:preserve-window-start t=.
+- Follow-up after the first fix missed live workspace activation and tail
+  following. Validation now also confirms =e-chat--tail-selected-active-turn= is
+  installed in both =window-selection-change-functions= and
+  =persp-activated-functions=, and a live active redraw returned =:tail-grew t=,
+  =:point-at-new-tail t=, and =:window-point-at-new-tail t=.

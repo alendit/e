@@ -34,6 +34,7 @@
 (require 'e-workspaces)
 
 (declare-function markdown-mode "markdown-mode")
+(declare-function +workspace/display "ext:doom-workspaces")
 (declare-function e-dev-profile-enabled-p "e-dev-profile")
 (declare-function e-dev-profile-measure-thunk "e-dev-profile")
 
@@ -470,6 +471,14 @@ Each value is a cons cell (WORKSPACE-NAME . UNREAD-P).")
          (buffer-local-value 'e-chat-session-id buffer)
          buffer)))
 
+(defun e-chat--refresh-workspace-unread-presentation ()
+  "Refresh cached unread state and workspace displays."
+  (e-chat--workspace-unread-cache-rebuild)
+  (force-mode-line-update t)
+  (when (fboundp '+workspace/display)
+    (ignore-errors
+      (+workspace/display))))
+
 (defun e-chat--mark-buffer-session-read-if-selected (&optional buffer)
   "Mark BUFFER's latest assistant output read when BUFFER is selected."
   (let ((buffer (or buffer (current-buffer))))
@@ -477,10 +486,13 @@ Each value is a cons cell (WORKSPACE-NAME . UNREAD-P).")
                (buffer-live-p buffer))
       (with-current-buffer buffer
         (when (and e-chat-harness e-chat-session-id)
-          (e-chat-overview--mark-session-read
-           e-chat-harness
-           e-chat-session-id
-           e-chat-harness-instance-id))))))
+          (let ((was-unread (e-chat--buffer-unread-p buffer)))
+            (e-chat-overview--mark-session-read
+             e-chat-harness
+             e-chat-session-id
+             e-chat-harness-instance-id)
+            (when was-unread
+              (e-chat--refresh-workspace-unread-presentation))))))))
 
 (defun e-chat--mark-selected-session-read (&rest _)
   "Mark the currently selected chat session read after focus changes."
@@ -495,13 +507,27 @@ Each value is a cons cell (WORKSPACE-NAME . UNREAD-P).")
         (e-chat--show-latest-output)))))
 
 (defun e-chat--ensure-window-selection-hook ()
-  "Install the scalar chat read hook for selected-window changes."
-  (unless e-chat--window-selection-hook-installed-p
+  "Install chat focus hooks for window and workspace changes."
+  (unless (memq #'e-chat--mark-selected-session-read
+                window-selection-change-functions)
     (add-hook 'window-selection-change-functions
-              #'e-chat--mark-selected-session-read)
+              #'e-chat--mark-selected-session-read))
+  (unless (memq #'e-chat--tail-selected-active-turn
+                window-selection-change-functions)
     (add-hook 'window-selection-change-functions
-              #'e-chat--tail-selected-active-turn)
-    (setq e-chat--window-selection-hook-installed-p t)))
+              #'e-chat--tail-selected-active-turn))
+  (when (boundp 'persp-activated-functions)
+    (unless (memq #'e-chat--mark-selected-session-read
+                  persp-activated-functions)
+      (add-hook 'persp-activated-functions
+                #'e-chat--mark-selected-session-read))
+    (unless (memq #'e-chat--tail-selected-active-turn
+                  persp-activated-functions)
+      (add-hook 'persp-activated-functions
+                #'e-chat--tail-selected-active-turn)))
+  (setq e-chat--window-selection-hook-installed-p t))
+
+(e-chat--ensure-window-selection-hook)
 
 (defvar-local e-chat--transcript-end-marker nil
   "Marker at the end of the protected transcript region.")
@@ -3853,6 +3879,7 @@ When RECORD is nil, clear only buffer-local status markers."
   "Capture point/window offsets when the user is reading active status."
   (when-let ((bounds (e-chat--running-status-bounds)))
     (let* ((window (e-chat--visible-window))
+           (end (cdr bounds))
            (point-offset (e-chat--position-running-offset (point) bounds))
            (window-point-offset
             (and (window-live-p window)
@@ -3864,7 +3891,10 @@ When RECORD is nil, clear only buffer-local status markers."
         (list :point-offset point-offset
               :window window
               :window-point-offset window-point-offset
-              :window-start-offset window-start-offset)))))
+              :window-start-offset window-start-offset
+              :tail (or (= (point) end)
+                        (and (window-live-p window)
+                             (= (window-point window) end))))))))
 
 (defun e-chat--running-status-position-from-offset (offset bounds)
   "Return a position inside BOUNDS for OFFSET."
@@ -3876,27 +3906,29 @@ When RECORD is nil, clear only buffer-local status markers."
 (defun e-chat--restore-running-status-display-state (state)
   "Restore point/window offsets captured by STATE after active-status redraw."
   (when state
-    (when-let ((bounds (e-chat--running-status-bounds)))
-      (let* ((window (plist-get state :window))
-             (point-position
-              (e-chat--running-status-position-from-offset
-               (plist-get state :point-offset)
-               bounds))
-             (window-point-position
-              (e-chat--running-status-position-from-offset
-               (plist-get state :window-point-offset)
-               bounds))
-             (window-start-position
-              (e-chat--running-status-position-from-offset
-               (plist-get state :window-start-offset)
-               bounds)))
-        (when point-position
-          (goto-char point-position))
-        (when (window-live-p window)
-          (when window-start-position
-            (set-window-start window window-start-position t))
-          (when window-point-position
-            (set-window-point window window-point-position)))))))
+    (if (plist-get state :tail)
+        (e-chat--show-latest-output)
+      (when-let ((bounds (e-chat--running-status-bounds)))
+        (let* ((window (plist-get state :window))
+               (point-position
+                (e-chat--running-status-position-from-offset
+                 (plist-get state :point-offset)
+                 bounds))
+               (window-point-position
+                (e-chat--running-status-position-from-offset
+                 (plist-get state :window-point-offset)
+                 bounds))
+               (window-start-position
+                (e-chat--running-status-position-from-offset
+                 (plist-get state :window-start-offset)
+                 bounds)))
+          (when point-position
+            (goto-char point-position))
+          (when (window-live-p window)
+            (when window-start-position
+              (set-window-start window window-start-position t))
+            (when window-point-position
+              (set-window-point window window-point-position))))))))
 
 (defun e-chat--running-status-data (turn-id record)
   "Return render data for TURN-ID's active progress and RECORD."

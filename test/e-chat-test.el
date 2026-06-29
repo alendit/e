@@ -3617,6 +3617,52 @@ the orphaned region and appeared to vanish."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-activity-rerender-keeps-running-status-tail ()
+  "Activity redraws keep following output when focus was at the active tail."
+  (let ((buffer (e-chat-test--buffer nil "chat-activity-status-tail"))
+        (window nil))
+    (unwind-protect
+        (progn
+          (setq window (display-buffer buffer))
+          (with-current-buffer buffer
+            (e-chat--render-event
+             (e-events-make :type 'turn-started
+                            :session-id e-chat-session-id
+                            :turn-id "turn-1"
+                            :created-at 10))
+            (e-chat-test--mark-active-turn "turn-1")
+            (e-chat--render-event
+             (e-events-make :type 'provider-request-started
+                            :session-id e-chat-session-id
+                            :turn-id "turn-1"
+                            :created-at 11))
+            (e-chat--render-event
+             (e-events-make :type 'reasoning-delta
+                            :session-id e-chat-session-id
+                            :turn-id "turn-1"
+                            :payload '(:content "first chunk")))
+            (e-chat-test--flush-pending-activity-redraw)
+            (e-chat--show-latest-output)
+            (let ((old-tail (cdr (e-chat--running-status-bounds))))
+              (should old-tail)
+              (should (= (point) old-tail))
+              (should (= (window-point window) old-tail))
+              (e-chat--render-event
+               (e-events-make :type 'reasoning-delta
+                              :session-id e-chat-session-id
+                              :turn-id "turn-1"
+                              :payload '(:content "\nsecond chunk")))
+              (e-chat-test--flush-pending-activity-redraw)
+              (let ((new-tail (cdr (e-chat--running-status-bounds))))
+                (should new-tail)
+                (should (> new-tail old-tail))
+                (should (= (point) new-tail))
+                (should (= (window-point window) new-tail))))))
+      (when (window-live-p window)
+        (delete-window window))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-progress-rerender-strips-composer-presentation-properties ()
   "Progress redraws do not leak transcript presentation into composer text."
   (let ((buffer (e-chat-test--buffer nil "chat-progress-composer-properties")))
@@ -7720,9 +7766,15 @@ The context-window denominator comes from the live provider lookup
          (harness (e-harness-create
                    :backend (e-backend-fake-create :items nil)
                    :sessions store))
+         (workspace (make-e-workspace-token
+                     :backend 'single
+                     :id 'focus-read-workspace
+                     :name "focus-read-workspace"
+                     :frame (selected-frame)))
          (buffer (generate-new-buffer " *e-chat-focus-read-test*")))
     (unwind-protect
         (progn
+          (e-chat--workspace-unread-cache-invalidate)
           (e-session-create store :id "focus-read"
                             :metadata '(:name "Focus read"))
           (e-session-append-message
@@ -7738,7 +7790,9 @@ The context-window denominator comes from the live provider lookup
             (e-chat-mode)
             (setq-local e-chat-harness harness)
             (setq-local e-chat-session-id "focus-read")
+            (e-buffer-set-workspace buffer workspace)
             (e-chat--mark-buffer-session-read-if-selected))
+          (should (e-chat-workspace-unread-p workspace))
           (should (e-chat-overview--session-unread-p
                    harness
                    (car (e-harness-session-list harness))))
@@ -7748,11 +7802,13 @@ The context-window denominator comes from the live provider lookup
           (should-not (e-chat-overview--session-unread-p
                        harness
                        (car (e-harness-session-list harness))))
+          (should-not (e-chat-workspace-unread-p workspace))
           (should (equal
                    (e-chat-overview--read-marker "focus-read" harness)
                    "msg-2")))
       (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
+        (kill-buffer buffer))
+      (e-chat--workspace-unread-cache-invalidate))))
 
 (ert-deftest e-chat-test-mode-does-not-poll-read-state-after-commands ()
   "Chat mode does not mark sessions read from `post-command-hook'."
@@ -7762,6 +7818,20 @@ The context-window denominator comes from the live provider lookup
                       post-command-hook))
     (should-not (memq #'e-chat--mark-selected-session-read
                       post-command-hook))))
+
+(ert-deftest e-chat-test-installs-workspace-switch-read-hook ()
+  "Chat focus hooks include Doom workspace activation when available."
+  (cl-progv '(window-selection-change-functions persp-activated-functions)
+      '(nil nil)
+    (e-chat--ensure-window-selection-hook)
+    (should (memq #'e-chat--mark-selected-session-read
+                  window-selection-change-functions))
+    (should (memq #'e-chat--tail-selected-active-turn
+                  window-selection-change-functions))
+    (should (memq #'e-chat--mark-selected-session-read
+                  persp-activated-functions))
+    (should (memq #'e-chat--tail-selected-active-turn
+                  persp-activated-functions))))
 
 (ert-deftest e-chat-test-active-sessions-errors-without-candidates ()
   "The active sessions command reports an empty session list."
