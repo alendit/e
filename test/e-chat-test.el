@@ -5647,6 +5647,36 @@ the orphaned region and appeared to vanish."
       (e-chat-test--kill-chat-buffers)
       (delete-directory directory t))))
 
+(ert-deftest e-chat-test-attach-buffer-accepts-replayed-read-marker-plist ()
+  "Attaching a chat buffer accepts read markers replayed as plist metadata."
+  (let* ((store (e-session-store-create))
+         (backend (e-backend-fake-create
+                   :items '((:type assistant-message :content "answer")
+                            (:type done :reason stop))))
+         (harness (e-harness-create :backend backend :sessions store))
+         (buffer (get-buffer-create "*e-chat-read-marker-attach-test*")))
+    (unwind-protect
+        (progn
+          (e-session-create
+           store
+           :id "read-marker-attach"
+           :metadata
+           '(:name "Read Marker"
+             :e-chat-read-markers (:chat-default "assistant-read")))
+          (e-session-append-message
+           store "read-marker-attach"
+           '(:id "assistant-read" :role assistant :content "answer"))
+          (with-current-buffer buffer
+            (e-chat--attach-buffer
+             buffer harness "read-marker-attach" :chat-default)
+            (should (equal e-chat-session-id "read-marker-attach"))
+            (should (equal
+                     (e-chat-overview--read-marker
+                      "read-marker-attach" harness :chat-default)
+                     "assistant-read"))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-overview-renders-and-opens-owning-chat-instance ()
   "Overview rows carry owning instance metadata when session ids collide."
   (let* ((alpha-store (e-session-store-create))

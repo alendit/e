@@ -54,3 +54,4 @@ State values for coding agents:
 | Closed | global-skills-duplicated-as-project/ | Global Skills Duplicated As Project Skills |
 | Closed | session-root-not-project-root/ | Session Root Uses Feature Directory Instead of Project Root |
 | Closed | org-canvas-stale-workspace-affinity/ | Org Canvas stale workspace affinity |
+| Closed | e-chat-read-marker-json-plist-listp/ | e-chat read-marker JSON plist causes listp after restart |

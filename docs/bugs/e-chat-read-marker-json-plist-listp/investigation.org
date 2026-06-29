@@ -1,0 +1,35 @@
+#+title: Investigation: e-chat read-marker JSON plist listp restart failure
+
+* Finding
+
+The failure reproduced during =e-chat--attach-buffer= after
+=e-session-load-session=, before provider context or request-body construction.
+The failing string was the latest assistant message id stored as the
+=chat-default= read marker, not a provider anchor.
+
+* Root Cause
+
+=e-session--json-read-line= parses JSON objects with =:object-type 'plist=.
+When =:e-chat-read-markers= is persisted as a JSON object, replay returns a plist
+such as:
+
+#+begin_src elisp
+(:chat-default "01KW92NEZQHYRCDN2KH538MPCT")
+#+end_src
+
+=e-chat-overview--session-read-marker= and
+=e-chat-session-set-read-marker= used =alist-get= directly on that value.  On a
+plist, =alist-get= eventually inspects the marker string as if it were an alist
+cell and raises =wrong-type-argument listp=.
+
+* Fix
+
+Centralize read-marker map handling in =e-chat-session=:
+
+- normalize live alists and replayed plists into a string-keyed alist;
+- read markers through the normalized map;
+- update markers through the normalized map before persisting metadata.
+
+The chat shell now delegates read-marker key, read, and normalization behavior
+to =e-chat-session= instead of directly applying alist operations to raw
+metadata.

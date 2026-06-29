@@ -6680,15 +6680,11 @@ operation."
 
 (defun e-chat-overview--read-marker-key (&optional instance-id)
   "Return the session-metadata read marker key for INSTANCE-ID."
-  (or instance-id "__default__"))
+  (e-chat-session-read-marker-key instance-id))
 
 (defun e-chat-overview--session-read-marker (session &optional instance-id)
   "Return SESSION's stored read marker for INSTANCE-ID."
-  (let ((markers (plist-get (plist-get session :metadata)
-                            :e-chat-read-markers)))
-    (alist-get (e-chat-overview--read-marker-key instance-id)
-               markers
-               nil nil #'equal)))
+  (e-chat-session-read-marker session instance-id))
 
 (defun e-chat-overview--set-session-read-marker
     (harness session-id marker &optional instance-id)
@@ -7200,8 +7196,7 @@ face properties so the preview still reflects chat rendering."
                       (e-chat-overview--session-read-marker
                        session instance-id))
         (let* ((metadata (copy-sequence (plist-get session :metadata)))
-               (markers (copy-sequence
-                         (plist-get metadata :e-chat-read-markers)))
+               (markers (e-chat-session-read-markers metadata))
                (key (e-chat-overview--read-marker-key instance-id)))
           (setf (alist-get key markers nil nil #'equal) marker)
           (plist-put session :metadata

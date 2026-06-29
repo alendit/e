@@ -1,0 +1,19 @@
+#+title: e-chat read-marker JSON plist causes listp after restart
+
+* Report
+
+After restarting Emacs, sending chat prompts in an existing =e-chat= session
+failed with:
+
+#+begin_example
+Wrong type argument: listp, "01KW92NEZQHYRCDN2KH538MPCT"
+#+end_example
+
+The visible session kept accepting user prompts, but the turn failed before a
+provider request could be built.
+
+* Trigger
+
+The session metadata contained a persisted =:e-chat-read-markers= map.  JSON
+replay loads object fields as plists, while the chat presentation code treated
+the value as an alist during buffer attach and read-state refresh.

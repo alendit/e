@@ -17,6 +17,7 @@
 (require 'e-capabilities)
 (require 'e-chat-session)
 (require 'e-harness)
+(require 'e-session)
 
 (ert-deftest e-chat-session-test-submit-validates-and-queues-prompt ()
   "Submitting validates prompt text and queues an async harness turn."
@@ -54,6 +55,27 @@
       (should (equal (plist-get metadata :org-canvas-scope) 'thread))
       (should (equal (plist-get metadata :references)
                      '((:uri "buffer://source")))))))
+
+(ert-deftest e-chat-session-test-read-marker-accepts-replayed-plist ()
+  "Read-marker metadata replayed from JSON plists is read and updated."
+  (let ((harness (e-harness-create
+                  :backend (e-backend-create :name "noop"))))
+    (e-harness-create-session
+     harness
+     :id "session-1"
+     :metadata '(:e-chat-read-markers (:chat-default "assistant-read")))
+    (let ((session (e-session-get (e-harness-sessions harness) "session-1")))
+      (should (equal (e-chat-session-read-marker session "chat-default")
+                     "assistant-read"))
+      (should (equal (e-chat-session-read-marker session :chat-default)
+                     "assistant-read")))
+    (e-chat-session-set-read-marker
+     harness "session-1" "assistant-next" :chat-default)
+    (let* ((session (e-session-get (e-harness-sessions harness) "session-1"))
+           (markers (e-chat-session-read-markers
+                     (plist-get session :metadata))))
+      (should (equal markers
+                     '(("chat-default" . "assistant-next")))))))
 
 (ert-deftest e-chat-session-test-queue-validates-and-delegates ()
   "Queueing validates prompt text and delegates to harness queue state."

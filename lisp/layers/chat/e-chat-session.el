@@ -79,14 +79,89 @@ PROJECT-ROOT."
           (e-session-set-metadata
            (e-harness-sessions harness) session-id metadata))))))
 
+(defun e-chat-session--read-marker-key-string (key)
+  "Return read-marker KEY as a string, or nil when unsupported."
+  (cond
+   ((stringp key) key)
+   ((keywordp key) (substring (symbol-name key) 1))
+   ((symbolp key) (symbol-name key))
+   (t nil)))
+
+(defun e-chat-session-read-marker-key (&optional instance-id)
+  "Return the metadata read-marker key for INSTANCE-ID."
+  (or (and instance-id
+           (e-chat-session--read-marker-key-string instance-id))
+      "__default__"))
+
+(defun e-chat-session--read-marker-key-equal-p (stored expected)
+  "Return non-nil when STORED read-marker key names EXPECTED."
+  (when-let ((stored-string
+              (e-chat-session--read-marker-key-string stored)))
+    (equal stored-string expected)))
+
+(defun e-chat-session--read-marker-plist-key (key)
+  "Return plist keyword form of read-marker KEY."
+  (intern (concat ":" key)))
+
+(defun e-chat-session-read-markers (metadata)
+  "Return METADATA read markers as an alist.
+Persisted JSON objects replay as plists, while live writes use alists."
+  (let ((markers (plist-get metadata :e-chat-read-markers)))
+    (cond
+     ((null markers) nil)
+     ((and (proper-list-p markers)
+           (cl-every #'consp markers))
+      (cl-loop for (key . marker) in markers
+               for normalized = (e-chat-session--read-marker-key-string key)
+               when normalized
+               collect (cons normalized marker)))
+     ((proper-list-p markers)
+      (let ((tail markers)
+            result)
+        (while (consp tail)
+          (let ((key (pop tail)))
+            (when (consp tail)
+              (let ((normalized
+                     (e-chat-session--read-marker-key-string key))
+                    (marker (pop tail)))
+                (when normalized
+                  (push (cons normalized marker) result))))))
+        (nreverse result)))
+     (t nil))))
+
+(defun e-chat-session-read-marker (session &optional instance-id)
+  "Return SESSION's stored read marker for INSTANCE-ID."
+  (let ((markers (plist-get (plist-get session :metadata)
+                            :e-chat-read-markers))
+        found)
+    (cond
+     ((and (consp (car-safe markers))
+           (or (null instance-id) (stringp instance-id)))
+      (alist-get (or instance-id "__default__") markers nil nil #'equal))
+     ((consp (car-safe markers))
+      (alist-get (e-chat-session-read-marker-key instance-id)
+                 markers nil nil #'equal))
+     ((listp markers)
+      (let ((key (e-chat-session-read-marker-key instance-id)))
+        (or (plist-get markers (e-chat-session--read-marker-plist-key key))
+            (progn
+              (while (and (consp markers) (not found))
+                (let ((stored-key (pop markers)))
+                  (when (consp markers)
+                    (let ((marker (pop markers)))
+                      (when (e-chat-session--read-marker-key-equal-p
+                             stored-key key)
+                        (setq found marker))))))
+              found))))
+     (t nil))))
+
 (defun e-chat-session-set-read-marker
     (harness session-id marker &optional instance-id)
   "Persist SESSION-ID read MARKER for chat INSTANCE-ID."
   (let* ((session (e-session-get (e-harness-sessions harness) session-id))
          (metadata (copy-sequence (plist-get session :metadata)))
-         (markers (copy-sequence
-                   (plist-get metadata :e-chat-read-markers)))
-         (key (or instance-id "__default__")))
+         (markers (e-chat-session-read-markers metadata))
+         (key (e-chat-session-read-marker-key instance-id)))
     (setf (alist-get key markers nil nil #'equal) marker)
     (setq metadata (plist-put metadata :e-chat-read-markers markers))
     (e-session-set-metadata (e-harness-sessions harness) session-id metadata)
