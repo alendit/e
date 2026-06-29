@@ -5616,8 +5616,9 @@ the orphaned region and appeared to vanish."
   (let* ((directory (make-temp-file "e-chat-overview-" t))
          (store (e-session-persistent-store-create directory))
          (backend (e-backend-fake-create :items nil))
-        (harness (e-chat-test--activate-chat-session
-                  (e-harness-create :backend backend :sessions store))))
+         (harness (e-chat-test--activate-chat-session
+                   (e-harness-create :backend backend :sessions store)))
+         (e-chat--read-markers (make-hash-table :test #'eq)))
     (unwind-protect
         (progn
           (e-session-create store :id "read-me"
@@ -5638,6 +5639,10 @@ the orphaned region and appeared to vanish."
                                   (e-chat-overview--read-marker
                                    "read-me" harness)
                                   "assistant-read"))
+                    (should-not
+                     (plist-member
+                      (plist-get (e-session-get store "read-me") :metadata)
+                      :e-chat-read-markers))
                     (e-chat-overview--render harness)
                     (should-not (string-match-p
                                  "! Read Me"
@@ -5647,14 +5652,15 @@ the orphaned region and appeared to vanish."
       (e-chat-test--kill-chat-buffers)
       (delete-directory directory t))))
 
-(ert-deftest e-chat-test-attach-buffer-accepts-replayed-read-marker-plist ()
-  "Attaching a chat buffer accepts read markers replayed as plist metadata."
+(ert-deftest e-chat-test-attach-buffer-ignores-persisted-read-marker-plist ()
+  "Attaching ignores stale read markers replayed as plist metadata."
   (let* ((store (e-session-store-create))
          (backend (e-backend-fake-create
                    :items '((:type assistant-message :content "answer")
                             (:type done :reason stop))))
          (harness (e-harness-create :backend backend :sessions store))
-         (buffer (get-buffer-create "*e-chat-read-marker-attach-test*")))
+         (buffer (get-buffer-create "*e-chat-read-marker-attach-test*"))
+         (e-chat--read-markers (make-hash-table :test #'eq)))
     (unwind-protect
         (progn
           (e-session-create
@@ -5670,6 +5676,11 @@ the orphaned region and appeared to vanish."
             (e-chat--attach-buffer
              buffer harness "read-marker-attach" :chat-default)
             (should (equal e-chat-session-id "read-marker-attach"))
+            (should-not
+             (e-chat-overview--read-marker
+              "read-marker-attach" harness :chat-default))
+            (e-chat-overview--mark-session-read
+             harness "read-marker-attach" :chat-default)
             (should (equal
                      (e-chat-overview--read-marker
                       "read-marker-attach" harness :chat-default)

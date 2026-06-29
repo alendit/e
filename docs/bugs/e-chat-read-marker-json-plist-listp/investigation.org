@@ -22,14 +22,36 @@ such as:
 plist, =alist-get= eventually inspects the marker string as if it were an alist
 cell and raises =wrong-type-argument listp=.
 
+The underlying design error was persisting =:e-chat-read-markers= in session
+metadata.  The marker only answers whether the current UI has already shown the
+latest assistant message for an unread indicator.  That state is local to the
+running Emacs presentation shell and is safe to lose on restart.
+
 * Fix
 
-Centralize read-marker map handling in =e-chat-session=:
+Keep read markers out of durable session state:
 
-- normalize live alists and replayed plists into a string-keyed alist;
-- read markers through the normalized map;
-- update markers through the normalized map before persisting metadata.
+- =e-chat= stores read markers in a process-local hash keyed by harness,
+  session id, and chat instance;
+- buffer attach and unread checks ignore any stale =:e-chat-read-markers=
+  value loaded from old session metadata;
+- marking a session read no longer calls =e-session-set-metadata=;
+- chat-session metadata writes strip stale =:e-chat-read-markers= so future
+  legitimate metadata updates do not carry presentation-only state forward.
 
-The chat shell now delegates read-marker key, read, and normalization behavior
-to =e-chat-session= instead of directly applying alist operations to raw
-metadata.
+This removes the restart crash and restores the correct ownership boundary:
+durable session history contains conversation and session configuration, while
+unread presentation state lives only in the UI process.
+
+* Performance
+
+The corrected read-marker path does less work than the persisted version.
+Marking a session read now performs one process-local hash update and invalidates
+the workspace unread cache.  It no longer copies session metadata, appends a
+metadata event to the session store, rewrites persistent store indexes, or
+serializes unread state to disk.
+
+The only added metadata scan happens on existing chat-session metadata writes,
+where the code already had to copy/update a plist before persisting it.  That
+scan is linear in metadata size and replaces the prior copy-only step for rare
+project-root/context-attachment writes, not for the frequent focus/read path.

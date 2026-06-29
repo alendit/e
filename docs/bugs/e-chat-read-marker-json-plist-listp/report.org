@@ -17,3 +17,7 @@ provider request could be built.
 The session metadata contained a persisted =:e-chat-read-markers= map.  JSON
 replay loads object fields as plists, while the chat presentation code treated
 the value as an alist during buffer attach and read-state refresh.
+
+The deeper design problem was that unread-indicator state was being persisted
+at all.  Read markers are presentation state for the current Emacs process, not
+durable chat-session data.

@@ -56,26 +56,39 @@
       (should (equal (plist-get metadata :references)
                      '((:uri "buffer://source")))))))
 
-(ert-deftest e-chat-session-test-read-marker-accepts-replayed-plist ()
-  "Read-marker metadata replayed from JSON plists is read and updated."
-  (let ((harness (e-harness-create
-                  :backend (e-backend-create :name "noop"))))
-    (e-harness-create-session
-     harness
-     :id "session-1"
-     :metadata '(:e-chat-read-markers (:chat-default "assistant-read")))
-    (let ((session (e-session-get (e-harness-sessions harness) "session-1")))
-      (should (equal (e-chat-session-read-marker session "chat-default")
-                     "assistant-read"))
-      (should (equal (e-chat-session-read-marker session :chat-default)
-                     "assistant-read")))
-    (e-chat-session-set-read-marker
-     harness "session-1" "assistant-next" :chat-default)
-    (let* ((session (e-session-get (e-harness-sessions harness) "session-1"))
-           (markers (e-chat-session-read-markers
-                     (plist-get session :metadata))))
-      (should (equal markers
-                     '(("chat-default" . "assistant-next")))))))
+(ert-deftest e-chat-session-test-metadata-writes-drop-read-markers ()
+  "Chat-session metadata writes do not retain presentation read markers."
+  (let* ((project-root (file-name-as-directory
+                        (make-temp-file "e-chat-session-root-" t)))
+         (harness (e-harness-create
+                   :backend (e-backend-create :name "noop"))))
+    (unwind-protect
+        (progn
+          (e-harness-create-session
+           harness
+           :id "session-1"
+           :metadata '(:name "Chat"
+                       :e-chat-read-markers (:chat-default "assistant-read")))
+          (e-chat-session-ensure-project-root
+           harness "session-1" project-root)
+          (let ((metadata (plist-get
+                           (e-session-get
+                            (e-harness-sessions harness) "session-1")
+                           :metadata)))
+            (should (equal (plist-get metadata :project-root) project-root))
+            (should-not (plist-member metadata :e-chat-read-markers)))
+          (e-chat-session-attach-context
+           harness "session-1" '(:uri "buffer://source"))
+          (let ((metadata (plist-get
+                           (e-session-get
+                            (e-harness-sessions harness) "session-1")
+                           :metadata)))
+            (should (equal (plist-get
+                            (car (plist-get metadata :context-attachments))
+                            :uri)
+                           "buffer://source"))
+            (should-not (plist-member metadata :e-chat-read-markers))))
+      (delete-directory project-root t))))
 
 (ert-deftest e-chat-session-test-queue-validates-and-delegates ()
   "Queueing validates prompt text and delegates to harness queue state."

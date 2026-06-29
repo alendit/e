@@ -456,6 +456,11 @@ Each value is a cons cell (WORKSPACE-NAME . UNREAD-P).")
 (defvar e-chat--workspace-unread-cache-valid-p nil
   "Non-nil when workspace unread cache reflects live chat buffers.")
 
+(defvar e-chat--read-markers (make-hash-table :test #'eq)
+  "Process-local read markers keyed by harness.
+Read markers are presentation state for unread indicators.  They are
+intentionally not persisted in session metadata.")
+
 (defvar e-chat--window-selection-hook-installed-p nil
   "Non-nil when e-chat installed its window-selection hook.")
 
@@ -6679,27 +6684,48 @@ operation."
   (e-chat-resume))
 
 (defun e-chat-overview--read-marker-key (&optional instance-id)
-  "Return the session-metadata read marker key for INSTANCE-ID."
-  (e-chat-session-read-marker-key instance-id))
+  "Return the process-local read marker key for INSTANCE-ID."
+  (cond
+   ((null instance-id) "__default__")
+   ((stringp instance-id) instance-id)
+   ((keywordp instance-id) (substring (symbol-name instance-id) 1))
+   ((symbolp instance-id) (symbol-name instance-id))
+   (t (prin1-to-string instance-id))))
 
-(defun e-chat-overview--session-read-marker (session &optional instance-id)
-  "Return SESSION's stored read marker for INSTANCE-ID."
-  (e-chat-session-read-marker session instance-id))
+(defun e-chat-overview--read-marker-table (harness)
+  "Return process-local read-marker table for HARNESS."
+  (or (gethash harness e-chat--read-markers)
+      (let ((table (make-hash-table :test #'equal)))
+        (puthash harness table e-chat--read-markers)
+        table)))
+
+(defun e-chat-overview--session-read-marker
+    (harness session &optional instance-id)
+  "Return SESSION's process-local read marker for INSTANCE-ID."
+  (gethash
+   (cons (plist-get session :id)
+         (e-chat-overview--read-marker-key instance-id))
+   (e-chat-overview--read-marker-table harness)))
 
 (defun e-chat-overview--set-session-read-marker
     (harness session-id marker &optional instance-id)
-  "Store SESSION-ID read MARKER in HARNESS metadata."
-  (e-chat-session-set-read-marker harness session-id marker instance-id))
+  "Store SESSION-ID read MARKER in process-local presentation state."
+  (puthash
+   (cons session-id (e-chat-overview--read-marker-key instance-id))
+   marker
+   (e-chat-overview--read-marker-table harness)))
 
 (defun e-chat-overview--read-marker
     (session-id &optional harness instance-id)
   "Return the stored read marker for SESSION-ID in HARNESS."
-  (when-let ((session (e-chat-overview--session-for-id
-                       (or harness
-                           e-chat-overview--harness
-                           (e-chat--default-harness))
-                       session-id)))
-    (e-chat-overview--session-read-marker session instance-id)))
+  (when-let* ((target-harness (or harness
+                                  e-chat-overview--harness
+                                  (e-chat--default-harness)))
+              (session (e-chat-overview--session-for-id
+                        target-harness
+                        session-id)))
+    (e-chat-overview--session-read-marker
+     target-harness session instance-id)))
 
 (defun e-chat-overview--set-read-marker
     (session-id marker &optional harness instance-id)
@@ -6730,7 +6756,8 @@ operation."
   "Return non-nil when SESSION has unread assistant output in HARNESS."
   (when-let ((marker (e-chat-overview--latest-assistant-marker harness session)))
     (not (equal marker
-                (e-chat-overview--session-read-marker session instance-id)))))
+                (e-chat-overview--session-read-marker
+                 harness session instance-id)))))
 
 (defun e-chat--workspace-name (workspace)
   "Return display name for WORKSPACE token or string."
@@ -7194,13 +7221,7 @@ face properties so the preview still reflects chat rendering."
                              harness session))))
       (unless (equal marker
                       (e-chat-overview--session-read-marker
-                       session instance-id))
-        (let* ((metadata (copy-sequence (plist-get session :metadata)))
-               (markers (e-chat-session-read-markers metadata))
-               (key (e-chat-overview--read-marker-key instance-id)))
-          (setf (alist-get key markers nil nil #'equal) marker)
-          (plist-put session :metadata
-                     (plist-put metadata :e-chat-read-markers markers)))
+                       harness session instance-id))
         (e-chat-overview--set-session-read-marker
          harness
          session-id
