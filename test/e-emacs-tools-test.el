@@ -30,6 +30,20 @@ When READ-ONLY is non-nil, buffer resources only support reads."
     (e-harness--register-resource-tools tools resources)
     tools))
 
+(defun e-emacs-tools-test--run-elisp-result (registry code &optional context)
+  "Run CODE through REGISTRY's `run_elisp' tool and return the result."
+  (let (result)
+    (e-tools-start
+     registry
+     (list :id "call-1"
+           :name "run_elisp"
+           :arguments (list :code code))
+     :context context
+     :on-done (lambda (value) (setq result value)))
+    (while (not result)
+      (accept-process-output nil 0.01))
+    result))
+
 (ert-deftest e-emacs-tools-test-list-buffers-reports-buffer-metadata ()
   "The list-buffers tool returns live buffer metadata."
   (let ((registry (e-tools-registry-create))
@@ -346,6 +360,61 @@ When READ-ONLY is non-nil, buffer resources only support reads."
                        :arguments (:code "(error \"boom\")")))
                     :status)
                    'error))))
+
+(ert-deftest e-emacs-tools-test-run-elisp-rejects-blocking-loads-interactively ()
+  "Interactive run_elisp rejects blocking Elisp loading primitives."
+  (let ((registry (e-tools-registry-create)))
+    (e-emacs-tools-register-run-elisp registry)
+    (dolist (case '(("load" "(load \"e-test-missing-feature\")")
+                    ("load-file" "(load-file \"/tmp/e-test-missing.el\")")
+                    ("require" "(require 'e-test-missing-feature)")
+                    ("byte-compile-file"
+                     "(byte-compile-file \"/tmp/e-test-missing.el\")")
+                    ("directory-files-recursively"
+                     "(directory-files-recursively default-directory \"\\\\.el\\\\'\")")))
+      (pcase-let ((`(,primitive ,code) case))
+        (let ((result (e-emacs-tools-test--run-elisp-result
+                       registry
+                       code
+                       '(:interactive t))))
+          (should (eq (plist-get result :status) 'error))
+          (should (string-match-p primitive
+                                  (format "%s" (plist-get result :content))))
+          (should (string-match-p
+                   "resource/file tools"
+                   (format "%s" (plist-get result :content)))))))))
+
+(ert-deftest e-emacs-tools-test-run-elisp-allows-batch-loading ()
+  "Batch run_elisp keeps existing direct Elisp loading semantics."
+  (let* ((registry (e-tools-registry-create))
+         (file (make-temp-file "e-run-elisp-batch-load-" nil ".el")))
+    (unwind-protect
+        (progn
+          (write-region "(setq e-emacs-tools-test--batch-loaded t)"
+                        nil file nil 'silent)
+          (e-emacs-tools-register-run-elisp registry)
+          (let ((result (e-emacs-tools-test--run-elisp-result
+                         registry
+                         (format "(load-file %S) e-emacs-tools-test--batch-loaded"
+                                 file))))
+            (should (eq (plist-get result :status) 'ok))
+            (should (equal (plist-get result :content)
+                           '(:result "t")))))
+      (when (boundp 'e-emacs-tools-test--batch-loaded)
+        (makunbound 'e-emacs-tools-test--batch-loaded))
+      (delete-file file))))
+
+(ert-deftest e-emacs-tools-test-run-elisp-allows-loaded-require-interactively ()
+  "Interactive run_elisp allows `require' for features already loaded."
+  (let ((registry (e-tools-registry-create)))
+    (e-emacs-tools-register-run-elisp registry)
+    (let ((result (e-emacs-tools-test--run-elisp-result
+                   registry
+                   "(require 'cl-lib)"
+                   '(:interactive t))))
+      (should (eq (plist-get result :status) 'ok))
+      (should (equal (plist-get result :content)
+                     '(:result "cl-lib"))))))
 
 (ert-deftest e-emacs-tools-test-run-elisp-description-names-tool-chaining-api ()
   "run_elisp tells models about context-bound tool/action calls."

@@ -23,6 +23,8 @@
 (define-error 'e-emacs-tools-buffer-missing "Emacs buffer is missing")
 (define-error 'e-emacs-tools-edit-invalid "Emacs buffer edit is invalid")
 (define-error 'e-emacs-tools-save-invalid "Emacs buffer cannot be saved")
+(define-error 'e-emacs-tools-blocking-elisp-load
+  "Blocking Elisp loading is not allowed in interactive run_elisp")
 
 (defun e-emacs-tools--buffer (name)
   "Return live buffer NAME or signal an explicit tool error."
@@ -421,6 +423,49 @@ When VISIBLE-ONLY is non-nil, include only buffers visible in windows."
         (setq position (1+ position))))
     (nreverse forms)))
 
+(defun e-emacs-tools--interactive-run-elisp-context-p ()
+  "Return non-nil when `run_elisp' is evaluating in an interactive context."
+  (let ((context (e-tools-current-context)))
+    (or (e-tools--interactive-context-p context)
+        (and (plist-get context :session-id)
+             (plist-get context :turn-id)))))
+
+(defun e-emacs-tools--reject-blocking-elisp-load (primitive)
+  "Signal that PRIMITIVE cannot run from interactive `run_elisp'."
+  (signal
+   'e-emacs-tools-blocking-elisp-load
+   (list
+    (format
+     "%s is blocking in interactive run_elisp; inspect external Elisp with resource/file tools or use project-local actions for trusted activation"
+     primitive))))
+
+(defmacro e-emacs-tools--with-run-elisp-load-guard (&rest body)
+  "Run BODY while rejecting blocking Elisp loading in interactive contexts."
+  (declare (indent 0) (debug t))
+  `(if (not (e-emacs-tools--interactive-run-elisp-context-p))
+       (progn ,@body)
+     (let ((original-require (symbol-function 'require)))
+       (cl-letf (((symbol-function 'load)
+                  (lambda (&rest _args)
+                    (e-emacs-tools--reject-blocking-elisp-load 'load)))
+                 ((symbol-function 'load-file)
+                  (lambda (&rest _args)
+                    (e-emacs-tools--reject-blocking-elisp-load 'load-file)))
+                 ((symbol-function 'require)
+                  (lambda (feature &optional filename noerror)
+                    (if (featurep feature)
+                        (funcall original-require feature filename noerror)
+                      (e-emacs-tools--reject-blocking-elisp-load 'require))))
+                 ((symbol-function 'byte-compile-file)
+                  (lambda (&rest _args)
+                    (e-emacs-tools--reject-blocking-elisp-load
+                     'byte-compile-file)))
+                 ((symbol-function 'directory-files-recursively)
+                  (lambda (&rest _args)
+                    (e-emacs-tools--reject-blocking-elisp-load
+                     'directory-files-recursively))))
+         ,@body))))
+
 (defun e-emacs-tools-register-list-buffers (registry)
   "Register a tool that lists live Emacs buffers in REGISTRY."
   (e-tools-register
@@ -491,8 +536,9 @@ When VISIBLE-ONLY is non-nil, include only buffers visible in windows."
             (debug-on-quit nil)
             (eval-expression-debug-on-error nil)
             result)
-       (dolist (form forms)
-         (setq result (eval form t)))
+       (e-emacs-tools--with-run-elisp-load-guard
+         (dolist (form forms)
+           (setq result (eval form t))))
        (list :result (prin1-to-string result))))))
 
 (defun e-emacs-tools-register-elisp-eval (registry)
