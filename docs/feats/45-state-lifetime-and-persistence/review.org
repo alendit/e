@@ -172,6 +172,73 @@ a neighboring auto-compaction wait test.  This looks like existing mixed-order
 wait/timing fragility, not a state-lifetime regression.  It is recorded here so a
 later harness-stability slice can address it directly.
 
+* Post-commit validation addendum
+
+The initial completion missed two checks the operator asked about later:
+before/after perf validation and e2e validation.  They were run after commit
+=50bf8eb= and produced the following evidence.
+
+** Before/after perf
+
+The repo has no literal =perf2= command.  The current opt-in runner is
+=e-dev-perf=.  I exported parent commit =bf032c3= and =50bf8eb= into
+=/private/tmp= and ran the seven common reviewed scenarios in both trees.  The
+new =session.metadata-state= scenario did not exist in the parent, so it was run
+only on =50bf8eb=.
+
+| Scenario | Before | After | Delta |
+|----------+--------+-------+-------|
+| =session.append-index= | 6.806 ms | 7.822 ms | +1.016 ms |
+| =session.replay-list= | 5.026 ms | 5.563 ms | +0.537 ms |
+| =context.fixture= | 0.803 ms | 0.934 ms | +0.131 ms |
+| =turn.fake-backend= | 19.472 ms | 16.528 ms | -2.944 ms |
+| =chat.activity-burst= | 6.126 ms | 6.093 ms | -0.033 ms |
+| =chat.final-assistant-render= | 1.725 ms | 1.859 ms | +0.134 ms |
+| =tool.lifecycle-dispatch= | 60.587 ms | 55.651 ms | -4.936 ms |
+
+The structural counters stayed unchanged:
+
+- =session.append-index/session.index-write.count=: 8 before, 8 after.
+- =session.replay-list/entries-replayed.count=: 12 before, 12 after.
+- =chat.activity-burst/chat.render-event.count=: 13 before, 13 after.
+- =chat.activity-burst/chat.activity-redraw.count=: 1 before, 1 after.
+- =turn.fake-backend/harness.message-append.count=: 2 before, 2 after.
+
+The new =session.metadata-state= scenario on =50bf8eb= measured 6.797 ms median
+for 12 typed metadata writes, with 12 append records and 12 index writes.  The
+small session/context elapsed-time increases above did not add structural work
+to the measured hot paths.  They remain in the low-millisecond local-noise range
+and should be rechecked once the perf baseline has enough local history.
+
+** E2E
+
+Deterministic e2e:
+
+#+begin_src sh
+env E_E2E=1 rtk eldev test -f e2e/e-provider-continuation-e2e-test.el
+#+end_src
+
+Result: passed, 1/1.
+
+The first live e2e run exposed a stale e2e helper: durable activity events use
+=:event-type=, not =:type=.  I fixed
+=e-live-e2e--activity-of-type= and the cancellation assertion to read
+=:event-type=.
+
+Corrected live e2e:
+
+#+begin_src sh
+env E_E2E=1 rtk eldev test -f e2e/e-live-e2e-test.el
+#+end_src
+
+Result: 6/10 passed, 4 failed.  The passing cases include cancellation,
+compaction activity, provider lifecycle activity, session persistence, token
+usage, and provider-anchor persistence.  The remaining failures are live Codex
+provider/test-contract failures: nonce-response tests sometimes return empty
+=:assistant-content= despite a scalar live probe succeeding immediately after,
+and the invalid-model test does not fail under the Codex provider.  Those are
+not evidence of a state-lifetime regression, but the live suite is not clean.
+
 * Design self-check
 
 1. The project is better off if work stops here: the session store now rejects

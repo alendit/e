@@ -115,7 +115,7 @@
 (defun e-live-e2e--activity-of-type (harness session-id type)
   "Return durable activity events of TYPE for SESSION-ID."
   (seq-filter
-   (lambda (event) (eq (plist-get event :type) type))
+   (lambda (event) (eq (plist-get event :event-type) type))
    (e-session-activity-events (e-harness-sessions harness) session-id)))
 
 (defun e-live-e2e--echo-tool-register (registry &rest _context)
@@ -379,7 +379,7 @@ SPEC is (HARNESS SESSION-ID &key LAYERS PERSISTENT)."
           (setq cancelled
                 (seq-some
                  (lambda (event)
-                   (and (eq (plist-get event :type) 'turn-cancelled)
+                   (and (eq (plist-get event :event-type) 'turn-cancelled)
                         (equal (plist-get event :turn-id) turn-id)))
                  (e-session-activity-events
                   (e-harness-sessions harness) session-id)))
