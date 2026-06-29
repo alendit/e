@@ -354,6 +354,137 @@ operators because ddgr's --site accepts only a single domain."
       (setq content (append content (list :raw (car payload-results)))))
     content))
 
+(defun e-web-tools--search-content (arguments backend payload-results)
+  "Return normalized search content for ARGUMENTS, BACKEND, and PAYLOAD-RESULTS."
+  (let ((content (list :capability "web.search"
+                       :backend (symbol-name backend)
+                       :query (e-web-tools--argument-string arguments :query)
+                       :results (cdr payload-results)
+                       :diagnostics nil)))
+    (when (e-web-tools--truthy-p (plist-get arguments :include_raw))
+      (setq content (append content (list :raw (car payload-results)))))
+    content))
+
+(cl-defun e-web-tools--search-start
+    (&key arguments on-done on-error on-event &allow-other-keys)
+  "Start web search for ARGUMENTS asynchronously."
+  (let* ((backend e-web-search-backend)
+         (program-args
+          (pcase backend
+            ('bx
+             (cons (e-web-tools--executable-path e-web-bx-program "bx backend")
+                   (e-web-tools--search-argv arguments)))
+            ('ddgr
+             (cons (e-web-tools--executable-path e-web-ddgr-program "ddgr backend")
+                   (e-web-tools--ddgr-argv arguments)))
+            (_ (signal 'e-web-backend-unavailable
+                       (list (format "Unknown web search backend: %s"
+                                     backend))))))
+         (timeout (pcase backend
+                    ('bx e-web-bx-timeout)
+                    ('ddgr e-web-ddgr-timeout)))
+         (label (format "%s backend" backend))
+         (stdout (generate-new-buffer " *e-web-stdout*"))
+         (stderr (generate-new-buffer " *e-web-stderr*"))
+         (settled nil)
+         timer
+         process)
+    (cl-labels
+        ((cleanup ()
+           (when (timerp timer)
+             (cancel-timer timer))
+           (when (buffer-live-p stdout)
+             (kill-buffer stdout))
+           (when (buffer-live-p stderr)
+             (kill-buffer stderr)))
+         (fail (condition)
+           (unless settled
+             (setq settled t)
+             (cleanup)
+             (when on-error
+               (funcall on-error condition))))
+         (finish ()
+           (unless settled
+             (condition-case condition
+                 (let ((exit-code (process-exit-status process))
+                       (out (e-web-tools--buffer-string stdout))
+                       (err-text (string-trim
+                                  (e-web-tools--buffer-string stderr))))
+                   (if (not (zerop exit-code))
+                       (fail
+                        (list
+                         'e-web-backend-error
+                         (string-trim
+                          (format "%s exited with exit code %s%s"
+                                  label
+                                  exit-code
+                                  (if (string-empty-p err-text)
+                                      ""
+                                    (concat ": " err-text))))))
+                     (let* ((payload (e-web-tools--parse-json out))
+                            (payload-results
+                             (cons payload
+                                   (pcase backend
+                                     ('bx (e-web-tools--normalize-search-results
+                                           payload))
+                                     ('ddgr (e-web-tools--normalize-ddgr-results
+                                             payload)))))
+                            (content (e-web-tools--search-content
+                                      arguments backend payload-results)))
+                       (setq settled t)
+                       (cleanup)
+                       (when on-done
+                         (funcall on-done content)))))
+               (error
+                (fail condition)))))
+         (timeout! ()
+           (when (and process (process-live-p process))
+             (kill-process process))
+           (fail
+            (list 'e-web-backend-timeout
+                  (format "%s timed out after %s seconds" label timeout)))))
+      (let ((started nil))
+        (unwind-protect
+            (progn
+              (setq process
+                    (make-process
+                     :name "e-web-backend"
+                     :buffer stdout
+                     :stderr stderr
+                     :command program-args
+                     :connection-type 'pipe
+                     :coding 'utf-8-unix
+                     :noquery t
+                     :sentinel
+                     (lambda (proc _event)
+                       (when (and (eq proc process)
+                                  (memq (process-status proc) '(exit signal)))
+                         (if (eq (process-status proc) 'signal)
+                             (fail
+                              (list 'e-web-backend-error
+                                    (format "%s was interrupted" label)))
+                           (finish))))))
+              (set-process-query-on-exit-flag process nil)
+              (when on-event
+                (funcall on-event 'tool-progress
+                         (list :message (format "%s started" label))))
+              (when timeout
+                (setq timer (run-at-time timeout nil #'timeout!)))
+              (setq started t)
+              (e-tools-request-create
+               :cancel (lambda ()
+                         (unless settled
+                           (setq settled t)
+                           (when (and process (process-live-p process))
+                             (kill-process process))
+                           (cleanup))
+                         t)
+               :metadata (list :transport 'process
+                               :process process
+                               :backend label)))
+          (unless started
+            (cleanup)))))))
+
 (defun e-web-tools--url-scheme (url)
   "Return lowercase scheme for URL."
   (let ((scheme (url-type (url-generic-parse-url url))))
@@ -942,7 +1073,9 @@ operators because ddgr's --site accepts only a single domain."
                               :include_raw (:type "boolean"))
                  :required ["query"])
    :handler (lambda (arguments)
-              (e-web-tools--search arguments))))
+              (e-web-tools--search arguments))
+   :start #'e-web-tools--search-start
+   :blocking-class 'process))
 
 (defun e-web-tools-register-fetch (registry)
   "Register the passive web fetch tool in REGISTRY."

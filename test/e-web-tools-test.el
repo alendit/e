@@ -107,6 +107,44 @@ JSON
           (should (plist-get content :raw)))
       (delete-directory directory t))))
 
+(ert-deftest e-web-tools-test-search-start-returns-before-process-exits ()
+  "web_search starts a cancellable process without waiting for completion."
+  (let* ((directory (make-temp-file "e-web-bx-delay-" t))
+         (bx (e-web-tools-test--fake-executable
+              directory
+              "bx-delay"
+              "sleep 5
+cat <<'JSON'
+{\"web\":{\"results\":[]}}
+JSON
+"))
+         result
+         failure
+         request)
+    (unwind-protect
+        (let ((e-web-bx-program bx)
+              (e-web-bx-timeout 10))
+          (e-request-with-blocking-primitive-guard
+            (e-request-with-hot-path 'web-search
+              (setq request
+                    (e-tools-start
+                     (e-web-tools-test--registry)
+                     '(:id "call-1"
+                       :name "web_search"
+                       :arguments (:query "emacs agents"))
+                     :context '(:interactive t)
+                     :on-done (lambda (value)
+                                (setq result value))
+                     :on-error (lambda (err)
+                                 (setq failure err)))))))
+          (should (e-tools-request-p request))
+          (should (process-live-p
+                   (plist-get (e-tools-request-metadata request) :process)))
+          (should-not result)
+          (should-not failure)
+          (should (e-tools-cancel-request request)))
+      (delete-directory directory t)))
+
 (ert-deftest e-web-tools-test-fetch-extracts-html-text-links-and-markdown ()
   "web_fetch reads passive HTML responses without browser rendering."
   (let ((captured nil))

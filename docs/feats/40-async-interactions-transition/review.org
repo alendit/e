@@ -128,6 +128,30 @@ git diff --check
 Result: passed.
 
 #+begin_src sh
+rtk eldev emacs --batch --eval "(progn (setq byte-compile-error-on-warn t) (byte-compile-file \"lisp/layers/web/e-web-tools.el\"))"
+#+end_src
+
+Result: passed for the touched web layer.
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Result: returned the repository path after reloading changed Lisp.
+
+#+begin_src sh
+emacsclient --eval "...bounded web_search registry probe..."
+#+end_src
+
+Result: returned =(:has-start t :blocking-class process)=.
+
+#+begin_src sh
+git diff --check
+#+end_src
+
+Result: passed.
+
+#+begin_src sh
 rtk eldev compile --warnings-as-errors
 #+end_src
 
@@ -144,3 +168,29 @@ emacsclient --eval "...bounded web_fetch registry probe..."
 #+end_src
 
 Result: returned =(:has-start t :blocking-class network)=.
+
+* Phase 2 Search Slice Review
+
+Status: in progress.
+
+** Scope reviewed
+
+- Converted =web_search= registration to a long =process= class tool with async =:start=.
+- Replaced the interactive search path's foreground process wait with =make-process= callback settlement.
+- Kept the synchronous handler for explicit batch execution while the remaining web/browser and MCP surfaces are migrated.
+- Preserved bx/ddgr argument construction, normalized result shape, raw payload opt-in, backend failure, timeout, and invalid JSON error behavior.
+- Added deterministic coverage proving =e-tools-start= returns an =e-tools-request= before a delayed search backend process exits under the hot-path blocking guard.
+
+** Verification
+
+#+begin_src sh
+rtk eldev test -f test/e-web-tools-test.el -b e-web-tools-test-search-normalizes-fake-bx-results e-web-tools-test-search-reports-backend-failures e-web-tools-test-search-start-returns-before-process-exits
+#+end_src
+
+Result: passed for the focused search success, error, and async start-before-exit coverage.
+
+#+begin_src sh
+rtk eldev test --file test/e-web-tools-test.el --file test/e-tools-test.el --file test/e-request-test.el -B
+#+end_src
+
+Result: passed for the touched web behavior and adjacent request/tool contracts.
