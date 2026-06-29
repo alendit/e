@@ -158,10 +158,10 @@ A fractional value is interpreted relative to the selected frame height."
            (current-root (plist-get metadata :project-root)))
       (when (or (not current-root)
                 (e-debug--narrower-project-root-p project-root current-root))
-        (e-session-set-metadata
+        (e-session-set-session-config
          (e-harness-sessions harness)
          session-id
-         (plist-put metadata :project-root project-root))))))
+         (list :project-root project-root))))))
 
 (defun e-debug--install-focus-tracking ()
   "Install hooks that keep `e-debug--last-focused-buffer' current."

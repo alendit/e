@@ -1277,8 +1277,8 @@
 
 
 
-(ert-deftest e-chat-test-attach-widens-existing-session-project-root ()
-  "Attaching a session updates a too-narrow stored project root."
+(ert-deftest e-chat-test-attach-keeps-existing-session-project-root ()
+  "Attaching a session does not rewrite existing durable project metadata."
   (let* ((project-root (make-temp-file "e-chat-project-" t))
          (nested (expand-file-name "docs/feats/item" project-root))
          (harness (e-harness-create :backend (e-backend-fake-create :items nil))))
@@ -1293,7 +1293,7 @@
           (let ((default-directory (file-name-as-directory nested)))
             (e-chat-open :harness harness :session-id "session-1"))
           (should (equal (e-harness-project-root harness "session-1" nil)
-                         (file-name-as-directory project-root))))
+                         (file-name-as-directory nested))))
       (e-chat-test--kill-chat-buffers)
       (delete-directory project-root t))))
 
@@ -5687,6 +5687,36 @@ the orphaned region and appeared to vanish."
                      "assistant-read"))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-attach-buffer-does-not-rewrite-existing-project-root ()
+  "Attaching an existing chat does not rewrite durable session metadata."
+  (let* ((directory (file-name-as-directory
+                     (make-temp-file "e-chat-attach-root-" t)))
+         (store (e-session-store-create))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :sessions store))
+         (buffer (get-buffer-create "*e-chat-attach-root-test*"))
+         (writes 0))
+    (unwind-protect
+        (progn
+          (e-session-create
+           store
+           :id "rooted"
+           :metadata (list :project-root directory))
+          (with-current-buffer buffer
+            (setq-local default-directory directory))
+          (let ((original-set-session-config
+                 (symbol-function 'e-session-set-session-config)))
+            (cl-letf (((symbol-function 'e-session-set-session-config)
+                       (lambda (&rest args)
+                         (setq writes (1+ writes))
+                         (apply original-set-session-config args))))
+              (e-chat--attach-buffer buffer harness "rooted" nil)))
+          (should (= writes 0)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (delete-directory directory t))))
 
 (ert-deftest e-chat-test-overview-renders-and-opens-owning-chat-instance ()
   "Overview rows carry owning instance metadata when session ids collide."

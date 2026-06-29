@@ -1,0 +1,146 @@
+#+title: State Lifetime Inventory
+#+startup: overview
+
+* Purpose
+
+This inventory records where runtime state lives, why it has that lifetime, and
+what can rebuild it.  It is a review aid for feature 45 and a starting point for
+future state changes.
+
+* State classes
+
+| Class | Meaning | Persistence rule |
+|-------+---------+------------------|
+| Session config | Stable facts and user intent that define a session. | Persist through typed session config writes. |
+| Transcript and replay | User, assistant, tool, compaction, branch, and activity evidence. | Persist as append-only session records with bounded payloads. |
+| Current-state reference | Durable handle used to rebuild live context. | Persist the reference, not the live view. |
+| Capability state | Capability-owned state meaningful across turns or restart. | Persist through capability-state ownership. |
+| Active runtime state | In-flight requests, timers, retries, queues, and process handles. | Keep in harness-local or process-local memory. |
+| Presentation state | Buffer display, read markers, focus, point, overlays, previews, and caches. | Keep in shells, buffers, or rebuildable caches. |
+| Provider continuation | Opaque provider-side continuation anchors. | Persist as provider-anchor records owned by session/harness code. |
+
+* Session metadata
+
+Session metadata is indexed and replayed.  Every accepted key must have a
+state-class entry in =e-session-metadata-schema=.
+
+| Key | Owner | Class | Mutability | Rebuild source | Rule |
+|-----+-------+-------+------------+----------------+------|
+| =:name= | session | Session config | Low | User rename or derived title fallback | Persist. |
+| =:model= | session | Session config | Low | Legacy model override | Legacy reader only; prefer turn options. |
+| =:project-root= | session | Session config | Low | Session creation directory | Persist on creation or explicit config change, not attach. |
+| =:harness-instance-id= | chat | Session config | Low | Chat harness instance | Persist to route session ownership. |
+| =:origin= | shell | Session config | Low | Shell session creation | Persist when it identifies the creator of a durable session. |
+| =:source= | shell | Session config | Low | Shell session creation | Persist when rediscovery depends on the source, such as the debug session. |
+| =:source-reference= | shell | Current-state reference | Low | Starter source capture | Persist the captured reference that explains the one-shot session. |
+| =:context-references= | session | Current-state reference | Medium | Attachment actions and layer references | Persist owner-keyed references; arrays must encode as JSON arrays. |
+| =:context-attachments= | chat-session | Current-state reference | Legacy | Old chat attachment metadata | Read for compatibility; new writes use =:context-references=. |
+| =:org-canvas-ref= | org-canvas | Current-state reference | Low | Org Canvas open/create flow | Persist stable document identity only. |
+| =:org-canvas= | org-canvas | Current-state reference | Legacy | Old Org Canvas metadata | Read for compatibility; strip volatile focus/scope on replay. |
+| =:mcp-active= | mcp | Capability state | Legacy | Old MCP activation metadata | Read for compatibility; new writes use capability state. |
+| =:capability-state= | capabilities | Capability state | Medium | Capability-owned typed writes | Persist owner-keyed capability state. |
+
+Rejected metadata:
+
+- =:e-chat-read-markers= is presentation state.
+- Org Canvas =:last-focus= and =:last-scope= are volatile focus state.
+- Unknown metadata keys have no durable owner and should fail.
+
+* Transcript and replay records
+
+| Record | Owner | Class | Mutability | Rebuild source | Rule |
+|--------+-------+-------+------------+----------------+------|
+| =session= | session | Session config root | Low | Session creation | Persist once. |
+| =message= | session | Transcript and replay | Append-only | User/backend/tool output | Persist. |
+| =session-info= | session | Session config/current references | Low to medium | Typed metadata writes | Persist only schema-owned keys. |
+| =messages-cleared= | session | Transcript boundary | Append-only | Reset/clear command | Persist boundary. |
+| =branch-summary= | session | Transcript view | Append-only | Branch summarization | Persist. |
+| =compaction= | session | Replay | Append-only | Compaction run | Persist summary and boundary. |
+| =current-branch= | session | Replay | Low | Branch selection | Persist. |
+| =provider-anchor= | harness/provider adapter | Provider continuation | Append-only bounded | Provider candidate callback | Persist opaque anchors plus compatibility fingerprints. |
+
+Derived session fields such as latest assistant marker, token usage, and entry
+indexes are rebuilt during append or replay.  They are not independent durable
+facts.
+
+* Activity events
+
+Durable activity events are persisted only when their class gives a reason:
+
+| Class | Meaning | Payload rule |
+|-------+---------+--------------|
+| =audit= | Evidence of a user-visible, tool-visible, or backend-visible operation. | Keep scalar or compact payloads. |
+| =replay= | Needed to reconstruct user-facing turn or compaction state. | Persist enough to rebuild the visible state. |
+| =presentation-log= | Useful visible history, not raw protocol stream. | Bound and compact payloads. |
+| =transient-progress= | Live progress only. | Do not persist. |
+
+Current durable event types are:
+
+- =turn-started=, =provider-request-started=, =provider-request-finished=
+- =reasoning-delta=, =reasoning-raw-delta=
+- =tool-started=, =tool-finished=
+- =turn-finished=, =turn-failed=, =turn-cancelled=, =turn-steered=
+- =token-usage=, =backend-empty-output=
+- =compaction-started=, =compaction-prepared=,
+  =compaction-summary-started=, =compaction-finished=, =compaction-failed=
+
+Index writes stay coalesced and flush only for terminal turn/compaction events.
+Tool-finished activity keeps a bounded result preview rather than duplicating
+large tool output.
+
+* Chat state
+
+| State | Owner | Class | Current storage | Rule |
+|-------+-------+-------+-----------------+------|
+| Chat attachments | =chat-session= | Current-state reference | =:context-references= under =:chat-session= | Persist URI/id/label/canvas reference; read live content each turn. |
+| Project root | session | Session config | =:project-root= | Write during session creation or explicit config change only. |
+| Read markers and unread indicators | chat shell | Presentation state | Buffer/session display caches | Do not persist. Rebuild from session activity and focus events. |
+| Overview rows and previews | chat shell | Presentation state | Buffers/caches | Rebuild from session index and tail messages. |
+| Mode-line context estimate | chat shell | Presentation cache | Timed cache | Rebuild on demand. |
+| Activity redraw timers | chat shell | Active runtime state | Timers/hash state | Do not persist. |
+
+* Org Canvas state
+
+| State | Owner | Class | Current storage | Rule |
+|-------+-------+-------+-----------------+------|
+| Stable canvas reference | org-canvas | Current-state reference | =:org-canvas-ref= | Persist URI, buffer label, mode, root, target folder, and save requirements. |
+| Legacy canvas metadata | org-canvas | Current-state reference | =:org-canvas= | Read for compatibility; normalize away volatile focus/scope. |
+| Prompt scope/focus | org-canvas prompt | Transcript evidence | User message metadata | Persist because it explains that turn's request. |
+| Live point, heading, visibility, and window range | org-canvas shell | Presentation/current live state | Buffer-local capture | Recompute for each context build. |
+
+Normal context building uses live buffer capture first, then prompt metadata for
+the latest user request, then the stable canvas reference.
+
+* MCP state
+
+| State | Owner | Class | Current storage | Rule |
+|-------+-------+-------+-----------------+------|
+| Server/tool catalog | mcp helper | Active runtime/cache | Process-local cache | Rebuild through discovery and refresh. |
+| Helper subprocesses | mcp helper | Active runtime state | Process table | Do not persist. |
+| Active tool choices | mcp capability | Capability state | =:capability-state= under =:mcp= | Persist as explicit =:server-id= / =:tools= records. |
+| Legacy active tool choices | mcp capability | Capability state | =:mcp-active= | Read for compatibility only. |
+
+* Harness runtime state
+
+| State | Owner | Class | Current storage | Rule |
+|-------+-------+-------+-----------------+------|
+| Active turns | harness | Active runtime state | =e-harness-active-turns= hash table | Do not persist; terminal records settle durable history. |
+| Prompt queues | harness | Active runtime state | =e-harness-prompt-queues= hash table | Do not persist until a queued prompt becomes a turn. |
+| Provider request handles | harness/provider adapter | Active runtime state | Active turn entry | Do not persist. |
+| Retry counters and timers | harness | Active runtime state | Active turn entry/timers | Do not persist. |
+| Provider anchor candidates | harness/provider adapter | Provider continuation | Active turn entry until terminal callback | Persist only latest compatible candidates at turn finish. |
+| Context/status snapshots | harness/context | Derived current state | Request-local values | Rebuild per request. |
+
+* Cleanup and migration rules
+
+- New metadata writes must use a typed API or add a schema entry with owner,
+  state class, lifetime, and compatibility reason.
+- Presentation and active runtime state should fail fast if sent through generic
+  session metadata.
+- Legacy readers stay only for real persisted keys: =:context-attachments=,
+  =:org-canvas=, =:model=, and =:mcp-active=.
+- Legacy data that mixes stable references with volatile focus should be
+  normalized on replay instead of kept as steady-state behavior.
+- Performance regressions from this feature are not justified by the existing
+  metadata shape.  New validation or migration work must be bounded and measured
+  against the session metadata perf scenario.

@@ -1,0 +1,200 @@
+#+title: Review: State Lifetime and Persistence Boundaries
+#+author: e implementation
+#+date: 2026-06-29
+#+startup: overview
+
+* Status
+
+Done.
+
+* Review summary
+
+Feature 45 implements the planned state lifetime boundary.  Session metadata now
+has typed lanes for session config, current-state references, and capability
+state.  Chat attachments moved to current-state references.  Org Canvas stable
+identity is split from live focus.  Activity events have explicit persistence
+classes.  The implementation rejects unknown durable metadata instead of
+letting presentation or runtime state drift into replay.
+
+No unresolved review findings remain.
+
+* Scope reviewed
+
+- =docs/feats/45-state-lifetime-and-persistence/plan.org=
+- =docs/feats/45-state-lifetime-and-persistence/state-inventory.org=
+- =docs/architecture.md=
+- =lisp/core/e-session.el=
+- =lisp/core/e-harness.el=
+- =lisp/core/e-mcp.el=
+- =lisp/layers/chat/e-chat-session.el=
+- =lisp/layers/org-canvas/e-org-canvas-capabilities.el=
+- =lisp/shells/e-org-canvas.el=
+- =lisp/shells/e-debug.el=
+- focused tests for session metadata, chat, MCP, Org Canvas, harness activity,
+  and metadata-state performance
+
+* Plan coverage
+
+** DONE Phase 1: Inventory and tests before migration
+
+Added =state-inventory.org= and tests for presentation-state rejection,
+read-marker rejection, known durable metadata, replay normalization, and the new
+metadata-state performance scenario.
+
+** DONE Phase 2: Session metadata schema and typed APIs
+
+Added the =e-session= metadata schema and typed write paths for session config,
+context references, and capability state.  Generic metadata writes now validate
+against schema-owned keys.  Legacy readers remain only for real existing keys.
+
+** DONE Phase 3: Chat and context attachment migration
+
+Chat attachments now write through =:context-references= under the
+=:chat-session= owner.  Ordinary attach does not rewrite durable project root
+unless the session has no root yet.  Read markers and presentation caches stay
+out of session metadata.
+
+** DONE Phase 4: Org Canvas state split
+
+Org Canvas persists stable =:org-canvas-ref= data.  Live focus and scope are
+rebuilt from the live buffer first, then prompt metadata when needed.  Replay
+normalizes legacy =:org-canvas= metadata by stripping volatile focus fields.
+
+** DONE Phase 5: Activity and provider-anchor boundaries
+
+Harness activity event types now declare durable classes.  Transient progress
+stays out of persistence.  Provider anchors remain opaque session records owned
+by harness/provider code, with dynamic context still attached fresh at request
+time.
+
+** DONE Phase 6: Documentation and cleanup
+
+Updated the architecture document and added the inventory.  Obsolete steady-state
+metadata writes were replaced rather than hidden behind broad compatibility
+paths.
+
+* Performance review
+
+No long-term performance regression is accepted for this slice.
+
+The extra validation runs at metadata write and replay boundaries.  It is
+bounded by the number of metadata keys, not the number of messages, buffers, or
+sessions.  That work is the necessary cost of making persisted state reject
+ownerless data.  The implementation does not add full-session scans, repeated
+normalization on chat display, or broad listing-time materialization.
+
+Chat attach became cheaper in the common existing-session case because it avoids
+rewriting durable project root when the root already exists.  Attachments are
+stored as current-state references, so prompt-time work still reads live content
+only when context is built.
+
+The metadata-state perf scenario completed with a median elapsed time of about
+6.9 ms for 12 typed metadata writes.  It recorded 12 session append records and
+12 index writes, matching the expected one durable record per typed write.  No
+additional regression was accepted because of the old generic metadata shape.
+
+* Verification
+
+#+begin_src sh
+rtk eldev test -f test/e-session-test.el -f test/e-chat-session-test.el -f test/e-mcp-test.el -f test/e-dev-perf-test.el
+#+end_src
+
+Result: passed, 94/94.
+
+#+begin_src sh
+rtk eldev test -f test/e-harness-test.el
+#+end_src
+
+Result: passed, 102/102.
+
+#+begin_src sh
+rtk eldev test -f test/e-chat-test.el
+#+end_src
+
+Result: passed, 258 expected and 1 skipped.
+
+#+begin_src sh
+rtk eldev test -f test/e-org-canvas-test.el
+#+end_src
+
+Result: passed, 60/60.
+
+#+begin_src sh
+rtk eldev test -f test/e-chat-starter-test.el -f test/e-debug-test.el
+#+end_src
+
+Result: passed, 48/48.
+
+#+begin_src sh
+rtk eldev compile --warnings-as-errors
+#+end_src
+
+Result: passed.
+
+#+begin_src sh
+git diff --check
+#+end_src
+
+Result: passed.
+
+#+begin_src emacs-lisp
+(progn
+  (require 'e-dev)
+  (e-dev-reload "/Users/dimitrivorona/projects/elisp/e"))
+#+end_src
+
+Result: reloaded the running Emacs and returned the project root.
+
+#+begin_src emacs-lisp
+;; Bounded live probe after reload.
+;; Fake backend, throwaway in-memory session, typed attachment, one prompt.
+#+end_src
+
+Result:
+
+#+begin_example
+(:status done
+ :messages 2
+ :read-markers nil
+ :legacy-attachments nil
+ :context-references ...)
+#+end_example
+
+The probe verified that chat submit still works through the reloaded runtime and
+that the old presentation-state metadata key is not written.
+
+* Full-suite note
+
+=rtk eldev test= found one mixed-order harness wait failure after the feature
+tests passed in isolation.  The failing auto-compaction test passed when
+=test/e-harness-test.el= ran alone, and a narrower mixed run moved the failure to
+a neighboring auto-compaction wait test.  This looks like existing mixed-order
+wait/timing fragility, not a state-lifetime regression.  It is recorded here so a
+later harness-stability slice can address it directly.
+
+* Design self-check
+
+1. The project is better off if work stops here: the session store now rejects
+   ownerless durable state instead of relying on callers to remember the rule.
+2. The final direction is explicit lifetime lanes: stable config, current-state
+   references, capability state, transcript/replay, runtime state, and
+   presentation state.
+3. Uncertain compatibility remains local to schema entries and legacy readers.
+   No speculative extension layer was added.
+4. =e-session= owns durable metadata validation.  Chat, Org Canvas, and MCP own
+   their domain state and use typed session APIs.
+5. Coupling is reduced because callers no longer write arbitrary metadata keys.
+6. Stable session policy does not depend on concrete UI state.  Shells keep live
+   focus, read state, and display caches.
+7. Side effects moved outward: presentation attach no longer acts as a normal
+   durable session rewrite path.
+8. The typed APIs name real state classes and do not require unsupported
+   behavior from implementations.
+9. Compatibility is explicit for =:context-attachments=, =:org-canvas=,
+   =:model=, and =:mcp-active=.  Unknown keys fail.
+10. Obsolete steady-state writes for read markers, Org focus, and MCP active
+    metadata were removed.
+11. Expected legacy data is normalized or read through compatibility paths.
+    Unexpected ownerless metadata surfaces as a validation failure.
+12. Focused tests cover the core behavior without requiring unrelated UI tests
+    to change.

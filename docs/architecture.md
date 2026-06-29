@@ -203,6 +203,21 @@ identity uses generated ids and per-entry identity/parent links. Display titles
 prefer explicit names, then first user-message summaries, then untitled
 timestamps.
 
+Durable state follows a stability gradient. Stable session identity and config
+persist as typed session metadata. Transcript, replay, compaction, provider
+anchor, and audit evidence persist as append-only records. Current-state
+references persist only the stable handle needed to rebuild live context.
+Capability-owned state persists under owner-keyed capability state. Active
+runtime state, presentation state, focus, point, overlays, read markers, timers,
+request handles, retry counters, and rebuildable caches stay in the harness,
+shell, buffer, or request that owns them.
+
+`e-session` owns the durable metadata schema and typed write paths for session
+config, current-state references, and capability state. Generic metadata writes
+remain a compatibility path and must reject unowned, presentation-only, or
+volatile state. Shells and layers can own presentation or live context, but they
+should persist only stable references or explicit user intent.
+
 The store is append-only evidence plus derived mutable projections. Future
 semantic state artifacts such as canvas revisions should not be hidden inside a
 presentation shell; they should be session records or separate resources with
@@ -480,10 +495,11 @@ layer-owned shell registrations. Model-facing tools, resources, prompts, hooks,
 stores, and context use fresh effective capabilities derived from the session
 project root, not from shell sync state.
 
-Live context attachment flow is session metadata, not transcript history. Canvas
-or file/buffer attachments are stored on the session, and the `chat-session`
-context provider reads current live content on each turn. Unsaved live buffer
-contents win over disk reads.
+Live context attachment flow is durable current-state references, not transcript
+history. Canvas or file/buffer attachments are stored under the `chat-session`
+owner in session context references, and the `chat-session` context provider
+reads current live content on each turn. Unsaved live buffer contents win over
+disk reads.
 
 Tool output protection flow runs through hooks. Tool results are normalized into
 one structured result shape, post-tool hooks can replace large content with

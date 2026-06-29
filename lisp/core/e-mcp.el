@@ -749,7 +749,63 @@ HARNESS, when present, contributes session-scoped runtime config."
                             :harness harness :session-id session-id)
              :progressive))
 
-;;; Tier 2 — active tool set (persisted in session metadata)
+;;; Tier 2 — active tool set (persisted as capability session state)
+
+(defun e-mcp--active-tools-from-state (tools)
+  "Return persisted active TOOLS in runtime shape."
+  (cond
+   ((eq tools t) t)
+   ((vectorp tools) (append tools nil))
+   ((listp tools) tools)
+   (t nil)))
+
+(defun e-mcp--active-state-entry-to-pair (entry)
+  "Return active-set pair for persisted ENTRY."
+  (when-let ((server-id (plist-get entry :server-id)))
+    (cons server-id
+          (e-mcp--active-tools-from-state
+           (plist-get entry :tools)))))
+
+(defun e-mcp--active-state-to-set (state)
+  "Return active-set alist represented by durable STATE."
+  (let ((active (plist-get state :active)))
+    (cond
+     ((vectorp active)
+      (e-mcp--active-state-to-set (list :active (append active nil))))
+     ((and (listp active)
+           (cl-every (lambda (entry)
+                       (and (consp entry)
+                            (keywordp (car entry))
+                            (plist-member entry :server-id)))
+                     active))
+      (delq nil (mapcar #'e-mcp--active-state-entry-to-pair active)))
+     ((and (listp active)
+           (cl-evenp (length active))
+           (cl-loop for (key _value) on active by #'cddr
+                    always (keywordp key)))
+      (let (result)
+        (while active
+          (let ((server-id (substring (symbol-name (pop active)) 1))
+                (tools (pop active)))
+            (push (cons server-id (e-mcp--active-tools-from-state tools))
+                  result)))
+        (nreverse result)))
+     ((listp active)
+      active))))
+
+(defun e-mcp--active-set-to-state (active)
+  "Return durable capability state for active-set ACTIVE."
+  (list
+   :active
+   (vconcat
+    (mapcar
+     (lambda (entry)
+       (let ((tools (cdr entry)))
+         (list :server-id (car entry)
+               :tools (if (and (listp tools) (not (eq tools t)))
+                          (vconcat tools)
+                        tools))))
+     active))))
 
 (defun e-mcp--active-set (harness session-id)
   "Return the activated-MCP-tools alist for HARNESS SESSION-ID.
@@ -759,7 +815,10 @@ tool-name strings."
     (when-let ((session (ignore-errors
                           (e-session-get (e-harness-sessions harness)
                                          session-id))))
-      (plist-get (plist-get session :metadata) :mcp-active))))
+      (or (e-mcp--active-state-to-set
+           (e-session-capability-state
+            (e-harness-sessions harness) session-id 'mcp))
+          (plist-get (plist-get session :metadata) :mcp-active)))))
 
 (defun e-mcp--tool-activated-p (active server-id tool-name)
   "Return non-nil when TOOL-NAME of SERVER-ID is activated in ACTIVE."
@@ -781,14 +840,12 @@ Nil or empty TOOL-NAMES means \"all tools\"."
   "Promote TOOL-NAMES of SERVER-ID into HARNESS SESSION-ID active set.
 TOOL-NAMES nil or empty activates the whole server.  Returns the merged value."
   (let* ((store (e-harness-sessions harness))
-         (metadata (copy-sequence
-                    (plist-get (e-session-get store session-id) :metadata)))
-         (active (copy-alist (plist-get metadata :mcp-active)))
+         (active (copy-alist (e-mcp--active-set harness session-id)))
          (existing (cdr (assoc server-id active)))
          (merged (e-mcp--merge-active-tools existing (append tool-names nil))))
     (setf (alist-get server-id active nil nil #'equal) merged)
-    (e-session-set-metadata store session-id
-                            (plist-put metadata :mcp-active active))
+    (e-session-set-capability-state
+     store session-id 'mcp (e-mcp--active-set-to-state active))
     merged))
 
 ;;; Tier 1 — schema text and on-demand resources

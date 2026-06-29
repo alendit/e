@@ -54,12 +54,16 @@
                   (concat "buffer://" (buffer-name)))
                 uri))))
 
+(defun e-org-canvas--metadata-ref (metadata)
+  "Return stable Org Canvas reference from session METADATA."
+  (or (plist-get metadata :org-canvas-ref)
+      (plist-get metadata :org-canvas)))
+
 (defun e-org-canvas-session-metadata (harness session-id)
-  "Return Org Canvas metadata for HARNESS SESSION-ID, or nil."
-  (plist-get
+  "Return Org Canvas stable reference for HARNESS SESSION-ID, or nil."
+  (e-org-canvas--metadata-ref
    (plist-get (e-session-get (e-harness-sessions harness) session-id)
-              :metadata)
-   :org-canvas))
+              :metadata)))
 
 (defun e-org-canvas-session-p (harness session-id)
   "Return non-nil when HARNESS SESSION-ID is an Org Canvas session."
@@ -203,16 +207,33 @@
    (or (plist-get focus :window-start) "nil")
    (or (plist-get focus :window-end) "nil")))
 
+(defun e-org-canvas--last-prompt-metadata (harness session-id)
+  "Return metadata from the last Org Canvas user prompt for SESSION-ID."
+  (when (and harness session-id)
+    (let ((message
+           (cl-find-if
+            (lambda (candidate)
+              (and (eq (plist-get candidate :role) 'user)
+                   (plist-get (plist-get candidate :metadata)
+                              :org-canvas-scope)))
+            (reverse (e-harness-messages harness session-id)))))
+      (plist-get message :metadata))))
+
 (cl-defun e-org-canvas-context-provider (&key harness session-id _turn-id)
   "Return Org Canvas context for HARNESS SESSION-ID when gated metadata exists."
   (when (and harness session-id (e-org-canvas-session-p harness session-id))
     (let* ((metadata (e-org-canvas-session-metadata harness session-id))
            (buffer (e-org-canvas-session-buffer harness session-id))
-           (scope (or (plist-get metadata :last-scope) 'thread))
-           (focus (or (plist-get metadata :last-focus)
-                      (and (buffer-live-p buffer)
+           (prompt-metadata (e-org-canvas--last-prompt-metadata
+                             harness session-id))
+           (scope (or (plist-get prompt-metadata :org-canvas-scope)
+                      (plist-get (plist-get prompt-metadata :org-canvas-focus)
+                                 :scope)
+                      'thread))
+           (focus (or (and (buffer-live-p buffer)
                            (with-current-buffer buffer
-                             (e-org-canvas-capture-focus scope)))))
+                             (e-org-canvas-capture-focus scope)))
+                      (plist-get prompt-metadata :org-canvas-focus)))
            (instructions (if (eq scope 'document)
                              e-org-canvas--document-instructions
                            e-org-canvas--thread-instructions))

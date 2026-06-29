@@ -79,14 +79,18 @@
             (should-not (plist-member metadata :e-chat-read-markers)))
           (e-chat-session-attach-context
            harness "session-1" '(:uri "buffer://source"))
-          (let ((metadata (plist-get
-                           (e-session-get
-                            (e-harness-sessions harness) "session-1")
-                           :metadata)))
+          (let* ((metadata (plist-get
+                            (e-session-get
+                             (e-harness-sessions harness) "session-1")
+                            :metadata))
+                 (references (plist-get metadata :context-references)))
             (should (equal (plist-get
-                            (car (plist-get metadata :context-attachments))
+                            (car (e-chat-session-attachments
+                                  harness "session-1"))
                             :uri)
                            "buffer://source"))
+            (should (plist-member references :chat-session))
+            (should-not (plist-member metadata :context-attachments))
             (should-not (plist-member metadata :e-chat-read-markers))))
       (delete-directory project-root t))))
 

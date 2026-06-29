@@ -706,6 +706,24 @@ echoed back on `tools/list' and `tools/call'."
                          #'string<)
                    '("mcp__fixture__echo" "mcp__fixture__ping")))))
 
+(ert-deftest e-mcp-test-active-set-persists-through-replay ()
+  "Active MCP tool choices keep their runtime shape after session replay."
+  (let* ((directory (make-temp-file "e-mcp-active-" t))
+         (store (e-session-persistent-store-create directory))
+         (harness (e-harness-create :backend (e-backend-fake-create :items nil)
+                                    :sessions store)))
+    (unwind-protect
+        (progn
+          (e-harness-create-session harness :id "s1")
+          (e-mcp--activate harness "s1" "fixture" '("echo"))
+          (let ((loaded-harness
+                 (e-harness-create
+                  :backend (e-backend-fake-create :items nil)
+                  :sessions (e-session-persistent-store-create directory))))
+            (should (equal (e-mcp--active-set loaded-harness "s1")
+                           '(("fixture" "echo"))))))
+      (delete-directory directory t))))
+
 (ert-deftest e-mcp-test-list-tools-memoizes-catalog ()
   "`e-mcp-list-tools' caches catalogs and `e-mcp-refresh' invalidates them."
   (let ((calls 0))

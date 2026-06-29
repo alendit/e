@@ -28,6 +28,12 @@
         "elapsed-ms": { "baseline": 1000.0, "direction": "lower-is-better", "fail_ratio": 2.0, "fail_delta": 500.0, "warn_ratio": 1.5, "warn_delta": 250.0, "variance_ratio": 2.0, "samples": 5 }
       }
     },
+    "session.metadata-state": {
+      "owner": "e-session",
+      "metrics": {
+        "elapsed-ms": { "baseline": 1000.0, "direction": "lower-is-better", "fail_ratio": 2.0, "fail_delta": 500.0, "warn_ratio": 1.5, "warn_delta": 250.0, "variance_ratio": 2.0, "samples": 5 }
+      }
+    },
     "chat.activity-burst": {
       "owner": "e-chat",
       "metrics": {

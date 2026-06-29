@@ -886,6 +886,12 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
         (should (equal (plist-get metadata :activity-original-bytes) 64))
         (should (equal (plist-get metadata :tmp-uri) "tmp://full.txt"))))))
 
+(ert-deftest e-harness-test-activity-events-declare-persistence-class ()
+  "Every durable activity event declares why it is persisted."
+  (dolist (type e-harness--durable-activity-event-types)
+    (should (memq (e-harness-activity-event-class type)
+                  '(audit replay presentation-log)))))
+
 (ert-deftest e-harness-test-token-usage-events-are-durable ()
   "Backend token usage events are retained in session activity."
   (let* ((backend (e-backend-fake-create

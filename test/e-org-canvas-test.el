@@ -122,11 +122,9 @@
                   (should e-org-canvas-mode)
                   (should e-chat-context-mode-suppressed))
                 (with-current-buffer chat-buffer
-                  (let* ((session (e-session-get
-                                   (e-harness-sessions e-chat-harness)
-                                   e-chat-session-id))
-                         (metadata (plist-get session :metadata))
-                         (org-canvas (plist-get metadata :org-canvas))
+                  (let* ((org-canvas (e-org-canvas-session-metadata
+                                      e-chat-harness
+                                      e-chat-session-id))
                          (attachment (car (e-chat-session-attachments
                                            e-chat-harness
                                            e-chat-session-id))))
@@ -610,12 +608,9 @@
             (e-harness-registry-register :org-canvas-test harness)
             (let ((chat-buffer (e-org-canvas-new-file directory)))
               (with-current-buffer chat-buffer
-                (let* ((session (e-session-get
-                                 (e-harness-sessions e-chat-harness)
-                                 e-chat-session-id))
-                       (org-canvas (plist-get
-                                    (plist-get session :metadata)
-                                    :org-canvas))
+                (let* ((org-canvas (e-org-canvas-session-metadata
+                                    e-chat-harness
+                                    e-chat-session-id))
                        (target-buffer (get-buffer
                                        (plist-get org-canvas :buffer-name))))
                   (should (plist-get org-canvas :needs-file-name))
@@ -855,6 +850,12 @@
       (e-harness-create-session harness :id "org")
       (e-org-canvas--mark-session
        harness "org" (current-buffer) :scope 'document :target-folder nil)
+      (e-session-append-message
+       (e-harness-sessions harness)
+       "org"
+       '(:role user
+         :content "Use the whole document."
+         :metadata (:org-canvas-scope document)))
       (let ((content (mapconcat
                       (lambda (message) (or (plist-get message :content) ""))
                       (plist-get (e-harness-context harness "org") :messages)
@@ -1592,11 +1593,8 @@ relied on `e-chat--running-status-rendered-hook' to follow the bottom."
           (should (equal (file-name-nondirectory buffer-file-name)
                          "project-notes.org"))
           (should (file-exists-p buffer-file-name))
-          (let* ((metadata (plist-get
-                            (e-session-get (e-harness-sessions harness)
-                                           "session-1")
-                            :metadata))
-                 (org-canvas (plist-get metadata :org-canvas))
+          (let* ((org-canvas (e-org-canvas-session-metadata
+                              harness "session-1"))
                  (attachment (car (e-chat-session-attachments
                                    harness "session-1"))))
             (should-not (plist-get org-canvas :needs-file-name))

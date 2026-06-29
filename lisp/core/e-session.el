@@ -54,6 +54,81 @@
     (:provider-anchors . :provider-anchors-tail))
   "Internal append-only list fields and their cached tail cells.")
 
+(defconst e-session-metadata-schema
+  '((:name
+     :owner session
+     :state-class session-config
+     :lifetime durable
+     :indexed t)
+    (:model
+     :owner session
+     :state-class session-config
+     :lifetime durable
+     :indexed t
+     :legacy t)
+    (:project-root
+     :owner session
+     :state-class session-config
+     :lifetime durable
+     :indexed t)
+    (:harness-instance-id
+     :owner chat
+     :state-class session-config
+     :lifetime durable
+     :indexed t)
+    (:origin
+     :owner shell
+     :state-class session-config
+     :lifetime durable
+     :indexed t)
+    (:source
+     :owner shell
+     :state-class session-config
+     :lifetime durable
+     :indexed t)
+    (:source-reference
+     :owner shell
+     :state-class current-state-reference
+     :lifetime durable-reference
+     :indexed t)
+    (:context-references
+     :owner session
+     :state-class current-state-reference
+     :lifetime durable-reference
+     :indexed t)
+    (:context-attachments
+     :owner chat-session
+     :state-class current-state-reference
+     :lifetime durable-reference
+     :indexed t
+     :legacy t)
+    (:org-canvas-ref
+     :owner org-canvas
+     :state-class current-state-reference
+     :lifetime durable-reference
+     :indexed t)
+    (:org-canvas
+     :owner org-canvas
+     :state-class current-state-reference
+     :lifetime durable-reference
+     :indexed t
+     :legacy t)
+    (:mcp-active
+     :owner mcp
+     :state-class capability-state
+     :lifetime durable
+     :indexed t)
+    (:capability-state
+     :owner capabilities
+     :state-class capability-state
+     :lifetime durable
+     :indexed t))
+  "Allowed durable session metadata keys and their state ownership.")
+
+(defconst e-session--presentation-metadata-keys
+  '(:e-chat-read-markers)
+  "Presentation-only metadata keys rejected on write and removed on replay.")
+
 (defconst e-session--ulid-alphabet "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
   "Crockford Base32 alphabet used for ULID strings.")
 
@@ -62,6 +137,179 @@
 
 (defvar e-session--last-ulid-random nil
   "Last 80-bit random suffix used by `e-session-generate-ulid'.")
+
+(defun e-session--metadata-descriptor (key)
+  "Return metadata schema descriptor for KEY."
+  (seq-find (lambda (descriptor)
+              (eq (car descriptor) key))
+            e-session-metadata-schema))
+
+(defun e-session-metadata-key-state-class (key)
+  "Return the declared state class for durable metadata KEY."
+  (plist-get (cdr (e-session--metadata-descriptor key)) :state-class))
+
+(defun e-session--plist-remove (plist key)
+  "Return PLIST without KEY."
+  (let (result)
+    (while (consp plist)
+      (let ((current-key (pop plist)))
+        (when (consp plist)
+          (let ((value (pop plist)))
+            (unless (eq current-key key)
+              (push current-key result)
+              (push value result))))))
+    (nreverse result)))
+
+(defun e-session--keyword-plist-shape-p (value)
+  "Return non-nil when VALUE has keyword plist shape."
+  (and (proper-list-p value)
+       (let ((tail value)
+             (valid t))
+         (while (and valid tail)
+           (setq valid
+                 (and (consp tail)
+                      (keywordp (car tail))
+                      (consp (cdr tail))))
+           (setq tail (cddr tail)))
+         valid)))
+
+(defun e-session--metadata-owner-key (owner)
+  "Return stable keyword key for metadata OWNER."
+  (cond
+   ((keywordp owner) owner)
+   ((symbolp owner) (intern (concat ":" (symbol-name owner))))
+   ((stringp owner) (intern (concat ":" owner)))
+   (t (error "Metadata owner must be a keyword, symbol, or string: %S" owner))))
+
+(defun e-session--metadata-json-array-safe-value (value)
+  "Return VALUE with reference arrays encoded unambiguously for JSON.
+Keyword plists remain objects.  Other proper lists become vectors so the JSON
+writer cannot reinterpret a list of plists as one object."
+  (cond
+   ((vectorp value)
+    (vconcat (mapcar #'e-session--metadata-json-array-safe-value value)))
+   ((e-session--keyword-plist-shape-p value)
+    (let (result)
+      (while (consp value)
+        (let ((key (pop value)))
+          (when (consp value)
+            (push key result)
+            (push (e-session--metadata-json-array-safe-value (pop value))
+                  result))))
+      (nreverse result)))
+   ((proper-list-p value)
+    (vconcat (mapcar #'e-session--metadata-json-array-safe-value value)))
+   (t value)))
+
+(defun e-session--metadata-public-value (value)
+  "Return persisted metadata VALUE in caller-facing Elisp shape."
+  (cond
+   ((vectorp value)
+    (mapcar #'e-session--metadata-public-value value))
+   ((e-session--keyword-plist-shape-p value)
+    (let (result)
+      (while (consp value)
+        (let ((key (pop value)))
+          (when (consp value)
+            (push key result)
+            (push (e-session--metadata-public-value (pop value)) result))))
+      (nreverse result)))
+   ((proper-list-p value)
+    (mapcar #'e-session--metadata-public-value value))
+   (t value)))
+
+(defun e-session--metadata-validate-org-canvas-ref (value key)
+  "Validate Org Canvas metadata VALUE under KEY."
+  (unless (or (null value) (e-session--keyword-plist-shape-p value))
+    (error "Session metadata %S must be a keyword plist" key))
+  (when (or (plist-member value :last-focus)
+            (plist-member value :last-scope))
+    (error "Session metadata %S must not contain volatile focus or scope" key)))
+
+(defun e-session--metadata-validate-context-references (value)
+  "Validate durable current-state reference VALUE."
+  (unless (or (null value) (e-session--keyword-plist-shape-p value))
+    (error "Session metadata :context-references must be an owner-keyed plist")))
+
+(defun e-session--metadata-validate-capability-state (value)
+  "Validate durable capability-state VALUE."
+  (unless (or (null value) (e-session--keyword-plist-shape-p value))
+    (error "Session metadata :capability-state must be an owner-keyed plist")))
+
+(defun e-session--validate-metadata-value (key value)
+  "Validate durable session metadata KEY VALUE."
+  (pcase key
+    ((or :org-canvas :org-canvas-ref)
+     (e-session--metadata-validate-org-canvas-ref value key))
+    (:context-references
+     (e-session--metadata-validate-context-references value))
+    (:capability-state
+     (e-session--metadata-validate-capability-state value))
+    (_ nil)))
+
+(defun e-session--validate-metadata-class (metadata expected-class)
+  "Validate that METADATA only contains keys in EXPECTED-CLASS."
+  (let ((tail metadata))
+    (while (consp tail)
+      (let ((key (pop tail)))
+        (unless (consp tail)
+          (error "Session metadata has key %S without value" key))
+        (let* ((value (pop tail))
+               (descriptor (e-session--metadata-descriptor key))
+               (state-class (plist-get (cdr descriptor) :state-class)))
+          (unless descriptor
+            (error "Session metadata key %S has no durable state schema" key))
+          (unless (eq state-class expected-class)
+            (error "Session metadata key %S is %S, not %S"
+                   key state-class expected-class))
+          (e-session--validate-metadata-value key value)))))
+  metadata)
+
+(defun e-session--validate-metadata (metadata)
+  "Validate durable session METADATA and return it."
+  (unless (or (null metadata) (e-session--keyword-plist-shape-p metadata))
+    (error "Session metadata must be a keyword plist"))
+  (let ((tail metadata))
+    (while (consp tail)
+      (let* ((key (pop tail))
+             (value (pop tail))
+             (descriptor (e-session--metadata-descriptor key)))
+        (when (memq key e-session--presentation-metadata-keys)
+          (error "Session metadata key %S is presentation state" key))
+        (unless descriptor
+          (error "Session metadata key %S has no durable state schema" key))
+        (e-session--validate-metadata-value key value))))
+  metadata)
+
+(defun e-session--normalize-org-canvas-ref-for-replay (value)
+  "Return legacy Org Canvas VALUE without volatile focus fields."
+  (when value
+    (setq value (copy-sequence value))
+    (setq value (e-session--plist-remove value :last-focus))
+    (setq value (e-session--plist-remove value :last-scope)))
+  value)
+
+(defun e-session--normalize-metadata-for-replay (metadata)
+  "Return replayed METADATA without known transient state."
+  (when metadata
+    (setq metadata (copy-sequence metadata))
+    (dolist (key e-session--presentation-metadata-keys)
+      (setq metadata (e-session--plist-remove metadata key)))
+    (when (plist-member metadata :org-canvas)
+      (setq metadata
+            (plist-put
+             metadata
+             :org-canvas
+             (e-session--normalize-org-canvas-ref-for-replay
+              (plist-get metadata :org-canvas)))))
+    (when (plist-member metadata :org-canvas-ref)
+      (setq metadata
+            (plist-put
+             metadata
+             :org-canvas-ref
+             (e-session--normalize-org-canvas-ref-for-replay
+              (plist-get metadata :org-canvas-ref))))))
+  metadata)
 
 (defun e-session--timestamp (&optional time)
   "Return TIME as a compact UTC timestamp."
@@ -788,8 +1036,10 @@ and RECORD supplies persisted identity fields during replay."
                                 (e-session-store-sessions store)))))
     (pcase type
       ("session"
-       (let ((session (list :id session-id
-                            :metadata (plist-get record :metadata)
+       (let* ((metadata (e-session--normalize-metadata-for-replay
+                         (plist-get record :metadata)))
+              (session (list :id session-id
+                            :metadata metadata
                             :session-events nil
                             :messages nil
                             :activity-events nil
@@ -810,7 +1060,7 @@ and RECORD supplies persisted identity fields during replay."
           session
           'session-created
           (or (plist-get record :created-at) timestamp)
-          (list :metadata (plist-get record :metadata))
+          (list :metadata metadata)
           record)
          (e-session--touch store session (plist-get session :updated-at))
          (puthash session-id session (e-session-store-sessions store))))
@@ -938,7 +1188,8 @@ and RECORD supplies persisted identity fields during replay."
            (when (plist-member record :metadata)
              (setq fields (plist-put fields
                                      :metadata
-                                     (plist-get record :metadata))))
+                                     (e-session--normalize-metadata-for-replay
+                                      (plist-get record :metadata)))))
            (when (plist-member record :turn-options)
              (setq fields
                    (plist-put fields
@@ -950,7 +1201,10 @@ and RECORD supplies persisted identity fields during replay."
          (when (plist-member record :name)
            (plist-put session :name (plist-get record :name)))
          (when (plist-member record :metadata)
-           (plist-put session :metadata (plist-get record :metadata)))
+           (plist-put session
+                      :metadata
+                      (e-session--normalize-metadata-for-replay
+                       (plist-get record :metadata))))
          (when (plist-member record :turn-options)
            (plist-put session
                       :turn-options
@@ -1195,6 +1449,8 @@ state are requested."
   (setq id (or id (e-session--generate-id)))
   (when (gethash id (e-session-store-sessions store))
     (signal 'e-session-duplicate (list id)))
+  (setq metadata (e-session--validate-metadata
+                  (e-session--normalize-metadata-for-replay metadata)))
   (let* ((timestamp (e-session--timestamp))
          (session (list :id id
                         :metadata metadata
@@ -1279,9 +1535,10 @@ state are requested."
   "Return session-scoped turn options for SESSION-ID in STORE."
   (copy-sequence (plist-get (e-session-get store session-id) :turn-options)))
 
-(defun e-session-set-metadata (store session-id metadata)
-  "Replace SESSION-ID METADATA in STORE."
-  (let* ((session (e-session-get store session-id))
+(defun e-session--replace-metadata (store session-id metadata)
+  "Replace SESSION-ID METADATA in STORE after validation."
+  (let* ((metadata (e-session--validate-metadata metadata))
+         (session (e-session-get store session-id))
          (timestamp (e-session--timestamp))
          (event (e-session--append-session-event
                  session
@@ -1302,6 +1559,92 @@ state are requested."
            :metadata metadata))
     (e-session--write-index store)
     metadata))
+
+(defun e-session-set-metadata (store session-id metadata)
+  "Replace SESSION-ID METADATA in STORE.
+This compatibility path validates that every key has a durable state schema.
+New code should prefer the narrower typed metadata helpers."
+  (e-session--replace-metadata store session-id metadata))
+
+(defun e-session--merge-metadata (metadata updates)
+  "Return METADATA with UPDATES applied."
+  (let ((metadata (copy-sequence metadata)))
+    (while (consp updates)
+      (let ((key (pop updates)))
+        (when (consp updates)
+          (setq metadata (plist-put metadata key (pop updates))))))
+    metadata))
+
+(defun e-session-set-session-config (store session-id config)
+  "Merge durable session CONFIG into SESSION-ID metadata."
+  (e-session--validate-metadata-class config 'session-config)
+  (let* ((session (e-session-get store session-id))
+         (metadata (e-session--merge-metadata
+                    (plist-get session :metadata)
+                    config)))
+    (e-session--replace-metadata store session-id metadata)))
+
+(defun e-session-context-references (store session-id owner)
+  "Return current-state references for OWNER in SESSION-ID."
+  (let* ((metadata (plist-get (e-session-get store session-id) :metadata))
+         (references (plist-get metadata :context-references))
+         (owner-key (e-session--metadata-owner-key owner)))
+    (copy-tree
+     (e-session--metadata-public-value
+      (plist-get references owner-key)))))
+
+(defun e-session-set-context-references (store session-id owner references)
+  "Set durable current-state REFERENCES for OWNER in SESSION-ID."
+  (let* ((owner-key (e-session--metadata-owner-key owner))
+         (session (e-session-get store session-id))
+         (metadata (copy-sequence (plist-get session :metadata)))
+         (all-references (copy-sequence
+                          (plist-get metadata :context-references))))
+    (setq all-references
+          (plist-put all-references
+                     owner-key
+                     (e-session--metadata-json-array-safe-value references)))
+    (e-session--replace-metadata
+     store
+     session-id
+     (plist-put metadata :context-references all-references))
+    references))
+
+(defun e-session-set-context-reference (store session-id key reference)
+  "Set durable current-state REFERENCE metadata KEY for SESSION-ID."
+  (e-session--validate-metadata-class (list key reference)
+                                      'current-state-reference)
+  (let* ((session (e-session-get store session-id))
+         (metadata (e-session--merge-metadata
+                    (plist-get session :metadata)
+                    (list key reference))))
+    (e-session--replace-metadata store session-id metadata)))
+
+(defun e-session-capability-state (store session-id capability-id)
+  "Return durable capability state for CAPABILITY-ID in SESSION-ID."
+  (let* ((metadata (plist-get (e-session-get store session-id) :metadata))
+         (state (plist-get metadata :capability-state))
+         (owner-key (e-session--metadata-owner-key capability-id)))
+    (copy-tree
+     (e-session--metadata-public-value
+      (plist-get state owner-key)))))
+
+(cl-defun e-session-set-capability-state
+    (store session-id capability-id state &key version)
+  "Set durable capability STATE for CAPABILITY-ID in SESSION-ID."
+  (let* ((owner-key (e-session--metadata-owner-key capability-id))
+         (session (e-session-get store session-id))
+         (metadata (copy-sequence (plist-get session :metadata)))
+         (all-state (copy-sequence (plist-get metadata :capability-state)))
+         (entry (if version
+                    (list :version version :state state)
+                  state)))
+    (setq all-state (plist-put all-state owner-key entry))
+    (e-session--replace-metadata
+     store
+     session-id
+     (plist-put metadata :capability-state all-state))
+    entry))
 
 (defun e-session-set-turn-options (store session-id options)
   "Replace SESSION-ID turn OPTIONS in STORE."

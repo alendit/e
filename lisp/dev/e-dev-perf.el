@@ -750,6 +750,45 @@ artifacts under `e-dev-perf-run-directory'."
        (plist-put metrics :entries-replayed.count
                   (length (e-session-messages replay-store "session-replay")))))))
 
+(defun e-dev-perf--scenario-session-metadata-state-run (_state)
+  "Run typed session metadata state write scenario."
+  (e-dev-perf--with-temp-session-store
+   (lambda (store _directory)
+     (let ((index-writes 0)
+           metrics)
+       (e-session-create store :id "session-state")
+       (cl-letf (((symbol-function 'e-session--write-index)
+                  (lambda (store-arg)
+                    (setq index-writes (1+ index-writes))
+                    (let ((file (e-session-store-index-file store-arg)))
+                      (when file
+                        (make-directory (file-name-directory file) t)
+                        (with-temp-file file
+                          (insert "[]\n")))))))
+         (setq metrics
+               (e-dev-perf--profile-spans
+                (lambda ()
+                  (dotimes (index 4)
+                    (e-session-set-session-config
+                     store "session-state"
+                     (list :project-root
+                           (format "/tmp/e-state-%d/" index)))
+                    (e-session-set-context-references
+                     store
+                     "session-state"
+                     'chat-session
+                     (list :attachments
+                           (list (list :uri
+                                       (format "buffer://source-%d" index)))))
+                    (e-session-set-capability-state
+                     store
+                     "session-state"
+                     'mcp
+                     (list :enabled t
+                           :iteration index))))
+                '(session.append-record session.write-index))))
+       (plist-put metrics :session.index-write.count index-writes)))))
+
 (defun e-dev-perf--scenario-context-run (_state)
   "Run context assembly fixture scenario."
   (let* ((store (e-session-store-create))
@@ -896,6 +935,15 @@ artifacts under `e-dev-perf-run-directory'."
       :samples 5
       :warmups 1
       :tags '(session)))
+    (e-dev-perf-register-scenario
+     (e-dev-perf-scenario-create
+      :id "session.metadata-state"
+      :title "Session metadata state lanes"
+      :owner 'e-session
+      :run #'e-dev-perf--scenario-session-metadata-state-run
+      :samples 5
+      :warmups 1
+      :tags '(session state)))
     (e-dev-perf-register-scenario
      (e-dev-perf-scenario-create
       :id "context.fixture"

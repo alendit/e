@@ -461,7 +461,95 @@
             (should (equal (plist-get
                             (plist-get (e-session-get loaded session-id) :metadata)
                             :project-root)
-                           "/tmp/wide/"))))
+	                           "/tmp/wide/"))))
+      (delete-directory directory t))))
+
+(ert-deftest e-session-test-metadata-schema-rejects-transient-and-unknown-keys ()
+  "Generic metadata writes reject unowned or presentation-only state."
+  (let ((store (e-session-store-create)))
+    (e-session-create store :id "session-1")
+    (should-error
+     (e-session-set-metadata store "session-1" '(:unknown t)))
+    (should-error
+     (e-session-set-metadata
+      store "session-1" '(:e-chat-read-markers (:default "marker"))))
+    (should-error
+     (e-session-set-metadata
+      store
+      "session-1"
+      '(:org-canvas (:uri "buffer://canvas"
+                    :last-focus (:point 1)))))))
+
+(ert-deftest e-session-test-typed-state-lanes-persist-through-replay ()
+  "Typed metadata helpers persist their owned state lanes."
+  (let* ((directory (make-temp-file "e-session-typed-state-" t))
+         (store (e-session-persistent-store-create directory))
+         (session-id (plist-get (e-session-create store :id "session-1") :id)))
+    (unwind-protect
+        (progn
+          (e-session-set-session-config
+           store session-id '(:project-root "/tmp/project/"))
+          (e-session-set-context-references
+           store
+           session-id
+           'chat-session
+           '(:attachments ((:uri "buffer://source" :id "source"))))
+          (e-session-set-capability-state
+           store
+           session-id
+           'mcp
+           '(:enabled t))
+          (let* ((loaded (e-session-persistent-store-create directory))
+                 (metadata (plist-get
+                            (e-session-get loaded session-id)
+                            :metadata)))
+            (should (equal (plist-get metadata :project-root)
+                           "/tmp/project/"))
+            (should (equal
+                     (plist-get
+                      (car (plist-get
+                            (e-session-context-references
+                             loaded session-id 'chat-session)
+                            :attachments))
+                      :uri)
+                     "buffer://source"))
+            (should (equal (plist-get
+                            (e-session-capability-state
+                             loaded session-id 'mcp)
+                            :enabled)
+                           t))))
+      (delete-directory directory t))))
+
+(ert-deftest e-session-test-replay-drops-known-transient-metadata ()
+  "Legacy replay removes known presentation and high-churn focus metadata."
+  (let* ((directory (make-temp-file "e-session-legacy-metadata-" t))
+         (sessions-directory (expand-file-name "sessions" directory))
+         (session-file (expand-file-name "legacy.jsonl" sessions-directory)))
+    (unwind-protect
+        (progn
+          (make-directory sessions-directory t)
+          (with-temp-file session-file
+            (insert
+             (json-encode
+              '(:type "session"
+                :session-id "legacy"
+                :id "root"
+                :timestamp "2026-06-29T00:00:00Z"
+                :metadata (:name "Legacy"
+                           :e-chat-read-markers (:default "marker")
+                           :org-canvas (:uri "buffer://canvas"
+                                        :last-scope "document"
+                                        :last-focus (:point 42)))))
+             "\n"))
+          (let* ((store (e-session-persistent-store-create directory))
+                 (metadata (plist-get (e-session-get store "legacy")
+                                      :metadata))
+                 (canvas (plist-get metadata :org-canvas)))
+            (should (equal (plist-get metadata :name) "Legacy"))
+            (should-not (plist-member metadata :e-chat-read-markers))
+            (should (equal (plist-get canvas :uri) "buffer://canvas"))
+            (should-not (plist-member canvas :last-scope))
+            (should-not (plist-member canvas :last-focus))))
       (delete-directory directory t))))
 
 (ert-deftest e-session-test-turn-options-persist-through-session-info ()

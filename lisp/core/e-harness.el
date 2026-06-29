@@ -584,6 +584,28 @@ an already-removed record is a no-op."
     compaction-finished compaction-failed)
   "Turn event types stored as durable session activity.")
 
+(defconst e-harness--activity-event-classes
+  '((turn-started . audit)
+    (provider-request-started . audit)
+    (provider-request-finished . audit)
+    (reasoning-delta . presentation-log)
+    (reasoning-raw-delta . presentation-log)
+    (tool-started . audit)
+    (tool-finished . presentation-log)
+    (turn-finished . replay)
+    (token-usage . audit)
+    (turn-failed . audit)
+    (turn-cancelled . audit)
+    (turn-steered . audit)
+    (backend-empty-output . audit)
+    (compaction-started . audit)
+    (compaction-prepared . audit)
+    (compaction-summary-started . audit)
+    (compaction-finished . replay)
+    (compaction-failed . audit))
+  "Persistence reason for activity event types.
+Classes are `audit', `replay', `presentation-log', and `transient-progress'.")
+
 (defconst e-harness--activity-index-flush-event-types
   '(turn-finished turn-failed turn-cancelled backend-empty-output
     compaction-finished compaction-failed)
@@ -701,7 +723,14 @@ The delay grows geometrically and is capped at
 
 (defun e-harness--durable-activity-event-p (type)
   "Return non-nil when TYPE should be stored as session activity."
-  (memq type e-harness--durable-activity-event-types))
+  (let ((class (e-harness-activity-event-class type)))
+    (and class
+         (not (eq class 'transient-progress))
+         (memq type e-harness--durable-activity-event-types))))
+
+(defun e-harness-activity-event-class (type)
+  "Return persistence class for activity event TYPE."
+  (cdr (assq type e-harness--activity-event-classes)))
 
 (defun e-harness--activity-index-flush-event-p (type)
   "Return non-nil when TYPE should flush coalesced activity index writes."

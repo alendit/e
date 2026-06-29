@@ -60,37 +60,19 @@ METADATA is caller-provided turn activity metadata."
    prompt
    :metadata metadata))
 
-(defun e-chat-session--metadata-for-write (metadata)
-  "Return METADATA without presentation-only session state."
-  (let (result)
-    (while (consp metadata)
-      (let ((key (pop metadata)))
-        (when (consp metadata)
-          (let ((value (pop metadata)))
-            (unless (eq key :e-chat-read-markers)
-              (push value result)
-              (push key result))))))
-    (nreverse result)))
-
 (defun e-chat-session-ensure-project-root (harness session-id project-root)
-  "Ensure SESSION-ID uses PROJECT-ROOT when it safely widens the stored root.
-Existing roots are updated only when absent or when they are descendants of
-PROJECT-ROOT."
+  "Ensure SESSION-ID has PROJECT-ROOT when no durable root is stored."
   (let* ((project-root (and project-root
                             (file-name-as-directory
                              (expand-file-name project-root))))
-         (current-root (and project-root
-                            (e-harness-project-root harness session-id nil))))
+         (store (e-harness-sessions harness))
+         (session (and project-root (e-session-get store session-id)))
+         (metadata (plist-get session :metadata))
+         (current-root (plist-get metadata :project-root)))
     (when (and project-root
-               (or (not current-root)
-                   (file-in-directory-p current-root project-root)))
-      (let* ((session (e-session-get (e-harness-sessions harness) session-id))
-             (metadata (e-chat-session--metadata-for-write
-                        (plist-get session :metadata))))
-        (unless (equal (plist-get metadata :project-root) project-root)
-          (setq metadata (plist-put metadata :project-root project-root))
-          (e-session-set-metadata
-           (e-harness-sessions harness) session-id metadata))))))
+               (not current-root))
+      (e-session-set-session-config
+       store session-id (list :project-root project-root)))))
 
 (defun e-chat-session-abort (harness session-id)
   "Abort the active chat turn for SESSION-ID through HARNESS."
@@ -157,11 +139,13 @@ When CANVAS is non-nil, mark the attachment as the session canvas."
 
 (defun e-chat-session-attachments (harness session-id)
   "Return current live context attachments for SESSION-ID in HARNESS."
-  (copy-sequence
-   (plist-get
-    (plist-get (e-session-get (e-harness-sessions harness) session-id)
-               :metadata)
-    :context-attachments)))
+  (let* ((store (e-harness-sessions harness))
+         (references (e-session-context-references
+                      store session-id 'chat-session))
+         (metadata (plist-get (e-session-get store session-id) :metadata)))
+    (copy-sequence
+     (or (plist-get references :attachments)
+         (plist-get metadata :context-attachments)))))
 
 (defun e-chat-session--same-attachment-p (left right)
   "Return non-nil when LEFT and RIGHT identify the same attachment."
@@ -193,20 +177,21 @@ When CANVAS is non-nil, mark the attachment as the session canvas."
                       attachments)))
 
 (defun e-chat-session--set-attachments (harness session-id attachments)
-  "Persist ATTACHMENTS as SESSION-ID live context metadata."
-  (let* ((session (e-session-get (e-harness-sessions harness) session-id))
-         (metadata (e-chat-session--metadata-for-write
-                    (plist-get session :metadata))))
-    (setq metadata (plist-put metadata :context-attachments attachments))
-    (e-session-set-metadata (e-harness-sessions harness) session-id metadata)
-    attachments))
+  "Persist ATTACHMENTS as SESSION-ID current-state references."
+  (e-session-set-context-references
+   (e-harness-sessions harness)
+   session-id
+   'chat-session
+   (list :attachments attachments))
+  attachments)
 
 (cl-defun e-chat-session-attach-context
     (harness session-id attachment &key canvas)
   "Attach ATTACHMENT to SESSION-ID live context in HARNESS.
 ATTACHMENT is a plist with at least :uri.  Attachments are stored as session
-metadata; their contents are read fresh whenever context is built.  When CANVAS
-is non-nil, ATTACHMENT replaces the session's primary canvas attachment."
+current-state references; their contents are read fresh whenever context is
+built.  When CANVAS is non-nil, ATTACHMENT replaces the session's primary canvas
+attachment."
   (let* ((attachment (e-chat-session--normalize-attachment attachment canvas))
          (attachments (e-chat-session-attachments harness session-id))
          (next (if canvas

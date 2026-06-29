@@ -357,8 +357,8 @@ ad-hoc test or caller-supplied harnesses keep their explicit layer state."
   harness)
 
 (cl-defun e-org-canvas--metadata-for-buffer
-    (buffer &key scope focus target-folder needs-file-name)
-  "Return Org Canvas metadata for BUFFER."
+    (buffer &key _scope _focus target-folder needs-file-name)
+  "Return stable Org Canvas reference metadata for BUFFER."
   (with-current-buffer buffer
     (let ((root (e-org-canvas--root-for-buffer buffer)))
       (list :uri (e-org-canvas--buffer-uri buffer)
@@ -366,36 +366,28 @@ ad-hoc test or caller-supplied harnesses keep their explicit layer state."
             :label (e-org-canvas--buffer-label buffer)
             :mode 'org
             :root root
-            :last-scope scope
-            :last-focus focus
             :needs-file-name needs-file-name
             :target-folder target-folder))))
 
 (defun e-org-canvas--set-session-metadata
     (harness session-id org-canvas-metadata)
   "Persist ORG-CANVAS-METADATA on HARNESS SESSION-ID."
-  (let* ((session (e-session-get (e-harness-sessions harness) session-id))
-         (metadata (copy-sequence (plist-get session :metadata))))
-    (setq metadata (plist-put metadata :org-canvas org-canvas-metadata))
+  (let ((store (e-harness-sessions harness)))
+    (e-session-set-context-reference
+     store session-id :org-canvas-ref org-canvas-metadata)
     (when (plist-get org-canvas-metadata :root)
-      (setq metadata (plist-put metadata
-                                :project-root
-                                (plist-get org-canvas-metadata :root))))
-    (e-session-set-metadata (e-harness-sessions harness) session-id metadata)
-    metadata))
+      (e-session-set-session-config
+       store
+       session-id
+       (list :project-root (plist-get org-canvas-metadata :root))))
+    (plist-get (e-session-get store session-id) :metadata)))
 
 (cl-defun e-org-canvas--mark-session
     (harness session-id buffer &key scope target-folder needs-file-name focus)
   "Mark HARNESS SESSION-ID as an Org Canvas session for BUFFER."
-  (let* ((focus (or focus
-                    (and (buffer-live-p buffer)
-                         (with-current-buffer buffer
-                           (e-org-canvas-capture-focus
-                            (or scope 'thread))))))
-         (org-canvas (e-org-canvas--metadata-for-buffer
+  (ignore scope focus)
+  (let* ((org-canvas (e-org-canvas--metadata-for-buffer
                       buffer
-                      :scope scope
-                      :focus focus
                       :target-folder target-folder
                       :needs-file-name needs-file-name))
          (attachment (append (e-canvas--buffer-attachment buffer)
@@ -413,11 +405,11 @@ ad-hoc test or caller-supplied harnesses keep their explicit layer state."
 
 (defun e-org-canvas--session-uri (session)
   "Return Org Canvas URI for SESSION metadata."
-  (plist-get (plist-get session :metadata) :org-canvas))
+  (plist-get (e-org-canvas--session-canvas session) :uri))
 
 (defun e-org-canvas--session-canvas (session)
   "Return SESSION's Org Canvas metadata, or nil."
-  (plist-get (plist-get session :metadata) :org-canvas))
+  (e-org-canvas--metadata-ref (plist-get session :metadata)))
 
 (defun e-org-canvas--all-sessions (harness)
   "Return full session records for HARNESS."
@@ -856,26 +848,8 @@ Org file."
       (when (buffer-file-name buffer)
         (e-org-canvas--mark-session
          harness session-id buffer
-         :scope (plist-get canvas :last-scope)
          :target-folder (plist-get canvas :target-folder)
-         :needs-file-name nil
-         :focus (plist-get canvas :last-focus))))))
-
-(defun e-org-canvas--update-last-turn-metadata
-    (harness session-id scope focus)
-  "Update HARNESS SESSION-ID Org Canvas metadata with SCOPE and FOCUS."
-  (let ((buffer (e-org-canvas-session-buffer harness session-id)))
-    (when (buffer-live-p buffer)
-      (e-org-canvas--mark-session
-       harness session-id buffer
-       :scope scope
-       :target-folder (plist-get
-                       (e-org-canvas-session-metadata harness session-id)
-                       :target-folder)
-       :needs-file-name (plist-get
-                         (e-org-canvas-session-metadata harness session-id)
-                         :needs-file-name)
-       :focus focus))))
+         :needs-file-name nil)))))
 
 (defun e-org-canvas--input-status-text ()
   "Return the current input pane status block."
@@ -1213,7 +1187,6 @@ progress redraws follow output instead of staying pinned at the top."
          (focus (with-current-buffer buffer
                   (e-org-canvas-capture-focus scope)))
          (uri (plist-get focus :uri)))
-    (e-org-canvas--update-last-turn-metadata harness session-id scope focus)
     (e-chat-session-submit
      harness
      session-id
