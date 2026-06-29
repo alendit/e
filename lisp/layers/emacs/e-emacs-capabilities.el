@@ -171,6 +171,8 @@ Before finalizing, verify presentation, not just content. Confirm the resource y
      "Action example:"
      "(e-actions-call 'chat-session :rename '(:name \"Focused chat\"))"
      ""
+     "Do not use run_elisp to load, require, byte-compile, or recursively scan external Elisp during an interactive turn. Inspect external Elisp with resource/file tools, and use an explicit project-local action when trusted project Elisp needs activation."
+     ""
      "Use this when several tool calls are needed to compute one answer, later calls depend on earlier results, many similar resources need the same read/search/edit operation, or the result should be filtered, grouped, or summarized before returning."
      ""
      "Use e-actions-call from run_elisp for capability actions. Do not add a separate action tool just to call an action; run_elisp is the agent-facing tool and e-actions-call is the ergonomic Elisp action API."

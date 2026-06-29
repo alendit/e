@@ -115,6 +115,20 @@ SOURCE overrides the default layer source."
           (should (null (e-project-local-capabilities project))))
       (delete-directory project t))))
 
+(ert-deftest e-project-local-test-guidance-discourages-raw-elisp-loading ()
+  "Project-local guidance points agents away from raw run_elisp loads."
+  (let* ((project (make-temp-file "e-project-local-guidance-" t))
+         (e-project-local-allowed-roots (list project)))
+    (unwind-protect
+        (let* ((layer (e-project-local-layer-create project))
+               (capability (car (e-layer-capabilities layer)))
+               (instructions (e-capability-instructions capability)))
+          (should (string-match-p "resource/file tools" instructions))
+          (should (string-match-p "Do not raw-load project files from run_elisp"
+                                  instructions))
+          (should (string-match-p "project-local actions" instructions)))
+      (delete-directory project t))))
+
 (ert-deftest e-project-local-test-discovers-ancestor-capabilities ()
   "Discovery walks ancestor .e/capabilities directories."
   (let* ((project (make-temp-file "e-project-local-anc-" t))

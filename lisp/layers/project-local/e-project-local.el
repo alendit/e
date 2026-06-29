@@ -70,7 +70,10 @@ by default because byte compilation writes `.elc' files into the project."
   :group 'e-project-local)
 
 (defconst e-project-local-instructions
-  "Project-local capabilities discovered from this repository are active. Their tools, resources, and skills behave like built-in capabilities for this turn."
+  (string-join
+   '("Project-local capabilities discovered from this repository are active. Their tools, resources, and skills behave like built-in capabilities for this turn."
+     "Inspect project-local Elisp with resource/file tools before activation. Do not raw-load project files from run_elisp; use project-local actions for trusted activation when available.")
+   "\n")
   "Instructions contributed when project-local capabilities are active.")
 
 (defconst e-project-local-capabilities-subdir ".e/capabilities"

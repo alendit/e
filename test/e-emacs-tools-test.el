@@ -357,7 +357,11 @@ When READ-ONLY is non-nil, buffer resources only support reads."
       (should (string-match-p "e-tools-call!" description))
       (should (string-match-p "e-actions-call" description))
       (should (string-match-p "active tools" description))
-      (should (string-match-p "active capability actions" description)))))
+      (should (string-match-p "active capability actions" description))
+      (should (string-match-p "Inspect external Elisp with resource/file tools"
+                              description))
+      (should (string-match-p "do not load, require, byte-compile"
+                              description)))))
 
 (ert-deftest e-emacs-tools-test-run-elisp-never-enters-debugger ()
   "run_elisp surfaces errors as tool errors without popping the debugger.
@@ -366,6 +370,7 @@ entered the interactive debugger, whose buffer setup re-signalled and recursed,
 pinning Emacs at 100% CPU.  The tool must inhibit the debugger so such code
 returns a normal tool error instead."
   (let ((registry (e-tools-registry-create))
+        (debug-on-error nil)
         ;; Fail loudly if anything tries to enter the debugger.
         (debugger (lambda (&rest _) (error "debugger must not be entered"))))
     (e-emacs-tools-register-run-elisp registry)
