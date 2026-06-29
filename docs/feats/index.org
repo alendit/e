@@ -48,8 +48,10 @@ Status values for coding agents:
 | 35 | In-review | 35-provider-context-anchors/ | Provider Context Anchors |
 | 36 | In-review | 36-steering-and-queuing/ | Steering and Queuing |
 | 37 | Planned | 37-ask-user-question/ | Ask User Question Tool |
-| 38 | Done | 38-output-style/ | Output Style |
+| 38 | In-review | 38-output-style/ | Output Style |
 | 39 | Done | 39-chat-hot-path-optimizations/ | Chat Hot Path Optimizations |
 | 40 | In-review | 40-async-interactions-transition/ | Async Interactions Transition |
-| 41 | In-review | 41-perf-regression-testing/ | Performance Regression Testing |
+| 41 | In-progress | 41-perf-regression-testing/ | Performance Regression Testing |
 | 42 | Done | 42-goal-capability/ | Goal Capability |
+| 43 | Done | 43-action-dispatcher/ | Action Dispatcher |
+| 44 | Planned | 44-action-telemetry-tool-surface/ | Action Telemetry and Tool Surface Cleanup |

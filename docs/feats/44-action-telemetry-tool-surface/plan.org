@@ -1,0 +1,386 @@
+#+title: Action Telemetry and Tool Surface Cleanup
+#+startup: overview
+
+* Goal
+
+Track capability action calls as first-class activity and move UI, workflow, and
+capability-control verbs out of the default model-facing tool surface.
+
+The model should see a small set of primitive tools.  Semantic operations that
+belong to e capabilities, grimoire, or personal layers should be invoked through
+the unified action-call wrapper from =run_elisp= and reported as actions in
+usage summaries.
+
+* Status
+
+Planned.
+
+* Problem
+
+The last-14-days tool usage report showed tool-surface creep.  Entries such as
+=org_canvas_show_context=, =workspace_focus_buffer=, =annotation_list=,
+=dev_sync_push=, =questbook=, and =topic_state_read= are not the same kind of
+primitive as =read=, =edit=, =search=, =bash=, or =web_fetch=.
+
+They are capability or presentation operations.  Exposing each one as a
+model-facing tool has costs:
+
+- the tool list grows with UI and project-local concerns;
+- prompts spend budget on verbs that should be capability APIs;
+- usage reports conflate primitive tools with semantic actions;
+- project-local systems such as grimoire copy the tool pattern for workflow
+  verbs;
+- personal layers add ad hoc tool names instead of stable action contracts.
+
+The new action-call wrapper gives us the right execution path.  The missing
+piece is durable action telemetry and guidance that makes actions the default
+shape for these operations.
+
+* Desired split
+
+** Model-facing tools
+
+Keep tools for primitive operations the model must request directly:
+
+- resource reads, writes, edits, globbing, and search;
+- shell/process execution;
+- explicit Elisp evaluation;
+- web search/fetch/browser primitives when enabled;
+- narrow diagnostics that truly need to be model-facing in a debug layer.
+
+** Capability actions
+
+Move semantic or presentation operations to actions:
+
+- workspace state and display operations;
+- Org Canvas visibility and presentation operations;
+- annotation list/add/resolve operations;
+- session compaction and context export;
+- e error/session diagnostics unless a debug layer deliberately exposes tools;
+- grimoire topic, quest, and dev-sync operations;
+- personal workflow operations.
+
+** Context providers
+
+Prefer passive context when the model usually needs state but should not have to
+call anything.  Workspace awareness and Org Canvas visibility already fit this
+pattern.  The action path should remain available for explicit refresh or
+presentation changes.
+
+* Design
+
+** Action telemetry
+
+Add durable activity events around action dispatch:
+
+- =action-started=
+- =action-finished=
+- =action-failed=, or =action-finished= with =:status "error"= if we prefer one
+  terminal event shape
+
+Record compact payload fields:
+
+- capability id;
+- action key;
+- action call id;
+- session id and turn id when present;
+- parent tool call id when the action was invoked through =run_elisp=;
+- argument preview with truncation metadata;
+- result preview with truncation metadata;
+- status;
+- elapsed seconds;
+- error class and message for failures.
+
+Telemetry should be emitted by the action dispatcher, not by each action.  This
+keeps action owners focused on behavior and makes reporting consistent.
+
+When no harness/session/turn is available, dispatch should still work as it does
+now.  Durable activity should be skipped unless the dispatcher has enough
+session context to store it correctly.
+
+** Usage reporting
+
+Update session usage reports to produce separate sections:
+
+1. model-facing tools;
+2. capability actions;
+3. nested tool calls from =run_elisp=, if useful as a sub-breakdown.
+
+Do not hide action calls inside =run_elisp=.  A report should show that
+=run_elisp= executed once and that it invoked, for example,
+=org-canvas/:show-context= or =workspace-awareness/:focus-buffer=.
+
+Keep zero rows for active tools and active actions when the user asks for a full
+surface report.
+
+** Migration rule
+
+Before removing a model-facing tool, ensure the equivalent action has:
+
+- an =e-action-create= descriptor;
+- a compact parameter schema;
+- a clear capability id and action key;
+- durable action telemetry through the dispatcher;
+- updated instructions or skill text;
+- tests proving dispatch, errors, and telemetry.
+
+Do not add a generic =call_action= model-facing tool.  =run_elisp= plus the
+action-call wrapper is the model-facing affordance.
+
+* e migration plan
+
+** Core action dispatch
+
+1. Add telemetry hooks to action dispatch.
+2. Reuse existing result-preview and argument-preview logic where possible.
+3. Add action event types to durable activity storage.
+4. Add tests for successful, failed, and missing-context action calls.
+5. Add reporting helpers that aggregate =tool-started= and =action-started=
+   separately.
+
+** Workspace awareness
+
+Migrate:
+
+- =workspace_state= -> =workspace-awareness/:state=, or context-only for routine
+  state;
+- =workspace_focus_buffer= -> =workspace-awareness/:focus-buffer=;
+- =workspace_show_shell= -> =workspace-awareness/:show-shell=.
+
+Guidance should say:
+
+- read workspace context first;
+- use =e-actions-call= for workspace presentation changes;
+- prefer direct workspace-aware Elisp helpers only inside custom Elisp that
+  already owns the display logic.
+
+** Org Canvas
+
+Migrate:
+
+- =org_canvas_visibility_state= -> =org-canvas/:visibility-state=;
+- =org_canvas_show_context= -> =org-canvas/:show-context=;
+- =org_canvas_cycle_heading= -> =org-canvas/:cycle-heading=;
+- =org_canvas_show_all= -> =org-canvas/:show-all=;
+- =org_canvas_overview= -> =org-canvas/:overview=.
+
+Keep Org Canvas visibility in dynamic context.  The action path is for explicit
+presentation changes, not routine inspection.
+
+** Annotation layer
+
+Migrate:
+
+- =annotation_list= -> =annotations/:list=;
+- =annotation_add= -> =annotations/:add=;
+- =annotation_resolve= -> =annotations/:resolve=.
+
+Keep the existing safety model: adding annotations is non-destructive;
+resolving a thread records a verdict but does not apply domain mutations.
+
+** Session and diagnostics
+
+Migrate or gate:
+
+- =compact_session= -> existing chat/session compaction action;
+- =export-context= -> diagnostics or session action;
+- =e_error_recent_failures= -> diagnostics action;
+- =e_error_failure_detail= -> diagnostics action;
+- =e_error_raw_provider_preview= -> diagnostics action.
+
+Expose diagnostics as model-facing tools only in a deliberate debug layer if a
+future workflow proves that direct tool access is worth the tool-surface cost.
+
+** Buffer save
+
+Decide during implementation whether =save_buffer= remains a primitive Emacs
+mutation tool or becomes =buffer-edit/:save=.  The current guidance treats saving
+as a persistence step after buffer edits, so this may stay as a tool until buffer
+editing itself has a clearer action boundary.
+
+* grimoire migration plan
+
+Grimoire should define semantic actions on project-local capabilities instead of
+model-facing workflow tools.
+
+Candidate migrations:
+
+- =topic_state_read= -> =grimoire-topic/:state-read=;
+- =topic_list_recent= -> =grimoire-topic/:list-recent=;
+- =topic_index_regen= -> =grimoire-topic/:index-regen=;
+- =questbook= -> =grimoire-quest/:book=;
+- =quest_new= -> =grimoire-quest/:new=;
+- =dev_sync_preflight= -> =grimoire-dev-sync/:preflight=;
+- =dev_sync_compile_check= -> =grimoire-dev-sync/:compile-check=;
+- =dev_sync_integrate= -> =grimoire-dev-sync/:integrate=;
+- =dev_sync_push= -> =grimoire-dev-sync/:push=.
+
+Guidance for grimoire project-local layers:
+
+- use capability ids that name the domain, not the transport;
+- expose action descriptors with required argument schemas;
+- keep idempotent review/proposal operations as actions;
+- keep destructive or publishing actions explicit, narrow, and auditable;
+- rely on action telemetry for reports rather than custom logging tools;
+- avoid compatibility tool shims unless a real active workflow cannot be moved
+  in one step.
+
+* personal layers migration plan
+
+Personal layers should follow the same contract as grimoire:
+
+- use actions for personal workflows, capture, review queues, host shortcuts,
+  agenda operations, and UI control;
+- use tools only for primitive IO or external inspection that the model must
+  request directly;
+- keep personal action names stable and capability-scoped;
+- document each action in the layer guidance with its =e-actions-call= form;
+- avoid exposing broad host or workflow commands as generic model-facing tools;
+- ensure action telemetry records enough evidence for later audits.
+
+Personal layer guidance should include a short decision checklist:
+
+1. Is this a primitive read/write/search/shell/web operation?  If yes, it may be
+   a tool.
+2. Does it mean something in a domain or UI?  If yes, make it an action.
+3. Does the model only need passive state?  If yes, make it context.
+4. Would usage reporting need to distinguish it from =run_elisp=?  If yes,
+   ensure action telemetry covers it.
+
+* Guidance updates
+
+Update e guidance in these places:
+
+- runtime vocabulary docs;
+- =run_elisp= instructions;
+- workspace-awareness skill and instructions;
+- Org Canvas instructions;
+- annotation guidance;
+- project-local capability guidance;
+- any AGENTS or project templates that currently tell agents to add a tool for a
+  semantic operation.
+
+New guidance should use this rule:
+
+#+begin_quote
+Use tools for primitive model-facing IO.  Use actions for capability semantics,
+workflow steps, UI operations, and shell-facing runtime behavior.  Use context
+providers for passive state.
+#+end_quote
+
+Show examples:
+
+#+begin_src elisp
+(e-actions-call 'workspace-awareness :focus-buffer '(:buffer "*scratch*"))
+(e-actions-call 'org-canvas :show-context '(:heading-path ["Project" "Next"]))
+(e-actions-call 'annotations :list '(:file "notes.org"))
+#+end_src
+
+* Rollout phases
+
+** Phase 1: telemetry foundation
+
+- Add durable action activity events.
+- Add tests.
+- Update usage aggregation to split tools and actions.
+- Keep existing tools unchanged.
+
+** Phase 2: e built-in actions
+
+- Convert workspace and Org Canvas operations to actions.
+- Convert annotation operations to actions.
+- Convert or gate session diagnostics.
+- Update guidance.
+- Keep any temporary tool aliases disabled by default unless a real compatibility
+  requirement appears.
+
+** Phase 3: grimoire and personal layers
+
+- Convert grimoire topic, quest, and dev-sync tools to actions.
+- Convert personal semantic tools to actions.
+- Update project-local capability templates and examples.
+- Run usage reports to confirm these calls now appear as actions.
+
+** Phase 4: cleanup
+
+- Remove obsolete tool registration functions.
+- Remove obsolete tool guidance.
+- Keep the default tool list small and stable.
+
+* Acceptance criteria
+
+- Action calls emit durable activity events when dispatched with active session
+  context.
+- Usage reports show tools and actions separately.
+- Existing action dispatch behavior remains compatible for callers.
+- Workspace, Org Canvas, annotations, diagnostics, grimoire, and personal layer
+  guidance point agents to =e-actions-call= instead of dedicated semantic tools.
+- The default model-facing tool surface no longer includes migrated UI,
+  workflow, or project-local action verbs.
+- Zero-use rows remain available for both tools and actions in full-surface
+  reports.
+
+* Verification plan
+
+- Focused tests for action dispatch telemetry.
+- Session-store replay test for =action-started= and terminal action events.
+- Usage aggregation test with mixed tool and action events.
+- Layer tests proving migrated actions are active when their capabilities are
+  active.
+- Guidance tests or fixture checks where existing instruction strings name old
+  tools.
+- Live reload after implementation because this changes core dispatch and loaded
+  layer behavior.
+- Live probe from =run_elisp= that calls one migrated e action and confirms it
+  appears in durable activity.
+
+* Non-goals
+
+- Do not implement this in the planning slice.
+- Do not remove primitive tools.
+- Do not add a generic model-facing action tool.
+- Do not hide actions inside =run_elisp= in reports.
+- Do not add broad compatibility shims without a concrete workflow that needs
+  them.
+
+* Design self-check
+
+1. If this work package stopped here, would the project be better off than if it
+   had not been built?
+   Yes.  It gives a clear migration path from tool-surface creep to a smaller
+   tool surface with auditable action telemetry.
+2. What final direction does this move toward?
+   A runtime where tools are primitive IO, actions are capability semantics, and
+   reports show both honestly.
+3. Which decisions are likely to change, uncertain, or stable?
+   The stable decision is the tool/action/context split.  The uncertain decision
+   is whether a few border cases, such as =save_buffer= and debug diagnostics,
+   remain tools or move fully to actions.  Those decisions stay local to their
+   layers.
+4. What component owns this behavior, and why?
+   Core action dispatch owns telemetry.  Each capability owns its actions.
+   Reporting owns aggregation.  Guidance owns the user-facing rule.
+5. Does this change increase or reduce coupling?
+   It reduces coupling by removing project and UI verbs from the global tool
+   registry and routing them through capability-owned contracts.
+6. Did any dependency start pointing the wrong way?
+   No.  Core dispatch records generic action events without knowing grimoire,
+   personal layers, Org Canvas details, or workspace internals.
+7. Could any side effect be moved outward into an adapter or shell?
+   Yes.  UI display side effects move from model-facing tools to presentation or
+   capability actions.
+8. Are the abstractions semantically real?
+   Yes.  Actions already represent shell-facing capability behavior.  Telemetry
+   records that real boundary.
+9. What compatibility expectations apply?
+   Existing =e-actions-call= behavior must continue.  Tool shims should not be
+   kept by default unless a real migration blocker appears.
+10. What legacy code can we remove now?
+    After migration, old tool registration functions and instructions for
+    semantic tools can be removed.
+11. Where are expected errors handled?
+    Action argument and missing-session errors surface through action dispatch.
+    Unexpected action failures are recorded and re-raised.
+12. What tests prove the core behavior independently of the full system?
+    Dispatcher telemetry tests and usage aggregation tests prove the core.  Layer
+    tests prove action availability without full live sessions.
