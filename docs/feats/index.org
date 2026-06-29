@@ -56,4 +56,4 @@ Status values for coding agents:
 | 43 | Done | 43-action-dispatcher/ | Action Dispatcher |
 | 44 | Planned | 44-action-telemetry-tool-surface/ | Action Telemetry and Tool Surface Cleanup |
 | 45 | Done | 45-state-lifetime-and-persistence/ | State Lifetime and Persistence Boundaries |
-| 46 | Done | 46-elisp-batch-job-tool/ | Elisp Batch Job Tool |
+| 46 | Done | 46-elisp-batch-job-tool/ | Elisp Batch Job Actions |

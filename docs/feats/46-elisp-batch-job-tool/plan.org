@@ -1,13 +1,14 @@
-#+title: Elisp Batch Job Tool
+#+title: Elisp Batch Job Actions
 #+startup: overview
 
 * Goal
 
-Give agents a non-UI execution path for expensive Emacs Lisp validation work.
-The first operation is an =elisp_job= tool with =operation= =run-batch= that
-starts a separate =emacs -Q --batch= process with =make-process=, reports
-bounded streaming progress, supports cancellation and timeout, and returns the
-worker output without evaluating expensive top-level forms in the live UI Emacs.
+Give agents a non-UI execution path for expensive Emacs Lisp validation work
+without expanding the model-facing tool surface.  The first operation is the
+=elisp-job= capability action =:run-batch=, backed by public Elisp functions,
+which starts a separate =emacs -Q --batch= process with =make-process=,
+supports cancellation and timeout, and returns bounded worker output without
+evaluating expensive top-level forms in the live UI Emacs.
 
 * Status
 
@@ -28,23 +29,37 @@ synchronous =load= call in an action does not make it nonblocking.
 
 * Design
 
-Add a model-facing =elisp_job= tool to the Emacs operator layer.  The initial
+Add an =elisp-job= capability to the Emacs operator layer.  The initial action
 shape is intentionally narrow:
 
-- =operation= :: required string, currently only =run-batch=.
 - =code= :: required Emacs Lisp evaluated in the worker with =--eval=.
 - =directory= :: optional working directory for the worker, defaulting to the
   live =default-directory=.
 - =load_path= :: optional array of directories to add with =-L= before
   evaluation.
 - =timeout= :: optional hard timeout in seconds; reaching it kills the worker
-  and returns a tool error.
+  and marks the job as an error.
 
-The tool must use =make-process= directly rather than shelling out.  Output is
-captured incrementally and emitted through existing =tool-progress= events with a
-bounded preview.  The final result should include stdout and stderr text,
-process status metadata, truncation metadata when needed, and a pointer to a
-full output file when available.
+Agents call the action from =run_elisp= with:
+
+#+begin_src elisp
+(e-actions-call 'elisp-job :run-batch
+                '(:code "..." :load_path ["lisp"] :timeout 10))
+#+end_src
+
+They then poll or fetch results with:
+
+#+begin_src elisp
+(e-actions-call 'elisp-job :status '(:job_id "JOB"))
+(e-actions-call 'elisp-job :result '(:job_id "JOB"))
+(e-actions-call 'elisp-job :cancel '(:job_id "JOB"))
+#+end_src
+
+The action implementation must use =make-process= directly rather than shelling
+out.  Output is captured incrementally and exposed through =:status= and
+=:result= with a bounded preview.  The final result should include stdout and
+stderr text, process status metadata, truncation metadata when needed, and a
+pointer to a full output file when available.
 
 The worker process owns expensive evaluation.  The live Emacs only starts the
 process, collects small chunks, handles cancellation/timeout, and renders
@@ -55,25 +70,27 @@ progress.
 - Do not make project-local =:prime= or =:refresh= async in this slice.
 - Do not auto-activate project-local code after a successful batch validation.
 - Do not add another action dispatch surface.
+- Do not add a model-facing =elisp_job= tool.
 - Do not load user config in the worker by default; start from =-Q= and let the
   caller choose explicit =load_path= / =code=.
 
 * Acceptance
 
-- =elisp_job= =run-batch= returns an =e-tools-request= immediately when started
-  through the tool lifecycle.
+- =elisp-job= =:run-batch= returns a job id immediately when called through
+  =e-actions-call=.
 - Long-running worker evaluation does not complete synchronously on the call
   stack.
-- The tool publishes progress while output streams.
+- =:status= exposes bounded output while the worker is still running.
 - Timeout kills the worker and returns an error.
-- Guidance tells agents to use =elisp_job= for expensive validation or
+- Guidance tells agents to use =elisp-job= actions for expensive validation or
   byte-compilation instead of loading external Elisp from =run_elisp=.
 - Live reload includes the new module.
 
 * Verification
 
-- Focused ERT tests for async start, progress, timeout, and tool registration.
+- Focused ERT tests for async action start, status output, timeout, and absence
+  from model-facing tool definitions.
 - Broader affected Emacs tool tests.
 - =git diff --check=.
-- =e-dev-reload= and a bounded live probe for the new tool when an Emacs server
-  is available.
+- =e-dev-reload= and a bounded live probe for the new action surface when an
+  Emacs server is available and the user has not asked to skip reload.

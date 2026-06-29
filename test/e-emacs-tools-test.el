@@ -15,6 +15,8 @@
 (require 'ert)
 (require 'seq)
 (require 'e)
+(require 'e-actions)
+(require 'e-backend)
 (require 'e-capabilities)
 (require 'e-elisp-job)
 (require 'e-emacs-capabilities)
@@ -397,10 +399,10 @@ When READ-ONLY is non-nil, buffer resources only support reads."
                    "resource/file tools"
                    (format "%s" (plist-get result :content))))
           (should (string-match-p
-                   "elisp_job"
+                   "e-actions-call"
                    (format "%s" (plist-get result :content))))
           (should (string-match-p
-                   "operation=run-batch"
+                   "elisp-job"
                    (format "%s" (plist-get result :content)))))))))
 
 (ert-deftest e-emacs-tools-test-run-elisp-allows-batch-loading ()
@@ -450,99 +452,117 @@ When READ-ONLY is non-nil, buffer resources only support reads."
                               description))
       (should (string-match-p "do not load, require, byte-compile"
                               description))
-      (should (string-match-p "elisp_job" description))
+      (should (string-match-p "e-actions-call" description))
+      (should (string-match-p "elisp-job" description))
       (should (string-match-p "run-batch" description)))))
 
-(ert-deftest e-emacs-tools-test-elisp-job-starts-asynchronously ()
-  "elisp_job run-batch returns before worker completion."
-  (let ((registry (e-tools-registry-create))
-        result)
-    (e-elisp-job-register registry)
-    (let ((request
-           (e-tools-start
-            registry
-            '(:id "call-1"
-              :name "elisp_job"
-              :arguments
-              (:operation "run-batch"
-               :code "(progn (sleep-for 0.1) (princ \"done\"))"))
-            :on-done (lambda (value) (setq result value)))))
-      (should (e-tools-request-p request))
-      (should (null result))
-      (should (e-emacs-tools-test--wait-until
-               (lambda () result)
-               2.0))
+(defun e-emacs-tools-test--elisp-job-harness ()
+  "Return a harness/session pair with Elisp job actions active."
+  (let ((harness (e-harness-create
+                  :backend (e-backend-fake-create :items nil))))
+    (e-harness-activate-capability harness (e-elisp-job-capability-create))
+    (e-harness-create-session harness :id "session-1")
+    (list :harness harness :session-id "session-1")))
+
+(ert-deftest e-emacs-tools-test-elisp-job-action-starts-asynchronously ()
+  "elisp-job run-batch action returns before worker completion."
+  (pcase-let* ((context (e-emacs-tools-test--elisp-job-harness))
+               (`(:harness ,harness :session-id ,session-id) context)
+               (start (e-actions-call
+                       'elisp-job
+                       :run-batch
+                       '(:code "(progn (sleep-for 0.1) (princ \"done\"))")
+                       (list :harness harness :session-id session-id)))
+               (job-id (plist-get start :job_id)))
+    (should (stringp job-id))
+    (should (eq (plist-get start :status) 'running))
+    (should (e-emacs-tools-test--wait-until
+             (lambda ()
+               (eq (plist-get (e-elisp-job-result job-id) :status) 'ok))
+             2.0))
+    (let ((result (e-elisp-job-result job-id)))
       (should (eq (plist-get result :status) 'ok))
       (should (string-match-p "done" (plist-get result :content))))))
 
-(ert-deftest e-emacs-tools-test-elisp-job-publishes-progress ()
-  "elisp_job streams bounded progress from the worker process."
-  (let ((registry (e-tools-registry-create))
-        (e-elisp-job-progress-interval 0)
-        result
-        events)
-    (e-elisp-job-register registry)
-    (e-tools-start
-     registry
-     '(:id "call-1"
-       :name "elisp_job"
-       :arguments
-       (:operation "run-batch"
-        :code "(progn (princ \"one\\n\") (sleep-for 0.05) (princ \"two\\n\"))"))
-     :on-event (lambda (type payload)
-                 (push (list :type type :payload payload) events))
-     :on-done (lambda (value) (setq result value)))
+(ert-deftest e-emacs-tools-test-elisp-job-action-exposes-progress-by-status ()
+  "elisp-job status action exposes bounded worker output while running."
+  (pcase-let* ((context (e-emacs-tools-test--elisp-job-harness))
+               (`(:harness ,harness :session-id ,session-id) context)
+               (start (e-actions-call
+                       'elisp-job
+                       :run-batch
+                       '(:code
+                         "(progn (princ \"one\\n\") (sleep-for 0.2) (princ \"two\\n\"))")
+                       (list :harness harness :session-id session-id)))
+               (job-id (plist-get start :job_id)))
     (should (e-emacs-tools-test--wait-until
-             (lambda () result)
+             (lambda ()
+               (string-match-p
+                "one"
+                (plist-get
+                 (e-actions-call
+                  'elisp-job
+                  :status
+                  (list :job_id job-id)
+                  (list :harness harness :session-id session-id))
+                 :content)))
              2.0))
-    (let ((progress (cl-find 'tool-progress events
-                             :key (lambda (event)
-                                    (plist-get event :type)))))
-      (should progress)
-      (should (equal (plist-get (plist-get progress :payload)
-                                :tool-call-id)
-                     "call-1"))
-      (should (string-match-p
-               "one"
-               (plist-get (plist-get progress :payload) :preview))))))
-
-(ert-deftest e-emacs-tools-test-elisp-job-timeout-kills-worker ()
-  "elisp_job kills timed-out worker processes and returns an error."
-  (let ((registry (e-tools-registry-create))
-        result
-        request)
-    (e-elisp-job-register registry)
-    (setq request
-          (e-tools-start
-           registry
-           '(:id "call-1"
-             :name "elisp_job"
-             :arguments
-             (:operation "run-batch"
-              :code "(sleep-for 2)"
-              :timeout 0.1))
-           :on-done (lambda (value) (setq result value))))
-    (should (e-tools-request-p request))
     (should (e-emacs-tools-test--wait-until
-             (lambda () result)
-             2.0))
-    (should (eq (plist-get result :status) 'error))
-    (should (string-match-p "timed out after 0.1 seconds"
-                            (plist-get result :content)))
-    (when-let ((process (plist-get (e-tools-request-metadata request)
-                                   :process)))
-      (should-not (process-live-p process)))))
+             (lambda ()
+               (memq (plist-get (e-elisp-job-result job-id) :status)
+                     '(ok error)))
+             2.0))))
 
-(ert-deftest e-emacs-tools-test-elisp-eval-capability-registers-elisp-job ()
-  "The operator Elisp capability exposes elisp_job next to run_elisp."
-  (let ((registry (e-tools-registry-create)))
+(ert-deftest e-emacs-tools-test-elisp-job-action-timeout-kills-worker ()
+  "elisp-job action marks timed-out worker processes as errors."
+  (pcase-let* ((context (e-emacs-tools-test--elisp-job-harness))
+               (`(:harness ,harness :session-id ,session-id) context)
+               (start (e-actions-call
+                       'elisp-job
+                       :run-batch
+                       '(:code "(sleep-for 2)" :timeout 0.1)
+                       (list :harness harness :session-id session-id)))
+               (job-id (plist-get start :job_id)))
+    (should (e-emacs-tools-test--wait-until
+             (lambda ()
+               (eq (plist-get (e-elisp-job-result job-id) :status) 'error))
+             2.0))
+    (let ((result (e-elisp-job-result job-id)))
+      (should (string-match-p "timed out after 0.1 seconds"
+                              (plist-get result :content))))))
+
+(ert-deftest e-emacs-tools-test-elisp-job-is-action-not-tool ()
+  "The operator Elisp surface keeps Elisp jobs out of model-facing tools."
+  (let ((registry (e-tools-registry-create))
+        (capability (e-elisp-job-capability-create)))
     (e-capabilities-register-tools
      (e-elisp-eval-capability-create)
      registry)
     (let ((names (mapcar (lambda (tool) (plist-get tool :name))
                          (e-tools-definitions registry))))
       (should (member "run_elisp" names))
-      (should (member "elisp_job" names)))))
+      (should-not (member "elisp_job" names)))
+    (should (e-capabilities-action-spec capability :run-batch))
+    (should (e-capabilities-action-spec capability :status))
+    (should (e-capabilities-action-spec capability :result))
+    (should (e-capabilities-action-spec capability :cancel))))
+
+(ert-deftest e-emacs-tools-test-run-elisp-can-start-elisp-job-action ()
+  "run_elisp can start Elisp jobs through e-actions-call."
+  (pcase-let* ((context (e-emacs-tools-test--elisp-job-harness))
+               (`(:harness ,harness :session-id ,session-id) context)
+               (registry (e-tools-registry-create)))
+    (e-emacs-tools-register-run-elisp registry)
+    (let ((result
+           (e-emacs-tools-test--run-elisp-result
+            registry
+            "(stringp (plist-get (e-actions-call 'elisp-job :run-batch '(:code \"(princ \\\"ok\\\")\")) :job_id))"
+            (list :interactive t
+                  :harness harness
+                  :session-id session-id))))
+      (should (eq (plist-get result :status) 'ok))
+      (should (equal (plist-get result :content)
+                     '(:result "t"))))))
 
 (ert-deftest e-emacs-tools-test-run-elisp-never-enters-debugger ()
   "run_elisp surfaces errors as tool errors without popping the debugger.

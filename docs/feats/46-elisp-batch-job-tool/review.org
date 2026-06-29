@@ -1,4 +1,4 @@
-#+title: Review: Elisp Batch Job Tool
+#+title: Review: Elisp Batch Job Actions
 #+author: e implementation
 #+date: 2026-06-29
 #+startup: overview
@@ -11,12 +11,12 @@ Done.
 
 No unresolved findings.
 
-The implementation matches the plan's first slice: =elisp_job= exposes
-=operation= =run-batch= as a model-facing tool, starts a separate
-=emacs -Q --batch= worker with =make-process=, streams progress through the
-tool lifecycle, supports timeout cancellation, and is advertised as the
-replacement path for expensive external Elisp validation from interactive
-=run_elisp=.
+The final implementation exposes =elisp-job= as capability actions and public
+Elisp functions, not as a model-facing tool.  =:run-batch= starts a separate
+=emacs -Q --batch= worker with =make-process=, =:status= and =:result= expose
+bounded output, =:cancel= interrupts active work, and guidance points
+interactive =run_elisp= callers to =e-actions-call= instead of =load-file= or
+=byte-compile-file=.
 
 * Scope reviewed
 
@@ -59,6 +59,14 @@ emacs -Q --batch -L . -l e.el -l test/e-test.el -l test/e-emacs-tools-test.el -f
 
 #+begin_example
 Ran 37 tests, 37 results as expected, 0 unexpected
+#+end_example
+
+#+begin_src sh
+emacs -Q --batch --eval '(setq load-prefer-newer t)' -L . -l e.el --eval '(setq byte-compile-error-on-warn t)' -f batch-byte-compile lisp/layers/emacs/e-elisp-job.el lisp/layers/emacs/e-emacs-tools.el lisp/layers/emacs/e-emacs-capabilities.el lisp/layers/emacs/e-emacs-base.el test/e-emacs-tools-test.el
+#+end_src
+
+#+begin_example
+No warnings or errors.
 #+end_example
 
 #+begin_src sh

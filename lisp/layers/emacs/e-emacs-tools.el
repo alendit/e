@@ -436,7 +436,7 @@ When VISIBLE-ONLY is non-nil, include only buffers visible in windows."
    'e-emacs-tools-blocking-elisp-load
    (list
     (format
-     "%s is blocking in interactive run_elisp; inspect external Elisp with resource/file tools, or use elisp_job operation=run-batch for expensive validation and byte-compilation that must not freeze the live UI Emacs"
+     "%s is blocking in interactive run_elisp; inspect external Elisp with resource/file tools, or use (e-actions-call 'elisp-job :run-batch ...) for expensive validation and byte-compilation that must not freeze the live UI Emacs"
      primitive))))
 
 (defmacro e-emacs-tools--with-run-elisp-load-guard (&rest body)
@@ -516,9 +516,9 @@ When VISIBLE-ONLY is non-nil, include only buffers visible in windows."
     "active tools with e-tools-call/e-tools-call! and active capability actions "
     "with e-actions-call. Inspect external Elisp with resource/file tools; do "
     "not load, require, byte-compile, or recursively scan external Elisp here "
-    "during an interactive turn. Use elisp_job operation=run-batch for "
-    "expensive validation or byte-compilation that must not freeze the live "
-    "UI Emacs.")
+    "during an interactive turn. Use "
+    "(e-actions-call 'elisp-job :run-batch ...) for expensive validation or "
+    "byte-compilation that must not freeze the live UI Emacs.")
    :parameters '(:type "object"
                  :properties (:code (:type "string"))
                  :required ["code"])

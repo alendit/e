@@ -32,6 +32,7 @@
                        (e-selection-context-capability-create)
                        (e-buffer-edit-capability-create)
                        (e-elisp-eval-capability-create)
+                       (e-elisp-job-capability-create)
                        (e-workspace-awareness-capability-create))))
 
 (provide 'e-emacs-base)
