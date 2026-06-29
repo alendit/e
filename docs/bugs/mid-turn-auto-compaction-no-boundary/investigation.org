@@ -1,0 +1,111 @@
+#+title: Investigation: Mid-turn Auto Compaction No Boundary
+#+startup: overview
+
+* Summary
+
+The failure was a compaction preparation failure, not a backend summarization
+failure.
+
+In session =20260628T145240-917993483b54=, the auto-compaction trigger ran at
+turn start with the just-appended user prompt excluded from the candidate message
+set.  For the latest reported attempt, excluding that prompt left no safe message
+boundary on the current branch, so =e-compaction-prepare= signalled:
+
+#+begin_example
+No safe message boundary available for compaction
+#+end_example
+
+The later manual compaction succeeded because it ran after the turn had produced
+tool-call/tool-result messages.  It selected the first tool-call
+=01KW9QAT1KXH6XN4XGPDBYJRF1= as a split-turn boundary, summarized only the
+preceding user prompt, and kept the active-turn body as suffix.
+
+* Evidence
+
+The relevant persisted session events:
+
+#+begin_example
+2026-06-29T09:28:02Z  compaction-failed  auto    No safe message boundary available for compaction
+2026-06-29T09:51:30Z  compaction-failed  auto    No safe message boundary available for compaction
+2026-06-29T12:57:51Z  compaction-failed  auto    No safe message boundary available for compaction
+2026-06-29T12:59:14Z  compaction-prepared  manual  first-kept-entry-id=01KW9QAT1KXH6XN4XGPDBYJRF1 tokens-before=37 tokens-kept=1611
+2026-06-29T12:59:21Z  compaction-finished  manual  first-kept-entry-id=01KW9QAT1KXH6XN4XGPDBYJRF1 tokens-before=37 tokens-kept=1611
+#+end_example
+
+The latest failing prompt was:
+
+#+begin_quote
+You previous task was to replay a session with 4 different output styles and
+create a comparison. You were interrupted. How far did you get?
+#+end_quote
+
+Immediately after that prompt, the successful turn produced these message
+entries before manual compaction:
+
+#+begin_example
+2026-06-29T12:57:51Z  user       01KW9QA8KZCZCEVGHWTEE0KA53
+2026-06-29T12:58:09Z  tool-call  01KW9QAT1KXH6XN4XGPDBYJRF1
+2026-06-29T12:58:09Z  tool       01KW9QATDJSDP15766W4G4E1XN
+2026-06-29T12:58:19Z  tool-call  01KW9QB459D9G1CC3B5HZXCHGH
+2026-06-29T12:58:20Z  tool       01KW9QB4M6R6FBF95JRRBFZZJC
+2026-06-29T12:58:46Z  assistant  01KW9QBY5HHQC48RN8W9H82DE4
+#+end_example
+
+* Source Path
+
+In =lisp/core/e-harness.el=, =e-harness-prompt-async= appends the user message,
+then =start-turn= calls =e-harness--maybe-auto-compact-session= with:
+
+#+begin_src elisp
+(list (plist-get entry :prompt-message-id))
+#+end_src
+
+That means the newly submitted prompt is deliberately excluded from automatic
+turn-start compaction.
+
+=e-harness--maybe-auto-compact-session= calls =e-harness-compact-session= with
+=:allow-active-turn t= and =:exclude-entry-ids= set to that prompt id.
+=e-harness-compact-session= emits =compaction-started=, calls
+=e-compaction-prepare=, and on any error emits =compaction-failed= before
+re-signalling.
+
+The auto trigger catches =e-compaction-error= and allows the prompt turn to
+continue.  That part worked: each failed auto attempt was followed by a normal
+turn.
+
+* Why Manual Succeeded
+
+Manual compaction ran after the active turn finished.  At that point there were
+tool-call and assistant boundaries available, and the prompt was no longer
+excluded.  =e-compaction-prepare= selected the tool-call boundary
+=01KW9QAT1KXH6XN4XGPDBYJRF1=, summarized the single user entry before it
+(=tokens-before= 37), and kept the five later entries (=tokens-kept= 1611).
+
+So manual success does not contradict the auto failure.  The two calls saw
+different candidate message sets:
+
+- auto: active prompt excluded; no later split boundary existed yet;
+- manual: prompt included; tool-call split boundary existed.
+
+* Current Code Notes
+
+Current =e-compaction-prepare= already falls back from user-only boundaries to
+assistant/tool-call boundaries, independent of =allow-split-turn=.  That fallback
+does not help this exact auto-start case because the useful tool-call boundary
+did not exist at the moment auto-compaction ran.
+
+=test/e-harness-test.el= also documents that expected auto-compaction
+preparation failures do not block the prompt:
+=e-harness-test-auto-compaction_expected_failure_keeps_prompt=.
+
+* Follow-up
+
+The auto trigger should likely avoid emitting a user-visible failure for this
+known no-progress shape.  Possible fixes:
+
+- make =e-harness--auto-compaction-needed-p= or a new preparation probe skip when
+  excluding the active prompt leaves no compactible boundary;
+- defer active-turn auto compaction until at least one non-excluded split
+  boundary exists;
+- keep the internal audit event but render this specific expected no-boundary
+  case as a quiet skip rather than a failure.

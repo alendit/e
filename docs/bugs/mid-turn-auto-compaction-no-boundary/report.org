@@ -1,0 +1,32 @@
+#+title: Report: Mid-turn Auto Compaction No Boundary
+#+startup: overview
+
+* Report
+
+The user reported that mid-turn auto-compaction in the most recent live session
+failed, or at least emitted a failure message, while a subsequent manual
+compaction succeeded.
+
+Observed live session:
+
+- session id: =20260628T145240-917993483b54=
+- failed auto attempts: =2026-06-29T09:28:02Z=,
+  =2026-06-29T09:51:30Z=, =2026-06-29T12:57:51Z=
+- later manual success: =2026-06-29T12:59:21Z=
+
+* Expected
+
+Auto-compaction should either compact when there is a useful safe boundary, or
+skip quietly when compaction cannot make progress.  It should not emit a scary
+failure message for a known no-boundary state that the trigger can predict.
+
+* Actual
+
+Auto-compaction emitted =compaction-failed= with:
+
+#+begin_example
+No safe message boundary available for compaction
+#+end_example
+
+The later manual compaction succeeded after the turn had produced tool-call and
+tool-result entries.
