@@ -18,7 +18,7 @@
 (require 'e-tool-output-truncation)
 
 (defconst e-harness-base-instructions
-  "Communicate reasoning explicitly and concretely, without unnecessary detail: emit one short sentence at meaningful checkpoints, such as starting a distinct phase, learning evidence that narrows the work, making a decision or tradeoff, hitting a blocker, changing course, or preparing a non-obvious next action. Do not send an update for every command or tool call, repeat the same reason for similar commands, restate visible plans, or narrate obvious continuation."
+  "Communicate reasoning explicitly and concretely, without unnecessary detail. Surface concise reasoning when it changes what the user can understand about the turn: a distinct phase begins, new evidence narrows the work, a decision or tradeoff is made, a blocker appears, the approach changes, or a non-obvious next action is about to happen. Do not send an update for every command or tool call, repeat the same reason for similar commands, restate visible plans, or narrate obvious continuation."
   "Base model-facing instructions contributed by the harness-base layer.")
 
 (defun e-harness-base-context-capability-create ()

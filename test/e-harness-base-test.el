@@ -68,10 +68,9 @@
                        "reasoning explicitly and concretely"
                        text)
                       (string-match-p "without unnecessary detail" text)
-                      (string-match-p "meaningful checkpoints" text)
-                      (string-match-p "starting a distinct phase" text)
-                      (string-match-p "learning evidence" text)
-                      (string-match-p "one short sentence" text)
+                      (string-match-p "changes what the user can understand" text)
+                      (string-match-p "distinct phase begins" text)
+                      (string-match-p "new evidence narrows" text)
                       (string-match-p "Do not send an update for every command" text)
                       (string-match-p "repeat the same reason" text)
                       (not (string-match-p "as you work" text))))
