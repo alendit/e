@@ -114,9 +114,10 @@
     (provider &key harness session-id turn-id context-purpose)
   "Build read-only context messages with PROVIDER.
 HARNESS, SESSION-ID, and TURN-ID identify the current turn.
-CONTEXT-PURPOSE may be `status', `snapshot', or `optional' for non-critical
-callers that must avoid live dynamic context work.  Dynamic providers without an
-explicit snapshot builder are skipped for those optional purposes."
+CONTEXT-PURPOSE may be `turn' for correctness-critical provider requests, or
+`status', `snapshot', or `optional' for non-critical callers that must avoid
+live dynamic context work.  Dynamic providers without an explicit snapshot
+builder are skipped for those optional purposes."
   (let ((snapshot-build (e-context-provider--snapshot-build-function provider))
         (build (e-context-provider--build-function provider)))
     (cond

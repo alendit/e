@@ -1322,8 +1322,9 @@ compaction) where exposing tools risks a tool-call instead of a reply."
     (harness session-id &optional turn-id context-purpose)
   "Return backend-neutral context for SESSION-ID in HARNESS.
 TURN-ID is passed to active capability context providers when present.
-CONTEXT-PURPOSE may be `status', `snapshot', or `optional' for callers that
-must not perform correctness-critical turn context work."
+CONTEXT-PURPOSE may be `turn' for correctness-critical provider turns, or
+`status', `snapshot', or `optional' for callers that must not perform
+correctness-critical turn context work."
   (e-harness--profile-call
    'harness.context
    (list :session-id session-id
@@ -1357,6 +1358,12 @@ must not perform correctness-critical turn context work."
           harness
           session-id
           context))))))
+
+(defun e-harness-turn-context (harness session-id turn-id)
+  "Return correctness-critical model context for TURN-ID.
+Unlike status, snapshot, or optional context, turn context must include the live
+dynamic providers needed for the model-facing request."
+  (e-harness-context harness session-id turn-id 'turn))
 
 (defun e-harness--active-turn-id (entry)
   "Return active turn id from ENTRY."
@@ -2030,7 +2037,7 @@ When a turn produced multiple assistant messages, return the last one."
    (list :session-id session-id
          :turn-id turn-id)
    (lambda ()
-     (let ((context (e-harness-context harness session-id turn-id)))
+     (let ((context (e-harness-turn-context harness session-id turn-id)))
        (e-loop-run-turn
         :session-id session-id
         :turn-id turn-id
@@ -2045,7 +2052,7 @@ When a turn produced multiple assistant messages, return the last one."
         :on-request-start on-request-start
         :refresh-messages
         (lambda ()
-          (plist-get (e-harness-context harness session-id turn-id)
+          (plist-get (e-harness-turn-context harness session-id turn-id)
                      :messages))
         :append-message
         (lambda (message)
@@ -2061,7 +2068,7 @@ When a turn produced multiple assistant messages, return the last one."
          :turn-id turn-id)
    (lambda ()
      (let ((context (or context
-                        (e-harness-context harness session-id turn-id))))
+                        (e-harness-turn-context harness session-id turn-id))))
        (e-loop-start-turn
         :session-id session-id
         :turn-id turn-id
@@ -2080,7 +2087,7 @@ When a turn produced multiple assistant messages, return the last one."
         :on-error on-error
         :refresh-messages
         (lambda ()
-          (plist-get (e-harness-context harness session-id turn-id)
+          (plist-get (e-harness-turn-context harness session-id turn-id)
                      :messages))
         :drain-pending-input
         (or drain-pending-input
@@ -2291,7 +2298,7 @@ cancellation.  SESSION-ID identifies the session."
 	                           (when (and (active-entry-p)
 	                                      (not (plist-get entry :cancelled)))
 	                             (start-provider
-	                              (e-harness-context
+	                              (e-harness-turn-context
 	                               harness session-id turn-id))))
 	                         :on-error
 	                         (lambda (err)
@@ -2312,10 +2319,11 @@ cancellation.  SESSION-ID identifies the session."
 	            (start-turn
 	             ()
 	             (when (and (active-entry-p) (not (plist-get entry :cancelled)))
-	               (let ((context (e-harness-context harness session-id turn-id))
+	               (let ((context (e-harness-turn-context
+	                               harness session-id turn-id))
 	                     (excluded (list (plist-get entry :prompt-message-id))))
 	                 (plist-put entry :timer nil)
-				                 (if (and
+	                 (if (and
 	                      (e-harness--auto-compaction-needed-p
 	                       harness session-id context)
 	                      (e-harness--auto-compaction-useful-prefix-p

@@ -1393,6 +1393,52 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
       (should (equal (plist-get (plist-get context :options) :model)
                      "session-model")))))
 
+(ert-deftest e-harness-test-turn-context-uses-explicit-turn-purpose ()
+  "Turn context is a distinct correctness-critical context purpose."
+  (let (captured)
+    (cl-letf (((symbol-function 'e-harness-context)
+               (lambda (harness session-id turn-id context-purpose)
+                 (setq captured
+                       (list :harness harness
+                             :session-id session-id
+                             :turn-id turn-id
+                             :context-purpose context-purpose))
+                 '(:messages nil :options nil))))
+      (should (equal (e-harness-turn-context 'harness "session-1" "turn-1")
+                     '(:messages nil :options nil))))
+    (should (equal captured
+                   '(:harness harness
+                     :session-id "session-1"
+                     :turn-id "turn-1"
+                     :context-purpose turn)))))
+
+(ert-deftest e-harness-test-prompt-async-builds-turn-context-purpose ()
+  "Prompt startup builds correctness-critical turn context explicitly."
+  (let* ((backend (e-backend-create
+                   :name 'turn-context
+                   :stream
+                   (cl-function
+                    (lambda (&key messages options on-item)
+                      (ignore messages options)
+                      (funcall on-item
+                               '(:type assistant-message :content "Answer."))
+                      (funcall on-item '(:type done :reason stop))))))
+         (harness (e-harness-create :backend backend))
+         (original-context (symbol-function 'e-harness-context))
+         (purposes nil))
+    (e-harness-create-session harness :id "session-1")
+    (cl-letf (((symbol-function 'e-harness-context)
+               (lambda (&rest args)
+                 (push (nth 3 args) purposes)
+                 (apply original-context args))))
+      (e-harness-prompt-async harness "session-1" "hello")
+      (should (equal (plist-get (e-harness-wait harness "session-1" 1.0)
+                                :status)
+                     'done)))
+    (should (member 'turn purposes))
+    (should-not (member nil purposes))
+    (should-not (member 'status purposes))))
+
 (ert-deftest e-harness-test-context-preview-includes-segments ()
   "Context preview exposes segment metadata without changing flat messages."
   (let* ((stable-provider (e-context-provider-create
