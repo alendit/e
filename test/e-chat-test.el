@@ -29,6 +29,12 @@
 (require 'e-store)
 (require 'e-tools)
 
+(defvar evil-local-mode)
+(defvar evil-state)
+(defvar doom-leader-alt-key)
+(defvar doom-leader-map)
+(defvar persp-activated-functions)
+
 (ert-deftest e-chat-test-open-captures-current-workspace ()
   "Opening a chat buffer records presentation workspace affinity."
   (let* ((harness (e-harness-create :backend (e-backend-fake-create :items nil)))
@@ -441,7 +447,7 @@
       (when (buffer-live-p buffer)
         (with-current-buffer buffer
           (ignore-errors
-            (e-harness-abort harness e-chat-session-id)))
+            (e-harness-abort e-chat-harness e-chat-session-id)))
         (kill-buffer buffer)))))
 
 (ert-deftest e-chat-test-shared-harness-buffers-render-only-their-session ()
@@ -497,7 +503,7 @@
       (when (buffer-live-p buffer)
         (with-current-buffer buffer
           (ignore-errors
-            (e-harness-abort harness e-chat-session-id)))
+            (e-harness-abort e-chat-harness e-chat-session-id)))
         (kill-buffer buffer)))))
 
 (ert-deftest e-chat-test-submit-defers-backend-start-until-after-command ()
@@ -545,7 +551,7 @@
       (when (buffer-live-p buffer)
         (with-current-buffer buffer
           (ignore-errors
-            (e-harness-abort harness e-chat-session-id)))
+            (e-harness-abort e-chat-harness e-chat-session-id)))
         (kill-buffer buffer)))))
 
 (ert-deftest e-chat-test-submit-does-not-render-assistant-before-async-provider-completes ()
@@ -724,7 +730,7 @@
       (when (buffer-live-p buffer)
         (with-current-buffer buffer
           (ignore-errors
-            (e-harness-abort harness e-chat-session-id)))
+            (e-harness-abort e-chat-harness e-chat-session-id)))
         (kill-buffer buffer)))))
 
 (ert-deftest e-chat-test-queued-prompts-render-above-composer ()
@@ -766,7 +772,7 @@
       (when (buffer-live-p buffer)
         (with-current-buffer buffer
           (ignore-errors
-            (e-harness-abort harness e-chat-session-id)))
+            (e-harness-abort e-chat-harness e-chat-session-id)))
         (kill-buffer buffer)))))
 
 (ert-deftest e-chat-test-queued-prompts-survive-composer-refresh-and-final-insertion ()
@@ -803,7 +809,7 @@
       (when (buffer-live-p buffer)
         (with-current-buffer buffer
           (ignore-errors
-            (e-harness-abort harness e-chat-session-id)))
+            (e-harness-abort e-chat-harness e-chat-session-id)))
         (kill-buffer buffer)))))
 
 (ert-deftest e-chat-test-queued-prompts-survive-failure-and-cancel-rendering ()
@@ -846,7 +852,7 @@
       (when (buffer-live-p buffer)
         (with-current-buffer buffer
           (ignore-errors
-            (e-harness-abort harness e-chat-session-id)))
+            (e-harness-abort e-chat-harness e-chat-session-id)))
         (kill-buffer buffer)))))
 
 (ert-deftest e-chat-test-empty-queue-removes-list-without-deleting-composer ()
@@ -879,7 +885,7 @@
       (when (buffer-live-p buffer)
         (with-current-buffer buffer
           (ignore-errors
-            (e-harness-abort harness e-chat-session-id)))
+            (e-harness-abort e-chat-harness e-chat-session-id)))
         (kill-buffer buffer)))))
 
 (ert-deftest e-chat-test-return-inserts-newline-in-composer ()
@@ -4340,9 +4346,13 @@ the orphaned region and appeared to vanish."
             (should (memq 'e-chat-final-assistant-face faces))
             (should-not (memq 'e-chat-markdown-strong-face faces)))
           (should e-chat--pending-markdown-presentation-timers)
+          (should e-chat--pending-render-job-timers)
+          (should (eq (car e-chat--pending-markdown-presentation-timers)
+                      (car e-chat--pending-render-job-timers)))
           (should (e-chat-test--wait-until
                    (lambda ()
                      (not e-chat--pending-markdown-presentation-timers))))
+          (should-not e-chat--pending-render-job-timers)
           (goto-char (point-min))
           (search-forward "bold")
           (let ((faces (ensure-list
@@ -4371,10 +4381,12 @@ the orphaned region and appeared to vanish."
              "Assistant"
              "Use **bold** and `code`.")
             (should e-chat--pending-markdown-presentation-timers)
+            (should e-chat--pending-render-job-timers)
             (e-chat--clear)
             (accept-process-output nil 0.05)
             (should (= calls 0))
-            (should-not e-chat--pending-markdown-presentation-timers)))
+            (should-not e-chat--pending-markdown-presentation-timers)
+            (should-not e-chat--pending-render-job-timers)))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 

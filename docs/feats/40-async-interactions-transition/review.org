@@ -2177,3 +2177,51 @@ emacsclient --eval "(progn (load-file \"/private/tmp/e-session-tmp-raw-result-pr
 #+end_src
 
 Result: returned =(:uri "tmp://raw-results/live.txt" :owner (:kind tool-result :tool-call-id "live-call") :original-bytes 26 :preview "abcdefghij" :preview-bytes 10 :preview-truncated t :stored-matches t)=, confirming the live raw-result reference stored the full content and exposed only bounded preview metadata.
+
+* Phase 3 Chat Render Job Registry Slice Review
+
+Status: complete.
+
+** Scope reviewed
+
+- Added a buffer-local chat render-job timer registry.
+- Moved deferred assistant Markdown presentation scheduling through the shared render-job registry while preserving the existing markdown-specific pending-timer view.
+- Cleaned up existing chat test byte-compile issues in optional host integration variables and stale teardown harness references so the touched chat test file can be compiled with warnings as errors.
+
+** Verification
+
+#+begin_src sh
+rtk eldev test -f test/e-chat-test.el -B e-chat-test-long-final-response-defers-markdown-presentation e-chat-test-deferred-markdown-cancels-on-clear
+#+end_src
+
+Result: passed the focused deferred markdown scheduling and cancellation tests.
+
+#+begin_src sh
+rtk eldev test -f test/e-chat-test.el -B e-chat-test-submit-multiline-composer-and-render-response e-chat-test-submit-immediately-clears-composer-and-keeps-separator e-chat-test-submit-defers-backend-start-until-after-command
+#+end_src
+
+Result: passed the focused tests covering the corrected cleanup harness references.
+
+#+begin_src sh
+rtk eldev test -f test/e-chat-test.el
+#+end_src
+
+Result: passed all 276 chat tests, with the existing Markdown rendering skip unchanged.
+
+#+begin_src sh
+rtk eldev emacs --batch --eval "(progn (setq byte-compile-error-on-warn t) (dolist (file '(\"lisp/shells/chat/e-chat.el\" \"test/e-chat-test.el\")) (byte-compile-file file)))"
+#+end_src
+
+Result: passed for the touched chat module and tests.
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Result: returned ="/Users/dimitrivorona/projects/elisp/e/"=, so the running Emacs loaded the changed chat render scheduling code.
+
+#+begin_src sh
+emacsclient --eval "(progn (load-file \"/private/tmp/e-chat-render-job-probe.el\") e-chat-render-job-probe-result)"
+#+end_src
+
+Result: returned =(:initial-markdown 1 :initial-render 1 :final-markdown 0 :final-render 0 :custom-render-ran t :custom-render-final 0)=, confirming live deferred markdown jobs enter the generic render-job registry and generic render jobs run and clear.

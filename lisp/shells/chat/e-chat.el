@@ -736,6 +736,9 @@ intentionally not persisted in session metadata.")
 (defvar-local e-chat--activity-redraw-generation 0
   "Latest activity redraw generation for stale timer detection.")
 
+(defvar-local e-chat--pending-render-job-timers nil
+  "Timers scheduled for deferred chat render jobs.")
+
 (defvar-local e-chat--pending-markdown-presentation-timers nil
   "Timers scheduled to apply deferred assistant Markdown presentation.")
 
@@ -5399,11 +5402,35 @@ Hide REGEXP groups 1 and 3 as Markdown syntax."
       (e-chat--apply-markdown-emphasis-face content-start content-end)
       (e-chat--apply-markdown-link-faces content-start content-end))))
 
+(defun e-chat--cancel-render-job-timer (timer)
+  "Cancel deferred render-job TIMER if it is still live."
+  (when (timerp timer)
+    (cancel-timer timer))
+  (setq e-chat--pending-render-job-timers
+        (delq timer e-chat--pending-render-job-timers)))
+
+(defun e-chat--schedule-render-job (delay thunk)
+  "Schedule deferred chat render THUNK after DELAY seconds.
+The returned timer is tracked in the buffer-local render-job registry until it
+runs or is cancelled."
+  (let ((buffer (current-buffer))
+        timer)
+    (setq timer
+          (run-at-time
+           delay nil
+           (lambda ()
+             (when (buffer-live-p buffer)
+               (with-current-buffer buffer
+                 (setq e-chat--pending-render-job-timers
+                       (delq timer e-chat--pending-render-job-timers))
+                 (funcall thunk))))))
+    (push timer e-chat--pending-render-job-timers)
+    timer))
+
 (defun e-chat--cancel-pending-markdown-presentation ()
   "Cancel all pending deferred assistant Markdown presentation jobs."
   (dolist (timer e-chat--pending-markdown-presentation-timers)
-    (when (timerp timer)
-      (cancel-timer timer)))
+    (e-chat--cancel-render-job-timer timer))
   (setq e-chat--pending-markdown-presentation-timers nil)
   (cl-incf e-chat--markdown-presentation-generation))
 
@@ -5434,27 +5461,24 @@ generation."
 
 (defun e-chat--schedule-assistant-markdown (content-start content-end)
   "Schedule deferred Markdown presentation for assistant CONTENT bounds."
-  (let* ((buffer (current-buffer))
-         (start-marker (copy-marker content-start nil))
+  (let* ((start-marker (copy-marker content-start nil))
          (end-marker (copy-marker content-end t))
          (generation e-chat--markdown-presentation-generation)
          timer)
     (setq timer
-          (run-at-time
-           0 nil
+          (e-chat--schedule-render-job
+           0
            (lambda ()
-             (when (buffer-live-p buffer)
-               (with-current-buffer buffer
-                 (setq e-chat--pending-markdown-presentation-timers
-                       (delq timer
-                             e-chat--pending-markdown-presentation-timers))
-                 (unwind-protect
-                     (e-chat--run-deferred-assistant-markdown
-                      start-marker
-                      end-marker
-                      generation)
-                   (set-marker start-marker nil)
-                   (set-marker end-marker nil)))))))
+             (setq e-chat--pending-markdown-presentation-timers
+                   (delq timer
+                         e-chat--pending-markdown-presentation-timers))
+             (unwind-protect
+                 (e-chat--run-deferred-assistant-markdown
+                  start-marker
+                  end-marker
+                  generation)
+               (set-marker start-marker nil)
+               (set-marker end-marker nil)))))
     (push timer e-chat--pending-markdown-presentation-timers)
     timer))
 

@@ -57,6 +57,7 @@ Partly implemented:
 - Composer =@= file candidates use a buffer-local cached snapshot, start async refreshes on cache miss, show a loading row while refreshing, and drop stale refreshes by generation/key.
 - Selected composer =@= file references read at most =e-chat-file-reference-max-bytes= plus one byte before truncating the inline preview.
 - Long final assistant messages are inserted as plain protected text immediately, with Markdown presentation deferred through a generation-checked timer job.
+- Deferred assistant Markdown presentation now runs through the shared chat render-job timer registry, so cancellable render work has a common buffer-local owner instead of only ad hoc per-feature timer lists.
 - Settled activity summaries no longer precompute expanded detail text during summary rendering; child expansion and details buffers compute details on demand.
 - Opening a loaded session renders an omitted-history marker plus a bounded newest-message tail when the transcript exceeds =e-chat-initial-session-render-message-limit=.
 - Shared context-status text accepts caller-owned formatted snapshot caches, and chat mode-line status uses a semantic snapshot key so repeated refreshes can avoid context rebuilding and model-window lookup.
@@ -67,7 +68,7 @@ Not yet implemented in the planned sense:
 
 - Explicit MCP batch call wrappers still have synchronous waits; generated model-facing MCP tool execution, interactive capability providers, interactive refresh, activation, and catalog discovery start APIs no longer do. Generic batch tool execution now fails fast for long async tools under an interactive hot-path guard.
 - There is no raw-result store outside the session tmp owner and no cache-driven reference cleanup lifecycle beyond explicit, harness-reset, and max-age tmp cleanup.
-- There is no full cooperative presentation render scheduler, though long final assistant Markdown presentation is now deferred and cancellable.
+- There is no full cooperative presentation render scheduler, though long final assistant Markdown presentation is now deferred, cancellable, and tracked through the shared chat render-job timer registry.
 - Context budget estimates and shared context-status text now support semantic cache keys; chat mode-line, active-session picker rows, and Org Canvas status use formatted-status snapshots, but the broader context/status snapshot contract for turn prep and any other shells remains open.
 - Chat open/resume now uses the chunked replay scheduler for unloaded indexed sessions, a bounded initial tail for large loaded sessions, and timer-driven progressive backfill for older loaded messages, but the complete queued-write critical/derived durability model remains only partially implemented.
 - Nested cheap tool calls still use synchronous return semantics; long-class nested calls now fail fast with model guidance in both harness-owned and core default nested executors instead of waiting.
