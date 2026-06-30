@@ -282,6 +282,24 @@
       (ignore-errors (e-session-flush-write-queue store))
       (delete-directory directory t))))
 
+(ert-deftest e-session-test-queued-record-criticality-covers-durable-record-types ()
+  "Queued write criticality recognizes every persisted durable record type."
+  (dolist (type '("session"
+                  "session-info"
+                  "message"
+                  "activity-event"
+                  "branch-summary"
+                  "compaction"
+                  "provider-anchor"
+                  "current-branch"
+                  "messages-cleared"))
+    (should (eq (e-session--queued-record-criticality
+                 (list :type type))
+                'critical)))
+  (should (eq (e-session--queued-record-criticality
+               '(:type "derived-preview"))
+              'derived)))
+
 (ert-deftest e-session-test-flush-write-queue-drops-stale-generation-records ()
   "Flushing a queued store ignores records from stale queue generations."
   (let* ((directory (make-temp-file "e-session-" t))
@@ -327,6 +345,38 @@
                                  :test #'equal)))
             (should entry)
             (should-not (plist-get entry :loaded))))
+      (ignore-errors (e-session-flush-write-queue store))
+      (delete-directory directory t))))
+
+(ert-deftest e-session-test-flush-write-queue-orders-critical-before-derived-records ()
+  "Queued flush writes critical records before non-critical derived records."
+  (let* ((directory (make-temp-file "e-session-" t))
+         (store (e-session-persistent-index-store-create
+                 directory
+                 :write-mode 'queued))
+         order)
+    (unwind-protect
+        (let* ((session-entry
+                (e-session--queued-write-entry
+                 store "ordered-critical" '(:type "session")))
+               (derived-entry
+                (e-session--queued-write-entry
+                 store "ordered-critical" '(:type "derived-preview")))
+               (message-entry
+                (e-session--queued-write-entry
+                 store "ordered-critical" '(:type "message"))))
+          (setf (e-session-store-write-queue store)
+                (list message-entry derived-entry session-entry))
+          (cl-letf (((symbol-function 'e-session--append-record-now)
+                     (lambda (_store _session-id record)
+                       (push (plist-get record :type) order)))
+                    ((symbol-function 'e-session--write-index-now)
+                     (lambda (_store)
+                       (push 'index order))))
+            (e-session-flush-write-queue store))
+          (should (equal (nreverse order)
+                         '("session" "message" "derived-preview")))
+          (should-not (e-session-store-write-queue store)))
       (ignore-errors (e-session-flush-write-queue store))
       (delete-directory directory t))))
 

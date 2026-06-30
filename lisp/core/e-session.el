@@ -511,11 +511,21 @@ arrays and sometimes inverted key/value pairs."
       (with-temp-file (e-session-store-index-file store)
         (insert (e-session--index-json store))))))
 
+(defconst e-session--critical-record-types
+  '("session"
+    "session-info"
+    "message"
+    "activity-event"
+    "branch-summary"
+    "compaction"
+    "provider-anchor"
+    "current-branch"
+    "messages-cleared")
+  "Persistent record types that must flush before derived queued records.")
+
 (defun e-session--queued-record-criticality (record)
   "Return the queued-write criticality class for RECORD."
-  (if (member (plist-get record :type)
-              '("session" "message" "activity" "compaction"
-                "provider_anchor" "branch_summary"))
+  (if (member (plist-get record :type) e-session--critical-record-types)
       'critical
     'derived))
 
@@ -592,6 +602,22 @@ arrays and sometimes inverted key/value pairs."
            (e-session--queued-entry-current-p store entry))
          (e-session-store-write-queue store))))
 
+(defun e-session--queued-entry-critical-p (entry)
+  "Return non-nil when queued ENTRY must flush before derived records."
+  (not (and (consp entry)
+            (keywordp (car entry))
+            (eq (plist-get entry :criticality) 'derived))))
+
+(defun e-session--order-queued-records-for-flush (entries)
+  "Return ENTRIES with critical records before derived records.
+Ordering remains stable within each criticality class."
+  (let (critical derived)
+    (dolist (entry entries)
+      (if (e-session--queued-entry-critical-p entry)
+          (push entry critical)
+        (push entry derived)))
+    (nconc (nreverse critical) (nreverse derived))))
+
 (defun e-session--flush-queued-records (store entries)
   "Append queued ENTRIES, acknowledging each successful record write."
   (dolist (entry entries)
@@ -610,6 +636,7 @@ Return STORE."
                    (lambda (entry)
                      (e-session--queued-entry-current-p store entry))
                    raw-entries))
+         (ordered-entries (e-session--order-queued-records-for-flush entries))
          (write-index-entry (e-session-store-index-write-pending store))
          (write-index (and write-index-entry
                            (e-session--queued-index-current-p
@@ -626,7 +653,7 @@ Return STORE."
                            :write-index (and (or write-index rebuild-index) t)))
      (lambda ()
        (e-session--drop-stale-queued-write-entries store)
-       (e-session--flush-queued-records store entries)
+       (e-session--flush-queued-records store ordered-entries)
        (when rebuild-index
          (setf (e-session-store-index-write-pending store)
                (e-session--queued-index-entry store)))
