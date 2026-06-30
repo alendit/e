@@ -768,6 +768,8 @@ intentionally not persisted in session metadata.")
   owner
   key
   generation
+  session-id
+  block-id
   buffer
   timer)
 
@@ -812,7 +814,7 @@ intentionally not persisted in session metadata.")
           (delq timer e-chat--pending-render-job-timers))))
 
 (cl-defun e-chat--schedule-render-job
-    (delay thunk &key owner key generation coalesce)
+    (delay thunk &key owner key generation session-id block-id coalesce)
   "Schedule deferred chat render THUNK after DELAY seconds.
 The returned timer is tracked in the buffer-local render-job registry until it
 runs or is cancelled.
@@ -822,6 +824,9 @@ KEY before scheduling the new one."
   (when coalesce
     (e-chat--cancel-render-jobs owner key))
   (let* ((buffer (current-buffer))
+         (session-id (or session-id
+                         (and (boundp 'e-chat-session-id)
+                              e-chat-session-id)))
          (id (cl-incf e-chat--render-job-counter))
          job
          timer)
@@ -840,6 +845,8 @@ KEY before scheduling the new one."
            :owner owner
            :key key
            :generation generation
+           :session-id session-id
+           :block-id block-id
            :buffer buffer
            :timer timer))
     (push job e-chat--pending-render-jobs)
@@ -1462,6 +1469,8 @@ PROMPT forces completion even when only one/default instance exists."
              :owner 'loaded-session-backfill
              :key e-chat-session-id
              :generation generation
+             :session-id e-chat-session-id
+             :block-id 'loaded-session-backfill
              :coalesce t)))))
 
 (defun e-chat--loaded-session-backfill (generation)
@@ -4850,6 +4859,8 @@ When TURN-ID is non-nil, cancel only a redraw for that turn."
                :owner 'activity-redraw
                :key turn-id
                :generation generation
+               :session-id e-chat-session-id
+               :block-id turn-id
                :coalesce t))))))
 
 (defun e-chat--progress-dots ()
@@ -5591,7 +5602,7 @@ generation.  Return non-nil when another chunk remains."
           has-more)))))
 
 (defun e-chat--schedule-deferred-assistant-markdown-chunk
-    (start-marker end-marker position-marker generation)
+    (start-marker end-marker position-marker generation block-id)
   "Schedule one deferred Markdown chunk for assistant CONTENT markers."
   (let (timer)
     (setq timer
@@ -5610,14 +5621,18 @@ generation.  Return non-nil when another chunk remains."
                 start-marker
                 end-marker
                 position-marker
-                generation)))
+                generation
+                block-id)))
            :owner 'markdown-presentation
            :key generation
-           :generation generation))
+           :generation generation
+           :session-id e-chat-session-id
+           :block-id block-id))
     (push timer e-chat--pending-markdown-presentation-timers)
     timer))
 
-(defun e-chat--schedule-assistant-markdown (content-start content-end)
+(defun e-chat--schedule-assistant-markdown
+    (content-start content-end &optional block-id)
   "Schedule deferred Markdown presentation for assistant CONTENT bounds."
   (let* ((start-marker (copy-marker content-start nil))
          (end-marker (copy-marker content-end t))
@@ -5627,7 +5642,8 @@ generation.  Return non-nil when another chunk remains."
      start-marker
      end-marker
      position-marker
-     generation)))
+     generation
+     block-id)))
 
 (defun e-chat--apply-final-assistant-face (content-start content-end)
   "Apply settled assistant styling from CONTENT-START to CONTENT-END.
@@ -5680,7 +5696,8 @@ non-nil, is used by focused block activation."
                (if (e-chat--defer-assistant-markdown-p content)
                    (e-chat--schedule-assistant-markdown
                     content-start
-                    (point))
+                    (point)
+                    block-id)
                  (e-chat--apply-assistant-markdown
                   content-start
                   (point)))

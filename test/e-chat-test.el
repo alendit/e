@@ -4152,6 +4152,13 @@ the orphaned region and appeared to vanish."
             (let ((timer e-chat--pending-activity-redraw-timer))
               (should (timerp timer))
               (should (eq (car e-chat--pending-render-job-timers) timer))
+              (let ((job (car e-chat--pending-render-jobs)))
+                (should (eq (e-chat-render-job-owner job)
+                            'activity-redraw))
+                (should (equal (e-chat-render-job-session-id job)
+                               e-chat-session-id))
+                (should (equal (e-chat-render-job-block-id job)
+                               "turn-1")))
               (should (= redraws 0))
               (e-chat--render-event
                (e-events-make :type 'reasoning-delta
@@ -4191,6 +4198,7 @@ the orphaned region and appeared to vanish."
                    :owner 'test-owner
                    :key "same"
                    :generation 2
+                   :block-id "block-2"
                    :coalesce t))
                  (second-job (car e-chat--pending-render-jobs)))
             (should (timerp first))
@@ -4202,6 +4210,10 @@ the orphaned region and appeared to vanish."
             (should (eq (e-chat-render-job-owner second-job) 'test-owner))
             (should (equal (e-chat-render-job-key second-job) "same"))
             (should (equal (e-chat-render-job-generation second-job) 2))
+            (should (equal (e-chat-render-job-session-id second-job)
+                           "chat-render-job-coalesce"))
+            (should (equal (e-chat-render-job-block-id second-job)
+                           "block-2"))
             (funcall (timer--function second))
             (should (equal ran '(second)))
             (should-not e-chat--pending-render-jobs)
@@ -4394,7 +4406,9 @@ the orphaned region and appeared to vanish."
         (with-current-buffer buffer
           (e-chat--insert-entry
            "Assistant"
-           "Use **bold** and `code`.")
+           "Use **bold** and `code`."
+           nil
+           "turn-final-md")
           (goto-char (point-min))
           (search-forward "bold")
           (let ((faces (ensure-list
@@ -4419,7 +4433,9 @@ the orphaned region and appeared to vanish."
         (with-current-buffer buffer
           (e-chat--insert-entry
            "Assistant"
-           "Use **bold** and `code`.")
+           "Use **bold** and `code`."
+           nil
+           "turn-final-md")
           (goto-char (point-min))
           (search-forward "bold")
           (let ((faces (ensure-list
@@ -4430,6 +4446,13 @@ the orphaned region and appeared to vanish."
           (should e-chat--pending-render-job-timers)
           (should (eq (car e-chat--pending-markdown-presentation-timers)
                       (car e-chat--pending-render-job-timers)))
+          (let ((job (car e-chat--pending-render-jobs)))
+            (should (eq (e-chat-render-job-owner job)
+                        'markdown-presentation))
+            (should (equal (e-chat-render-job-session-id job)
+                           "chat-final-markdown-deferred"))
+            (should (equal (e-chat-render-job-block-id job)
+                           "block-1")))
           (should (e-chat-test--wait-until
                    (lambda ()
                      (not e-chat--pending-markdown-presentation-timers))))
@@ -8446,6 +8469,13 @@ The context-window denominator comes from the live provider lookup
             (should (timerp e-chat--loaded-session-backfill-timer))
             (should (memq e-chat--loaded-session-backfill-timer
                           e-chat--pending-render-job-timers))
+            (let ((job (car e-chat--pending-render-jobs)))
+              (should (eq (e-chat-render-job-owner job)
+                          'loaded-session-backfill))
+              (should (equal (e-chat-render-job-session-id job)
+                             "loaded-backfill"))
+              (should (equal (e-chat-render-job-block-id job)
+                             'loaded-session-backfill)))
             (goto-char (point-max))
             (insert "next")
             (should (equal (e-chat--composer-text) "next"))
