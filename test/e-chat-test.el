@@ -3873,8 +3873,8 @@ the orphaned region and appeared to vanish."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest e-chat-test-active-focus-tail-survives-late-window-restore ()
-  "Active chat focus tails again after workspace code restores old point."
+(ert-deftest e-chat-test-window-config-tail-survives-late-window-restore ()
+  "Active chat window-configuration focus tails after restored old point."
   (let ((buffer (e-chat-test--buffer nil "chat-active-focus-tail-late"))
         (window nil))
     (unwind-protect
@@ -3907,7 +3907,9 @@ the orphaned region and appeared to vanish."
               (set-window-point window stale-point)
               (set-window-start window stale-point)
               (goto-char stale-point)
-              (e-chat--tail-selected-active-turn)
+              (let ((window-configuration-change-hook
+                     '(e-chat--tail-selected-active-turn)))
+                (run-hooks 'window-configuration-change-hook))
               (with-current-buffer buffer
                 (should (timerp e-chat--tail-active-turn-timer))
                 (should (eq (car e-chat--pending-render-job-timers)
@@ -8838,13 +8840,17 @@ The context-window denominator comes from the live provider lookup
 
 (ert-deftest e-chat-test-installs-workspace-switch-read-hook ()
   "Chat focus hooks include Doom workspace activation when available."
-  (cl-progv '(window-selection-change-functions persp-activated-functions)
-      '(nil nil)
+  (cl-progv '(window-selection-change-functions
+              window-configuration-change-hook
+              persp-activated-functions)
+      '(nil nil nil)
     (e-chat--ensure-window-selection-hook)
     (should (memq #'e-chat--mark-selected-session-read
                   window-selection-change-functions))
     (should (memq #'e-chat--tail-selected-active-turn
                   window-selection-change-functions))
+    (should (memq #'e-chat--tail-selected-active-turn
+                  window-configuration-change-hook))
     (should (memq #'e-chat--mark-selected-session-read
                   persp-activated-functions))
     (should (memq #'e-chat--tail-selected-active-turn

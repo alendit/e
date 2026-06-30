@@ -611,6 +611,10 @@ intentionally not persisted in session metadata.")
                 window-selection-change-functions)
     (add-hook 'window-selection-change-functions
               #'e-chat--tail-selected-active-turn))
+  (unless (memq #'e-chat--tail-selected-active-turn
+                window-configuration-change-hook)
+    (add-hook 'window-configuration-change-hook
+              #'e-chat--tail-selected-active-turn))
   (when (boundp 'persp-activated-functions)
     (unless (memq #'e-chat--mark-selected-session-read
                   persp-activated-functions)
