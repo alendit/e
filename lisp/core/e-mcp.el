@@ -36,10 +36,13 @@
   'e-mcp-backend-error)
 (define-error 'e-mcp-protocol-error "MCP helper protocol error"
   'e-mcp-backend-error)
+(define-error 'e-mcp-backpressure "Too many concurrent MCP requests"
+  'e-mcp-backend-error)
 
 (dolist (condition '(e-mcp-backend-error
                      e-mcp-backend-timeout
-                     e-mcp-protocol-error))
+                     e-mcp-protocol-error
+                     e-mcp-backpressure))
   (put condition 'e-tools-infrastructure-error t))
 
 (defcustom e-mcp-helper-timeout 10
@@ -50,6 +53,14 @@
 (defcustom e-mcp-node-executable "node"
   "Node executable used for the MCP helper."
   :type 'string
+  :group 'e)
+
+(defcustom e-mcp-max-concurrent-requests 8
+  "Maximum number of in-flight async MCP transport requests.
+This cap covers stdio helper requests and HTTP JSON-RPC POST requests.  Set to
+nil to disable the cap."
+  :type '(choice (const :tag "Unlimited" nil)
+                 (integer :tag "Maximum in-flight requests"))
   :group 'e)
 
 (cl-defstruct (e-mcp-server
@@ -95,6 +106,29 @@
 (defvar e-mcp--http-sessions nil
   "Alist of (server-id . session-plist) for HTTP MCP sessions.
 Each session plist tracks :url, :headers, :session-id, :initialized.")
+
+(defvar e-mcp--active-request-count 0
+  "Number of async MCP transport requests currently in flight.")
+
+(defun e-mcp--reserve-request-slot (family)
+  "Reserve one async MCP transport slot for FAMILY.
+Signal `e-mcp-backpressure' before starting helper or HTTP transport when the
+shared cap is already full."
+  (when (and (integerp e-mcp-max-concurrent-requests)
+             (>= e-mcp--active-request-count
+                 e-mcp-max-concurrent-requests))
+    (signal 'e-mcp-backpressure
+            (list (format "Too many concurrent MCP requests: %s"
+                          e-mcp--active-request-count)
+                  family
+                  e-mcp-max-concurrent-requests)))
+  (cl-incf e-mcp--active-request-count)
+  family)
+
+(defun e-mcp--release-request-slot (&optional _family)
+  "Release one async MCP transport slot."
+  (setq e-mcp--active-request-count
+        (max 0 (1- e-mcp--active-request-count))))
 
 (defconst e-mcp--missing-catalog (make-symbol "e-mcp-missing-catalog")
   "Sentinel used to distinguish absent cache entries from empty catalogs.")
@@ -220,6 +254,7 @@ transport), but not both."
   (setq e-mcp--helper-next-id 0)
   (setq e-mcp--latest-diagnostics nil)
   (setq e-mcp--http-sessions nil)
+  (setq e-mcp--active-request-count 0)
   (maphash (lambda (_key request)
              (when request
                (e-tools-cancel-request request)))
@@ -399,6 +434,7 @@ transport), but not both."
          (timeout (or (plist-get args :timeout)
                       e-mcp-helper-timeout))
          (settled nil)
+         (reservation (e-mcp--reserve-request-slot 'stdio))
          poll-timer
          timeout-timer
          transport-timer
@@ -410,7 +446,10 @@ transport), but not both."
            (when (timerp timeout-timer)
              (cancel-timer timeout-timer))
            (when (timerp transport-timer)
-             (cancel-timer transport-timer)))
+             (cancel-timer transport-timer))
+           (when reservation
+             (e-mcp--release-request-slot reservation)
+             (setq reservation nil)))
          (fail (condition)
            (unless settled
              (setq settled t)
@@ -624,6 +663,7 @@ Return the parsed JSON-RPC result on success, signal on error."
                          :method method
                          :params (or params (make-hash-table)))))
          (settled nil)
+         (reservation (e-mcp--reserve-request-slot 'http))
          timer
          buffer)
     (cl-labels
@@ -631,7 +671,10 @@ Return the parsed JSON-RPC result on success, signal on error."
            (when (timerp timer)
              (cancel-timer timer))
            (when (buffer-live-p buffer)
-             (kill-buffer buffer)))
+             (kill-buffer buffer))
+           (when reservation
+             (e-mcp--release-request-slot reservation)
+             (setq reservation nil)))
          (fail (condition)
            (unless settled
              (setq settled t)

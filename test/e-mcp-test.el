@@ -151,6 +151,74 @@
       (should (equal (cdr notify-error)
                      '(e-mcp--http-notify mcp-http-notify))))))
 
+(ert-deftest e-mcp-test-helper-start-rejects-when-backpressure-full ()
+  "Async stdio MCP transport fails before fake helper transport when full."
+  (let ((old-max e-mcp-max-concurrent-requests)
+        (old-count e-mcp--active-request-count)
+        (calls 0))
+    (unwind-protect
+        (e-mcp-test--with-transport
+            (lambda (_request)
+              (setq calls (1+ calls))
+              '(:ok t :result (:tools [])))
+          (setq e-mcp-max-concurrent-requests 1)
+          (setq e-mcp--active-request-count 1)
+          (should-error
+           (e-mcp--helper-request-start
+            "list-tools"
+            (list (e-mcp-test--server))
+            nil)
+           :type 'e-mcp-backpressure)
+          (should (= calls 0))
+          (should (= e-mcp--active-request-count 1)))
+      (setq e-mcp-max-concurrent-requests old-max)
+      (setq e-mcp--active-request-count old-count))))
+
+(ert-deftest e-mcp-test-helper-start-releases-backpressure-slot-on-cancel ()
+  "Cancelling a queued stdio MCP transport request releases its slot."
+  (let ((old-max e-mcp-max-concurrent-requests)
+        (old-count e-mcp--active-request-count)
+        request)
+    (unwind-protect
+        (e-mcp-test--with-transport
+            (lambda (_request)
+              '(:ok t :result (:tools [])))
+          (setq e-mcp-max-concurrent-requests 1)
+          (setq e-mcp--active-request-count 0)
+          (setq request
+                (e-mcp--helper-request-start
+                 "list-tools"
+                 (list (e-mcp-test--server))
+                 nil))
+          (should (e-tools-request-p request))
+          (should (= e-mcp--active-request-count 1))
+          (should (e-tools-cancel-request request))
+          (should (= e-mcp--active-request-count 0)))
+      (setq e-mcp-max-concurrent-requests old-max)
+      (setq e-mcp--active-request-count old-count))))
+
+(ert-deftest e-mcp-test-http-post-start-rejects-when-backpressure-full ()
+  "Async HTTP MCP transport fails before URL transport when full."
+  (let ((old-max e-mcp-max-concurrent-requests)
+        (old-count e-mcp--active-request-count)
+        (started nil)
+        (session (list :url "http://127.0.0.1:1" :next-id 0)))
+    (unwind-protect
+        (progn
+          (setq e-mcp-max-concurrent-requests 1)
+          (setq e-mcp--active-request-count 1)
+          (cl-letf (((symbol-function 'url-retrieve)
+                     (lambda (&rest _args)
+                       (setq started t)
+                       (error "url-retrieve should not start"))))
+            (should-error
+             (e-mcp--http-post-start session "tools/list" nil)
+             :type 'e-mcp-backpressure)
+            (should-not started)
+            (should (= e-mcp--active-request-count 1))))
+      (setq e-mcp-max-concurrent-requests old-max)
+      (setq e-mcp--active-request-count old-count))))
+
 (ert-deftest e-mcp-test-helper-request-rejects-malformed-response ()
   "Malformed helper responses signal a protocol error."
   (e-mcp-test--with-transport
