@@ -43,6 +43,11 @@
   :type 'number
   :group 'e-context-status)
 
+(defcustom e-context-status-stale-snapshot-prefix "stale "
+  "Prefix added to status text served from an expired snapshot."
+  :type 'string
+  :group 'e-context-status)
+
 (defun e-context-status--profile-enabled-p ()
   "Return non-nil when developer profiling is currently available."
   (and (fboundp 'e-dev-profile-enabled-p)
@@ -125,19 +130,44 @@ BYTES-PER-TOKEN defaults to `e-context-budget-estimate-bytes-per-token'."
              (numberp (plist-get (car cache) :time)))
     (car cache)))
 
+(defun e-context-status--snapshot-key-matches-p (entry key)
+  "Return non-nil when snapshot ENTRY matches KEY."
+  (or (and (null key)
+           (not (plist-get entry :snapshot-cache-keyed)))
+      (equal key (plist-get entry :snapshot-cache-key))))
+
+(defun e-context-status--stale-snapshot-text (text prefix)
+  "Return TEXT marked stale with PREFIX."
+  (concat (or prefix e-context-status-stale-snapshot-prefix) text))
+
+(cl-defun e-context-status-snapshot-text
+    (cache &key key ttl now allow-stale stale-prefix)
+  "Return cached status text from CACHE.
+KEY must match the cached snapshot key.  TTL defaults to
+`e-context-status-estimate-cache-seconds'.  Fresh snapshots return unmodified
+text.  When ALLOW-STALE is non-nil, expired snapshots return visibly marked text
+using STALE-PREFIX or `e-context-status-stale-snapshot-prefix'."
+  (let* ((ttl (if (and (numberp ttl) (>= ttl 0))
+                  ttl
+                e-context-status-estimate-cache-seconds))
+         (now (or now (float-time)))
+         (entry (e-context-status--snapshot-cache-entry cache)))
+    (when (and entry (e-context-status--snapshot-key-matches-p entry key))
+      (if (< (- now (plist-get entry :time)) ttl)
+          (plist-get entry :text)
+        (and allow-stale
+             (e-context-status--stale-snapshot-text
+              (plist-get entry :text)
+              stale-prefix))))))
+
 (defun e-context-status--fresh-snapshot-text
     (cache ttl &optional now snapshot-cache-key)
   "Return fresh cached status text from CACHE, or nil."
-  (let ((ttl (if (and (numberp ttl) (>= ttl 0)) ttl 2.0))
-        (now (or now (float-time)))
-        (entry (e-context-status--snapshot-cache-entry cache)))
-    (when (and entry
-               (or (and (null snapshot-cache-key)
-                        (not (plist-get entry :snapshot-cache-keyed)))
-                   (equal snapshot-cache-key
-                          (plist-get entry :snapshot-cache-key)))
-               (< (- now (plist-get entry :time)) ttl))
-      (plist-get entry :text))))
+  (e-context-status-snapshot-text
+   cache
+   :key snapshot-cache-key
+   :ttl ttl
+   :now now))
 
 (defun e-context-status--store-snapshot-text (cache text &optional key)
   "Store TEXT in caller-owned status snapshot CACHE."
@@ -156,6 +186,7 @@ BYTES-PER-TOKEN defaults to `e-context-budget-estimate-bytes-per-token'."
     (harness session-id
              &key (prefix "e-context") prefer-token-usage estimate-cache
              estimate-cache-key snapshot-cache snapshot-cache-key
+             allow-stale-snapshot snapshot-cache-only stale-snapshot-prefix
              token-limits token-limit-function bytes-per-token
              (estimate-context t))
   "Return context-state status text for SESSION-ID through HARNESS.
@@ -167,6 +198,11 @@ when the caller's semantic context state changes.
 SNAPSHOT-CACHE is an optional caller-owned cons cell for the formatted status
 text.  SNAPSHOT-CACHE-KEY, when non-nil, invalidates cached status text when the
 caller's semantic status state changes.
+ALLOW-STALE-SNAPSHOT returns visibly stale cached text instead of rebuilding
+status when only an expired matching snapshot is available.
+SNAPSHOT-CACHE-ONLY returns PREFIX when no matching snapshot exists, avoiding
+context and budget work entirely.
+STALE-SNAPSHOT-PREFIX overrides `e-context-status-stale-snapshot-prefix'.
 TOKEN-LIMIT-FUNCTION, when non-nil, is called with the model id and should
 return its context window in tokens or nil; it takes precedence over the
 static TOKEN-LIMITS alias.  TOKEN-LIMITS and BYTES-PER-TOKEN override the
@@ -181,13 +217,19 @@ When ESTIMATE-CONTEXT is nil, avoid building full model-facing context."
                          :estimate-cache-key-present
                          (and estimate-cache-key t)
                          :snapshot-cache-key-present
-                         (and snapshot-cache-key t)))
+                         (and snapshot-cache-key t)
+                         :allow-stale-snapshot
+                         (and allow-stale-snapshot t)
+                         :snapshot-cache-only
+                         (and snapshot-cache-only t)))
    (lambda ()
-     (or (e-context-status--fresh-snapshot-text
+     (or (e-context-status-snapshot-text
           snapshot-cache
-          e-context-status-estimate-cache-seconds
-          nil
-          snapshot-cache-key)
+          :key snapshot-cache-key
+          :ttl e-context-status-estimate-cache-seconds
+          :allow-stale allow-stale-snapshot
+          :stale-prefix stale-snapshot-prefix)
+         (and snapshot-cache-only prefix)
          (e-context-status--store-snapshot-text
           snapshot-cache
           (if-let ((status (e-context-budget-status

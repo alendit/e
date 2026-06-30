@@ -8131,6 +8131,49 @@ The context-window denominator comes from the live provider lookup
                  (e-chat--active-session-line candidate status-cache)))))
     (should (= calls 1))))
 
+(ert-deftest e-chat-test-active-session-line-can-use-stale-status-snapshot ()
+  "Active-session picker rows can serve stale cached status without rebuilding."
+  (let* ((store (e-session-store-create))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :sessions store
+                   :default-options
+                   '(:model "gpt-5.5" :reasoning-effort "high")))
+         (candidate (list :harness harness
+                          :session '(:id "picker-stale-status-cache"
+                                      :title "Picker Stale Status"
+                                      :message-count 1
+                                      :loaded t)
+                          :session-id "picker-stale-status-cache"))
+         (status-cache (make-hash-table :test #'equal))
+         (calls 0))
+    (e-session-create store :id "picker-stale-status-cache")
+    (let* ((status-key (e-chat--active-session-status-key candidate))
+           (status-cache-cell (puthash status-key
+                                       (cons
+                                        (list :text "ctx cached"
+                                              :time 0.0
+                                              :snapshot-cache-keyed t
+                                              :snapshot-cache-key
+                                              (list :status-key status-key
+                                                    :prefer-token-usage t
+                                                    :estimate-context nil))
+                                        nil)
+                                       status-cache)))
+      (cl-letf (((symbol-function 'e-context-budget-status)
+                 (lambda (&rest _args)
+                   (setq calls (1+ calls))
+                   (error "stale picker status should not rebuild")))
+                ((symbol-function 'e-chat-overview--session-unread-p)
+                 (lambda (&rest _args) nil)))
+        (let ((e-context-status-estimate-cache-seconds 1))
+          (should (string-match-p
+                   "stale ctx cached"
+                   (e-chat--active-session-line candidate status-cache)))))
+      (should (eq status-cache-cell
+                  (gethash status-key status-cache))))
+    (should (= calls 0))))
+
 (ert-deftest e-chat-test-active-session-open-ignores-preview-buffer-and-focuses_workspace ()
   "Opening from active sessions ignores the picker preview and focuses session affinity."
   (let* ((store (e-session-store-create))

@@ -8046,7 +8046,8 @@ adds its display name to the row."
                     :snapshot-cache-key
                     (list :status-key status-key
                           :prefer-token-usage t
-                          :estimate-context nil))))
+                          :estimate-context nil)
+                    :allow-stale-snapshot t)))
          (meta (string-join
                 (delq nil
                       (list (and instance
