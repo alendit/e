@@ -330,6 +330,33 @@
       (ignore-errors (e-session-flush-write-queue store))
       (delete-directory directory t))))
 
+(ert-deftest e-session-test-flush-write-queue-writes-critical-records-before-index ()
+  "Queued flush writes critical session records before derived index state."
+  (let* ((directory (make-temp-file "e-session-" t))
+         (store (e-session-persistent-index-store-create
+                 directory
+                 :write-mode 'queued))
+         order)
+    (unwind-protect
+        (let* ((session (e-session-create store :id "critical-before-index"))
+               (session-id (plist-get session :id)))
+          (e-session-append-message
+           store session-id
+           '(:id "msg-1" :role user :content "durable before index"))
+          (cl-letf (((symbol-function 'e-session--append-record-now)
+                     (lambda (_store _session-id record)
+                       (push (plist-get record :type) order)))
+                    ((symbol-function 'e-session--write-index-now)
+                     (lambda (_store)
+                       (push 'index order))))
+            (e-session-flush-write-queue store))
+          (should (equal (nreverse order)
+                         '("session" "message" index)))
+          (should-not (e-session-store-write-queue store))
+          (should-not (e-session-store-index-write-pending store)))
+      (ignore-errors (e-session-flush-write-queue store))
+      (delete-directory directory t))))
+
 (ert-deftest e-session-test-load-session-start-replays-in-chunks ()
   "Chunked persistent session loading returns before replay completion."
   (let* ((directory (make-temp-file "e-session-" t))
