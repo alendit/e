@@ -420,6 +420,38 @@
               :content "HI"
               :metadata nil)))))
 
+(ert-deftest e-tools-test-call-rejects-long-nested-tool-without-executor ()
+  "Default nested calls fail fast for long-class tools."
+  (let ((registry (e-tools-registry-create))
+        started)
+    (e-tools-register registry
+                      :name "outer"
+                      :description "Call long inner."
+                      :handler (lambda (_arguments)
+                                 (e-tools-call "inner" nil)))
+    (e-tools-register registry
+                      :name "inner"
+                      :description "Long async inner."
+                      :blocking-class 'process
+                      :start
+                      (lambda (&rest _args)
+                        (setq started t)
+                        nil))
+    (should
+     (equal (plist-get
+             (e-tools-test--execute-with-context
+              registry
+              '(:id "outer-1" :name "outer" :arguments nil)
+              (list :tools registry))
+             :content)
+            '(:tool-call-id "outer-1/nested-1"
+              :name "inner"
+              :status error
+              :content "Nested tool inner is process-class and cannot run synchronously inside another tool; call it as a top-level tool instead."
+              :metadata (:error e-tools-nested-long-tool-rejected
+                         :blocking-class process))))
+    (should-not started)))
+
 (ert-deftest e-tools-test-call-bang-returns-content-or-signals-tool-error ()
   "The bang variant unwraps ok content and signals structured tool errors."
   (let ((registry (e-tools-registry-create)))

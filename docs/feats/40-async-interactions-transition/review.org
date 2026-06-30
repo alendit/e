@@ -1539,3 +1539,58 @@ emacsclient --eval "(progn (load-file \"/private/tmp/e-chat-live-open-probe.el\"
 #+end_src
 
 Result: returned =(:sync-called nil :initial-loading t :initial-response nil :settled t :final-response t)=.
+
+* Phase 4 Core Nested Long Tool Rejection Slice Review
+
+Status: in progress.
+
+** Scope reviewed
+
+- Added a core =e-tools-nested-long-tool-rejected= error class and structured nested result helper.
+- Changed the default =e-tools-call= executor path to reject long blocking-class nested calls before starting or waiting on the inner tool.
+- Left harness-owned nested execution on its existing custom executor path so lifecycle events and harness-specific rejection behavior remain unchanged.
+- Added a focused test proving a long async inner tool is not started by default nested calls.
+
+** Verification
+
+#+begin_src sh
+rtk eldev test -f test/e-tools-test.el -B e-tools-test-call-rejects-long-nested-tool-without-executor e-tools-test-call-executes-active-tool-from-context e-tools-test-call-bang-returns-content-or-signals-tool-error e-tools-test-call-enforces-default-nested-budget
+#+end_src
+
+Result: passed all four focused nested-call tests.
+
+#+begin_src sh
+rtk eldev test -f test/e-tools-test.el
+#+end_src
+
+Result: passed all 24 =e-tools= tests.
+
+#+begin_src sh
+rtk eldev test -f test/e-harness-test.el -B e-harness-test-nested-tool-calls-use-harness-lifecycle e-harness-test-run-elisp-can-catch-nested-tool-errors
+#+end_src
+
+Result: passed both focused harness nested-tool tests.
+
+#+begin_src sh
+rtk eldev emacs --batch --eval "(progn (setq byte-compile-error-on-warn t) (dolist (file '(\"lisp/core/e-tools.el\" \"test/e-tools-test.el\")) (byte-compile-file file)))"
+#+end_src
+
+Result: passed for the touched core tool module and tests.
+
+#+begin_src sh
+git diff --check -- lisp/core/e-tools.el test/e-tools-test.el docs/feats/40-async-interactions-transition/plan.org docs/feats/40-async-interactions-transition/review.org
+#+end_src
+
+Result: passed.
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Result: returned the repository path after reloading changed Lisp.
+
+#+begin_src sh
+emacsclient --eval "(progn (load-file \"/private/tmp/e-tools-live-nested-probe.el\") e-tools-live-nested-probe-result)"
+#+end_src
+
+Result: returned =(:started nil :content (:tool-call-id "outer-live/nested-1" :name "inner" :status error :content "Nested tool inner is process-class and cannot run synchronously inside another tool; call it as a top-level tool instead." :metadata (:error e-tools-nested-long-tool-rejected :blocking-class process)))=.

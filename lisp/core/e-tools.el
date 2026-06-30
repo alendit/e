@@ -40,6 +40,8 @@
   "Nested tool returned a structured error")
 (define-error 'e-tools-nested-tool-budget-exceeded
   "Nested tool call budget exceeded")
+(define-error 'e-tools-nested-long-tool-rejected
+  "Long nested tool call rejected")
 (define-error 'e-tools-blocking-handler-rejected
   "Long synchronous tool handler rejected in interactive execution")
 
@@ -525,6 +527,19 @@ SUMMARY is optional and should stay compact and high value."
        (e-tools--interactive-context-p context)
        (e-tools-long-blocking-class-p (e-tools--blocking-class tool))))
 
+(defun e-tools--nested-long-tool-result (call tool)
+  "Return a structured rejection result for long nested CALL to TOOL."
+  (let ((class (or (e-tools--blocking-class tool) 'unknown))
+        (name (plist-get call :name)))
+    (e-tools--result
+     call
+     'error
+     (format
+      "Nested tool %s is %s-class and cannot run synchronously inside another tool; call it as a top-level tool instead."
+      name class)
+     (list :error 'e-tools-nested-long-tool-rejected
+           :blocking-class class))))
+
 (defun e-tools-execute (registry call)
   "Execute CALL against REGISTRY and return a structured tool result."
   (let ((done nil)
@@ -592,10 +607,15 @@ OPTIONS is a plist.  Supported keys are `:call-id', `:allow-recursive', and
         (setq call (plist-put call :metadata metadata)))
       (if executor
           (funcall executor call options context)
-        (e-tools--execute-with-context
-         registry
-         call
-         (e-tools--nested-context context))))))
+        (let ((tool (gethash name (e-tools-registry-tools registry))))
+          (if (and tool
+                   (e-tools-long-blocking-class-p
+                    (e-tools--blocking-class tool)))
+              (e-tools--nested-long-tool-result call tool)
+            (e-tools--execute-with-context
+             registry
+             call
+             (e-tools--nested-context context))))))))
 
 (defun e-tools-call! (name arguments &optional options)
   "Execute active tool NAME with ARGUMENTS and return successful content.

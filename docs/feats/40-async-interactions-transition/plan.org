@@ -60,7 +60,7 @@ Not yet implemented in the planned sense:
 - There is no cooperative presentation render scheduler.
 - Context budget estimates now support semantic cache keys for transcript/model/option/layer-sensitive invalidation, but there is no cached context/status snapshot contract broad enough to satisfy Phase 3.
 - Chat resume/rendering does not yet use the chunked replay scheduler, and the queued-write critical/derived durability model is only partially implemented.
-- Nested cheap tool calls still use synchronous return semantics; long-class nested calls now fail fast with model guidance instead of waiting.
+- Nested cheap tool calls still use synchronous return semantics; long-class nested calls now fail fast with model guidance in both harness-owned and core default nested executors instead of waiting.
 - The final obsolete sync API sweep is not done.
 
 Practical status:
@@ -535,9 +535,9 @@ Purpose: remove the remaining design-level wait in =e-tools-call= without invent
 
 Work:
 
-1. Classify nested sync calls as cheap-only by default.
+1. Classify nested sync calls as cheap-only by default. Implemented for the core default nested executor and harness-owned nested executor.
 2. Add =e-tools-call-async= or a cleaner continuation/request API for nested long tools if a concrete use case requires it.
-3. Make long nested calls fail clearly with model-guiding instructions when no tested continuation path exists.
+3. Make long nested calls fail clearly with model-guiding instructions when no tested continuation path exists. Implemented for long-class nested calls without a custom executor.
 4. Preserve parent-call visibility with nested =tool-started=, =tool-progress=, =tool-finished=, and =tool-failed= events.
 5. Keep recursion and fan-out budgets.
 
