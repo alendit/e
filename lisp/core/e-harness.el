@@ -1169,7 +1169,27 @@ compaction) where exposing tools risks a tool-call instead of a reply."
          :depth depth)
    extra
    (when (listp (plist-get tool-call :metadata))
-     (plist-get tool-call :metadata))))
+	     (plist-get tool-call :metadata))))
+
+(defun e-harness--tool-blocking-class (tool)
+  "Return TOOL blocking class metadata."
+  (let ((metadata (plist-get tool :metadata)))
+    (or (plist-get metadata :blocking-class)
+        (plist-get metadata :blocking_class)
+        (plist-get metadata :blocking))))
+
+(defun e-harness--nested-long-tool-result (tool-call tool)
+  "Return a structured error result for long nested TOOL-CALL."
+  (let ((class (e-harness--tool-blocking-class tool))
+        (name (plist-get tool-call :name)))
+    (e-tools-result-create
+     tool-call
+     'error
+     (format
+      "Nested tool %s is %s-class and cannot run synchronously inside another tool; call it as a top-level tool instead."
+      name class)
+     (list :error 'e-nested-long-tool-rejected
+           :blocking-class class))))
 
 (defun e-harness--execute-nested-tool
     (harness session-id turn-id tools tool-call _options parent-context)
@@ -1177,29 +1197,35 @@ compaction) where exposing tools risks a tool-call instead of a reply."
   (let* ((hooks (e-harness-hooks harness))
          (parent-tool-call (plist-get parent-context :tool-call))
          (depth (1+ (or (plist-get parent-context :depth) 0)))
-         (context (e-harness--tool-hook-context
-                   harness session-id turn-id tools parent-context depth))
-         (prepared
-          (e-hooks-run-reduce hooks :pre-tool-call tool-call context))
-         result
-         failure)
+	         (context (e-harness--tool-hook-context
+	                   harness session-id turn-id tools parent-context depth))
+	         (prepared
+	          (e-hooks-run-reduce hooks :pre-tool-call tool-call context))
+	         (tool (gethash (plist-get prepared :name)
+	                        (e-tools-registry-tools tools)))
+	         result
+	         failure)
     (e-harness--emit-turn-event
      harness
      session-id
      turn-id
-     'tool-started
-     (e-harness--nested-tool-payload
-      prepared parent-tool-call depth))
-    (e-tools-start
-     tools
-     prepared
-     :context context
-     :on-done (lambda (value) (setq result value))
-     :on-error (lambda (err) (setq failure err)))
-    (while (not (or result failure))
-      (accept-process-output nil 0.01))
-    (when failure
-      (signal (car failure) (cdr failure)))
+	     'tool-started
+	     (e-harness--nested-tool-payload
+	      prepared parent-tool-call depth))
+	    (if (and tool
+	             (e-tools-long-blocking-class-p
+	              (e-harness--tool-blocking-class tool)))
+	        (setq result (e-harness--nested-long-tool-result prepared tool))
+	      (e-tools-start
+	       tools
+	       prepared
+	       :context context
+	       :on-done (lambda (value) (setq result value))
+	       :on-error (lambda (err) (setq failure err)))
+	      (while (not (or result failure))
+	        (accept-process-output nil 0.01))
+	      (when failure
+	        (signal (car failure) (cdr failure))))
     (setq result
           (e-hooks-run-reduce hooks :post-tool-call result context))
     (e-harness--emit-turn-event

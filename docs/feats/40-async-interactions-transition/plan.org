@@ -28,6 +28,7 @@ Implemented:
 - Generated MCP HTTP tools start through async =url-retrieve= with timeout/cancellation and deterministic start-before-network-result coverage.
 - =e-harness-compact-session-start= provides a core async compaction lifecycle with callback completion, backend request cancellation, failure events, and stale-callback protection.
 - Auto-compaction in =e-harness-prompt-async= starts through the async compaction lifecycle before provider sampling and keeps the compaction request cancellable as the active request.
+- Nested long-class tool calls are rejected by the harness with a structured model-facing error instead of synchronously waiting inside another tool.
 - The Phase 1 review records focused tests, compile checks, and a live reload.
 
 Partly implemented:
@@ -45,7 +46,7 @@ Not yet implemented in the planned sense:
 - There is no cooperative presentation render scheduler.
 - There is no cached context/status snapshot contract broad enough to satisfy Phase 3.
 - There is no queued session write and chunked replay scheduler.
-- Nested tool calls still have synchronous wait semantics for non-cheap work.
+- Nested cheap tool calls still use synchronous return semantics; long-class nested calls now fail fast with model guidance instead of waiting.
 - The final obsolete sync API sweep is not done.
 
 Practical status:

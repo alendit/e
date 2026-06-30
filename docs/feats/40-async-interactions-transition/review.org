@@ -209,6 +209,49 @@ emacsclient --eval "...bounded auto-compaction active-request probe..."
 
 Result: returned =(:request t :operation compaction)= after prompt submit and before summary completion.
 
+* Phase 2 Nested Long-Tool Slice Review
+
+Status: in progress.
+
+** Scope reviewed
+
+- Added harness-side detection of long blocking classes for nested tool calls.
+- Nested long-class tools now return a structured error with =:error e-nested-long-tool-rejected= and model-facing guidance to call the tool as a top-level tool instead.
+- Cheap nested tools keep the existing synchronous return semantics.
+- Added focused coverage in =test/e-harness-nested-tools-test.el= proving the long nested tool start function is not invoked.
+
+** Verification
+
+#+begin_src sh
+rtk eldev test --file test/e-harness-nested-tools-test.el -B
+#+end_src
+
+Result: passed for focused nested long-tool rejection.
+
+#+begin_src sh
+rtk eldev test --file test/e-harness-nested-tools-test.el --file test/e-harness-test.el --file test/e-tools-test.el -B
+#+end_src
+
+Result: passed for nested harness policy plus existing harness/tool nested-call behavior.
+
+#+begin_src sh
+git diff --check
+#+end_src
+
+Result: passed.
+
+#+begin_src sh
+rtk eldev emacs --batch --eval "(progn (setq byte-compile-error-on-warn t) (dolist (file '(\"lisp/core/e-harness.el\" \"test/e-harness-nested-tools-test.el\")) (byte-compile-file file)))"
+#+end_src
+
+Result: passed for the touched harness and nested-tool test files.
+
+#+begin_src sh
+emacsclient --eval "...bounded nested long-tool rejection probe..."
+#+end_src
+
+Result: returned =(:outer-status ok :nested-status error :error e-nested-long-tool-rejected :started nil)=.
+
 * Phase 2 MCP Slice Review
 
 Status: in progress.
