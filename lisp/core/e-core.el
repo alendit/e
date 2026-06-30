@@ -35,6 +35,7 @@
 (require 'e-layers)
 (require 'e-harness)
 (require 'e-actions)
+(require 'e-usage-report)
 (require 'e-harness-registry)
 (require 'e-harness-instances)
 (require 'e-task-queue)
@@ -67,6 +68,7 @@
         :layers t
         :harness t
         :actions t
+        :usage-report t
         :harness-registry t
         :harness-instances t))
 
