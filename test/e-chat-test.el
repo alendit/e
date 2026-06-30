@@ -3204,54 +3204,60 @@ the orphaned region and appeared to vanish."
 
 (ert-deftest e-chat-test-final-turn-collapses-progress-to-summary ()
   "Settled activity collapses to a navigable turn summary."
-  (let ((buffer (e-chat-test--buffer nil "chat-progress-summary")))
+  (let ((buffer (e-chat-test--buffer nil "chat-progress-summary"))
+        (details-calls 0))
     (unwind-protect
         (with-current-buffer buffer
-          (e-chat--render-event
-           (e-events-make :type 'turn-started
-                          :session-id e-chat-session-id
-                          :turn-id "turn-1"
-                          :created-at 0))
-          (e-chat--render-event
-           (e-events-make :type 'provider-request-started
-                          :session-id e-chat-session-id
-                          :turn-id "turn-1"
-                          :created-at 0
-                          :payload '(:status started)))
-          (e-chat--render-event
-           (e-events-make :type 'provider-request-finished
-                          :session-id e-chat-session-id
-                          :turn-id "turn-1"
-                          :created-at 63
-                          :payload '(:status done)))
-          (dotimes (index 2)
+          (cl-letf (((symbol-function 'e-chat--activity-summary-details-text)
+                     (lambda (&rest _args)
+                       (setq details-calls (1+ details-calls))
+                       "eager details")))
             (e-chat--render-event
-             (e-events-make :type 'tool-started
+             (e-events-make :type 'turn-started
                             :session-id e-chat-session-id
                             :turn-id "turn-1"
-                            :created-at 64
-                            :payload (list :type 'tool-call
-                                           :id (format "call-%d" index)
-                                           :name "read"))))
-          (e-chat--render-event
-           (e-events-make :type 'provider-request-started
-                          :session-id e-chat-session-id
-                          :turn-id "turn-1"
-                          :created-at 160
-                          :payload '(:status started)))
-          (e-chat--render-event
-           (e-events-make :type 'provider-request-finished
-                          :session-id e-chat-session-id
-                          :turn-id "turn-1"
-                          :created-at 205
-                          :payload '(:status done)))
-          (e-chat--render-event
-           (e-events-make :type 'message-added
-                          :session-id e-chat-session-id
-                          :turn-id "turn-1"
-                          :created-at 205
-                          :payload '(:message (:role assistant
-                                                :content "Final answer."))))
+                            :created-at 0))
+            (e-chat--render-event
+             (e-events-make :type 'provider-request-started
+                            :session-id e-chat-session-id
+                            :turn-id "turn-1"
+                            :created-at 0
+                            :payload '(:status started)))
+            (e-chat--render-event
+             (e-events-make :type 'provider-request-finished
+                            :session-id e-chat-session-id
+                            :turn-id "turn-1"
+                            :created-at 63
+                            :payload '(:status done)))
+            (dotimes (index 2)
+              (e-chat--render-event
+               (e-events-make :type 'tool-started
+                              :session-id e-chat-session-id
+                              :turn-id "turn-1"
+                              :created-at 64
+                              :payload (list :type 'tool-call
+                                             :id (format "call-%d" index)
+                                             :name "read"))))
+            (e-chat--render-event
+             (e-events-make :type 'provider-request-started
+                            :session-id e-chat-session-id
+                            :turn-id "turn-1"
+                            :created-at 160
+                            :payload '(:status started)))
+            (e-chat--render-event
+             (e-events-make :type 'provider-request-finished
+                            :session-id e-chat-session-id
+                            :turn-id "turn-1"
+                            :created-at 205
+                            :payload '(:status done)))
+            (e-chat--render-event
+             (e-events-make :type 'message-added
+                            :session-id e-chat-session-id
+                            :turn-id "turn-1"
+                            :created-at 205
+                            :payload '(:message (:role assistant
+                                                  :content "Final answer."))))
+            (should (= details-calls 0)))
           (let ((content (buffer-string)))
             (should (string-match-p
                      "Turn took 3min 25sec, 2 tool calls\\." content))

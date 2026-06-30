@@ -54,6 +54,7 @@ Partly implemented:
 - Composer =@= file candidates use a buffer-local cached snapshot, start async refreshes on cache miss, show a loading row while refreshing, and drop stale refreshes by generation/key.
 - Selected composer =@= file references read at most =e-chat-file-reference-max-bytes= plus one byte before truncating the inline preview.
 - Long final assistant messages are inserted as plain protected text immediately, with Markdown presentation deferred through a generation-checked timer job.
+- Settled activity summaries no longer precompute expanded detail text during summary rendering; child expansion and details buffers compute details on demand.
 
 Not yet implemented in the planned sense:
 
@@ -133,7 +134,7 @@ Still blocking or potentially blocking:
 - MCP generated tools, web tools, file/tmp resource discovery tools, MCP refresh, MCP activation, MCP catalog discovery, and interactive MCP capability providers have async/cache-first paths for interactive execution, while explicit batch wrappers keep synchronous waits;
 - =file://= and =tmp://= glob/search methods use synchronous =process-file=;
 - nested =e-tools-call= keeps cheap direct-return semantics, but long-class nested calls fail fast with model guidance unless a harness/custom executor handles them;
-- running-status redraw, tool-result previewing, block details, and full session render are synchronous buffer work; long final assistant Markdown presentation is deferred after immediate plain-text insertion;
+- running-status redraw, tool-result previewing, and full session render are synchronous buffer work; long final assistant Markdown presentation is deferred after immediate plain-text insertion, and activity-summary details are generated on demand;
 - context/status paths can build full context, run providers, estimate tokens, or query Anthropic model info synchronously;
 - default live session appends queue persistent JSONL/index writes through a short timer with generation/sequence metadata and stale-generation dropping; unloaded indexed chat open/resume uses the chunked replay start API, while overview read state and full-session render remain synchronous where they render loaded transcripts;
 - composer =@= candidate discovery is cache-first and refreshed asynchronously; selected file insertion still performs a synchronous but bounded read.
@@ -457,7 +458,7 @@ Work:
 3. Insert final assistant text promptly as plain protected text when Markdown presentation remains expensive. Implemented for assistant messages above =e-chat-deferred-markdown-threshold-bytes=.
 4. Defer Markdown/font-lock presentation into chunks only when the content requires it. Initial implementation defers the Markdown pass as a generation-checked timer job; chunking remains future work.
 5. Update running activity/progress rows in place where possible.
-6. Lazy-generate expanded block details.
+6. Lazy-generate expanded block details. Initial implementation avoids eager activity-summary details during summary rendering and leaves detail construction to activation/details commands.
 7. Render old session turns tail-first or in bounded chunks.
 8. Require each render job to carry buffer identity, session id, block id, and generation. Initial deferred activity redraw jobs carry buffer identity and generation tokens.
 9. Preserve composer draft, references, point, response navigation, block view, and tool-list state across every scheduled render step.

@@ -1649,3 +1649,58 @@ emacsclient --eval "(progn (load-file \"/private/tmp/e-chat-live-deferred-markdo
 #+end_src
 
 Result: returned =(:initial-final-face (e-chat-final-assistant-face) :initial-markdown-face nil :initial-pending t :final-final-face (e-chat-final-assistant-face) :final-markdown-face (markdown-bold-face e-chat-final-assistant-face))=.
+
+* Phase 3 Lazy Activity Summary Details Slice Review
+
+Status: in progress.
+
+** Scope reviewed
+
+- Removed eager =e-chat--activity-summary-details-text= construction from settled activity summary display data.
+- Kept summary activation on the existing child-block expansion path.
+- Kept explicit details-buffer generation lazy through =e-chat-response-navigation-details= and =e-chat--turn-details-text=.
+- Extended the final-turn summary regression so summary rendering and child expansion fail if they try to build activity-summary details eagerly.
+
+** Verification
+
+#+begin_src sh
+rtk eldev test -f test/e-chat-test.el -B e-chat-test-final-turn-collapses-progress-to-summary e-chat-test-activity-summary-expands-to-child-blocks e-chat-test-response-navigation-details-shows-intermittent-events
+#+end_src
+
+Result: passed all three focused summary/detail tests.
+
+#+begin_src sh
+rtk eldev test -f test/e-chat-test.el
+#+end_src
+
+Result: passed 271 tests, 1 skipped.
+
+#+begin_src sh
+rtk eldev emacs --batch --eval "(progn (require 'e-chat) (setq byte-compile-error-on-warn t) (byte-compile-file \"lisp/shells/chat/e-chat.el\"))"
+#+end_src
+
+Result: passed for the touched chat source module.
+
+#+begin_src sh
+rtk eldev emacs --batch --eval "(progn (require 'e-chat) (setq byte-compile-error-on-warn t) (dolist (file '(\"lisp/shells/chat/e-chat.el\" \"test/e-chat-test.el\")) (byte-compile-file file)))"
+#+end_src
+
+Result: source compile passed; the test-file compile path still reports the pre-existing free-variable issue at =test/e-chat-test.el:444=.
+
+#+begin_src sh
+git diff --check -- lisp/shells/chat/e-chat.el test/e-chat-test.el docs/feats/40-async-interactions-transition/plan.org docs/feats/40-async-interactions-transition/review.org
+#+end_src
+
+Result: passed.
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Result: returned the repository path after reloading changed Lisp.
+
+#+begin_src sh
+emacsclient --eval "(progn (load-file \"/private/tmp/e-chat-live-lazy-details-probe.el\") e-chat-live-lazy-details-probe-result)"
+#+end_src
+
+Result: returned =(:details-calls 0 :summary t)=.

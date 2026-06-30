@@ -4323,10 +4323,7 @@ When RECORD is nil, clear only buffer-local status markers."
           :final-rendered final-rendered
           :summary-text summary-text
           :text text
-          :block-kind (if summary-text 'activity-summary 'activity)
-          :details-text (and summary-text
-                             (e-chat--activity-summary-details-text
-                              turn-id record)))))
+          :block-kind (if summary-text 'activity-summary 'activity))))
 
 (defun e-chat--running-status-display-text (data)
   "Return the buffer text represented by running-status DATA."
