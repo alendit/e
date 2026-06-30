@@ -58,6 +58,7 @@ Partly implemented:
 - Explicit MCP sync helper/HTTP wrappers reject marked interactive hot paths before helper transport or HTTP primitives run, while preserving batch/test direct-return semantics.
 - OpenAI and Anthropic provider-specific sync transport/stream wrappers reject marked interactive hot paths before starting URL, websocket, or injected request-function waits, while preserving batch/test sync wrappers outside guarded hot paths.
 - Legacy web search/fetch/browser sync helpers reject marked interactive hot paths before starting subprocess, URL, or browser-helper waits, while registered model-facing web tools keep their async =:start= paths.
+- Web search/fetch/browser async starts share a configurable in-flight request cap and fail with =e-web-backpressure= before starting process, URL, or browser request transport when saturated; cancellation and terminal cleanup release the slot.
 - Base file discovery and shell-command sync helpers reject marked interactive hot paths before starting =process-file= or shell-command waits, while file glob/search resource methods and =bash= keep their async start paths.
 - Chat command-output and composer file-candidate sync helpers reject marked interactive hot paths before starting shell, =process-file=, =fd=, or recursive fallback scans, while composer command insertion and =@= file candidates keep their async/cache-first paths.
 - Session tmp glob/search sync discovery helpers reject marked interactive hot paths before starting =process-file= waits, while tmp:// model-facing resource tools keep their async start paths.
@@ -75,7 +76,7 @@ Partly implemented:
 
 Not yet implemented in the planned sense:
 
-- Explicit MCP batch call wrappers still have synchronous waits for non-interactive batch/test callers, but marked interactive hot paths now fail before helper transport or HTTP primitives run. Generated model-facing MCP tool execution, interactive capability providers, interactive refresh, activation, and catalog discovery start APIs no longer wait.
+- Explicit MCP batch call wrappers still have synchronous waits for non-interactive batch/test callers, and MCP helper backpressure remains incomplete, but marked interactive hot paths now fail before helper transport or HTTP primitives run. Generated model-facing MCP tool execution, interactive capability providers, interactive refresh, activation, and catalog discovery start APIs no longer wait.
 - There is no raw-result store outside the session tmp owner; cache invalidation can now clean individual session-tmp raw-result references, while root-level explicit, harness-reset, and max-age cleanup remain available.
 - There is no full cooperative presentation render scheduler covering every presentation job, though deferred Markdown has a configurable line budget and the current deferred Markdown, activity/progress redraw, and loaded-session backfill jobs are cancellable, tracked through the shared chat render-job registry, and coalesced by owner/key where they supersede older work.
 - Context budget estimates and shared context-status text now support semantic cache keys; chat mode-line, active-session picker rows, and Org Canvas status use formatted-status snapshots, but the broader context/status snapshot contract for turn prep and any other shells remains open.
@@ -362,7 +363,7 @@ Work:
 2. Convert MCP HTTP JSON-RPC calls from =url-retrieve-synchronously= to async =url-retrieve= with timeout and cancellation. Implemented for generated tool calls, interactive refresh, async catalog discovery, interactive capability providers, and activation.
 3. Convert =web_search=, =web_fetch=, and =web_browser= to =:start= tools.
 4. Add progress events for long helper/browser work where useful.
-5. Add concurrency limits, cancellation cleanup, timeout settlement, and late-callback diagnostics.
+5. Add concurrency limits, cancellation cleanup, timeout settlement, and late-callback diagnostics. Web search/fetch/browser starts now share a configurable in-flight request cap with deterministic pre-transport rejection and release-on-cancel coverage; MCP backpressure remains open.
 6. Store large fetched/browser outputs through result references instead of display-string materialization.
 
 Acceptance:

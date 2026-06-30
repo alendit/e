@@ -27,6 +27,7 @@
 (define-error 'e-web-invalid-response "Web backend returned an invalid response")
 (define-error 'e-web-unsupported-url "Web URL is unsupported")
 (define-error 'e-web-unsupported-content "Web response content is unsupported")
+(define-error 'e-web-backpressure "Too many concurrent web requests")
 
 (defcustom e-web-search-backend 'bx
   "Active web search backend used by `web_search'.
@@ -73,6 +74,14 @@ When nil and the program is node, e uses the bundled helper script."
   :type 'number
   :group 'e)
 
+(defcustom e-web-tools-max-concurrent-requests 8
+  "Maximum number of in-flight async web helper requests.
+This cap covers web search processes, passive URL fetches, and rendered browser
+helper requests.  Set to nil to disable the cap."
+  :type '(choice (const :tag "Unlimited" nil)
+                 (integer :tag "Maximum in-flight requests"))
+  :group 'e)
+
 (defconst e-web-tools--directory
   (file-name-directory
    (file-truename
@@ -83,6 +92,28 @@ When nil and the program is node, e uses the bundled helper script."
 (defvar e-web-tools--browser-stdout nil)
 (defvar e-web-tools--browser-stderr nil)
 (defvar e-web-tools--browser-next-id 0)
+(defvar e-web-tools--active-request-count 0
+  "Number of async web helper requests currently in flight.")
+
+(defun e-web-tools--reserve-request-slot (family)
+  "Reserve one async web helper slot for FAMILY.
+Signal `e-web-backpressure' before starting transport when the shared cap is
+already full."
+  (when (and (integerp e-web-tools-max-concurrent-requests)
+             (>= e-web-tools--active-request-count
+                 e-web-tools-max-concurrent-requests))
+    (signal 'e-web-backpressure
+            (list (format "Too many concurrent web requests: %s"
+                          e-web-tools--active-request-count)
+                  family
+                  e-web-tools-max-concurrent-requests)))
+  (cl-incf e-web-tools--active-request-count)
+  family)
+
+(defun e-web-tools--release-request-slot (&optional _family)
+  "Release one async web helper slot."
+  (setq e-web-tools--active-request-count
+        (max 0 (1- e-web-tools--active-request-count))))
 
 (defun e-web-tools--argument-string (arguments key)
   "Return string argument KEY from ARGUMENTS."
@@ -391,6 +422,7 @@ operators because ddgr's --site accepts only a single domain."
                     ('bx e-web-bx-timeout)
                     ('ddgr e-web-ddgr-timeout)))
          (label (format "%s backend" backend))
+         (reservation (e-web-tools--reserve-request-slot 'search))
          (stdout (generate-new-buffer " *e-web-stdout*"))
          (stderr (generate-new-buffer " *e-web-stderr*"))
          (settled nil)
@@ -403,7 +435,10 @@ operators because ddgr's --site accepts only a single domain."
            (when (buffer-live-p stdout)
              (kill-buffer stdout))
            (when (buffer-live-p stderr)
-             (kill-buffer stderr)))
+             (kill-buffer stderr))
+           (when reservation
+             (e-web-tools--release-request-slot reservation)
+             (setq reservation nil)))
          (fail (condition)
            (unless settled
              (setq settled t)
@@ -818,15 +853,20 @@ operators because ddgr's --site accepts only a single domain."
   (let* ((url (e-web-tools--argument-string arguments :url))
          (timeout (or (e-web-tools--optional-number arguments :timeout) 20))
          (settled nil)
+         reservation
          timer
          response-buffer)
     (e-web-tools--validate-http-url url)
+    (setq reservation (e-web-tools--reserve-request-slot 'fetch))
     (cl-labels
         ((cleanup ()
            (when (timerp timer)
              (cancel-timer timer))
            (when (buffer-live-p response-buffer)
-             (kill-buffer response-buffer)))
+             (kill-buffer response-buffer))
+           (when reservation
+             (e-web-tools--release-request-slot reservation)
+             (setq reservation nil)))
          (fail (err)
            (unless settled
              (setq settled t)
@@ -1072,16 +1112,20 @@ operators because ddgr's --site accepts only a single domain."
           (or (e-web-tools--browser-arguments operation arguments) nil))
          (timeout (or (e-web-tools--optional-number arguments :timeout)
                       e-web-browser-helper-timeout))
-         (process (e-web-tools--browser-helper-ensure))
-         (id (e-web-tools--browser-next-id))
-         (request (append (list :id id :op operation) request-arguments))
-         (deadline (+ (float-time) timeout))
+         reservation
+         process
+         id
+         request
+         deadline
          (settled nil)
          timer)
     (cl-labels
         ((cleanup ()
            (when (timerp timer)
-             (cancel-timer timer)))
+             (cancel-timer timer))
+           (when reservation
+             (e-web-tools--release-request-slot reservation)
+             (setq reservation nil)))
          (fail (condition)
            (unless settled
              (setq settled t)
@@ -1129,22 +1173,38 @@ operators because ddgr's --site accepts only a single domain."
                      (schedule))))
                (error
                 (fail condition))))))
-      (process-send-string process (concat (json-encode request) "\n"))
-      (when on-event
-        (funcall on-event 'tool-progress
-                 (list :message (format "Browser %s started" operation))))
-      (schedule)
-      (e-tools-request-create
-       :cancel (lambda ()
-                 (unless settled
-                   (setq settled t)
-                   (cleanup))
-                 t)
-       :metadata (list :transport 'process
-                       :process process
-                       :backend "playwright"
-                       :operation operation
-                       :request-id id)))))
+      (condition-case condition
+          (progn
+            (setq reservation (e-web-tools--reserve-request-slot 'browser))
+            (setq process (e-web-tools--browser-helper-ensure))
+            (setq id (e-web-tools--browser-next-id))
+            (setq request (append (list :id id :op operation)
+                                  request-arguments))
+            (setq deadline (+ (float-time) timeout))
+            (process-send-string process (concat (json-encode request) "\n"))
+            (when on-event
+              (funcall on-event 'tool-progress
+                       (list :message (format "Browser %s started"
+                                             operation))))
+            (schedule)
+            (e-tools-request-create
+             :cancel (lambda ()
+                       (unless settled
+                         (setq settled t)
+                         (cleanup))
+                       t)
+             :metadata (list :transport 'process
+                             :process process
+                             :backend "playwright"
+                             :operation operation
+                             :request-id id)))
+        (error
+         (cleanup)
+         (if on-error
+             (progn
+               (funcall on-error condition)
+               nil)
+           (signal (car condition) (cdr condition))))))))
 
 (defun e-web-tools--unimplemented (operation _arguments)
   "Signal that OPERATION is not implemented yet."

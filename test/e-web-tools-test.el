@@ -248,6 +248,46 @@ JSON
       (when (buffer-live-p response-buffer)
         (kill-buffer response-buffer)))))
 
+(ert-deftest e-web-tools-test-fetch-start-rejects-when-backpressure-full ()
+  "web_fetch fails before starting URL transport when web slots are full."
+  (let ((e-web-tools-max-concurrent-requests 1)
+        (e-web-tools--active-request-count 1)
+        started)
+    (cl-letf (((symbol-function 'url-retrieve)
+               (lambda (&rest _args)
+                 (setq started t)
+                 (error "url-retrieve should not start"))))
+      (should-error
+       (e-web-tools--fetch-start
+        :arguments '(:url "https://example.com/full"))
+       :type 'e-web-backpressure)
+      (should-not started)
+      (should (= e-web-tools--active-request-count 1)))))
+
+(ert-deftest e-web-tools-test-fetch-start-releases-backpressure-slot-on-cancel ()
+  "Cancelling an async web_fetch request releases its web helper slot."
+  (let ((e-web-tools-max-concurrent-requests 1)
+        (e-web-tools--active-request-count 0)
+        (response-buffer nil)
+        callback
+        request)
+    (unwind-protect
+        (cl-letf (((symbol-function 'url-retrieve)
+                   (lambda (_url cb &rest _args)
+                     (setq callback cb)
+                     (setq response-buffer
+                           (generate-new-buffer " *e-web-test-response*")))))
+          (setq request
+                (e-web-tools--fetch-start
+                 :arguments '(:url "https://example.com/pending")))
+          (should callback)
+          (should (e-tools-request-p request))
+          (should (= e-web-tools--active-request-count 1))
+          (should (e-tools-cancel-request request))
+          (should (= e-web-tools--active-request-count 0)))
+      (when (buffer-live-p response-buffer)
+        (kill-buffer response-buffer)))))
+
 (ert-deftest e-web-tools-test-sync-fetch-helper-rejects-hot-path ()
   "The synchronous fetch helper fails before url.el in hot paths."
   (let (started)
@@ -459,6 +499,23 @@ done
           (should (e-tools-cancel-request request)))
       (e-web-tools-browser-reset)
       (delete-directory directory t))))
+
+(ert-deftest e-web-tools-test-browser-start-releases-slot-on-helper-error ()
+  "A browser helper startup failure releases its reserved web slot."
+  (let ((e-web-tools-max-concurrent-requests 1)
+        (e-web-tools--active-request-count 0)
+        failure)
+    (cl-letf (((symbol-function 'e-web-tools--browser-helper-ensure)
+               (lambda ()
+                 (signal 'e-web-backend-unavailable
+                         '("browser helper missing")))))
+      (should-not
+       (e-web-tools--browser-start
+        :arguments '(:operation "open" :url "https://example.com")
+        :on-error (lambda (err)
+                    (setq failure err))))
+      (should (eq (car failure) 'e-web-backend-unavailable))
+      (should (= e-web-tools--active-request-count 0)))))
 
 (ert-deftest e-web-tools-test-sync-browser-helper-rejects-hot-path ()
   "The synchronous browser helper fails before starting or using the helper."
