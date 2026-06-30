@@ -296,6 +296,24 @@ printf '%s\\n' notes/delayed.txt
           (should (e-tools-cancel-request request)))
       (delete-directory bin-dir t))))
 
+(ert-deftest e-session-tmp-test-sync-process-lines-rejects-hot-path ()
+  "The synchronous tmp discovery helper fails before process-file in hot paths."
+  (let (started)
+    (cl-letf (((symbol-function 'process-file)
+               (lambda (&rest _args)
+                 (setq started t)
+                 (error "process-file should not run"))))
+      (let ((err (should-error
+                  (e-request-with-hot-path 'tmp-process-lines
+                    (e-session-tmp--process-lines
+                     "fd"
+                     default-directory
+                     nil))
+                  :type 'e-request-blocking-call-in-hot-path)))
+        (should (equal (cdr err)
+                       '(e-session-tmp--process-lines tmp-process-lines))))
+      (should-not started))))
+
 (ert-deftest e-session-tmp-test-discovery-rejects-unsafe-paths ()
   "tmp:// glob/search roots stay inside the session tmp root."
   (should (require 'e-session-tmp-resources nil t))

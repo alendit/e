@@ -2717,3 +2717,45 @@ emacsclient --eval "(let (command-start process-start command-error candidates-e
 #+end_src
 
 Result: returned =(:command-start nil :command-error (e-chat--run-shell-command live-chat-command) :process-start nil :candidates-error (e-chat--project-file-candidates-sync live-chat-candidates))=, confirming the live direct chat sync helpers reject before starting blocking work.
+
+* Phase 4 Session Tmp Sync Helper Hot-Path Guard Slice Review
+
+Status: complete.
+
+** Scope reviewed
+
+- Added a session-tmp hot-path rejection helper.
+- Guarded the synchronous tmp:// discovery process helper before it can start =process-file= waits.
+- Preserved async tmp:// glob/search resource tool starts and existing cleanup/reference behavior.
+
+** Verification
+
+#+begin_src sh
+rtk eldev emacs --batch --eval "(progn (setq byte-compile-error-on-warn t) (dolist (file '(\"lisp/layers/harness/e-session-tmp-resources.el\" \"test/e-session-tmp-resources-test.el\")) (byte-compile-file file)))"
+#+end_src
+
+Result: passed for the touched session-tmp module and tests.
+
+#+begin_src sh
+rtk eldev test -f test/e-session-tmp-resources-test.el -B e-session-tmp-test-sync-process-lines-rejects-hot-path e-session-tmp-test-glob-start-returns-before-fd-exits
+#+end_src
+
+Result: passed the focused sync-helper guard and async tmp glob regression.
+
+#+begin_src sh
+rtk eldev test -f test/e-session-tmp-resources-test.el
+#+end_src
+
+Result: passed all 18 session tmp resource tests.
+
+#+begin_src sh
+emacsclient --eval "(progn (load \"/Users/dimitrivorona/projects/elisp/e/lisp/dev/e-dev.el\" nil 'nomessage) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Result: returned ="/Users/dimitrivorona/projects/elisp/e/"=, so the running Emacs loaded the session tmp guard change.
+
+#+begin_src sh
+emacsclient --eval "(let (process-start process-error) ...)"
+#+end_src
+
+Result: returned =(:process-start nil :process-error (e-session-tmp--process-lines live-tmp-process))=, confirming the live direct tmp sync helper rejects before starting blocking work.

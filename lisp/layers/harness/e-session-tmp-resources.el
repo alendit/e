@@ -20,6 +20,7 @@
 (require 'e-hooks)
 (require 'e-operations)
 (require 'e-resource-patterns)
+(require 'e-request)
 (require 'e-resources)
 (require 'e-tools)
 
@@ -228,9 +229,15 @@ defaults to the current time.  Return a list of deleted root directories."
       (signal 'e-session-tmp-resources-missing-command
               (list (format "Missing executable: %s" name)))))
 
+(defun e-session-tmp--reject-sync-in-hot-path (operation)
+  "Reject synchronous session-tmp OPERATION from marked interactive hot paths."
+  (when (e-request-hot-path-active-p)
+    (e-request-hot-path-blocking-error operation)))
+
 (defun e-session-tmp--process-lines (program directory args &optional ok-statuses)
   "Run PROGRAM in DIRECTORY with ARGS and return output lines.
 OK-STATUSES defaults to only zero."
+  (e-session-tmp--reject-sync-in-hot-path 'e-session-tmp--process-lines)
   (let ((default-directory directory)
         (accepted (or ok-statuses '(0))))
     (with-temp-buffer
