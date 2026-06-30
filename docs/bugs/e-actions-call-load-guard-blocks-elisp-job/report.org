@@ -1,0 +1,108 @@
+#+title: e-actions-call from interactive run_elisp is blocked by the load guard
+#+startup: overview
+
+* Report
+
+From an interactive =run_elisp= turn, calling the documented Elisp job action
+entrypoint fails:
+
+#+begin_example
+(e-actions-call 'elisp-job :run-batch '(:code "..." :timeout 20))
+;; => Blocking Elisp loading is not allowed in interactive run_elisp:
+;;    "load is blocking in interactive run_elisp; ..."
+#+end_example
+
+This is exactly the call form the system guidance and the =elisp-job= guidance
+text instruct agents to use:
+
+#+begin_quote
+Use =(e-actions-call 'elisp-job :run-batch '(:code "..." :load_path ["lisp"]
+:timeout 10))=.  Poll with =:status= and fetch with =:result=.
+#+end_quote
+
+So the guard rejects the very escape hatch it points at.  The same applies to
+=:status=, =:result=, and =:cancel= dispatched through =e-actions-call=.
+
+* Reproduction
+
+1. In a project that has a project-local layer (e.g. the grimoire repo, which
+   ships =.e/layers/topic/=), open an interactive =e= chat with =run_elisp=
+   active.
+2. Evaluate =(e-actions-call 'elisp-job :status '(:job_id "probe"))=.
+3. Observe the =e-emacs-tools-blocking-elisp-load= error instead of a job
+   status result.
+
+Workaround used in the field: call the underlying functions directly
+(=e-elisp-job-run-batch=, =e-elisp-job-result=, ...), which bypasses
+=e-actions-call= dispatch and works.  This defeats the point of documenting the
+=e-actions-call= path and is non-obvious.
+
+* Root cause
+
+=run_elisp= wraps evaluation in
+=e-emacs-tools--with-run-elisp-load-guard= (=lisp/layers/emacs/e-emacs-tools.el=),
+which, in an interactive context, =cl-letf='s =load=, =load-file=, =require=,
+=byte-compile-file=, and =directory-files-recursively= to signal
+=e-emacs-tools-blocking-elisp-load=.  The intent is to stop an interactive turn
+from loading/scanning external Elisp on the live UI Emacs.
+
+=e-actions-call= → =e-actions-dispatch= → =e-actions--find-capability= →
+=e-harness-effective-capabilities= resolves the active capability set.  In a
+project with project-local layers, that resolution re-discovers project layers
+through =e-project-local--discover-layers=, which calls
+=e-project-local--load-layer-file= →  =e-project-local--load-project-file=,
+which calls =load= on the trusted project-local =layer.el=.
+
+That =load= is a legitimate, allowlisted, trusted project-local layer load — not
+an agent loading arbitrary external Elisp — but it runs through the same global
+=load= symbol the guard has shadowed, so the guard fires and aborts the whole
+=e-actions-call=.
+
+Confirmed by tracing the first =load= call during a guarded
+=(e-actions-call 'elisp-job :status ...)=; the =e-*= frames at the call site
+were:
+
+#+begin_example
+e-project-local--extensionless-load-advice
+e-project-local--load-project-file
+e-project-local--load-layer-file
+e-project-local--discover-layers
+#+end_example
+
+So the failure is collateral: capability dispatch performs trusted
+project-local layer loading, and the interactive =run_elisp= load guard cannot
+tell that trusted load apart from an agent-initiated blocking load.
+
+* Why it matters
+
+- The guard's own remediation message and the global guidance both tell agents
+  to use =(e-actions-call 'elisp-job :run-batch ...)= precisely when they must
+  not block the UI Emacs.  Today that instruction fails in any project with
+  project-local layers, which includes the grimoire knowledge base where the
+  Elisp-job tooling is most useful.
+- It only reproduces when project-local layers exist, so it is easy to miss in
+  a bare =e= checkout and surfaces as a confusing, environment-dependent error.
+
+* Suggested fix
+
+The guard should bracket only agent-authored loads, not the runtime's own
+trusted capability/layer resolution.  Options, roughly in order of preference:
+
+- Make =e-actions-dispatch= (or the project-local discovery path it triggers)
+  run capability/layer resolution outside the interactive load guard — e.g. a
+  dynamic =e-emacs-tools--bypass-run-elisp-load-guard= that
+  =e-project-local--load-project-file= binds while loading trusted, allowlisted
+  layer/capability files.  The guard's =load= shim would honor that bypass.
+- Alternatively, have the guard's =load=/=require= shims permit loads whose
+  target resolves under an allowlisted project-local extension root (the same
+  =e-project-local--root-allowed-p= trust check used elsewhere), and only reject
+  loads outside that trust boundary.  This keeps the protection against
+  arbitrary external Elisp while letting trusted layer resolution proceed.
+- At minimum, cache discovered project-local layers/capabilities for the active
+  session so capability resolution during a turn does not re-=load= =layer.el=
+  on every dispatch.  This narrows the window but does not fix the first
+  dispatch in a turn, so it is a mitigation rather than a fix.
+
+A regression test should dispatch an =e-actions-call= from a simulated
+interactive =run_elisp= context in a project that has a project-local layer, and
+assert the action result comes back rather than =e-emacs-tools-blocking-elisp-load=.
