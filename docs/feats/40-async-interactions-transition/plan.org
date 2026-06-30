@@ -90,8 +90,9 @@ Not yet implemented in the planned sense:
 Practical status:
 
 - The main external-latency, composer-scan, large-preview, indexed-session-open, and nested-long-tool paths have async/cache-first or fail-fast behavior.
-- The full non-blocking proof remains open because the broader cooperative presentation scheduler and the final sync API sweep are not done.
-- A fair status label is =In-progress=, not close to =Done=.
+- The cooperative presentation scheduler now covers the known chat render jobs that previously had independent timers: deferred Markdown, activity/progress redraw, loaded-session backfill, and active-turn focus-tail updates. Remaining non-chat timers are currently classified as lifecycle/debounce/progress tickers rather than large render jobs.
+- The final sync sweep now has an executable blocking-site inventory plus source/test/perf checklist evidence, but the full non-blocking proof remains open until live reload/probes succeed or the live gap is explicitly accepted as a tracked follow-up.
+- A fair status label is still =In-progress= until the live verification gap is closed.
 - The feature index now says =In-progress= to match the code evidence.
 
 =e= already has an async turn spine for ordinary provider and top-level tool execution, but several user-visible paths can still block Emacs.

@@ -2856,3 +2856,51 @@ rtk eldev compile
 #+end_src
 
 Result: passed with nothing to rebuild.
+
+* Phase 4 Nonblocking Review Checklist Sweep
+
+Status: in progress.
+
+** Scope reviewed
+
+- Provider submit: normal chat submit returns before backend completion and does not render assistant output early.
+- Long MCP/web/browser tools: generated MCP and web/browser starts return before helper/network completion, with backpressure and cancellation coverage.
+- Compaction: core compaction start and auto-compaction use async request lifecycles and ignore late cancelled summaries.
+- Long final response rendering: plain assistant text appears before deferred Markdown presentation completes, and deferred presentation cancellation is covered.
+- Noisy tool output: chat activity keeps bounded tool-result previews instead of rendering full output inline.
+- Large session resume: unloaded sessions replay in chunks and loaded sessions backfill older transcript messages after initial paint.
+- Context/status cache miss: status and budget paths have cache-only/stale-snapshot coverage and avoid cold rebuilds for optional status surfaces.
+- Composer =@=: file candidates refresh asynchronously and present loading/cache behavior instead of foreground scans.
+- Cancellation races, owner teardown, stale render jobs, and queued write recovery: covered through request, MCP/web slots, deferred Markdown cancellation, active-turn tail generation checks, session replay chunks, and queued-write retry tests.
+- Nested tool attempts: long nested tools fail with a structured model-facing error instead of blocking the parent tool call.
+
+** Verification
+
+#+begin_src sh
+rtk eldev test -f test/e-chat-test.el -f test/e-mcp-test.el -f test/e-web-tools-test.el -f test/e-harness-compaction-async-test.el -f test/e-harness-nested-tools-test.el -f test/e-session-test.el -f test/e-context-status-test.el -f test/e-context-budget-test.el -B ...
+#+end_src
+
+Result: the first checklist pass matched 10 focused selectors and all passed: chat async submit, long final response, bounded tool preview, loaded-session backfill, composer =@= async refresh, deferred Markdown cancellation, active-turn tail render-job coverage, HTTP MCP generated tool start, HTTP MCP refresh, and chunked session load.
+
+#+begin_src sh
+rtk eldev test -f test/e-mcp-test.el -f test/e-web-tools-test.el -f test/e-harness-compaction-async-test.el -f test/e-harness-nested-tools-test.el -f test/e-session-test.el -f test/e-context-status-test.el -f test/e-context-budget-test.el -B ...
+#+end_src
+
+Result: the second checklist pass matched 15 focused selectors and all passed: MCP stdio/HTTP backpressure, web fetch/browser async start and slot release, compaction start/cancel/auto-compaction, long nested-tool rejection, chunked session load, context budget fresh-cache reuse, and context-status cache-only snapshots.
+
+#+begin_src sh
+rtk eldev test -f test/e-session-test.el -B e-session-test-flush-write-queue-retries-only-unacknowledged-records e-session-test-flush-write-queue-retries-rebuilt-stale-index
+#+end_src
+
+Result: passed queued-write partial-failure retry and rebuilt-index retry coverage.
+
+#+begin_src sh
+rtk eldev eval "(progn (require 'e-dev-perf) ...)"
+#+end_src
+
+Result: full default perf scenario run completed with no regressions: regression=0, warning=0, improvement=7, noisy=1, skipped=45.
+
+** Open review notes
+
+- Live Emacs reload and scalar live probes could not run in this environment because =emacsclient= repeatedly failed with =Connection refused= for the server socket.
+- The final checklist is therefore source/test/perf backed, but not live-session backed in this continuation.
