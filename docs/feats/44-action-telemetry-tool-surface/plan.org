@@ -32,6 +32,25 @@ Still open:
 - broader usage-report helpers beyond chat activity rendering;
 - removal of obsolete compatibility registration helpers after callers are gone.
 
+Current implementation state as of 2026-06-30:
+
+- Phase 1 is mostly implemented in e.
+  Action dispatch emits durable =action-started=, =action-finished=, and =action-failed= events when harness, session, and turn context are present.
+  The =e-action://= resource surface exists through the action-descriptions capability and supports =read=, =glob=, and =search=.
+  Focused tests cover action dispatch, async action settlement, durable action events, and action description resources.
+- A large part of Phase 2 is implemented but not fully cleaned up.
+  Workspace awareness, Org Canvas, annotations, session compaction, and context inspection now expose action descriptors.
+  Guidance for =run_elisp= and workspace and annotation workflows points agents to =e-actions-call= and =e-action://= contracts.
+  Org Canvas still has obsolete tool registration functions in source, although no current search hit showed their registrar being called.
+  Workspace, annotation, context-inspection, and session-compaction tool registration helpers also remain as compatibility or cleanup debt.
+- Usage presentation has partial support.
+  Chat activity rendering records and counts actions separately from tools.
+  Broader reusable usage-report helpers and full-surface reports with zero rows are still open.
+- Phase 3 has not started in this repository.
+  The grimoire and personal layer migrations remain planned work.
+- The focused verification currently passes.
+  =eldev test test/e-actions-test.el test/e-harness-test.el= passed 113/113 tests.
+
 * Problem
 
 The last-14-days tool usage report showed tool-surface creep.  Entries such as
