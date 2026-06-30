@@ -33,6 +33,11 @@
   :type 'integer
   :group 'e)
 
+(defcustom e-raw-results-default-max-age-seconds (* 24 60 60)
+  "Default maximum idle age before generic raw-result files are expired."
+  :type 'number
+  :group 'e)
+
 (defvar e-raw-results--counter 0
   "Counter used to make generated raw-result names unique.")
 
@@ -87,6 +92,15 @@
   (let ((coding-system-for-write 'utf-8-unix)
         (select-safe-coding-system-function nil))
     (write-region content nil path nil 'silent)))
+
+(defun e-raw-results--file-age-seconds (path now)
+  "Return PATH idle age in seconds at NOW, or nil when PATH is unavailable."
+  (when (and (stringp path) (file-exists-p path))
+    (let ((attributes (file-attributes path)))
+      (when attributes
+        (- now
+           (float-time
+            (file-attribute-modification-time attributes)))))))
 
 (cl-defun e-raw-results-write
     (&key id content owner redaction-policy cleanup-lifetime preview
@@ -149,6 +163,26 @@ the referenced file is already absent."
 (defun e-raw-results-cleanup-references (references)
   "Delete raw-result REFERENCES and return the deleted file paths."
   (delq nil (mapcar #'e-raw-results-cleanup-reference references)))
+
+(defun e-raw-results-cleanup-expired (&optional max-age-seconds now)
+  "Delete generic raw-result files idle longer than MAX-AGE-SECONDS.
+MAX-AGE-SECONDS defaults to `e-raw-results-default-max-age-seconds'.  NOW
+defaults to the current time.  Return the list of deleted file paths."
+  (let* ((max-age (or max-age-seconds e-raw-results-default-max-age-seconds))
+         (now (or now (float-time)))
+         deleted)
+    (when (and (numberp max-age)
+               (>= max-age 0)
+               (file-directory-p e-raw-results-directory))
+      (dolist (name (directory-files e-raw-results-directory nil
+                                     directory-files-no-dot-files-regexp))
+        (let ((path (e-raw-results--path name)))
+          (when (and (file-regular-p path)
+                     (let ((age (e-raw-results--file-age-seconds path now)))
+                       (or (null age) (> age max-age))))
+            (delete-file path)
+            (push path deleted)))))
+    (nreverse deleted)))
 
 (defun e-raw-results--register-resource-methods (registry &rest _context)
   "Register raw-result resource methods in REGISTRY."

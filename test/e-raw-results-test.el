@@ -79,6 +79,58 @@
       (when (file-directory-p directory)
         (delete-directory directory t)))))
 
+(ert-deftest e-raw-results-test-cleanup-expired-deletes-stale-files ()
+  "Expired cleanup deletes only stale raw-result files."
+  (should (require 'e-raw-results nil t))
+  (let* ((directory (make-temp-file "e-raw-results-test-" t))
+         (e-raw-results-directory directory)
+         (old-reference (e-raw-results-write
+                         :id "old.txt"
+                         :content "old"))
+         (fresh-reference (e-raw-results-write
+                           :id "fresh.txt"
+                           :content "fresh"))
+         (old-path (expand-file-name "old.txt" directory))
+         (fresh-path (expand-file-name "fresh.txt" directory))
+         (nested-directory (expand-file-name "nested" directory))
+         (now 1000.0))
+    (unwind-protect
+        (progn
+          (make-directory nested-directory)
+          (set-file-times old-path (seconds-to-time 900))
+          (set-file-times fresh-path (seconds-to-time 995))
+          (set-file-times nested-directory (seconds-to-time 900))
+          (should (equal (e-raw-results-cleanup-expired 50 now)
+                         (list old-path)))
+          (should-not (file-exists-p old-path))
+          (should (file-exists-p fresh-path))
+          (should (file-directory-p nested-directory))
+          (should (equal (e-raw-results-read
+                          (plist-get fresh-reference :uri))
+                         "fresh"))
+          (should-not (e-raw-results-cleanup-reference old-reference)))
+      (when (file-directory-p directory)
+        (delete-directory directory t)))))
+
+(ert-deftest e-raw-results-test-cleanup-expired-uses-default-age ()
+  "Expired cleanup uses `e-raw-results-default-max-age-seconds' by default."
+  (should (require 'e-raw-results nil t))
+  (let* ((directory (make-temp-file "e-raw-results-test-" t))
+         (e-raw-results-directory directory)
+         (e-raw-results-default-max-age-seconds 10)
+         (_reference (e-raw-results-write
+                      :id "default-age.txt"
+                      :content "old"))
+         (path (expand-file-name "default-age.txt" directory)))
+    (unwind-protect
+        (progn
+          (set-file-times path (seconds-to-time 980))
+          (should (equal (e-raw-results-cleanup-expired nil 1000.0)
+                         (list path)))
+          (should-not (file-exists-p path)))
+      (when (file-directory-p directory)
+        (delete-directory directory t)))))
+
 (provide 'e-raw-results-test)
 
 ;;; e-raw-results-test.el ends here
