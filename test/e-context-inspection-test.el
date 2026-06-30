@@ -22,19 +22,17 @@
 (require 'e-resources)
 (require 'e-tools)
 
-(ert-deftest e-context-inspection-test-capability-registers-export-tool ()
-  "The context-inspection capability exposes context and error tools."
-  (let* ((capability (e-context-inspection-capability-create))
-         (registry (e-tools-registry-create)))
-    (e-capabilities-register-tools capability registry)
+(ert-deftest e-context-inspection-test-capability-registers-actions ()
+  "The context-inspection capability exposes context and error actions."
+  (let ((capability (e-context-inspection-capability-create)))
     (should (eq (e-capability-id capability) 'context-inspection))
-    (should (equal (mapcar (lambda (definition)
-                             (plist-get definition :name))
-                           (e-tools-definitions registry))
-                   '("export-context"
-                     "e_error_recent_failures"
-                     "e_error_failure_detail"
-                     "e_error_raw_provider_preview")))))
+    (should (equal (cl-loop for (key _value) on (e-capability-actions capability)
+                            by #'cddr
+                            collect key)
+                   '(:export-context
+                     :recent-failures
+                     :failure-detail
+                     :raw-provider-preview)))))
 
 (ert-deftest e-context-inspection-test-dev-layer-contains-context-inspection ()
   "The e-dev layer packages context-inspection."
@@ -66,30 +64,22 @@
      (e-harness-sessions harness)
      "session-1"
      '(:id "msg-1" :role user :content "existing prompt"))
-    (let* ((registry (e-harness-tools harness "session-1" "turn-1"))
-           (result nil))
-      (e-tools-start
-       registry
-       (list :id "call-1"
-             :name "export-context"
-             :arguments (list :uri "tmp://default_context.md"))
-       :context (list :harness harness
-                      :session-id "session-1"
-                      :turn-id "turn-1")
-       :on-done (lambda (value) (setq result value)))
-      (while (not result)
-        (accept-process-output nil 0.01))
-      (let ((content (e-resources-read
-                      (e-harness-resources harness "session-1" "turn-1")
-                      "tmp://default_context.md"))
-            (metadata (plist-get result :content)))
-        (should (equal (plist-get result :status) 'ok))
-        (should (equal (plist-get metadata :uri) "tmp://default_context.md"))
-        (should (eq (plist-get metadata :mode) 'pre-prompt))
-        (should (equal (plist-get metadata :message-count) 3))
-        (should (string-match-p "capability instructions" content))
-        (should (string-match-p "provider context" content))
-        (should-not (string-match-p "existing prompt" content))))))
+    (let* ((metadata (e-actions-call
+                      'context-inspection
+                      :export-context
+                      (list :uri "tmp://default_context.md")
+                      (list :harness harness
+                            :session-id "session-1"
+                            :turn-id "turn-1")))
+           (content (e-resources-read
+                     (e-harness-resources harness "session-1" "turn-1")
+                     "tmp://default_context.md")))
+      (should (equal (plist-get metadata :uri) "tmp://default_context.md"))
+      (should (eq (plist-get metadata :mode) 'pre-prompt))
+      (should (equal (plist-get metadata :message-count) 3))
+      (should (string-match-p "capability instructions" content))
+      (should (string-match-p "provider context" content))
+      (should-not (string-match-p "existing prompt" content)))))
 
 (ert-deftest e-context-inspection-test-export-full-context-when-requested ()
   "export-context can include transcript messages when explicitly requested."
@@ -107,30 +97,23 @@
      (e-harness-sessions harness)
      "session-1"
      '(:id "msg-1" :role user :content "existing prompt"))
-    (let ((result nil))
-      (e-tools-start
-       (e-harness-tools harness "session-1" "turn-1")
-       (list :id "call-1"
-             :name "export-context"
-             :arguments (list :uri "tmp://context.md"
-                              :include_transcript t
-                              :include_metadata :json-false))
-       :context (list :harness harness
-                      :session-id "session-1"
-                      :turn-id "turn-1")
-       :on-done (lambda (value) (setq result value)))
-      (while (not result)
-        (accept-process-output nil 0.01))
-      (let ((content (e-resources-read
-                      (e-harness-resources harness "session-1" "turn-1")
-                      "tmp://context.md"))
-            (metadata (plist-get result :content)))
-        (should (equal (plist-get result :status) 'ok))
-        (should (eq (plist-get metadata :mode) 'full))
-        (should (equal (plist-get metadata :message-count) 3))
-        (should (string-match-p "system guidance" content))
-        (should (string-match-p "existing prompt" content))
-        (should-not (string-match-p "Export metadata" content))))))
+    (let* ((metadata (e-actions-call
+                      'context-inspection
+                      :export-context
+                      (list :uri "tmp://context.md"
+                            :include_transcript t
+                            :include_metadata :json-false)
+                      (list :harness harness
+                            :session-id "session-1"
+                            :turn-id "turn-1")))
+           (content (e-resources-read
+                     (e-harness-resources harness "session-1" "turn-1")
+                     "tmp://context.md")))
+      (should (eq (plist-get metadata :mode) 'full))
+      (should (equal (plist-get metadata :message-count) 3))
+      (should (string-match-p "system guidance" content))
+      (should (string-match-p "existing prompt" content))
+      (should-not (string-match-p "Export metadata" content)))))
 
 (ert-deftest e-context-inspection-test-recent-failures-finds-turn-failed ()
   "Recent failure inspection lists failed turns newest first."

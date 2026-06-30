@@ -486,13 +486,94 @@ exported.  This is the default context e sends before the first user prompt."
                  :required [])
    :handler #'e-context-inspection--raw-provider-preview-tool))
 
+(defun e-context-inspection--actions ()
+  "Return context-inspection action plist."
+  (list
+   :export-context
+   (e-action-create
+    :handler #'e-context-inspection--export-context-tool
+    :caller (lambda (context arguments)
+              (e-context-inspection-export-context
+               :harness (plist-get context :harness)
+               :session-id (or (e-context-inspection--argument-string
+                                arguments :session_id)
+                               (plist-get context :session-id))
+               :turn-id (or (e-context-inspection--argument-string
+                             arguments :turn_id)
+                            (plist-get context :turn-id))
+               :uri (e-context-inspection--argument-string
+                     arguments
+                     :uri
+                     e-context-inspection-default-uri)
+               :include-transcript
+               (eq (e-context-inspection--argument-boolean
+                    arguments :include_transcript)
+                   t)
+               :include-metadata
+               (not (eq (e-context-inspection--argument-boolean
+                         arguments :include_metadata t)
+                        :json-false))))
+    :description "Export the current e LLM context to a writable URI-addressed resource."
+    :parameters '(:type "object"
+                  :properties (:uri (:type "string")
+                               :session_id (:type "string")
+                               :turn_id (:type "string")
+                               :include_transcript (:type "boolean")
+                               :include_metadata (:type "boolean"))
+                  :required []))
+   :recent-failures
+   (e-action-create
+    :handler #'e-context-inspection--recent-failures-tool
+    :caller (lambda (context arguments)
+              (e-context-inspection-recent-failures
+               :harness (plist-get context :harness)
+               :limit (e-context-inspection--argument-nonnegative-integer
+                       arguments :limit)))
+    :description "List recent failed e turns from the current harness session store."
+    :parameters '(:type "object"
+                  :properties (:limit (:type "integer" :minimum 0))
+                  :required []))
+   :failure-detail
+   (e-action-create
+    :handler #'e-context-inspection--failure-detail-tool
+    :caller (lambda (context arguments)
+              (e-context-inspection-failure-detail
+               :harness (plist-get context :harness)
+               :session-id (or (e-context-inspection--argument-string
+                                arguments :session_id)
+                               (plist-get context :session-id))
+               :turn-id (or (e-context-inspection--argument-string
+                             arguments :turn_id)
+                            (plist-get context :turn-id))))
+    :description "Return one failed e turn timeline with prompt messages, activity, terminal error, session id, turn id, and project root."
+    :parameters '(:type "object"
+                  :properties (:session_id (:type "string")
+                               :turn_id (:type "string"))
+                  :required ["session_id" "turn_id"]))
+   :raw-provider-preview
+   (e-action-create
+    :handler #'e-context-inspection--raw-provider-preview-tool
+    :caller (lambda (context arguments)
+              (e-context-inspection-raw-provider-preview
+               :harness (plist-get context :harness)
+               :session-id (or (e-context-inspection--argument-string
+                                arguments :session_id)
+                               (plist-get context :session-id))
+               :turn-id (or (e-context-inspection--argument-string
+                             arguments :turn_id)
+                            (plist-get context :turn-id))))
+    :description "Return sanitized bounded raw provider diagnostics when available."
+    :parameters '(:type "object"
+                  :properties (:session_id (:type "string")
+                               :turn_id (:type "string"))
+                  :required []))))
+
 (defun e-context-inspection-capability-create ()
   "Create the context-inspection capability."
   (e-capability-create
    :id 'context-inspection
    :name "Context Inspection"
-   :tools (list #'e-context-inspection-register-export-context
-                #'e-context-inspection-register-error-tools)))
+   :actions (e-context-inspection--actions)))
 
 (provide 'e-context-inspection)
 
