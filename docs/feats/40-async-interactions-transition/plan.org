@@ -50,6 +50,7 @@ Partly implemented:
 - Interactive MCP capability providers use cached catalogs and start async discovery instead of blocking harness tool/resource/context construction on a cache miss.
 - =mcp_activate= has an async =:start= path for catalog loading and optional invocation.
 - Persistent session transcript replay has a chunked async start API with progress and cancellation.
+- Chat open/resume attaches unloaded indexed sessions through the chunked transcript loader and initially renders a cheap summary/loading shell.
 - Composer =@= file candidates use a buffer-local cached snapshot, start async refreshes on cache miss, show a loading row while refreshing, and drop stale refreshes by generation/key.
 - Selected composer =@= file references read at most =e-chat-file-reference-max-bytes= plus one byte before truncating the inline preview.
 
@@ -59,14 +60,14 @@ Not yet implemented in the planned sense:
 - There is no generic raw-result store or cache-driven reference cleanup lifecycle.
 - There is no cooperative presentation render scheduler.
 - Context budget estimates now support semantic cache keys for transcript/model/option/layer-sensitive invalidation, but there is no cached context/status snapshot contract broad enough to satisfy Phase 3.
-- Chat resume/rendering does not yet use the chunked replay scheduler, and the queued-write critical/derived durability model is only partially implemented.
+- Chat open/resume now uses the chunked replay scheduler for unloaded indexed sessions, but progressive tail-first rendering and the queued-write critical/derived durability model remain only partially implemented.
 - Nested cheap tool calls still use synchronous return semantics; long-class nested calls now fail fast with model guidance in both harness-owned and core default nested executors instead of waiting.
 - The final obsolete sync API sweep is not done.
 
 Practical status:
 
-- Roughly one early slice plus a few adjacent cheapening and safety items are implemented.
-- Most of the user-visible feature goal remains open.
+- The main external-latency, composer-scan, large-preview, indexed-session-open, and nested-long-tool paths have async/cache-first or fail-fast behavior.
+- The full non-blocking proof remains open because cooperative presentation rendering, tail-first transcript rendering, and the final sync API sweep are not done.
 - A fair status label is =In-progress=, not close to =Done=.
 - The feature index now says =In-progress= to match the code evidence.
 
@@ -130,10 +131,10 @@ Still blocking or potentially blocking:
 - core compaction, auto-compaction, manual chat/Org Canvas commands, the legacy =compact_session= tool registration, and the session compaction action entry point have async lifecycle paths;
 - MCP generated tools, web tools, file/tmp resource discovery tools, MCP refresh, MCP activation, MCP catalog discovery, and interactive MCP capability providers have async/cache-first paths for interactive execution, while explicit batch wrappers keep synchronous waits;
 - =file://= and =tmp://= glob/search methods use synchronous =process-file=;
-- nested =e-tools-call= waits for the nested tool by contract;
+- nested =e-tools-call= keeps cheap direct-return semantics, but long-class nested calls fail fast with model guidance unless a harness/custom executor handles them;
 - running-status redraw, final assistant Markdown presentation, tool-result previewing, block details, and full session render are synchronous buffer work;
 - context/status paths can build full context, run providers, estimate tokens, or query Anthropic model info synchronously;
-- default live session appends queue persistent JSONL/index writes through a short timer with generation/sequence metadata and stale-generation dropping, and transcript replay has a chunked async start API, but current chat resume/load callers and overview read state are still synchronous;
+- default live session appends queue persistent JSONL/index writes through a short timer with generation/sequence metadata and stale-generation dropping; unloaded indexed chat open/resume uses the chunked replay start API, while overview read state and full-session render remain synchronous where they render loaded transcripts;
 - composer =@= candidate discovery is cache-first and refreshed asynchronously; selected file insertion still performs a synchronous but bounded read.
 
 * Target Contracts
