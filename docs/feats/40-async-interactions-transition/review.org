@@ -1073,6 +1073,54 @@ emacsclient --eval "...bounded temporary chat composer-cache probe..."
 
 Result: returned =(:initial ("files: loading...") :calls 1 :final ("file: live.txt"))=.
 
+* Phase 3 Composer File Reference Bound Slice Review
+
+Status: in progress.
+
+** Scope reviewed
+
+- Composer file references now call =insert-file-contents-literally= with an end bound of =e-chat-file-reference-max-bytes + 1=.
+- The visible inline reference still uses the existing truncation marker when the bounded read proves the file is larger than the configured preview limit.
+- This keeps selected file insertion synchronous but bounded.
+
+** Verification
+
+#+begin_src sh
+rtk eldev test -f test/e-chat-test.el -B e-chat-test-composer-at-truncates-file-reference-text e-chat-test-composer-at-bounds-file-reference-read e-chat-test-composer-at-inserts-file-reference
+#+end_src
+
+Result: passed all three focused file-reference tests.
+
+#+begin_src sh
+rtk eldev test -f test/e-chat-test.el
+#+end_src
+
+Result: passed all 268 chat tests, with the existing Markdown rendering test skipped.
+
+#+begin_src sh
+rtk eldev emacs --batch --eval "(progn (require 'e-chat) (setq byte-compile-error-on-warn t) (byte-compile-file \"lisp/shells/chat/e-chat.el\"))"
+#+end_src
+
+Result: passed for the touched chat source module.
+
+#+begin_src sh
+git diff --check -- lisp/shells/chat/e-chat.el test/e-chat-test.el
+#+end_src
+
+Result: passed.
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Result: returned the repository path after reloading changed Lisp.
+
+#+begin_src sh
+emacsclient --eval "...bounded temporary file reference probe..."
+#+end_src
+
+Result: returned =(:prefix "01234" :truncated t :bytes 33)=.
+
 * Phase 3 Queued Session Write Generation Slice Review
 
 Status: in progress.

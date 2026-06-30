@@ -51,6 +51,7 @@ Partly implemented:
 - =mcp_activate= has an async =:start= path for catalog loading and optional invocation.
 - Persistent session transcript replay has a chunked async start API with progress and cancellation.
 - Composer =@= file candidates use a buffer-local cached snapshot, start async refreshes on cache miss, show a loading row while refreshing, and drop stale refreshes by generation/key.
+- Selected composer =@= file references read at most =e-chat-file-reference-max-bytes= plus one byte before truncating the inline preview.
 
 Not yet implemented in the planned sense:
 
@@ -133,7 +134,7 @@ Still blocking or potentially blocking:
 - running-status redraw, final assistant Markdown presentation, tool-result previewing, block details, and full session render are synchronous buffer work;
 - context/status paths can build full context, run providers, estimate tokens, or query Anthropic model info synchronously;
 - default live session appends queue persistent JSONL/index writes through a short timer with generation/sequence metadata and stale-generation dropping, and transcript replay has a chunked async start API, but current chat resume/load callers and overview read state are still synchronous;
-- composer =@= candidate discovery is cache-first and refreshed asynchronously; selected file insertion still performs a synchronous bounded read.
+- composer =@= candidate discovery is cache-first and refreshed asynchronously; selected file insertion still performs a synchronous but bounded read.
 
 * Target Contracts
 
@@ -400,7 +401,7 @@ Work:
 2. Convert =file://= and =tmp://= glob/search =fd= / =rg= calls to async process starts or cheap cached snapshots.
 3. Add deterministic caps for fallback directory scans and file previews.
 4. Build workspace file-candidate snapshots for composer =@= and refresh them asynchronously. Implemented for chat buffer-local candidate snapshots.
-5. Read selected file references through bounded preview or non-blocking attachment/reference paths.
+5. Read selected file references through bounded preview or non-blocking attachment/reference paths. Implemented as bounded previews for composer file references.
 6. Add latest-only composer refresh behavior and cleanup on buffer/session teardown. Implemented for composer file candidate refreshes.
 
 Acceptance:

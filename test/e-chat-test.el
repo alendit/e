@@ -2142,6 +2142,19 @@
       (when (file-exists-p path)
         (delete-file path)))))
 
+(ert-deftest e-chat-test-composer-at-bounds-file-reference-read ()
+  "File references read only enough bytes to determine truncation."
+  (let (args)
+    (cl-letf (((symbol-function 'insert-file-contents-literally)
+               (lambda (&rest actual-args)
+                 (setq args actual-args)
+                 (insert "12345"))))
+      (let ((e-chat-file-reference-max-bytes 4))
+        (should (string-match-p
+                 (regexp-quote "[File reference truncated]")
+                 (e-chat--read-file-reference-text "/tmp/example.txt")))))
+    (should (equal args '("/tmp/example.txt" nil 0 5)))))
+
 (ert-deftest e-chat-test-composer-slash-expands-leading-selected-prompt ()
   "Leading / expands the selected prompt as editable composer text."
   (let (buffer)

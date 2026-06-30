@@ -2207,7 +2207,8 @@ scan."
 (defun e-chat--read-file-reference-text (path)
   "Return reference text for PATH, truncated when necessary."
   (with-temp-buffer
-    (insert-file-contents-literally path)
+    (insert-file-contents-literally
+     path nil 0 (1+ e-chat-file-reference-max-bytes))
     (let* ((content (buffer-string))
            (truncated (> (string-bytes content)
                          e-chat-file-reference-max-bytes)))
