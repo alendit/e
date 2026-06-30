@@ -30,7 +30,7 @@ Implemented:
 - Auto-compaction in =e-harness-prompt-async= starts through the async compaction lifecycle before provider sampling and keeps the compaction request cancellable as the active request.
 - Manual chat and Org Canvas compaction commands start through =e-chat-session-compact-start= and return before backend summary completion.
 - The legacy =compact_session= tool registration provides an async =:start= path and long-class blocking metadata.
-- Large tool outputs can be truncated into model-visible previews with full content stored as session-owned =tmp://tool-results/...= references, and session tmp roots have explicit cleanup APIs.
+- Large tool outputs can be truncated into model-visible previews with full content stored as session-owned =tmp://tool-results/...= references, and session tmp roots clean up explicitly or through the harness session-reset hook.
 - Nested long-class tool calls are rejected by the harness with a structured model-facing error instead of synchronously waiting inside another tool.
 - The Phase 1 review records focused tests, compile checks, and a live reload.
 
@@ -40,13 +40,13 @@ Partly implemented:
 - Sync tool execution remains available for batch, tests, and nested call paths.
 - Some UI redraw preservation and preview cheapening landed, but this is not a render scheduler.
 - The session compaction action still calls the synchronous compaction wrapper because actions do not yet have an async dispatch contract.
-- Raw-result storage exists for large tool output through session tmp resources, but there is no generic raw-result store or automatic lifetime policy beyond explicit tmp cleanup.
+- Raw-result storage exists for large tool output through session tmp resources, but there is no generic raw-result store or lifetime policy beyond explicit/harness-reset tmp cleanup.
 
 Not yet implemented in the planned sense:
 
 - MCP discovery, refresh, and explicit batch call wrappers still have synchronous waits; generated model-facing MCP tool execution no longer does.
 - Compaction still uses the synchronous wrapper from the session compaction action entry point.
-- There is no generic raw-result store or automatic reference cleanup lifecycle.
+- There is no generic raw-result store or time/cache-driven reference cleanup lifecycle.
 - There is no cooperative presentation render scheduler.
 - There is no cached context/status snapshot contract broad enough to satisfy Phase 3.
 - There is no queued session write and chunked replay scheduler.

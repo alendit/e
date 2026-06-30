@@ -118,6 +118,20 @@ blocked on the interactive coding-system picker."
       (should-not (file-exists-p root-1))
       (should-not (file-exists-p root-2)))))
 
+(ert-deftest e-session-tmp-test-harness-reset-cleans-session-root ()
+  "The tmp resource capability cleans session-owned files on harness reset."
+  (should (require 'e-session-tmp-resources nil t))
+  (let* ((harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :intrinsic-capabilities
+                   (list (e-session-tmp-capability-create)))))
+    (e-harness-create-session harness :id "session-1")
+    (e-session-tmp-write harness "session-1" "tool-results/out.txt" "large")
+    (let ((root (e-session-tmp-directory harness "session-1")))
+      (should (file-exists-p (expand-file-name "tool-results/out.txt" root)))
+      (e-harness-reset harness "session-1")
+      (should-not (file-exists-p root)))))
+
 (ert-deftest e-session-tmp-test-resource-edit-is-strict ()
   "tmp:// edits apply exact replacements to existing files only."
   (should (require 'e-session-tmp-resources nil t))

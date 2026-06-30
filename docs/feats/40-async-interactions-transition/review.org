@@ -372,6 +372,50 @@ emacsclient --eval "...bounded session tmp cleanup probe..."
 
 Result: returned =(:uri "tmp://result.txt" :before t :cleaned t :after nil)=.
 
+* Phase 3 Session Reset Tmp Cleanup Slice Review
+
+Status: in progress.
+
+** Scope reviewed
+
+- Added a harness-owned =:session-reset= hook point that runs during =e-harness-reset=.
+- Wired the session tmp resource capability to delete the reset session's tmp root from that hook.
+- Kept core dependency direction clean: harness emits lifecycle, the tmp resource layer owns tmp cleanup behavior.
+- Added focused harness hook coverage in =test/e-harness-session-reset-hooks-test.el=.
+- Added tmp resource coverage proving =e-harness-reset= removes session-owned =tmp://= files.
+
+** Verification
+
+#+begin_src sh
+rtk eldev test --file test/e-harness-session-reset-hooks-test.el --file test/e-session-tmp-resources-test.el --file test/e-tool-output-truncation-test.el -B
+#+end_src
+
+Result: passed for the reset hook point, tmp cleanup on reset, tmp:// discovery, and tool-output truncation references.
+
+#+begin_src sh
+git diff --check
+#+end_src
+
+Result: passed.
+
+#+begin_src sh
+rtk eldev emacs --batch --eval "(progn (setq byte-compile-error-on-warn t) (dolist (file '(\"lisp/core/e-harness.el\" \"lisp/layers/harness/e-session-tmp-resources.el\" \"test/e-harness-session-reset-hooks-test.el\" \"test/e-session-tmp-resources-test.el\")) (byte-compile-file file)))"
+#+end_src
+
+Result: passed for the touched harness, tmp resource, and focused test files.
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Result: returned the repository path after reloading changed Lisp.
+
+#+begin_src sh
+emacsclient --eval "...bounded reset tmp cleanup probe..."
+#+end_src
+
+Result: returned =(:before t :after nil)=.
+
 * Phase 2 Nested Long-Tool Slice Review
 
 Status: in progress.

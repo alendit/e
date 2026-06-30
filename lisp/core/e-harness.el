@@ -2323,12 +2323,22 @@ cancellation.  SESSION-ID identifies the session."
   "Submit PROMPT as the next turn for SESSION-ID in HARNESS."
   (e-harness-prompt harness session-id prompt :metadata metadata))
 
+(defun e-harness--run-session-reset-hooks (harness session-id)
+  "Run `:session-reset' hooks for HARNESS SESSION-ID."
+  (e-hooks-run-reduce
+   (e-harness-hooks harness)
+   :session-reset
+   nil
+   (list :harness harness
+         :session-id session-id)))
+
 (defun e-harness-reset (harness session-id)
   "Clear SESSION-ID transcript state in HARNESS."
   (e-session-clear-messages (e-harness-sessions harness) session-id)
   (when (e-harness-queued-prompts harness session-id)
     (e-harness--set-queued-prompts harness session-id nil)
     (e-harness--emit-queue-changed harness session-id))
+  (e-harness--run-session-reset-hooks harness session-id)
   (e-harness--emit
    harness
    (e-events-make :type 'session-reset

@@ -17,6 +17,7 @@
 (require 'seq)
 (require 'subr-x)
 (require 'e-capabilities)
+(require 'e-hooks)
 (require 'e-operations)
 (require 'e-resource-patterns)
 (require 'e-resources)
@@ -727,7 +728,16 @@ root and is suitable for streaming writes."
    :name "Session Tmp Resources"
    :resource-methods
    (list (e-capability-resource-method-provider-create
-          :handler #'e-session-tmp--register-resource-methods))))
+          :handler #'e-session-tmp--register-resource-methods))
+   :hooks
+   (list (e-hook-create
+          :id "50-session-tmp-cleanup"
+          :point :session-reset
+          :handler (lambda (_value context)
+                     (e-session-tmp-cleanup-session
+                      (plist-get context :harness)
+                      (plist-get context :session-id))
+                     nil)))))
 
 (provide 'e-session-tmp-resources)
 
