@@ -2813,3 +2813,46 @@ emacsclient --eval "(progn (load \"/Users/dimitrivorona/projects/elisp/e/lisp/de
 #+end_src
 
 Result: failed because =emacsclient= could not connect to the Emacs server socket: =Connection refused=.
+
+* Phase 4 Executable Sync Inventory Slice Review
+
+Status: complete.
+
+** Scope reviewed
+
+- Added an executable final-sweep inventory test for the remaining audited blocking primitives and sync replay API symbols under =lisp/=.
+- The inventory tracks =url-retrieve-synchronously=, =process-file=, =accept-process-output=, =call-process=, and =e-session-load-session= by source file and count.
+- The test treats new occurrences as review failures, so remaining sync waits cannot expand silently while the final nonblocking review proceeds.
+- The inventory is intentionally paired with the existing hot-path guard tests rather than replacing them: it proves no new sync site appeared, while the existing focused tests prove guarded wrappers fail before starting blocking work.
+
+** Verification
+
+#+begin_src sh
+rtk eldev test -f test/e-nonblocking-sweep-test.el
+#+end_src
+
+Result: passed the executable blocking-site inventory.
+
+#+begin_src sh
+rtk eldev test -f test/e-request-test.el -f test/e-tools-test.el
+#+end_src
+
+Result: passed all 31 request/tool guard and async contract tests.
+
+#+begin_src sh
+E_E2E=1 rtk eldev test -f e2e/e-provider-continuation-e2e-test.el
+#+end_src
+
+Result: passed the provider-continuation e2e smoke.
+
+#+begin_src sh
+git diff --check
+#+end_src
+
+Result: passed.
+
+#+begin_src sh
+rtk eldev compile
+#+end_src
+
+Result: passed with nothing to rebuild.

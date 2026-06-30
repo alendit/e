@@ -85,7 +85,7 @@ Not yet implemented in the planned sense:
 - Context budget estimates and shared context-status text now support semantic cache keys plus explicit stale/cache-only snapshot reads; chat mode-line, active-session picker rows, and Org Canvas status use explicit status/snapshot purposes; chat-session context preview, context-inspection exports, and the dev perf context fixture use explicit preview purpose; active-session rows can reuse stale snapshots without rebuilding; optional context assembly routes through provider snapshot builders for status/snapshot purposes; and prompt turns use an explicit correctness-critical turn-context boundary. The remaining context work is the final sync API sweep proof rather than an unclassified production caller.
 - Chat open/resume now uses the chunked replay scheduler for unloaded indexed sessions, a bounded initial tail for large loaded sessions, and timer-driven progressive backfill for older loaded messages, but the complete queued-write critical/derived durability model remains only partially implemented beyond current generation, stale-index rebuild, partial-failure retry, and critical-before-index flush-order coverage.
 - Nested cheap tool calls still use synchronous return semantics; long-class nested calls now fail fast with model guidance in both harness-owned and core default nested executors instead of waiting.
-- The final obsolete sync API sweep is not done, though MCP, base/web/chat/tmp helper, tool execution, harness prompt/wait, provider adapter, backend stream, and loop run-turn sync wrappers now reject marked interactive hot paths before they can wait.
+- The final obsolete sync API sweep is not done, though MCP, base/web/chat/tmp helper, tool execution, harness prompt/wait, provider adapter, backend stream, and loop run-turn sync wrappers now reject marked interactive hot paths before they can wait, and an executable nonblocking-sweep inventory now fails if new reviewed blocking primitives or sync replay APIs appear under =lisp/=.
 
 Practical status:
 
@@ -589,7 +589,7 @@ Work:
 4. Add a review checklist that exercises provider submit, long MCP/web/browser tools, compaction, long final response rendering, noisy tool output, large session resume, context/status cache miss, composer =@= on a large workspace, cancellation races, owner teardown, and nested tool attempts.
 5. Run focused tests per slice, then full serialized Eldev.
 6. Reload live Emacs after Lisp changes and run bounded scalar probes only.
-7. Record findings in =docs/feats/40-async-interactions-transition/review.org= and fix or explicitly track every issue.
+7. Record findings in =docs/feats/40-async-interactions-transition/review.org= and fix or explicitly track every issue. Initial executable inventory coverage records the remaining audited =url-retrieve-synchronously=, =process-file=, =accept-process-output=, =call-process=, and =e-session-load-session= sites under =lisp/=.
 
 Acceptance:
 
