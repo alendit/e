@@ -14,42 +14,39 @@ reported as actions in usage summaries.
 
 * Status
 
-In-progress.
+In-review.
 
-Implemented in this slice:
+Implemented in this feature:
 
 - durable action activity events from the action dispatcher;
 - read-only =e-action://= resources with =read=, =glob=, and =search=;
-- workspace-awareness, Org Canvas, annotations, and context-inspection actions;
+- workspace-awareness, Org Canvas, annotations, session compaction, and context-inspection actions;
 - session compaction action use from =run_elisp=;
 - chat activity rendering that counts actions separately from tools;
+- reusable usage reporting through =e-usage-report-session= with separate tool/action rows and optional zero-use active-surface rows;
+- removal of obsolete e built-in semantic tool registration helpers for workspace awareness, Org Canvas, annotations, session compaction, and context inspection;
 - live reload coverage for the migrated action path.
 
 Still open:
 
-- grimoire and personal layer migrations;
-- =multi_tool_use.parallel= migration or removal;
-- broader usage-report helpers beyond chat activity rendering;
-- removal of obsolete compatibility registration helpers after callers are gone.
+- grimoire and personal layer migrations outside this repository;
+- =multi_tool_use.parallel= migration or removal.
 
 Current implementation state as of 2026-06-30:
 
-- Phase 1 is mostly implemented in e.
+- Phase 1 is implemented in e.
   Action dispatch emits durable =action-started=, =action-finished=, and =action-failed= events when harness, session, and turn context are present.
   The =e-action://= resource surface exists through the action-descriptions capability and supports =read=, =glob=, and =search=.
-  Focused tests cover action dispatch, async action settlement, durable action events, and action description resources.
-- A large part of Phase 2 is implemented but not fully cleaned up.
-  Workspace awareness, Org Canvas, annotations, session compaction, and context inspection now expose action descriptors.
+  =e-usage-report-session= aggregates tools and actions separately and can include zero-use rows for the active tool and action surface.
+  Focused tests cover action dispatch, async action settlement, durable action events, action description resources, and usage reports.
+- Phase 2 is implemented for e built-ins.
+  Workspace awareness, Org Canvas, annotations, session compaction, and context inspection expose action descriptors.
   Guidance for =run_elisp= and workspace and annotation workflows points agents to =e-actions-call= and =e-action://= contracts.
-  Org Canvas still has obsolete tool registration functions in source, although no current search hit showed their registrar being called.
-  Workspace, annotation, context-inspection, and session-compaction tool registration helpers also remain as compatibility or cleanup debt.
-- Usage presentation has partial support.
-  Chat activity rendering records and counts actions separately from tools.
-  Broader reusable usage-report helpers and full-surface reports with zero rows are still open.
-- Phase 3 has not started in this repository.
-  The grimoire and personal layer migrations remain planned work.
+  Obsolete model-facing semantic tool registration helpers were removed from e source.
+- Phase 3 remains external follow-up work.
+  The grimoire and personal layer migrations remain planned work outside this repository.
 - The focused verification currently passes.
-  =eldev test test/e-actions-test.el test/e-harness-test.el= passed 113/113 tests.
+  =eldev test test/e-loop-test.el test/e-org-canvas-test.el test/e-session-compaction-action-test.el test/e-usage-report-test.el test/e-actions-test.el test/e-harness-test.el test/e-annotation-tools-test.el test/e-context-inspection-test.el= passed 220/220 tests.
 
 * Problem
 

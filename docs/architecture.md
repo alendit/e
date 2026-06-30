@@ -312,7 +312,7 @@ recreated by the factory/sync path and are excluded from the recorded
 | `chat-session` | Chat Session | intrinsic only | `chat-session` |
 
 The `e` layer is where runtime self-management lives: layer selection, context
-inspection, runtime context, and the `compact_session` tool. `harness-base`
+inspection, runtime context, and the `session-compaction` action. `harness-base`
 supplies harness-owned support (the `tmp://` resources and tool-output
 truncation guards) and is not optional user-facing behavior. `os-base` and
 `emacs-base` are the execution surfaces (workspace files/shell and live Emacs
@@ -341,7 +341,7 @@ their capabilities actually contributes:
 | `emacs-base` | `selection-context` | Nothing yet — placeholder capability reserved for future selection context. |
 | `emacs-base` | `buffer-edit` | `save_buffer` tool + writable `buffer://` resource method (live buffer mutation). |
 | `emacs-base` | `elisp-eval` | The `run_elisp` tool for explicit Emacs Lisp evaluation, with context-bound `e-tools-call` and `e-actions-call` guidance. |
-| `e` | `session-compaction` | `compact_session` for active-turn context compaction. |
+| `e` | `session-compaction` | Action `:compact` for active-turn context compaction. |
 
 The contribution shape is consistent across the three layers: `*-context` /
 `*-guidance` / `*-awareness` capabilities carry only instructions or a read-only
