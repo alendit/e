@@ -890,3 +890,52 @@ emacsclient --eval "...bounded queued session persistence probe..."
 #+end_src
 
 Result: returned =(:before nil :queue-count 2 :timer t :after t)=.
+
+* Phase 2 Stdio MCP Refresh Start Slice Review
+
+Status: in progress.
+
+** Scope reviewed
+
+- Added =e-mcp-refresh-start= as an async request lifecycle for stdio MCP catalog refresh.
+- The all-stdio interactive =e-mcp-refresh= path now starts refresh asynchronously and reports completion through callbacks/messages.
+- Noninteractive =e-mcp-refresh= remains synchronous for batch/test callers.
+- HTTP and mixed-server refresh remain synchronous because HTTP session initialization still has synchronous request steps and needs a separate slice.
+
+** Verification
+
+#+begin_src sh
+rtk eldev test -f test/e-mcp-test.el -b e-mcp-test-refresh-start-returns-before-helper-response e-mcp-test-refresh-affects-next-registration
+#+end_src
+
+Result: passed both focused refresh tests.
+
+#+begin_src sh
+rtk eldev test -f test/e-mcp-test.el
+#+end_src
+
+Result: passed all 31 MCP tests.
+
+#+begin_src sh
+rtk eldev emacs --batch --eval "(progn (setq byte-compile-error-on-warn t) (dolist (file '(\"lisp/core/e-mcp.el\" \"test/e-mcp-test.el\")) (byte-compile-file file)))"
+#+end_src
+
+Result: passed for the touched MCP module and tests.
+
+#+begin_src sh
+git diff --check
+#+end_src
+
+Result: passed.
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Result: returned the repository path after reloading changed Lisp.
+
+#+begin_src sh
+emacsclient --eval "...bounded fake-transport MCP refresh-start probe..."
+#+end_src
+
+Result: returned =(:request t :result (:refreshed t) :failure nil)=.

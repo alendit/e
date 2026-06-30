@@ -409,6 +409,52 @@
                                (e-mcp-list-tools servers))
                        '("after")))))))
 
+(ert-deftest e-mcp-test-refresh-start-returns-before-helper-response ()
+  "Async refresh returns before the helper response and invalidates catalogs."
+  (let ((catalog-version 0)
+        calls
+        result
+        failure
+        request)
+    (e-mcp-test--with-transport
+        (lambda (payload)
+          (push (plist-get payload :op) calls)
+          (pcase (plist-get payload :op)
+            ("refresh"
+             (setq catalog-version 1)
+             '(:ok t :result (:refreshed t)))
+            ("list-tools"
+             (list :ok t
+                   :result
+                   (list :tools
+                         (vector
+                          (e-mcp-test--fake-tool
+                           (if (= catalog-version 0) "before" "after")
+                           '(:type "object"))))))))
+      (let ((servers (list (e-mcp-test--server))))
+        (should (equal (mapcar #'e-mcp-tool-name
+                               (e-mcp-list-tools servers))
+                       '("before")))
+        (e-request-with-blocking-primitive-guard
+          (e-request-with-hot-path 'mcp-refresh
+            (setq request
+                  (e-mcp-refresh-start
+                   servers
+                   :on-done (lambda (value) (setq result value))
+                   :on-error (lambda (err) (setq failure err))))))
+        (should (e-tools-request-p request))
+        (should-not result)
+        (should-not failure)
+        (let ((deadline (+ (float-time) 1)))
+          (while (and (not result) (< (float-time) deadline))
+            (accept-process-output nil 0.01)))
+        (should-not failure)
+        (should (equal result '(:refreshed t)))
+        (should (equal (nreverse calls) '("list-tools" "refresh")))
+        (should (equal (mapcar #'e-mcp-tool-name
+                               (e-mcp-list-tools servers))
+                       '("after")))))))
+
 (ert-deftest e-mcp-test-harness-smoke-registers-and-executes-generated-tool ()
   "An opt-in MCP capability contributes generated tools through the harness."
   (e-mcp-test--with-transport

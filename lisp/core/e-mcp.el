@@ -882,13 +882,43 @@ Interactively, refresh all servers seen during capability construction."
     (unless servers
       (signal 'e-mcp-backend-error
               (list "No MCP servers are configured for refresh")))
+    (if (and (called-interactively-p 'interactive)
+             (not (cl-some #'e-mcp--server-http-p servers)))
+        (progn
+          (e-mcp-refresh-start
+           servers
+           :on-done (lambda (_result)
+                      (message "MCP refresh finished"))
+           :on-error (lambda (err)
+                       (display-warning 'e-mcp
+                                        (error-message-string err)
+                                        :warning)))
+          nil)
+      (e-mcp--invalidate-catalog servers)
+      (let ((http-servers (cl-remove-if-not #'e-mcp--server-http-p servers))
+            (stdio-servers (cl-remove-if #'e-mcp--server-http-p servers)))
+        (dolist (server http-servers)
+          (e-mcp--http-refresh server))
+        (when stdio-servers
+          (e-mcp--helper-request "refresh" stdio-servers))))))
+
+(cl-defun e-mcp-refresh-start
+    (&optional servers &key on-done on-error on-event &allow-other-keys)
+  "Start a stdio MCP catalog refresh for SERVERS asynchronously."
+  (let* ((servers (or servers e-mcp--known-servers))
+         (http-servers (cl-remove-if-not #'e-mcp--server-http-p servers)))
+    (unless servers
+      (signal 'e-mcp-backend-error
+              (list "No MCP servers are configured for refresh")))
+    (when http-servers
+      (signal 'e-mcp-backend-error
+              (list "Async MCP refresh currently supports stdio servers only")))
     (e-mcp--invalidate-catalog servers)
-    (let ((http-servers (cl-remove-if-not #'e-mcp--server-http-p servers))
-          (stdio-servers (cl-remove-if #'e-mcp--server-http-p servers)))
-      (dolist (server http-servers)
-        (e-mcp--http-refresh server))
-      (when stdio-servers
-        (e-mcp--helper-request "refresh" stdio-servers)))))
+    (e-mcp--helper-request-start
+     "refresh" servers nil
+     :on-done on-done
+     :on-error on-error
+     :on-event on-event)))
 
 (defun e-mcp--generated-tool-name (tool)
   "Return the generated e tool name for MCP TOOL.
