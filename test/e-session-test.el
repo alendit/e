@@ -252,6 +252,56 @@
       (ignore-errors (e-session-flush-write-queue store))
       (delete-directory directory t))))
 
+(ert-deftest e-session-test-load-session-start-replays-in-chunks ()
+  "Chunked persistent session loading returns before replay completion."
+  (let* ((directory (make-temp-file "e-session-" t))
+         (store (e-session-persistent-store-create directory))
+         (session (e-session-create store :id "chunked-session"))
+         (session-id (plist-get session :id)))
+    (unwind-protect
+        (progn
+          (dotimes (index 8)
+            (e-session-append-message
+             store session-id
+             (list :id (format "msg-%d" index)
+                   :role 'user
+                   :content (format "chunked message %d with enough bytes"
+                                    index))))
+          (let ((loaded (e-session-persistent-index-store-create directory))
+                result
+                failure
+                progress
+                request)
+            (setq request
+                  (e-session-load-session-start
+                   loaded session-id
+                   :chunk-bytes 31
+                   :on-progress (lambda (payload)
+                                  (push payload progress))
+                   :on-done (lambda (session)
+                              (setq result session))
+                   :on-error (lambda (err)
+                               (setq failure err))))
+            (should (e-request-lifecycle-p request))
+            (should (eq (e-request-lifecycle-state request) 'started))
+            (should-not result)
+            (let ((deadline (+ (float-time) 3)))
+              (while (and (not result) (not failure) (< (float-time) deadline))
+                (accept-process-output nil 0.01)))
+            (should-not failure)
+            (should (eq (e-request-lifecycle-state request) 'finished))
+            (should (plist-get result :loaded))
+            (should (< 1 (length progress)))
+            (should (equal (mapcar (lambda (message)
+                                     (plist-get message :content))
+                                   (e-session-messages loaded session-id))
+                           (mapcar (lambda (index)
+                                     (format
+                                      "chunked message %d with enough bytes"
+                                      index))
+                                   (number-sequence 0 7))))))
+      (delete-directory directory t))))
+
 (ert-deftest e-session-test-persistent-replay-preserves-entry-ids ()
   "Persistent replay keeps durable ids and parent links instead of regenerating."
   (let* ((directory (make-temp-file "e-session-" t))

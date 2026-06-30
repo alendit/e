@@ -13,6 +13,7 @@
 
 (require 'cl-lib)
 (require 'json)
+(require 'e-request)
 (require 'seq)
 (require 'subr-x)
 
@@ -49,6 +50,11 @@
 (defcustom e-session-write-queue-delay 0.05
   "Seconds to wait before flushing queued persistent session writes."
   :type 'number
+  :group 'e)
+
+(defcustom e-session-load-chunk-bytes 65536
+  "Number of bytes to read per cooperative persistent session load step."
+  :type 'integer
   :group 'e)
 
 (defconst e-session--replay-list-fields
@@ -1554,6 +1560,111 @@ state are requested."
     (if-let ((session (gethash session-id (e-session-store-sessions store))))
         (e-session--finalize-replayed-session store session)
       (signal 'e-session-missing (list session-id)))))
+
+(cl-defun e-session-load-session-start
+    (store session-id &key on-done on-error on-progress chunk-bytes)
+  "Start cooperatively loading SESSION-ID transcript from persistent STORE.
+Return an `e-request-lifecycle' request.  ON-DONE receives the loaded session,
+ON-ERROR receives a condition list, and ON-PROGRESS receives byte progress."
+  (unless (e-session--persistent-p store)
+    (signal 'e-session-missing (list session-id)))
+  (let* ((file (e-session--session-file store session-id))
+         (chunk-bytes (max 1 (or chunk-bytes e-session-load-chunk-bytes))))
+    (unless (file-readable-p file)
+      (signal 'e-session-missing (list session-id)))
+    (remhash session-id (e-session-store-sessions store))
+    (e-session--clear-entry-index store session-id)
+    (let* ((file-size (file-attribute-size (file-attributes file)))
+           (position 0)
+           (carry "")
+           timer
+           request)
+      (cl-labels
+          ((clear-timer ()
+             (when (timerp timer)
+               (cancel-timer timer))
+             (setq timer nil))
+           (progress ()
+             (let ((payload (list :session-id session-id
+                                  :bytes-read position
+                                  :bytes-total file-size)))
+               (e-request-progress request payload)
+               (when on-progress
+                 (funcall on-progress payload))))
+           (fail (err)
+             (unless (e-request-terminal-p request)
+               (clear-timer)
+               (e-request-fail request err)
+               (when on-error
+                 (funcall on-error err))))
+           (finish ()
+             (unless (e-request-terminal-p request)
+               (clear-timer)
+               (condition-case err
+                   (progn
+                     (unless (string-empty-p carry)
+                       (e-session--replay-record
+                        store
+                        (e-session--json-read-line
+                         (decode-coding-string carry 'utf-8))))
+                     (if-let ((session
+                               (gethash session-id
+                                        (e-session-store-sessions store))))
+                         (let ((session
+                                (e-session--finalize-replayed-session
+                                 store session)))
+                           (e-request-finish request session)
+                           (when on-done
+                             (funcall on-done session)))
+                       (signal 'e-session-missing (list session-id))))
+                 (error
+                  (fail err)))))
+           (schedule ()
+             (setq timer (run-at-time 0 nil #'step)))
+           (process-lines (text final-newline)
+             (let* ((joined (concat carry text))
+                    (lines (split-string joined "\n")))
+               (setq carry (if final-newline "" (car (last lines))))
+               (dolist (line (if final-newline lines (butlast lines)))
+                 (unless (string-empty-p line)
+                   (e-session--replay-record
+                    store
+                    (e-session--json-read-line
+                     (decode-coding-string line 'utf-8)))))))
+           (step ()
+             (unless (e-request-terminal-p request)
+               (condition-case err
+                   (if (>= position file-size)
+                       (finish)
+                     (let* ((next-position
+                             (min file-size (+ position chunk-bytes)))
+                            text)
+                       (with-temp-buffer
+                         (let ((coding-system-for-read 'no-conversion))
+                           (insert-file-contents-literally
+                            file nil position next-position))
+                         (setq text (buffer-string)))
+                       (setq position next-position)
+                       (process-lines
+                        text
+                        (or (string-empty-p text)
+                            (string-suffix-p "\n" text)))
+                       (progress)
+                       (schedule)))
+                 (error
+                  (fail err))))))
+        (setq request
+              (e-request-lifecycle-create
+               :id (e-session-generate-ulid)
+               :owner 'e-session-load
+               :session-id session-id
+               :state 'created
+               :cancel-function (lambda (_request)
+                                  (clear-timer))))
+        (e-request-start request (list :session-id session-id
+                                       :bytes-total file-size))
+        (schedule)
+        request))))
 
 (defun e-session--peek-session (store session-id)
   "Return SESSION-ID metadata from STORE without forcing transcript replay."

@@ -1038,3 +1038,52 @@ emacsclient --eval "...bounded fake-transport MCP list-tools-start probe..."
 #+end_src
 
 Result: returned =(:request t :tool-names ("echo") :failure nil :transport aggregate)=.
+
+* Phase 3 Chunked Session Load Start Slice Review
+
+Status: in progress.
+
+** Scope reviewed
+
+- Added =e-session-load-session-start= as a cancellable =e-request= lifecycle for persistent transcript replay.
+- The loader reads bounded byte chunks, replays complete JSONL records between timer ticks, reports byte progress, and finalizes the session through the same replay finalizer as the synchronous path.
+- The existing synchronous =e-session-load-session= remains for current callers.
+- This is the scheduler API for Slice 10; chat resume/render integration remains separate.
+
+** Verification
+
+#+begin_src sh
+rtk eldev test -f test/e-session-test.el -b e-session-test-load-session-start-replays-in-chunks e-session-test-persistent-replay-preserves-entry-ids e-session-test-index-store-lists-without-loading-transcripts
+#+end_src
+
+Result: passed all three focused replay/index tests.
+
+#+begin_src sh
+rtk eldev test -f test/e-session-test.el
+#+end_src
+
+Result: passed all 52 session tests.
+
+#+begin_src sh
+rtk eldev emacs --batch --eval "(progn (setq byte-compile-error-on-warn t) (dolist (file '(\"lisp/core/e-session.el\" \"test/e-session-test.el\")) (byte-compile-file file)))"
+#+end_src
+
+Result: passed for the touched session module and tests.
+
+#+begin_src sh
+git diff --check
+#+end_src
+
+Result: passed.
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Result: returned the repository path after reloading changed Lisp.
+
+#+begin_src sh
+emacsclient --eval "...bounded chunked session load probe..."
+#+end_src
+
+Result: returned =(:request t :state finished :messages 4 :progress-count 43 :failure nil)=.
