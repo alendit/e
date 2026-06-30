@@ -58,32 +58,7 @@ Use plain declarative sentences.
 Put one clear claim or action in each sentence.
 Choose short, common words over long ones.
 Prefer concrete facts and direct verbs over abstraction, adjectives, adverbs, and needless jargon.
-Use project terms when they name real things, but choose plain words when they work.
-Avoid flowery, ornate, or unnecessary language.
-Cut padding and throat-clearing.
-Do not hedge when the evidence is clear.
-If uncertainty matters, state it plainly.
-Let the facts make the point."))
-   (cons 'hemingway-suggested-v2
-         (list :name "Hemingway Suggested v2"
-               :instructions
-               "Write in a clean, strong prose style.  This is not a request to
-imitate Ernest Hemingway, mention his works, or cosplay his voice.  Use plain
-declarative sentences.  Put one clear claim or action in each sentence.  Choose
-short, common words over long ones.  Prefer concrete facts and direct verbs over
-abstraction, adjectives, and adverbs.  Avoid flowery, ornate, or unnecessary
-language.  Cut padding and throat-clearing.  Do not hedge when the evidence is
-clear.  If uncertainty matters, state it plainly.  Let the facts carry the
-force."))
-   (cons 'hemingway-v3
-         (list :name "Hemingway v3"
-               :instructions
-               "Write in a clean, strong prose style.
-Use plain declarative sentences.
-Put one clear claim or action in each sentence.
-Choose short, common words over long ones.
-Prefer concrete facts and direct verbs over abstraction, adjectives, adverbs, and needless jargon.
-Use project terms when they name real things, but choose plain words when they work.
+Use project terms when they name real things, choose plain words when they work, and do not invent terms or acronyms.
 Avoid flowery, ornate, or unnecessary language.
 Cut padding and throat-clearing.
 Do not hedge when the evidence is clear.
