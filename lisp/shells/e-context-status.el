@@ -117,10 +117,45 @@ BYTES-PER-TOKEN defaults to `e-context-budget-estimate-bytes-per-token'."
                     prefix model-text effort-text mark used-text)))
       (format "%s %s/%s" prefix model-text effort-text))))
 
+(defun e-context-status--snapshot-cache-entry (cache)
+  "Return normalized status snapshot cache entry for CACHE, or nil."
+  (when (and (consp cache)
+             (listp (car cache))
+             (stringp (plist-get (car cache) :text))
+             (numberp (plist-get (car cache) :time)))
+    (car cache)))
+
+(defun e-context-status--fresh-snapshot-text
+    (cache ttl &optional now snapshot-cache-key)
+  "Return fresh cached status text from CACHE, or nil."
+  (let ((ttl (if (and (numberp ttl) (>= ttl 0)) ttl 2.0))
+        (now (or now (float-time)))
+        (entry (e-context-status--snapshot-cache-entry cache)))
+    (when (and entry
+               (or (and (null snapshot-cache-key)
+                        (not (plist-get entry :snapshot-cache-keyed)))
+                   (equal snapshot-cache-key
+                          (plist-get entry :snapshot-cache-key)))
+               (< (- now (plist-get entry :time)) ttl))
+      (plist-get entry :text))))
+
+(defun e-context-status--store-snapshot-text (cache text &optional key)
+  "Store TEXT in caller-owned status snapshot CACHE."
+  (when (consp cache)
+    (setcar cache
+            (append
+             (list :text text
+                   :time (float-time))
+             (when key
+               (list :snapshot-cache-keyed t
+                     :snapshot-cache-key key))))
+    (setcdr cache nil))
+  text)
+
 (cl-defun e-context-status-text
     (harness session-id
              &key (prefix "e-context") prefer-token-usage estimate-cache
-             estimate-cache-key
+             estimate-cache-key snapshot-cache snapshot-cache-key
              token-limits token-limit-function bytes-per-token
              (estimate-context t))
   "Return context-state status text for SESSION-ID through HARNESS.
@@ -129,6 +164,9 @@ provider usage exists, skip the expensive context-token estimate.
 ESTIMATE-CACHE is an optional caller-owned cons cell (TOKENS . TIME) reused
 across calls.  ESTIMATE-CACHE-KEY, when non-nil, invalidates cached estimates
 when the caller's semantic context state changes.
+SNAPSHOT-CACHE is an optional caller-owned cons cell for the formatted status
+text.  SNAPSHOT-CACHE-KEY, when non-nil, invalidates cached status text when the
+caller's semantic status state changes.
 TOKEN-LIMIT-FUNCTION, when non-nil, is called with the model id and should
 return its context window in tokens or nil; it takes precedence over the
 static TOKEN-LIMITS alias.  TOKEN-LIMITS and BYTES-PER-TOKEN override the
@@ -141,27 +179,37 @@ When ESTIMATE-CONTEXT is nil, avoid building full model-facing context."
                          :prefer-token-usage (and prefer-token-usage t)
                          :estimate-context (and estimate-context t)
                          :estimate-cache-key-present
-                         (and estimate-cache-key t)))
+                         (and estimate-cache-key t)
+                         :snapshot-cache-key-present
+                         (and snapshot-cache-key t)))
    (lambda ()
-     (if-let ((status (e-context-budget-status
-                       harness session-id
-                       :prefer-token-usage prefer-token-usage
-                       :estimate-cache estimate-cache
-                       :token-limits token-limits
-                       :token-limit-function token-limit-function
-                       :bytes-per-token bytes-per-token
-                       :estimate-cache-seconds
-                       e-context-status-estimate-cache-seconds
-                       :estimate-cache-key estimate-cache-key
-                       :estimate-context estimate-context)))
-         (let ((model (plist-get status :model))
-               (effort (plist-get status :reasoning-effort))
-               (used-tokens (plist-get status :used-tokens))
-               (max-tokens (plist-get status :window))
-               (approximate (plist-get status :approximate)))
-           (e-context-status-format
-            prefix model effort used-tokens max-tokens approximate))
-       prefix))))
+     (or (e-context-status--fresh-snapshot-text
+          snapshot-cache
+          e-context-status-estimate-cache-seconds
+          nil
+          snapshot-cache-key)
+         (e-context-status--store-snapshot-text
+          snapshot-cache
+          (if-let ((status (e-context-budget-status
+                            harness session-id
+                            :prefer-token-usage prefer-token-usage
+                            :estimate-cache estimate-cache
+                            :token-limits token-limits
+                            :token-limit-function token-limit-function
+                            :bytes-per-token bytes-per-token
+                            :estimate-cache-seconds
+                            e-context-status-estimate-cache-seconds
+                            :estimate-cache-key estimate-cache-key
+                            :estimate-context estimate-context)))
+              (let ((model (plist-get status :model))
+                    (effort (plist-get status :reasoning-effort))
+                    (used-tokens (plist-get status :used-tokens))
+                    (max-tokens (plist-get status :window))
+                    (approximate (plist-get status :approximate)))
+                (e-context-status-format
+                 prefix model effort used-tokens max-tokens approximate))
+            prefix)
+          snapshot-cache-key)))))
 
 (provide 'e-context-status)
 

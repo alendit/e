@@ -56,13 +56,14 @@ Partly implemented:
 - Long final assistant messages are inserted as plain protected text immediately, with Markdown presentation deferred through a generation-checked timer job.
 - Settled activity summaries no longer precompute expanded detail text during summary rendering; child expansion and details buffers compute details on demand.
 - Opening a loaded session renders an omitted-history marker plus a bounded newest-message tail when the transcript exceeds =e-chat-initial-session-render-message-limit=.
+- Shared context-status text accepts caller-owned formatted snapshot caches, and chat mode-line status uses a semantic snapshot key so repeated refreshes can avoid context rebuilding and model-window lookup.
 
 Not yet implemented in the planned sense:
 
 - Explicit MCP batch call wrappers still have synchronous waits; generated model-facing MCP tool execution, interactive capability providers, interactive refresh, activation, and catalog discovery start APIs no longer do.
 - There is no generic raw-result store or cache-driven reference cleanup lifecycle.
 - There is no full cooperative presentation render scheduler, though long final assistant Markdown presentation is now deferred and cancellable.
-- Context budget estimates now support semantic cache keys for transcript/model/option/layer-sensitive invalidation, but there is no cached context/status snapshot contract broad enough to satisfy Phase 3.
+- Context budget estimates and shared context-status text now support semantic cache keys; chat mode-line status uses both estimate and formatted-status snapshots, but the broader context/status snapshot contract for turn prep and other shells remains open.
 - Chat open/resume now uses the chunked replay scheduler for unloaded indexed sessions and a bounded initial tail for large loaded sessions, but progressive backfill and the queued-write critical/derived durability model remain only partially implemented.
 - Nested cheap tool calls still use synchronous return semantics; long-class nested calls now fail fast with model guidance in both harness-owned and core default nested executors instead of waiting.
 - The final obsolete sync API sweep is not done.
@@ -136,7 +137,7 @@ Still blocking or potentially blocking:
 - =file://= and =tmp://= glob/search methods use synchronous =process-file=;
 - nested =e-tools-call= keeps cheap direct-return semantics, but long-class nested calls fail fast with model guidance unless a harness/custom executor handles them;
 - running-status redraw and tool-result previewing are synchronous buffer work; long final assistant Markdown presentation is deferred after immediate plain-text insertion, activity-summary details are generated on demand, and large loaded-session opens render only a bounded newest-message tail initially;
-- context/status paths can build full context, run providers, estimate tokens, or query Anthropic model info synchronously;
+- context/status paths outside the chat mode-line snapshot path can still build full context, run providers, estimate tokens, or query Anthropic model info synchronously;
 - default live session appends queue persistent JSONL/index writes through a short timer with generation/sequence metadata and stale-generation dropping; unloaded indexed chat open/resume uses the chunked replay start API, while overview read state and progressive loaded-transcript backfill remain open;
 - composer =@= candidate discovery is cache-first and refreshed asynchronously; selected file insertion still performs a synchronous but bounded read.
 
@@ -486,7 +487,7 @@ Work:
 1. Define context providers as cheap snapshot providers unless they explicitly declare async refresh behavior.
 2. Move network/process/recursive/large-buffer work into async refresh jobs.
 3. Replace Anthropic model-info sync lookup with async prefetch plus stale cache or static fallback. Implemented for chat status through cache-only lookup plus async catalog refresh.
-4. Cache context budget estimates and invalidate only on relevant transcript, model, option, layer, or compaction changes. Initial chat mode-line estimate invalidation is implemented with semantic cache keys.
+4. Cache context budget estimates and invalidate only on relevant transcript, model, option, layer, or compaction changes. Initial chat mode-line estimate invalidation is implemented with semantic cache keys, and chat mode-line formatted status now reuses a keyed status snapshot that includes latest token-usage activity.
 5. Make Org Canvas and project-local context providers read cached focus and capability snapshots.
 6. Split correctness-critical turn context from status-only or optional enrichment context.
 7. Ensure turn startup builds or version-checks correctness-critical context exactly where needed.

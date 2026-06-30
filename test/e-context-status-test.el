@@ -210,6 +210,35 @@
     (should (equal calls 2))
     (should (equal context-calls 2))))
 
+(ert-deftest e-context-status-test-snapshot-cache-reuses-text ()
+  "A caller-owned status snapshot cache skips rebuilding budget status."
+  (let ((cache (cons nil nil))
+        (calls 0))
+    (cl-letf (((symbol-function 'e-context-budget-status)
+               (lambda (&rest _args)
+                 (setq calls (1+ calls))
+                 '(:model "gpt-5.5"
+                   :reasoning-effort "high"
+                   :used-tokens 123
+                   :window 1000
+                   :approximate t))))
+      (let ((e-context-status-estimate-cache-seconds 100))
+        (should (equal
+                 (e-context-status-text
+                  'harness "snapshot"
+                 :prefix "e-chat"
+                 :snapshot-cache cache
+                 :snapshot-cache-key '(:state 1))
+                 "e-chat gpt-5.5/high ~13% (~123/1k tok)"))
+        (should (equal
+                 (e-context-status-text
+                  'harness "snapshot"
+                  :prefix "e-chat"
+                  :snapshot-cache cache
+                  :snapshot-cache-key '(:state 1))
+                 "e-chat gpt-5.5/high ~13% (~123/1k tok)"))))
+    (should (= calls 1))))
+
 (ert-deftest e-context-status-test-profile-records-status-text ()
   "Enabled dev profiling records context status text computation."
   (let* ((profile-directory (make-temp-file "e-context-status-profile-" t))

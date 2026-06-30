@@ -7207,6 +7207,7 @@ The context-window denominator comes from the live provider lookup
                                   :estimate-cache-key
                                   (e-chat--mode-line-context-estimate-key))
                             nil))
+          (setq-local e-chat--mode-line-context-status-cache (cons nil nil))
           (cl-letf (((symbol-function 'e-chat--model-context-window)
                      (lambda (model) (and (equal model "gpt-5.5") 1000)))
                     ((symbol-function 'e-harness-context)
@@ -7217,6 +7218,44 @@ The context-window denominator comes from the live provider lookup
           (should (= context-calls 0))
           (should (equal mode-name
                          "e-chat gpt-5.5/high ~13% (~123/1k tok)")))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-mode-line-status-reuses-fresh-status-snapshot ()
+  "Fresh mode-line status snapshots skip context and model-window rebuilding."
+  (let* ((store (e-session-store-create))
+         (backend (e-backend-fake-create :items nil))
+         (harness (e-harness-create
+                   :backend backend
+                   :sessions store
+                   :default-options
+                   '(:model "gpt-5.5" :reasoning-effort "high")))
+         (buffer (e-chat-open :harness harness
+                              :session-id "chat-mode-line-status-cache"))
+         (context-calls 0)
+         (window-calls 0))
+    (unwind-protect
+        (with-current-buffer buffer
+          (setq-local e-chat--mode-line-context-estimate-cache (cons nil nil))
+          (setq-local e-chat--mode-line-context-status-cache (cons nil nil))
+          (e-session-append-message
+           store e-chat-session-id '(:role user :content "cached status"))
+          (let ((original-context (symbol-function 'e-harness-context)))
+            (cl-letf (((symbol-function 'e-chat--model-context-window)
+                       (lambda (model)
+                         (setq window-calls (1+ window-calls))
+                         (and (equal model "gpt-5.5") 1000)))
+                      ((symbol-function 'e-harness-context)
+                       (lambda (&rest args)
+                         (setq context-calls (1+ context-calls))
+                         (apply original-context args))))
+              (let ((e-chat-mode-line-context-estimate-cache-seconds 100))
+                (e-chat--set-status "idle" t)
+                (e-chat--set-status "ready" t))))
+          (should (= context-calls 1))
+          (should (= window-calls 1))
+          (should (equal mode-name
+                         "e-chat gpt-5.5/high ~2% (~16/1k tok)")))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 

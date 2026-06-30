@@ -731,6 +731,9 @@ intentionally not persisted in session metadata.")
 Passed to `e-context-status-text' to reuse approximate estimates between
 mode-line refreshes for the current chat buffer.")
 
+(defvar-local e-chat--mode-line-context-status-cache nil
+  "Caller-owned status text snapshot cache for this chat buffer's mode line.")
+
 (defvar-local e-chat--status nil
   "Current chat status text shown in the header line.")
 
@@ -6023,11 +6026,17 @@ until the gateway cache is populated or when MODEL is not listed."
   "Return semantic cache key for this buffer's mode-line context estimate."
   (when (and e-chat-harness e-chat-session-id)
     (ignore-errors
-      (let ((state (e-harness-state e-chat-harness e-chat-session-id))
-            (options (e-harness-display-options e-chat-harness
-                                                e-chat-session-id)))
+      (let* ((state (e-harness-state e-chat-harness e-chat-session-id))
+             (options (e-harness-display-options e-chat-harness
+                                                 e-chat-session-id))
+             (usage-event
+              (ignore-errors
+                (e-session-latest-token-usage-event
+                 (e-harness-sessions e-chat-harness)
+                 e-chat-session-id))))
         (list :message-count (plist-get state :message-count)
               :active-turn (plist-get state :active-turn)
+              :latest-token-usage-id (plist-get usage-event :id)
               :model (plist-get options :model)
               :reasoning-effort (plist-get options :reasoning-effort)
               :layers (e-harness-effective-layer-ids
@@ -6039,15 +6048,23 @@ When PREFER-TOKEN-USAGE is non-nil and fresh provider usage exists, skip the
 expensive context-token estimate path."
   (unless (consp e-chat--mode-line-context-estimate-cache)
     (setq-local e-chat--mode-line-context-estimate-cache (cons nil nil)))
+  (unless (consp e-chat--mode-line-context-status-cache)
+    (setq-local e-chat--mode-line-context-status-cache (cons nil nil)))
   (let ((e-context-status-estimate-cache-seconds
-         e-chat-mode-line-context-estimate-cache-seconds))
+         e-chat-mode-line-context-estimate-cache-seconds)
+        (cache-key (e-chat--mode-line-context-estimate-key)))
     (e-context-status-text
      e-chat-harness e-chat-session-id
      :prefix "e-chat"
      :prefer-token-usage prefer-token-usage
      :estimate-context (not prefer-token-usage)
      :estimate-cache e-chat--mode-line-context-estimate-cache
-     :estimate-cache-key (e-chat--mode-line-context-estimate-key)
+     :estimate-cache-key cache-key
+     :snapshot-cache e-chat--mode-line-context-status-cache
+     :snapshot-cache-key
+     (list :status-key cache-key
+           :prefer-token-usage (and prefer-token-usage t)
+           :estimate-context (not prefer-token-usage))
      :token-limit-function #'e-chat--model-context-window
      :bytes-per-token e-chat-context-token-estimate-bytes-per-token)))
 
@@ -6062,7 +6079,8 @@ an approximate full-context estimate."
 
 (defun e-chat--invalidate-mode-line-context-estimate ()
   "Clear the buffer-local context estimate used by the mode-line status."
-  (setq-local e-chat--mode-line-context-estimate-cache (cons nil nil)))
+  (setq-local e-chat--mode-line-context-estimate-cache (cons nil nil))
+  (setq-local e-chat--mode-line-context-status-cache (cons nil nil)))
 
 (defun e-chat--set-status (status &optional refresh-mode-line)
   "Set chat buffer STATUS.
