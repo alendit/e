@@ -1930,3 +1930,22 @@ emacsclient --eval "(progn (load-file \"/private/tmp/e-chat-live-loaded-backfill
 #+end_src
 
 Result: returned =(:initial (:timer t :marker 42 :first nil :last 182) :final (:timer nil :marker nil :first 40 :middle 204 :last 366 :draft t))=, proving the live loaded-session buffer initially showed a marker plus latest tail, then backfilled older messages and preserved composer draft text.
+
+* Phase 2 Resource Glob Async Evidence Sweep
+
+Status: in progress.
+
+** Scope reviewed
+
+- Rechecked the current =file://= and =tmp://= resource glob/search implementation boundary.
+- Model-facing resource tools register async =:start= handlers for =glob= and =search= through =e-harness--resource-operation-async-p=.
+- The direct =e-resources-glob= and =e-resources-search= facades remain synchronous for non-interactive callers and tests, so the remaining sync API sweep should target documented direct callers rather than the model-facing tool path.
+- Updated stale plan wording that still described =file://= and =tmp://= glob/search as blocking in the interactive path.
+
+** Verification
+
+#+begin_src sh
+rtk eldev test -f test/e-base-tools-test.el -f test/e-session-tmp-resources-test.el -B e-base-tools-test-glob-start-returns-before-fd-exits e-session-tmp-test-glob-start-returns-before-fd-exits
+#+end_src
+
+Result: passed both focused resource glob start tests. Both tests run under the blocking primitive hot-path guard and prove the tool start path returns a cancellable request while the fake =fd= process is still live.

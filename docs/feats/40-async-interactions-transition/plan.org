@@ -134,7 +134,7 @@ Still blocking or potentially blocking:
 
 - core compaction, auto-compaction, manual chat/Org Canvas commands, the legacy =compact_session= tool registration, and the session compaction action entry point have async lifecycle paths;
 - MCP generated tools, web tools, file/tmp resource discovery tools, MCP refresh, MCP activation, MCP catalog discovery, and interactive MCP capability providers have async/cache-first paths for interactive execution, while explicit batch wrappers keep synchronous waits;
-- =file://= and =tmp://= glob/search methods use synchronous =process-file=;
+- =file://= and =tmp://= glob/search still expose synchronous direct resource facades for non-interactive callers and tests, but model-facing resource tools route through async =:start= methods and return request handles before =fd= or =rg= exits;
 - nested =e-tools-call= keeps cheap direct-return semantics, but long-class nested calls fail fast with model guidance unless a harness/custom executor handles them;
 - running-status redraw and tool-result previewing are synchronous buffer work; long final assistant Markdown presentation is deferred after immediate plain-text insertion, activity-summary details are generated on demand, and large loaded-session opens render a bounded newest-message tail initially before timer-driven older-message backfill;
 - context/status paths outside the chat mode-line snapshot path can still build full context, run providers, estimate tokens, or query Anthropic model info synchronously;
