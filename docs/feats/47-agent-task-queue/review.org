@@ -1,0 +1,143 @@
+#+title: Review: Agent Task Queue
+#+startup: overview
+
+* Status
+
+In-review.
+
+Awaiting an independent review pass.  Implementation of all three plan slices
+is complete and committed; this file is the handoff scaffold.  The independent
+reviewer should fill in =What looks good=, =UX and performance playthrough=,
+=Findings=, =Plan coverage=, and =Architecture review=, then set the dev-work
+status per the operator approval policy.
+
+* Review summary
+
+(To be written by the independent reviewer.)
+
+Implementation state: the headless queue, the capability action surface, and
+the list shell are implemented and committed across three slices.  Focused ERT
+for the feature passes (17 tests).  One pre-existing, unrelated suite failure
+exists (see Verification).
+
+* Scope to review
+
+Source:
+
+- =lisp/core/e-task-queue.el= -- registry, status lifecycle, FIFO bounded
+  dispatcher, dispatch-time harness resolution, runner seam, default
+  harness-turn runner.
+- =lisp/layers/agents/e-task-queue-actions.el= -- =task-queue= capability and
+  layer: =enqueue=, =list-tasks=, =task-status=, =read-task=, =cancel-task=,
+  plus the skill.
+- =lisp/shells/e-task-queue-shell.el= -- =e-task-queue-list-buffer=
+  tabulated-list shell, change-hook refresh, row actions, workspace-aware
+  display.
+- Wiring: =lisp/core/e-core.el= (require), =lisp/defaults/e-default-layers.el=
+  (layer spec), =e.el= (requires).
+
+Tests:
+
+- =test/e-task-queue-test.el= (12 tests).
+- =test/e-task-queue-actions-test.el= (3 tests).
+- =test/e-task-queue-shell-test.el= (2 tests).
+
+Plan:
+
+- =docs/feats/47-agent-task-queue/plan.org= -- the local contract, including the
+  per-task harness-selection design and the three slices.
+
+Commits:
+
+- =4b7e721= Plan agent task queue feature.
+- =3a642ff= Add core agent task queue registry and dispatcher (Slice 1).
+- =a35afdb= Add task queue capability actions and layer (Slice 2).
+- =c2bb678= Add task queue list shell (Slice 3).
+
+* Suggested review use cases
+
+Derived from =plan.org= acceptance, plus surface-driven additions:
+
+- Enqueue returns a =queued= record immediately; dispatch may start it before
+  return.
+- With cap 2, a third enqueue waits until one running task settles.
+- =queued= -> =running= -> =done= over a real harness turn; =read-task= returns
+  outputs.
+- Failing turn lands =failed= with =:error= and does not block the dispatcher.
+- Cancel of a queued task: =cancelled=, never runs; cancel of a running task:
+  interrupts and a late settle does not resurrect it.
+- Per-task =harness-instance-id= wins; omitted uses the queue default;
+  unregistered id fails just that task without stalling dispatch.
+- List shell: opens newest-first, refreshes on queue change, row cancel and
+  show-outputs, workspace-aware display; empty-queue state; repeated use.
+
+* What looks good
+
+(To be written by the independent reviewer.)
+
+* Verification performed during implementation
+
+Focused feature suite:
+
+#+begin_src sh
+eldev test -f e-task-queue-test.el -f e-task-queue-actions-test.el -f e-task-queue-shell-test.el
+#+end_src
+
+#+begin_example
+Ran 17 tests, 17 results as expected, 0 unexpected
+#+end_example
+
+Warnings-as-error compile gate passed for each slice's HEAD before push.
+
+Full suite:
+
+#+begin_src sh
+eldev test
+#+end_src
+
+#+begin_example
+Ran 1331 tests, 1329 results as expected, 1 unexpected, 1 skipped
+1 unexpected results:
+   FAILED  e-layer-selection-test-capability-exposes-layer-actions
+#+end_example
+
+The single failure is pre-existing and unrelated: it reproduces identically on
+=eb41a78= (the commit before this feature), where the layer-selection test
+expects 4 capabilities and finds 5.  No task-queue file touches layer-selection.
+The independent reviewer should confirm this is out of scope here.
+
+Live reload and a bounded probe:
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dvorona/projects/elisp/e\"))"
+#+end_src
+
+#+begin_example
+;; reloaded; e-task-queue-list-buffer rendered 1 row after one enqueue.
+#+end_example
+
+* UX and performance playthrough
+
+(To be written by the independent reviewer in the running Emacs.)
+
+* Findings
+
+(To be filled by the independent reviewer.)
+
+* Plan coverage
+
+(To be filled by the independent reviewer.)  Note for the reviewer: the default
+runner's =turn-finished= path is only lightly exercised by the live probe and
+one real-turn test; deeper output-shaping behavior is a candidate for closer
+inspection.
+
+* Architecture review
+
+(To be filled by the independent reviewer.)  Design-sensitive points to weigh:
+dispatch-time harness resolution vs enqueue-time; the runner seam contract
+=(task harness on-settle)=; in-memory-only state (no persistence this slice);
+and the decision to fail (not silently default) on an unregistered instance id.
+
+* Unresolved
+
+Pending independent review.
