@@ -196,7 +196,7 @@ Before finalizing, verify presentation, not just content. Confirm the resource y
    :tools (list #'e-emacs-tools-register-elisp-eval)))
 
 (defconst e-workspace-awareness-instructions
-  "Workspace-aware Emacs shells carry a workspace affinity. Prefer workspace_state, workspace_focus_buffer, and workspace_show_shell before raw switch-to-buffer, pop-to-buffer, or display-buffer calls."
+  "Workspace-aware Emacs shells carry a workspace affinity. Prefer the workspace context and workspace-awareness actions before raw switch-to-buffer, pop-to-buffer, or display-buffer calls. Use e-actions-call from run_elisp for explicit workspace presentation changes. Read e://workspace-awareness/skills/workspace-display for the process and e-action://workspace-awareness for active action contracts when needed."
   "Instructions for workspace-aware Emacs operation.")
 
 (defconst e-workspace-awareness-display-skill
@@ -207,9 +207,9 @@ Before finalizing, verify presentation, not just content. Confirm the resource y
      ""
      "## First choice"
      ""
-     "- Call `workspace_state` before changing visibility when workspace ownership is unclear."
-     "- Call `workspace_focus_buffer` to focus a named buffer in the active shell workspace."
-     "- Call `workspace_show_shell` to return to the active e shell in its workspace."
+     "- Read workspace context before changing visibility when workspace ownership is unclear."
+     "- Use `(e-actions-call 'workspace-awareness :focus-buffer '(:buffer \"NAME\"))` to focus a named buffer in the active shell workspace."
+     "- Use `(e-actions-call 'workspace-awareness :show-shell)` to return to the active e shell in its workspace."
      ""
      "## Direct Elisp"
      ""
@@ -266,7 +266,7 @@ Before finalizing, verify presentation, not just content. Confirm the resource y
      (format "- match=%s\n" (if (plist-get state :match) "true" "false"))
      (format "- shell_buffer=%s\n" (or (plist-get state :shell-buffer)
                                        "none"))
-     "- guidance: prefer workspace_state, workspace_focus_buffer, and workspace_show_shell before raw switch-to-buffer, pop-to-buffer, or display-buffer; direct Elisp should use e-workspace-* helpers.")))
+     "- guidance: prefer workspace-awareness actions through e-actions-call before raw switch-to-buffer, pop-to-buffer, or display-buffer; direct Elisp should use e-workspace-* helpers.")))
 
 (defun e-workspace-awareness-context-provider ()
   "Return the workspace-awareness context provider."
@@ -360,6 +360,46 @@ When ADD-TO-WORKSPACE is non-nil, add BUFFER to its target workspace first."
          (user-error "No active shell buffer"))
        (e-workspace-awareness--focus-buffer buffer)))))
 
+(defun e-workspace-awareness--action (description caller &optional parameters)
+  "Return a workspace-awareness action descriptor."
+  (e-action-create
+   :handler (lambda (arguments) (funcall caller nil arguments))
+   :caller (lambda (context arguments)
+             (funcall caller context arguments))
+   :description description
+   :parameters (or parameters '(:type "object" :properties nil))))
+
+(defun e-workspace-awareness--actions ()
+  "Return workspace-awareness action plist."
+  (list
+   :state
+   (e-workspace-awareness--action
+    "Return the current Emacs workspace and active e shell workspace affinity."
+    (lambda (_context _arguments)
+      (e-workspace-awareness--tool-state)))
+   :focus-buffer
+   (e-workspace-awareness--action
+    "Focus a named Emacs buffer in the active e shell workspace."
+    (lambda (_context arguments)
+      (let* ((name (e-workspace-awareness--argument-string arguments :buffer))
+             (buffer (or (get-buffer name)
+                         (user-error "No buffer named %s" name))))
+        (e-workspace-awareness--focus-buffer
+         buffer
+         (plist-get arguments :add_to_workspace))))
+    '(:type "object"
+      :properties (:buffer (:type "string")
+                   :add_to_workspace (:type "boolean"))
+      :required ["buffer"]))
+   :show-shell
+   (e-workspace-awareness--action
+    "Show the active e shell buffer in its workspace."
+    (lambda (_context _arguments)
+      (let ((buffer (e-workspace-awareness--shell-buffer)))
+        (unless (buffer-live-p buffer)
+          (user-error "No active shell buffer"))
+        (e-workspace-awareness--focus-buffer buffer))))))
+
 (defun e-workspace-awareness-capability-create ()
   "Create a capability for workspace-aware Emacs shells."
   (e-capability-with-skills-create
@@ -367,9 +407,7 @@ When ADD-TO-WORKSPACE is non-nil, add BUFFER to its target workspace first."
    :name "Workspace Awareness"
    :instructions e-workspace-awareness-instructions
    :context-providers (list (e-workspace-awareness-context-provider))
-   :tools (list #'e-workspace-awareness-register-state
-                #'e-workspace-awareness-register-focus-buffer
-                #'e-workspace-awareness-register-show-shell)
+   :actions (e-workspace-awareness--actions)
    :skills
    (list
     (e-skill-spec-create

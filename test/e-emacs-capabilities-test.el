@@ -164,22 +164,21 @@
                 (should (string-match-p "Workspace awareness:" content))
                 (should (string-match-p "current=single:test" content))
                 (should (string-match-p "shell=single:test" content))
-                (should (string-match-p "prefer workspace_state" content))))))
+                (should (string-match-p "prefer workspace-awareness actions" content))))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
 (ert-deftest e-emacs-capabilities-test-workspace-awareness-registers-actions ()
-  "Workspace awareness registers the small model-facing action set."
-  (should (equal (e-emacs-capabilities-test--tool-names
-                  (e-workspace-awareness-capability-create))
-                 '("workspace_state"
-                   "workspace_focus_buffer"
-                   "workspace_show_shell"))))
+  "Workspace awareness registers the small action set."
+  (should (equal (cl-loop for (key _value) on (e-capability-actions
+                                               (e-workspace-awareness-capability-create))
+                          by #'cddr
+                          collect key)
+                 '(:state :focus-buffer :show-shell))))
 
 (ert-deftest e-emacs-capabilities-test-workspace-focus-buffer-action ()
   "The focus action routes a named buffer through the workspace display helper."
   (let* ((capability (e-workspace-awareness-capability-create))
-         (registry (e-tools-registry-create))
          (buffer (get-buffer-create " *e-workspace-focus*"))
          (shell (get-buffer-create " *e-workspace-focus-shell*"))
          (token (make-e-workspace-token
@@ -190,7 +189,6 @@
          focused)
     (unwind-protect
         (progn
-          (e-capabilities-register-tools capability registry)
           (e-buffer-set-workspace buffer token)
           (e-buffer-set-workspace shell token)
           (with-current-buffer shell
@@ -198,15 +196,17 @@
                        (lambda (candidate &key workspace)
                          (setq focused (list candidate workspace))
                          candidate)))
-              (let ((result (e-tools-execute
-                             registry
-                             '(:id "call-1"
-                               :name "workspace_focus_buffer"
-                               :arguments (:buffer " *e-workspace-focus*")))))
-                (should (eq (plist-get result :status) 'ok))
-                (should (equal (plist-get (plist-get result :content) :buffer)
-                               " *e-workspace-focus*"))
-                (should (equal focused (list buffer token)))))))
+              (let* ((harness (e-harness-create
+                               :backend (e-backend-fake-create :items nil))))
+                (e-harness-activate-capability harness capability)
+                (let ((result (e-actions-call
+                               'workspace-awareness
+                               :focus-buffer
+                               '(:buffer " *e-workspace-focus*")
+                               (list :harness harness))))
+                  (should (equal (plist-get result :buffer)
+                                 " *e-workspace-focus*"))
+                  (should (equal focused (list buffer token))))))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer))
       (when (buffer-live-p shell)
@@ -215,7 +215,6 @@
 (ert-deftest e-emacs-capabilities-test-workspace-focus-buffer-preserves-target-affinity ()
   "The focus action preserves a buffer's own workspace over stale shell state."
   (let* ((capability (e-workspace-awareness-capability-create))
-         (registry (e-tools-registry-create))
          (buffer (get-buffer-create " *e-workspace-focus-owned*"))
          (shell (get-buffer-create " *e-workspace-focus-owner-shell*"))
          (buffer-token (make-e-workspace-token
@@ -231,7 +230,6 @@
          focused)
     (unwind-protect
         (progn
-          (e-capabilities-register-tools capability registry)
           (e-buffer-set-workspace buffer buffer-token)
           (e-buffer-set-workspace shell shell-token)
           (with-current-buffer shell
@@ -239,13 +237,15 @@
                        (lambda (candidate &key workspace)
                          (setq focused (list candidate workspace))
                          candidate)))
-              (let ((result (e-tools-execute
-                             registry
-                             '(:id "call-1"
-                               :name "workspace_focus_buffer"
-                               :arguments (:buffer " *e-workspace-focus-owned*")))))
-                (should (eq (plist-get result :status) 'ok))
-                (should (equal focused (list buffer buffer-token)))))))
+              (let ((harness (e-harness-create
+                              :backend (e-backend-fake-create :items nil))))
+                (e-harness-activate-capability harness capability)
+                (e-actions-call
+                 'workspace-awareness
+                 :focus-buffer
+                 '(:buffer " *e-workspace-focus-owned*")
+                 (list :harness harness)))
+              (should (equal focused (list buffer buffer-token))))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer))
       (when (buffer-live-p shell)
@@ -263,7 +263,7 @@
                     "e://workspace-awareness/skills/workspace-display"
                     nil)))
       (should (string-match-p "Workspace-aware Emacs display" content))
-      (should (string-match-p "workspace_focus_buffer" content))
+      (should (string-match-p "focus-buffer" content))
       (should (string-match-p "active shell workspace" content))
       (should (string-match-p "e-workspace-pop-to-buffer" content))
       (should (string-match-p "Presentation shells own workspace affinity"
@@ -305,6 +305,7 @@
                    selection-context
                    buffer-edit
                    elisp-eval
+                   elisp-job
                    workspace-awareness))))
 
 (provide 'e-emacs-capabilities-test)
