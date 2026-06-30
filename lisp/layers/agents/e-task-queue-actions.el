@@ -14,6 +14,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'subr-x)
 (require 'e-capabilities)
 (require 'e-layers)
 (require 'e-skills)
@@ -31,7 +32,7 @@
      ""
      "## Actions"
      ""
-     "- `enqueue`: input `(:prompt STRING :metadata PLIST :harness-instance-id KEYWORD)`. Returns a `queued` task record immediately; the dispatcher may start it before the call returns. `metadata` is an opaque plist the enqueuer owns. `harness-instance-id` is optional and defaults to the queue default, resolved at dispatch time."
+     "- `enqueue`: input `(:prompt STRING :metadata PLIST :harness-instance-id STRING)`. Returns a `queued` task record immediately; the dispatcher may start it before the call returns. `metadata` is an opaque plist the enqueuer owns. `harness-instance-id` is optional (an instance id string such as `chat-project-e`) and defaults to the queue default, resolved at dispatch time."
      "- `list-tasks`: returns compact normalized records, newest-first."
      "- `task-status`: input `(:task-id STRING)`. Returns one normalized record."
      "- `read-task`: input `(:task-id STRING)`. Returns the task's collected outputs."
@@ -58,13 +59,26 @@
       (signal 'wrong-type-argument (list 'stringp :task-id)))
     value))
 
+(defun e-task-queue-actions--instance-id (value)
+  "Normalize a harness instance id VALUE from the action surface.
+Actions arrive as JSON, so an instance id reaches here as a string; the harness
+catalog keys instances by keyword.  Intern a string into the keyword the catalog
+expects and pass an existing keyword or nil through unchanged."
+  (cond
+   ((null value) nil)
+   ((keywordp value) value)
+   ((stringp value)
+    (intern (concat ":" (string-remove-prefix ":" value))))
+   (t (signal 'wrong-type-argument (list 'stringp :harness-instance-id)))))
+
 (defun e-task-queue-actions--enqueue (queue arguments)
   "Enqueue work described by ARGUMENTS on QUEUE."
   (e-task-queue-enqueue
    queue
    :prompt (plist-get arguments :prompt)
    :metadata (plist-get arguments :metadata)
-   :harness-instance-id (plist-get arguments :harness-instance-id)))
+   :harness-instance-id (e-task-queue-actions--instance-id
+                         (plist-get arguments :harness-instance-id))))
 
 (defun e-task-queue-actions--list-tasks (queue _arguments)
   "Return tracked task records from QUEUE, newest-first."

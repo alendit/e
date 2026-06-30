@@ -85,6 +85,22 @@
                              :status)
                   'cancelled)))))
 
+(ert-deftest e-task-queue-actions-test-string-instance-id-resolves ()
+  "A string `harness-instance-id', as the action schema advertises, resolves."
+  (e-task-queue-actions-test--with-instances
+    (let* ((settled-harness nil)
+           (queue (e-task-queue-create
+                   :runner (lambda (_task harness _on-settle)
+                             (setq settled-harness harness)
+                             (list :cancel #'ignore))))
+           (capability (e-task-queue-capability-create :queue queue))
+           (enqueue (e-capabilities-action capability :enqueue))
+           (expected (e-harness-instance-get-or-create :chat-test))
+           (record (funcall enqueue (list :prompt "go"
+                                          :harness-instance-id "chat-test"))))
+      (should (eq (plist-get record :status) 'running))
+      (should (eq settled-harness expected)))))
+
 (ert-deftest e-task-queue-actions-test-is-action-not-tool ()
   "The task queue capability exposes actions but no model-facing tools."
   (let* ((capability (e-task-queue-capability-create
