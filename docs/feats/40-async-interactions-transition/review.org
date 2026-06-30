@@ -2445,3 +2445,57 @@ emacsclient --eval "(let* ((harness ...) (reference ...) ...) ...)"
 #+end_src
 
 Result: returned =(:before t :deleted t :after nil :root-live t :uri \"tmp://raw-results/out.txt\" :preview \"abcde\")=, confirming live reference cleanup deletes the raw file while keeping the session tmp root alive.
+
+* Phase 4 Backend Loop Sync Hot-Path Guard Slice Review
+
+Status: complete.
+
+** Scope reviewed
+
+- Added hot-path rejection to =e-backend-stream= before it can adapt an async backend start into a blocking wait.
+- Added hot-path rejection to =e-loop-run-turn= before it can start a blocking turn wrapper.
+- Preserved existing batch/test sync wrapper behavior outside marked hot paths.
+
+** Verification
+
+#+begin_src sh
+rtk eldev emacs --batch --eval "(progn (setq byte-compile-error-on-warn t) (dolist (file '(\"lisp/core/e-backend.el\" \"lisp/core/e-loop.el\" \"test/e-backend-test.el\" \"test/e-loop-test.el\")) (byte-compile-file file)))"
+#+end_src
+
+Result: passed for the touched backend/loop modules and tests.
+
+#+begin_src sh
+rtk eldev test -f test/e-backend-test.el -B e-backend-test-sync-stream-wrapper-waits-for-async-backend e-backend-test-sync-stream-wrapper-rejects-hot-path
+#+end_src
+
+Result: passed the focused backend sync wrapper guard and existing sync-wrapper wait regression.
+
+#+begin_src sh
+rtk eldev test -f test/e-loop-test.el -B e-loop-test-persists-assistant-message e-loop-test-sync-run-turn-rejects-hot-path
+#+end_src
+
+Result: passed the focused loop sync wrapper guard and existing synchronous run-turn regression.
+
+#+begin_src sh
+rtk eldev test -f test/e-backend-test.el
+#+end_src
+
+Result: passed all 6 backend tests.
+
+#+begin_src sh
+rtk eldev test -f test/e-loop-test.el
+#+end_src
+
+Result: passed all 23 loop tests.
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Result: returned ="/Users/dimitrivorona/projects/elisp/e/"=, so the running Emacs loaded the backend/loop guard changes.
+
+#+begin_src sh
+emacsclient --eval "(let* ((backend-started nil) (loop-messages nil) ...) ...)"
+#+end_src
+
+Result: returned =(:backend (:error e-request-blocking-call-in-hot-path :data (e-backend-stream live-backend-stream)) :backend-started nil :loop (:error e-request-blocking-call-in-hot-path :data (e-loop-run-turn live-loop-run)) :loop-messages 0)=, confirming the live guards reject before backend start or message append.

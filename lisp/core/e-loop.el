@@ -14,6 +14,7 @@
 (require 'cl-lib)
 (require 'subr-x)
 (require 'e-backend)
+(require 'e-request)
 (require 'e-tools)
 
 (declare-function e-dev-profile-enabled-p "e-dev-profile")
@@ -433,6 +434,8 @@ MESSAGES, BACKEND, TOOLS, TOOL-LIFECYCLE, OPTIONS, ON-EVENT, APPEND-MESSAGE,
 and REFRESH-MESSAGES define the turn context and output callbacks.
 ON-REQUEST-START receives the backend request handle when an adapter exposes
 one.  This is a blocking convenience wrapper over `e-loop-start-turn'."
+  (when (e-request-hot-path-active-p)
+    (e-request-hot-path-blocking-error 'e-loop-run-turn))
   (let ((done nil)
         (result nil)
         (failure nil))

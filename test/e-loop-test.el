@@ -17,6 +17,7 @@
 (require 'e-backend)
 (require 'e-dev-profile)
 (require 'e-loop)
+(require 'e-request)
 (require 'e-tools)
 
 (defun e-loop-test--wait-until (predicate &optional timeout)
@@ -52,6 +53,28 @@
     (should (equal (plist-get (car messages) :content) "hello"))
     (should (member 'turn-started (mapcar (lambda (event) (plist-get event :type)) events)))
     (should (member 'turn-finished (mapcar (lambda (event) (plist-get event :type)) events)))))
+
+(ert-deftest e-loop-test-sync-run-turn-rejects-hot-path ()
+  "The synchronous run-turn wrapper cannot run inside marked hot paths."
+  (let ((messages nil)
+        (backend (e-backend-fake-create
+                  :items '((:type assistant-message :content "hello")
+                           (:type done :reason stop)))))
+    (let ((err (should-error
+                (e-request-with-hot-path 'loop-run-turn
+                  (e-loop-run-turn
+                   :session-id "session-1"
+                   :turn-id "turn-1"
+                   :messages '((:role user :content "hi"))
+                   :backend backend
+                   :tools (e-tools-registry-create)
+                   :options nil
+                   :on-event #'ignore
+                   :append-message (lambda (message)
+                                     (push message messages))))
+                :type 'e-request-blocking-call-in-hot-path)))
+      (should (equal (cdr err) '(e-loop-run-turn loop-run-turn))))
+    (should-not messages)))
 
 (ert-deftest e-loop-test-persists-delta-only-assistant-message ()
   "Assistant deltas are persisted when no final assistant message arrives."

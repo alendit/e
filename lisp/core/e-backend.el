@@ -12,6 +12,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'e-request)
 
 (cl-defstruct (e-backend-request (:constructor e-backend-request-create))
   cancel
@@ -45,6 +46,8 @@
 MESSAGES and OPTIONS are backend-neutral plists/lists.  ON-ITEM receives
 backend-neutral stream items.  ON-REQUEST-START receives an optional
 `e-backend-request' handle when the adapter can expose request state."
+  (when (e-request-hot-path-active-p)
+    (e-request-hot-path-blocking-error 'e-backend-stream))
   (cond
    ((functionp (e-backend--stream backend))
     (let ((e-backend--request-start-callback on-request-start))

@@ -14,6 +14,7 @@
 (require 'ert)
 (require 'e)
 (require 'e-backend)
+(require 'e-request)
 
 (ert-deftest e-backend-test-fake-streams-items ()
   "Fake backends synchronously stream configured items."
@@ -107,6 +108,26 @@
     (should (equal (nreverse seen)
                    '((:type assistant-message :content "ok")
                      (:type done :reason stop))))))
+
+(ert-deftest e-backend-test-sync-stream-wrapper-rejects-hot-path ()
+  "The synchronous stream wrapper cannot run inside marked hot paths."
+  (let ((started nil))
+    (let ((backend (e-backend-create
+                    :name "async-only"
+                    :start
+                    (cl-function
+                     (lambda (&key on-done &allow-other-keys)
+                       (setq started t)
+                       (funcall on-done '(:status done)))))))
+      (let ((err (should-error
+                  (e-request-with-hot-path 'backend-stream
+                    (e-backend-stream backend
+                                      :messages nil
+                                      :options nil
+                                      :on-item #'ignore))
+                  :type 'e-request-blocking-call-in-hot-path)))
+        (should (equal (cdr err) '(e-backend-stream backend-stream))))
+      (should-not started))))
 
 (provide 'e-backend-test)
 
