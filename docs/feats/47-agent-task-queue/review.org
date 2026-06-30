@@ -6,8 +6,9 @@
 In-review.
 
 Independent review pass complete.  Implementation of all three plan slices is
-complete and committed.  Three findings are open (1 Medium, 2 Low); the feature
-stays =In-review= until they are resolved or explicitly accepted.
+complete and committed.  All three review findings (1 Medium, 2 Low) are now
+resolved with fixes and regression tests; see Findings.  The feature stays
+=In-review= pending operator approval.
 
 * Review summary
 
@@ -15,8 +16,8 @@ Independent review pass complete.  The three plan slices are implemented and
 match the plan contract closely: a headless bounded-concurrency registry with
 dispatch-time harness resolution, a skill-backed =task-queue= capability with no
 model-facing tool, and a workspace-aware =tabulated-list= shell.  Focused ERT
-(17 tests) passes and the warnings-as-error compile gate is green at HEAD
-(=596bd7e=).
+passes (17 at review time, 20 after the three review-fix regression tests)
+and the warnings-as-error compile gate is green.
 
 The core dispatcher, lifecycle, cancellation, and harness-selection behavior are
 solid and well covered.  Review found three issues, none of which block the
@@ -140,6 +141,19 @@ emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dvorona/proje
 ;; reloaded; e-task-queue-list-buffer rendered 1 row after one enqueue.
 #+end_example
 
+Verification after the review-fix commits (=9d8d2e0=, =7da70e6=, =512de1d=):
+
+#+begin_src sh
+eldev test -f e-task-queue-test.el -f e-task-queue-actions-test.el -f e-task-queue-shell-test.el
+#+end_src
+
+#+begin_example
+Ran 20 tests, 20 results as expected, 0 unexpected
+#+end_example
+
+Each fix added a regression test: a string-instance-id round-trip, a =g=
+keybinding command assertion, and a synchronous-settle stale-handle check.
+
 * UX and performance playthrough
 
 Exercised in the running Emacs against the reloaded build (run_elisp; the
@@ -167,7 +181,7 @@ the intended task volume.  No timer polling.  No regression observed.
 
 * Findings
 
-** TODO Medium: =harness-instance-id= action schema invites a string the queue rejects
+** DONE Medium: =harness-instance-id= action schema invites a string the queue rejects
 
 *** Problem
 
@@ -201,7 +215,16 @@ the skill if the skill is also corrected to say "instance id string, e.g.
 \"chat-project-e\"".  Add a round-trip test that enqueues with a string id and
 asserts it resolves.
 
-** TODO Low: =g= is bound to a non-command and errors
+*** Resolved
+
+Fixed in =9d8d2e0=.  =e-task-queue-actions--instance-id= normalizes the value
+at the action boundary: a string is interned to the keyword the catalog
+expects, an existing keyword or nil passes through.  The skill now describes
+the field as a =STRING= (e.g. =chat-project-e=).  =e-task-queue-actions-test-string-instance-id-resolves=
+enqueues with the string ="chat-test"= and asserts the task runs on that
+instance.  Focused suite green (20 tests).
+
+** DONE Low: =g= is bound to a non-command and errors
 
 *** Problem
 
@@ -221,7 +244,13 @@ Give the refresh an interactive command wrapper (or rely on
 =tabulated-list-mode='s built-in =g= =revert= wired to the queue refresh) and
 bind that.  Add the keybinding to the shell smoke test.
 
-** TODO Low: stale =:handle= retained on a synchronously-settled task
+*** Resolved
+
+Fixed in =7da70e6=.  Added an interactive =e-task-queue-shell-refresh= wrapper
+and bound =g= to it.  =e-task-queue-shell-test-refresh-key-is-command= asserts
+the =g= binding is that command and satisfies =commandp=.
+
+** DONE Low: stale =:handle= retained on a synchronously-settled task
 
 *** Problem
 
@@ -246,6 +275,14 @@ cleanup and could mislead a future change that trusts =:handle= as "live".
 In =e-task-queue--start=, only store the handle when the task is still =running=
 after the runner returns (or have the runner-return path skip the =plist-put=
 when the record already settled).  Cover with a synchronous-settle test.
+
+*** Resolved
+
+Fixed in =512de1d=.  =e-task-queue--start= now stores the handle only when the
+task is still =running= after the runner returns, while still recording any
+session id the handle carried.  =e-task-queue-test-synchronous-settle-clears-handle=
+asserts a synchronously-settled =done= task carries a nil handle and keeps its
+session id.
 
 * Plan coverage
 
@@ -304,9 +341,10 @@ structural problem.
 
 * Unresolved
 
-Three open findings remain (1 Medium, 2 Low); see Findings.  The feature stays
-=In-review= until they are resolved or explicitly accepted by the operator.  The
-pre-existing =e-layer-selection-test-capability-exposes-layer-actions= failure is
-out of scope: it reproduces on =eb41a78= (before this feature) and is caused by
-the =action-descriptions= capability being added to the e layer, which no
-task-queue file touches.
+All three review findings are resolved (commits =9d8d2e0=, =7da70e6=,
+=512de1d=), each with a regression test; the focused suite is green at 20
+tests.  The feature stays =In-review= pending operator approval.  The
+pre-existing =e-layer-selection-test-capability-exposes-layer-actions= failure
+is out of scope: it reproduces on =eb41a78= (before this feature) and is
+caused by the =action-descriptions= capability being added to the e layer,
+which no task-queue file touches.
