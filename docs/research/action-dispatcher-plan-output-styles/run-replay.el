@@ -1,8 +1,11 @@
-;;; run-replay.el --- Generate action-dispatcher plan comparison artifacts -*- lexical-binding: t; -*-
+;;; run-replay.el --- Generate action-dispatcher plan comparison artifacts -*- lexical-binding: t; no-byte-compile: t; -*-
 
 ;; Loaded into the running Emacs with emacsclient.  This avoids interactive
 ;; run_elisp blocking-load limits while using the already configured live E
-;; backend.
+;; backend.  It is a one-off replay driver that resolves live harness/session
+;; symbols at load time in a configured Emacs, so it is excluded from the
+;; byte-compiled fileset (`no-byte-compile' above) rather than carrying
+;; declare-function stubs for code it never ships with.
 
 (require 'cl-lib)
 (require 'json)
