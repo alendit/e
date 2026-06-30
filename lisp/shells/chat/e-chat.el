@@ -1968,11 +1968,28 @@ Return non-nil when a composer was removed."
   "Return a visible window for the current chat buffer."
   (get-buffer-window (current-buffer) t))
 
-(defun e-chat--transcript-screen-lines ()
-  "Return screen lines used by transcript content before point."
+(defun e-chat--transcript-screen-lines (&optional limit)
+  "Return screen lines used by transcript content before point.
+When LIMIT is a positive integer, stop counting once LIMIT screen lines
+precede point and return LIMIT.  The exact count only matters while it is
+below the window height (it shrinks the composer spacer); above that the
+spacer is already zero, so walking the whole transcript is wasted work.  This
+keeps composer positioning O(window-height) instead of O(transcript-length)."
   (or e-chat--test-transcript-screen-lines
       (when-let ((window (e-chat--visible-window)))
-        (count-screen-lines (point-min) (point) nil window))
+        (if (and (integerp limit) (> limit 0))
+            (save-excursion
+              (let ((target (point)))
+                ;; Walk up at most LIMIT screen lines from point.
+                (vertical-motion (- limit) window)
+                (if (bobp)
+                    ;; Reached buffer start within LIMIT: the exact count is
+                    ;; cheap (at most LIMIT screen lines).
+                    (count-screen-lines (point) target nil window)
+                  ;; LIMIT screen lines precede point without reaching the
+                  ;; start; the exact total no longer matters, so cap it.
+                  limit)))
+          (count-screen-lines (point-min) (point) nil window)))
       (count-lines (point-min) (point))))
 
 (defun e-chat--screen-lines (start end)
@@ -2023,7 +2040,9 @@ Return non-nil when a composer was removed."
     (let* ((transcript-lines
             (save-excursion
               (goto-char e-chat--composer-spacer-marker)
-              (e-chat--transcript-screen-lines)))
+              ;; The spacer is only positive while the transcript is shorter
+              ;; than the window, so counting past the window height is wasted.
+              (e-chat--transcript-screen-lines (e-chat--visible-height))))
            (composer-lines
             (e-chat--screen-lines e-chat--composer-spacer-marker (point-max)))
            (spacer-lines

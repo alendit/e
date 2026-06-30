@@ -5376,7 +5376,7 @@ the orphaned region and appeared to vanish."
         (with-current-buffer buffer
           (setq e-chat--composer-layout-cache nil)
           (cl-letf (((symbol-function 'e-chat--transcript-screen-lines)
-                     (lambda ()
+                     (lambda (&optional _limit)
                        (setq transcript-line-counts
                              (1+ transcript-line-counts))
                        4))
@@ -5396,6 +5396,55 @@ the orphaned region and appeared to vanish."
               (e-chat--refresh-composer-position)
               (should (= transcript-line-counts 2))
               (should (= composer-line-counts 2)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-composer-spacer-line-count-is-window-bounded ()
+  "Positioning the composer scans at most a window of transcript, not all of it."
+  (let ((buffer (e-chat-test--buffer nil "chat-screen-bound"))
+        (window nil)
+        (max-region-lines 0))
+    (unwind-protect
+        (progn
+          (setq window (display-buffer buffer))
+          (with-current-buffer buffer
+            (should (window-live-p (e-chat--visible-window)))
+            ;; Build a tall, non-wrapping transcript.
+            (dotimes (i 200)
+              (e-chat--insert-entry "System" (format "line %d" i) t))
+            (cl-letf* ((orig (symbol-function 'count-screen-lines))
+                       ((symbol-function 'count-screen-lines)
+                        (lambda (beg end &rest args)
+                          (setq max-region-lines
+                                (max max-region-lines (count-lines beg end)))
+                          (apply orig beg end args))))
+              (let ((e-chat--test-window-body-height 12))
+                (e-chat--refresh-composer-position)))
+            ;; The transcript is 200 lines tall; the spacer math must not walk
+            ;; more than a window's worth of it.
+            (should (<= max-region-lines 13))))
+      (when (window-live-p window)
+        (delete-window window))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-transcript-screen-lines-cap-matches-exact ()
+  "A short transcript counts identically with or without a line cap."
+  (let ((buffer (e-chat-test--buffer nil "chat-screen-exact"))
+        (window nil))
+    (unwind-protect
+        (progn
+          (setq window (display-buffer buffer))
+          (with-current-buffer buffer
+            (should (window-live-p (e-chat--visible-window)))
+            (e-chat--insert-entry "System" "one" t)
+            (e-chat--insert-entry "System" "two" t)
+            (e-chat--insert-entry "System" "three" t)
+            (goto-char (point-max))
+            (should (= (e-chat--transcript-screen-lines)
+                       (e-chat--transcript-screen-lines 200)))))
+      (when (window-live-p window)
+        (delete-window window))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
