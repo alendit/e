@@ -44,7 +44,8 @@ Partly implemented:
 - Blocking primitive guardrails exist, but they are test and probe helpers rather than a complete proof over every interactive path.
 - Sync tool execution remains available for batch, tests, and nested call paths.
 - Some UI redraw preservation, stale deferred activity-redraw guards, and preview cheapening landed, but this is not a render scheduler.
-- Raw-result storage exists for large tool output through session tmp resources, with explicit, harness-reset, and configured max-age cleanup; there is still no generic raw-result store.
+- Raw-result storage exists for large tool output through session tmp resources, with explicit, harness-reset, and configured max-age cleanup; there is still no raw-result store outside the session tmp owner.
+- Session tmp resources now expose a generic raw-result reference API with owner, storage, original size, bounded preview, redaction policy, and cleanup-lifetime metadata; the tool-output truncation hook uses that shared reference shape while preserving existing compatibility metadata.
 - Anthropic context-window lookup is cache-only; chat status starts an async model-info refresh on cache miss instead of waiting for gateway I/O.
 - The default live chat session store queues persistent JSONL/index writes behind a short timer, records queued-write generation/sequence/criticality metadata, drops stale-generation queued writes, rebuilds stale derived index writes when current critical records are flushed, and has an explicit synchronous flush path.
 - MCP refresh has an async start API, and the interactive refresh path uses it instead of waiting for helper or HTTP responses.
@@ -65,7 +66,7 @@ Partly implemented:
 Not yet implemented in the planned sense:
 
 - Explicit MCP batch call wrappers still have synchronous waits; generated model-facing MCP tool execution, interactive capability providers, interactive refresh, activation, and catalog discovery start APIs no longer do. Generic batch tool execution now fails fast for long async tools under an interactive hot-path guard.
-- There is no generic raw-result store or cache-driven reference cleanup lifecycle.
+- There is no raw-result store outside the session tmp owner and no cache-driven reference cleanup lifecycle beyond explicit, harness-reset, and max-age tmp cleanup.
 - There is no full cooperative presentation render scheduler, though long final assistant Markdown presentation is now deferred and cancellable.
 - Context budget estimates and shared context-status text now support semantic cache keys; chat mode-line, active-session picker rows, and Org Canvas status use formatted-status snapshots, but the broader context/status snapshot contract for turn prep and any other shells remains open.
 - Chat open/resume now uses the chunked replay scheduler for unloaded indexed sessions, a bounded initial tail for large loaded sessions, and timer-driven progressive backfill for older loaded messages, but the complete queued-write critical/derived durability model remains only partially implemented.

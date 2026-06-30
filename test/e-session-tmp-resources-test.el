@@ -375,6 +375,39 @@ printf '%s\\n' notes/delayed.txt
                     '(:unit "line" :start 2 :end 3))
                    "two\nthree\n"))))
 
+(ert-deftest e-session-tmp-test-raw-result-reference-is-bounded ()
+  "Raw-result references carry bounded preview and ownership metadata."
+  (should (require 'e-session-tmp-resources nil t))
+  (let* ((harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :intrinsic-capabilities
+                   (list (e-session-tmp-capability-create))))
+         (reference
+          (e-session-tmp-write-raw-result
+           harness
+           "session-1"
+           "raw-results/out.txt"
+           "abcdefghijklmnopqrstuvwxyz"
+           :owner '(:kind tool-result :tool-call-id "call-1")
+           :redaction-policy 'none
+           :cleanup-lifetime 'session-tmp
+           :preview-bytes 10)))
+    (should (equal (plist-get reference :uri)
+                   "tmp://raw-results/out.txt"))
+    (should (equal (plist-get reference :owner)
+                   '(:kind tool-result :tool-call-id "call-1")))
+    (should (eq (plist-get reference :storage) 'session-tmp))
+    (should (equal (plist-get reference :original-bytes) 26))
+    (should (equal (plist-get reference :preview) "abcdefghij"))
+    (should (equal (plist-get reference :preview-bytes) 10))
+    (should (plist-get reference :preview-truncated))
+    (should (eq (plist-get reference :cleanup-lifetime) 'session-tmp))
+    (should (equal (e-resources-read
+                    (e-harness-resources harness "session-1" "turn-1")
+                    (plist-get reference :uri)
+                    nil)
+                   "abcdefghijklmnopqrstuvwxyz"))))
+
 (provide 'e-session-tmp-resources-test)
 
 ;;; e-session-tmp-resources-test.el ends here

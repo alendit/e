@@ -42,6 +42,11 @@
   :type 'number
   :group 'e)
 
+(defcustom e-session-tmp-raw-result-preview-bytes 4096
+  "Default maximum preview bytes included in raw-result references."
+  :type 'integer
+  :group 'e)
+
 (defun e-session-tmp--require-session (harness session-id)
   "Signal unless HARNESS and SESSION-ID identify a session tmp root."
   (unless (and harness (stringp session-id) (not (string-empty-p session-id)))
@@ -614,6 +619,38 @@ encode; without these bindings `write-region' would invoke
     (e-session-tmp--write-file path (format "%s" content))
     (e-session-tmp--touch-root root)
     (e-session-tmp--uri relative-name)))
+
+(cl-defun e-session-tmp-write-raw-result
+    (harness session-id relative-name content
+             &key owner redaction-policy cleanup-lifetime preview
+             preview-bytes metadata)
+  "Persist raw result CONTENT and return a bounded reference plist.
+RELATIVE-NAME is written under the session tmp root.  OWNER identifies the
+caller-visible owner of the result.  REDACTION-POLICY and CLEANUP-LIFETIME are
+metadata for consumers deciding how to show or clean up the reference.  PREVIEW,
+when non-nil, is used as the bounded model/display preview; otherwise CONTENT is
+previewed with `e-tools-result-content-preview'."
+  (let* ((content-text (format "%s" content))
+         (limit (max 0 (or preview-bytes
+                           e-session-tmp-raw-result-preview-bytes)))
+         (preview-data
+          (e-tools-result-content-preview
+           (or preview content-text)
+           limit))
+         (uri (e-session-tmp-write harness session-id relative-name content-text))
+         (reference
+          (list :uri uri
+                :owner owner
+                :storage 'session-tmp
+                :original-bytes (string-bytes content-text)
+                :preview (plist-get preview-data :text)
+                :preview-bytes (plist-get preview-data :shown-bytes)
+                :preview-truncated (plist-get preview-data :truncated)
+                :redaction-policy (or redaction-policy 'none)
+                :cleanup-lifetime (or cleanup-lifetime 'session-tmp))))
+    (if metadata
+        (append reference (list :metadata metadata))
+      reference)))
 
 (defun e-session-tmp-file-path (harness session-id relative-name)
   "Return an absolute file path for RELATIVE-NAME in HARNESS SESSION-ID.

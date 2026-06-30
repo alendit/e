@@ -106,13 +106,14 @@
           uri))
 
 (defun e-tool-output-truncation--metadata
-    (metadata uri original-bytes original-lines shown-bytes shown-lines)
+    (metadata reference original-lines shown-lines)
   "Return METADATA with truncation fields added."
   (append (list :truncated t
-                :tmp-uri uri
-                :original-bytes original-bytes
+                :tmp-uri (plist-get reference :uri)
+                :raw-result-reference reference
+                :original-bytes (plist-get reference :original-bytes)
                 :original-lines original-lines
-                :shown-bytes shown-bytes
+                :shown-bytes (plist-get reference :preview-bytes)
                 :shown-lines shown-lines)
           metadata))
 
@@ -131,11 +132,21 @@
           (let* ((preview (e-tool-output-truncation--preview content-text))
                  (shown-bytes (string-bytes preview))
                  (shown-lines (e-tool-output-truncation--line-count preview))
-                 (uri (e-session-tmp-write
-                       (plist-get context :harness)
-                       (plist-get context :session-id)
-                       (e-tool-output-truncation--relative-name result context)
-                       content-text))
+                 (reference
+                  (e-session-tmp-write-raw-result
+                   (plist-get context :harness)
+                   (plist-get context :session-id)
+                   (e-tool-output-truncation--relative-name result context)
+                   content-text
+                   :owner (list :kind 'tool-result
+                                :turn-id (plist-get context :turn-id)
+                                :tool-call-id (plist-get result :tool-call-id)
+                                :tool-name (plist-get result :name))
+                   :redaction-policy 'none
+                   :cleanup-lifetime 'session-tmp
+                   :preview preview
+                   :preview-bytes e-tool-output-truncation-max-bytes))
+                 (uri (plist-get reference :uri))
                  (notice (e-tool-output-truncation--notice
                           shown-bytes
                           shown-lines
@@ -150,10 +161,8 @@
             (plist-put truncated :metadata
                        (e-tool-output-truncation--metadata
                         metadata
-                        uri
-                        original-bytes
+                        reference
                         original-lines
-                        shown-bytes
                         shown-lines))
             truncated))))))
 

@@ -19,6 +19,14 @@
 (require 'e-resources)
 (require 'e-session-tmp-resources)
 
+(defvar e-tool-output-truncation-max-bytes)
+(defvar e-tool-output-truncation-max-lines)
+
+(declare-function e-tool-output-truncation-capability-create
+                  "e-tool-output-truncation")
+(declare-function e-tool-output-truncation-post-tool-call
+                  "e-tool-output-truncation")
+
 (defun e-tool-output-truncation-test--harness ()
   "Return a harness with tmp resources active."
   (e-harness-create
@@ -64,12 +72,21 @@
              result
              (e-tool-output-truncation-test--context harness)))
            (metadata (plist-get truncated :metadata))
-           (uri (plist-get metadata :tmp-uri)))
+           (uri (plist-get metadata :tmp-uri))
+           (reference (plist-get metadata :raw-result-reference)))
       (should (not (eq truncated result)))
       (should (plist-get metadata :truncated))
       (should (equal (plist-get metadata :existing) 'yes))
+      (should (equal uri (plist-get reference :uri)))
+      (should (eq (plist-get reference :storage) 'session-tmp))
+      (should (equal (plist-get reference :owner)
+                     '(:kind tool-result
+                       :turn-id "turn-1"
+                       :tool-call-id "call-1"
+                       :tool-name "bash")))
       (should (equal (plist-get metadata :original-bytes) 26))
       (should (equal (plist-get metadata :shown-bytes) 10))
+      (should (equal (plist-get reference :preview) "abcdefghij"))
       (should (string-prefix-p "abcdefghij" (plist-get truncated :content)))
       (should (string-match-p (regexp-quote uri) (plist-get truncated :content)))
       (should (equal (e-resources-read

@@ -2129,3 +2129,51 @@ emacsclient --eval "(progn (load-file \"/private/tmp/e-chat-session-compact-acti
 #+end_src
 
 Result: returned =(:status started :initial-compactions 0 :finish-captured t :final-compactions 1 :summary "Live action summary." ...)=, confirming the live =chat-session :compact= action returned before compaction completion and finished through callbacks.
+
+* Phase 3 Session Tmp Raw Result Reference Slice Review
+
+Status: complete.
+
+** Scope reviewed
+
+- Added =e-session-tmp-write-raw-result= as a shared session-tmp raw-result reference constructor.
+- Standardized reference metadata for owner, storage, original byte size, bounded preview, preview size/truncation, redaction policy, and cleanup lifetime.
+- Rewired the tool-output truncation hook to use the shared raw-result reference while preserving existing =:tmp-uri= and byte/line compatibility metadata.
+
+** Verification
+
+#+begin_src sh
+rtk eldev test -f test/e-session-tmp-resources-test.el -B e-session-tmp-test-raw-result-reference-is-bounded
+#+end_src
+
+Result: passed the focused raw-result reference storage test.
+
+#+begin_src sh
+rtk eldev test -f test/e-tool-output-truncation-test.el
+#+end_src
+
+Result: passed all 6 tool-output truncation tests.
+
+#+begin_src sh
+rtk eldev test -f test/e-session-tmp-resources-test.el
+#+end_src
+
+Result: passed all 15 session tmp resource tests.
+
+#+begin_src sh
+rtk eldev emacs --batch --eval "(progn (setq byte-compile-error-on-warn t) (dolist (file '(\"lisp/layers/harness/e-session-tmp-resources.el\" \"lisp/layers/harness/e-tool-output-truncation.el\" \"test/e-session-tmp-resources-test.el\" \"test/e-tool-output-truncation-test.el\")) (byte-compile-file file)))"
+#+end_src
+
+Result: passed for the touched tmp resource and tool-output truncation modules and tests.
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Result: returned ="/Users/dimitrivorona/projects/elisp/e/"=, so the running Emacs loaded the changed tmp resource and truncation code.
+
+#+begin_src sh
+emacsclient --eval "(progn (load-file \"/private/tmp/e-session-tmp-raw-result-probe.el\") e-session-tmp-raw-result-probe-result)"
+#+end_src
+
+Result: returned =(:uri "tmp://raw-results/live.txt" :owner (:kind tool-result :tool-call-id "live-call") :original-bytes 26 :preview "abcdefghij" :preview-bytes 10 :preview-truncated t :stored-matches t)=, confirming the live raw-result reference stored the full content and exposed only bounded preview metadata.
