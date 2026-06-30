@@ -54,15 +54,17 @@
       (should (member 'annotations capability-ids))
       (should-not (member 'annotation-tools capability-ids)))))
 
-(ert-deftest e-text-editing-test-layer-includes-annotation-tools-with-backend ()
-  "The text-editing layer uses annotation tools when Simply Annotate is present."
+(ert-deftest e-text-editing-test-layer-includes-annotation-actions-with-backend ()
+  "The text-editing layer adds annotation actions when Simply Annotate is present."
   (cl-letf (((symbol-function 'e-annotation-tools-available-p)
              (lambda () t)))
-    (let ((capability-ids
-           (mapcar #'e-capability-id
-                   (e-layer-capabilities (e-text-editing-layer-create)))))
+    (let* ((capabilities (e-layer-capabilities (e-text-editing-layer-create)))
+           (capability-ids (mapcar #'e-capability-id capabilities))
+           (annotations (cl-find 'annotations capabilities
+                                 :key #'e-capability-id)))
       (should (member 'annotations capability-ids))
-      (should (member 'annotation-tools capability-ids)))))
+      (should-not (member 'annotation-tools capability-ids))
+      (should (e-capability-actions annotations)))))
 
 (provide 'e-text-editing-test)
 

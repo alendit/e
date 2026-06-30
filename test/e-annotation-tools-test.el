@@ -217,10 +217,10 @@ abort the resolution."
 (ert-deftest e-annotation-tools-test-layer-exposes-tools ()
   "The text-editing layer exposes the annotation tools capability."
   (let* ((layer (e-text-editing-layer-create))
-         (capability (cl-find 'annotation-tools (e-layer-capabilities layer)
+         (capability (cl-find 'annotations (e-layer-capabilities layer)
                               :key #'e-capability-id)))
     (should capability)
-    (should (e-capability-tools capability))))
+    (should (e-capability-actions capability))))
 
 (provide 'e-annotation-tools-test)
 

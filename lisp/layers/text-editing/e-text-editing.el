@@ -61,12 +61,14 @@
   "Detailed guidance for working with Simply Annotate annotation databases.")
 
 (defun e-text-editing-annotations-capability-create ()
-  "Create the annotations guidance capability."
+  "Create the annotations guidance and action capability."
   (e-capability-with-skills-create
    :id 'annotations
    :name "Annotations"
    :instruction-priority 230
-   :instructions "Use annotation guidance when the user asks to inspect or respond to text annotation threads."
+   :instructions "Use annotation guidance when the user asks to inspect or respond to text annotation threads. Use actions through e-actions-call for annotation workflows; read e-action://annotations when active action contracts are needed."
+   :actions (when (e-annotation-tools-available-p)
+              (e-annotation-tools--actions))
    :skills
    (list
     (e-skill-spec-create
@@ -80,10 +82,7 @@
    :id 'text-editing
    :name "Text Editing"
    :capabilities
-   (append
-    (list (e-text-editing-annotations-capability-create))
-    (when (e-annotation-tools-available-p)
-      (list (e-annotation-tools-capability-create))))))
+   (list (e-text-editing-annotations-capability-create))))
 
 (provide 'e-text-editing)
 

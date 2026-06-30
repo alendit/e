@@ -384,14 +384,72 @@ domain-side failure never rolls back the already-persisted verdict."
                :comment (plist-get arguments :comment)
                :author (plist-get arguments :author)))))
 
+(defun e-annotation-tools--actions ()
+  "Return annotation action plist."
+  (list
+   :list
+   (e-action-create
+    :handler #'e-annotation-tools-list
+    :caller (lambda (_context arguments)
+              (e-annotation-tools-list
+               :file (plist-get arguments :file)
+               :org-id (or (plist-get arguments :org_id)
+                           (plist-get arguments :org-id))))
+    :description "List Simply Annotate threads on a file. Optionally filter by an org-id stored in a thread's payload."
+    :parameters '(:type "object"
+                  :properties (:file (:type "string")
+                               :org_id (:type "string"))
+                  :required ["file"]))
+   :add
+   (e-action-create
+    :handler #'e-annotation-tools-add
+    :caller (lambda (_context arguments)
+              (e-annotation-tools-add
+               :file (plist-get arguments :file)
+               :start (plist-get arguments :start)
+               :end (plist-get arguments :end)
+               :text (plist-get arguments :text)
+               :author (plist-get arguments :author)
+               :payload (or (plist-get arguments :payload)
+                            (plist-get arguments :metadata))))
+    :description "Post a non-destructive proposal as a Simply Annotate thread anchored to a file region."
+    :parameters '(:type "object"
+                  :properties (:file (:type "string")
+                               :start (:type "integer")
+                               :end (:type "integer")
+                               :text (:type "string")
+                               :author (:type "string")
+                               :payload (:type "object"))
+                  :required ["file" "start" "end" "text"]))
+   :resolve
+   (e-action-create
+    :handler #'e-annotation-tools-resolve
+    :caller (lambda (_context arguments)
+              (e-annotation-tools-resolve
+               :file (plist-get arguments :file)
+               :thread-id (or (plist-get arguments :thread_id)
+                              (plist-get arguments :thread-id))
+               :verdict (plist-get arguments :verdict)
+               :comment (plist-get arguments :comment)
+               :author (plist-get arguments :author)))
+    :description "Set a verdict on a Simply Annotate thread and return the thread payload. Resolving does not apply domain mutations itself."
+    :parameters '(:type "object"
+                  :properties (:file (:type "string")
+                               :thread_id (:type "string")
+                               :verdict (:type "string"
+                                         :enum ["accepted" "rejected"])
+                               :comment (:type "string")
+                               :author (:type "string"))
+                  :required ["file" "thread_id" "verdict"]))))
+
 (defun e-annotation-tools-capability-create ()
-  "Create the annotation review-channel tool capability."
+  "Create the annotation review-channel action capability."
   (e-capability-create
-   :id 'annotation-tools
-   :name "Annotation Tools"
+   :id 'annotations
+   :name "Annotations"
    :instruction-priority 230
-   :instructions "Use annotation_add to post a non-destructive review proposal as an inline Simply Annotate thread anchored to a file region; carry any domain key (such as an org-id) and a machine-applicable description in the payload. Use annotation_list to read open proposals and their verdicts. Use annotation_resolve to record an accepted or rejected verdict; it returns the payload so a domain-specific tool can execute an accepted change. Resolving never mutates domain state itself."
-   :tools (list #'e-annotation-tools--register)))
+   :instructions "Use annotation actions to post non-destructive review proposals, list annotation threads, and record accepted or rejected verdicts. Read e://annotations/skills/simply-annotate for the process. Read e-action://annotations when the active action contracts are needed. Resolving a thread records a verdict but does not apply domain mutations itself."
+   :actions (e-annotation-tools--actions)))
 
 (provide 'e-annotation-tools)
 
