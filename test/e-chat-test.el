@@ -7945,6 +7945,45 @@ The context-window denominator comes from the live provider lookup
       (should (eq (plist-get opened :display) t))
       (should (eq (plist-get opened :instance-id) :beta)))))
 
+(ert-deftest e-chat-test-active-session-line-reuses-fresh-status-snapshot ()
+  "Active-session picker rows reuse fresh context-status snapshots."
+  (let* ((store (e-session-store-create))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :sessions store
+                   :default-options
+                   '(:model "gpt-5.5" :reasoning-effort "high")))
+         (candidate (list :harness harness
+                          :session '(:id "picker-status-cache"
+                                      :title "Picker Status"
+                                      :message-count 1
+                                      :messages ((:id "picker-user"
+                                                  :role user
+                                                  :content "prompt"))
+                                      :loaded t)
+                          :session-id "picker-status-cache"))
+         (status-cache (make-hash-table :test #'equal))
+         (calls 0))
+    (e-session-create store :id "picker-status-cache")
+    (cl-letf (((symbol-function 'e-context-budget-status)
+               (lambda (&rest _args)
+                 (setq calls (1+ calls))
+                 '(:model "gpt-5.5"
+                   :reasoning-effort "high"
+                   :used-tokens 123
+                   :window 1000
+                   :approximate t)))
+              ((symbol-function 'e-chat-overview--session-unread-p)
+               (lambda (&rest _args) nil)))
+      (let ((e-context-status-estimate-cache-seconds 100))
+        (should (string-match-p
+                 "ctx gpt-5.5/high ~13% (~123/1k tok)"
+                 (e-chat--active-session-line candidate status-cache)))
+        (should (string-match-p
+                 "ctx gpt-5.5/high ~13% (~123/1k tok)"
+                 (e-chat--active-session-line candidate status-cache)))))
+    (should (= calls 1))))
+
 (ert-deftest e-chat-test-active-session-open-ignores-preview-buffer-and-focuses_workspace ()
   "Opening from active sessions ignores the picker preview and focuses session affinity."
   (let* ((store (e-session-store-create))

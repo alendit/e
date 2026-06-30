@@ -7795,7 +7795,44 @@ adds its display name to the row."
                  'e-chat-overview-unread-face))
     (_ "  ")))
 
-(defun e-chat--active-session-line (candidate)
+(defun e-chat--active-session-status-key (candidate)
+  "Return semantic context-status cache key for active-session CANDIDATE."
+  (let* ((harness (plist-get candidate :harness))
+         (session (plist-get candidate :session))
+         (session-id (plist-get candidate :session-id))
+         (state (ignore-errors
+                  (and harness
+                       session-id
+                       (e-harness-state harness session-id))))
+         (options (ignore-errors
+                    (and harness
+                         session-id
+                         (e-harness-display-options harness session-id))))
+         (usage-event (ignore-errors
+                        (and harness
+                             session-id
+                             (e-session-latest-token-usage-event
+                              (e-harness-sessions harness)
+                              session-id)))))
+    (list :session-id session-id
+          :message-count (or (plist-get state :message-count)
+                             (plist-get session :message-count))
+          :active-turn (plist-get state :active-turn)
+          :latest-token-usage-id (plist-get usage-event :id)
+          :model (plist-get options :model)
+          :reasoning-effort (plist-get options :reasoning-effort)
+          :layers (ignore-errors
+                    (and harness
+                         session-id
+                         (e-harness-effective-layer-ids harness session-id))))))
+
+(defun e-chat--active-session-status-cache-cell (cache key)
+  "Return status snapshot cache cell from CACHE for KEY."
+  (when (and cache key)
+    (or (gethash key cache)
+        (puthash key (cons nil nil) cache))))
+
+(defun e-chat--active-session-line (candidate &optional status-cache)
   "Return picker row text for active session CANDIDATE."
   (let* ((harness (plist-get candidate :harness))
          (session (plist-get candidate :session))
@@ -7807,13 +7844,21 @@ adds its display name to the row."
          (message-count (or (plist-get session :message-count) 0))
          (timestamp (or (plist-get session :last-message-at)
                         (plist-get session :created-at)))
+         (status-key (e-chat--active-session-status-key candidate))
+         (status-cache-cell
+          (e-chat--active-session-status-cache-cell status-cache status-key))
          (status (ignore-errors
                    (e-context-status-text
                     harness
                     session-id
                     :prefix "ctx"
                     :prefer-token-usage t
-                    :estimate-context nil)))
+                    :estimate-context nil
+                    :snapshot-cache status-cache-cell
+                    :snapshot-cache-key
+                    (list :status-key status-key
+                          :prefer-token-usage t
+                          :estimate-context nil))))
          (meta (string-join
                 (delq nil
                       (list (and instance
@@ -7910,7 +7955,8 @@ face properties so the preview still reflects chat rendering."
   (interactive)
   (let ((candidates (cl-remove-if-not
                      #'e-chat--active-session-has-prompt-p
-                     (e-chat--session-candidates))))
+                     (e-chat--session-candidates)))
+        (status-cache (make-hash-table :test #'equal)))
     (unless candidates
       (user-error "No e chat sessions to show"))
     (e-picker-open
@@ -7918,7 +7964,9 @@ face properties so the preview still reflects chat rendering."
      :title "Active sessions"
      :candidates (lambda () candidates)
      :candidate-key #'e-chat--active-session-candidate-key
-     :candidate-line #'e-chat--active-session-line
+     :candidate-line
+     (lambda (candidate)
+       (e-chat--active-session-line candidate status-cache))
      :preview #'e-chat--active-session-preview
      :refresh-candidate-after-preview t
      :initial-candidate-limit 15

@@ -2033,3 +2033,51 @@ emacsclient --eval "(progn (load-file \"/private/tmp/e-org-canvas-live-status-sn
 #+end_src
 
 Result: returned =(:first "Org Canvas gpt-5.5/high ~13% (~123/1k tok)" :second "Org Canvas gpt-5.5/high ~13% (~123/1k tok)" :calls 1 :same t)=, confirming repeated live Org Canvas status rendering reused the formatted snapshot instead of rebuilding budget status.
+
+* Phase 3 Active Session Picker Status Snapshot Slice Review
+
+Status: complete.
+
+** Scope reviewed
+
+- Added picker-local formatted context-status snapshot caching for active-session candidate rows.
+- Keyed picker status snapshots by session id, message count, active turn, latest token usage, model, reasoning effort, and effective layers.
+- Kept the cache lifetime scoped to a single picker invocation so active-session status remains cheap while the picker is open without adding durable picker state.
+
+** Verification
+
+#+begin_src sh
+rtk eldev test -f test/e-chat-test.el -B e-chat-test-active-sessions-builds-picker-spec e-chat-test-active-session-line-reuses-fresh-status-snapshot
+#+end_src
+
+Result: passed the focused active-session picker wiring and status snapshot reuse tests.
+
+#+begin_src sh
+rtk eldev test -f test/e-chat-test.el
+#+end_src
+
+Result: passed all 276 chat tests, with the existing Markdown rendering skip unchanged.
+
+#+begin_src sh
+rtk eldev emacs --batch --eval "(progn (setq byte-compile-error-on-warn t) (byte-compile-file \"lisp/shells/chat/e-chat.el\"))"
+#+end_src
+
+Result: passed for the touched runtime module.
+
+#+begin_src sh
+rtk eldev emacs --batch --eval "(progn (setq byte-compile-error-on-warn t) (dolist (file '(\"lisp/shells/chat/e-chat.el\" \"test/e-chat-test.el\")) (byte-compile-file file)))"
+#+end_src
+
+Result: failed before reaching this slice's new test hunk because =test/e-chat-test.el:444= has an existing free-variable warning for =harness= in older teardown code.
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Result: returned ="/Users/dimitrivorona/projects/elisp/e/"=, so the running Emacs loaded the changed chat code.
+
+#+begin_src sh
+emacsclient --eval "(progn (load-file \"/private/tmp/e-chat-active-session-status-snapshot-probe.el\") e-chat-active-session-status-snapshot-probe-result)"
+#+end_src
+
+Result: returned =(:first "  Live Picker Status                                  1 msg  ctx gpt-5.5/high ~13% (~123/1k tok)" :second "  Live Picker Status                                  1 msg  ctx gpt-5.5/high ~13% (~123/1k tok)" :calls 1 :same t)=, confirming repeated live active-session row rendering reused the formatted snapshot.
