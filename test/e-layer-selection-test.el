@@ -37,7 +37,8 @@
     (should (functionp (e-capabilities-action capability :toggle)))
     (should (eq (e-layer-id layer) 'e))
     (should (equal (mapcar #'e-capability-id (e-layer-capabilities layer))
-                   '(e-runtime-context
+                   '(action-descriptions
+                     e-runtime-context
                      layer-selection
                      context-inspection
                      session-compaction)))))
