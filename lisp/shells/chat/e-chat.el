@@ -749,34 +749,100 @@ intentionally not persisted in session metadata.")
 (defvar-local e-chat--pending-render-job-timers nil
   "Timers scheduled for deferred chat render jobs.")
 
+(defvar-local e-chat--pending-render-jobs nil
+  "Deferred chat render job records owned by this buffer.")
+
+(defvar-local e-chat--render-job-counter 0
+  "Monotonic id counter for buffer-local chat render jobs.")
+
 (defvar-local e-chat--pending-markdown-presentation-timers nil
   "Timers scheduled to apply deferred assistant Markdown presentation.")
 
 (defvar-local e-chat--markdown-presentation-generation 0
   "Generation token for deferred assistant Markdown presentation callbacks.")
 
+(cl-defstruct (e-chat-render-job
+               (:constructor e-chat-render-job-create))
+  "Buffer-local deferred chat render job."
+  id
+  owner
+  key
+  generation
+  buffer
+  timer)
+
+(defun e-chat--render-job-matches-p (job owner key)
+  "Return non-nil when JOB matches OWNER and KEY."
+  (and (eq (e-chat-render-job-owner job) owner)
+       (equal (e-chat-render-job-key job) key)))
+
+(defun e-chat--render-job-for-timer (timer)
+  "Return pending render job for TIMER, or nil."
+  (cl-find timer e-chat--pending-render-jobs
+           :key #'e-chat-render-job-timer))
+
+(defun e-chat--drop-render-job (job)
+  "Remove JOB from this buffer's pending render-job registries."
+  (setq e-chat--pending-render-jobs
+        (delq job e-chat--pending-render-jobs))
+  (setq e-chat--pending-render-job-timers
+        (delq (e-chat-render-job-timer job)
+              e-chat--pending-render-job-timers)))
+
+(defun e-chat--cancel-render-job (job)
+  "Cancel pending render JOB."
+  (when job
+    (when (timerp (e-chat-render-job-timer job))
+      (cancel-timer (e-chat-render-job-timer job)))
+    (e-chat--drop-render-job job)))
+
+(defun e-chat--cancel-render-jobs (owner key)
+  "Cancel pending render jobs matching OWNER and KEY."
+  (dolist (job (copy-sequence e-chat--pending-render-jobs))
+    (when (e-chat--render-job-matches-p job owner key)
+      (e-chat--cancel-render-job job))))
+
 (defun e-chat--cancel-render-job-timer (timer)
   "Cancel deferred render-job TIMER if it is still live."
-  (when (timerp timer)
-    (cancel-timer timer))
-  (setq e-chat--pending-render-job-timers
-        (delq timer e-chat--pending-render-job-timers)))
+  (if-let ((job (e-chat--render-job-for-timer timer)))
+      (e-chat--cancel-render-job job)
+    (when (timerp timer)
+      (cancel-timer timer))
+    (setq e-chat--pending-render-job-timers
+          (delq timer e-chat--pending-render-job-timers))))
 
-(defun e-chat--schedule-render-job (delay thunk)
+(cl-defun e-chat--schedule-render-job
+    (delay thunk &key owner key generation coalesce)
   "Schedule deferred chat render THUNK after DELAY seconds.
 The returned timer is tracked in the buffer-local render-job registry until it
-runs or is cancelled."
-  (let ((buffer (current-buffer))
-        timer)
+runs or is cancelled.
+
+When COALESCE is non-nil, cancel any older pending job with the same OWNER and
+KEY before scheduling the new one."
+  (when coalesce
+    (e-chat--cancel-render-jobs owner key))
+  (let* ((buffer (current-buffer))
+         (id (cl-incf e-chat--render-job-counter))
+         job
+         timer)
     (setq timer
           (run-at-time
            delay nil
            (lambda ()
              (when (buffer-live-p buffer)
                (with-current-buffer buffer
-                 (setq e-chat--pending-render-job-timers
-                       (delq timer e-chat--pending-render-job-timers))
-                 (funcall thunk))))))
+                 (when (memq job e-chat--pending-render-jobs)
+                   (e-chat--drop-render-job job)
+                   (funcall thunk)))))))
+    (setq job
+          (e-chat-render-job-create
+           :id id
+           :owner owner
+           :key key
+           :generation generation
+           :buffer buffer
+           :timer timer))
+    (push job e-chat--pending-render-jobs)
     (push timer e-chat--pending-render-job-timers)
     timer))
 
@@ -1392,7 +1458,11 @@ PROMPT forces completion even when only one/default instance exists."
             (e-chat--schedule-render-job
              e-chat-loaded-session-backfill-delay
              (lambda ()
-               (e-chat--loaded-session-backfill generation)))))))
+               (e-chat--loaded-session-backfill generation))
+             :owner 'loaded-session-backfill
+             :key e-chat-session-id
+             :generation generation
+             :coalesce t)))))
 
 (defun e-chat--loaded-session-backfill (generation)
   "Render the next older loaded-session transcript chunk for GENERATION."
@@ -4776,7 +4846,11 @@ When TURN-ID is non-nil, cancel only a redraw for that turn."
                e-chat-activity-redraw-delay
                (lambda ()
                  (e-chat--run-pending-activity-redraw
-                  generation))))))))
+                  generation))
+               :owner 'activity-redraw
+               :key turn-id
+               :generation generation
+               :coalesce t))))))
 
 (defun e-chat--progress-dots ()
   "Return the current active assistant progress glyph string."
@@ -5536,7 +5610,10 @@ generation.  Return non-nil when another chunk remains."
                 start-marker
                 end-marker
                 position-marker
-                generation)))))
+                generation)))
+           :owner 'markdown-presentation
+           :key generation
+           :generation generation))
     (push timer e-chat--pending-markdown-presentation-timers)
     timer))
 

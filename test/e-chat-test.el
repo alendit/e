@@ -4167,6 +4167,48 @@ the orphaned region and appeared to vanish."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-render-job-scheduler-coalesces-owner-key ()
+  "The shared render scheduler cancels stale jobs by owner and key."
+  (let ((buffer (e-chat-test--buffer nil "chat-render-job-coalesce"))
+        (ran nil))
+    (unwind-protect
+        (with-current-buffer buffer
+          (let* ((first
+                  (e-chat--schedule-render-job
+                   60
+                   (lambda ()
+                     (push 'first ran))
+                   :owner 'test-owner
+                   :key "same"
+                   :generation 1
+                   :coalesce t))
+                 (first-job (car e-chat--pending-render-jobs))
+                 (second
+                  (e-chat--schedule-render-job
+                   60
+                   (lambda ()
+                     (push 'second ran))
+                   :owner 'test-owner
+                   :key "same"
+                   :generation 2
+                   :coalesce t))
+                 (second-job (car e-chat--pending-render-jobs)))
+            (should (timerp first))
+            (should-not (memq first e-chat--pending-render-job-timers))
+            (should-not (memq first-job e-chat--pending-render-jobs))
+            (should (timerp second))
+            (should (memq second e-chat--pending-render-job-timers))
+            (should (= 1 (length e-chat--pending-render-jobs)))
+            (should (eq (e-chat-render-job-owner second-job) 'test-owner))
+            (should (equal (e-chat-render-job-key second-job) "same"))
+            (should (equal (e-chat-render-job-generation second-job) 2))
+            (funcall (timer--function second))
+            (should (equal ran '(second)))
+            (should-not e-chat--pending-render-jobs)
+            (should-not e-chat--pending-render-job-timers)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-stale-activity-redraw-generation-preserves-newer-job ()
   "A stale deferred redraw callback cannot clear a newer pending redraw."
   (let ((buffer (e-chat-test--buffer nil "chat-stale-activity-redraw"))
