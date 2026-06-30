@@ -176,7 +176,7 @@ ESTIMATE-CACHE-KEY is non-nil, reuse only matching keyed cache entries."
     (harness session-id
              &key prefer-token-usage estimate-cache bytes-per-token
              estimate-cache-seconds estimate-cache-key
-             (estimate-context t))
+             (estimate-context t) context-purpose)
   "Return current used tokens for SESSION-ID through HARNESS.
 Fresh provider usage is preferred.  Provider usage before the latest valid
 compaction is ignored and the current model-facing context is estimated."
@@ -199,7 +199,8 @@ compaction is ignored and the current model-facing context is estimated."
                              (not cached-tokens)
                              (not (and prefer-token-usage usage-tokens)))
                     (ignore-errors
-                      (e-harness-context harness session-id)))))
+                      (e-harness-context
+                       harness session-id nil context-purpose)))))
     (or usage-tokens
         cached-tokens
         (and context
@@ -212,7 +213,7 @@ compaction is ignored and the current model-facing context is estimated."
     (harness session-id
              &key prefer-token-usage estimate-cache token-limits
              token-limit-function bytes-per-token estimate-cache-seconds
-             estimate-cache-key (estimate-context t))
+             estimate-cache-key (estimate-context t) context-purpose)
   "Return budget plist for SESSION-ID through HARNESS.
 The plist includes `:model', `:reasoning-effort', `:used-tokens', `:window',
 and `:approximate'."
@@ -236,7 +237,8 @@ and `:approximate'."
                                (not cached-tokens)
                                (not (and prefer-token-usage usage-tokens)))
                       (ignore-errors
-                        (e-harness-context harness session-id))))
+                        (e-harness-context
+                         harness session-id nil context-purpose))))
            (options (or (plist-get context :options)
                         (ignore-errors
                           (e-harness-display-options harness session-id))

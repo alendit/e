@@ -219,6 +219,36 @@
             (reverse (e-harness-messages harness session-id)))))
       (plist-get message :metadata))))
 
+(defun e-org-canvas--context-provider-messages
+    (metadata scope focus visibility)
+  "Return Org Canvas context messages from cached or live state."
+  (let ((instructions (if (eq scope 'document)
+                          e-org-canvas--document-instructions
+                        e-org-canvas--thread-instructions)))
+    (list
+     (list :role 'system
+           :content
+           (string-join
+            (list
+             "Org Canvas mode is active for this session."
+             "Treat the Org buffer as the main interaction surface and primary output target. Put durable results in the Org document as structured Org content. Keep the final assistant message brief."
+             "When editing Org prose, preserve sentence-per-line style: put each sentence on its own physical line and do not hard-wrap sentences to an artificial fill column; let Emacs visual-line/display wrapping handle width."
+             "Use lists and nested sublists for prose itemization. Use tables for short-cell data that benefits from column scanning, not for sentences or paragraphs; when table cells may grow, consider Org table width cookies such as | <20> | to keep columns readable."
+             "Write durable output to document-uri below (the canonical canvas resource); it matches the <canvas> attachment uri. Do not write to the *e-org-canvas:...* / *e-org-canvas-input:...* helper buffers -- they are editor chrome, not the document, and editing them has no effect on the canvas."
+             "Preserve the reader's fold state by default: the user may be mid-read, and collapsing or reflowing the buffer out from under them loses their place. Do not collapse the whole document or otherwise churn visibility as a routine post-edit step. Only change fold state when the user explicitly asks, or when you are deliberately presenting a fresh overview; when you must reveal something, reveal just the relevant subtree with org-canvas actions and leave the rest as the user left it. Editing or reverting can churn fold state as a side effect -- when it does, restore the user's prior visibility (re-reveal the section you changed) rather than collapsing everything."
+             instructions
+             (format "document-uri=%s buffer=%s point=%s"
+                     (plist-get metadata :uri)
+                     (plist-get metadata :buffer-name)
+                     (or (plist-get focus :point) "nil"))
+             (format "heading-path=%s"
+                     (e-org-canvas--format-heading-path
+                      (plist-get focus :heading-path)))
+             (e-org-canvas--focus-summary focus)
+             "Visibility state:"
+             (e-org-canvas--format-visibility-state visibility))
+            "\n")))))
+
 (cl-defun e-org-canvas-context-provider (&key harness session-id _turn-id)
   "Return Org Canvas context for HARNESS SESSION-ID when gated metadata exists."
   (when (and harness session-id (e-org-canvas-session-p harness session-id))
@@ -234,35 +264,25 @@
                            (with-current-buffer buffer
                              (e-org-canvas-capture-focus scope)))
                       (plist-get prompt-metadata :org-canvas-focus)))
-           (instructions (if (eq scope 'document)
-                             e-org-canvas--document-instructions
-                           e-org-canvas--thread-instructions))
            (visibility (and (buffer-live-p buffer)
                             (with-current-buffer buffer
                               (e-org-canvas-visibility-state)))))
-      (list
-       (list :role 'system
-             :content
-             (string-join
-              (list
-               "Org Canvas mode is active for this session."
-               "Treat the Org buffer as the main interaction surface and primary output target. Put durable results in the Org document as structured Org content. Keep the final assistant message brief."
-               "When editing Org prose, preserve sentence-per-line style: put each sentence on its own physical line and do not hard-wrap sentences to an artificial fill column; let Emacs visual-line/display wrapping handle width."
-               "Use lists and nested sublists for prose itemization. Use tables for short-cell data that benefits from column scanning, not for sentences or paragraphs; when table cells may grow, consider Org table width cookies such as | <20> | to keep columns readable."
-               "Write durable output to document-uri below (the canonical canvas resource); it matches the <canvas> attachment uri. Do not write to the *e-org-canvas:...* / *e-org-canvas-input:...* helper buffers -- they are editor chrome, not the document, and editing them has no effect on the canvas."
-               "Preserve the reader's fold state by default: the user may be mid-read, and collapsing or reflowing the buffer out from under them loses their place. Do not collapse the whole document or otherwise churn visibility as a routine post-edit step. Only change fold state when the user explicitly asks, or when you are deliberately presenting a fresh overview; when you must reveal something, reveal just the relevant subtree with org-canvas actions and leave the rest as the user left it. Editing or reverting can churn fold state as a side effect -- when it does, restore the user's prior visibility (re-reveal the section you changed) rather than collapsing everything."
-               instructions
-               (format "document-uri=%s buffer=%s point=%s"
-                       (plist-get metadata :uri)
-                       (plist-get metadata :buffer-name)
-                       (or (plist-get focus :point) "nil"))
-               (format "heading-path=%s"
-                       (e-org-canvas--format-heading-path
-                        (plist-get focus :heading-path)))
-               (e-org-canvas--focus-summary focus)
-               "Visibility state:"
-               (e-org-canvas--format-visibility-state visibility))
-              "\n"))))))
+      (e-org-canvas--context-provider-messages
+       metadata scope focus visibility))))
+
+(cl-defun e-org-canvas-context-snapshot-provider
+    (&key harness session-id _turn-id)
+  "Return cached Org Canvas context for optional status/snapshot callers."
+  (when (and harness session-id (e-org-canvas-session-p harness session-id))
+    (let* ((metadata (e-org-canvas-session-metadata harness session-id))
+           (prompt-metadata (e-org-canvas--last-prompt-metadata
+                             harness session-id))
+           (focus (plist-get prompt-metadata :org-canvas-focus))
+           (scope (or (plist-get prompt-metadata :org-canvas-scope)
+                      (plist-get focus :scope)
+                      'thread)))
+      (e-org-canvas--context-provider-messages
+       metadata scope focus nil))))
 
 (defun e-org-canvas--require-tool-session (harness session-id)
   "Return the Org canvas buffer for HARNESS SESSION-ID or signal."
@@ -487,7 +507,8 @@ CONTEXT carries :harness and :session-id from the active turn."
           :name 'org-canvas
           :priority 118
           :cache-placement 'dynamic-context
-          :build #'e-org-canvas-context-provider))
+          :build #'e-org-canvas-context-provider
+          :snapshot-build #'e-org-canvas-context-snapshot-provider))
    :actions (e-org-canvas--actions)))
 
 (defun e-org-canvas-layer-create ()

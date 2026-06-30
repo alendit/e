@@ -29,7 +29,8 @@
   name
   (priority 200)
   build
-  (cache-placement 'stable-context))
+  (cache-placement 'stable-context)
+  snapshot-build)
 
 (defun e-context-name (strategy)
   "Return STRATEGY name."
@@ -85,6 +86,19 @@
 
 (put 'e-context-provider--build-function 'compiler-macro nil)
 
+(defun e-context-provider--snapshot-build-function (provider)
+  "Return PROVIDER snapshot build function, or nil."
+  (unless (e-context-provider-p provider)
+    (signal 'wrong-type-argument (list 'e-context-provider-p provider)))
+  (and (>= (length provider) 6)
+       (e-context-provider--snapshot-build provider)))
+
+(put 'e-context-provider--snapshot-build-function 'compiler-macro nil)
+
+(defun e-context-provider--snapshot-purpose-p (purpose)
+  "Return non-nil when PURPOSE requests optional snapshot context."
+  (memq purpose '(status snapshot optional)))
+
 (defun e-context-segment-fingerprint (messages)
   "Return deterministic fingerprint for backend-neutral MESSAGES."
   (secure-hash 'sha256 (prin1-to-string messages)))
@@ -96,16 +110,33 @@
         :fingerprint (e-context-segment-fingerprint messages)
         :messages messages))
 
-(cl-defun e-context-provider-build (provider &key harness session-id turn-id)
+(cl-defun e-context-provider-build
+    (provider &key harness session-id turn-id context-purpose)
   "Build read-only context messages with PROVIDER.
-HARNESS, SESSION-ID, and TURN-ID identify the current turn."
-  (unless (functionp (e-context-provider--build-function provider))
-    (signal 'wrong-type-argument
-            (list 'functionp (e-context-provider--build-function provider))))
-  (funcall (e-context-provider--build-function provider)
-           :harness harness
-           :session-id session-id
-           :turn-id turn-id))
+HARNESS, SESSION-ID, and TURN-ID identify the current turn.
+CONTEXT-PURPOSE may be `status', `snapshot', or `optional' for non-critical
+callers that must avoid live dynamic context work.  Dynamic providers without an
+explicit snapshot builder are skipped for those optional purposes."
+  (let ((snapshot-build (e-context-provider--snapshot-build-function provider))
+        (build (e-context-provider--build-function provider)))
+    (cond
+     ((and (e-context-provider--snapshot-purpose-p context-purpose)
+           (functionp snapshot-build))
+      (funcall snapshot-build
+               :harness harness
+               :session-id session-id
+               :turn-id turn-id))
+     ((and (e-context-provider--snapshot-purpose-p context-purpose)
+           (eq (e-context-provider-cache-placement provider)
+               'dynamic-context))
+      nil)
+     ((functionp build)
+      (funcall build
+               :harness harness
+               :session-id session-id
+               :turn-id turn-id))
+     (t
+      (signal 'wrong-type-argument (list 'functionp build))))))
 
 (cl-defun e-context-build
     (strategy &key sessions session-id options prefix-messages prefix-segments)

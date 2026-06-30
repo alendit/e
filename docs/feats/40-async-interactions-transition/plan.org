@@ -74,13 +74,14 @@ Partly implemented:
 - Shared context-status text accepts caller-owned formatted snapshot caches, can serve visibly stale or cache-only snapshots for optional status surfaces, and chat mode-line status uses a semantic snapshot key so repeated refreshes can avoid context rebuilding and model-window lookup.
 - Org Canvas mode-line status uses the shared formatted snapshot cache with a semantic key, so repeated refreshes outside the chat shell avoid budget/status rebuilding while still updating on token usage and session state changes.
 - Active-session picker rows use a picker-local formatted status snapshot cache keyed by session/model/layer/token-usage state, so repeated candidate rendering avoids rebuilding context status while the picker is open.
+- Optional/status context assembly now has an explicit context-purpose path: context providers can declare snapshot builders, dynamic providers without a snapshot builder are skipped for optional status context, Org Canvas status context reads cached prompt focus instead of live Org buffer focus/visibility, and project-local status context reads cached capability snapshots instead of loading extension files on a cold cache.
 
 Not yet implemented in the planned sense:
 
 - Explicit MCP batch call wrappers still have synchronous waits for non-interactive batch/test callers, but marked interactive hot paths now fail before helper transport or HTTP primitives run. Generated model-facing MCP tool execution, interactive capability providers, interactive refresh, activation, and catalog discovery start APIs no longer wait, and async MCP transport starts now have bounded fan-out.
 - A generic =raw-result://= store now covers large outputs without a session tmp owner, mixed-owner cache invalidation can dispatch cleanup across both session-tmp and generic raw-result references, and the generic store has configured max-age expiry cleanup.
 - There is no full cooperative presentation render scheduler covering every presentation job, though deferred Markdown has a configurable line budget and the current deferred Markdown, activity/progress redraw, and loaded-session backfill jobs are cancellable, tracked through the shared chat render-job registry with owner/key/session/block/generation metadata, and coalesced by owner/key where they supersede older work.
-- Context budget estimates and shared context-status text now support semantic cache keys plus explicit stale/cache-only snapshot reads; chat mode-line, active-session picker rows, and Org Canvas status use formatted-status snapshots, active-session rows can reuse stale snapshots without rebuilding, but the broader context/status snapshot contract for turn prep and any other shells remains open.
+- Context budget estimates and shared context-status text now support semantic cache keys plus explicit stale/cache-only snapshot reads; chat mode-line, active-session picker rows, and Org Canvas status use formatted-status snapshots, active-session rows can reuse stale snapshots without rebuilding, and optional context assembly now routes through provider snapshot builders for status purpose, but the broader correctness-critical turn-prep boundary remains open.
 - Chat open/resume now uses the chunked replay scheduler for unloaded indexed sessions, a bounded initial tail for large loaded sessions, and timer-driven progressive backfill for older loaded messages, but the complete queued-write critical/derived durability model remains only partially implemented beyond current generation, stale-index rebuild, partial-failure retry, and critical-before-index flush-order coverage.
 - Nested cheap tool calls still use synchronous return semantics; long-class nested calls now fail fast with model guidance in both harness-owned and core default nested executors instead of waiting.
 - The final obsolete sync API sweep is not done, though MCP, base/web/chat/tmp helper, tool execution, harness prompt/wait, provider adapter, backend stream, and loop run-turn sync wrappers now reject marked interactive hot paths before they can wait.
@@ -501,11 +502,11 @@ Purpose: keep status, mode-line, and turn-start context prep from doing hidden h
 
 Work:
 
-1. Define context providers as cheap snapshot providers unless they explicitly declare async refresh behavior.
+1. Define context providers as cheap snapshot providers unless they explicitly declare async refresh behavior. Initial support adds an optional =context-purpose= path plus explicit provider snapshot builders for optional status/snapshot context.
 2. Move network/process/recursive/large-buffer work into async refresh jobs.
 3. Replace Anthropic model-info sync lookup with async prefetch plus stale cache or static fallback. Implemented for chat status through cache-only lookup plus async catalog refresh.
 4. Cache context budget estimates and invalidate only on relevant transcript, model, option, layer, or compaction changes. Initial chat mode-line estimate invalidation is implemented with semantic cache keys, chat mode-line formatted status now reuses a keyed status snapshot that includes latest token-usage activity, and optional status surfaces can explicitly choose visibly stale or cache-only snapshot reads.
-5. Make Org Canvas and project-local context providers read cached focus and capability snapshots.
+5. Make Org Canvas and project-local context providers read cached focus and capability snapshots. Implemented for optional/status context: Org Canvas uses cached prompt focus, and project-local reads only warmed discovered-capability snapshots without loading extension files on a cold cache.
 6. Split correctness-critical turn context from status-only or optional enrichment context.
 7. Ensure turn startup builds or version-checks correctness-critical context exactly where needed.
 

@@ -587,6 +587,69 @@ SOURCE overrides the default layer source."
               (should (plist-get capability :readable)))))
       (delete-directory project t))))
 
+(ert-deftest e-project-local-test-status-context-does-not-load-cold-extensions ()
+  "Optional project-local context reads only cached capability snapshots."
+  (let* ((project (make-temp-file "e-project-local-status-cold-" t))
+         (e-project-local-allowed-roots (list project))
+         (e-project-local-test--unexpected-inspect-load nil)
+         (capability (e-project-local--dynamic-capability project))
+         (provider (car (e-capability-context-providers capability))))
+    (unwind-protect
+        (progn
+          (clrhash e-project-local--capability-snapshots)
+          (e-project-local-test--make-capability
+           project 'topic
+           (mapconcat #'identity
+                      '("(setq e-project-local-test--unexpected-inspect-load t)"
+                        "(e-project-capability-register"
+                        " :id 'topic"
+                        " :factory (lambda (_dir)"
+                        "            (e-capability-create :id 'topic :name \"Topic\")))")
+                      "\n"))
+          (should-not
+           (e-context-provider-build provider :context-purpose 'status))
+          (should-not e-project-local-test--unexpected-inspect-load))
+      (delete-directory project t))))
+
+(ert-deftest e-project-local-test-status-context-reuses_cached_capabilities ()
+  "Optional project-local context reuses warmed capability snapshots."
+  (let* ((project (make-temp-file "e-project-local-status-warm-" t))
+         (e-project-local-allowed-roots (list project))
+         (e-project-local-test--unexpected-inspect-load nil)
+         (capability (e-project-local--dynamic-capability project))
+         (provider (car (e-capability-context-providers capability))))
+    (unwind-protect
+        (progn
+          (clrhash e-project-local--capability-snapshots)
+          (e-project-local-test--make-capability
+           project 'topic
+           (mapconcat #'identity
+                      '("(setq e-project-local-test--unexpected-inspect-load t)"
+                        "(e-project-capability-register"
+                        " :id 'topic"
+                        " :factory (lambda (directory)"
+                        "            (e-capability-create"
+                        "             :id 'topic"
+                        "             :name \"Topic\""
+                        "             :instructions"
+                        "             (format \"Cached rooted at %s\" directory))))")
+                      "\n"))
+          (should (e-context-provider-build provider))
+          (should e-project-local-test--unexpected-inspect-load)
+          (setq e-project-local-test--unexpected-inspect-load nil)
+          (let ((messages (e-context-provider-build
+                           provider
+                           :context-purpose 'status)))
+            (should (string-match-p
+                     "Cached rooted"
+                     (mapconcat
+                      (lambda (message)
+                        (or (plist-get message :content) ""))
+                      messages
+                      "\n")))
+            (should-not e-project-local-test--unexpected-inspect-load)))
+      (delete-directory project t))))
+
 (ert-deftest e-project-local-test-prime-action-loads-allowed-extensions ()
   "The project-local prime action explicitly loads trusted extension files."
   (let* ((project (make-temp-file "e-project-local-action-prime-" t))

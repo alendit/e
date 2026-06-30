@@ -105,6 +105,9 @@ can detect they are running inside a sanctioned project layer load.")
 (defvar e-project-local--extensionless-load-roots nil
   "Trusted project-local roots whose explicit `.el' loads should be extensionless.")
 
+(defvar e-project-local--capability-snapshots (make-hash-table :test 'equal)
+  "Cached discovered project-local capabilities keyed by normalized root.")
+
 (cl-defstruct (e-project-local-registration
                (:constructor e-project-local-registration-create))
   id
@@ -569,9 +572,17 @@ shells are used."
   (let* ((root (e-skills-normalize-directory directory))
          (layers (e-project-local--discover-layers root))
          (capabilities (e-project-local--discover-capabilities root)))
-    (append
-     (apply #'append (mapcar #'e-layer-capabilities layers))
-     capabilities)))
+    (let ((discovered (append
+                       (apply #'append (mapcar #'e-layer-capabilities layers))
+                       capabilities)))
+      (puthash root discovered e-project-local--capability-snapshots)
+      discovered)))
+
+(defun e-project-local--cached-capabilities (directory)
+  "Return cached project-local capabilities for DIRECTORY, or nil."
+  (and directory
+       (gethash (e-skills-normalize-directory directory)
+                e-project-local--capability-snapshots)))
 
 (defun e-project-local--context-directory (fallback context)
   "Return session project root from CONTEXT, falling back to FALLBACK."
@@ -693,6 +704,15 @@ shells are used."
           context)
    :messages))
 
+(defun e-project-local--context-snapshot-messages (fallback &rest context)
+  "Return cached project-local context messages for optional CONTEXT."
+  (let* ((directory (e-project-local--context-directory fallback context))
+         (capabilities (e-project-local--cached-capabilities directory)))
+    (when capabilities
+      (plist-get
+       (apply #'e-capabilities-context capabilities context)
+       :messages))))
+
 (defun e-project-local--run-context-hooks
     (fallback point value context)
   "Run project-local hooks for POINT in CONTEXT, using FALLBACK when needed."
@@ -757,7 +777,12 @@ shells are used."
        :build (lambda (&rest context)
                 (apply #'e-project-local--context-messages
                        fallback
-                       context))))
+                       context))
+       :snapshot-build
+       (lambda (&rest context)
+         (apply #'e-project-local--context-snapshot-messages
+                fallback
+                context))))
      :hooks
      (list
       (e-hook-create

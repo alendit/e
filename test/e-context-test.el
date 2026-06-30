@@ -214,6 +214,34 @@
     (should (eq (e-context-provider-cache-placement provider)
                 'stable-context))))
 
+(ert-deftest e-context-test-provider-snapshot-build-serves-optional-context ()
+  "Optional context uses a provider's explicit snapshot builder."
+  (let ((provider (e-context-provider-create
+                   :name 'provider
+                   :cache-placement 'dynamic-context
+                   :build (lambda (&rest _args)
+                            '((:role system :content "live")))
+                   :snapshot-build
+                   (lambda (&rest _args)
+                     '((:role system :content "snapshot"))))))
+    (should (equal (e-context-provider-build provider)
+                   '((:role system :content "live"))))
+    (should (equal (e-context-provider-build
+                    provider
+                    :context-purpose 'status)
+                   '((:role system :content "snapshot"))))))
+
+(ert-deftest e-context-test-dynamic-provider-without-snapshot-skips-optional-context ()
+  "Optional context skips dynamic providers without a snapshot path."
+  (let ((provider (e-context-provider-create
+                   :name 'provider
+                   :cache-placement 'dynamic-context
+                   :build (lambda (&rest _args)
+                            (error "live provider should not run")))))
+    (should-not (e-context-provider-build
+                 provider
+                 :context-purpose 'status))))
+
 (ert-deftest e-context-test-rejects-invalid-provider-cache-placement ()
   "Context provider cache placement is limited to known prompt regions."
   (let ((provider (e-context-provider-create

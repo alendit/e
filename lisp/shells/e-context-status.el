@@ -188,7 +188,7 @@ using STALE-PREFIX or `e-context-status-stale-snapshot-prefix'."
              estimate-cache-key snapshot-cache snapshot-cache-key
              allow-stale-snapshot snapshot-cache-only stale-snapshot-prefix
              token-limits token-limit-function bytes-per-token
-             (estimate-context t))
+             (estimate-context t) (context-purpose 'status))
   "Return context-state status text for SESSION-ID through HARNESS.
 PREFIX is the leading label.  When PREFER-TOKEN-USAGE is non-nil and fresh
 provider usage exists, skip the expensive context-token estimate.
@@ -207,7 +207,9 @@ TOKEN-LIMIT-FUNCTION, when non-nil, is called with the model id and should
 return its context window in tokens or nil; it takes precedence over the
 static TOKEN-LIMITS alias.  TOKEN-LIMITS and BYTES-PER-TOKEN override the
 configured defaults.
-When ESTIMATE-CONTEXT is nil, avoid building full model-facing context."
+When ESTIMATE-CONTEXT is nil, avoid building full model-facing context.
+CONTEXT-PURPOSE defaults to `status', so optional status callers use provider
+snapshot builders and skip dynamic providers that have no snapshot path."
   (e-context-status--profile-call
    'context-status.text
    (list :session-id session-id
@@ -221,7 +223,8 @@ When ESTIMATE-CONTEXT is nil, avoid building full model-facing context."
                          :allow-stale-snapshot
                          (and allow-stale-snapshot t)
                          :snapshot-cache-only
-                         (and snapshot-cache-only t)))
+                         (and snapshot-cache-only t)
+                         :context-purpose context-purpose))
    (lambda ()
      (or (e-context-status-snapshot-text
           snapshot-cache
@@ -242,7 +245,8 @@ When ESTIMATE-CONTEXT is nil, avoid building full model-facing context."
                             :estimate-cache-seconds
                             e-context-status-estimate-cache-seconds
                             :estimate-cache-key estimate-cache-key
-                            :estimate-context estimate-context)))
+                            :estimate-context estimate-context
+                            :context-purpose context-purpose)))
               (let ((model (plist-get status :model))
                     (effort (plist-get status :reasoning-effort))
                     (used-tokens (plist-get status :used-tokens))

@@ -237,16 +237,18 @@ CAPABILITY."
   (e-hooks-register-list registry (e-capability-hooks capability)))
 
 (cl-defun e-capabilities--provider-messages
-    (provider &key harness session-id turn-id)
+    (provider &key harness session-id turn-id context-purpose)
   "Return context messages from PROVIDER for the current turn.
-HARNESS, SESSION-ID, and TURN-ID identify the active turn."
+HARNESS, SESSION-ID, and TURN-ID identify the active turn.
+CONTEXT-PURPOSE may request optional snapshot context."
   (cond
    ((e-context-provider-p provider)
     (e-context-provider-build
      provider
      :harness harness
      :session-id session-id
-     :turn-id turn-id))
+     :turn-id turn-id
+     :context-purpose context-purpose))
    ((functionp provider)
     (funcall provider
              :harness harness
@@ -295,9 +297,10 @@ HARNESS, SESSION-ID, and TURN-ID identify the active turn."
              until (/= left-item right-item))))
 
 (cl-defun e-capabilities--context-fragments
-    (capabilities &key harness session-id turn-id)
+    (capabilities &key harness session-id turn-id context-purpose)
   "Return sorted context fragments contributed by CAPABILITIES.
-HARNESS, SESSION-ID, and TURN-ID are passed to context providers."
+HARNESS, SESSION-ID, TURN-ID, and CONTEXT-PURPOSE are passed to context
+providers."
   (let ((fragments nil)
         (capability-index 0))
     (dolist (capability capabilities)
@@ -321,7 +324,8 @@ HARNESS, SESSION-ID, and TURN-ID are passed to context providers."
                               provider
                               :harness harness
                               :session-id session-id
-                              :turn-id turn-id))
+                              :turn-id turn-id
+                              :context-purpose context-purpose))
               (push (list :cache-placement
                           (e-capabilities--provider-cache-placement provider)
                           :priority (e-capabilities--provider-priority provider)
@@ -351,14 +355,16 @@ HARNESS, SESSION-ID, and TURN-ID are passed to context providers."
    :messages (list (plist-get fragment :message))))
 
 (cl-defun e-capabilities-context
-    (capabilities &key harness session-id turn-id)
+    (capabilities &key harness session-id turn-id context-purpose)
   "Return context messages and segment metadata from CAPABILITIES.
-HARNESS, SESSION-ID, and TURN-ID are passed to context providers."
+HARNESS, SESSION-ID, TURN-ID, and CONTEXT-PURPOSE are passed to context
+providers."
   (let ((fragments (e-capabilities--context-fragments
                     capabilities
                     :harness harness
                     :session-id session-id
-                    :turn-id turn-id)))
+                    :turn-id turn-id
+                    :context-purpose context-purpose)))
     (list :messages
           (mapcar (lambda (fragment) (plist-get fragment :message))
                   fragments)
@@ -366,14 +372,16 @@ HARNESS, SESSION-ID, and TURN-ID are passed to context providers."
           (mapcar #'e-capabilities--fragment-segment fragments))))
 
 (cl-defun e-capabilities-context-messages
-    (capabilities &key harness session-id turn-id)
+    (capabilities &key harness session-id turn-id context-purpose)
   "Return backend-neutral context messages contributed by CAPABILITIES.
-HARNESS, SESSION-ID, and TURN-ID are passed to context providers."
+HARNESS, SESSION-ID, TURN-ID, and CONTEXT-PURPOSE are passed to context
+providers."
   (plist-get (e-capabilities-context
               capabilities
               :harness harness
               :session-id session-id
-              :turn-id turn-id)
+              :turn-id turn-id
+              :context-purpose context-purpose)
              :messages))
 
 (defun e-capabilities-action (capability action)

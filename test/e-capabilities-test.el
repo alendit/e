@@ -254,6 +254,35 @@
                      "stable provider"
                      "dynamic provider")))))
 
+(ert-deftest e-capabilities-test-context-purpose-uses-provider-snapshots ()
+  "Optional context aggregation uses explicit provider snapshots."
+  (let* ((snapshot-provider
+          (e-context-provider-create
+           :name 'snapshot
+           :cache-placement 'dynamic-context
+           :build (lambda (&rest _args)
+                    '((:role system :content "live provider")))
+           :snapshot-build
+           (lambda (&rest _args)
+             '((:role system :content "snapshot provider")))))
+         (skipped-provider
+          (e-context-provider-create
+           :name 'skipped
+           :cache-placement 'dynamic-context
+           :build (lambda (&rest _args)
+                    (error "dynamic provider should not run"))))
+         (capability
+          (e-capability-create
+           :id 'context
+           :context-providers (list snapshot-provider skipped-provider)))
+         (messages
+          (e-capabilities-context-messages
+           (list capability)
+           :context-purpose 'status)))
+    (should (equal (mapcar (lambda (message) (plist-get message :content))
+                           messages)
+                   '("snapshot provider")))))
+
 (ert-deftest e-capabilities-test-context-priority_preserves_tie_order ()
   "Equal priorities preserve capability traversal and provider message order."
   (let* ((provider

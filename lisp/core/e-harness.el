@@ -1318,20 +1318,25 @@ compaction) where exposing tools risks a tool-call instead of a reply."
                      (signal (car err) (cdr err))))))
               :on-error on-error)))))))))
 
-(defun e-harness-context (harness session-id &optional turn-id)
+(defun e-harness-context
+    (harness session-id &optional turn-id context-purpose)
   "Return backend-neutral context for SESSION-ID in HARNESS.
-TURN-ID is passed to active capability context providers when present."
+TURN-ID is passed to active capability context providers when present.
+CONTEXT-PURPOSE may be `status', `snapshot', or `optional' for callers that
+must not perform correctness-critical turn context work."
   (e-harness--profile-call
    'harness.context
    (list :session-id session-id
-         :turn-id turn-id)
+         :turn-id turn-id
+         :metadata (list :context-purpose context-purpose))
    (lambda ()
      (let ((capability-context
             (e-capabilities-context
              (e-harness-effective-capabilities harness session-id turn-id)
              :harness harness
              :session-id session-id
-             :turn-id turn-id)))
+             :turn-id turn-id
+             :context-purpose context-purpose)))
        (let ((context
               (e-context-build
                (e-harness-context-strategy harness)

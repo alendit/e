@@ -120,6 +120,28 @@
                      321))
       (should (= context-calls 0)))))
 
+(ert-deftest e-context-budget-test-estimate-context-passes_context_purpose ()
+  "Budget estimates pass optional context purpose to harness context."
+  (let* ((store (e-session-store-create))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :sessions store
+                   :default-options
+                   '(:model "gpt-5.5" :reasoning-effort "high")))
+         seen-purpose)
+    (e-session-create store :id "budget-purpose")
+    (cl-letf (((symbol-function 'e-harness-context)
+               (lambda (_harness _session-id _turn-id context-purpose)
+                 (setq seen-purpose context-purpose)
+                 '(:messages ((:role user :content "purpose context"))
+                   :options (:model "gpt-5.5" :reasoning-effort "high")))))
+      (let ((status (e-context-budget-status
+                     harness "budget-purpose"
+                     :context-purpose 'status
+                     :token-limits '(("gpt-5.5" . 1000)))))
+        (should (eq seen-purpose 'status))
+        (should (plist-get status :approximate))))))
+
 (ert-deftest e-context-budget-test-estimate-cache-key-mismatch-recomputes ()
   "Estimate cache keys force recomputation even when TTL is fresh."
   (let* ((store (e-session-store-create))

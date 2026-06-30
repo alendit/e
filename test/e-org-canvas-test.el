@@ -869,6 +869,38 @@
     (should (eq (e-context-provider-cache-placement provider)
                 'dynamic-context))))
 
+(ert-deftest e-org-canvas-test-status-context-uses-cached-focus-snapshot ()
+  "Optional Org Canvas context avoids live focus capture."
+  (let ((harness (e-org-canvas-test--harness t)))
+    (with-temp-buffer
+      (rename-buffer "org-canvas-snapshot-context" t)
+      (org-mode)
+      (insert "* Live heading\nBody\n")
+      (e-harness-create-session harness :id "org")
+      (e-org-canvas--mark-session
+       harness "org" (current-buffer) :scope 'thread :target-folder nil)
+      (e-session-append-message
+       (e-harness-sessions harness)
+       "org"
+       '(:role user
+         :content "Use cached focus."
+         :metadata (:org-canvas-scope thread
+                    :org-canvas-focus
+                    (:scope thread
+                     :point 42
+                     :heading-path ("Cached heading")))))
+      (cl-letf (((symbol-function 'e-org-canvas-capture-focus)
+                 (lambda (&rest _args)
+                   (error "status context should use cached focus"))))
+        (let* ((context (e-harness-context harness "org" nil 'status))
+               (content (mapconcat
+                         (lambda (message)
+                           (or (plist-get message :content) ""))
+                         (plist-get context :messages)
+                         "\n")))
+          (should (string-match-p "point=42" content))
+          (should (string-match-p "Cached heading" content)))))))
+
 (ert-deftest e-org-canvas-test-document-context-uses-whole-document-scope ()
   "Document-scope context asks the model to consider the full Org document."
   (let ((harness (e-org-canvas-test--harness t)))
