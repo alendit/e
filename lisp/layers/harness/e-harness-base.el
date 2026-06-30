@@ -16,6 +16,7 @@
 (require 'e-layers)
 (require 'e-raw-results)
 (require 'e-session-tmp-resources)
+(require 'e-raw-result-cleanup)
 (require 'e-tool-output-truncation)
 
 (defconst e-harness-base-instructions

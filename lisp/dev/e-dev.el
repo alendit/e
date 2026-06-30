@@ -125,6 +125,7 @@
                   "lisp/layers/base/e-base.el"
                   "lisp/core/e-raw-results.el"
                   "lisp/layers/harness/e-session-tmp-resources.el"
+                  "lisp/layers/harness/e-raw-result-cleanup.el"
                   "lisp/layers/harness/e-tool-output-truncation.el"
                   "lisp/layers/harness/e-harness-base.el"
                   "lisp/layers/emacs/e-elisp-job.el"
