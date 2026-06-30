@@ -216,7 +216,7 @@ Status: in progress.
 ** Scope reviewed
 
 - Added =e-chat-session-compact-start= as the chat-session action surface for starting harness compaction without waiting for the backend summary.
-- Kept =e-chat-session-compact= as a synchronous compatibility wrapper for current unconverted callers.
+- Initially kept =e-chat-session-compact= as a synchronous compatibility wrapper for current unconverted callers; a later Phase 4 slice removed it after =chat-session :compact= moved to async action start.
 - Converted manual chat and Org Canvas compaction commands to call =e-chat-session-compact-start=.
 - Left the session compaction tool/action compatibility path for a later API cleanup slice.
 - Added focused coverage proving the chat-session start API returns a request before the delayed summary completes, and adjusted chat/Org Canvas command tests to expect start semantics.
@@ -2081,3 +2081,51 @@ emacsclient --eval "(progn (load-file \"/private/tmp/e-chat-active-session-statu
 #+end_src
 
 Result: returned =(:first "  Live Picker Status                                  1 msg  ctx gpt-5.5/high ~13% (~123/1k tok)" :second "  Live Picker Status                                  1 msg  ctx gpt-5.5/high ~13% (~123/1k tok)" :calls 1 :same t)=, confirming repeated live active-session row rendering reused the formatted snapshot.
+
+* Phase 4 Chat Session Compact Action Async Slice Review
+
+Status: complete.
+
+** Scope reviewed
+
+- Removed the synchronous =e-chat-session-compact= wrapper that waited on =accept-process-output=.
+- Rewired =chat-session :compact= to use an async action =:start= adapter around =e-chat-session-compact-start=.
+- Preserved the historical direct action lookup contract by exposing =e-chat-session-compact-start= as the action handler.
+
+** Verification
+
+#+begin_src sh
+rtk eldev test -f test/e-chat-session-test.el -B e-chat-session-test-compact-start-returns-before-summary e-chat-session-test-compact-action-starts-asynchronously e-chat-session-test-capability-actions
+#+end_src
+
+Result: passed the focused compact-start, compact action, and capability action descriptor tests.
+
+#+begin_src sh
+rtk eldev test -f test/e-chat-session-test.el
+#+end_src
+
+Result: passed all 12 chat-session capability tests.
+
+#+begin_src sh
+rtk eldev test -f test/e-chat-test.el -B e-chat-test-mid-turn-compact-session-renders-visible-message e-chat-test-compact-session-command-renders_activity
+#+end_src
+
+Result: passed after rerunning serially; an earlier parallel Eldev run hit a lock conflict before tests started.
+
+#+begin_src sh
+rtk eldev emacs --batch --eval "(progn (setq byte-compile-error-on-warn t) (dolist (file '(\"lisp/layers/chat/e-chat-session.el\" \"test/e-chat-session-test.el\")) (byte-compile-file file)))"
+#+end_src
+
+Result: passed for the touched chat-session module and tests.
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Result: returned ="/Users/dimitrivorona/projects/elisp/e/"=, so the running Emacs loaded the changed chat-session action code.
+
+#+begin_src sh
+emacsclient --eval "(progn (load-file \"/private/tmp/e-chat-session-compact-action-probe.el\") e-chat-session-compact-action-probe-result)"
+#+end_src
+
+Result: returned =(:status started :initial-compactions 0 :finish-captured t :final-compactions 1 :summary "Live action summary." ...)=, confirming the live =chat-session :compact= action returned before compaction completion and finished through callbacks.

@@ -35,6 +35,7 @@ Implemented:
 - Synchronous batch tool execution rejects long async tools while an interactive hot-path guard is active, preventing the batch API from bypassing the async start contract in guarded UI paths.
 - Capability actions support async =:start= dispatch with started/finished/failed activity events.
 - The session compaction action starts through =e-harness-compact-session-start= instead of waiting on the synchronous compaction wrapper.
+- =chat-session :compact= now uses an async action =:start= adapter around =e-chat-session-compact-start=, and the old synchronous =e-chat-session-compact= wrapper was removed.
 - Chat activity presentation renders action started/finished/failed events in the settled turn summary and navigable expanded activity rows.
 - The Phase 1 review records focused tests, compile checks, and a live reload.
 

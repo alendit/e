@@ -95,25 +95,6 @@ METADATA is caller-provided turn activity metadata."
    :on-done on-done
    :on-error on-error))
 
-(cl-defun e-chat-session-compact
-    (harness session-id &key instructions keep-recent-tokens
-             allow-active-turn turn-id)
-  "Compact SESSION-ID through HARNESS synchronously."
-  (let (record failure)
-    (e-chat-session-compact-start
-     harness session-id
-     :instructions instructions
-     :keep-recent-tokens keep-recent-tokens
-     :allow-active-turn allow-active-turn
-     :turn-id turn-id
-     :on-done (lambda (value) (setq record value))
-     :on-error (lambda (err) (setq failure err)))
-    (while (not (or record failure))
-      (accept-process-output nil 0.01))
-    (when failure
-      (signal (car failure) (cdr failure)))
-    record))
-
 (defun e-chat-session-rename (harness session-id name)
   "Rename SESSION-ID to NAME through HARNESS session storage."
   (e-session-rename (e-harness-sessions harness) session-id name))
@@ -240,13 +221,27 @@ attachment."
   "Return CONTEXT session id for a chat-session action."
   (plist-get context :session-id))
 
-(defun e-chat-session--action (handler caller &optional parameters)
+(defun e-chat-session--action (handler caller &optional parameters start)
   "Return chat-session action descriptor for HANDLER."
   (e-action-create
    :handler handler
    :caller caller
    :parameters parameters
-   :requires-session t))
+   :requires-session t
+   :start start))
+
+(cl-defun e-chat-session--compact-action-start
+    (context arguments &key on-done on-error &allow-other-keys)
+  "Start chat-session compaction from action CONTEXT and ARGUMENTS."
+  (e-chat-session-compact-start
+   (e-chat-session--action-harness context)
+   (e-chat-session--action-session-id context)
+   :instructions (plist-get arguments :instructions)
+   :keep-recent-tokens (plist-get arguments :keep_recent_tokens)
+   :allow-active-turn (and (plist-get context :turn-id) t)
+   :turn-id (plist-get context :turn-id)
+   :on-done on-done
+   :on-error on-error))
 
 (defun e-chat-session--uri-file-name (uri)
   "Return local filename for file URI, or nil."
@@ -423,21 +418,13 @@ in the next turn's context."
                       (e-chat-session--action-session-id context))))
                   :compact
                   (e-chat-session--action
-                   #'e-chat-session-compact
-                   (lambda (context arguments)
-                     (e-chat-session-compact
-                      (e-chat-session--action-harness context)
-                      (e-chat-session--action-session-id context)
-                      :instructions (plist-get arguments :instructions)
-                      :keep-recent-tokens
-                      (plist-get arguments :keep_recent_tokens)
-                      :allow-active-turn
-                      (and (plist-get context :turn-id) t)
-                      :turn-id (plist-get context :turn-id)))
+                   #'e-chat-session-compact-start
+                   nil
                    '(:type "object"
                      :properties (:instructions (:type "string")
                                   :keep_recent_tokens (:type "integer"))
-                     :required []))
+                     :required [])
+                   #'e-chat-session--compact-action-start)
                   :rename
                   (e-chat-session--action
                    #'e-chat-session-rename

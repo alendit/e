@@ -13,6 +13,7 @@
 
 (require 'ert)
 (require 'e)
+(require 'e-actions)
 (require 'e-backend)
 (require 'e-capabilities)
 (require 'e-chat-session)
@@ -215,6 +216,52 @@
       (should (equal (plist-get record :summary)
                      "Compacted summary.")))))
 
+(ert-deftest e-chat-session-test-compact-action-starts-asynchronously ()
+  "The chat-session compact action starts asynchronously through e-actions."
+  (let* ((backend (e-backend-create
+                   :name 'delayed-action-summary
+                   :start
+                   (cl-function
+                    (lambda (&key messages options on-item on-done
+                                   &allow-other-keys)
+                      (ignore messages options)
+                      (run-at-time
+                       0.05 nil
+                       (lambda ()
+                         (funcall on-item
+                                  '(:type assistant-message
+                                    :content "Action summary."))
+                         (funcall on-done '(:status done))))
+                      (e-backend-request-create
+                       :metadata '(:provider delayed-action-summary))))))
+         (harness (e-harness-create :backend backend))
+         (store (e-harness-sessions harness)))
+    (e-harness-activate-capability harness (e-chat-session-capability-create))
+    (e-harness-create-session harness :id "session-1")
+    (e-session-append-message store "session-1"
+                              '(:role user :content "old"))
+    (e-session-append-message store "session-1"
+                              '(:role assistant :content "old answer"))
+    (e-session-append-message store "session-1"
+                              '(:role user :content "new"))
+    (let ((result
+           (e-actions-call
+            'chat-session
+            :compact
+            '(:keep_recent_tokens 1)
+            (list :harness harness
+                  :session-id "session-1"
+                  :turn-id "turn-compact"))))
+      (should (eq (plist-get result :status) 'started))
+      (should-not (e-session-compactions store "session-1")))
+    (let ((deadline (+ (float-time) 1)))
+      (while (and (not (e-session-compactions store "session-1"))
+                  (< (float-time) deadline))
+        (accept-process-output nil 0.01)))
+    (should (equal (plist-get (car (e-session-compactions store "session-1"))
+                              :summary)
+                   "Action summary."))))
+
 (ert-deftest e-chat-session-test-options-and-context ()
   "Chat-session actions update options and build context preview data."
   (let ((harness (e-harness-create
@@ -242,7 +289,10 @@
     (dolist (action '(:submit :steer :queue :abort :reset :compact :rename
                       :set-model :set-effort
                       :attach-context :detach-context :context))
-      (should (functionp (e-capabilities-action capability action))))))
+      (should (functionp (e-capabilities-action capability action))))
+    (should (functionp
+             (e-action-start
+              (e-capabilities-action-spec capability :compact))))))
 
 (ert-deftest e-chat-session-test-attachments-are-current-state-context ()
   "Canvas attachments are rebuilt from current live buffer state per context."
