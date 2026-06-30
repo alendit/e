@@ -108,6 +108,11 @@ use the asynchronous transcript loader."
   :type 'number
   :group 'e-chat)
 
+(defcustom e-chat-render-work-item-budget 1
+  "Default maximum render work items processed in one scheduler tick."
+  :type 'integer
+  :group 'e-chat)
+
 (defcustom e-chat-details-buffer-name "*e-chat-details*"
   "Buffer name for read-only focused block details."
   :type 'string
@@ -853,6 +858,49 @@ KEY before scheduling the new one."
     (push timer e-chat--pending-render-job-timers)
     timer))
 
+(cl-defun e-chat--schedule-render-work-items
+    (delay items render-item
+           &key budget owner key generation session-id block-id coalesce
+           on-schedule on-finish)
+  "Schedule cooperative rendering for ITEMS.
+RENDER-ITEM is called for each item, up to BUDGET items per scheduler tick.
+Each tick is represented as an ordinary render job with OWNER, KEY, GENERATION,
+SESSION-ID, and BLOCK-ID metadata.  ON-SCHEDULE, when non-nil, receives each
+new timer.  ON-FINISH, when non-nil, runs after the final item."
+  (let ((remaining (copy-sequence items))
+        (budget (if (and (integerp budget) (> budget 0))
+                    budget
+                  (max 1 (or e-chat-render-work-item-budget 1))))
+        run)
+    (cl-labels
+        ((schedule-next ()
+           (let ((timer
+                  (e-chat--schedule-render-job
+                   delay
+                   run
+                   :owner owner
+                   :key key
+                   :generation generation
+                   :session-id session-id
+                   :block-id block-id
+                   :coalesce coalesce)))
+             (setq coalesce nil)
+             (when on-schedule
+               (funcall on-schedule timer))
+             timer)))
+      (setq run
+            (lambda ()
+              (let ((count 0))
+                (while (and remaining (< count budget))
+                  (funcall render-item (pop remaining))
+                  (setq count (1+ count))))
+              (if remaining
+                  (schedule-next)
+                (when on-finish
+                  (funcall on-finish)))))
+      (when remaining
+        (schedule-next)))))
+
 (defvar-local e-chat--mode-line-status nil
   "Current compact e chat status text shown in the mode line.")
 
@@ -1432,8 +1480,20 @@ PROMPT forces completion even when only one/default instance exists."
   (let ((chunk (if (and (integerp e-chat-loaded-session-backfill-chunk-size)
                         (> e-chat-loaded-session-backfill-chunk-size 0))
                    e-chat-loaded-session-backfill-chunk-size
-                 total-count)))
+                total-count)))
     (min total-count (+ current-count chunk))))
+
+(defun e-chat--loaded-session-backfill-counts (rendered-count total-count)
+  "Return queued loaded-session backfill counts from RENDERED-COUNT."
+  (let ((counts nil)
+        (current-count rendered-count))
+    (while (< current-count total-count)
+      (setq current-count
+            (e-chat--loaded-session-next-backfill-count
+             current-count
+             total-count))
+      (push current-count counts))
+    (nreverse counts)))
 
 (defun e-chat--render-loaded-session-messages (messages rendered-count)
   "Render newest RENDERED-COUNT loaded transcript MESSAGES."
@@ -1462,38 +1522,41 @@ PROMPT forces completion even when only one/default instance exists."
     (let ((generation (1+ e-chat--loaded-session-backfill-generation)))
       (setq e-chat--loaded-session-backfill-generation generation)
       (setq e-chat--loaded-session-backfill-timer
-            (e-chat--schedule-render-job
+            (e-chat--schedule-render-work-items
              e-chat-loaded-session-backfill-delay
-             (lambda ()
-               (e-chat--loaded-session-backfill generation))
+             (e-chat--loaded-session-backfill-counts
+              rendered-count
+              total-count)
+             (lambda (next-count)
+               (e-chat--loaded-session-backfill generation next-count))
+             :budget e-chat-render-work-item-budget
              :owner 'loaded-session-backfill
              :key e-chat-session-id
              :generation generation
              :session-id e-chat-session-id
              :block-id 'loaded-session-backfill
-             :coalesce t)))))
+             :coalesce t
+             :on-schedule
+             (lambda (timer)
+               (setq e-chat--loaded-session-backfill-timer timer))
+             :on-finish
+             (lambda ()
+               (setq e-chat--loaded-session-backfill-timer nil)))))))
 
-(defun e-chat--loaded-session-backfill (generation)
-  "Render the next older loaded-session transcript chunk for GENERATION."
+(defun e-chat--loaded-session-backfill (generation next-count)
+  "Render loaded-session transcript through NEXT-COUNT for GENERATION."
   (when (and (derived-mode-p 'e-chat-mode)
              (= generation e-chat--loaded-session-backfill-generation)
              e-chat-harness
              e-chat-session-id)
-    (setq e-chat--loaded-session-backfill-timer nil)
     (let* ((messages (e-harness-messages e-chat-harness e-chat-session-id))
            (total-count (length messages))
-           (current-count (or e-chat--loaded-session-rendered-message-count
-                              total-count))
-           (next-count
-            (e-chat--loaded-session-next-backfill-count
-             current-count
-             total-count))
+           (next-count (min next-count total-count))
            (composer-state (e-chat--capture-composer-state)))
-      (e-chat--clear)
+      (e-chat--clear nil t)
       (let ((inhibit-read-only t))
         (e-chat--render-loaded-session-messages messages next-count))
-      (e-chat--restore-composer-state composer-state)
-      (e-chat--schedule-loaded-session-backfill next-count total-count))))
+      (e-chat--restore-composer-state composer-state))))
 
 (defun e-chat--render-loaded-session-initial ()
   "Render the initial view for the attached loaded session."
@@ -6230,11 +6293,14 @@ signal; route the display to a normal window in that case."
         (format "%s\n%s\n\n" e-chat--title title)
       (concat e-chat--title "\n\n"))))
 
-(defun e-chat--clear (&optional omit-composer)
+(defun e-chat--clear (&optional omit-composer keep-loaded-session-backfill)
   "Clear and initialize the current chat buffer.
-When OMIT-COMPOSER is non-nil, leave the buffer as transcript-only."
+When OMIT-COMPOSER is non-nil, leave the buffer as transcript-only.
+When KEEP-LOADED-SESSION-BACKFILL is non-nil, preserve the current
+loaded-session backfill generation while rebuilding the transcript."
   (e-chat--cancel-pending-command-references)
-  (e-chat--cancel-loaded-session-backfill)
+  (unless keep-loaded-session-backfill
+    (e-chat--cancel-loaded-session-backfill))
   (let ((inhibit-read-only t))
     (e-chat--cancel-pending-markdown-presentation)
     (erase-buffer)

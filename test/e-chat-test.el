@@ -4221,6 +4221,58 @@ the orphaned region and appeared to vanish."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-render-work-items-honor-budget ()
+  "Budgeted render work processes bounded items per scheduler tick."
+  (let ((buffer (e-chat-test--buffer nil "chat-render-work-budget"))
+        (rendered nil)
+        (scheduled nil)
+        (finished nil))
+    (unwind-protect
+        (with-current-buffer buffer
+          (let* ((first
+                  (e-chat--schedule-render-work-items
+                   60
+                   '(one two three)
+                   (lambda (item)
+                     (push item rendered))
+                   :budget 2
+                   :owner 'test-work
+                   :key "budget"
+                   :generation 4
+                   :block-id "work-block"
+                   :on-schedule
+                   (lambda (timer)
+                     (push timer scheduled))
+                   :on-finish
+                   (lambda ()
+                     (setq finished t))))
+                 (first-job (car e-chat--pending-render-jobs)))
+            (should (timerp first))
+            (should (eq (car scheduled) first))
+            (should (eq (e-chat-render-job-owner first-job) 'test-work))
+            (should (equal (e-chat-render-job-key first-job) "budget"))
+            (should (equal (e-chat-render-job-generation first-job) 4))
+            (should (equal (e-chat-render-job-session-id first-job)
+                           "chat-render-work-budget"))
+            (should (equal (e-chat-render-job-block-id first-job)
+                           "work-block"))
+            (funcall (timer--function first))
+            (should (equal (nreverse (copy-sequence rendered))
+                           '(one two)))
+            (should-not finished)
+            (should (= 1 (length e-chat--pending-render-jobs)))
+            (let ((second (car scheduled)))
+              (should (timerp second))
+              (should-not (eq second first))
+              (funcall (timer--function second)))
+            (should (equal (nreverse rendered)
+                           '(one two three)))
+            (should finished)
+            (should-not e-chat--pending-render-jobs)
+            (should-not e-chat--pending-render-job-timers)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-stale-activity-redraw-generation-preserves-newer-job ()
   "A stale deferred redraw callback cannot clear a newer pending redraw."
   (let ((buffer (e-chat-test--buffer nil "chat-stale-activity-redraw"))
@@ -7292,19 +7344,18 @@ The context-window denominator comes from the live provider lookup
                    :default-options
                    '(:model "gpt-5.5" :reasoning-effort "high")))
          (buffer (e-chat-open :harness harness
-                              :session-id "chat-status-refresh"))
-         (context-calls 0)
-         (original-context (symbol-function 'e-harness-context)))
+                               :session-id "chat-status-refresh"))
+         (refresh-calls 0))
     (unwind-protect
         (with-current-buffer buffer
           (e-chat--invalidate-mode-line-context-estimate)
-          (cl-letf (((symbol-function 'e-harness-context)
-                     (lambda (harness session-id)
-                       (setq context-calls (1+ context-calls))
-                       (funcall original-context harness session-id))))
+          (cl-letf (((symbol-function 'e-chat--refresh-mode-line-status)
+                     (lambda (&rest _args)
+                       (setq refresh-calls (1+ refresh-calls))
+                       (setq-local mode-name "refreshed mode line"))))
             (e-chat--set-status "idle" t))
-          (should (> context-calls 0))
-          (should (string-match-p "gpt-5.5/high" mode-name)))
+          (should (= refresh-calls 1))
+          (should (equal mode-name "refreshed mode line")))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
