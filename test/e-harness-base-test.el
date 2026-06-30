@@ -21,10 +21,18 @@
 (require 'e-operations)
 (require 'e-resources)
 
+(declare-function e-harness-base-layer-create "e-harness-base")
+
 (defun e-harness-base-test--tmp-read-method-p (resources)
   "Return non-nil when RESOURCES includes a tmp:// read method."
   (cl-some (lambda (method)
              (equal (e-resource-method-scheme method) "tmp"))
+           (e-resources-methods-for-operation resources e-operation-read)))
+
+(defun e-harness-base-test--raw-result-read-method-p (resources)
+  "Return non-nil when RESOURCES includes a raw-result:// read method."
+  (cl-some (lambda (method)
+             (equal (e-resource-method-scheme method) "raw-result"))
            (e-resources-methods-for-operation resources e-operation-read)))
 
 (defun e-harness-base-test--tmp-operation-ids (resources)
@@ -44,6 +52,7 @@
     (should (equal (mapcar #'e-capability-id
                            (e-layer-capabilities layer))
                    '(harness-base-context
+                     raw-result-resources
                      session-tmp-resources
                      tool-output-truncation)))))
 
@@ -77,13 +86,15 @@
                system-texts)))))
 
 (ert-deftest e-harness-base-test-activation-adds-tmp-resource-and-hook ()
-  "Activating harness-base exposes tmp:// and the post-tool hook."
+  "Activating harness-base exposes raw result resources and the post-tool hook."
   (should (require 'e-harness-base nil t))
   (let* ((harness (e-harness-create
                    :backend (e-backend-fake-create :items nil)))
          (layer (e-harness-base-layer-create)))
     (e-harness-set-intrinsic-capabilities
      harness (e-layer-capabilities layer))
+    (should (e-harness-base-test--raw-result-read-method-p
+             (e-harness-resources harness "session-1" "turn-1")))
     (should (e-harness-base-test--tmp-read-method-p
              (e-harness-resources harness "session-1" "turn-1")))
     (should (equal (e-harness-base-test--tmp-operation-ids
@@ -95,6 +106,8 @@
                             :post-tool-call))
                    '("50-tool-output-truncation")))
     (e-harness-set-intrinsic-capabilities harness nil)
+    (should-not (e-harness-base-test--raw-result-read-method-p
+                 (e-harness-resources harness "session-1" "turn-1")))
     (should-not (e-harness-base-test--tmp-read-method-p
                  (e-harness-resources harness "session-1" "turn-1")))
     (should-not (e-hooks-for-point

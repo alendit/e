@@ -14,6 +14,7 @@
 
 (require 'e-capabilities)
 (require 'e-layers)
+(require 'e-raw-results)
 (require 'e-session-tmp-resources)
 (require 'e-tool-output-truncation)
 
@@ -35,6 +36,7 @@
    :id 'harness-base
    :name "Harness Base"
    :capabilities (list (e-harness-base-context-capability-create)
+                       (e-raw-results-capability-create)
                        (e-session-tmp-capability-create)
                        (e-tool-output-truncation-capability-create))))
 

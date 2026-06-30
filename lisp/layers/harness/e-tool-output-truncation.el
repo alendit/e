@@ -8,7 +8,8 @@
 ;;; Commentary:
 
 ;; A post-tool-call hook that bounds model-visible tool result content and stores
-;; the full output in session tmp resources.
+;; the full output in the owning session tmp resources, or in generic raw-result
+;; resources when no session owns the result.
 
 ;;; Code:
 
@@ -16,6 +17,7 @@
 (require 'subr-x)
 (require 'e-capabilities)
 (require 'e-hooks)
+(require 'e-raw-results)
 (require 'e-session-tmp-resources)
 (require 'e-tools)
 
@@ -95,6 +97,45 @@
                   "call")))
     (format "tool-results/%s/%s-%s.txt" turn-id tool-name call-id)))
 
+(defun e-tool-output-truncation--raw-result-id (relative-name)
+  "Return generic raw-result id for RELATIVE-NAME."
+  (concat "tool-result-"
+          (replace-regexp-in-string "[^A-Za-z0-9._-]" "-" relative-name)))
+
+(defun e-tool-output-truncation--owner (result context)
+  "Return the raw-result owner plist for RESULT in CONTEXT."
+  (list :kind 'tool-result
+        :turn-id (plist-get context :turn-id)
+        :tool-call-id (plist-get result :tool-call-id)
+        :tool-name (plist-get result :name)))
+
+(defun e-tool-output-truncation--write-raw-result
+    (result context content preview)
+  "Persist full tool result CONTENT for RESULT in CONTEXT."
+  (let ((relative-name (e-tool-output-truncation--relative-name result context))
+        (owner (e-tool-output-truncation--owner result context)))
+    (if (and (plist-get context :harness)
+             (stringp (plist-get context :session-id))
+             (not (string-empty-p (plist-get context :session-id))))
+        (e-session-tmp-write-raw-result
+         (plist-get context :harness)
+         (plist-get context :session-id)
+         relative-name
+         content
+         :owner owner
+         :redaction-policy 'none
+         :cleanup-lifetime 'session-tmp
+         :preview preview
+         :preview-bytes e-tool-output-truncation-max-bytes)
+      (e-raw-results-write
+       :id (e-tool-output-truncation--raw-result-id relative-name)
+       :content content
+       :owner owner
+       :redaction-policy 'none
+       :cleanup-lifetime 'raw-result-store
+       :preview preview
+       :preview-bytes e-tool-output-truncation-max-bytes))))
+
 (defun e-tool-output-truncation--notice
     (shown-bytes shown-lines original-bytes original-lines uri)
   "Return truncation notice text."
@@ -133,19 +174,11 @@
                  (shown-bytes (string-bytes preview))
                  (shown-lines (e-tool-output-truncation--line-count preview))
                  (reference
-                  (e-session-tmp-write-raw-result
-                   (plist-get context :harness)
-                   (plist-get context :session-id)
-                   (e-tool-output-truncation--relative-name result context)
+                  (e-tool-output-truncation--write-raw-result
+                   result
+                   context
                    content-text
-                   :owner (list :kind 'tool-result
-                                :turn-id (plist-get context :turn-id)
-                                :tool-call-id (plist-get result :tool-call-id)
-                                :tool-name (plist-get result :name))
-                   :redaction-policy 'none
-                   :cleanup-lifetime 'session-tmp
-                   :preview preview
-                   :preview-bytes e-tool-output-truncation-max-bytes))
+                   preview))
                  (uri (plist-get reference :uri))
                  (notice (e-tool-output-truncation--notice
                           shown-bytes

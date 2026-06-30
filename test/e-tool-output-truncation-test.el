@@ -16,6 +16,7 @@
 (require 'e-backend)
 (require 'e-harness)
 (require 'e-hooks)
+(require 'e-raw-results)
 (require 'e-resources)
 (require 'e-session-tmp-resources)
 
@@ -117,6 +118,43 @@
       (should (equal (plist-get metadata :shown-lines) 2))
       (should (string-prefix-p "one\ntwo\n" (plist-get truncated :content)))
       (should-not (string-prefix-p content (plist-get truncated :content))))))
+
+(ert-deftest e-tool-output-truncation-test-without-session-uses-raw-result-store ()
+  "Large outputs without an owning session are persisted to raw-result://."
+  (should (require 'e-tool-output-truncation nil t))
+  (let* ((directory (make-temp-file "e-tool-raw-results-test-" t))
+         (e-raw-results-directory directory)
+         (result '(:tool-call-id "call-raw"
+                   :name "external"
+                   :status ok
+                   :content "abcdefghijklmnopqrstuvwxyz"
+                   :metadata nil)))
+    (unwind-protect
+        (let* ((e-tool-output-truncation-max-bytes 10)
+               (e-tool-output-truncation-max-lines 2000)
+               (truncated
+                (e-tool-output-truncation-post-tool-call
+                 result
+                 '(:turn-id "turn-raw")))
+               (metadata (plist-get truncated :metadata))
+               (uri (plist-get metadata :tmp-uri))
+               (reference (plist-get metadata :raw-result-reference)))
+          (should (plist-get metadata :truncated))
+          (should (string-prefix-p "raw-result://" uri))
+          (should (equal uri (plist-get reference :uri)))
+          (should (eq (plist-get reference :storage) 'raw-result-store))
+          (should (equal (plist-get reference :cleanup-lifetime)
+                         'raw-result-store))
+          (should (equal (plist-get reference :owner)
+                         '(:kind tool-result
+                           :turn-id "turn-raw"
+                           :tool-call-id "call-raw"
+                           :tool-name "external")))
+          (should (string-match-p (regexp-quote uri)
+                                  (plist-get truncated :content)))
+          (should (equal (e-raw-results-read uri)
+                         "abcdefghijklmnopqrstuvwxyz")))
+      (delete-directory directory t))))
 
 (ert-deftest e-tool-output-truncation-test-structured-content-uses-shared-text ()
   "Structured content is measured using provider-visible text."
