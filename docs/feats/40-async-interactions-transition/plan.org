@@ -32,6 +32,7 @@ Implemented:
 - The legacy =compact_session= tool registration provides an async =:start= path and long-class blocking metadata.
 - Large tool outputs can be truncated into model-visible previews with full content stored as session-owned =tmp://tool-results/...= references, and session tmp roots clean up explicitly or through the harness session-reset hook.
 - Nested long-class tool calls are rejected by the harness with a structured model-facing error instead of synchronously waiting inside another tool.
+- Synchronous batch tool execution rejects long async tools while an interactive hot-path guard is active, preventing the batch API from bypassing the async start contract in guarded UI paths.
 - Capability actions support async =:start= dispatch with started/finished/failed activity events.
 - The session compaction action starts through =e-harness-compact-session-start= instead of waiting on the synchronous compaction wrapper.
 - Chat activity presentation renders action started/finished/failed events in the settled turn summary and navigable expanded activity rows.
@@ -60,7 +61,7 @@ Partly implemented:
 
 Not yet implemented in the planned sense:
 
-- Explicit MCP batch call wrappers still have synchronous waits; generated model-facing MCP tool execution, interactive capability providers, interactive refresh, activation, and catalog discovery start APIs no longer do.
+- Explicit MCP batch call wrappers still have synchronous waits; generated model-facing MCP tool execution, interactive capability providers, interactive refresh, activation, and catalog discovery start APIs no longer do. Generic batch tool execution now fails fast for long async tools under an interactive hot-path guard.
 - There is no generic raw-result store or cache-driven reference cleanup lifecycle.
 - There is no full cooperative presentation render scheduler, though long final assistant Markdown presentation is now deferred and cancellable.
 - Context budget estimates and shared context-status text now support semantic cache keys; chat mode-line status uses both estimate and formatted-status snapshots, but the broader context/status snapshot contract for turn prep and other shells remains open.
@@ -133,7 +134,7 @@ Already acceptable:
 Still blocking or potentially blocking:
 
 - core compaction, auto-compaction, manual chat/Org Canvas commands, the legacy =compact_session= tool registration, and the session compaction action entry point have async lifecycle paths;
-- MCP generated tools, web tools, file/tmp resource discovery tools, MCP refresh, MCP activation, MCP catalog discovery, and interactive MCP capability providers have async/cache-first paths for interactive execution, while explicit batch wrappers keep synchronous waits;
+- MCP generated tools, web tools, file/tmp resource discovery tools, MCP refresh, MCP activation, MCP catalog discovery, and interactive MCP capability providers have async/cache-first paths for interactive execution, while explicit batch wrappers keep synchronous waits except that generic batch tool execution rejects long async tools in guarded hot paths;
 - =file://= and =tmp://= glob/search still expose synchronous direct resource facades for non-interactive callers and tests, but model-facing resource tools route through async =:start= methods and return request handles before =fd= or =rg= exits;
 - nested =e-tools-call= keeps cheap direct-return semantics, but long-class nested calls fail fast with model guidance unless a harness/custom executor handles them;
 - running-status redraw and tool-result previewing are synchronous buffer work; long final assistant Markdown presentation is deferred after immediate plain-text insertion, activity-summary details are generated on demand, and large loaded-session opens render a bounded newest-message tail initially before timer-driven older-message backfill;

@@ -44,6 +44,8 @@
   "Long nested tool call rejected")
 (define-error 'e-tools-blocking-handler-rejected
   "Long synchronous tool handler rejected in interactive execution")
+(define-error 'e-tools-blocking-execute-rejected
+  "Long synchronous tool batch execution rejected in interactive execution")
 
 (defconst e-tools-nested-tool-default-budget 20
   "Default maximum number of nested tool calls per parent tool execution.")
@@ -369,7 +371,8 @@ strings."
   (if (and (memq (car err) '(e-tools-recursive-call
                              e-tools-nested-tool-budget-exceeded
                              e-tools-no-active-registry
-                             e-tools-blocking-handler-rejected))
+                             e-tools-blocking-handler-rejected
+                             e-tools-blocking-execute-rejected))
            (stringp (cadr err)))
       (cadr err)
     (error-message-string err)))
@@ -540,25 +543,49 @@ SUMMARY is optional and should stay compact and high value."
      (list :error 'e-tools-nested-long-tool-rejected
            :blocking-class class))))
 
+(defun e-tools--reject-blocking-execute-p (tool)
+  "Return non-nil when TOOL must not use sync batch execution here."
+  (and (functionp (plist-get tool :start))
+       (e-request-hot-path-active-p)
+       (e-tools-long-blocking-class-p (e-tools--blocking-class tool))))
+
+(defun e-tools--blocking-execute-result (call tool)
+  "Return a structured rejection result for sync execution of long TOOL."
+  (let ((class (or (e-tools--blocking-class tool) 'unknown))
+        (name (plist-get call :name)))
+    (e-tools-result-create
+     call
+     'error
+     (format
+      "Tool %s is %s-class and cannot be synchronously executed in an interactive hot path; use e-tools-start instead."
+      name class)
+     (list :error 'e-tools-blocking-execute-rejected
+           :blocking-class class))))
+
 (defun e-tools-execute (registry call)
   "Execute CALL against REGISTRY and return a structured tool result."
-  (let ((done nil)
-        (result nil)
-        (failure nil))
-    (e-tools-start
-     registry
-     call
-     :on-done (lambda (value)
-                (setq result value)
-                (setq done t))
-     :on-error (lambda (err)
-                 (setq failure err)
-                 (setq done t)))
-    (while (not done)
-      (accept-process-output nil 0.01))
-    (when failure
-      (signal (car failure) (cdr failure)))
-    result))
+  (let* ((name (plist-get call :name))
+         (tool (and name
+                    (gethash name (e-tools-registry-tools registry)))))
+    (if (and tool (e-tools--reject-blocking-execute-p tool))
+        (e-tools--blocking-execute-result call tool)
+      (let ((done nil)
+            (result nil)
+            (failure nil))
+        (e-tools-start
+         registry
+         call
+         :on-done (lambda (value)
+                    (setq result value)
+                    (setq done t))
+         :on-error (lambda (err)
+                     (setq failure err)
+                     (setq done t)))
+        (while (not done)
+          (accept-process-output nil 0.01))
+        (when failure
+          (signal (car failure) (cdr failure)))
+        result))))
 
 (defun e-tools--execute-with-context (registry call context)
   "Execute CALL against REGISTRY with CONTEXT and return a structured result."

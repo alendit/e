@@ -1578,6 +1578,18 @@ rtk eldev emacs --batch --eval "(progn (setq byte-compile-error-on-warn t) (doli
 Result: passed for the touched core tool module and tests.
 
 #+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Result: returned the repository path after reloading changed Lisp.
+
+#+begin_src sh
+emacsclient --eval "(progn (load-file \"/private/tmp/e-tools-live-batch-hot-path-probe.el\") e-tools-live-batch-hot-path-probe-result)"
+#+end_src
+
+Result: returned =(:started nil :status error :error e-tools-blocking-execute-rejected :class network)=, proving the guarded live path did not start the long async tool and returned the structured rejection.
+
+#+begin_src sh
 git diff --check -- lisp/core/e-tools.el test/e-tools-test.el docs/feats/40-async-interactions-transition/plan.org docs/feats/40-async-interactions-transition/review.org
 #+end_src
 
@@ -1949,3 +1961,33 @@ rtk eldev test -f test/e-base-tools-test.el -f test/e-session-tmp-resources-test
 #+end_src
 
 Result: passed both focused resource glob start tests. Both tests run under the blocking primitive hot-path guard and prove the tool start path returns a cancellable request while the fake =fd= process is still live.
+
+* Phase 4 Hot-Path Batch Tool Execute Guard Slice Review
+
+Status: in progress.
+
+** Scope reviewed
+
+- Added =e-tools-blocking-execute-rejected= for guarded synchronous batch execution attempts.
+- Changed =e-tools-execute= so an active hot-path guard rejects long-class tools that have async =:start= handlers instead of entering the synchronous wait loop.
+- Preserved explicit batch execution outside guarded hot paths, including existing synchronous handler compatibility.
+
+** Verification
+
+#+begin_src sh
+rtk eldev test -f test/e-tools-test.el -B e-tools-test-long-sync-handler-rejected-in-interactive-context e-tools-test-long-sync-handler-allowed-for-explicit-batch-execute e-tools-test-long-async-batch-execute-rejected-in-hot-path
+#+end_src
+
+Result: passed the focused interactive rejection, explicit batch allowance, and hot-path async batch rejection tests.
+
+#+begin_src sh
+rtk eldev test -f test/e-tools-test.el
+#+end_src
+
+Result: passed all 25 tool contract tests.
+
+#+begin_src sh
+rtk eldev emacs --batch --eval "(progn (setq byte-compile-error-on-warn t) (dolist (file '(\"lisp/core/e-tools.el\" \"test/e-tools-test.el\")) (byte-compile-file file)))"
+#+end_src
+
+Result: passed for the touched core tool module and tests.

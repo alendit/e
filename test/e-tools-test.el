@@ -315,6 +315,32 @@
                      :content "ok"
                      :metadata nil)))))
 
+(ert-deftest e-tools-test-long-async-batch-execute-rejected-in-hot-path ()
+  "Batch execution cannot synchronously wait for a long async tool in hot paths."
+  (let ((registry (e-tools-registry-create))
+        started)
+    (e-tools-register registry
+                      :name "async-network"
+                      :description "Pretend async network work."
+                      :blocking-class 'network
+                      :start (lambda (&rest _args)
+                               (setq started t)
+                               (e-tools-request-create)))
+    (let ((result
+           (e-request-with-blocking-primitive-guard
+             (e-request-with-hot-path 'tool-batch-execute
+               (e-tools-execute
+                registry
+                '(:id "call-1" :name "async-network" :arguments nil))))))
+      (should-not started)
+      (should (equal result
+                     '(:tool-call-id "call-1"
+                       :name "async-network"
+                       :status error
+                       :content "Tool async-network is network-class and cannot be synchronously executed in an interactive hot path; use e-tools-start instead."
+                       :metadata (:error e-tools-blocking-execute-rejected
+                                  :blocking-class network)))))))
+
 (ert-deftest e-tools-test-handler-errors-return-structured-results ()
   "Tool handler errors remain structured tool results."
   (let ((registry (e-tools-registry-create)))
