@@ -20,6 +20,19 @@
 (require 'e-openai)
 (require 'url-http)
 
+(defvar url-current-object)
+(defvar url-extensions-header)
+(defvar url-http-attempt-keepalives)
+(defvar url-http-data)
+(defvar url-http-extra-headers)
+(defvar url-http-method)
+(defvar url-http-proxy)
+(defvar url-http-real-basic-auth-storage)
+(defvar url-http-referer)
+(defvar url-http-target-url)
+(defvar url-http-version)
+(defvar url-mime-encoding-string)
+
 (defun e-openai-test--jwt ()
   "Return a fake JWT with a Codex account-id claim."
   (let* ((payload (json-encode
@@ -1327,6 +1340,41 @@ data: {\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"delta\":{}}]}\n\n"
       (should (equal captured-method "POST"))
       (should (equal captured-headers '(("Authorization" . "Bearer test"))))
       (should (equal (decode-coding-string captured-body 'utf-8) "{}")))))
+
+(ert-deftest e-openai-test-sync-http-request-rejects-hot-path-before-start ()
+  "The synchronous Codex HTTP wrapper fails before starting transport in hot paths."
+  (let (started)
+    (cl-letf (((symbol-function 'e-openai-codex--http-request-start)
+               (lambda (&rest _args)
+                 (setq started t)
+                 (error "transport should not start"))))
+      (let ((err (should-error
+                  (e-request-with-hot-path 'openai-sync-http
+                    (e-openai-codex--http-request
+                     :url "https://example.test/codex/responses"
+                     :headers nil
+                     :body "{}"))
+                  :type 'e-request-blocking-call-in-hot-path)))
+        (should (equal (cdr err)
+                       '(e-openai-codex--http-request openai-sync-http))))
+      (should-not started))))
+
+(ert-deftest e-openai-test-sync-backend-stream-rejects-hot-path-before-request ()
+  "The provider sync stream wrapper fails before issuing sync requests."
+  (let ((backend (e-openai-backend-create
+                  :provider 'codex
+                  :request-function
+                  (lambda (&rest _args)
+                    (error "request function should not run")))))
+    (let ((err (should-error
+                (e-request-with-hot-path 'openai-stream
+                  (funcall (e-backend--stream backend)
+                           :messages nil
+                           :options nil
+                           :on-item #'ignore))
+                :type 'e-request-blocking-call-in-hot-path)))
+      (should (equal (cdr err)
+                     '(e-openai-backend-stream openai-stream))))))
 
 (ert-deftest e-openai-test-default-http-request-start-returns-error-body ()
   "HTTP error responses with bodies continue through backend parsing."

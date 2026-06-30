@@ -25,6 +25,7 @@
 (require 'url)
 (require 'e-backend)
 (require 'e-harness)
+(require 'e-request)
 (require 'e-tools)
 
 (define-error 'e-anthropic-auth-missing "Anthropic auth is missing")
@@ -147,6 +148,11 @@ When PROVIDER is nil, use `e-anthropic-default-provider'."
               (list (format "Environment variable %s is missing" env-key))))
     token))
 
+(defun e-anthropic--reject-sync-in-hot-path (operation)
+  "Reject synchronous Anthropic OPERATION from marked interactive hot paths."
+  (when (e-request-hot-path-active-p)
+    (e-request-hot-path-blocking-error operation)))
+
 (defun e-anthropic--model-info-url (base-url)
   "Return the LiteLLM `/model/info' catalog URL for BASE-URL.
 The gateway exposes per-model deployment metadata (including the real context
@@ -157,6 +163,7 @@ window) at `<base>/model/info', sibling to `/messages'."
 (defun e-anthropic--http-get (url headers)
   "GET URL with HEADERS and return the response body text, or signal.
 Synchronous; bounded by `e-anthropic-request-timeout-seconds'."
+  (e-anthropic--reject-sync-in-hot-path 'e-anthropic--http-get)
   (let ((url-request-method "GET")
         (url-request-extra-headers (e-anthropic--http-header-list headers))
         (timeout e-anthropic-request-timeout-seconds))
@@ -976,6 +983,7 @@ condition list.  Return a cancellable `e-backend-request' handle."
 
 (cl-defun e-anthropic--http-request (&key url headers body)
   "POST BODY to URL with HEADERS and return response text synchronously."
+  (e-anthropic--reject-sync-in-hot-path 'e-anthropic--http-request)
   (let ((response nil) (failure nil) (done nil))
     (e-anthropic--http-request-start
      :url url :headers headers :body body
@@ -1074,6 +1082,7 @@ MODEL is the backend-local default when turn options omit `:model'."
      :stream
      (cl-function
       (lambda (&key messages options on-item)
+        (e-anthropic--reject-sync-in-hot-path 'e-anthropic-backend-stream)
         (let* ((context (e-anthropic--request-context
                          :provider provider
                          :base-url base-url

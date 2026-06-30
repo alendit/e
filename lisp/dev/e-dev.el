@@ -137,6 +137,7 @@
                   "lisp/layers/org-canvas/e-org-canvas-capabilities.el"
                   "lisp/layers/project-local/e-project-local.el"
                   "lisp/layers/chat/e-chat-session.el"
+                  "lisp/adapters/anthropic/e-anthropic.el"
                   "lisp/adapters/openai/e-openai.el"
                   "lisp/defaults/e-default-layers.el"
                   "lisp/defaults/e-default-harnesses.el"

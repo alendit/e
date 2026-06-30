@@ -2541,3 +2541,46 @@ emacsclient --eval "(let ((registry ...) started result) ...)"
 #+end_src
 
 Result: returned =(:started nil :status error :metadata (:error e-tools-blocking-execute-rejected :blocking-class process))=, confirming the live context-aware sync execute path rejects without starting the long async tool.
+
+* Phase 4 Provider Sync Wrapper Hot-Path Guard Slice Review
+
+Status: complete.
+
+** Scope reviewed
+
+- Added provider-local hot-path rejection to OpenAI and Anthropic synchronous transport wrappers before they can start URL, websocket, or injected request-function waits.
+- Added the same rejection to direct provider sync stream functions, preserving batch/test sync behavior outside marked hot paths.
+- Added Anthropic to the live reload manifest so adapter changes refresh through =e-dev-reload= like OpenAI changes.
+- Declared the =url-http= internals used by the OpenAI request-normalization test so touched tests compile with =byte-compile-error-on-warn=.
+
+** Verification
+
+#+begin_src sh
+rtk eldev emacs --batch --eval "(progn (setq byte-compile-error-on-warn t) (dolist (file '(\"lisp/dev/e-dev.el\" \"lisp/adapters/openai/e-openai.el\" \"lisp/adapters/anthropic/e-anthropic.el\" \"test/e-openai-test.el\" \"test/e-anthropic-test.el\")) (byte-compile-file file)))"
+#+end_src
+
+Result: passed for the touched reload helper, provider adapters, and tests.
+
+#+begin_src sh
+rtk eldev test -f test/e-openai-test.el -f test/e-anthropic-test.el -B e-openai-test-sync-http-request-rejects-hot-path-before-start e-openai-test-sync-backend-stream-rejects-hot-path-before-request e-anthropic-test-sync-http-get-rejects-hot-path-before-url-retrieve e-anthropic-test-sync-http-request-rejects-hot-path-before-start e-anthropic-test-sync-backend-stream-rejects-hot-path-before-request
+#+end_src
+
+Result: passed the focused provider sync-wrapper guard tests.
+
+#+begin_src sh
+rtk eldev test -f test/e-openai-test.el -f test/e-anthropic-test.el
+#+end_src
+
+Result: passed all 119 OpenAI/Anthropic adapter tests.
+
+#+begin_src sh
+emacsclient --eval "(progn (load \"/Users/dimitrivorona/projects/elisp/e/lisp/dev/e-dev.el\" nil 'nomessage) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Result: returned ="/Users/dimitrivorona/projects/elisp/e/"=.  The source load refreshed the running =e-dev-reload= definition itself so the new Anthropic reload-list entry was active.
+
+#+begin_src sh
+emacsclient --eval "(let (openai-start anthropic-start openai-error anthropic-error) ...)"
+#+end_src
+
+Result: returned =(:openai-start nil :openai-error (e-openai-codex--http-request live-openai-sync) :anthropic-start nil :anthropic-error (e-anthropic--http-request live-anthropic-sync))=, confirming both live provider sync wrappers reject before transport starts.

@@ -743,6 +743,56 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
     (should-not (e-anthropic-context-window "claude-opus-4-8")))
   (e-anthropic-reset-context-window-cache))
 
+(ert-deftest e-anthropic-test-sync-http-get-rejects-hot-path-before-url-retrieve ()
+  "The synchronous model-info GET wrapper fails before url.el in hot paths."
+  (let (started)
+    (cl-letf (((symbol-function 'url-retrieve-synchronously)
+               (lambda (&rest _args)
+                 (setq started t)
+                 (error "url-retrieve-synchronously should not run"))))
+      (let ((err (should-error
+                  (e-request-with-hot-path 'anthropic-model-info
+                    (e-anthropic--http-get "https://example.test/model/info"
+                                           nil))
+                  :type 'e-request-blocking-call-in-hot-path)))
+        (should (equal (cdr err)
+                       '(e-anthropic--http-get anthropic-model-info))))
+      (should-not started))))
+
+(ert-deftest e-anthropic-test-sync-http-request-rejects-hot-path-before-start ()
+  "The synchronous Messages HTTP wrapper fails before starting transport."
+  (let (started)
+    (cl-letf (((symbol-function 'e-anthropic--http-request-start)
+               (lambda (&rest _args)
+                 (setq started t)
+                 (error "transport should not start"))))
+      (let ((err (should-error
+                  (e-request-with-hot-path 'anthropic-sync-http
+                    (e-anthropic--http-request
+                     :url "https://example.test/messages"
+                     :headers nil
+                     :body "{}"))
+                  :type 'e-request-blocking-call-in-hot-path)))
+        (should (equal (cdr err)
+                       '(e-anthropic--http-request anthropic-sync-http))))
+      (should-not started))))
+
+(ert-deftest e-anthropic-test-sync-backend-stream-rejects-hot-path-before-request ()
+  "The provider sync stream wrapper fails before issuing sync requests."
+  (let ((backend (e-anthropic-backend-create
+                  :request-function
+                  (lambda (&rest _args)
+                    (error "request function should not run")))))
+    (let ((err (should-error
+                (e-request-with-hot-path 'anthropic-stream
+                  (funcall (e-backend--stream backend)
+                           :messages nil
+                           :options nil
+                           :on-item #'ignore))
+                :type 'e-request-blocking-call-in-hot-path)))
+      (should (equal (cdr err)
+                     '(e-anthropic-backend-stream anthropic-stream))))))
+
 (ert-deftest e-anthropic-test-refresh-context-window-cache-populates-catalog ()
   "Async context-window refresh reads max-input-tokens from the gateway catalog."
   (e-anthropic-reset-context-window-cache)

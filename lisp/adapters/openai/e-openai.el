@@ -21,6 +21,7 @@
 (require 'websocket)
 (require 'e-backend)
 (require 'e-harness)
+(require 'e-request)
 (require 'e-tools)
 
 (declare-function e-dev-profile-enabled-p "e-dev-profile")
@@ -42,6 +43,11 @@
   (if (e-openai--profile-enabled-p)
       (e-dev-profile-measure-thunk event options thunk)
     (funcall thunk)))
+
+(defun e-openai--reject-sync-in-hot-path (operation)
+  "Reject synchronous OpenAI OPERATION from marked interactive hot paths."
+  (when (e-request-hot-path-active-p)
+    (e-request-hot-path-blocking-error operation)))
 
 (defconst e-openai-codex-default-base-url
   "https://chatgpt.com/backend-api"
@@ -753,6 +759,7 @@ profiles."
 
 (cl-defun e-openai-codex--http-request (&key url headers body)
   "POST BODY to URL with HEADERS and return response text."
+  (e-openai--reject-sync-in-hot-path 'e-openai-codex--http-request)
   (let ((response nil)
         (failure nil)
         (done nil))
@@ -1615,6 +1622,7 @@ default when turn options do not include `:model'.  The provider profile's
        :stream
        (cl-function
         (lambda (&key messages options on-item)
+          (e-openai--reject-sync-in-hot-path 'e-openai-backend-stream)
           (let* ((context (e-openai--request-context
                            :provider provider
                            :auth-file auth-file
