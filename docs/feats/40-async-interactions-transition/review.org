@@ -1832,3 +1832,52 @@ emacsclient --eval "...context-status snapshot live probe..."
 #+end_src
 
 Result: returned =(:context-calls 1 :window-calls 1 :mode-name "e-chat gpt-5.5/high ~2% (~16/1k tok)")= across two explicit mode-line refreshes, proving the second refresh reused the status snapshot.
+
+* Phase 3 Queued Write Derived Index Recovery Slice Review
+
+Status: in progress.
+
+** Scope reviewed
+
+- Kept stale-generation record writes dropped during queued flush.
+- Treated stale derived index writes as recoverable when the same flush has current queued records.
+- Rebuilt the index from current in-memory session state after current critical records were written.
+- Added a regression proving an index-backed store can list the recovered session without loading the transcript.
+
+** Verification
+
+#+begin_src sh
+rtk eldev test -f test/e-session-test.el -B e-session-test-queued-persistent-writes-flush-later e-session-test-queued-writes-carry-generation-metadata e-session-test-flush-write-queue-drops-stale-generation-records e-session-test-flush-write-queue-recovers-stale-derived-index
+#+end_src
+
+Result: passed the focused queued-write generation/recovery tests.
+
+#+begin_src sh
+rtk eldev test -f test/e-session-test.el
+#+end_src
+
+Result: passed 55 tests.
+
+#+begin_src sh
+rtk eldev emacs --batch --eval "(progn (setq byte-compile-error-on-warn t) (dolist (file '(\"lisp/core/e-session.el\" \"test/e-session-test.el\")) (byte-compile-file file)))"
+#+end_src
+
+Result: passed.
+
+#+begin_src sh
+git diff --check -- lisp/core/e-session.el test/e-session-test.el docs/feats/40-async-interactions-transition/plan.org docs/feats/40-async-interactions-transition/review.org
+#+end_src
+
+Result: passed.
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Result: returned the repository path after reloading changed Lisp.
+
+#+begin_src sh
+emacsclient --eval "...queued-write stale derived index recovery live probe..."
+#+end_src
+
+Result: returned =(:listed t :loaded nil :queue nil :index-pending nil)=, proving the recovered index-backed store lists the session without loading the transcript and the flush drained queued state.

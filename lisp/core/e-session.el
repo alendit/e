@@ -592,20 +592,23 @@ Return STORE."
          (write-index (and write-index-entry
                            (e-session--queued-index-current-p
                             store write-index-entry)))
+         (stale-index (and write-index-entry (not write-index)))
+         (rebuild-index (and stale-index entries))
          (stale-count (- (length raw-entries) (length entries))))
     (e-session--profile-call
      'session.flush-write-queue
      (list :metadata (list :persistent (and (e-session--persistent-p store) t)
                            :record-count (length entries)
                            :stale-record-count stale-count
-                           :write-index (and write-index t)))
+                           :stale-index (and stale-index t)
+                           :write-index (and (or write-index rebuild-index) t)))
      (lambda ()
        (dolist (entry entries)
          (e-session--append-record-now
           store
           (e-session--queued-entry-session-id entry)
           (e-session--queued-entry-record entry)))
-       (when write-index
+       (when (or write-index rebuild-index)
          (e-session--write-index-now store))))
     (setf (e-session-store-write-queue store) nil)
     (setf (e-session-store-index-write-pending store) nil))

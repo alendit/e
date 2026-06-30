@@ -304,6 +304,32 @@
       (ignore-errors (e-session-flush-write-queue store))
       (delete-directory directory t))))
 
+(ert-deftest e-session-test-flush-write-queue-recovers-stale-derived-index ()
+  "Flushing current records rebuilds a stale derived index write."
+  (let* ((directory (make-temp-file "e-session-" t))
+         (store (e-session-persistent-index-store-create
+                 directory
+                 :write-mode 'queued)))
+    (unwind-protect
+        (let* ((session (e-session-create store :id "recover-index"))
+               (session-id (plist-get session :id))
+               (stale-index (copy-sequence
+                             (e-session-store-index-write-pending store))))
+          (plist-put stale-index
+                     :generation
+                     (1- (e-session-store-write-queue-generation store)))
+          (setf (e-session-store-index-write-pending store) stale-index)
+          (e-session-flush-write-queue store)
+          (let* ((loaded (e-session-persistent-index-store-create directory))
+                 (entry (cl-find session-id
+                                 (e-session-list loaded)
+                                 :key (lambda (entry) (plist-get entry :id))
+                                 :test #'equal)))
+            (should entry)
+            (should-not (plist-get entry :loaded))))
+      (ignore-errors (e-session-flush-write-queue store))
+      (delete-directory directory t))))
+
 (ert-deftest e-session-test-load-session-start-replays-in-chunks ()
   "Chunked persistent session loading returns before replay completion."
   (let* ((directory (make-temp-file "e-session-" t))
