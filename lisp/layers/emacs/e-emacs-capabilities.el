@@ -315,50 +315,6 @@ When ADD-TO-WORKSPACE is non-nil, add BUFFER to its target workspace first."
           :workspace (e-workspace-format workspace)
           :focused t)))
 
-(defun e-workspace-awareness-register-state (registry)
-  "Register the workspace_state tool in REGISTRY."
-  (e-tools-register
-   registry
-   :name "workspace_state"
-   :description "Return the current Emacs workspace and active e shell workspace affinity."
-   :parameters '(:type "object"
-                 :properties nil)
-   :handler (lambda (_arguments)
-              (e-workspace-awareness--tool-state))))
-
-(defun e-workspace-awareness-register-focus-buffer (registry)
-  "Register the workspace_focus_buffer tool in REGISTRY."
-  (e-tools-register
-   registry
-   :name "workspace_focus_buffer"
-   :description "Focus a named Emacs buffer in the active e shell workspace."
-   :parameters '(:type "object"
-                 :properties (:buffer (:type "string")
-                              :add_to_workspace (:type "boolean"))
-                 :required ["buffer"])
-   :handler
-   (lambda (arguments)
-     (let* ((name (e-workspace-awareness--argument-string arguments :buffer))
-            (buffer (or (get-buffer name)
-                        (user-error "No buffer named %s" name))))
-       (e-workspace-awareness--focus-buffer
-        buffer
-        (plist-get arguments :add_to_workspace))))))
-
-(defun e-workspace-awareness-register-show-shell (registry)
-  "Register the workspace_show_shell tool in REGISTRY."
-  (e-tools-register
-   registry
-   :name "workspace_show_shell"
-   :description "Show the active e shell buffer in its workspace."
-   :parameters '(:type "object"
-                 :properties nil)
-   :handler
-   (lambda (_arguments)
-     (let ((buffer (e-workspace-awareness--shell-buffer)))
-       (unless (buffer-live-p buffer)
-         (user-error "No active shell buffer"))
-       (e-workspace-awareness--focus-buffer buffer)))))
 
 (defun e-workspace-awareness--action (description caller &optional parameters)
   "Return a workspace-awareness action descriptor."

@@ -25,7 +25,7 @@
   "Context inspection input is invalid")
 
 (defconst e-context-inspection-default-uri "tmp://default_context.md"
-  "Default destination resource URI used by the export-context tool.")
+  "Default destination resource URI used by the export-context action.")
 
 (defconst e-context-inspection-default-failure-limit 10
   "Default number of recent failures returned by failure inspection.")
@@ -392,107 +392,12 @@ exported.  This is the default context e sends before the first user prompt."
           :message-count (length (plist-get context :messages))
           :bytes (string-bytes content))))
 
-(defun e-context-inspection--export-context-tool (arguments)
-  "Handle export-context tool ARGUMENTS."
-  (e-context-inspection-export-context
-   :uri (e-context-inspection--argument-string
-         arguments
-         :uri
-         e-context-inspection-default-uri)
-   :session-id (e-context-inspection--argument-string arguments :session_id)
-   :turn-id (e-context-inspection--argument-string arguments :turn_id)
-   :include-transcript (eq (e-context-inspection--argument-boolean
-                            arguments
-                            :include_transcript
-                            :json-false)
-                           t)
-   :include-metadata (not (eq (e-context-inspection--argument-boolean
-                               arguments
-                               :include_metadata
-                               t)
-                              :json-false))))
-
-(defun e-context-inspection--recent-failures-tool (arguments)
-  "Handle e_error_recent_failures tool ARGUMENTS."
-  (e-context-inspection-recent-failures
-   :limit (e-context-inspection--argument-nonnegative-integer
-           arguments
-           :limit
-           e-context-inspection-default-failure-limit)))
-
-(defun e-context-inspection--failure-detail-tool (arguments)
-  "Handle e_error_failure_detail tool ARGUMENTS."
-  (e-context-inspection-failure-detail
-   :session-id (e-context-inspection--argument-string arguments :session_id)
-   :turn-id (e-context-inspection--argument-string arguments :turn_id)))
-
-(defun e-context-inspection--raw-provider-preview-tool (arguments)
-  "Handle e_error_raw_provider_preview tool ARGUMENTS."
-  (e-context-inspection-raw-provider-preview
-   :session-id (e-context-inspection--argument-string arguments :session_id)
-   :turn-id (e-context-inspection--argument-string arguments :turn_id)))
-
-(defun e-context-inspection-register-export-context (registry)
-  "Register the export-context tool in REGISTRY."
-  (e-tools-register
-   registry
-   :name "export-context"
-   :description "Export the current e LLM context to a writable URI-addressed resource. By default this writes the pre-prompt default context to tmp://default_context.md and returns only metadata, avoiding large tool output."
-   :parameters '(:type "object"
-                 :properties (:uri (:type "string"
-                                    :description "Destination resource URI. Defaults to tmp://default_context.md.")
-                              :session_id (:type "string"
-                                           :description "Optional session id. Defaults to the active tool session.")
-                              :turn_id (:type "string"
-                                        :description "Optional turn id. Defaults to the active tool turn.")
-                              :include_transcript (:type "boolean"
-                                                   :description "When true, export full context including transcript messages. Defaults to false.")
-                              :include_metadata (:type "boolean"
-                                                 :description "When true, include export metadata in the Markdown file. Defaults to true."))
-                 :required [])
-   :handler #'e-context-inspection--export-context-tool))
-
-(defun e-context-inspection-register-error-tools (registry)
-  "Register read-only error inspection tools in REGISTRY."
-  (e-tools-register
-   registry
-   :name "e_error_recent_failures"
-   :description "List recent failed e turns from the current harness session store, newest first. Returns compact session id, turn id, timestamp, error, details, and session title evidence."
-   :parameters '(:type "object"
-                 :properties (:limit (:type "integer"
-                                      :minimum 0
-                                      :description "Maximum failures to return. Defaults to 10."))
-                 :required [])
-   :handler #'e-context-inspection--recent-failures-tool)
-  (e-tools-register
-   registry
-   :name "e_error_failure_detail"
-   :description "Return one failed e turn timeline with prompt messages, provider lifecycle events, token/tool evidence, terminal error payload, session id, turn id, and project root."
-   :parameters '(:type "object"
-                 :properties (:session_id (:type "string"
-                                           :description "Failed session id.")
-                              :turn_id (:type "string"
-                                        :description "Failed turn id."))
-                 :required ["session_id" "turn_id"])
-   :handler #'e-context-inspection--failure-detail-tool)
-  (e-tools-register
-   registry
-   :name "e_error_raw_provider_preview"
-   :description "Return sanitized bounded raw provider diagnostics when available. In v1 this reports unavailable unless an adapter exposes matching raw diagnostics."
-   :parameters '(:type "object"
-                 :properties (:session_id (:type "string"
-                                           :description "Optional failed session id.")
-                              :turn_id (:type "string"
-                                        :description "Optional failed turn id."))
-                 :required [])
-   :handler #'e-context-inspection--raw-provider-preview-tool))
 
 (defun e-context-inspection--actions ()
   "Return context-inspection action plist."
   (list
    :export-context
    (e-action-create
-    :handler #'e-context-inspection--export-context-tool
     :caller (lambda (context arguments)
               (e-context-inspection-export-context
                :harness (plist-get context :harness)
@@ -524,7 +429,6 @@ exported.  This is the default context e sends before the first user prompt."
                   :required []))
    :recent-failures
    (e-action-create
-    :handler #'e-context-inspection--recent-failures-tool
     :caller (lambda (context arguments)
               (e-context-inspection-recent-failures
                :harness (plist-get context :harness)
@@ -536,7 +440,6 @@ exported.  This is the default context e sends before the first user prompt."
                   :required []))
    :failure-detail
    (e-action-create
-    :handler #'e-context-inspection--failure-detail-tool
     :caller (lambda (context arguments)
               (e-context-inspection-failure-detail
                :harness (plist-get context :harness)
@@ -553,7 +456,6 @@ exported.  This is the default context e sends before the first user prompt."
                   :required ["session_id" "turn_id"]))
    :raw-provider-preview
    (e-action-create
-    :handler #'e-context-inspection--raw-provider-preview-tool
     :caller (lambda (context arguments)
               (e-context-inspection-raw-provider-preview
                :harness (plist-get context :harness)

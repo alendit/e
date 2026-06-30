@@ -2040,7 +2040,7 @@ Body
                             prompt))
     (should (string-match-p "thread t-2 \\[chars 20\\.\\.30\\]: (no text)"
                             prompt))
-    (should (string-match-p "annotation_resolve" prompt))))
+    (should (string-match-p "e-actions-call 'annotations :resolve" prompt))))
 
 (ert-deftest e-org-canvas-test-respond-to-threads-seeds-document-prompt ()
   "Responding to threads opens a document-scoped pane listing open threads."

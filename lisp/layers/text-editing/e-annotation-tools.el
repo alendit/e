@@ -7,18 +7,9 @@
 
 ;;; Commentary:
 
-;; Generic annotation tools over the Simply Annotate package.  These expose the
-;; review-channel primitives an agent needs to post non-destructive proposals as
-;; inline annotation threads and to resolve them:
-;;
-;;   - annotation_add     create a thread on a file region with a proposal
-;;                        payload, returning a thread id.
-;;   - annotation_list    enumerate threads for a file (optionally filtered by an
-;;                        opaque correlation key such as an org-id) with their
-;;                        payload and verdict.
-;;   - annotation_resolve set a thread's verdict (accepted | rejected), optionally
-;;                        appending a reply, and return its payload so the caller
-;;                        can execute any domain-specific acceptance mutation.
+;; Generic annotation actions over the Simply Annotate package.  These expose
+;; the review-channel primitives an agent needs to post non-destructive
+;; proposals as inline annotation threads and to resolve them.
 ;;
 ;; The capability is deliberately generic.  Simply Annotate anchors a thread to a
 ;; buffer region (start/end + text-hash/context); it has no concept of an org-id
@@ -54,7 +45,7 @@
   :group 'e)
 
 (defconst e-annotation-tools-verdicts '("accepted" "rejected")
-  "Verdict values accepted by `annotation_resolve'.")
+  "Verdict values accepted by annotation resolution actions.")
 
 (defconst e-annotation-tools--backend-functions
   '(simply-annotate--add-reply
@@ -308,81 +299,6 @@ domain-side failure never rolls back the already-persisted verdict."
             (when effect (push effect effects)))
         (error (push (list :error (error-message-string err)) effects))))
     (nreverse effects)))
-
-;; --- tool registration ------------------------------------------------------
-
-(defun e-annotation-tools--register (registry &rest _context)
-  "Register the annotation review-channel tools into REGISTRY."
-  (e-tools-register
-   registry
-   :name "annotation_list"
-   :description "List Simply Annotate threads on a file. Optionally filter by an org-id stored in a thread's payload. Returns each thread's id, region, status, verdict, root proposal text, and payload."
-   :parameters '(:type "object"
-                 :properties (:file (:type "string"
-                                     :description "Path to the annotated file.")
-                              :org_id (:type "string"
-                                       :description "Optional payload org-id to filter threads by."))
-                 :required ["file"])
-   :handler (lambda (arguments)
-              (e-annotation-tools-list
-               :file (plist-get arguments :file)
-               :org-id (or (plist-get arguments :org_id)
-                           (plist-get arguments :org-id)))))
-  (e-tools-register
-   registry
-   :name "annotation_add"
-   :description "Post a non-destructive proposal as a Simply Annotate thread anchored to a file region (start/end character positions). The proposal text is the human-readable note; payload carries machine fields (e.g. org-id, kind, apply) stored verbatim for later correlation and execution. Returns the new thread id."
-   :parameters '(:type "object"
-                 :properties (:file (:type "string"
-                                     :description "Path to the file to annotate.")
-                              :start (:type "integer"
-                                      :description "Region start (1-based character position).")
-                              :end (:type "integer"
-                                    :description "Region end (character position, exclusive).")
-                              :text (:type "string"
-                                     :description "Human-readable proposal recorded as the thread's root comment.")
-                              :author (:type "string"
-                                       :description "Optional author name; defaults to the configured agent name.")
-                              :payload (:type "object"
-                                        :description "Optional machine fields stored on the thread (e.g. org-id, kind, apply)."
-                                        :properties (:org_id (:type "string")
-                                                     :kind (:type "string")
-                                                     :apply (:type "string"))))
-                 :required ["file" "start" "end" "text"])
-   :handler (lambda (arguments)
-              (e-annotation-tools-add
-               :file (plist-get arguments :file)
-               :start (plist-get arguments :start)
-               :end (plist-get arguments :end)
-               :text (plist-get arguments :text)
-               :author (plist-get arguments :author)
-               :payload (or (plist-get arguments :payload)
-                            (plist-get arguments :metadata)))))
-  (e-tools-register
-   registry
-   :name "annotation_resolve"
-   :description "Set a verdict (accepted | rejected) on a Simply Annotate thread by its id, optionally appending a reply comment. Persists the verdict and returns the thread's payload (e.g. an apply description) so the caller can execute any domain-specific acceptance mutation. Does not itself mutate domain state."
-   :parameters '(:type "object"
-                 :properties (:file (:type "string"
-                                     :description "Path to the annotated file.")
-                              :thread_id (:type "string"
-                                          :description "Thread id to resolve.")
-                              :verdict (:type "string"
-                                        :description "accepted or rejected."
-                                        :enum ["accepted" "rejected"])
-                              :comment (:type "string"
-                                        :description "Optional reply recorded on the thread.")
-                              :author (:type "string"
-                                       :description "Optional reply author; defaults to the configured agent name."))
-                 :required ["file" "thread_id" "verdict"])
-   :handler (lambda (arguments)
-              (e-annotation-tools-resolve
-               :file (plist-get arguments :file)
-               :thread-id (or (plist-get arguments :thread_id)
-                              (plist-get arguments :thread-id))
-               :verdict (plist-get arguments :verdict)
-               :comment (plist-get arguments :comment)
-               :author (plist-get arguments :author)))))
 
 (defun e-annotation-tools--actions ()
   "Return annotation action plist."

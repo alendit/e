@@ -405,7 +405,7 @@
                                     (funcall on-item
                                              '(:type tool-call
                                                :id "call-1"
-                                               :name "compact_session"
+                                               :name "refreshing_tool"
                                                :arguments nil))
                                     (funcall on-item
                                              '(:type done :reason tool-use)))
@@ -418,7 +418,7 @@
          (tools (e-tools-registry-create)))
     (e-tools-register
      tools
-     :name "compact_session"
+     :name "refreshing_tool"
      :description "Compact session."
      :handler
      (lambda (_arguments)

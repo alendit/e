@@ -65,9 +65,9 @@
    '("Open annotation threads on this document are awaiting your response."
      "Review each thread listed below, address what it asks, and update the"
      "document where appropriate."
-     "Record your reply on the thread with the annotation tools:"
-     "`annotation_list` to re-read the current threads, and `annotation_resolve`"
-     "to append a reply and set a verdict once a proposal is genuinely settled."
+     "Record your reply on the thread with annotation actions:"
+     "use `(e-actions-call 'annotations :list ...)` to re-read current threads,"
+     "and `(e-actions-call 'annotations :resolve ...)` to append a reply and set a verdict once a proposal is genuinely settled."
      "Do not resolve a thread whose request you have not actually handled.")
    " ")
   "Prompt preamble seeded by `e-org-canvas-respond-to-threads'."

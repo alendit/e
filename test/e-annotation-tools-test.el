@@ -7,7 +7,7 @@
 
 ;;; Commentary:
 
-;; ERT tests for the Simply Annotate review-channel tools.  All tests run
+;; ERT tests for the Simply Annotate review-channel actions.  All tests run
 ;; headless: a temp source file plus a project-local annotation database, with
 ;; no live `simply-annotate-mode' buffer.
 
@@ -16,8 +16,10 @@
 (require 'cl-lib)
 (require 'ert)
 (require 'e)
-(require 'e-tools)
+(require 'e-actions)
 (require 'e-annotation-tools)
+(require 'e-backend)
+(require 'e-harness)
 (require 'e-text-editing)
 (require 'simply-annotate)
 
@@ -39,18 +41,6 @@ project-local `.simply-annotations.el' beside the file."
                          nil ,file-var nil 'silent)
            ,@body)
        (delete-directory dir t))))
-
-(defun e-annotation-tools-test--registry ()
-  "Return a tools registry with the annotation tools registered."
-  (let ((registry (e-tools-registry-create)))
-    (e-annotation-tools--register registry)
-    registry))
-
-(defun e-annotation-tools-test--call (registry name arguments)
-  "Execute NAME with ARGUMENTS against REGISTRY and return :content."
-  (plist-get
-   (e-tools-execute registry (list :id "call-1" :name name :arguments arguments))
-   :content))
 
 ;; --- primitive-level tests --------------------------------------------------
 
@@ -191,31 +181,44 @@ abort the resolution."
       (should (equal "accepted" (plist-get resolved :verdict)))
       (should-not (plist-member resolved :effects)))))
 
-;; --- registered-tool tests --------------------------------------------------
+;; --- registered-action tests ------------------------------------------------
 
-(ert-deftest e-annotation-tools-test-tools-roundtrip-through-registry ()
-  "The registered tools add, list, and resolve through the registry."
+(ert-deftest e-annotation-tools-test-actions-roundtrip-through-dispatch ()
+  "The registered actions add, list, and resolve through action dispatch."
   (e-annotation-tools-test--with-project file
-    (let* ((registry (e-annotation-tools-test--registry))
-           (added (e-annotation-tools-test--call
-                   registry "annotation_add"
-                   (list :file file :start 1 :end 11 :text "proposal"
-                         :payload '(:org_id "id-9" :apply "add-tag working"))))
-           (thread-id (plist-get added :thread-id)))
+    (let* ((harness (e-harness-create :backend (e-backend-fake-create :items nil)))
+           (capability (e-text-editing-annotations-capability-create))
+           added
+           thread-id)
+      (e-harness-activate-capability harness capability)
+      (e-harness-create-session harness :id "session-1")
+      (setq added
+            (e-actions-call
+             'annotations
+             :add
+             (list :file file :start 1 :end 11 :text "proposal"
+                   :payload '(:org_id "id-9" :apply "add-tag working"))
+             (list :harness harness :session-id "session-1" :turn-id "turn-1")))
+      (setq thread-id (plist-get added :thread-id))
       (should (stringp thread-id))
-      (let ((listed (e-annotation-tools-test--call
-                     registry "annotation_list" (list :file file))))
+      (let ((listed (e-actions-call
+                     'annotations
+                     :list
+                     (list :file file)
+                     (list :harness harness :session-id "session-1" :turn-id "turn-1"))))
         (should (= 1 (plist-get listed :count))))
-      (let ((resolved (e-annotation-tools-test--call
-                       registry "annotation_resolve"
+      (let ((resolved (e-actions-call
+                       'annotations
+                       :resolve
                        (list :file file :thread_id thread-id
-                             :verdict "rejected"))))
+                             :verdict "rejected")
+                       (list :harness harness :session-id "session-1" :turn-id "turn-1"))))
         (should (equal "rejected" (plist-get resolved :verdict)))
         (should (equal "add-tag working"
                        (alist-get 'apply (plist-get resolved :payload))))))))
 
-(ert-deftest e-annotation-tools-test-layer-exposes-tools ()
-  "The text-editing layer exposes the annotation tools capability."
+(ert-deftest e-annotation-tools-test-layer-exposes-actions ()
+  "The text-editing layer exposes the annotation actions capability."
   (let* ((layer (e-text-editing-layer-create))
          (capability (cl-find 'annotations (e-layer-capabilities layer)
                               :key #'e-capability-id)))

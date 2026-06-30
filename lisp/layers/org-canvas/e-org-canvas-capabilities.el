@@ -19,7 +19,6 @@
 (require 'e-harness)
 (require 'e-layers)
 (require 'e-session)
-(require 'e-tools)
 (require 'e-workspaces)
 (require 'org)
 (require 'seq)
@@ -384,68 +383,6 @@
         (_ (org-cycle))))
     "Updated Org Canvas heading visibility."))
 
-(defun e-org-canvas--register-tool
-    (registry name description parameters harness session-id handler)
-  "Register an Org Canvas tool in REGISTRY."
-  (e-tools-register
-   registry
-   :name name
-   :description description
-   :parameters parameters
-   :handler
-   (lambda (arguments)
-     (funcall handler
-              (e-org-canvas--require-tool-session harness session-id)
-              arguments))))
-
-(defun e-org-canvas-register-tools (registry &rest context)
-  "Register Org Canvas visibility tools in REGISTRY.
-CONTEXT carries :harness and :session-id from the active turn."
-  (let ((harness (plist-get context :harness))
-        (session-id (plist-get context :session-id))
-        (empty-object '(:type "object" :properties ())))
-    (e-org-canvas--register-tool
-     registry
-     "org_canvas_visibility_state"
-     "Return outline and visibility data for the current Org Canvas buffer."
-     empty-object
-     harness session-id
-     #'e-org-canvas--visibility-state-tool)
-    (e-org-canvas--register-tool
-     registry
-     "org_canvas_show_context"
-     "Reveal ancestors and current subtree around an optional point or heading path."
-     '(:type "object"
-       :properties (:point (:type "number")
-                    :heading_path (:type "array"
-                                   :items (:type "string"))))
-     harness session-id
-     #'e-org-canvas--show-context-tool)
-    (e-org-canvas--register-tool
-     registry
-     "org_canvas_cycle_heading"
-     "Cycle, show, hide, or reveal one Org heading or subtree by point or heading path."
-     '(:type "object"
-       :properties (:point (:type "number")
-                    :heading_path (:type "array"
-                                   :items (:type "string"))
-                    :operation (:type "string")))
-     harness session-id
-     #'e-org-canvas--cycle-heading-tool)
-    (e-org-canvas--register-tool
-     registry
-     "org_canvas_show_all"
-     "Show all headings in the current Org Canvas buffer."
-     empty-object
-     harness session-id
-     #'e-org-canvas--show-all-tool)
-    (e-org-canvas--register-tool
-     registry
-     "org_canvas_overview"
-     "Collapse the current Org Canvas buffer to an overview."
-     empty-object
-     harness session-id
-     #'e-org-canvas--overview-tool)))
 
 (defun e-org-canvas--action (description handler &optional parameters)
   "Return an Org Canvas action descriptor for HANDLER."
