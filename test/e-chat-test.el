@@ -8004,33 +8004,43 @@ The context-window denominator comes from the live provider lookup
           (should (string-match-p "last prompt" text))
           (should (string-match-p "last response" text)))))))
 
-(ert-deftest e-chat-test-active-session-preview-loads-unloaded-index-session ()
-  "Active-session preview loads messages for restart-style index sessions."
-  (let* ((store (e-session-store-create))
-         (harness (e-harness-create
-                   :backend (e-backend-fake-create :items nil)
-                   :sessions store))
-         candidate)
-    (e-session-create store :id "unloaded-active"
-                      :metadata '(:name "Unloaded active"))
-    (e-session-append-message
-     store "unloaded-active"
-     '(:id "msg-1" :role user :content "last prompt"))
-    (e-session-append-message
-     store "unloaded-active"
-     '(:id "msg-2" :role assistant :content "last response"))
-    (setq candidate
-          (list :harness harness
-                :session '(:id "unloaded-active"
-                           :title "Unloaded active"
-                           :summary "last prompt"
-                           :message-count 2)
-                :session-id "unloaded-active"))
-    (with-temp-buffer
-      (e-chat--active-session-preview candidate (current-buffer))
-      (let ((text (buffer-string)))
-        (should (string-match-p "last prompt" text))
-        (should (string-match-p "last response" text))))))
+(ert-deftest e-chat-test-active-session-preview-avoids-unloaded-index-session-load ()
+  "Active-session preview renders metadata for unloaded index sessions."
+  (let* ((directory (make-temp-file "e-chat-active-" t))
+         (store (e-session-persistent-store-create directory))
+         loaded)
+    (unwind-protect
+        (progn
+          (e-session-create store :id "unloaded-active"
+                            :metadata '(:name "Unloaded active"))
+          (e-session-append-message
+           store "unloaded-active"
+           '(:id "msg-1" :role user :content "last prompt"))
+          (e-session-append-message
+           store "unloaded-active"
+           '(:id "msg-2" :role assistant :content "last response"))
+          (let* ((indexed-store
+                  (e-session-persistent-index-store-create directory))
+                 (harness (e-harness-create
+                           :backend (e-backend-fake-create :items nil)
+                           :sessions indexed-store))
+                 (session (car (e-harness-session-list harness)))
+                 (candidate
+                  (list :harness harness
+                        :session session
+                        :session-id "unloaded-active")))
+            (should-not (plist-get session :loaded))
+            (cl-letf (((symbol-function 'e-session-load-session)
+                       (lambda (&rest _args)
+                         (setq loaded t)
+                         (error "preview loaded transcript"))))
+              (with-temp-buffer
+                (e-chat--active-session-preview candidate (current-buffer))
+                (let ((text (buffer-string)))
+                  (should-not loaded)
+                  (should (string-match-p "last prompt" text))
+                  (should-not (string-match-p "last response" text)))))))
+      (delete-directory directory t))))
 
 (ert-deftest e-chat-test-active-session-preview-marks-session-read ()
   "Showing a session in the active-session preview records its latest response."

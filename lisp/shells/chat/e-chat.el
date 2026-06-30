@@ -7509,8 +7509,13 @@ adds its display name to the row."
 (defun e-chat--active-session-preview-messages (harness session)
   "Return messages to render for active-session preview of SESSION."
   (or (plist-get session :messages)
-      (ignore-errors
-        (e-harness-messages harness (plist-get session :id)))))
+      (let* ((store (e-harness-sessions harness))
+             (stored-session
+              (ignore-errors
+                (e-session--peek-session store (plist-get session :id)))))
+        (unless (and (e-session--persistent-p store)
+                     (not (plist-get stored-session :loaded)))
+          (copy-sequence (plist-get stored-session :messages))))))
 
 (defun e-chat--active-session-sanitize-preview-properties ()
   "Strip chat buffer structural properties from the active-session preview.
