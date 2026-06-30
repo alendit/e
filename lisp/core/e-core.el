@@ -37,6 +37,7 @@
 (require 'e-actions)
 (require 'e-harness-registry)
 (require 'e-harness-instances)
+(require 'e-task-queue)
 
 (defconst e-core-scaffold-state 'ready
   "Minimal state marker for the core runtime scaffold.")
