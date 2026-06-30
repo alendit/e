@@ -57,7 +57,7 @@ Partly implemented:
 - Composer =@= file candidates use a buffer-local cached snapshot, start async refreshes on cache miss, show a loading row while refreshing, and drop stale refreshes by generation/key.
 - Selected composer =@= file references read at most =e-chat-file-reference-max-bytes= plus one byte before truncating the inline preview.
 - Long final assistant messages are inserted as plain protected text immediately, with Markdown presentation deferred through a generation-checked timer job.
-- Deferred assistant Markdown presentation, activity/progress redraws, and loaded-session transcript backfill now run through the shared chat render-job timer registry, so cancellable render work has a common buffer-local owner instead of only ad hoc per-feature timer lists.
+- Deferred assistant Markdown presentation now processes long content in configurable line chunks through the shared chat render-job timer registry; activity/progress redraws and loaded-session transcript backfill use the same registry, so cancellable render work has a common buffer-local owner instead of only ad hoc per-feature timer lists.
 - Settled activity summaries no longer precompute expanded detail text during summary rendering; child expansion and details buffers compute details on demand.
 - Opening a loaded session renders an omitted-history marker plus a bounded newest-message tail when the transcript exceeds =e-chat-initial-session-render-message-limit=.
 - Shared context-status text accepts caller-owned formatted snapshot caches, and chat mode-line status uses a semantic snapshot key so repeated refreshes can avoid context rebuilding and model-window lookup.
@@ -68,7 +68,7 @@ Not yet implemented in the planned sense:
 
 - Explicit MCP batch call wrappers still have synchronous waits; generated model-facing MCP tool execution, interactive capability providers, interactive refresh, activation, and catalog discovery start APIs no longer do. Generic batch tool execution now fails fast for long async tools under an interactive hot-path guard.
 - There is no raw-result store outside the session tmp owner and no cache-driven reference cleanup lifecycle beyond explicit, harness-reset, and max-age tmp cleanup.
-- There is no full cooperative presentation render scheduler with chunk budgets, though the current deferred Markdown, activity/progress redraw, and loaded-session backfill jobs are cancellable and tracked through the shared chat render-job timer registry.
+- There is no full cooperative presentation render scheduler covering every presentation job, though deferred Markdown has a configurable line budget and the current deferred Markdown, activity/progress redraw, and loaded-session backfill jobs are cancellable and tracked through the shared chat render-job timer registry.
 - Context budget estimates and shared context-status text now support semantic cache keys; chat mode-line, active-session picker rows, and Org Canvas status use formatted-status snapshots, but the broader context/status snapshot contract for turn prep and any other shells remains open.
 - Chat open/resume now uses the chunked replay scheduler for unloaded indexed sessions, a bounded initial tail for large loaded sessions, and timer-driven progressive backfill for older loaded messages, but the complete queued-write critical/derived durability model remains only partially implemented.
 - Nested cheap tool calls still use synchronous return semantics; long-class nested calls now fail fast with model guidance in both harness-owned and core default nested executors instead of waiting.
@@ -142,7 +142,7 @@ Still blocking or potentially blocking:
 - MCP generated tools, web tools, file/tmp resource discovery tools, MCP refresh, MCP activation, MCP catalog discovery, and interactive MCP capability providers have async/cache-first paths for interactive execution, while explicit batch wrappers keep synchronous waits except that generic batch tool execution rejects long async tools in guarded hot paths;
 - =file://= and =tmp://= glob/search still expose synchronous direct resource facades for non-interactive callers and tests, but model-facing resource tools route through async =:start= methods and return request handles before =fd= or =rg= exits;
 - nested =e-tools-call= keeps cheap direct-return semantics, but long-class nested calls fail fast with model guidance unless a harness/custom executor handles them;
-- running-status redraw and tool-result previewing are synchronous buffer work; long final assistant Markdown presentation is deferred after immediate plain-text insertion, activity-summary details are generated on demand, and large loaded-session opens render a bounded newest-message tail initially before timer-driven older-message backfill;
+- running-status redraw and tool-result previewing are synchronous buffer work; long final assistant Markdown presentation is deferred and processed in configurable line chunks after immediate plain-text insertion, activity-summary details are generated on demand, and large loaded-session opens render a bounded newest-message tail initially before timer-driven older-message backfill;
 - context/status paths outside the chat mode-line, active-session picker, and Org Canvas snapshot paths can still build full context, run providers, estimate tokens, or query Anthropic model info synchronously;
 - default live session appends queue persistent JSONL/index writes through a short timer with generation/sequence metadata, stale-generation record dropping, and stale derived-index rebuild when current records flush; unloaded indexed chat open/resume uses the chunked replay start API, while loaded sessions backfill older transcript chunks through a cancellable buffer-local timer;
 - composer =@= candidate discovery is cache-first and refreshed asynchronously; selected file insertion still performs a synchronous but bounded read.
@@ -464,7 +464,7 @@ Work:
 1. Use the Slice 2 triage results to avoid scheduling work that was made cheap enough to run synchronously.
 2. Add a render job queue with injected budgets for tests and configurable foreground diagnostics for live use.
 3. Insert final assistant text promptly as plain protected text when Markdown presentation remains expensive. Implemented for assistant messages above =e-chat-deferred-markdown-threshold-bytes=.
-4. Defer Markdown/font-lock presentation into chunks only when the content requires it. Initial implementation defers the Markdown pass as a generation-checked timer job; chunking remains future work.
+4. Defer Markdown/font-lock presentation into chunks only when the content requires it. Deferred assistant Markdown now uses configurable line chunks through generation-checked render jobs.
 5. Update running activity/progress rows in place where possible.
 6. Lazy-generate expanded block details. Initial implementation avoids eager activity-summary details during summary rendering and leaves detail construction to activation/details commands.
 7. Render old session turns tail-first or in bounded chunks.

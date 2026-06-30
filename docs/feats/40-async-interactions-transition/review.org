@@ -2274,3 +2274,46 @@ emacsclient --eval "(progn (load-file \"/private/tmp/e-chat-render-job-owner-pro
 #+end_src
 
 Result: returned =(:markdown (:initial 1 :final 0) :activity (:initial 1 :final 0) :backfill (:initial 1 :final 0))=, confirming the live deferred Markdown, activity redraw, and loaded-session backfill paths all enter and clear the shared render-job registry.
+
+* Phase 3 Deferred Markdown Chunking Slice Review
+
+Status: complete.
+
+** Scope reviewed
+
+- Added a configurable deferred assistant Markdown line budget.
+- Split deferred assistant Markdown presentation into repeated render-job chunks for long content.
+- Preserved immediate final assistant styling while chunking by restoring the settled assistant face across the full range after first-chunk presentation clearing.
+- Kept cancellation and stale-generation behavior on the existing buffer-local Markdown generation and render-job registry.
+
+** Verification
+
+#+begin_src sh
+rtk eldev emacs --batch --eval "(progn (setq byte-compile-error-on-warn t) (dolist (file '(\"lisp/shells/chat/e-chat.el\" \"test/e-chat-test.el\")) (byte-compile-file file)))"
+#+end_src
+
+Result: passed for the touched chat module and tests.
+
+#+begin_src sh
+rtk eldev test -f test/e-chat-test.el -B e-chat-test-long-final-response-defers-markdown-presentation e-chat-test-deferred-markdown-renders-in-line-chunks e-chat-test-deferred-markdown-cancels-on-clear
+#+end_src
+
+Result: passed the focused deferred Markdown tests, including the one-line chunk-budget regression.
+
+#+begin_src sh
+rtk eldev test -f test/e-chat-test.el
+#+end_src
+
+Result: passed all 277 chat tests, with the existing Markdown rendering skip unchanged.
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Result: returned ="/Users/dimitrivorona/projects/elisp/e/"=, so the running Emacs loaded the changed deferred Markdown scheduler.
+
+#+begin_src sh
+emacsclient --eval "(progn (load-file \"/private/tmp/e-chat-markdown-chunk-probe.el\") e-chat-markdown-chunk-probe-result)"
+#+end_src
+
+Result: returned =(:initial 1 :final 0 :chunks 4 :three-faced (e-chat-markdown-strong-face e-chat-final-assistant-face))=, confirming live deferred Markdown used multiple chunks, cleared the render-job registry, and preserved Markdown plus final assistant faces.

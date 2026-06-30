@@ -4372,6 +4372,37 @@ the orphaned region and appeared to vanish."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-deferred-markdown-renders-in-line-chunks ()
+  "Deferred Markdown presentation honors the configured line chunk budget."
+  (let ((buffer (e-chat-test--buffer nil "chat-final-markdown-chunks"))
+        (e-chat-deferred-markdown-threshold-bytes 8)
+        (e-chat-deferred-markdown-chunk-lines 1)
+        (chunks 0))
+    (unwind-protect
+        (with-current-buffer buffer
+          (let ((original (symbol-function 'e-chat--apply-markdown-line-faces)))
+            (cl-letf (((symbol-function 'e-chat--apply-markdown-line-faces)
+                       (lambda (start end)
+                         (setq chunks (1+ chunks))
+                         (funcall original start end))))
+              (e-chat--insert-entry
+               "Assistant"
+               "Use **one**\nUse **two**\nUse **three**.")
+              (should e-chat--pending-markdown-presentation-timers)
+              (should
+               (e-chat-test--wait-until
+                (lambda ()
+                  (not e-chat--pending-markdown-presentation-timers))))
+              (should (> chunks 1))
+              (goto-char (point-min))
+              (search-forward "three")
+              (let ((faces (ensure-list
+                            (get-text-property
+                             (match-beginning 0) 'face))))
+                (should (memq 'e-chat-markdown-strong-face faces))))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-deferred-markdown-cancels-on-clear ()
   "Deferred Markdown callbacks do not apply to stale cleared buffers."
   (let ((buffer (e-chat-test--buffer nil "chat-markdown-cancel"))

@@ -125,6 +125,11 @@ concealment are scheduled for a later timer tick."
   :type 'integer
   :group 'e-chat)
 
+(defcustom e-chat-deferred-markdown-chunk-lines 80
+  "Maximum number of lines processed by one deferred Markdown render job."
+  :type 'integer
+  :group 'e-chat)
+
 (defcustom e-chat-mode-line-context-estimate-cache-seconds 2.0
   "Seconds to reuse approximate context-token estimates for mode-line refreshes."
   :type 'number
@@ -5415,6 +5420,36 @@ Hide REGEXP groups 1 and 3 as Markdown syntax."
       (e-chat--apply-markdown-emphasis-face content-start content-end)
       (e-chat--apply-markdown-link-faces content-start content-end))))
 
+(defun e-chat--deferred-markdown-chunk-end (chunk-start content-end)
+  "Return the end of the deferred Markdown chunk after CHUNK-START."
+  (save-excursion
+    (goto-char chunk-start)
+    (let ((lines (if (and (integerp e-chat-deferred-markdown-chunk-lines)
+                          (> e-chat-deferred-markdown-chunk-lines 0))
+                     e-chat-deferred-markdown-chunk-lines
+                   1)))
+      (forward-line lines)
+      (min (point) content-end))))
+
+(defun e-chat--apply-assistant-markdown-chunk
+    (chunk-start chunk-end content-start content-end)
+  "Apply fallback Markdown presentation to one deferred chunk.
+CHUNK-START and CHUNK-END bound the work.  CONTENT-START and CONTENT-END
+bound the original assistant content and are used for first-chunk clearing."
+  (when (= chunk-start content-start)
+    (e-chat--clear-markdown-presentation content-start content-end)
+    (e-chat--apply-final-assistant-face content-start content-end))
+  (e-chat--apply-markdown-line-faces chunk-start chunk-end)
+  (e-chat--apply-markdown-delimited-face
+   "\\(`\\)\\([^`\n]+\\)\\(`\\)" chunk-start chunk-end
+   'e-chat-markdown-code-face)
+  (e-chat--apply-markdown-delimited-face
+   "\\(\\*\\*\\)\\([^*\n]+\\)\\(\\*\\*\\)" chunk-start chunk-end
+   'e-chat-markdown-strong-face)
+  (e-chat--apply-markdown-emphasis-face chunk-start chunk-end)
+  (e-chat--apply-markdown-link-faces chunk-start chunk-end)
+  (e-chat--apply-final-assistant-face chunk-start chunk-end))
+
 (defun e-chat--cancel-pending-markdown-presentation ()
   "Cancel all pending deferred assistant Markdown presentation jobs."
   (dolist (timer e-chat--pending-markdown-presentation-timers)
@@ -5430,29 +5465,54 @@ Hide REGEXP groups 1 and 3 as Markdown syntax."
        (> (string-bytes content)
           e-chat-deferred-markdown-threshold-bytes)))
 
-(defun e-chat--run-deferred-assistant-markdown
-    (start-marker end-marker generation)
-  "Apply deferred Markdown between START-MARKER and END-MARKER.
-GENERATION must match the current buffer-local Markdown presentation
-generation."
-  (when (and (equal generation e-chat--markdown-presentation-generation)
-             (marker-position start-marker)
-             (marker-position end-marker)
-             (< (marker-position start-marker)
-                (marker-position end-marker)))
-    (let ((inhibit-read-only t)
-          (content-start (marker-position start-marker))
-          (content-end (marker-position end-marker)))
-      (save-excursion
-        (e-chat--apply-assistant-markdown content-start content-end)
-        (e-chat--apply-final-assistant-face content-start content-end)))))
+(defun e-chat--finish-deferred-assistant-markdown
+    (start-marker end-marker position-marker)
+  "Release deferred Markdown START-MARKER, END-MARKER, and POSITION-MARKER."
+  (set-marker start-marker nil)
+  (set-marker end-marker nil)
+  (set-marker position-marker nil))
 
-(defun e-chat--schedule-assistant-markdown (content-start content-end)
-  "Schedule deferred Markdown presentation for assistant CONTENT bounds."
-  (let* ((start-marker (copy-marker content-start nil))
-         (end-marker (copy-marker content-end t))
-         (generation e-chat--markdown-presentation-generation)
-         timer)
+(defun e-chat--run-deferred-assistant-markdown-chunk
+    (start-marker end-marker position-marker generation)
+  "Apply one deferred Markdown chunk.
+GENERATION must match the current buffer-local Markdown presentation
+generation.  Return non-nil when another chunk remains."
+  (if (not (equal generation e-chat--markdown-presentation-generation))
+      (progn
+        (e-chat--finish-deferred-assistant-markdown
+         start-marker end-marker position-marker)
+        nil)
+    (let ((content-start (marker-position start-marker))
+          (content-end (marker-position end-marker))
+          (chunk-start (marker-position position-marker)))
+      (if (not (and content-start
+                    content-end
+                    chunk-start
+                    (< chunk-start content-end)))
+          (progn
+            (e-chat--finish-deferred-assistant-markdown
+             start-marker end-marker position-marker)
+            nil)
+        (let* ((chunk-end
+                (e-chat--deferred-markdown-chunk-end chunk-start content-end))
+               (chunk-end (if (> chunk-end chunk-start)
+                              chunk-end
+                            content-end))
+               (has-more (< chunk-end content-end))
+               (inhibit-read-only t))
+          (save-excursion
+            (e-chat--apply-assistant-markdown-chunk
+             chunk-start chunk-end content-start content-end))
+          (set-marker position-marker chunk-end)
+          (unless has-more
+            (e-chat--finish-deferred-assistant-markdown
+             start-marker end-marker position-marker))
+          has-more)))))
+
+(defun e-chat--schedule-deferred-assistant-markdown-chunk
+    (start-marker end-marker position-marker generation)
+  "Schedule one deferred Markdown chunk for assistant CONTENT markers."
+  (let (timer)
     (setq timer
           (e-chat--schedule-render-job
            0
@@ -5460,15 +5520,30 @@ generation."
              (setq e-chat--pending-markdown-presentation-timers
                    (delq timer
                          e-chat--pending-markdown-presentation-timers))
-             (unwind-protect
-                 (e-chat--run-deferred-assistant-markdown
-                  start-marker
-                  end-marker
-                  generation)
-               (set-marker start-marker nil)
-               (set-marker end-marker nil)))))
+             (when (e-chat--run-deferred-assistant-markdown-chunk
+                    start-marker
+                    end-marker
+                    position-marker
+                    generation)
+               (e-chat--schedule-deferred-assistant-markdown-chunk
+                start-marker
+                end-marker
+                position-marker
+                generation)))))
     (push timer e-chat--pending-markdown-presentation-timers)
     timer))
+
+(defun e-chat--schedule-assistant-markdown (content-start content-end)
+  "Schedule deferred Markdown presentation for assistant CONTENT bounds."
+  (let* ((start-marker (copy-marker content-start nil))
+         (end-marker (copy-marker content-end t))
+         (position-marker (copy-marker content-start nil))
+         (generation e-chat--markdown-presentation-generation))
+    (e-chat--schedule-deferred-assistant-markdown-chunk
+     start-marker
+     end-marker
+     position-marker
+     generation)))
 
 (defun e-chat--apply-final-assistant-face (content-start content-end)
   "Apply settled assistant styling from CONTENT-START to CONTENT-END.
