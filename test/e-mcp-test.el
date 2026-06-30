@@ -117,6 +117,40 @@
                              (nreverse requests))
                      '("list-tools" "call-tool" "refresh"))))))
 
+(ert-deftest e-mcp-test-sync-helper-wrappers-reject-hot-path ()
+  "Synchronous MCP stdio wrappers cannot run inside marked hot paths."
+  (let ((calls 0)
+        (servers (list (e-mcp-test--server))))
+    (e-mcp-test--with-transport
+        (lambda (_request)
+          (setq calls (1+ calls))
+          '(:ok t :result (:tools [])))
+      (let ((err (should-error
+                  (e-request-with-hot-path 'mcp-batch
+                    (e-mcp-list-tools servers))
+                  :type 'e-request-blocking-call-in-hot-path)))
+        (should (equal (cdr err)
+                       '(e-mcp--helper-request mcp-batch))))
+      (should (= calls 0)))))
+
+(ert-deftest e-mcp-test-sync-http-helpers-reject-hot-path ()
+  "Synchronous MCP HTTP helpers cannot run inside marked hot paths."
+  (let ((session (list :url "http://127.0.0.1:1")))
+    (let ((post-error
+           (should-error
+            (e-request-with-hot-path 'mcp-http-batch
+              (e-mcp--http-post session "tools/list" nil))
+            :type 'e-request-blocking-call-in-hot-path)))
+      (should (equal (cdr post-error)
+                     '(e-mcp--http-post mcp-http-batch))))
+    (let ((notify-error
+           (should-error
+            (e-request-with-hot-path 'mcp-http-notify
+              (e-mcp--http-notify session "notifications/initialized" nil))
+            :type 'e-request-blocking-call-in-hot-path)))
+      (should (equal (cdr notify-error)
+                     '(e-mcp--http-notify mcp-http-notify))))))
+
 (ert-deftest e-mcp-test-helper-request-rejects-malformed-response ()
   "Malformed helper responses signal a protocol error."
   (e-mcp-test--with-transport

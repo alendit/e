@@ -2317,3 +2317,46 @@ emacsclient --eval "(progn (load-file \"/private/tmp/e-chat-markdown-chunk-probe
 #+end_src
 
 Result: returned =(:initial 1 :final 0 :chunks 4 :three-faced (e-chat-markdown-strong-face e-chat-final-assistant-face))=, confirming live deferred Markdown used multiple chunks, cleared the render-job registry, and preserved Markdown plus final assistant faces.
+
+* Phase 4 MCP Sync Hot-Path Guard Slice Review
+
+Status: complete.
+
+** Scope reviewed
+
+- Added an MCP sync-wrapper guard that rejects marked interactive hot paths through =e-request-hot-path-blocking-error=.
+- Guarded stdio helper sync requests before helper transport can run.
+- Guarded HTTP sync post/notify helpers before =url-retrieve-synchronously= can run.
+- Preserved non-interactive batch/test direct-return semantics for =e-mcp-list-tools=, =e-mcp-call-tool=, and =e-mcp-refresh=.
+
+** Verification
+
+#+begin_src sh
+rtk eldev emacs --batch --eval "(progn (setq byte-compile-error-on-warn t) (dolist (file '(\"lisp/core/e-mcp.el\" \"test/e-mcp-test.el\")) (byte-compile-file file)))"
+#+end_src
+
+Result: passed for the touched MCP module and tests.
+
+#+begin_src sh
+rtk eldev test -f test/e-mcp-test.el -B e-mcp-test-sync-helper-wrappers-reject-hot-path e-mcp-test-sync-http-helpers-reject-hot-path e-mcp-test-helper-request-uses-fake-transport
+#+end_src
+
+Result: passed the focused hot-path guard tests and the existing fake-transport batch wrapper test.
+
+#+begin_src sh
+rtk eldev test -f test/e-mcp-test.el
+#+end_src
+
+Result: passed all 36 MCP tests.
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Result: returned ="/Users/dimitrivorona/projects/elisp/e/"=, so the running Emacs loaded the MCP guard change.
+
+#+begin_src sh
+emacsclient --eval "(let ((calls 0) result) ...)"
+#+end_src
+
+Result: returned =(:error e-request-blocking-call-in-hot-path :data (e-mcp--helper-request live-mcp-sync) :calls 0)=, confirming the live hot-path guard fires before helper transport runs.

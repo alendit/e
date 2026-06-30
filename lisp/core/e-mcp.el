@@ -17,6 +17,7 @@
 (require 'e-capabilities)
 (require 'e-capability-config)
 (require 'e-context)
+(require 'e-request)
 (require 'e-store)
 (require 'e-tools)
 (require 'json)
@@ -344,8 +345,14 @@ transport), but not both."
     (e-mcp--helper-error response "MCP helper returned an error"))
   (plist-get response :result))
 
+(defun e-mcp--reject-sync-in-hot-path (operation)
+  "Reject synchronous MCP OPERATION from marked interactive hot paths."
+  (when (e-request-hot-path-active-p)
+    (e-request-hot-path-blocking-error operation)))
+
 (defun e-mcp--helper-request (op servers &rest args)
   "Send OP for SERVERS to the helper with keyword ARGS."
+  (e-mcp--reject-sync-in-hot-path 'e-mcp--helper-request)
   (let* ((id (e-mcp--next-id))
          (request (append (list :id id
                                 :op op
@@ -583,6 +590,7 @@ headers) is searched."
 (defun e-mcp--http-post (session method params)
   "Send a JSON-RPC METHOD call with PARAMS to the MCP HTTP server in SESSION.
 Return the parsed JSON-RPC result on success, signal on error."
+  (e-mcp--reject-sync-in-hot-path 'e-mcp--http-post)
   (let* ((id (e-mcp--http-next-id session))
          (url (plist-get session :url))
          (timeout (or e-mcp-helper-timeout 10))
@@ -684,6 +692,7 @@ Return the parsed JSON-RPC result on success, signal on error."
 
 (defun e-mcp--http-notify (session method params)
   "Send a JSON-RPC notification (no id, no response expected) to SESSION."
+  (e-mcp--reject-sync-in-hot-path 'e-mcp--http-notify)
   (let* ((url (plist-get session :url))
          (payload (json-encode
                    (list :jsonrpc "2.0"

@@ -52,6 +52,7 @@ Partly implemented:
 - MCP catalog discovery has an async start API for stdio and HTTP transports, with cache population on completion.
 - Interactive MCP capability providers use cached catalogs and start async discovery instead of blocking harness tool/resource/context construction on a cache miss.
 - =mcp_activate= has an async =:start= path for catalog loading and optional invocation.
+- Explicit MCP sync helper/HTTP wrappers reject marked interactive hot paths before helper transport or HTTP primitives run, while preserving batch/test direct-return semantics.
 - Persistent session transcript replay has a chunked async start API with progress and cancellation.
 - Chat open/resume attaches unloaded indexed sessions through the chunked transcript loader and initially renders a cheap summary/loading shell.
 - Composer =@= file candidates use a buffer-local cached snapshot, start async refreshes on cache miss, show a loading row while refreshing, and drop stale refreshes by generation/key.
@@ -66,7 +67,7 @@ Partly implemented:
 
 Not yet implemented in the planned sense:
 
-- Explicit MCP batch call wrappers still have synchronous waits; generated model-facing MCP tool execution, interactive capability providers, interactive refresh, activation, and catalog discovery start APIs no longer do. Generic batch tool execution now fails fast for long async tools under an interactive hot-path guard.
+- Explicit MCP batch call wrappers still have synchronous waits for non-interactive batch/test callers, but marked interactive hot paths now fail before helper transport or HTTP primitives run. Generated model-facing MCP tool execution, interactive capability providers, interactive refresh, activation, and catalog discovery start APIs no longer wait.
 - There is no raw-result store outside the session tmp owner and no cache-driven reference cleanup lifecycle beyond explicit, harness-reset, and max-age tmp cleanup.
 - There is no full cooperative presentation render scheduler covering every presentation job, though deferred Markdown has a configurable line budget and the current deferred Markdown, activity/progress redraw, and loaded-session backfill jobs are cancellable and tracked through the shared chat render-job timer registry.
 - Context budget estimates and shared context-status text now support semantic cache keys; chat mode-line, active-session picker rows, and Org Canvas status use formatted-status snapshots, but the broader context/status snapshot contract for turn prep and any other shells remains open.
@@ -139,7 +140,7 @@ Already acceptable:
 Still blocking or potentially blocking:
 
 - core compaction, auto-compaction, manual chat/Org Canvas commands, the legacy =compact_session= tool registration, and the session compaction action entry point have async lifecycle paths;
-- MCP generated tools, web tools, file/tmp resource discovery tools, MCP refresh, MCP activation, MCP catalog discovery, and interactive MCP capability providers have async/cache-first paths for interactive execution, while explicit batch wrappers keep synchronous waits except that generic batch tool execution rejects long async tools in guarded hot paths;
+- MCP generated tools, web tools, file/tmp resource discovery tools, MCP refresh, MCP activation, MCP catalog discovery, and interactive MCP capability providers have async/cache-first paths for interactive execution, while explicit batch wrappers keep synchronous waits only outside marked hot paths;
 - =file://= and =tmp://= glob/search still expose synchronous direct resource facades for non-interactive callers and tests, but model-facing resource tools route through async =:start= methods and return request handles before =fd= or =rg= exits;
 - nested =e-tools-call= keeps cheap direct-return semantics, but long-class nested calls fail fast with model guidance unless a harness/custom executor handles them;
 - running-status redraw and tool-result previewing are synchronous buffer work; long final assistant Markdown presentation is deferred and processed in configurable line chunks after immediate plain-text insertion, activity-summary details are generated on demand, and large loaded-session opens render a bounded newest-message tail initially before timer-driven older-message backfill;
