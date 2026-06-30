@@ -2759,3 +2759,57 @@ emacsclient --eval "(let (process-start process-error) ...)"
 #+end_src
 
 Result: returned =(:process-start nil :process-error (e-session-tmp--process-lines live-tmp-process))=, confirming the live direct tmp sync helper rejects before starting blocking work.
+
+* Phase 3 Active-Turn Tail Render Job Slice Review
+
+Status: complete.
+
+** Scope reviewed
+
+- Routed the post-focus active-turn tail update through the shared chat render-job registry.
+- Preserved the existing buffer-local compatibility timer slot while adding a feature-level generation token for stale callback rejection.
+- Added owner/key/session/block metadata for the active-turn focus-tail job so opt-in render diagnostics and scheduler coalescing can see it.
+
+** Verification
+
+#+begin_src sh
+rtk eldev test -f test/e-chat-test.el -B e-chat-test-active-focus-tail-survives-late-window-restore e-chat-test-render-job-scheduler-coalesces-owner-key e-chat-test-render-job-diagnostics-track-pending-jobs
+#+end_src
+
+Result: passed the focused focus-tail render-job registry coverage and adjacent scheduler diagnostics tests.
+
+#+begin_src sh
+rtk eldev test -f test/e-chat-test.el
+#+end_src
+
+Result: passed all 283 chat tests, with 282 expected and 1 skipped.
+
+#+begin_src sh
+rtk eldev eval "(progn (require 'e-dev-perf) ...)"
+#+end_src
+
+Result: =chat.activity-burst= and =chat.final-assistant-render= completed with no regressions.
+
+#+begin_src sh
+E_E2E=1 rtk eldev test -f e2e/e-provider-continuation-e2e-test.el
+#+end_src
+
+Result: passed the provider-continuation e2e smoke.
+
+#+begin_src sh
+git diff --check
+#+end_src
+
+Result: passed.
+
+#+begin_src sh
+rtk eldev compile
+#+end_src
+
+Result: passed.
+
+#+begin_src sh
+emacsclient --eval "(progn (load \"/Users/dimitrivorona/projects/elisp/e/lisp/dev/e-dev.el\" nil 'nomessage) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Result: failed because =emacsclient= could not connect to the Emacs server socket: =Connection refused=.

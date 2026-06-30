@@ -3908,6 +3908,19 @@ the orphaned region and appeared to vanish."
               (set-window-start window stale-point)
               (goto-char stale-point)
               (e-chat--tail-selected-active-turn)
+              (with-current-buffer buffer
+                (should (timerp e-chat--tail-active-turn-timer))
+                (should (eq (car e-chat--pending-render-job-timers)
+                            e-chat--tail-active-turn-timer))
+                (let ((job (car e-chat--pending-render-jobs)))
+                  (should (eq (e-chat-render-job-owner job)
+                              'active-turn-tail))
+                  (should (equal (e-chat-render-job-key job)
+                                 'selected-window))
+                  (should (equal (e-chat-render-job-session-id job)
+                                 "chat-active-focus-tail-late"))
+                  (should (equal (e-chat-render-job-block-id job)
+                                 'active-turn-tail))))
               (should (= (window-point window) tail))
               ;; Doom workspace restoration can put the old point back after
               ;; focus hooks run.  The deferred tail must win that race.

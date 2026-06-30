@@ -520,6 +520,9 @@ intentionally not persisted in session metadata.")
 (defvar-local e-chat--tail-active-turn-timer nil
   "Deferred timer used to tail active output after window focus settles.")
 
+(defvar-local e-chat--tail-active-turn-generation 0
+  "Generation token for stale active-turn tail callbacks.")
+
 (defun e-chat--workspace-unread-cache-invalidate ()
   "Mark the workspace unread cache stale."
   (setq e-chat--workspace-unread-cache-valid-p nil))
@@ -573,18 +576,24 @@ intentionally not persisted in session metadata.")
   (when (buffer-live-p buffer)
     (with-current-buffer buffer
       (when (timerp e-chat--tail-active-turn-timer)
-        (cancel-timer e-chat--tail-active-turn-timer))
-      (setq e-chat--tail-active-turn-timer
-            (run-at-time
-             0
-             nil
-             (lambda (target-buffer)
-               (when (buffer-live-p target-buffer)
-                 (with-current-buffer target-buffer
-                   (setq e-chat--tail-active-turn-timer nil))
-                 (e-chat--tail-active-turn-buffer-if-selected
-                  target-buffer)))
-             buffer)))))
+        (e-chat--cancel-render-job-timer e-chat--tail-active-turn-timer)
+        (setq e-chat--tail-active-turn-timer nil))
+      (setq e-chat--tail-active-turn-generation
+            (1+ e-chat--tail-active-turn-generation))
+      (let ((generation e-chat--tail-active-turn-generation))
+        (setq e-chat--tail-active-turn-timer
+              (e-chat--schedule-render-job
+               0
+               (lambda ()
+                 (setq e-chat--tail-active-turn-timer nil)
+                 (when (= generation e-chat--tail-active-turn-generation)
+                   (e-chat--tail-active-turn-buffer-if-selected buffer)))
+               :owner 'active-turn-tail
+               :key 'selected-window
+               :generation generation
+               :session-id e-chat-session-id
+               :block-id 'active-turn-tail
+               :coalesce t))))))
 
 (defun e-chat--tail-selected-active-turn (&rest _)
   "Show the latest active-turn output when selecting a running chat window."
