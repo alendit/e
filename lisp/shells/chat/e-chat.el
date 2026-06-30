@@ -3138,6 +3138,10 @@ DETAILS-TEXT describe block actions."
   "Return collapsed display text for COUNT tool invocations."
   (format "%d tool call%s" count (if (= count 1) "" "s")))
 
+(defun e-chat--activity-action-count-text (count)
+  "Return collapsed display text for COUNT action invocations."
+  (format "%d action%s" count (if (= count 1) "" "s")))
+
 (defun e-chat--activity-records (record)
   "Return semantic activity records for RECORD."
   (plist-get record :activity-records))
@@ -3437,6 +3441,14 @@ ACTIVE-AT is used for active thinking duration."
         (mapcar #'e-chat--activity-round-visible-text
                 (e-chat--activity-records record))))
 
+(defun e-chat--activity-action-visible-chunks (record)
+  "Return visible action chunks from RECORD intermittent entries."
+  (e-chat--activity-visible-chunks
+   (cl-remove-if-not
+    (lambda (entry)
+      (member (plist-get entry :title) '("Action call" "Action")))
+    (plist-get record :intermittent-entries))))
+
 (defun e-chat--activity-visible-chunks (entries)
   "Return visible collapsed activity chunks for intermittent ENTRIES.
 Count tool invocations after the reasoning chunk they followed."
@@ -3466,6 +3478,11 @@ Count tool invocations after the reasoning chunk they followed."
             ("Tool call"
              (setq tool-count (1+ tool-count)))
             ("Tool")
+            ("Action call"
+             (setq current
+                   (append (or current nil)
+                           (list (format "Action: %s" content)))))
+            ("Action")
             (_
              (finish-current)
              (when (and content (not (string-empty-p content)))
@@ -3482,6 +3499,14 @@ Count tool invocations after the reasoning chunk they followed."
        (equal (plist-get entry :title) "Tool call"))
      (plist-get record :intermittent-entries))))
 
+(defun e-chat--activity-action-count (record)
+  "Return number of action calls recorded for RECORD."
+  (or (plist-get record :action-count)
+      (cl-count-if
+       (lambda (entry)
+         (equal (plist-get entry :title) "Action call"))
+       (plist-get record :intermittent-entries))))
+
 (defun e-chat--activity-summary-text (record)
   "Return settled turn summary text for RECORD."
   (when (and (plist-get record :started-at)
@@ -3491,16 +3516,22 @@ Count tool invocations after the reasoning chunk they followed."
                       (plist-get record :started-at)
                       (plist-get record :ended-at)))
            (tool-count (e-chat--activity-tool-count record))
+           (action-count (e-chat--activity-action-count record))
            (tool-text (cond
                        ((= tool-count 0) "")
                        ((= tool-count 1) ", 1 tool call")
-                       (t (format ", %d tool calls" tool-count)))))
-      (format "Turn took %s%s." duration tool-text))))
+                       (t (format ", %d tool calls" tool-count))))
+           (action-text (cond
+                         ((= action-count 0) "")
+                         ((= action-count 1) ", 1 action")
+                         (t (format ", %d actions" action-count)))))
+      (format "Turn took %s%s%s." duration tool-text action-text))))
 
 (defun e-chat--activity-expanded-text (record)
   "Return expanded per-line activity history for RECORD."
   (if (e-chat--activity-records record)
-      (when-let ((chunks (e-chat--activity-record-visible-chunks record)))
+      (when-let ((chunks (append (e-chat--activity-record-visible-chunks record)
+                                 (e-chat--activity-action-visible-chunks record))))
         (when chunks
           (concat (string-join
                    chunks
@@ -3560,6 +3591,13 @@ Count tool invocations after the reasoning chunk they followed."
                           :action-text text
                           :tool-items (e-chat--semantic-tool-items items))
                     children))))))
+    (dolist (entry (plist-get record :intermittent-entries))
+      (when (equal (plist-get entry :title) "Action call")
+        (let ((text (format "Action: %s" (plist-get entry :content))))
+          (push (list :kind 'activity-action
+                      :text text
+                      :action-text text)
+                children))))
     (nreverse children)))
 
 (defun e-chat--failure-details-text (record)
@@ -3743,6 +3781,57 @@ STATUS defaults to `done'."
    (e-chat--tool-result-display-text (plist-get payload :result))
    nil
    source))
+
+(defun e-chat--format-action-call (payload)
+  "Return compact action call text for PAYLOAD."
+  (let ((capability (plist-get payload :capability-id))
+        (action (plist-get payload :action)))
+    (format "%s/%s"
+            (or capability "unknown")
+            (cond
+             ((keywordp action) (substring (symbol-name action) 1))
+             ((symbolp action) (symbol-name action))
+             ((stringp action) (string-remove-prefix ":" action))
+             (t "unknown")))))
+
+(defun e-chat--action-preview-content (preview)
+  "Return display content from action PREVIEW plist."
+  (cond
+   ((and (listp preview) (plist-get preview :content))
+    (plist-get preview :content))
+   (preview (prin1-to-string preview))
+   (t "")))
+
+(defun e-chat--record-action-started (record payload &optional source)
+  "Record action-started PAYLOAD in RECORD."
+  (plist-put record :action-count (1+ (or (plist-get record :action-count) 0)))
+  (e-chat--add-intermittent-entry
+   record
+   "Action call"
+   (e-chat--format-action-call payload)
+   nil
+   source))
+
+(defun e-chat--record-action-finished (record payload &optional source)
+  "Record terminal action PAYLOAD in RECORD."
+  (let* ((status (or (plist-get payload :status) 'ok))
+         (result (or (plist-get payload :result)
+                     (and (plist-get payload :message)
+                          (list :content (plist-get payload :message)))))
+         (preview (string-trim-right (e-chat--action-preview-content result))))
+    (e-chat--add-intermittent-entry
+     record
+     "Action"
+     (string-trim-right
+      (format "%s -> %s%s"
+              (e-chat--format-action-call payload)
+              status
+              (if (string-empty-p preview)
+                  ""
+                (concat "
+" preview))))
+     nil
+     source)))
 
 (defun e-chat--record-tool-progress (record payload)
   "Record streaming tool progress PAYLOAD in RECORD."
@@ -4499,6 +4588,16 @@ SOURCE identifies where the entry came from for duplicate suppression."
         'activity))
       ('tool-finished
        (e-chat--record-tool-finished
+        record
+        (plist-get activity-event :payload)
+        'activity))
+      ('action-started
+       (e-chat--record-action-started
+        record
+        (plist-get activity-event :payload)
+        'activity))
+      ((or 'action-finished 'action-failed)
+       (e-chat--record-action-finished
         record
         (plist-get activity-event :payload)
         'activity))
@@ -5970,6 +6069,24 @@ When REFRESH-MODE-LINE is non-nil, also refresh context-aware mode-line text."
      (when-let ((record (e-chat--existing-turn-record
                          (plist-get event :turn-id))))
        (e-chat--record-tool-finished
+        record
+        (plist-get event :payload)
+        'activity)
+       (e-chat--request-activity-redraw (plist-get event :turn-id))))
+    ('action-started
+     (e-chat--set-status "action")
+     (when-let ((record (e-chat--existing-turn-record
+                         (plist-get event :turn-id))))
+       (e-chat--record-action-started
+        record
+        (plist-get event :payload)
+        'activity)
+       (e-chat--request-activity-redraw (plist-get event :turn-id))))
+    ((or 'action-finished 'action-failed)
+     (e-chat--set-status "action done")
+     (when-let ((record (e-chat--existing-turn-record
+                         (plist-get event :turn-id))))
+       (e-chat--record-action-finished
         record
         (plist-get event :payload)
         'activity)

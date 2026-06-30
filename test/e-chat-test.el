@@ -3167,6 +3167,64 @@ the orphaned region and appeared to vanish."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-action-activity-renders-in-summary ()
+  "Action activity events render in the settled turn summary."
+  (let ((buffer (e-chat-test--buffer nil "chat-action-summary")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat--render-event
+           (e-events-make :type 'turn-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 0))
+          (e-chat--render-event
+           (e-events-make :type 'provider-request-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 0
+                          :payload '(:status started)))
+          (e-chat--render-event
+           (e-events-make :type 'action-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 1
+                          :payload '(:capability-id workspace-awareness
+                                      :action :focus-buffer)))
+          (e-chat--render-event
+           (e-events-make :type 'action-finished
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 2
+                          :payload '(:capability-id workspace-awareness
+                                      :action :focus-buffer
+                                      :status ok
+                                      :result (:content "focused"))))
+          (e-chat--render-event
+           (e-events-make :type 'provider-request-finished
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 2
+                          :payload '(:status done)))
+          (e-chat--render-event
+           (e-events-make :type 'message-added
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 2
+                          :payload '(:message (:role assistant
+                                                :content "Done."))))
+          (let ((content (buffer-string)))
+            (should (string-match-p
+                     "Turn took 0min 2sec, 1 action\\." content))
+            (should-not (string-match-p "1 tool call" content)))
+          (e-chat-test--focus-block-containing "Turn took 0min 2sec")
+          (call-interactively #'e-chat-response-navigation-activate)
+          (let ((content (buffer-string)))
+            (should (string-match-p
+                     "Action: workspace-awareness/focus-buffer"
+                     content))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-activity-summary-expands-to-child-blocks ()
   "Settled activity summary expansion creates navigable child blocks."
   (let ((buffer (e-chat-test--buffer nil "chat-progress-summary-children")))

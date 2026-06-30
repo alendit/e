@@ -34,6 +34,7 @@ Implemented:
 - Nested long-class tool calls are rejected by the harness with a structured model-facing error instead of synchronously waiting inside another tool.
 - Capability actions support async =:start= dispatch with started/finished/failed activity events.
 - The session compaction action starts through =e-harness-compact-session-start= instead of waiting on the synchronous compaction wrapper.
+- Chat activity presentation renders action started/finished/failed events in the settled turn summary and navigable expanded activity rows.
 - The Phase 1 review records focused tests, compile checks, and a live reload.
 
 Partly implemented:

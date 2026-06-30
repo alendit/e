@@ -922,6 +922,60 @@ rtk eldev emacs --batch --eval "(progn (setq byte-compile-error-on-warn t) (doli
 
 Result: passed for the touched MCP module and tests.
 
+* Phase 3 Action Activity Presentation Slice Review
+
+Status: in progress.
+
+** Scope reviewed
+
+- Chat presentation now records =action-started=, =action-finished=, and =action-failed= activity events.
+- Settled activity summaries count action calls alongside tool calls.
+- Expanded activity summaries include navigable action rows so async action dispatch is visible after settlement.
+
+** Verification
+
+#+begin_src sh
+rtk eldev test -f test/e-chat-test.el -B e-chat-test-action-activity-renders-in-summary e-chat-test-final-turn-collapses-progress-to-summary e-chat-test-activity-summary-expands-to-child-blocks
+#+end_src
+
+Result: passed all three focused chat presentation tests.
+
+#+begin_src sh
+rtk eldev test -f test/e-chat-test.el -B e-chat-test-mode-line-status-reuses-fresh-estimate-cache
+#+end_src
+
+Result: failed independently with =context-calls= equal to 1 instead of 0. This failure is outside the action-activity path and was left for a separate slice.
+
+#+begin_src sh
+rtk eldev emacs --batch --eval "(progn (require 'e-chat) (setq byte-compile-error-on-warn t) (byte-compile-file \"lisp/shells/chat/e-chat.el\"))"
+#+end_src
+
+Result: passed for the touched chat source module.
+
+#+begin_src sh
+rtk eldev emacs --batch --eval "(progn (require 'e-chat) (setq byte-compile-error-on-warn t) (dolist (file '(\"lisp/shells/chat/e-chat.el\" \"test/e-chat-test.el\")) (byte-compile-file file)))"
+#+end_src
+
+Result: =e-chat.el= compiled; =test/e-chat-test.el= reported an existing free-variable warning at line 444 outside this slice.
+
+#+begin_src sh
+git diff --check -- lisp/shells/chat/e-chat.el test/e-chat-test.el
+#+end_src
+
+Result: passed.
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Result: returned the repository path after reloading changed Lisp.
+
+#+begin_src sh
+emacsclient --eval "...bounded temporary chat action-summary probe..."
+#+end_src
+
+Result: returned =(:summary 68 :actions 1)=.
+
 #+begin_src sh
 git diff --check
 #+end_src
