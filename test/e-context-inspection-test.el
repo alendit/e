@@ -11,6 +11,7 @@
 
 ;;; Code:
 
+(require 'cl-lib)
 (require 'ert)
 (require 'e)
 (require 'e-backend)
@@ -43,77 +44,91 @@
 
 (ert-deftest e-context-inspection-test-export-default-pre-prompt-context ()
   "export-context writes pre-prompt context to a resource and returns metadata."
-  (let* ((context-provider
-          (e-context-provider-create
-           :name 'test-context
-           :build (lambda (&rest _args)
-                    '((:role system :content "provider context")))))
-         (harness (e-harness-create
-                   :backend (e-backend-fake-create :items nil)
-                   :intrinsic-capabilities
-                   (append
-                    (list
-                     (e-capability-create
-                      :id 'context-capability
-                      :instructions "capability instructions"
-                      :context-providers (list context-provider)))
-                    (e-layer-capabilities (e-harness-base-layer-create))
-                    (e-layer-capabilities (e-dev-layer-create))))))
-    (e-harness-create-session harness :id "session-1")
-    (e-session-append-message
-     (e-harness-sessions harness)
-     "session-1"
-     '(:id "msg-1" :role user :content "existing prompt"))
-    (let* ((metadata (e-actions-call
-                      'context-inspection
-                      :export-context
-                      (list :uri "tmp://default_context.md")
-                      (list :harness harness
-                            :session-id "session-1"
-                            :turn-id "turn-1")))
-           (content (e-resources-read
-                     (e-harness-resources harness "session-1" "turn-1")
-                     "tmp://default_context.md")))
-      (should (equal (plist-get metadata :uri) "tmp://default_context.md"))
-      (should (eq (plist-get metadata :mode) 'pre-prompt))
-      (should (equal (plist-get metadata :message-count) 3))
-      (should (string-match-p "capability instructions" content))
-      (should (string-match-p "provider context" content))
-      (should-not (string-match-p "existing prompt" content)))))
+  (let (seen-purpose)
+    (let* ((context-provider
+            (e-context-provider-create
+             :name 'test-context
+             :build (cl-function
+                     (lambda (&key context-purpose &allow-other-keys)
+                       (setq seen-purpose context-purpose)
+                       '((:role system :content "provider context"))))))
+           (harness (e-harness-create
+                     :backend (e-backend-fake-create :items nil)
+                     :intrinsic-capabilities
+                     (append
+                      (list
+                       (e-capability-create
+                        :id 'context-capability
+                        :instructions "capability instructions"
+                        :context-providers (list context-provider)))
+                      (e-layer-capabilities (e-harness-base-layer-create))
+                      (e-layer-capabilities (e-dev-layer-create))))))
+      (e-harness-create-session harness :id "session-1")
+      (e-session-append-message
+       (e-harness-sessions harness)
+       "session-1"
+       '(:id "msg-1" :role user :content "existing prompt"))
+      (let* ((metadata (e-actions-call
+                        'context-inspection
+                        :export-context
+                        (list :uri "tmp://default_context.md")
+                        (list :harness harness
+                              :session-id "session-1"
+                              :turn-id "turn-1")))
+             (content (e-resources-read
+                       (e-harness-resources harness "session-1" "turn-1")
+                       "tmp://default_context.md")))
+        (should (equal (plist-get metadata :uri) "tmp://default_context.md"))
+        (should (eq (plist-get metadata :mode) 'pre-prompt))
+        (should (equal (plist-get metadata :message-count) 3))
+        (should (eq seen-purpose 'preview))
+        (should (string-match-p "capability instructions" content))
+        (should (string-match-p "provider context" content))
+        (should-not (string-match-p "existing prompt" content))))))
 
 (ert-deftest e-context-inspection-test-export-full-context-when-requested ()
   "export-context can include transcript messages when explicitly requested."
-  (let* ((harness (e-harness-create
-                   :backend (e-backend-fake-create :items nil)
-                   :intrinsic-capabilities
-                   (append
-                    (list (e-capability-create
-                           :id 'instructions-capability
-                           :instructions "system guidance"))
-                    (e-layer-capabilities (e-harness-base-layer-create))
-                    (e-layer-capabilities (e-dev-layer-create))))))
-    (e-harness-create-session harness :id "session-1")
-    (e-session-append-message
-     (e-harness-sessions harness)
-     "session-1"
-     '(:id "msg-1" :role user :content "existing prompt"))
-    (let* ((metadata (e-actions-call
-                      'context-inspection
-                      :export-context
-                      (list :uri "tmp://context.md"
-                            :include_transcript t
-                            :include_metadata :json-false)
-                      (list :harness harness
-                            :session-id "session-1"
-                            :turn-id "turn-1")))
-           (content (e-resources-read
-                     (e-harness-resources harness "session-1" "turn-1")
-                     "tmp://context.md")))
-      (should (eq (plist-get metadata :mode) 'full))
-      (should (equal (plist-get metadata :message-count) 3))
-      (should (string-match-p "system guidance" content))
-      (should (string-match-p "existing prompt" content))
-      (should-not (string-match-p "Export metadata" content)))))
+  (let (seen-purpose)
+    (let* ((context-provider
+            (e-context-provider-create
+             :name 'test-full-context
+             :build (cl-function
+                     (lambda (&key context-purpose &allow-other-keys)
+                       (setq seen-purpose context-purpose)
+                       nil))))
+           (harness (e-harness-create
+                     :backend (e-backend-fake-create :items nil)
+                     :intrinsic-capabilities
+                     (append
+                      (list (e-capability-create
+                             :id 'instructions-capability
+                             :instructions "system guidance"
+                             :context-providers (list context-provider)))
+                      (e-layer-capabilities (e-harness-base-layer-create))
+                      (e-layer-capabilities (e-dev-layer-create))))))
+      (e-harness-create-session harness :id "session-1")
+      (e-session-append-message
+       (e-harness-sessions harness)
+       "session-1"
+       '(:id "msg-1" :role user :content "existing prompt"))
+      (let* ((metadata (e-actions-call
+                        'context-inspection
+                        :export-context
+                        (list :uri "tmp://context.md"
+                              :include_transcript t
+                              :include_metadata :json-false)
+                        (list :harness harness
+                              :session-id "session-1"
+                              :turn-id "turn-1")))
+             (content (e-resources-read
+                       (e-harness-resources harness "session-1" "turn-1")
+                       "tmp://context.md")))
+        (should (eq (plist-get metadata :mode) 'full))
+        (should (equal (plist-get metadata :message-count) 3))
+        (should (eq seen-purpose 'preview))
+        (should (string-match-p "system guidance" content))
+        (should (string-match-p "existing prompt" content))
+        (should-not (string-match-p "Export metadata" content))))))
 
 (ert-deftest e-context-inspection-test-recent-failures-finds-turn-failed ()
   "Recent failure inspection lists failed turns newest first."

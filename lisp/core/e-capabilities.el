@@ -240,8 +240,9 @@ CAPABILITY."
     (provider &key harness session-id turn-id context-purpose)
   "Return context messages from PROVIDER for the current turn.
 HARNESS, SESSION-ID, and TURN-ID identify the active turn.
-CONTEXT-PURPOSE may be `turn' for model-facing requests or an optional snapshot
-purpose for status-like callers."
+CONTEXT-PURPOSE may be `turn' for model-facing requests, `preview' for
+explicit user-requested context inspection, or an optional snapshot purpose for
+status-like callers."
   (cond
    ((e-context-provider-p provider)
     (e-context-provider-build

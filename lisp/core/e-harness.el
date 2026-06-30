@@ -1322,9 +1322,10 @@ compaction) where exposing tools risks a tool-call instead of a reply."
     (harness session-id &optional turn-id context-purpose)
   "Return backend-neutral context for SESSION-ID in HARNESS.
 TURN-ID is passed to active capability context providers when present.
-CONTEXT-PURPOSE may be `turn' for correctness-critical provider turns, or
-`status', `snapshot', or `optional' for callers that must not perform
-correctness-critical turn context work."
+CONTEXT-PURPOSE may be `turn' for correctness-critical provider turns,
+`preview' for explicit user-requested context inspection, or `status',
+`snapshot', or `optional' for callers that must not perform correctness-critical
+turn context work."
   (e-harness--profile-call
    'harness.context
    (list :session-id session-id
@@ -1361,8 +1362,8 @@ correctness-critical turn context work."
 
 (defun e-harness-turn-context (harness session-id turn-id)
   "Return correctness-critical model context for TURN-ID.
-Unlike status, snapshot, or optional context, turn context must include the live
-dynamic providers needed for the model-facing request."
+Unlike preview, status, snapshot, or optional context, turn context must include
+the live dynamic providers needed for the model-facing request."
   (e-harness-context harness session-id turn-id 'turn))
 
 (defun e-harness--active-turn-id (entry)

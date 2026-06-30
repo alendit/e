@@ -109,7 +109,7 @@ METADATA is caller-provided turn activity metadata."
 
 (defun e-chat-session-context (harness session-id)
   "Return context preview data for SESSION-ID through HARNESS."
-  (e-harness-context harness session-id))
+  (e-harness-context harness session-id nil 'preview))
 
 (defun e-chat-session--attachment-uri (attachment)
   "Return ATTACHMENT's canonical URI."
@@ -307,7 +307,7 @@ in the next turn's context."
             tag)))
 
 (cl-defun e-chat-session-context-attachments-provider
-    (&key harness session-id _turn-id)
+    (&key harness session-id _turn-id _context-purpose)
   "Return live attachment context messages for SESSION-ID in HARNESS."
   (let ((attachments (and harness
                           session-id

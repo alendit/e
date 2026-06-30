@@ -1708,7 +1708,7 @@ Cards are emitted only when CAPABILITY-ID resolves to progressive mode."
    :cache-placement 'stable-context
    :build
    (cl-function
-    (lambda (&key harness session-id _turn-id)
+    (lambda (&key harness session-id _turn-id _context-purpose)
       (when (e-mcp--progressive-p capability-id all-options
                                   :harness harness :session-id session-id)
         (e-mcp--cards-message capability-id servers))))))

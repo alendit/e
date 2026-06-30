@@ -1365,8 +1365,10 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
   (let* ((provider (e-context-provider-create
                     :name 'test-provider
                     :build (cl-function
-                            (lambda (&key harness session-id turn-id)
-                              (ignore harness session-id turn-id)
+                            (lambda (&key harness session-id turn-id
+                                          context-purpose)
+                              (ignore harness session-id turn-id
+                                      context-purpose)
                               '((:role system :content "provider context"))))))
          (capability (e-capability-create
                       :id 'test-capability
@@ -1445,16 +1447,20 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
                            :name 'stable-provider
                            :cache-placement 'stable-context
                            :build (cl-function
-                                   (lambda (&key harness session-id turn-id)
-                                     (ignore harness session-id turn-id)
+                                   (lambda (&key harness session-id turn-id
+                                                 context-purpose)
+                                     (ignore harness session-id turn-id
+                                             context-purpose)
                                      '((:role system
                                         :content "stable context"))))))
          (dynamic-provider (e-context-provider-create
                             :name 'dynamic-provider
                             :cache-placement 'dynamic-context
                             :build (cl-function
-                                    (lambda (&key harness session-id turn-id)
-                                      (ignore harness session-id turn-id)
+                                    (lambda (&key harness session-id turn-id
+                                                  context-purpose)
+                                      (ignore harness session-id turn-id
+                                              context-purpose)
                                       '((:role system
                                          :content "dynamic context"))))))
          (capability (e-capability-create

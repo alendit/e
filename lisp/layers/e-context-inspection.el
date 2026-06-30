@@ -296,13 +296,14 @@ v1 reports an explicit unavailable shape."
     options))
 
 (defun e-context-inspection--pre-prompt-context (harness session-id turn-id)
-  "Return context messages/options before transcript prompt messages."
+  "Return preview context messages/options before transcript prompt messages."
   (let* ((messages (e-capabilities-context-messages
                     (e-harness-effective-capabilities
                      harness session-id turn-id)
                     :harness harness
                     :session-id session-id
-                    :turn-id turn-id))
+                    :turn-id turn-id
+                    :context-purpose 'preview))
          (options (e-context-inspection--turn-options-without-tools
                    harness session-id)))
     (list :strategy 'pre-prompt
@@ -310,8 +311,8 @@ v1 reports an explicit unavailable shape."
           :options options)))
 
 (defun e-context-inspection--full-context (harness session-id turn-id)
-  "Return full HARNESS context for SESSION-ID and TURN-ID."
-  (e-harness-context harness session-id turn-id))
+  "Return full preview HARNESS context for SESSION-ID and TURN-ID."
+  (e-harness-context harness session-id turn-id 'preview))
 
 (cl-defun e-context-inspection--format-context
     (context &key harness session-id turn-id source-buffer include-metadata mode)

@@ -282,6 +282,17 @@
                             :messages))
                    '("context question")))))
 
+(ert-deftest e-chat-session-test-context-preview-uses-preview-purpose ()
+  "Chat-session context preview asks for explicit non-turn preview context."
+  (let ((seen-purpose nil))
+    (cl-letf (((symbol-function 'e-harness-context)
+               (lambda (_harness _session-id &optional _turn-id context-purpose)
+                 (setq seen-purpose context-purpose)
+                 '(:messages nil :options nil))))
+      (should (equal (e-chat-session-context 'harness "session-1")
+                     '(:messages nil :options nil)))
+      (should (eq seen-purpose 'preview)))))
+
 (ert-deftest e-chat-session-test-capability-actions ()
   "The chat-session capability exposes stable shell action names."
   (let ((capability (e-chat-session-capability-create)))

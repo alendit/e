@@ -130,7 +130,8 @@
      :name 'agents-std-context-agents
      :priority 100
      :build (cl-function
-             (lambda (&key harness session-id turn-id)
+             (lambda (&key harness session-id turn-id context-purpose)
+               (ignore context-purpose)
                (e-agents-std-context--agents-messages
                 (e-agents-std-context--context-root
                  root
@@ -288,7 +289,8 @@ slugs across those scopes intentionally remain distinct resources."
      :name 'agents-std-context-skills
      :priority 220
      :build (cl-function
-             (lambda (&key harness session-id turn-id)
+             (lambda (&key harness session-id turn-id context-purpose)
+               (ignore context-purpose)
                (e-agents-std-context--skills-catalog-message
                 (let ((context-root
                        (e-agents-std-context--context-root

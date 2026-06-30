@@ -55,8 +55,8 @@ Before finalizing, verify presentation, not just content. Confirm the resource y
    :priority 320
    :cache-placement 'dynamic-context
    :build (cl-function
-           (lambda (&key harness session-id turn-id)
-             (ignore harness session-id turn-id)
+           (lambda (&key harness session-id turn-id context-purpose)
+             (ignore harness session-id turn-id context-purpose)
              (list (list :role 'system
                          :content
                          (e-emacs-capabilities-visible-buffer-context)))))))
@@ -275,8 +275,8 @@ Before finalizing, verify presentation, not just content. Confirm the resource y
    :priority 330
    :cache-placement 'dynamic-context
    :build (cl-function
-           (lambda (&key harness session-id turn-id)
-             (ignore harness session-id turn-id)
+           (lambda (&key harness session-id turn-id context-purpose)
+             (ignore harness session-id turn-id context-purpose)
              (list (list :role 'system
                          :content
                          (e-workspace-awareness-context)))))))

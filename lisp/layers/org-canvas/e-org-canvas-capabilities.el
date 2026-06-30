@@ -249,7 +249,8 @@
              (e-org-canvas--format-visibility-state visibility))
             "\n")))))
 
-(cl-defun e-org-canvas-context-provider (&key harness session-id _turn-id)
+(cl-defun e-org-canvas-context-provider
+    (&key harness session-id _turn-id _context-purpose)
   "Return Org Canvas context for HARNESS SESSION-ID when gated metadata exists."
   (when (and harness session-id (e-org-canvas-session-p harness session-id))
     (let* ((metadata (e-org-canvas-session-metadata harness session-id))
@@ -271,7 +272,7 @@
        metadata scope focus visibility))))
 
 (cl-defun e-org-canvas-context-snapshot-provider
-    (&key harness session-id _turn-id)
+    (&key harness session-id _turn-id _context-purpose)
   "Return cached Org Canvas context for optional status/snapshot callers."
   (when (and harness session-id (e-org-canvas-session-p harness session-id))
     (let* ((metadata (e-org-canvas-session-metadata harness session-id))

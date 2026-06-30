@@ -808,7 +808,8 @@ artifacts under `e-dev-perf-run-directory'."
             (e-dev-perf--profile-spans
              (lambda ()
                (setq context
-                     (e-harness-context harness "context-fixture" "turn-context")))
+                     (e-harness-context
+                      harness "context-fixture" "turn-context" 'preview)))
              '(harness.context)))
       (setq metrics (plist-put metrics :context.message-count
                                (length (plist-get context :messages))))
