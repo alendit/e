@@ -8257,6 +8257,56 @@ The context-window denominator comes from the live provider lookup
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-open-loaded-session-backfills-older-messages ()
+  "Loaded-session open backfills older transcript messages after initial paint."
+  (let* ((store (e-session-store-create))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :sessions store))
+         (e-chat-initial-session-render-message-limit 2)
+         (e-chat-loaded-session-backfill-chunk-size 2)
+         (e-chat-loaded-session-backfill-delay 0.01)
+         buffer)
+    (unwind-protect
+        (progn
+          (e-session-create store :id "loaded-backfill"
+                            :metadata '(:name "Loaded backfill"))
+          (dolist (message
+                   '((:id "msg-1" :role user :content "first prompt")
+                     (:id "msg-2" :role assistant :content "first response")
+                     (:id "msg-3" :role user :content "middle prompt")
+                     (:id "msg-4" :role user :content "last prompt")
+                     (:id "msg-5" :role assistant :content "last response")))
+            (e-session-append-message store "loaded-backfill" message))
+          (setq buffer (e-chat-open-session harness "loaded-backfill"))
+          (with-current-buffer buffer
+            (should (timerp e-chat--loaded-session-backfill-timer))
+            (goto-char (point-max))
+            (insert "next")
+            (should (equal (e-chat--composer-text) "next"))
+            (let ((text (buffer-string)))
+              (should (string-match-p
+                       "3 earlier transcript messages omitted" text))
+              (should-not (string-match-p "first prompt" text))))
+          (should
+           (e-chat-test--wait-until
+            (lambda ()
+              (with-current-buffer buffer
+                (let ((text (buffer-string)))
+                  (and (not (timerp e-chat--loaded-session-backfill-timer))
+                       (string-match-p "first prompt" text)
+                       (string-match-p "first response" text)
+                       (string-match-p "middle prompt" text)
+                       (string-match-p "last prompt" text)
+                       (string-match-p "last response" text)
+                       (not (string-match-p
+                             "earlier transcript messages omitted"
+                             text))
+                       (equal (e-chat--composer-text) "next")))))
+            1.0)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-active-session-preview-marks-session-read ()
   "Showing a session in the active-session preview records its latest response."
   (let* ((store (e-session-store-create))

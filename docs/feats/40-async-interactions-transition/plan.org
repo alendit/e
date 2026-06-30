@@ -64,14 +64,14 @@ Not yet implemented in the planned sense:
 - There is no generic raw-result store or cache-driven reference cleanup lifecycle.
 - There is no full cooperative presentation render scheduler, though long final assistant Markdown presentation is now deferred and cancellable.
 - Context budget estimates and shared context-status text now support semantic cache keys; chat mode-line status uses both estimate and formatted-status snapshots, but the broader context/status snapshot contract for turn prep and other shells remains open.
-- Chat open/resume now uses the chunked replay scheduler for unloaded indexed sessions and a bounded initial tail for large loaded sessions, but progressive backfill and the complete queued-write critical/derived durability model remain only partially implemented.
+- Chat open/resume now uses the chunked replay scheduler for unloaded indexed sessions, a bounded initial tail for large loaded sessions, and timer-driven progressive backfill for older loaded messages, but the complete queued-write critical/derived durability model remains only partially implemented.
 - Nested cheap tool calls still use synchronous return semantics; long-class nested calls now fail fast with model guidance in both harness-owned and core default nested executors instead of waiting.
 - The final obsolete sync API sweep is not done.
 
 Practical status:
 
 - The main external-latency, composer-scan, large-preview, indexed-session-open, and nested-long-tool paths have async/cache-first or fail-fast behavior.
-- The full non-blocking proof remains open because the broader cooperative presentation scheduler, progressive transcript backfill, and the final sync API sweep are not done.
+- The full non-blocking proof remains open because the broader cooperative presentation scheduler and the final sync API sweep are not done.
 - A fair status label is =In-progress=, not close to =Done=.
 - The feature index now says =In-progress= to match the code evidence.
 
@@ -136,9 +136,9 @@ Still blocking or potentially blocking:
 - MCP generated tools, web tools, file/tmp resource discovery tools, MCP refresh, MCP activation, MCP catalog discovery, and interactive MCP capability providers have async/cache-first paths for interactive execution, while explicit batch wrappers keep synchronous waits;
 - =file://= and =tmp://= glob/search methods use synchronous =process-file=;
 - nested =e-tools-call= keeps cheap direct-return semantics, but long-class nested calls fail fast with model guidance unless a harness/custom executor handles them;
-- running-status redraw and tool-result previewing are synchronous buffer work; long final assistant Markdown presentation is deferred after immediate plain-text insertion, activity-summary details are generated on demand, and large loaded-session opens render only a bounded newest-message tail initially;
+- running-status redraw and tool-result previewing are synchronous buffer work; long final assistant Markdown presentation is deferred after immediate plain-text insertion, activity-summary details are generated on demand, and large loaded-session opens render a bounded newest-message tail initially before timer-driven older-message backfill;
 - context/status paths outside the chat mode-line snapshot path can still build full context, run providers, estimate tokens, or query Anthropic model info synchronously;
-- default live session appends queue persistent JSONL/index writes through a short timer with generation/sequence metadata, stale-generation record dropping, and stale derived-index rebuild when current records flush; unloaded indexed chat open/resume uses the chunked replay start API, while overview read state and progressive loaded-transcript backfill remain open;
+- default live session appends queue persistent JSONL/index writes through a short timer with generation/sequence metadata, stale-generation record dropping, and stale derived-index rebuild when current records flush; unloaded indexed chat open/resume uses the chunked replay start API, while loaded sessions backfill older transcript chunks through a cancellable buffer-local timer;
 - composer =@= candidate discovery is cache-first and refreshed asynchronously; selected file insertion still performs a synchronous but bounded read.
 
 * Target Contracts
@@ -514,7 +514,7 @@ Work:
 2. Flush or acknowledge critical events before dependent state is considered durable.
 3. Queue and batch non-critical derived writes with session generation and monotonic sequence numbers. Initial queued JSONL/index persistence is implemented for the default live chat store; queued writes now carry generation, sequence, criticality, and dependency metadata, flush drops stale-generation records, and current-record flushes rebuild stale derived index writes.
 4. Add chunked session replay/loading for large JSONL transcripts. Initial =e-session-load-session-start= API is implemented, and chat open/resume now attaches unloaded indexed sessions through that async loader instead of forcing synchronous replay.
-5. Add lazy transcript rendering that can show latest turns first. Chat open now renders an index-summary loading shell before async replay finishes; loaded-session open renders an omitted-history marker plus a bounded newest-message tail; progressive backfill still remains.
+5. Add lazy transcript rendering that can show latest turns first. Chat open now renders an index-summary loading shell before async replay finishes; loaded-session open renders an omitted-history marker plus a bounded newest-message tail, then progressively backfills older messages through a buffer-local timer while preserving the composer.
 6. Cache overview/read state and avoid repeated full JSON reads. Active-session picker previews now avoid loading unloaded indexed transcripts and render metadata-only previews instead.
 7. Add recovery behavior for interrupted queued writes and stale generations. Initial implementation rebuilds a stale derived index write when current critical queued records are flushed.
 

@@ -1881,3 +1881,52 @@ emacsclient --eval "...queued-write stale derived index recovery live probe..."
 #+end_src
 
 Result: returned =(:listed t :loaded nil :queue nil :index-pending nil)=, proving the recovered index-backed store lists the session without loading the transcript and the flush drained queued state.
+
+* Phase 3 Loaded Session Backfill Slice Review
+
+Status: in progress.
+
+** Scope reviewed
+
+- Added a buffer-local, generation-guarded loaded-session backfill timer.
+- Kept initial loaded-session open bounded to the newest transcript tail, then rendered progressively larger tails until older history was present.
+- Preserved composer text across backfill re-renders and canceled stale backfill timers on clear/kill.
+- Fixed the loaded-session omitted-history marker path so the marker is inserted into the protected transcript instead of the composer.
+
+** Verification
+
+#+begin_src sh
+rtk eldev test -f test/e-chat-test.el -B e-chat-test-open-loaded-session-renders-initial-tail e-chat-test-open-loaded-session-backfills-older-messages
+#+end_src
+
+Result: passed both focused loaded-session tests.
+
+#+begin_src sh
+rtk eldev test -f test/e-chat-test.el
+#+end_src
+
+Result: passed all 275 chat tests, with the existing Markdown rendering test skipped.
+
+#+begin_src sh
+rtk eldev emacs --batch --eval "(progn (setq byte-compile-error-on-warn t) (dolist (file '(\"lisp/shells/chat/e-chat.el\" \"test/e-chat-test.el\")) (byte-compile-file file)))"
+#+end_src
+
+Result: returned exit 0, but printed the pre-existing =test/e-chat-test.el:444:30= free-variable compile warning/error text.
+
+#+begin_src sh
+rtk eldev emacs --batch --eval "(progn (setq byte-compile-error-on-warn t) (byte-compile-file \"lisp/shells/chat/e-chat.el\"))"
+#+end_src
+
+Result: passed cleanly for the touched production chat shell.
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Result: returned the repository path after reloading changed Lisp.
+
+#+begin_src sh
+emacsclient --eval "(progn (load-file \"/private/tmp/e-chat-live-loaded-backfill-probe.el\") e-chat-live-loaded-backfill-probe-result)"
+#+end_src
+
+Result: returned =(:initial (:timer t :marker 42 :first nil :last 182) :final (:timer nil :marker nil :first 40 :middle 204 :last 366 :draft t))=, proving the live loaded-session buffer initially showed a marker plus latest tail, then backfilled older messages and preserved composer draft text.

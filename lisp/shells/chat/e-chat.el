@@ -93,6 +93,16 @@ use the asynchronous transcript loader."
                  integer)
   :group 'e-chat)
 
+(defcustom e-chat-loaded-session-backfill-chunk-size 200
+  "Number of additional loaded transcript messages rendered per backfill tick."
+  :type 'integer
+  :group 'e-chat)
+
+(defcustom e-chat-loaded-session-backfill-delay 0.02
+  "Seconds to wait before each loaded transcript backfill tick."
+  :type 'number
+  :group 'e-chat)
+
 (defcustom e-chat-details-buffer-name "*e-chat-details*"
   "Buffer name for read-only focused block details."
   :type 'string
@@ -681,6 +691,15 @@ intentionally not persisted in session metadata.")
 (defvar-local e-chat--session-load-generation 0
   "Generation token for async transcript load callbacks.")
 
+(defvar-local e-chat--loaded-session-backfill-timer nil
+  "Timer rendering older messages for an already loaded session.")
+
+(defvar-local e-chat--loaded-session-backfill-generation 0
+  "Generation token for stale loaded-session backfill callbacks.")
+
+(defvar-local e-chat--loaded-session-rendered-message-count nil
+  "Number of loaded transcript messages currently rendered in this buffer.")
+
 (defvar-local e-chat--composer-restore-inhibited nil
   "Non-nil when transient chat rendering should not recreate a composer.")
 
@@ -1071,6 +1090,7 @@ and / expands available prompts."
   (add-hook 'kill-buffer-hook
             #'e-chat--cancel-project-file-candidate-refresh nil t)
   (add-hook 'kill-buffer-hook #'e-chat--cancel-session-load-request nil t)
+  (add-hook 'kill-buffer-hook #'e-chat--cancel-loaded-session-backfill nil t)
   (add-hook 'kill-buffer-hook
             #'e-chat--cancel-pending-markdown-presentation nil t)
   (add-hook 'kill-buffer-hook
@@ -1270,6 +1290,15 @@ PROMPT forces completion even when only one/default instance exists."
                       (list :reason 'chat-buffer-cancelled))
     (setq e-chat--session-load-request nil)))
 
+(defun e-chat--cancel-loaded-session-backfill ()
+  "Cancel any pending loaded-session transcript backfill."
+  (setq e-chat--loaded-session-backfill-generation
+        (1+ e-chat--loaded-session-backfill-generation))
+  (when (timerp e-chat--loaded-session-backfill-timer)
+    (cancel-timer e-chat--loaded-session-backfill-timer))
+  (setq e-chat--loaded-session-backfill-timer nil)
+  (setq e-chat--loaded-session-rendered-message-count nil))
+
 (defun e-chat--render-session-loading (session)
   "Render cheap loading state for unloaded indexed SESSION."
   (when-let ((summary (plist-get session :summary)))
@@ -1279,22 +1308,91 @@ PROMPT forces completion even when only one/default instance exists."
    (format "%s Loading transcript...\n\n" e-chat--system-glyph)
    'e-chat-activity-face))
 
+(defun e-chat--loaded-session-initial-count (messages)
+  "Return the initial loaded transcript render count for MESSAGES."
+  (let ((count (length messages)))
+    (if (and (integerp e-chat-initial-session-render-message-limit)
+             (> e-chat-initial-session-render-message-limit 0)
+             (> count e-chat-initial-session-render-message-limit))
+        e-chat-initial-session-render-message-limit
+      count)))
+
+(defun e-chat--loaded-session-next-backfill-count (current-count total-count)
+  "Return the next loaded-session backfill count after CURRENT-COUNT."
+  (let ((chunk (if (and (integerp e-chat-loaded-session-backfill-chunk-size)
+                        (> e-chat-loaded-session-backfill-chunk-size 0))
+                   e-chat-loaded-session-backfill-chunk-size
+                 total-count)))
+    (min total-count (+ current-count chunk))))
+
+(defun e-chat--render-loaded-session-messages (messages rendered-count)
+  "Render newest RENDERED-COUNT loaded transcript MESSAGES."
+  (let* ((total-count (length messages))
+         (omitted (max 0 (- total-count rendered-count)))
+         (tail (if (> rendered-count 0)
+                   (e-chat--tail-messages messages rendered-count)
+                 nil))
+         (composer-state (e-chat--capture-composer-state)))
+    (e-chat--delete-composer)
+    (setq e-chat--loaded-session-rendered-message-count rendered-count)
+    (when (> omitted 0)
+      (e-chat--insert-protected
+       (format "%s %d earlier transcript message%s omitted from initial render.\n\n"
+               e-chat--system-glyph
+               omitted
+               (if (= omitted 1) "" "s"))
+       'e-chat-activity-face))
+    (when tail
+      (e-chat--render-session tail))
+    (e-chat--restore-composer-state composer-state)))
+
+(defun e-chat--schedule-loaded-session-backfill (rendered-count total-count)
+  "Schedule a loaded-session transcript backfill from RENDERED-COUNT."
+  (when (< rendered-count total-count)
+    (let ((buffer (current-buffer))
+          (generation (1+ e-chat--loaded-session-backfill-generation)))
+      (setq e-chat--loaded-session-backfill-generation generation)
+      (setq e-chat--loaded-session-backfill-timer
+            (run-at-time
+             e-chat-loaded-session-backfill-delay
+             nil
+             #'e-chat--loaded-session-backfill
+             buffer
+             generation)))))
+
+(defun e-chat--loaded-session-backfill (buffer generation)
+  "Render the next older loaded-session transcript chunk in BUFFER."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (when (and (derived-mode-p 'e-chat-mode)
+                 (= generation e-chat--loaded-session-backfill-generation)
+                 e-chat-harness
+                 e-chat-session-id)
+        (setq e-chat--loaded-session-backfill-timer nil)
+        (let* ((messages (e-harness-messages e-chat-harness e-chat-session-id))
+               (total-count (length messages))
+               (current-count (or e-chat--loaded-session-rendered-message-count
+                                  total-count))
+               (next-count
+                (e-chat--loaded-session-next-backfill-count
+                 current-count
+                 total-count))
+               (composer-state (e-chat--capture-composer-state)))
+          (e-chat--clear)
+          (let ((inhibit-read-only t))
+            (e-chat--render-loaded-session-messages messages next-count))
+          (e-chat--restore-composer-state composer-state)
+          (e-chat--schedule-loaded-session-backfill next-count total-count))))))
+
 (defun e-chat--render-loaded-session-initial ()
   "Render the initial view for the attached loaded session."
+  (e-chat--cancel-loaded-session-backfill)
   (let ((inhibit-read-only t))
     (let* ((messages (e-harness-messages e-chat-harness e-chat-session-id))
-           (tail (e-chat--tail-messages
-                  messages
-                  e-chat-initial-session-render-message-limit))
-           (omitted (- (length messages) (length tail))))
-      (when (> omitted 0)
-        (e-chat--insert-protected
-         (format "%s %d earlier transcript message%s omitted from initial render.\n\n"
-                 e-chat--system-glyph
-                 omitted
-                 (if (= omitted 1) "" "s"))
-         'e-chat-activity-face))
-      (e-chat--render-session tail))))
+           (total-count (length messages))
+           (rendered-count (e-chat--loaded-session-initial-count messages)))
+      (e-chat--render-loaded-session-messages messages rendered-count)
+      (e-chat--schedule-loaded-session-backfill rendered-count total-count))))
 
 (defun e-chat--session-load-current-p
     (request generation harness session-id instance-id)
@@ -5948,6 +6046,7 @@ signal; route the display to a normal window in that case."
   "Clear and initialize the current chat buffer.
 When OMIT-COMPOSER is non-nil, leave the buffer as transcript-only."
   (e-chat--cancel-pending-command-references)
+  (e-chat--cancel-loaded-session-backfill)
   (let ((inhibit-read-only t))
     (e-chat--cancel-pending-markdown-presentation)
     (erase-buffer)
