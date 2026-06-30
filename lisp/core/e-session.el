@@ -39,7 +39,17 @@
   sessions-directory
   index-file
   persistent
+  write-mode
+  write-queue
+  write-queue-timer
+  index-write-pending
+  (write-queue-generation 0)
   (sequence 0))
+
+(defcustom e-session-write-queue-delay 0.05
+  "Seconds to wait before flushing queued persistent session writes."
+  :type 'number
+  :group 'e)
 
 (defconst e-session--replay-list-fields
   '(:session-events :messages :activity-events :branch-summaries
@@ -467,6 +477,76 @@ arrays and sometimes inverted key/value pairs."
   (expand-file-name (concat session-id ".jsonl")
                     (e-session-store-sessions-directory store)))
 
+(defun e-session--queued-writes-p (store)
+  "Return non-nil when STORE batches persistent writes through a timer."
+  (eq (e-session-store-write-mode store) 'queued))
+
+(defun e-session--append-record-now (store session-id record)
+  "Immediately append RECORD for SESSION-ID in persistent STORE."
+  (when (e-session--persistent-p store)
+    (e-session--ensure-directories store)
+    (let ((coding-system-for-write 'utf-8))
+      (with-temp-buffer
+        (insert (json-encode record) "\n")
+        (write-region (point-min) (point-max)
+                      (e-session--session-file store session-id)
+                      t 'silent)))))
+
+(defun e-session--index-json (store)
+  "Return STORE's current index JSON line."
+  (concat (json-encode (vconcat (e-session-list store))) "\n"))
+
+(defun e-session--write-index-now (store)
+  "Immediately write STORE's persistent session index."
+  (when (e-session--persistent-p store)
+    (e-session--ensure-directories store)
+    (let ((coding-system-for-write 'utf-8))
+      (with-temp-file (e-session-store-index-file store)
+        (insert (e-session--index-json store))))))
+
+(defun e-session--clear-write-queue-timer (store)
+  "Clear STORE's queued write timer slot."
+  (let ((timer (e-session-store-write-queue-timer store)))
+    (when (timerp timer)
+      (cancel-timer timer)))
+  (setf (e-session-store-write-queue-timer store) nil))
+
+(defun e-session-flush-write-queue (store)
+  "Synchronously flush queued persistent writes for STORE.
+Return STORE."
+  (e-session--clear-write-queue-timer store)
+  (let ((entries (nreverse (e-session-store-write-queue store)))
+        (write-index (e-session-store-index-write-pending store)))
+    (e-session--profile-call
+     'session.flush-write-queue
+     (list :metadata (list :persistent (and (e-session--persistent-p store) t)
+                           :record-count (length entries)
+                           :write-index (and write-index t)))
+     (lambda ()
+       (dolist (entry entries)
+         (e-session--append-record-now store (car entry) (cdr entry)))
+       (when write-index
+         (e-session--write-index-now store))))
+    (setf (e-session-store-write-queue store) nil)
+    (setf (e-session-store-index-write-pending store) nil))
+  store)
+
+(defun e-session--schedule-write-queue (store)
+  "Schedule STORE's queued persistent writes."
+  (when (and (e-session--persistent-p store)
+             (e-session--queued-writes-p store)
+             (not (timerp (e-session-store-write-queue-timer store))))
+    (let ((generation (cl-incf (e-session-store-write-queue-generation store)))
+          (delay (max 0 (or e-session-write-queue-delay 0))))
+      (setf (e-session-store-write-queue-timer store)
+            (run-at-time
+             delay nil
+             (lambda ()
+               (when (and (e-session-store-p store)
+                          (= generation
+                             (e-session-store-write-queue-generation store)))
+                 (e-session-flush-write-queue store))))))))
+
 (defun e-session--append-record (store session-id record)
   "Append RECORD for SESSION-ID in persistent STORE."
   (e-session--profile-call
@@ -475,13 +555,12 @@ arrays and sometimes inverted key/value pairs."
          :metadata (list :record-type (plist-get record :type)))
    (lambda ()
      (when (e-session--persistent-p store)
-       (e-session--ensure-directories store)
-       (let ((coding-system-for-write 'utf-8))
-         (with-temp-buffer
-           (insert (json-encode record) "\n")
-           (write-region (point-min) (point-max)
-                         (e-session--session-file store session-id)
-                         t 'silent)))))))
+       (if (e-session--queued-writes-p store)
+           (progn
+             (push (cons session-id record)
+                   (e-session-store-write-queue store))
+             (e-session--schedule-write-queue store))
+         (e-session--append-record-now store session-id record))))))
 
 
 (defun e-session--entry-index (store session-id)
@@ -1014,11 +1093,11 @@ and RECORD supplies persisted identity fields during replay."
    (list :metadata (list :persistent (and (e-session--persistent-p store) t)))
    (lambda ()
      (when (e-session--persistent-p store)
-       (e-session--ensure-directories store)
-       (let ((coding-system-for-write 'utf-8)
-             (index (e-session-list store)))
-         (with-temp-file (e-session-store-index-file store)
-           (insert (json-encode (vconcat index)) "\n")))))))
+       (if (e-session--queued-writes-p store)
+           (progn
+             (setf (e-session-store-index-write-pending store) t)
+             (e-session--schedule-write-queue store))
+         (e-session--write-index-now store))))))
 
 (defun e-session--json-read-line (line)
   "Parse one JSONL LINE as a plist."
@@ -1434,7 +1513,8 @@ and RECORD supplies persisted identity fields during replay."
           (file-error nil)
           (json-parse-error nil))))))
 
-(defun e-session-persistent-index-store-create (&optional directory)
+(cl-defun e-session-persistent-index-store-create (&optional directory
+                                                             &key write-mode)
   "Create a persistent STORE with session metadata loaded from the index.
 Transcript JSONL files are loaded on demand when a session's messages or mutable
 state are requested."
@@ -1445,7 +1525,8 @@ state are requested."
                  :directory directory
                  :sessions-directory sessions-directory
                  :index-file (expand-file-name "index.json" directory)
-                 :persistent t)))
+                 :persistent t
+                 :write-mode write-mode)))
     (unless (e-session--load-index store)
       (e-session--load-index-from-session-files store))
     store))
@@ -1479,7 +1560,8 @@ state are requested."
   (or (gethash session-id (e-session-store-sessions store))
       (signal 'e-session-missing (list session-id))))
 
-(defun e-session-persistent-store-create (&optional directory)
+(cl-defun e-session-persistent-store-create (&optional directory
+                                                       &key write-mode)
   "Create and load a persistent session store rooted at DIRECTORY."
   (let* ((directory (file-name-as-directory
                      (expand-file-name (or directory e-session-directory))))
@@ -1488,7 +1570,8 @@ state are requested."
                  :directory directory
                  :sessions-directory sessions-directory
                  :index-file (expand-file-name "index.json" directory)
-                 :persistent t)))
+                 :persistent t
+                 :write-mode write-mode)))
     (e-session-load store)
     store))
 

@@ -131,7 +131,9 @@ attaches the internal chat-session layer and `e-default-chat-layer-ids'."
                  (equal (e-session-store-directory e-default--chat-sessions)
                         directory))
       (setq e-default--chat-sessions
-            (e-session-persistent-index-store-create directory)))
+            (e-session-persistent-index-store-create
+             directory
+             :write-mode 'queued)))
     e-default--chat-sessions))
 
 (defun e-default-chat--record-layer-ids (harness)

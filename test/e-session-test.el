@@ -219,6 +219,39 @@
                              "quiet append")))))
       (delete-directory directory t))))
 
+(ert-deftest e-session-test-queued-persistent-writes-flush-later ()
+  "Queued persistent stores defer disk writes until the queue is flushed."
+  (let* ((directory (make-temp-file "e-session-" t))
+         (store (e-session-persistent-index-store-create
+                 directory
+                 :write-mode 'queued))
+         (write-count 0)
+         (orig-write-region (symbol-function 'write-region)))
+    (unwind-protect
+        (cl-letf (((symbol-function 'write-region)
+                   (lambda (&rest args)
+                     (setq write-count (1+ write-count))
+                     (apply orig-write-region args))))
+          (let* ((session (e-session-create store :id "queued-session"))
+                 (session-id (plist-get session :id)))
+            (e-session-append-message
+             store session-id
+             '(:id "msg-1" :role user :content "queued hello"))
+            (should (= write-count 0))
+            (should (timerp (e-session-store-write-queue-timer store)))
+            (should (= (length (e-session-store-write-queue store)) 2))
+            (should (e-session-store-index-write-pending store))
+            (e-session-flush-write-queue store)
+            (should (> write-count 0))
+            (should-not (e-session-store-write-queue store))
+            (should-not (e-session-store-index-write-pending store))
+            (let* ((loaded (e-session-persistent-store-create directory))
+                   (messages (e-session-messages loaded session-id)))
+              (should (equal (plist-get (car messages) :content)
+                             "queued hello")))))
+      (ignore-errors (e-session-flush-write-queue store))
+      (delete-directory directory t))))
+
 (ert-deftest e-session-test-persistent-replay-preserves-entry-ids ()
   "Persistent replay keeps durable ids and parent links instead of regenerating."
   (let* ((directory (make-temp-file "e-session-" t))

@@ -840,3 +840,53 @@ emacsclient --eval "...bounded stale activity redraw generation probe..."
 #+end_src
 
 Result: returned =(:redraws 0 :pending-turn "turn-new" :pending-generation 2)=.
+
+* Phase 3 Queued Session Persistence Slice Review
+
+Status: in progress.
+
+** Scope reviewed
+
+- Added an opt-in queued write mode to persistent session stores.
+- Queued stores batch JSONL appends and index writes behind a short timer and expose =e-session-flush-write-queue= for synchronous durability checkpoints.
+- The default live chat session store uses queued writes.
+- Flush keeps queued records until disk writes complete, so unexpected write errors do not silently discard pending records.
+- This reduces live append/index write blocking; it is not the full Slice 10 replay scheduler, critical/derived durability model, or stale-generation recovery design.
+
+** Verification
+
+#+begin_src sh
+rtk eldev test -f test/e-session-test.el -b e-session-test-queued-persistent-writes-flush-later e-session-test-persistent-appends-avoid-noisy-append-api e-session-test-index-backed-store-lists-sessions-without-replay
+#+end_src
+
+Result: passed the two matching focused tests; the third selector name did not match an existing test.
+
+#+begin_src sh
+rtk eldev test -f test/e-session-test.el
+#+end_src
+
+Result: passed all 51 session tests.
+
+#+begin_src sh
+rtk eldev emacs --batch --eval "(progn (setq byte-compile-error-on-warn t) (dolist (file '(\"lisp/core/e-session.el\" \"lisp/defaults/e-default-harnesses.el\" \"test/e-session-test.el\")) (byte-compile-file file)))"
+#+end_src
+
+Result: passed for the touched session, default harness, and session test files.
+
+#+begin_src sh
+git diff --check
+#+end_src
+
+Result: passed.
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Result: returned the repository path after reloading changed Lisp.
+
+#+begin_src sh
+emacsclient --eval "...bounded queued session persistence probe..."
+#+end_src
+
+Result: returned =(:before nil :queue-count 2 :timer t :after t)=.
