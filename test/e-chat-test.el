@@ -4221,6 +4221,39 @@ the orphaned region and appeared to vanish."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-render-job-diagnostics-track-pending-jobs ()
+  "Opt-in render-job diagnostics show grouped pending work in the header."
+  (let ((buffer (e-chat-test--buffer nil "chat-render-job-diagnostics"))
+        (e-chat-render-job-diagnostics t))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat--set-status "idle")
+          (should-not (string-match-p "render" header-line-format))
+          (let ((first (e-chat--schedule-render-job
+                        60
+                        #'ignore
+                        :owner 'markdown-presentation
+                        :key "one"
+                        :generation 1))
+                (second (e-chat--schedule-render-job
+                         60
+                         #'ignore
+                         :owner 'activity-redraw
+                         :key "two"
+                         :generation 2)))
+            (should (string-match-p "render 2" header-line-format))
+            (should (string-match-p "activity-redraw:1" header-line-format))
+            (should (string-match-p
+                     "markdown-presentation:1" header-line-format))
+            (e-chat--cancel-render-job-timer first)
+            (should (string-match-p "render 1" header-line-format))
+            (should-not (string-match-p
+                         "markdown-presentation:1" header-line-format))
+            (funcall (timer--function second))
+            (should-not (string-match-p "render" header-line-format))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-render-work-items-honor-budget ()
   "Budgeted render work processes bounded items per scheduler tick."
   (let ((buffer (e-chat-test--buffer nil "chat-render-work-budget"))

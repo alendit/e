@@ -113,6 +113,11 @@ use the asynchronous transcript loader."
   :type 'integer
   :group 'e-chat)
 
+(defcustom e-chat-render-job-diagnostics nil
+  "When non-nil, show pending render-job counts in the chat header line."
+  :type 'boolean
+  :group 'e-chat)
+
 (defcustom e-chat-details-buffer-name "*e-chat-details*"
   "Buffer name for read-only focused block details."
   :type 'string
@@ -794,7 +799,8 @@ intentionally not persisted in session metadata.")
         (delq job e-chat--pending-render-jobs))
   (setq e-chat--pending-render-job-timers
         (delq (e-chat-render-job-timer job)
-              e-chat--pending-render-job-timers)))
+              e-chat--pending-render-job-timers))
+  (e-chat--refresh-render-job-diagnostics))
 
 (defun e-chat--cancel-render-job (job)
   "Cancel pending render JOB."
@@ -856,6 +862,7 @@ KEY before scheduling the new one."
            :timer timer))
     (push job e-chat--pending-render-jobs)
     (push timer e-chat--pending-render-job-timers)
+    (e-chat--refresh-render-job-diagnostics)
     timer))
 
 (cl-defun e-chat--schedule-render-work-items
@@ -6435,6 +6442,57 @@ an approximate full-context estimate."
   (setq-local e-chat--mode-line-context-estimate-cache (cons nil nil))
   (setq-local e-chat--mode-line-context-status-cache (cons nil nil)))
 
+(defun e-chat--render-job-owner-counts ()
+  "Return pending render-job counts grouped by owner for this buffer."
+  (let ((counts (make-hash-table :test 'eq)))
+    (dolist (job e-chat--pending-render-jobs)
+      (let ((owner (or (e-chat-render-job-owner job) 'unknown)))
+        (puthash owner (1+ (gethash owner counts 0)) counts)))
+    counts))
+
+(defun e-chat--render-job-diagnostics-text ()
+  "Return compact pending render-job diagnostic text for the header line."
+  (when (and e-chat-render-job-diagnostics
+             e-chat--pending-render-jobs)
+    (let* ((counts (e-chat--render-job-owner-counts))
+           (owners nil))
+      (maphash (lambda (owner count)
+                 (push (format "%s:%d" owner count) owners))
+               counts)
+      (format " - render %d [%s]"
+              (length e-chat--pending-render-jobs)
+              (string-join (sort owners #'string<) ", ")))))
+
+(defun e-chat--header-line-text (status)
+  "Return chat header-line text for STATUS and current render diagnostics."
+  (let ((diagnostics (or (e-chat--render-job-diagnostics-text) "")))
+    (if (and e-chat-harness e-chat-session-id)
+        (let* ((title (ignore-errors
+                        (e-harness-session-title
+                         e-chat-harness
+                         e-chat-session-id)))
+               (options (ignore-errors
+                          (e-harness-display-options
+                           e-chat-harness
+                           e-chat-session-id)))
+               (model (plist-get options :model))
+               (effort (plist-get options :reasoning-effort)))
+          (format "E Chat: %s - %s - %s/%s%s"
+                  status
+                  title
+                  (or model "model unset")
+                  (or effort "effort unset")
+                  diagnostics))
+      (format "E Chat: %s%s" status diagnostics))))
+
+(defun e-chat--refresh-render-job-diagnostics ()
+  "Refresh foreground render-job diagnostics when they are enabled."
+  (when (and e-chat-render-job-diagnostics
+             header-line-format)
+    (setq header-line-format
+          (e-chat--header-line-text e-chat--status))
+    (force-mode-line-update t)))
+
 (defun e-chat--set-status (status &optional refresh-mode-line)
   "Set chat buffer STATUS.
 When REFRESH-MODE-LINE is non-nil, also refresh context-aware mode-line text."
@@ -6449,24 +6507,7 @@ When REFRESH-MODE-LINE is non-nil, also refresh context-aware mode-line text."
                            :refresh-mode-line (and refresh-mode-line t)))
      (lambda ()
        (setq e-chat--status status)
-       (setq header-line-format
-             (if (and e-chat-harness e-chat-session-id)
-                 (let* ((title (ignore-errors
-                                 (e-harness-session-title
-                                  e-chat-harness
-                                  e-chat-session-id)))
-                        (options (ignore-errors
-                                   (e-harness-display-options
-                                    e-chat-harness
-                                    e-chat-session-id)))
-                        (model (plist-get options :model))
-                        (effort (plist-get options :reasoning-effort)))
-                   (format "E Chat: %s - %s - %s/%s"
-                           status
-                           title
-                           (or model "model unset")
-                           (or effort "effort unset")))
-               (format "E Chat: %s" status)))
+       (setq header-line-format (e-chat--header-line-text status))
        (when refresh-mode-line
          (e-chat--refresh-mode-line-status))))))
 
