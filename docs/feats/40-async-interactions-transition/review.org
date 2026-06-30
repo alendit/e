@@ -2360,3 +2360,45 @@ emacsclient --eval "(let ((calls 0) result) ...)"
 #+end_src
 
 Result: returned =(:error e-request-blocking-call-in-hot-path :data (e-mcp--helper-request live-mcp-sync) :calls 0)=, confirming the live hot-path guard fires before helper transport runs.
+
+* Phase 4 Harness Sync Hot-Path Guard Slice Review
+
+Status: complete.
+
+** Scope reviewed
+
+- Added hot-path rejection to =e-harness-prompt= before it can start an async prompt turn.
+- Added hot-path rejection to =e-harness-wait= before it can enter the =accept-process-output= loop.
+- Preserved normal async prompt plus explicit batch/test wait behavior outside marked hot paths.
+
+** Verification
+
+#+begin_src sh
+rtk eldev emacs --batch --eval "(progn (setq byte-compile-error-on-warn t) (dolist (file '(\"lisp/core/e-harness.el\" \"test/e-harness-test.el\")) (byte-compile-file file)))"
+#+end_src
+
+Result: passed for the touched harness module and tests.
+
+#+begin_src sh
+rtk eldev test -f test/e-harness-test.el -B e-harness-test-async-prompt-wait-settles-turn e-harness-test-sync-prompt-rejects-hot-path-before-submit e-harness-test-wait-rejects-hot-path
+#+end_src
+
+Result: passed the focused harness prompt/wait guard tests and the existing async prompt wait regression.
+
+#+begin_src sh
+rtk eldev test -f test/e-harness-test.el
+#+end_src
+
+Result: passed all 105 harness tests.
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Result: returned ="/Users/dimitrivorona/projects/elisp/e/"=, so the running Emacs loaded the harness guard change.
+
+#+begin_src sh
+emacsclient --eval "(let* ((backend ...) (harness ...) result) ...)"
+#+end_src
+
+Result: returned =(:error e-request-blocking-call-in-hot-path :data (e-harness-prompt live-sync-prompt) :messages 0 :active nil)=, confirming the live hot-path guard rejects the sync prompt before appending a message or starting a turn.

@@ -14,7 +14,9 @@
 (require 'ert)
 (require 'seq)
 (require 'e)
+(require 'e-actions)
 (require 'e-backend)
+(require 'e-chat-session)
 (require 'e-base)
 (require 'e-capabilities)
 (require 'e-capability-config)
@@ -25,6 +27,7 @@
 (require 'e-layers)
 (require 'e-operations)
 (require 'e-prompts)
+(require 'e-request)
 (require 'e-resources)
 (require 'e-skills)
 (require 'e-store)
@@ -274,6 +277,43 @@
       (should (equal (plist-get (e-harness-state harness "session-1")
                                 :active-turn)
                      nil)))))
+
+(ert-deftest e-harness-test-sync-prompt-rejects-hot-path-before-submit ()
+  "The synchronous prompt wrapper cannot start inside a marked hot path."
+  (let* ((backend (e-backend-fake-create
+                   :items '((:type assistant-message :content "answer")
+                            (:type done :reason stop))))
+         (harness (e-harness-create :backend backend)))
+    (e-harness-create-session harness :id "session-1")
+    (let ((err (should-error
+                (e-request-with-hot-path 'chat-submit
+                  (e-harness-prompt harness "session-1" "question"))
+                :type 'e-request-blocking-call-in-hot-path)))
+      (should (equal (cdr err) '(e-harness-prompt chat-submit))))
+    (should-not (e-harness-messages harness "session-1"))
+    (should-not (plist-get (e-harness-state harness "session-1")
+                           :active-turn))))
+
+(ert-deftest e-harness-test-wait-rejects-hot-path ()
+  "The explicit harness wait helper cannot run inside a marked hot path."
+  (let* ((backend (e-backend-fake-create
+                   :items '((:type assistant-message :content "answer")
+                            (:type done :reason stop))
+                   :delay 1.0))
+         (harness (e-harness-create :backend backend)))
+    (unwind-protect
+        (progn
+          (e-harness-create-session harness :id "session-1")
+          (e-harness-prompt-async harness "session-1" "question")
+          (let ((err (should-error
+                      (e-request-with-hot-path 'turn-wait
+                        (e-harness-wait harness "session-1" 0.1))
+                      :type 'e-request-blocking-call-in-hot-path)))
+            (should (equal (cdr err) '(e-harness-wait turn-wait))))
+          (should (plist-get (e-harness-state harness "session-1")
+                             :active-turn)))
+      (ignore-errors
+        (e-harness-abort harness "session-1")))))
 
 (ert-deftest e-harness-test-async-prompt-appends-user-message-immediately ()
   "Async prompting records the user message before the backend timer runs."
@@ -891,6 +931,23 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
   (dolist (type e-harness--durable-activity-event-types)
     (should (memq (e-harness-activity-event-class type)
                   '(audit replay presentation-log)))))
+
+(ert-deftest e-harness-test-action-events-are-durable ()
+  "Action dispatch emits durable action activity events."
+  (let ((harness (e-harness-create
+                  :backend (e-backend-fake-create :items nil))))
+    (e-harness-activate-capability harness (e-chat-session-capability-create))
+    (e-harness-create-session harness :id "session-1")
+    (e-actions-call
+     'chat-session
+     :rename
+     '(:name "Action telemetry")
+     (list :harness harness :session-id "session-1" :turn-id "turn-1"))
+    (let ((types (mapcar (lambda (event)
+                           (plist-get event :event-type))
+                         (e-harness-session-activity-events
+                          harness "session-1"))))
+      (should (equal types '(action-started action-finished))))))
 
 (ert-deftest e-harness-test-token-usage-events-are-durable ()
   "Backend token usage events are retained in session activity."

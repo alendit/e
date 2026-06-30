@@ -24,6 +24,7 @@
 (require 'e-loop)
 (require 'e-operations)
 (require 'e-prompts)
+(require 'e-request)
 (require 'e-resources)
 (require 'e-session)
 (require 'e-shells)
@@ -2096,6 +2097,8 @@ When a turn produced multiple assistant messages, return the last one."
 (cl-defun e-harness-prompt (harness session-id prompt &key metadata)
   "Append PROMPT and run one backend turn for SESSION-ID in HARNESS.
 This is the synchronous convenience wrapper over `e-harness-prompt-async'."
+  (when (e-request-hot-path-active-p)
+    (e-request-hot-path-blocking-error 'e-harness-prompt))
   (e-harness--profile-call
    'harness.prompt
    (list :session-id session-id)
@@ -2381,6 +2384,8 @@ cancellation.  SESSION-ID identifies the session."
   "Wait for SESSION-ID's async turn in HARNESS to settle.
 TIMEOUT is in seconds.  Return the settled active-turn entry and clear it from
 active state when it is no longer running."
+  (when (e-request-hot-path-active-p)
+    (e-request-hot-path-blocking-error 'e-harness-wait))
   (let ((deadline (and timeout (+ (float-time) timeout)))
         (entry (gethash session-id (e-harness-active-turns harness))))
     (unless entry
