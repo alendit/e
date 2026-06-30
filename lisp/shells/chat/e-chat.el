@@ -5576,11 +5576,16 @@ When OMIT-COMPOSER is non-nil, leave the buffer as transcript-only."
 
 (defun e-chat--model-context-window (model)
   "Return MODEL's context window in tokens from the live provider, or nil.
-Queries the Anthropic gateway catalog (cached in-memory); there is no static
-fallback, so the mode line shows `?' when the gateway is unavailable or does
-not list MODEL.  Returns nil when no provider lookup is available."
+Reads the Anthropic gateway catalog cache and starts an async refresh when the
+catalog is missing.  There is no static fallback, so the mode line shows `?'
+until the gateway cache is populated or when MODEL is not listed."
   (when (and (stringp model) (fboundp 'e-anthropic-context-window))
-    (e-anthropic-context-window model)))
+    (or (e-anthropic-context-window model)
+        (progn
+          (when (fboundp 'e-anthropic-refresh-context-window-cache)
+            (ignore-errors
+              (e-anthropic-refresh-context-window-cache)))
+          nil))))
 
 (defun e-chat--context-token-estimate (context)
   "Return approximate token count for model-facing CONTEXT."

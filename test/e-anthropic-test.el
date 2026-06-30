@@ -734,13 +734,31 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
    "]}")
   "A representative LiteLLM `/model/info' payload for tests.")
 
-(ert-deftest e-anthropic-test-context-window-reads-gateway-catalog ()
-  "Context-window lookup reads max-input-tokens from the gateway catalog."
+(ert-deftest e-anthropic-test-context-window-cache-only-before-refresh ()
+  "Context-window lookup does not fetch the gateway catalog synchronously."
   (e-anthropic-reset-context-window-cache)
-  (let ((calls 0))
+  (cl-letf (((symbol-function 'e-anthropic--http-get)
+             (lambda (&rest _)
+               (error "context-window lookup must not fetch synchronously"))))
+    (should-not (e-anthropic-context-window "claude-opus-4-8")))
+  (e-anthropic-reset-context-window-cache))
+
+(ert-deftest e-anthropic-test-refresh-context-window-cache-populates-catalog ()
+  "Async context-window refresh reads max-input-tokens from the gateway catalog."
+  (e-anthropic-reset-context-window-cache)
+  (let ((calls 0)
+        done)
     (cl-letf (((symbol-function 'e-anthropic--headers) (lambda (&rest _) nil))
-              ((symbol-function 'e-anthropic--http-get)
-               (lambda (&rest _) (cl-incf calls) e-anthropic-test--model-info-json)))
+              ((symbol-function 'e-anthropic--http-get-start)
+               (lambda (&rest args)
+                 (cl-incf calls)
+                 (funcall (plist-get args :on-complete)
+                          e-anthropic-test--model-info-json)
+                 (e-backend-request-create :metadata '(:test immediate)))))
+      (should (e-backend-request-p
+               (e-anthropic-refresh-context-window-cache
+                :on-done (lambda (_table) (setq done t)))))
+      (should done)
       (should (equal (e-anthropic-context-window "claude-opus-4-8") 1000000))
       ;; Gateway truth, not the public-docs number (which lists 4.5 as 1M).
       (should (equal (e-anthropic-context-window "claude-opus-4-5-20251101")
@@ -749,30 +767,58 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
                      200000))
       ;; Unknown model -> nil (no static fallback).
       (should-not (e-anthropic-context-window "no-such-model"))
-      ;; The catalog is fetched once and cached in-memory for the session.
       (should (= calls 1))))
   (e-anthropic-reset-context-window-cache))
 
-(ert-deftest e-anthropic-test-context-window-nil-when-gateway-unavailable ()
-  "When the gateway query fails, context-window lookup returns nil (no fallback)."
+(ert-deftest e-anthropic-test-refresh-context-window-cache-dedupes-inflight ()
+  "A provider has at most one in-flight context-window refresh."
   (e-anthropic-reset-context-window-cache)
-  (cl-letf (((symbol-function 'e-anthropic--headers) (lambda (&rest _) nil))
-            ((symbol-function 'e-anthropic--http-get)
-             (lambda (&rest _) (signal 'e-anthropic-backend-error '("boom")))))
-    (should-not (e-anthropic-context-window "claude-opus-4-8")))
+  (let (complete
+        (calls 0))
+    (cl-letf (((symbol-function 'e-anthropic--headers) (lambda (&rest _) nil))
+              ((symbol-function 'e-anthropic--http-get-start)
+               (lambda (&rest args)
+                 (cl-incf calls)
+                 (setq complete (plist-get args :on-complete))
+                 (e-backend-request-create :metadata '(:test deferred)))))
+      (let ((first (e-anthropic-refresh-context-window-cache))
+            (second (e-anthropic-refresh-context-window-cache)))
+        (should (eq first second))
+        (should (= calls 1))
+        (funcall complete e-anthropic-test--model-info-json)
+        (should (equal (e-anthropic-context-window "claude-opus-4-8")
+                       1000000)))))
   (e-anthropic-reset-context-window-cache))
 
-(ert-deftest e-anthropic-test-reset-context-window-cache-forces-refetch ()
-  "Resetting the cache makes the next lookup re-query the gateway."
+(ert-deftest e-anthropic-test-refresh-context-window-cache-reports-errors ()
+  "Refresh failures report errors and leave the cache empty."
   (e-anthropic-reset-context-window-cache)
-  (let ((calls 0))
+  (let (error)
     (cl-letf (((symbol-function 'e-anthropic--headers) (lambda (&rest _) nil))
-              ((symbol-function 'e-anthropic--http-get)
-               (lambda (&rest _) (cl-incf calls) e-anthropic-test--model-info-json)))
-      (e-anthropic-context-window "claude-opus-4-8")
+              ((symbol-function 'e-anthropic--http-get-start)
+               (lambda (&rest args)
+                 (funcall (plist-get args :on-error)
+                          '(e-anthropic-backend-error "boom"))
+                 (e-backend-request-create :metadata '(:test error)))))
+      (e-anthropic-refresh-context-window-cache
+       :on-error (lambda (err) (setq error err)))
+      (should (equal error '(e-anthropic-backend-error "boom")))
+      (should-not (e-anthropic-context-window "claude-opus-4-8"))))
+  (e-anthropic-reset-context-window-cache))
+
+(ert-deftest e-anthropic-test-reset-context-window-cache-cancels-refresh ()
+  "Resetting the context-window cache cancels in-flight refreshes."
+  (e-anthropic-reset-context-window-cache)
+  (let (cancelled)
+    (cl-letf (((symbol-function 'e-anthropic--headers) (lambda (&rest _) nil))
+              ((symbol-function 'e-anthropic--http-get-start)
+               (lambda (&rest _)
+                 (e-backend-request-create
+                  :cancel (lambda () (setq cancelled t))
+                  :metadata '(:test cancellable)))))
+      (e-anthropic-refresh-context-window-cache)
       (e-anthropic-reset-context-window-cache)
-      (e-anthropic-context-window "claude-opus-4-8")
-      (should (= calls 2))))
+      (should cancelled)))
   (e-anthropic-reset-context-window-cache))
 
 (provide 'e-anthropic-test)

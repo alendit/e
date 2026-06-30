@@ -705,3 +705,48 @@ emacsclient --eval "...bounded context estimate cache key probe..."
 #+end_src
 
 Result: returned =(:estimate-calls 2 :keyed t :key (:messages 2))= after two calls with the same key and one call with a changed key.
+
+* Phase 3 Anthropic Model Info Refresh Slice Review
+
+Status: in progress.
+
+** Scope reviewed
+
+- Changed =e-anthropic-context-window= into a cache-only lookup instead of fetching the LiteLLM =/model/info= catalog synchronously.
+- Added =e-anthropic-refresh-context-window-cache= as an explicit async refresh API with per-provider in-flight dedupe.
+- Reused the adapter's cancellable =url-retrieve= request lifecycle for async catalog refreshes.
+- Made context-window cache reset cancel any in-flight refreshes.
+- Made =e-chat= mode-line context-window lookup start a background refresh on cache miss while still returning nil immediately.
+- This still leaves broader context/status snapshot work open, including Org Canvas provider snapshots and status-only/correctness-critical context separation.
+
+** Verification
+
+#+begin_src sh
+rtk eldev test --file test/e-anthropic-test.el -B
+#+end_src
+
+Result: passed all 40 Anthropic adapter tests, including cache-only lookup, async refresh, in-flight dedupe, error reporting, and reset cancellation coverage.
+
+#+begin_src sh
+rtk eldev emacs --batch --eval "(progn (setq byte-compile-error-on-warn t) (dolist (file '(\"lisp/adapters/anthropic/e-anthropic.el\" \"lisp/shells/chat/e-chat.el\" \"test/e-anthropic-test.el\")) (byte-compile-file file)))"
+#+end_src
+
+Result: passed for the touched adapter, chat shell, and adapter tests.
+
+#+begin_src sh
+git diff --check
+#+end_src
+
+Result: passed.
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Result: returned the repository path after reloading changed Lisp.
+
+#+begin_src sh
+emacsclient --eval "...bounded Anthropic model-info cache probe..."
+#+end_src
+
+Result: returned =(:chat-refreshes 1 :populated t :window 12345)= with synchronous fetch stubbed to error.

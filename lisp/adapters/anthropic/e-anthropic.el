@@ -84,6 +84,9 @@ populated from the gateway's `/v1/model/info' (LiteLLM) catalog.  Cleared by
 `e-anthropic-reset-context-window-cache'.  There is no static fallback: when
 the gateway is unavailable, context-window lookups return nil.")
 
+(defvar e-anthropic--context-window-refresh-requests (make-hash-table :test 'equal)
+  "In-flight async context-window catalog refresh requests keyed by provider.")
+
 (defcustom e-anthropic-model-providers
   '((gateway
      :name "Anthropic via gateway"
@@ -165,16 +168,21 @@ Synchronous; bounded by `e-anthropic-request-timeout-seconds'."
           (e-anthropic--http-response-text buffer)
         (e-anthropic--kill-request-buffer buffer)))))
 
-(defun e-anthropic--fetch-context-windows (provider)
-  "Fetch a model-name -> max-input-tokens hash for PROVIDER from the gateway.
-Queries `/model/info' and reads each entry's `model_info.max_input_tokens'.
-Signals on transport, auth, or parse failure -- callers decide how to degrade."
-  (let* ((profile (e-anthropic-provider-profile provider))
-         (base-url (e-anthropic--provider-base-url profile))
-         (headers (e-anthropic--headers profile))
-         (text (e-anthropic--http-get
-                (e-anthropic--model-info-url base-url) headers))
-         (payload (json-parse-string text :object-type 'alist
+(cl-defun e-anthropic--http-get-start
+    (&key url headers on-complete on-error)
+  "GET URL with HEADERS asynchronously.
+ON-COMPLETE receives the response body text.  ON-ERROR receives an Emacs
+condition list.  Return a cancellable `e-backend-request' handle."
+  (e-anthropic--http-request-start
+   :method "GET"
+   :url url
+   :headers headers
+   :on-complete on-complete
+   :on-error on-error))
+
+(defun e-anthropic--context-window-table-from-json (text)
+  "Return a model-name -> max-input-tokens hash parsed from model-info TEXT."
+  (let* ((payload (json-parse-string text :object-type 'alist
                                      :array-type 'list :null-object nil))
          (data (alist-get 'data payload))
          (table (make-hash-table :test 'equal)))
@@ -185,22 +193,71 @@ Signals on transport, auth, or parse failure -- callers decide how to degrade."
           (puthash name limit table))))
     table))
 
+(defun e-anthropic--fetch-context-windows (provider)
+  "Fetch a model-name -> max-input-tokens hash for PROVIDER from the gateway.
+Queries `/model/info' and reads each entry's `model_info.max_input_tokens'.
+Signals on transport, auth, or parse failure -- callers decide how to degrade."
+  (let* ((profile (e-anthropic-provider-profile provider))
+         (base-url (e-anthropic--provider-base-url profile))
+         (headers (e-anthropic--headers profile))
+         (text (e-anthropic--http-get
+                (e-anthropic--model-info-url base-url) headers)))
+    (e-anthropic--context-window-table-from-json text)))
+
 (defun e-anthropic--context-window-table (provider)
-  "Return the cached context-window hash for PROVIDER, fetching once.
+  "Return the cached context-window hash for PROVIDER.
 Returns nil when the gateway query fails (no static fallback)."
   (let ((key (or provider e-anthropic-default-provider)))
-    (or (gethash key e-anthropic--context-window-cache)
-        (when-let ((table (ignore-errors
-                            (e-anthropic--fetch-context-windows provider))))
-          (puthash key table e-anthropic--context-window-cache)
-          table))))
+    (gethash key e-anthropic--context-window-cache)))
+
+;;;###autoload
+(cl-defun e-anthropic-refresh-context-window-cache
+    (&key provider on-done on-error)
+  "Asynchronously refresh PROVIDER's model context-window cache.
+Return an in-flight request handle.  ON-DONE receives the parsed table after
+the cache is populated.  ON-ERROR receives an Emacs condition list."
+  (let* ((key (or provider e-anthropic-default-provider))
+         (existing (gethash key e-anthropic--context-window-refresh-requests)))
+    (or existing
+        (let* ((profile (e-anthropic-provider-profile provider))
+               (base-url (e-anthropic--provider-base-url profile))
+               (headers (e-anthropic--headers profile))
+               request
+               completed)
+          (setq request
+                (e-anthropic--http-get-start
+                 :url (e-anthropic--model-info-url base-url)
+                 :headers headers
+                 :on-complete
+                 (lambda (text)
+                   (setq completed t)
+                   (remhash key e-anthropic--context-window-refresh-requests)
+                   (condition-case err
+                       (let ((table
+                              (e-anthropic--context-window-table-from-json
+                               text)))
+                         (puthash key table e-anthropic--context-window-cache)
+                         (when on-done
+                           (funcall on-done table)))
+                     (error
+                      (when on-error
+                        (funcall on-error err)))))
+                 :on-error
+                 (lambda (err)
+                   (setq completed t)
+                   (remhash key e-anthropic--context-window-refresh-requests)
+                   (when on-error
+                     (funcall on-error err)))))
+          (unless completed
+            (puthash key request e-anthropic--context-window-refresh-requests))
+          request))))
 
 ;;;###autoload
 (defun e-anthropic-context-window (model &optional provider)
   "Return PROVIDER's context window (max input tokens) for MODEL, or nil.
-The value comes from the gateway's live `/model/info' catalog, cached
-in-memory for the session.  Returns nil when the gateway is unavailable or
-does not list MODEL -- there is no static fallback."
+The value comes from the in-memory `/model/info' catalog cache.  Use
+`e-anthropic-refresh-context-window-cache' to refresh that cache asynchronously.
+Returns nil when no cached catalog is available or MODEL is not listed."
   (when (stringp model)
     (when-let ((table (e-anthropic--context-window-table provider)))
       (gethash model table))))
@@ -208,8 +265,15 @@ does not list MODEL -- there is no static fallback."
 ;;;###autoload
 (defun e-anthropic-reset-context-window-cache ()
   "Clear the in-memory provider context-window cache.
-The next `e-anthropic-context-window' call re-queries the gateway."
+Cancel in-flight refreshes.  Future `e-anthropic-context-window' calls return
+nil until `e-anthropic-refresh-context-window-cache' repopulates the cache."
   (interactive)
+  (maphash
+   (lambda (_key request)
+     (ignore-errors
+       (e-backend-cancel-request request)))
+   e-anthropic--context-window-refresh-requests)
+  (clrhash e-anthropic--context-window-refresh-requests)
   (clrhash e-anthropic--context-window-cache))
 
 (defun e-anthropic-messages-url (base-url)
@@ -831,13 +895,13 @@ instead of a stream (the failure mode this adapter was built to make visible)."
     (kill-buffer buffer)))
 
 (cl-defun e-anthropic--http-request-start
-    (&key url headers body on-complete on-error)
-  "POST BODY to URL with HEADERS asynchronously.
+    (&key url headers body on-complete on-error (method "POST"))
+  "Send METHOD request to URL with HEADERS and optional BODY asynchronously.
 ON-COMPLETE receives the response body text.  ON-ERROR receives an Emacs
 condition list.  Return a cancellable `e-backend-request' handle."
-  (let ((url-request-method "POST")
+  (let ((url-request-method method)
         (url-request-extra-headers (e-anthropic--http-header-list headers))
-        (url-request-data (encode-coding-string body 'utf-8))
+        (url-request-data (and body (encode-coding-string body 'utf-8)))
         (timeout e-anthropic-request-timeout-seconds)
         request-buffer
         timeout-timer

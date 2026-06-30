@@ -41,6 +41,7 @@ Partly implemented:
 - Some UI redraw preservation and preview cheapening landed, but this is not a render scheduler.
 - The session compaction action still calls the synchronous compaction wrapper because actions do not yet have an async dispatch contract.
 - Raw-result storage exists for large tool output through session tmp resources, but there is no generic raw-result store or lifetime policy beyond explicit/harness-reset tmp cleanup.
+- Anthropic context-window lookup is cache-only; chat status starts an async model-info refresh on cache miss instead of waiting for gateway I/O.
 
 Not yet implemented in the planned sense:
 
@@ -465,7 +466,7 @@ Work:
 
 1. Define context providers as cheap snapshot providers unless they explicitly declare async refresh behavior.
 2. Move network/process/recursive/large-buffer work into async refresh jobs.
-3. Replace Anthropic model-info sync lookup with async prefetch plus stale cache or static fallback.
+3. Replace Anthropic model-info sync lookup with async prefetch plus stale cache or static fallback. Implemented for chat status through cache-only lookup plus async catalog refresh.
 4. Cache context budget estimates and invalidate only on relevant transcript, model, option, layer, or compaction changes. Initial chat mode-line estimate invalidation is implemented with semantic cache keys.
 5. Make Org Canvas and project-local context providers read cached focus and capability snapshots.
 6. Split correctness-critical turn context from status-only or optional enrichment context.
