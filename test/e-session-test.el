@@ -252,6 +252,58 @@
       (ignore-errors (e-session-flush-write-queue store))
       (delete-directory directory t))))
 
+(ert-deftest e-session-test-queued-writes-carry-generation-metadata ()
+  "Queued persistent record writes carry generation, sequence, and criticality."
+  (let* ((directory (make-temp-file "e-session-" t))
+         (store (e-session-persistent-index-store-create
+                 directory
+                 :write-mode 'queued)))
+    (unwind-protect
+        (let* ((session (e-session-create store :id "queued-metadata"))
+               (session-id (plist-get session :id)))
+          (e-session-append-message
+           store session-id
+           '(:id "msg-1" :role user :content "queued metadata"))
+          (let ((entries (reverse (e-session-store-write-queue store))))
+            (should (= (length entries) 2))
+            (dolist (entry entries)
+              (should (plist-member entry :session-id))
+              (should (plist-member entry :record))
+              (should (integerp (plist-get entry :generation)))
+              (should (integerp (plist-get entry :sequence)))
+              (should (eq (plist-get entry :criticality) 'critical))
+              (should (plist-member entry :dependencies)))
+            (should (< (plist-get (car entries) :sequence)
+                       (plist-get (cadr entries) :sequence))))
+          (let ((index-entry (e-session-store-index-write-pending store)))
+            (should (plist-member index-entry :generation))
+            (should (plist-member index-entry :sequence))
+            (should (eq (plist-get index-entry :criticality) 'derived))))
+      (ignore-errors (e-session-flush-write-queue store))
+      (delete-directory directory t))))
+
+(ert-deftest e-session-test-flush-write-queue-drops-stale-generation-records ()
+  "Flushing a queued store ignores records from stale queue generations."
+  (let* ((directory (make-temp-file "e-session-" t))
+         (store (e-session-persistent-index-store-create
+                 directory
+                 :write-mode 'queued)))
+    (unwind-protect
+        (let* ((session (e-session-create store :id "stale-queued"))
+               (session-id (plist-get session :id)))
+          (e-session-append-message
+           store session-id
+           '(:id "msg-1" :role user :content "stale queued"))
+          (cl-incf (e-session-store-write-queue-generation store))
+          (e-session-flush-write-queue store)
+          (let ((loaded (e-session-persistent-index-store-create directory)))
+            (should-not
+             (cl-find session-id (e-session-list loaded)
+                      :key (lambda (entry) (plist-get entry :id))
+                      :test #'equal))))
+      (ignore-errors (e-session-flush-write-queue store))
+      (delete-directory directory t))))
+
 (ert-deftest e-session-test-load-session-start-replays-in-chunks ()
   "Chunked persistent session loading returns before replay completion."
   (let* ((directory (make-temp-file "e-session-" t))

@@ -940,6 +940,55 @@ emacsclient --eval "...bounded fake-transport MCP capability-provider probe..."
 
 Result: returned =(:initial nil :cached t :calls 1 :final ("mcp__live-fixture__echo") :failure nil)=.
 
+* Phase 3 Queued Session Write Generation Slice Review
+
+Status: in progress.
+
+** Scope reviewed
+
+- Queued persistent record writes now carry session id, record payload, queue generation, monotonic queue sequence, criticality, and dependency metadata.
+- Queued derived index writes now carry generation, sequence, criticality, and dependency metadata instead of using a bare boolean marker.
+- =e-session-flush-write-queue= drops stale-generation queued record writes and skips stale derived index writes.
+- Legacy cons-shaped queued entries are still accepted by the flush path for compatibility with older in-memory queue state.
+
+** Verification
+
+#+begin_src sh
+rtk eldev test -f test/e-session-test.el -b e-session-test-queued-persistent-writes-flush-later e-session-test-queued-writes-carry-generation-metadata e-session-test-flush-write-queue-drops-stale-generation-records
+#+end_src
+
+Result: passed all three focused queued-write tests.
+
+#+begin_src sh
+rtk eldev test -f test/e-session-test.el
+#+end_src
+
+Result: passed all 54 session tests.
+
+#+begin_src sh
+rtk eldev emacs --batch --eval "(progn (setq byte-compile-error-on-warn t) (dolist (file '(\"lisp/core/e-session.el\" \"test/e-session-test.el\")) (byte-compile-file file)))"
+#+end_src
+
+Result: passed for the touched session module and tests.
+
+#+begin_src sh
+git diff --check
+#+end_src
+
+Result: passed.
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Result: returned the repository path after reloading changed Lisp.
+
+#+begin_src sh
+emacsclient --eval "...bounded queued-write generation probe..."
+#+end_src
+
+Result: returned =(:record-count 2 :record-generations (1 1) :record-sequences (1 3) :index-generation 1 :index-criticality derived :loaded-count 0)= after forcing a stale generation before flush.
+
 #+begin_src sh
 git diff --check
 #+end_src

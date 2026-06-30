@@ -42,7 +42,7 @@ Partly implemented:
 - The session compaction action still calls the synchronous compaction wrapper because actions do not yet have an async dispatch contract.
 - Raw-result storage exists for large tool output through session tmp resources, with explicit, harness-reset, and configured max-age cleanup; there is still no generic raw-result store.
 - Anthropic context-window lookup is cache-only; chat status starts an async model-info refresh on cache miss instead of waiting for gateway I/O.
-- The default live chat session store queues persistent JSONL/index writes behind a short timer and has an explicit synchronous flush path.
+- The default live chat session store queues persistent JSONL/index writes behind a short timer, records queued-write generation/sequence/criticality metadata, drops stale-generation queued writes, and has an explicit synchronous flush path.
 - MCP refresh has an async start API, and the interactive refresh path uses it instead of waiting for helper or HTTP responses.
 - MCP catalog discovery has an async start API for stdio and HTTP transports, with cache population on completion.
 - Interactive MCP capability providers use cached catalogs and start async discovery instead of blocking harness tool/resource/context construction on a cache miss.
@@ -56,7 +56,7 @@ Not yet implemented in the planned sense:
 - There is no generic raw-result store or cache-driven reference cleanup lifecycle.
 - There is no cooperative presentation render scheduler.
 - Context budget estimates now support semantic cache keys for transcript/model/option/layer-sensitive invalidation, but there is no cached context/status snapshot contract broad enough to satisfy Phase 3.
-- Chat resume/rendering does not yet use the chunked replay scheduler, and there is no critical/derived session durability model or stale-generation queued-write recovery.
+- Chat resume/rendering does not yet use the chunked replay scheduler, and the queued-write critical/derived durability model is only partially implemented.
 - Nested cheap tool calls still use synchronous return semantics; long-class nested calls now fail fast with model guidance instead of waiting.
 - The final obsolete sync API sweep is not done.
 
@@ -130,7 +130,7 @@ Still blocking or potentially blocking:
 - nested =e-tools-call= waits for the nested tool by contract;
 - running-status redraw, final assistant Markdown presentation, tool-result previewing, block details, and full session render are synchronous buffer work;
 - context/status paths can build full context, run providers, estimate tokens, or query Anthropic model info synchronously;
-- default live session appends queue persistent JSONL/index writes through a short timer, and transcript replay has a chunked async start API, but current chat resume/load callers and overview read state are still synchronous;
+- default live session appends queue persistent JSONL/index writes through a short timer with generation/sequence metadata and stale-generation dropping, and transcript replay has a chunked async start API, but current chat resume/load callers and overview read state are still synchronous;
 - composer =@= candidates and file insertion do synchronous discovery/reads.
 
 * Target Contracts
@@ -502,7 +502,7 @@ Work:
 
 1. Define critical vs derived session events.
 2. Flush or acknowledge critical events before dependent state is considered durable.
-3. Queue and batch non-critical derived writes with session generation and monotonic sequence numbers. Initial queued JSONL/index persistence is implemented for the default live chat store; generation-based recovery is not.
+3. Queue and batch non-critical derived writes with session generation and monotonic sequence numbers. Initial queued JSONL/index persistence is implemented for the default live chat store; queued writes now carry generation, sequence, criticality, and dependency metadata, and flush drops stale-generation record/index writes.
 4. Add chunked session replay/loading for large JSONL transcripts. Initial =e-session-load-session-start= API is implemented; chat resume/render integration remains.
 5. Add lazy transcript rendering that can show latest turns first.
 6. Cache overview/read state and avoid repeated full JSON reads.

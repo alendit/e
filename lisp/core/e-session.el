@@ -45,6 +45,7 @@
   write-queue-timer
   index-write-pending
   (write-queue-generation 0)
+  (write-queue-sequence 0)
   (sequence 0))
 
 (defcustom e-session-write-queue-delay 0.05
@@ -510,6 +511,67 @@ arrays and sometimes inverted key/value pairs."
       (with-temp-file (e-session-store-index-file store)
         (insert (e-session--index-json store))))))
 
+(defun e-session--queued-record-criticality (record)
+  "Return the queued-write criticality class for RECORD."
+  (if (member (plist-get record :type)
+              '("session" "message" "activity" "compaction"
+                "provider_anchor" "branch_summary"))
+      'critical
+    'derived))
+
+(defun e-session--queued-record-dependencies (session-id record)
+  "Return dependency metadata for queued RECORD in SESSION-ID."
+  (list :session-id session-id
+        :record-id (or (plist-get record :id)
+                       (plist-get record :entry_id))
+        :parent-id (or (plist-get record :parent_id)
+                       (plist-get record :previous_entry_id))))
+
+(defun e-session--queued-write-entry (store session-id record)
+  "Return a metadata-bearing queued write entry for RECORD."
+  (list :session-id session-id
+        :record record
+        :generation (e-session-store-write-queue-generation store)
+        :sequence (cl-incf (e-session-store-write-queue-sequence store))
+        :criticality (e-session--queued-record-criticality record)
+        :dependencies (e-session--queued-record-dependencies session-id record)))
+
+(defun e-session--queued-index-entry (store)
+  "Return a metadata-bearing queued derived-index write entry."
+  (list :generation (e-session-store-write-queue-generation store)
+        :sequence (cl-incf (e-session-store-write-queue-sequence store))
+        :criticality 'derived
+        :dependencies '(:source queued-records)))
+
+(defun e-session--queued-entry-session-id (entry)
+  "Return queued ENTRY's session id."
+  (if (and (consp entry)
+           (keywordp (car entry)))
+      (plist-get entry :session-id)
+    (car entry)))
+
+(defun e-session--queued-entry-record (entry)
+  "Return queued ENTRY's persistent record."
+  (if (and (consp entry)
+           (keywordp (car entry))
+           (plist-member entry :record))
+      (plist-get entry :record)
+    (cdr entry)))
+
+(defun e-session--queued-entry-current-p (store entry)
+  "Return non-nil when queued ENTRY belongs to STORE's current generation."
+  (let ((generation (plist-get entry :generation)))
+    (or (null generation)
+        (= generation (e-session-store-write-queue-generation store)))))
+
+(defun e-session--queued-index-current-p (store entry)
+  "Return non-nil when queued index ENTRY belongs to STORE's current generation."
+  (or (eq entry t)
+      (and (consp entry)
+           (keywordp (car entry))
+           (= (plist-get entry :generation)
+              (e-session-store-write-queue-generation store)))))
+
 (defun e-session--clear-write-queue-timer (store)
   "Clear STORE's queued write timer slot."
   (let ((timer (e-session-store-write-queue-timer store)))
@@ -521,16 +583,28 @@ arrays and sometimes inverted key/value pairs."
   "Synchronously flush queued persistent writes for STORE.
 Return STORE."
   (e-session--clear-write-queue-timer store)
-  (let ((entries (nreverse (e-session-store-write-queue store)))
-        (write-index (e-session-store-index-write-pending store)))
+  (let* ((raw-entries (nreverse (e-session-store-write-queue store)))
+         (entries (cl-remove-if-not
+                   (lambda (entry)
+                     (e-session--queued-entry-current-p store entry))
+                   raw-entries))
+         (write-index-entry (e-session-store-index-write-pending store))
+         (write-index (and write-index-entry
+                           (e-session--queued-index-current-p
+                            store write-index-entry)))
+         (stale-count (- (length raw-entries) (length entries))))
     (e-session--profile-call
      'session.flush-write-queue
      (list :metadata (list :persistent (and (e-session--persistent-p store) t)
                            :record-count (length entries)
+                           :stale-record-count stale-count
                            :write-index (and write-index t)))
      (lambda ()
        (dolist (entry entries)
-         (e-session--append-record-now store (car entry) (cdr entry)))
+         (e-session--append-record-now
+          store
+          (e-session--queued-entry-session-id entry)
+          (e-session--queued-entry-record entry)))
        (when write-index
          (e-session--write-index-now store))))
     (setf (e-session-store-write-queue store) nil)
@@ -563,9 +637,9 @@ Return STORE."
      (when (e-session--persistent-p store)
        (if (e-session--queued-writes-p store)
            (progn
-             (push (cons session-id record)
-                   (e-session-store-write-queue store))
-             (e-session--schedule-write-queue store))
+             (e-session--schedule-write-queue store)
+             (push (e-session--queued-write-entry store session-id record)
+                   (e-session-store-write-queue store)))
          (e-session--append-record-now store session-id record))))))
 
 
@@ -1101,8 +1175,9 @@ and RECORD supplies persisted identity fields during replay."
      (when (e-session--persistent-p store)
        (if (e-session--queued-writes-p store)
            (progn
-             (setf (e-session-store-index-write-pending store) t)
-             (e-session--schedule-write-queue store))
+             (e-session--schedule-write-queue store)
+             (setf (e-session-store-index-write-pending store)
+                   (e-session--queued-index-entry store)))
          (e-session--write-index-now store))))))
 
 (defun e-session--json-read-line (line)
