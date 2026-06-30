@@ -277,6 +277,57 @@ emacsclient --eval "...bounded chat-session compact-start probe..."
 
 Result: returned =(:fboundp t :request t :operation compaction :done-immediate nil)=.
 
+* Phase 2 compact_session Tool Slice Review
+
+Status: in progress.
+
+** Scope reviewed
+
+- Added =e-layer--compact-session-tool-start= so the legacy =compact_session= tool registration starts through =e-harness-compact-session-start=.
+- Kept the synchronous handler for explicit batch compatibility.
+- Marked =compact_session= as =network=-class through tool blocking metadata, so interactive execution requires the async =:start= path.
+- Shared result formatting between the synchronous handler and async start callback.
+- Added focused coverage in =test/e-layer-compaction-tool-test.el= without editing already-dirty broad layer tests.
+- Left the =session-compaction= action on the synchronous action dispatcher because action dispatch has no async completion contract yet.
+
+** Verification
+
+#+begin_src sh
+rtk eldev test --file test/e-layer-compaction-tool-test.el -B
+#+end_src
+
+Result: passed for registration metadata and start-before-summary completion.
+
+#+begin_src sh
+rtk eldev test --file test/e-layer-compaction-tool-test.el --file test/e-tools-test.el --file test/e-harness-compaction-async-test.el -B
+#+end_src
+
+Result: passed for async compact_session, tool start contracts, and harness async compaction coverage.
+
+#+begin_src sh
+git diff --check
+#+end_src
+
+Result: passed.
+
+#+begin_src sh
+rtk eldev emacs --batch --eval "(progn (setq byte-compile-error-on-warn t) (dolist (file '(\"lisp/layers/e-layer.el\" \"test/e-layer-compaction-tool-test.el\")) (byte-compile-file file)))"
+#+end_src
+
+Result: passed for the touched layer and focused test files.
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Result: returned the repository path after reloading changed Lisp.
+
+#+begin_src sh
+emacsclient --eval "...bounded compact_session registry probe..."
+#+end_src
+
+Result: returned =(:has-start t :blocking-class network)=.
+
 * Phase 2 Nested Long-Tool Slice Review
 
 Status: in progress.

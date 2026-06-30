@@ -63,13 +63,52 @@
       (e-tools-result-create
        tool-call
        'ok
-       (format "Session compacted into %s."
-               (plist-get record :id))
-       (list :refresh-context t
-             :compaction-id (plist-get record :id)
-             :first-kept-entry-id (plist-get record :first-kept-entry-id)
-             :tokens-before (plist-get record :tokens-before)
-             :tokens-kept (plist-get record :tokens-kept))))))
+       (e-layer--compact-session-result-message record)
+       (e-layer--compact-session-result-metadata record)))))
+
+(defun e-layer--compact-session-result-message (record)
+  "Return user-facing compaction result text for RECORD."
+  (format "Session compacted into %s."
+          (plist-get record :id)))
+
+(defun e-layer--compact-session-result-metadata (record)
+  "Return tool/action result metadata for compaction RECORD."
+  (list :refresh-context t
+        :compaction-id (plist-get record :id)
+        :first-kept-entry-id (plist-get record :first-kept-entry-id)
+        :tokens-before (plist-get record :tokens-before)
+        :tokens-kept (plist-get record :tokens-kept)))
+
+(cl-defun e-layer--compact-session-tool-start
+    (&key arguments on-done on-error &allow-other-keys)
+  "Start compacting the current session from inside an agent turn."
+  (let* ((context (e-tools-current-context))
+         (tool-call (plist-get context :tool-call))
+         (harness (plist-get context :harness))
+         (session-id (plist-get context :session-id))
+         (turn-id (plist-get context :turn-id)))
+    (unless (e-harness-p harness)
+      (signal 'e-layer-invalid-tool-context
+              (list "compact_session requires an active harness")))
+    (unless (stringp session-id)
+      (signal 'e-layer-invalid-tool-context
+              (list "compact_session requires an active session id")))
+    (e-harness-compact-session-start
+     harness session-id
+     :instructions (e-layer--compact-session-instructions arguments)
+     :keep-recent-tokens (e-layer--compact-session-keep-recent-tokens arguments)
+     :allow-active-turn t
+     :turn-id turn-id
+     :on-done (lambda (record)
+                (when on-done
+                  (funcall
+                   on-done
+                   (e-tools-result-create
+                    tool-call
+                    'ok
+                    (e-layer--compact-session-result-message record)
+                    (e-layer--compact-session-result-metadata record)))))
+     :on-error on-error)))
 
 (defun e-layer-register-compact-session-tool (registry)
   "Register the self-management context compaction tool in REGISTRY."
@@ -85,7 +124,9 @@
                               (:type "integer"
                                :description "Optional approximate token budget for the verbatim suffix kept after compaction."))
                  :required [])
-   :handler #'e-layer--compact-session-tool))
+   :handler #'e-layer--compact-session-tool
+   :start #'e-layer--compact-session-tool-start
+   :blocking-class 'network))
 
 (defun e-core-layer-create ()
   "Create the e self-management layer."
