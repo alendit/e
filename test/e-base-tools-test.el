@@ -87,6 +87,21 @@ printf '%s\\n' delayed.txt
       (delete-directory directory t)
       (delete-directory bin-dir t))))
 
+(ert-deftest e-base-tools-test-sync-process-lines-rejects-hot-path ()
+  "The synchronous process-lines helper fails before process-file in hot paths."
+  (let (started)
+    (cl-letf (((symbol-function 'process-file)
+               (lambda (&rest _args)
+                 (setq started t)
+                 (error "process-file should not run"))))
+      (let ((err (should-error
+                  (e-request-with-hot-path 'base-process-lines
+                    (e-base-tools--process-lines "fd" default-directory nil))
+                  :type 'e-request-blocking-call-in-hot-path)))
+        (should (equal (cdr err)
+                       '(e-base-tools--process-lines base-process-lines))))
+      (should-not started))))
+
 (defun e-base-tools-test--wait-until (predicate &optional timeout)
   "Wait until PREDICATE returns non-nil or TIMEOUT seconds elapse."
   (let ((deadline (+ (float-time) (or timeout 1.0)))
@@ -1111,10 +1126,28 @@ picker."
             (should (null result))
             (should (e-base-tools-test--wait-until
                      (lambda () result)
-                     1.0))
+                     2.0))
             (should (equal (plist-get result :status) 'ok))
             (should (equal (plist-get result :content) "done"))))
       (delete-directory directory t))))
+
+(ert-deftest e-base-tools-test-sync-bash-helper-rejects-hot-path ()
+  "The synchronous bash helper fails before starting a shell command."
+  (let (started)
+    (cl-letf (((symbol-function 'e-base-tools--run-shell-command-start)
+               (lambda (&rest _args)
+                 (setq started t)
+                 (error "shell command should not start"))))
+      (let ((err (should-error
+                  (e-request-with-hot-path 'base-sync-bash
+                    (e-base-tools--run-shell-command
+                     "printf done"
+                     default-directory
+                     nil))
+                  :type 'e-request-blocking-call-in-hot-path)))
+        (should (equal (cdr err)
+                       '(e-base-tools--run-shell-command base-sync-bash))))
+      (should-not started))))
 
 (ert-deftest e-base-tools-test-bash-publishes-streaming-progress ()
   "The native bash tool publishes progress while output is still streaming."

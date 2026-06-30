@@ -2626,3 +2626,46 @@ emacsclient --eval "(let (process-start fetch-start browser-start process-error 
 #+end_src
 
 Result: returned =(:process-start nil :process-error (e-web-tools--run-process live-web-process) :fetch-start nil :fetch-error (e-web-tools--fetch live-web-fetch) :browser-start nil :browser-error (e-web-tools--browser-request live-web-browser))=, confirming the live direct sync helpers reject before starting blocking work.
+
+* Phase 4 Base Sync Helper Hot-Path Guard Slice Review
+
+Status: complete.
+
+** Scope reviewed
+
+- Added a base-tool hot-path rejection helper.
+- Guarded synchronous file-discovery =process-file= execution and the synchronous bash wait wrapper before they can start blocking work.
+- Preserved async =file://= glob/search starts and the async =bash= tool start path.
+- Widened the existing async bash test wait from 1s to 2s after it passed only at about 0.96s in one rerun; this keeps the test focused on settlement rather than a tight wall-clock edge.
+
+** Verification
+
+#+begin_src sh
+rtk eldev emacs --batch --eval "(progn (setq byte-compile-error-on-warn t) (dolist (file '(\"lisp/layers/base/e-base-tools.el\" \"test/e-base-tools-test.el\")) (byte-compile-file file)))"
+#+end_src
+
+Result: passed for the touched base module and tests.
+
+#+begin_src sh
+rtk eldev test -f test/e-base-tools-test.el -B e-base-tools-test-sync-process-lines-rejects-hot-path e-base-tools-test-sync-bash-helper-rejects-hot-path e-base-tools-test-bash-starts-asynchronously
+#+end_src
+
+Result: passed the focused sync-helper guards and the async bash regression.  An earlier parallel compile/test run caused an Eldev lock conflict, and the old 1s async bash wait exposed a timing edge before the wait budget was widened.
+
+#+begin_src sh
+rtk eldev test -f test/e-base-tools-test.el
+#+end_src
+
+Result: passed all 39 base tools tests, including =e-base-tools-test-glob-start-returns-before-fd-exits=.
+
+#+begin_src sh
+emacsclient --eval "(progn (load \"/Users/dimitrivorona/projects/elisp/e/lisp/dev/e-dev.el\" nil 'nomessage) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Result: returned ="/Users/dimitrivorona/projects/elisp/e/"=, so the running Emacs loaded the base helper guard change.
+
+#+begin_src sh
+emacsclient --eval "(let (process-start bash-start process-error bash-error) ...)"
+#+end_src
+
+Result: returned =(:process-start nil :process-error (e-base-tools--process-lines live-base-process) :bash-start nil :bash-error (e-base-tools--run-shell-command live-base-bash))=, confirming the live direct base sync helpers reject before starting blocking work.

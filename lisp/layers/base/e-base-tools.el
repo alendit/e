@@ -19,6 +19,7 @@
 (require 'e-operations)
 (require 'e-resource-coherence)
 (require 'e-resource-patterns)
+(require 'e-request)
 (require 'e-resources)
 (require 'e-tools)
 
@@ -593,9 +594,15 @@ through file:// reads."
       (signal 'e-base-tools-missing-command
               (list (format "Missing executable: %s" name)))))
 
+(defun e-base-tools--reject-sync-in-hot-path (operation)
+  "Reject synchronous base-tool OPERATION from marked interactive hot paths."
+  (when (e-request-hot-path-active-p)
+    (e-request-hot-path-blocking-error operation)))
+
 (defun e-base-tools--process-lines (program directory args &optional ok-statuses)
   "Run PROGRAM in DIRECTORY with ARGS and return output lines.
 OK-STATUSES defaults to only zero."
+  (e-base-tools--reject-sync-in-hot-path 'e-base-tools--process-lines)
   (let ((default-directory directory)
         (accepted (or ok-statuses '(0))))
     (with-temp-buffer
@@ -1698,6 +1705,7 @@ streaming progress events."
 
 (defun e-base-tools--run-shell-command (command directory timeout)
   "Run shell COMMAND in DIRECTORY with optional TIMEOUT seconds."
+  (e-base-tools--reject-sync-in-hot-path 'e-base-tools--run-shell-command)
   (let ((done nil)
         (result nil)
         (failure nil))
