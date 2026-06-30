@@ -1147,10 +1147,13 @@
             (set-window-point window (point))
             (set-window-start window (point))
             (e-chat--after-display-buffer buffer)
-            (let ((latest-output-end (cdr (e-chat--running-status-bounds))))
+            (let ((latest-output-end (cdr (e-chat--running-status-bounds)))
+                  (composer-position
+                   (marker-position e-chat--composer-start-marker)))
               (should latest-output-end)
-              (should (= (point) latest-output-end))
-              (should (= (window-point window) latest-output-end)))))
+              (should composer-position)
+              (should (= (point) composer-position))
+              (should (= (window-point window) composer-position)))))
       (when (window-live-p window)
         (delete-window window))
       (when (buffer-live-p buffer)
@@ -3834,6 +3837,7 @@ the orphaned region and appeared to vanish."
     (unwind-protect
         (progn
           (setq window (display-buffer buffer))
+          (select-window window)
           (with-current-buffer buffer
             (e-chat--render-event
              (e-events-make :type 'turn-started
@@ -3853,21 +3857,25 @@ the orphaned region and appeared to vanish."
                             :payload '(:content "first chunk")))
             (e-chat-test--flush-pending-activity-redraw)
             (e-chat--show-latest-output)
-            (let ((old-tail (cdr (e-chat--running-status-bounds))))
+            (let ((old-tail (cdr (e-chat--running-status-bounds)))
+                  (old-composer (marker-position e-chat--composer-start-marker)))
               (should old-tail)
-              (should (= (point) old-tail))
-              (should (= (window-point window) old-tail))
+              (should old-composer)
+              (should (= (point) old-composer))
+              (should (= (window-point window) old-composer))
               (e-chat--render-event
                (e-events-make :type 'reasoning-delta
                               :session-id e-chat-session-id
                               :turn-id "turn-1"
                               :payload '(:content "\nsecond chunk")))
               (e-chat-test--flush-pending-activity-redraw)
-              (let ((new-tail (cdr (e-chat--running-status-bounds))))
+              (let ((new-tail (cdr (e-chat--running-status-bounds)))
+                    (new-composer (marker-position e-chat--composer-start-marker)))
                 (should new-tail)
+                (should new-composer)
                 (should (> new-tail old-tail))
-                (should (= (point) new-tail))
-                (should (= (window-point window) new-tail))))))
+                (should (= (point) new-composer))
+                (should (= (window-point window) new-composer))))))
       (when (window-live-p window)
         (delete-window window))
       (when (buffer-live-p buffer)
@@ -3923,7 +3931,8 @@ the orphaned region and appeared to vanish."
                                  "chat-active-focus-tail-late"))
                   (should (equal (e-chat-render-job-block-id job)
                                  'active-turn-tail))))
-              (should (= (window-point window) tail))
+              (should (= (window-point window)
+                         (marker-position e-chat--composer-start-marker)))
               ;; Doom workspace restoration can put the old point back after
               ;; focus hooks run.  The deferred tail must win that race.
               (set-window-point window stale-point)
@@ -3932,7 +3941,8 @@ the orphaned region and appeared to vanish."
               (should
                (e-chat-test--wait-until
                 (lambda ()
-                  (= (window-point window) tail))
+                  (= (window-point window)
+                     (marker-position e-chat--composer-start-marker)))
                 0.2)))))
       (when (window-live-p window)
         (delete-window window))

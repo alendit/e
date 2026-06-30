@@ -4592,6 +4592,27 @@ When RECORD is nil, clear only buffer-local status markers."
              (<= position (cdr bounds)))
     (- position (car bounds))))
 
+(defun e-chat--composer-focus-position ()
+  "Return the desired composer focus position, or nil."
+  (and (markerp e-chat--composer-start-marker)
+       (marker-position e-chat--composer-start-marker)
+       (point-max)))
+
+(defun e-chat--composer-focused-p ()
+  "Return non-nil when point is in the composer input."
+  (when-let ((position (and (markerp e-chat--composer-start-marker)
+                            (marker-position e-chat--composer-start-marker))))
+    (>= (point) position)))
+
+(defun e-chat--composer-focus-visible-p (window)
+  "Return non-nil when composer focus is visible in WINDOW."
+  (and (window-live-p window)
+       (e-chat--composer-focused-p)
+       (let ((position (point)))
+         (or (pos-visible-in-window-p position window)
+             (and (<= (window-start window) position)
+                  (<= position (window-end window t)))))))
+
 (defun e-chat--capture-running-status-display-state ()
   "Capture point/window offsets when the user is reading active status."
   (when-let ((bounds (e-chat--running-status-bounds)))
@@ -4603,15 +4624,17 @@ When RECORD is nil, clear only buffer-local status markers."
                  (e-chat--position-running-offset (window-point window) bounds)))
            (window-start-offset
             (and (window-live-p window)
-                 (e-chat--position-running-offset (window-start window) bounds))))
-      (when (or point-offset window-point-offset window-start-offset)
+                 (e-chat--position-running-offset (window-start window) bounds)))
+           (tail (or (= (point) end)
+                     (and (window-live-p window)
+                          (= (window-point window) end))
+                     (e-chat--composer-focus-visible-p window))))
+      (when (or point-offset window-point-offset window-start-offset tail)
         (list :point-offset point-offset
               :window window
               :window-point-offset window-point-offset
               :window-start-offset window-start-offset
-              :tail (or (= (point) end)
-                        (and (window-live-p window)
-                             (= (window-point window) end))))))))
+              :tail tail)))))
 
 (defun e-chat--running-status-position-from-offset (offset bounds)
   "Return a position inside BOUNDS for OFFSET."
@@ -6204,8 +6227,9 @@ non-nil, is used by focused block activation."
         (recenter -2)))))
 
 (defun e-chat--show-latest-output ()
-  "Move point and visible window focus to the latest chat output."
-  (let ((position (or (cdr (e-chat--running-status-bounds))
+  "Show the latest chat output while keeping input focus in the composer."
+  (let ((position (or (e-chat--composer-focus-position)
+                      (cdr (e-chat--running-status-bounds))
                       (point-max))))
     (goto-char position)
     (when-let ((window (e-chat--visible-window)))
