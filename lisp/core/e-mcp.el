@@ -700,15 +700,126 @@ Return the parsed JSON-RPC result on success, signal on error."
     (e-mcp--http-notify session "notifications/initialized" nil)
     (plist-put session :initialized t)))
 
+(cl-defun e-mcp--http-initialize-start
+    (session &key on-done on-error on-event &allow-other-keys)
+  "Start MCP HTTP initialization for SESSION asynchronously."
+  (if (plist-get session :initialized)
+      (let ((settled nil)
+            timer)
+        (setq timer
+              (run-at-time
+               0 nil
+               (lambda ()
+                 (unless settled
+                   (setq settled t)
+                   (when on-done
+                     (funcall on-done t))))))
+        (e-tools-request-create
+         :cancel (lambda ()
+                   (unless settled
+                     (setq settled t)
+                     (when (timerp timer)
+                       (cancel-timer timer)))
+                   t)
+         :metadata '(:transport timer
+                     :method initialize
+                     :cancellable queued-only)))
+    (let (child-request
+          settled)
+      (cl-labels
+          ((fail (condition)
+             (unless settled
+               (setq settled t)
+               (when on-error
+                 (funcall on-error condition))))
+           (finish (_result)
+             (unless settled
+               (setq settled t)
+               (e-mcp--http-notify-start
+                session "notifications/initialized" nil)
+               (plist-put session :initialized t)
+               (when on-done
+                 (funcall on-done t)))))
+        (setq child-request
+              (e-mcp--http-post-start
+               session "initialize"
+               (list :protocolVersion "2024-11-05"
+                     :capabilities nil
+                     :clientInfo (list :name "e-mcp" :version "0.1.0"))
+               :on-done #'finish
+               :on-error #'fail
+               :on-event on-event))
+        (e-tools-request-create
+         :cancel (lambda ()
+                   (unless settled
+                     (setq settled t)
+                     (when child-request
+                       (e-tools-cancel-request child-request)))
+                   t)
+         :metadata '(:transport url
+                     :method initialize
+                     :cancellable ignore-late-result))))))
+
+(defun e-mcp--http-tools-from-result (server result)
+  "Return tools for SERVER parsed from HTTP tools/list RESULT."
+  (mapcar
+   (lambda (item)
+     (e-mcp--tool-from-helper (e-mcp-server-id server) item))
+   (append (plist-get result :tools) nil)))
+
 (defun e-mcp--http-list-tools (server)
   "Return MCP tools for HTTP SERVER."
   (let ((session (e-mcp--http-session server)))
     (e-mcp--http-initialize session)
     (let ((result (e-mcp--http-post session "tools/list" nil)))
-      (mapcar
-       (lambda (item)
-         (e-mcp--tool-from-helper (e-mcp-server-id server) item))
-       (append (plist-get result :tools) nil)))))
+      (e-mcp--http-tools-from-result server result))))
+
+(cl-defun e-mcp--http-list-tools-start
+    (server &key on-done on-error on-event &allow-other-keys)
+  "Start MCP tools/list for HTTP SERVER asynchronously."
+  (let ((session (e-mcp--http-session server))
+        child-request
+        settled)
+    (cl-labels
+        ((fail (condition)
+           (unless settled
+             (setq settled t)
+             (when on-error
+               (funcall on-error condition))))
+         (finish-list (result)
+           (unless settled
+             (condition-case condition
+                 (let ((tools (e-mcp--http-tools-from-result server result)))
+                   (setq settled t)
+                   (when on-done
+                     (funcall on-done tools)))
+               (error
+                (fail condition)))))
+         (start-list (_initialized)
+           (unless settled
+             (setq child-request
+                   (e-mcp--http-post-start
+                    session "tools/list" nil
+                    :on-done #'finish-list
+                    :on-error #'fail
+                    :on-event on-event)))))
+      (setq child-request
+            (e-mcp--http-initialize-start
+             session
+             :on-done #'start-list
+             :on-error #'fail
+             :on-event on-event))
+      (e-tools-request-create
+       :cancel (lambda ()
+                 (unless settled
+                   (setq settled t)
+                   (when child-request
+                     (e-tools-cancel-request child-request)))
+                 t)
+       :metadata (list :transport 'url
+                       :method "tools/list"
+                       :server-id (e-mcp-server-id server)
+                       :cancellable 'ignore-late-result)))))
 
 (defun e-mcp--http-call-tool (server tool-name arguments)
   "Call TOOL-NAME with ARGUMENTS on HTTP SERVER."
@@ -882,8 +993,7 @@ Interactively, refresh all servers seen during capability construction."
     (unless servers
       (signal 'e-mcp-backend-error
               (list "No MCP servers are configured for refresh")))
-    (if (and (called-interactively-p 'interactive)
-             (not (cl-some #'e-mcp--server-http-p servers)))
+    (if (called-interactively-p 'interactive)
         (progn
           (e-mcp-refresh-start
            servers
@@ -904,21 +1014,69 @@ Interactively, refresh all servers seen during capability construction."
 
 (cl-defun e-mcp-refresh-start
     (&optional servers &key on-done on-error on-event &allow-other-keys)
-  "Start a stdio MCP catalog refresh for SERVERS asynchronously."
+  "Start an MCP catalog refresh for SERVERS asynchronously."
   (let* ((servers (or servers e-mcp--known-servers))
-         (http-servers (cl-remove-if-not #'e-mcp--server-http-p servers)))
+         (http-servers (cl-remove-if-not #'e-mcp--server-http-p servers))
+         (stdio-servers (cl-remove-if #'e-mcp--server-http-p servers))
+         child-requests
+         (pending 0)
+         settled)
     (unless servers
       (signal 'e-mcp-backend-error
               (list "No MCP servers are configured for refresh")))
-    (when http-servers
-      (signal 'e-mcp-backend-error
-              (list "Async MCP refresh currently supports stdio servers only")))
     (e-mcp--invalidate-catalog servers)
-    (e-mcp--helper-request-start
-     "refresh" servers nil
-     :on-done on-done
-     :on-error on-error
-     :on-event on-event)))
+    (cl-labels
+        ((cancel-children ()
+           (dolist (request child-requests)
+             (e-tools-cancel-request request)))
+         (fail (condition)
+           (unless settled
+             (setq settled t)
+             (cancel-children)
+             (when on-error
+               (funcall on-error condition))))
+         (finish-one (_result)
+           (unless settled
+             (setq pending (1- pending))
+             (when (= pending 0)
+               (setq settled t)
+               (when on-done
+                 (funcall on-done '(:refreshed t))))))
+         (remember (request)
+           (push request child-requests)
+           request))
+      (dolist (server http-servers)
+        (setq pending (1+ pending))
+        (condition-case condition
+            (remember
+             (e-mcp--http-list-tools-start
+              server
+              :on-done #'finish-one
+              :on-error #'fail
+              :on-event on-event))
+          (error
+           (fail condition))))
+      (when stdio-servers
+        (setq pending (1+ pending))
+        (condition-case condition
+            (remember
+             (e-mcp--helper-request-start
+              "refresh" stdio-servers nil
+              :on-done #'finish-one
+              :on-error #'fail
+              :on-event on-event))
+          (error
+           (fail condition))))
+      (e-tools-request-create
+       :cancel (lambda ()
+                 (unless settled
+                   (setq settled t)
+                   (cancel-children))
+                 t)
+       :metadata (list :transport 'aggregate
+                       :kind 'mcp-refresh
+                       :server-count (length servers)
+                       :cancellable 'cancel-children)))))
 
 (defun e-mcp--generated-tool-name (tool)
   "Return the generated e tool name for MCP TOOL.

@@ -900,7 +900,7 @@ Status: in progress.
 - Added =e-mcp-refresh-start= as an async request lifecycle for stdio MCP catalog refresh.
 - The all-stdio interactive =e-mcp-refresh= path now starts refresh asynchronously and reports completion through callbacks/messages.
 - Noninteractive =e-mcp-refresh= remains synchronous for batch/test callers.
-- HTTP and mixed-server refresh remain synchronous because HTTP session initialization still has synchronous request steps and needs a separate slice.
+- At this slice point, HTTP and mixed-server refresh remained synchronous because HTTP session initialization still had synchronous request steps.
 
 ** Verification
 
@@ -939,3 +939,52 @@ emacsclient --eval "...bounded fake-transport MCP refresh-start probe..."
 #+end_src
 
 Result: returned =(:request t :result (:refreshed t) :failure nil)=.
+
+* Phase 2 HTTP MCP Refresh Start Slice Review
+
+Status: in progress.
+
+** Scope reviewed
+
+- Added async HTTP MCP initialization, including the follow-up initialized notification.
+- Added async HTTP =tools/list= start support and reused the existing HTTP result parser for sync and async paths.
+- Extended =e-mcp-refresh-start= to aggregate stdio and HTTP refresh children, making mixed interactive refresh start without waiting on helper or HTTP completion.
+- Noninteractive =e-mcp-refresh= remains synchronous for batch/test callers.
+
+** Verification
+
+#+begin_src sh
+rtk eldev test -f test/e-mcp-test.el -b e-mcp-test-refresh-start-returns-before-helper-response e-mcp-test-http-refresh-starts-asynchronously e-mcp-test-refresh-affects-next-registration
+#+end_src
+
+Result: passed all three focused refresh tests.
+
+#+begin_src sh
+rtk eldev test -f test/e-mcp-test.el
+#+end_src
+
+Result: passed all 32 MCP tests.
+
+#+begin_src sh
+rtk eldev emacs --batch --eval "(progn (setq byte-compile-error-on-warn t) (dolist (file '(\"lisp/core/e-mcp.el\" \"test/e-mcp-test.el\")) (byte-compile-file file)))"
+#+end_src
+
+Result: passed for the touched MCP module and tests.
+
+#+begin_src sh
+git diff --check
+#+end_src
+
+Result: passed.
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Result: returned the repository path after reloading changed Lisp.
+
+#+begin_src sh
+emacsclient --eval "...bounded fake-transport MCP refresh-start aggregate probe..."
+#+end_src
+
+Result: returned =(:request t :result (:refreshed t) :failure nil :transport aggregate)=.

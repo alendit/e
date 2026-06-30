@@ -43,11 +43,11 @@ Partly implemented:
 - Raw-result storage exists for large tool output through session tmp resources, with explicit, harness-reset, and configured max-age cleanup; there is still no generic raw-result store.
 - Anthropic context-window lookup is cache-only; chat status starts an async model-info refresh on cache miss instead of waiting for gateway I/O.
 - The default live chat session store queues persistent JSONL/index writes behind a short timer and has an explicit synchronous flush path.
-- Stdio MCP refresh has an async start API, and the all-stdio interactive refresh path uses it instead of waiting for the helper response.
+- MCP refresh has an async start API, and the interactive refresh path uses it instead of waiting for helper or HTTP responses.
 
 Not yet implemented in the planned sense:
 
-- MCP discovery, HTTP refresh, mixed-server refresh, and explicit batch call wrappers still have synchronous waits; generated model-facing MCP tool execution and all-stdio interactive refresh no longer do.
+- MCP discovery and explicit batch call wrappers still have synchronous waits; generated model-facing MCP tool execution and interactive refresh no longer do.
 - Compaction still uses the synchronous wrapper from the session compaction action entry point.
 - There is no generic raw-result store or cache-driven reference cleanup lifecycle.
 - There is no cooperative presentation render scheduler.
@@ -331,8 +331,8 @@ Purpose: remove sync waits from web and MCP capability tools.
 
 Work:
 
-1. Convert MCP stdio helper calls from "send request then wait" to request-id callback dispatch. Implemented for generated tool calls and all-stdio interactive refresh.
-2. Convert MCP HTTP JSON-RPC calls from =url-retrieve-synchronously= to async =url-retrieve= with timeout and cancellation.
+1. Convert MCP stdio helper calls from "send request then wait" to request-id callback dispatch. Implemented for generated tool calls and interactive refresh.
+2. Convert MCP HTTP JSON-RPC calls from =url-retrieve-synchronously= to async =url-retrieve= with timeout and cancellation. Implemented for generated tool calls and interactive refresh.
 3. Convert =web_search=, =web_fetch=, and =web_browser= to =:start= tools.
 4. Add progress events for long helper/browser work where useful.
 5. Add concurrency limits, cancellation cleanup, timeout settlement, and late-callback diagnostics.
@@ -341,7 +341,7 @@ Work:
 Acceptance:
 
 - MCP stdio and HTTP tools return from =e-tools-start= before helper or network completion.
-- All-stdio interactive MCP refresh returns before helper completion.
+- Interactive MCP refresh returns before helper or HTTP completion.
 - Web fetch/search/browser tools return cancellable handles.
 - Tool completion and failure produce the declared model-facing result shape.
 - Aborting an active turn cancels pending helper/network work or ignores late completion without later mutation.

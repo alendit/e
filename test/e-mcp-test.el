@@ -714,6 +714,44 @@ echoed back on `tools/list' and `tools/call'."
       (when (buffer-live-p (process-buffer process))
         (kill-buffer (process-buffer process))))))
 
+(ert-deftest e-mcp-test-http-refresh-starts-asynchronously ()
+  "HTTP MCP refresh initializes and lists tools without synchronous URL waits."
+  (skip-unless (executable-find "node"))
+  (let* ((fixture (e-mcp-test--start-http-fixture))
+         (process (car fixture))
+         (url (cdr fixture))
+         (server (e-mcp-server-create :id "http-fixture" :url url))
+         result
+         failure
+         request)
+    (unwind-protect
+        (progn
+          (e-mcp-reset)
+          (e-request-with-blocking-primitive-guard
+            (e-request-with-hot-path 'mcp-refresh
+              (setq request
+                    (e-mcp-refresh-start
+                     (list server)
+                     :on-done (lambda (value) (setq result value))
+                     :on-error (lambda (err) (setq failure err))))))
+          (should (e-tools-request-p request))
+          (should (eq (plist-get (e-tools-request-metadata request)
+                                 :transport)
+                      'aggregate))
+          (should-not result)
+          (should-not failure)
+          (let ((deadline (+ (float-time) 3)))
+            (while (and (not result) (< (float-time) deadline))
+              (accept-process-output nil 0.01)))
+          (should-not failure)
+          (should (equal result '(:refreshed t)))
+          (should (plist-get (e-mcp--http-session server) :initialized)))
+      (e-mcp-reset)
+      (when (process-live-p process)
+        (kill-process process))
+      (when (buffer-live-p (process-buffer process))
+        (kill-buffer (process-buffer process))))))
+
 (defun e-mcp-test--progressive-transport ()
   "Return a fake helper transport exposing two tools for progressive tests."
   (lambda (request)
