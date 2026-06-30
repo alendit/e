@@ -752,6 +752,46 @@ echoed back on `tools/list' and `tools/call'."
       (when (buffer-live-p (process-buffer process))
         (kill-buffer (process-buffer process))))))
 
+(ert-deftest e-mcp-test-http-list-tools-starts-asynchronously ()
+  "HTTP MCP catalog discovery starts without synchronous URL waits."
+  (skip-unless (executable-find "node"))
+  (let* ((fixture (e-mcp-test--start-http-fixture))
+         (process (car fixture))
+         (url (cdr fixture))
+         (server (e-mcp-server-create :id "http-fixture" :url url))
+         result
+         failure
+         request)
+    (unwind-protect
+        (progn
+          (e-mcp-reset)
+          (e-request-with-blocking-primitive-guard
+            (e-request-with-hot-path 'mcp-discovery
+              (setq request
+                    (e-mcp-list-tools-start
+                     (list server)
+                     :on-done (lambda (value) (setq result value))
+                     :on-error (lambda (err) (setq failure err))))))
+          (should (e-tools-request-p request))
+          (should (eq (plist-get (e-tools-request-metadata request)
+                                 :transport)
+                      'aggregate))
+          (should-not result)
+          (should-not failure)
+          (let ((deadline (+ (float-time) 3)))
+            (while (and (not result) (< (float-time) deadline))
+              (accept-process-output nil 0.01)))
+          (should-not failure)
+          (should (equal (mapcar #'e-mcp-tool-name result) '("echo")))
+          (should (eq (gethash (e-mcp--catalog-key (list server))
+                               e-mcp--catalog-cache)
+                      result)))
+      (e-mcp-reset)
+      (when (process-live-p process)
+        (kill-process process))
+      (when (buffer-live-p (process-buffer process))
+        (kill-buffer (process-buffer process))))))
+
 (defun e-mcp-test--progressive-transport ()
   "Return a fake helper transport exposing two tools for progressive tests."
   (lambda (request)
@@ -937,6 +977,63 @@ echoed back on `tools/list' and `tools/call'."
         ;; Refresh invalidates the cache; the next list re-fetches once more.
         (e-mcp-list-tools servers)
         (should (= calls 2))))))
+
+(ert-deftest e-mcp-test-list-tools-start-returns-before-helper-response ()
+  "Async stdio catalog discovery returns before helper completion and caches."
+  (let ((calls 0)
+        result
+        failure
+        request)
+    (e-mcp-test--with-transport
+        (lambda (payload)
+          (when (equal (plist-get payload :op) "list-tools")
+            (setq calls (1+ calls)))
+          (list :ok t
+                :result (list :tools
+                              (vector (e-mcp-test--fake-tool
+                                       "echo" '(:type "object"))))))
+      (let ((servers (list (e-mcp-test--server))))
+        (e-request-with-blocking-primitive-guard
+          (e-request-with-hot-path 'mcp-discovery
+            (setq request
+                  (e-mcp-list-tools-start
+                   servers
+                   :on-done (lambda (value) (setq result value))
+                   :on-error (lambda (err) (setq failure err))))))
+        (should (e-tools-request-p request))
+        (should-not result)
+        (should-not failure)
+        (let ((deadline (+ (float-time) 1)))
+          (while (and (not result) (< (float-time) deadline))
+            (accept-process-output nil 0.01)))
+        (should-not failure)
+        (should (equal (mapcar #'e-mcp-tool-name result) '("echo")))
+        (should (= calls 1))
+        (should (eq (gethash (e-mcp--catalog-key servers)
+                             e-mcp--catalog-cache)
+                    result))
+        (should (equal (mapcar #'e-mcp-tool-name
+                               (e-mcp-list-tools servers))
+                       '("echo")))
+        (should (= calls 1))
+        (let (cached-result
+              cached-request)
+          (setq cached-request
+                (e-mcp-list-tools-start
+                 servers
+                 :on-done (lambda (value) (setq cached-result value))
+                 :on-error (lambda (err) (setq failure err))))
+          (should (e-tools-request-p cached-request))
+          (should (eq (plist-get (e-tools-request-metadata cached-request)
+                                 :source)
+                      'cache))
+          (should-not cached-result)
+          (let ((deadline (+ (float-time) 1)))
+            (while (and (not cached-result) (< (float-time) deadline))
+              (accept-process-output nil 0.01)))
+          (should-not failure)
+          (should (eq cached-result result))
+          (should (= calls 1)))))))
 
 (defun e-mcp-test--broken-server ()
   "Return a second stdio MCP server whose discovery fails."

@@ -988,3 +988,53 @@ emacsclient --eval "...bounded fake-transport MCP refresh-start aggregate probe.
 #+end_src
 
 Result: returned =(:request t :result (:refreshed t) :failure nil :transport aggregate)=.
+
+* Phase 2 MCP Catalog Discovery Start Slice Review
+
+Status: in progress.
+
+** Scope reviewed
+
+- Added =e-mcp-list-tools-start= as an async catalog discovery API for stdio and HTTP MCP servers.
+- Stdio discovery uses the helper request-start path and parses the helper catalog result without waiting.
+- HTTP discovery uses async initialization plus async =tools/list=.
+- Successful async discovery populates the same catalog cache used by =e-mcp-list-tools=, and cached async discovery settles through a timer-backed request.
+- Existing synchronous =e-mcp-list-tools= remains for batch callers and current capability construction; moving capability construction to this start API remains separate work.
+
+** Verification
+
+#+begin_src sh
+rtk eldev test -f test/e-mcp-test.el -b e-mcp-test-list-tools-start-returns-before-helper-response e-mcp-test-http-list-tools-starts-asynchronously e-mcp-test-list-tools-memoizes-catalog
+#+end_src
+
+Result: passed all three focused catalog tests.
+
+#+begin_src sh
+rtk eldev test -f test/e-mcp-test.el
+#+end_src
+
+Result: passed all 34 MCP tests.
+
+#+begin_src sh
+rtk eldev emacs --batch --eval "(progn (setq byte-compile-error-on-warn t) (dolist (file '(\"lisp/core/e-mcp.el\" \"test/e-mcp-test.el\")) (byte-compile-file file)))"
+#+end_src
+
+Result: passed for the touched MCP module and tests.
+
+#+begin_src sh
+git diff --check
+#+end_src
+
+Result: passed.
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Result: returned the repository path after reloading changed Lisp.
+
+#+begin_src sh
+emacsclient --eval "...bounded fake-transport MCP list-tools-start probe..."
+#+end_src
+
+Result: returned =(:request t :tool-names ("echo") :failure nil :transport aggregate)=.

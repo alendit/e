@@ -767,6 +767,22 @@ Return the parsed JSON-RPC result on success, signal on error."
      (e-mcp--tool-from-helper (e-mcp-server-id server) item))
    (append (plist-get result :tools) nil)))
 
+(defun e-mcp--tools-from-helper-result (servers result)
+  "Return tools parsed from helper RESULT for SERVERS."
+  (let ((fallback-server-id (when (= (length servers) 1)
+                              (e-mcp-server-id (car servers))))
+        tools)
+    (dolist (item (append (plist-get result :tools) nil))
+      (let ((server-id (or (plist-get item :serverId)
+                           (plist-get item :server-id)
+                           fallback-server-id)))
+        (unless server-id
+          (signal 'e-mcp-protocol-error
+                  (list "MCP helper omitted server id from multi-server catalog"
+                        item)))
+        (push (e-mcp--tool-from-helper server-id item) tools)))
+    (nreverse tools)))
+
 (defun e-mcp--http-list-tools (server)
   "Return MCP tools for HTTP SERVER."
   (let ((session (e-mcp--http-session server)))
@@ -896,18 +912,10 @@ HTTP servers are handled in-process; stdio servers use the helper."
       (setq tools (append tools (e-mcp--http-list-tools server))))
     ;; stdio transport: Node helper
     (when stdio-servers
-      (let* ((result (e-mcp--helper-request "list-tools" stdio-servers))
-             (fallback-server-id (when (= (length stdio-servers) 1)
-                                   (e-mcp-server-id (car stdio-servers)))))
-        (dolist (item (append (plist-get result :tools) nil))
-          (let ((server-id (or (plist-get item :serverId)
-                               (plist-get item :server-id)
-                               fallback-server-id)))
-            (unless server-id
-              (signal 'e-mcp-protocol-error
-                      (list "MCP helper omitted server id from multi-server catalog"
-                            item)))
-            (push (e-mcp--tool-from-helper server-id item) tools)))))
+      (dolist (tool (e-mcp--tools-from-helper-result
+                     stdio-servers
+                     (e-mcp--helper-request "list-tools" stdio-servers)))
+        (push tool tools)))
     (nreverse tools)))
 
 (defun e-mcp-list-tools (servers)
@@ -918,6 +926,116 @@ invalidate it."
     (if-let ((cached (gethash key e-mcp--catalog-cache)))
         cached
       (puthash key (e-mcp--list-tools-uncached servers) e-mcp--catalog-cache))))
+
+(cl-defun e-mcp-list-tools-start
+    (servers &key on-done on-error on-event &allow-other-keys)
+  "Start discovering MCP tools for SERVERS asynchronously.
+ON-DONE receives the discovered tools and the catalog cache is populated before
+the callback runs."
+  (let* ((key (e-mcp--catalog-key servers))
+         (cached (gethash key e-mcp--catalog-cache)))
+    (if cached
+        (let ((settled nil)
+              timer)
+          (setq timer
+                (run-at-time
+                 0 nil
+                 (lambda ()
+                   (unless settled
+                     (setq settled t)
+                     (when on-done
+                       (funcall on-done cached))))))
+          (e-tools-request-create
+           :cancel (lambda ()
+                     (unless settled
+                       (setq settled t)
+                       (when (timerp timer)
+                         (cancel-timer timer)))
+                     t)
+           :metadata '(:transport timer
+                       :kind mcp-list-tools
+                       :source cache
+                       :cancellable queued-only)))
+      (let* ((http-servers (cl-remove-if-not #'e-mcp--server-http-p servers))
+             (stdio-servers (cl-remove-if #'e-mcp--server-http-p servers))
+             (slot-count (+ (length http-servers)
+                            (if stdio-servers 1 0)))
+             (slots (make-vector slot-count nil))
+             child-requests
+             (pending slot-count)
+             settled)
+        (cl-labels
+            ((cancel-children ()
+               (dolist (request child-requests)
+                 (e-tools-cancel-request request)))
+             (fail (condition)
+               (unless settled
+                 (setq settled t)
+                 (cancel-children)
+                 (when on-error
+                   (funcall on-error condition))))
+             (finish-slot (index tools)
+               (unless settled
+                 (aset slots index tools)
+                 (setq pending (1- pending))
+                 (when (= pending 0)
+                   (let ((catalog
+                          (apply #'append (append slots nil))))
+                     (puthash key catalog e-mcp--catalog-cache)
+                     (setq settled t)
+                     (when on-done
+                       (funcall on-done catalog))))))
+             (remember (request)
+               (push request child-requests)
+               request))
+          (when (= pending 0)
+            (let ((catalog nil))
+              (puthash key catalog e-mcp--catalog-cache)
+              (setq settled t)
+              (when on-done
+                (funcall on-done catalog))))
+          (cl-loop for server in http-servers
+                   for index from 0
+                   do
+                   (let ((slot index))
+                     (condition-case condition
+                         (remember
+                          (e-mcp--http-list-tools-start
+                           server
+                           :on-done (lambda (tools)
+                                      (finish-slot slot tools))
+                           :on-error #'fail
+                           :on-event on-event))
+                       (error
+                        (fail condition)))))
+          (when stdio-servers
+            (let ((index (length http-servers)))
+              (condition-case condition
+                  (remember
+                   (e-mcp--helper-request-start
+                    "list-tools" stdio-servers nil
+                    :on-done (lambda (result)
+                               (condition-case err
+                                   (finish-slot
+                                    index
+                                    (e-mcp--tools-from-helper-result
+                                     stdio-servers result))
+                                 (error
+                                  (fail err))))
+                    :on-error #'fail
+                    :on-event on-event))
+                (error
+                 (fail condition)))))
+          (e-tools-request-create
+           :cancel (lambda ()
+                     (unless settled
+                       (setq settled t)
+                       (cancel-children))
+                     t)
+           :metadata (list :transport 'aggregate
+                           :kind 'mcp-list-tools
+                           :server-count (length servers)
+                           :cancellable 'cancel-children)))))))
 
 (defun e-mcp--warn-server-failure (server err)
   "Emit a warning that SERVER discovery failed with ERR, then continue."
