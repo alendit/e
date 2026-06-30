@@ -1690,7 +1690,7 @@
                      (lambda () (list directory))))
             (let ((labels (mapcar (lambda (candidate)
                                     (plist-get candidate :label))
-                                  (e-chat--project-file-candidates))))
+                                  (e-chat--project-file-candidates-sync))))
               (should (member "keep.txt" labels))
               (should (member "sub/nested.el" labels))
               (should-not (member "ignored.txt" labels)))))
@@ -1710,7 +1710,7 @@
                      (lambda () (list directory))))
             (let ((labels (mapcar (lambda (candidate)
                                     (plist-get candidate :label))
-                                  (e-chat--project-file-candidates))))
+                                  (e-chat--project-file-candidates-sync))))
               (should-not (member "ignored.txt" labels)))))
       (delete-directory directory t))))
 
@@ -1728,7 +1728,7 @@
                      (lambda () (list directory missing))))
             (let ((labels (mapcar (lambda (candidate)
                                     (plist-get candidate :label))
-                                  (e-chat--project-file-candidates))))
+                                  (e-chat--project-file-candidates-sync))))
               (should (member "keep.txt" labels)))))
       (delete-directory directory t))))
 
@@ -1751,7 +1751,7 @@
                      (error "recursive fallback should not run when fd succeeds"))))
           (let ((labels (mapcar (lambda (candidate)
                                   (plist-get candidate :label))
-                                (e-chat--project-file-candidates))))
+                                (e-chat--project-file-candidates-sync))))
             (should (equal labels '("from-fd.txt")))))
       (delete-directory directory t))))
 
@@ -1780,6 +1780,98 @@
           (should (member "--base-directory" (cdr calls)))
           (should (member directory (cdr calls))))
       (delete-directory directory t))))
+
+(ert-deftest e-chat-test-composer-at-file-candidates-refresh-asynchronously ()
+  "Public composer file candidates return cached snapshots and refresh later."
+  (let ((buffer (e-chat-test--buffer nil "chat-prefix-files-async"))
+        (calls 0))
+    (unwind-protect
+        (with-current-buffer buffer
+          (cl-letf (((symbol-function 'e-chat--project-file-candidates-sync)
+                     (lambda ()
+                       (setq calls (1+ calls))
+                       (list (list :label "async.txt"
+                                   :path "/tmp/async.txt"
+                                   :root "/tmp/")))))
+            (should-not (e-chat--project-file-candidates))
+            (should (= calls 0))
+            (should (e-chat-test--wait-until
+                     (lambda ()
+                       (e-chat--project-file-candidate-cache-hit-p
+                        (e-chat--project-file-candidate-cache-key)))))
+            (should (= calls 1))
+            (should (equal (mapcar (lambda (candidate)
+                                     (plist-get candidate :label))
+                                   (e-chat--project-file-candidates))
+                           '("async.txt")))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-composer-at-shows-loading-file-candidates ()
+  "Composer @ exposes a loading row while file candidates refresh."
+  (let ((buffer (e-chat-test--buffer nil "chat-prefix-files-loading"))
+        (calls 0))
+    (unwind-protect
+        (with-current-buffer buffer
+          (cl-letf (((symbol-function 'e-chat--project-file-candidates-sync)
+                     (lambda ()
+                       (setq calls (1+ calls))
+                       nil)))
+            (let ((labels (mapcar (lambda (candidate)
+                                    (plist-get candidate :label))
+                                  (e-chat--at-candidates))))
+              (should (member "files: loading..." labels))
+              (should (= calls 0)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-composer-at-file-candidate-refresh-is-latest-only ()
+  "Stale composer file candidate refreshes cannot replace newer roots."
+  (let ((buffer (e-chat-test--buffer nil "chat-prefix-files-latest"))
+        (root-a (file-name-as-directory
+                 (make-temp-file "e-chat-prefix-root-a-" t)))
+        (root-b (file-name-as-directory
+                 (make-temp-file "e-chat-prefix-root-b-" t)))
+        roots)
+    (unwind-protect
+        (with-current-buffer buffer
+          (setq roots (list root-a))
+          (cl-letf (((symbol-function 'e-chat--workspace-roots)
+                     (lambda () roots))
+                    ((symbol-function 'e-chat--project-file-candidates-sync)
+                     (lambda ()
+                       (list (list :label (file-name-nondirectory
+                                           (directory-file-name
+                                            (car roots)))
+                                   :path (expand-file-name "file.txt"
+                                                           (car roots))
+                                   :root (car roots))))))
+            (should-not (e-chat--project-file-candidates))
+            (setq roots (list root-b))
+            (should-not (e-chat--project-file-candidates))
+            (should (e-chat-test--wait-until
+                     (lambda ()
+                       (let ((candidate
+                              (car (e-chat--project-file-candidates))))
+                         (equal (plist-get candidate :root) root-b)))))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (delete-directory root-a t)
+      (delete-directory root-b t))))
+
+(ert-deftest e-chat-test-composer-at-file-candidate-refresh-cancels-on-kill ()
+  "Killing a chat buffer cancels pending composer file candidate refresh."
+  (let ((buffer (e-chat-test--buffer nil "chat-prefix-files-kill"))
+        (calls 0))
+    (with-current-buffer buffer
+      (cl-letf (((symbol-function 'e-chat--project-file-candidates-sync)
+                 (lambda ()
+                   (setq calls (1+ calls))
+                   nil)))
+        (e-chat--project-file-candidates)
+        (kill-buffer buffer)
+        (accept-process-output nil 0.05)
+        (should (= calls 0))))))
 
 (ert-deftest e-chat-test-inline-completion-matches-case-insensitive-fuzzy ()
   "Inline completion filters labels by case-insensitive ordered characters."
@@ -1933,7 +2025,7 @@
           (with-current-buffer buffer
             (cl-letf (((symbol-function 'e-chat--workspace-roots)
                        (lambda () (list primary secondary))))
-              (let* ((candidates (e-chat--project-file-candidates))
+              (let* ((candidates (e-chat--project-file-candidates-sync))
                      (secondary-path (expand-file-name "same.txt" secondary))
                      (secondary-candidate
                       (cl-find secondary-path candidates

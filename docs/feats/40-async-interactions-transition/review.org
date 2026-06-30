@@ -1023,6 +1023,56 @@ rtk eldev test -f test/e-chat-test.el
 
 Result: passed all 263 chat tests, with the existing Markdown rendering test skipped.
 
+* Phase 3 Composer File Candidate Snapshot Slice Review
+
+Status: in progress.
+
+** Scope reviewed
+
+- Split composer file candidate discovery into a synchronous scanner worker and a cache-first public snapshot reader.
+- Composer =@= now starts an async buffer-owned candidate refresh on cache miss and returns immediately.
+- Stale refreshes are ignored by generation/key checks, and pending refreshes are cancelled on chat buffer kill.
+- The =@= candidate list exposes a =files: loading...= row while file candidates are refreshing.
+- Selected file reference insertion remains a synchronous bounded read and is still tracked as remaining Slice 6 work.
+
+** Verification
+
+#+begin_src sh
+rtk eldev test -f test/e-chat-test.el -B e-chat-test-composer-at-lists-git-project-files e-chat-test-composer-at-does-not-fallback-in-ignored-only-git-root e-chat-test-composer-at-skips-missing-workspace-roots e-chat-test-composer-at-uses-fd-before-recursive-fallback e-chat-test-fd-file-candidates-invokes-fd-for-files e-chat-test-composer-at-file-candidates-refresh-asynchronously e-chat-test-composer-at-shows-loading-file-candidates e-chat-test-composer-at-file-candidate-refresh-is-latest-only e-chat-test-composer-at-file-candidate-refresh-cancels-on-kill e-chat-test-composer-at-lists-files-resources-and-capabilities e-chat-test-composer-at-inserts-file-reference
+#+end_src
+
+Result: passed all 11 focused composer candidate/reference tests.
+
+#+begin_src sh
+rtk eldev test -f test/e-chat-test.el
+#+end_src
+
+Result: passed all 267 chat tests, with the existing Markdown rendering test skipped.
+
+#+begin_src sh
+rtk eldev emacs --batch --eval "(progn (require 'e-chat) (setq byte-compile-error-on-warn t) (byte-compile-file \"lisp/shells/chat/e-chat.el\"))"
+#+end_src
+
+Result: passed for the touched chat source module.
+
+#+begin_src sh
+git diff --check -- lisp/shells/chat/e-chat.el test/e-chat-test.el
+#+end_src
+
+Result: passed.
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Result: returned the repository path after reloading changed Lisp.
+
+#+begin_src sh
+emacsclient --eval "...bounded temporary chat composer-cache probe..."
+#+end_src
+
+Result: returned =(:initial ("files: loading...") :calls 1 :final ("file: live.txt"))=.
+
 * Phase 3 Queued Session Write Generation Slice Review
 
 Status: in progress.

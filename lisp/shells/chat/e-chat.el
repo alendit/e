@@ -649,6 +649,15 @@ intentionally not persisted in session metadata.")
 (defvar-local e-chat--pending-command-requests nil
   "Alist of pending composer command-reference ids to cancellable requests.")
 
+(defvar-local e-chat--project-file-candidate-cache nil
+  "Cached composer file candidates as a plist with :key and :candidates.")
+
+(defvar-local e-chat--project-file-candidate-request nil
+  "Active async refresh request for composer file candidates.")
+
+(defvar-local e-chat--project-file-candidate-generation 0
+  "Generation token for composer file candidate refresh callbacks.")
+
 (defvar-local e-chat--composer-restore-inhibited nil
   "Non-nil when transient chat rendering should not recreate a composer.")
 
@@ -1027,6 +1036,8 @@ and / expands available prompts."
   (add-hook 'kill-buffer-hook #'e-chat--unsubscribe nil t)
   (add-hook 'kill-buffer-hook #'e-chat--stop-progress-indicator nil t)
   (add-hook 'kill-buffer-hook #'e-chat--cancel-pending-command-references nil t)
+  (add-hook 'kill-buffer-hook
+            #'e-chat--cancel-project-file-candidate-refresh nil t)
   (add-hook 'kill-buffer-hook
             #'e-chat--workspace-unread-cache-remove-buffer nil t)
   (add-hook 'evil-local-mode-hook #'e-chat--enforce-modal-editing-policy nil t)
@@ -2041,6 +2052,28 @@ scan."
   (and (stringp root)
        (file-directory-p root)))
 
+(defun e-chat--project-file-candidate-cache-key ()
+  "Return cache key for the active composer file candidate snapshot."
+  (list :roots (mapcar (lambda (root)
+                         (file-name-as-directory (expand-file-name root)))
+                       (e-chat--workspace-roots))
+        :limit e-chat-project-file-candidate-limit))
+
+(defun e-chat--project-file-candidate-cache-hit-p (key)
+  "Return non-nil when composer file candidate cache matches KEY."
+  (and (plist-get e-chat--project-file-candidate-cache :ready)
+       (equal key (plist-get e-chat--project-file-candidate-cache :key))))
+
+(defun e-chat--project-file-candidates-loading-p ()
+  "Return non-nil when composer file candidate refresh is in flight."
+  (and e-chat--project-file-candidate-request t))
+
+(defun e-chat--cancel-project-file-candidate-refresh ()
+  "Cancel the active composer file candidate refresh request."
+  (when e-chat--project-file-candidate-request
+    (e-tools-cancel-request e-chat--project-file-candidate-request)
+    (setq e-chat--project-file-candidate-request nil)))
+
 (defun e-chat--disambiguate-file-candidates (candidates)
   "Return CANDIDATES with duplicate labels qualified by root."
   (let ((counts (make-hash-table :test 'equal)))
@@ -2061,7 +2094,7 @@ scan."
            candidate)))
      candidates)))
 
-(defun e-chat--project-file-candidates ()
+(defun e-chat--project-file-candidates-sync ()
   "Return project file completion candidates for the active chat session."
   (let ((remaining e-chat-project-file-candidate-limit)
         candidates)
@@ -2084,6 +2117,92 @@ scan."
                   (push (list :label label :path file :root root) candidates)))
               (setq remaining (- remaining (length files))))))))
     (e-chat--disambiguate-file-candidates (nreverse candidates))))
+
+(defun e-chat--project-file-candidates-refresh-start (key)
+  "Start an async refresh of composer file candidates for KEY."
+  (unless (and e-chat--project-file-candidate-request
+               (equal key (plist-get e-chat--project-file-candidate-cache :key)))
+    (e-chat--cancel-project-file-candidate-refresh)
+    (setq e-chat--project-file-candidate-generation
+          (1+ e-chat--project-file-candidate-generation))
+    (setq e-chat--project-file-candidate-cache
+          (list :key key :ready nil :candidates nil))
+    (let* ((buffer (current-buffer))
+           (generation e-chat--project-file-candidate-generation)
+           (settled nil)
+           timer
+           request)
+      (cl-labels
+          ((current-p
+            ()
+            (and (buffer-live-p buffer)
+                 (with-current-buffer buffer
+                   (and (eq request e-chat--project-file-candidate-request)
+                        (= generation
+                           e-chat--project-file-candidate-generation)
+                        (equal key
+                               (plist-get
+                                e-chat--project-file-candidate-cache
+                                :key))))))
+           (finish
+            (candidates)
+            (unless settled
+              (setq settled t)
+              (when (current-p)
+                (with-current-buffer buffer
+                  (setq e-chat--project-file-candidate-cache
+                        (list :key key
+                              :ready t
+                              :candidates candidates))
+                  (setq e-chat--project-file-candidate-request nil)))))
+           (fail
+            (_error)
+            (unless settled
+              (setq settled t)
+              (when (current-p)
+                (with-current-buffer buffer
+                  (setq e-chat--project-file-candidate-cache
+                        (list :key key
+                              :ready t
+                              :candidates nil))
+                  (setq e-chat--project-file-candidate-request nil)))))
+           (cancel
+            ()
+            (unless settled
+              (setq settled t)
+              (when (timerp timer)
+                (cancel-timer timer))
+              (when (buffer-live-p buffer)
+                (with-current-buffer buffer
+                  (when (eq request
+                            e-chat--project-file-candidate-request)
+                    (setq e-chat--project-file-candidate-request nil)))))))
+        (setq request
+              (e-tools-request-create
+               :cancel #'cancel
+               :metadata (list :kind 'composer-file-candidates
+                               :key key
+                               :generation generation
+                               :cancellable t)))
+        (setq timer
+              (run-at-time
+               0 nil
+               (lambda ()
+                 (condition-case err
+                     (when (current-p)
+                       (with-current-buffer buffer
+                         (finish (e-chat--project-file-candidates-sync))))
+                   (error (fail err))))))
+        (setq e-chat--project-file-candidate-request request)
+        request))))
+
+(defun e-chat--project-file-candidates ()
+  "Return cached project file candidates and refresh stale snapshots async."
+  (let ((key (e-chat--project-file-candidate-cache-key)))
+    (if (e-chat--project-file-candidate-cache-hit-p key)
+        (plist-get e-chat--project-file-candidate-cache :candidates)
+      (e-chat--project-file-candidates-refresh-start key)
+      nil)))
 
 (defun e-chat--read-file-reference-text (path)
   "Return reference text for PATH, truncated when necessary."
@@ -2145,16 +2264,20 @@ scan."
 
 (defun e-chat--at-candidates ()
   "Return composer @ candidates for files, resources, and capabilities."
-  (append
-   (mapcar (lambda (candidate)
-             (let ((candidate (copy-sequence candidate)))
-               (plist-put candidate :kind 'file)
-               (plist-put candidate
-                          :label
-                          (format "file: %s" (plist-get candidate :label)))))
-           (e-chat--project-file-candidates))
-   (e-chat--resource-candidates)
-   (e-chat--capability-candidates)))
+  (let ((file-candidates (e-chat--project-file-candidates)))
+    (append
+     (mapcar (lambda (candidate)
+               (let ((candidate (copy-sequence candidate)))
+                 (plist-put candidate :kind 'file)
+                 (plist-put candidate
+                            :label
+                            (format "file: %s" (plist-get candidate :label)))))
+             file-candidates)
+     (when (and (null file-candidates)
+                (e-chat--project-file-candidates-loading-p))
+       (list (list :kind 'status :label "files: loading...")))
+     (e-chat--resource-candidates)
+     (e-chat--capability-candidates))))
 
 (defun e-chat--resource-reference-text (entry)
   "Return model-facing reference text for e:// resource ENTRY."
@@ -2236,6 +2359,7 @@ scan."
     ('file (e-chat--insert-file-reference candidate))
     ('resource (e-chat--insert-resource-reference candidate))
     ('capability (e-chat--insert-capability-reference candidate))
+    ('status (e-chat--insert-literal-prefix "@"))
     (_ (e-chat--insert-file-reference candidate))))
 
 (defun e-chat--prompt-candidates ()
