@@ -5587,6 +5587,20 @@ not list MODEL.  Returns nil when no provider lookup is available."
   (e-context-status-context-token-estimate
    context e-chat-context-token-estimate-bytes-per-token))
 
+(defun e-chat--mode-line-context-estimate-key ()
+  "Return semantic cache key for this buffer's mode-line context estimate."
+  (when (and e-chat-harness e-chat-session-id)
+    (ignore-errors
+      (let ((state (e-harness-state e-chat-harness e-chat-session-id))
+            (options (e-harness-display-options e-chat-harness
+                                                e-chat-session-id)))
+        (list :message-count (plist-get state :message-count)
+              :active-turn (plist-get state :active-turn)
+              :model (plist-get options :model)
+              :reasoning-effort (plist-get options :reasoning-effort)
+              :layers (e-harness-effective-layer-ids
+                       e-chat-harness e-chat-session-id))))))
+
 (defun e-chat--mode-line-status-text (&optional prefer-token-usage)
   "Return the current mode-line text for this e chat buffer.
 When PREFER-TOKEN-USAGE is non-nil and fresh provider usage exists, skip the
@@ -5601,6 +5615,7 @@ expensive context-token estimate path."
      :prefer-token-usage prefer-token-usage
      :estimate-context (not prefer-token-usage)
      :estimate-cache e-chat--mode-line-context-estimate-cache
+     :estimate-cache-key (e-chat--mode-line-context-estimate-key)
      :token-limit-function #'e-chat--model-context-window
      :bytes-per-token e-chat-context-token-estimate-bytes-per-token)))
 

@@ -48,7 +48,7 @@ Not yet implemented in the planned sense:
 - Compaction still uses the synchronous wrapper from the session compaction action entry point.
 - There is no generic raw-result store or time/cache-driven reference cleanup lifecycle.
 - There is no cooperative presentation render scheduler.
-- There is no cached context/status snapshot contract broad enough to satisfy Phase 3.
+- Context budget estimates now support semantic cache keys for transcript/model/option/layer-sensitive invalidation, but there is no cached context/status snapshot contract broad enough to satisfy Phase 3.
 - There is no queued session write and chunked replay scheduler.
 - Nested cheap tool calls still use synchronous return semantics; long-class nested calls now fail fast with model guidance instead of waiting.
 - The final obsolete sync API sweep is not done.
@@ -466,7 +466,7 @@ Work:
 1. Define context providers as cheap snapshot providers unless they explicitly declare async refresh behavior.
 2. Move network/process/recursive/large-buffer work into async refresh jobs.
 3. Replace Anthropic model-info sync lookup with async prefetch plus stale cache or static fallback.
-4. Cache context budget estimates and invalidate only on relevant transcript, model, option, layer, or compaction changes.
+4. Cache context budget estimates and invalidate only on relevant transcript, model, option, layer, or compaction changes. Initial chat mode-line estimate invalidation is implemented with semantic cache keys.
 5. Make Org Canvas and project-local context providers read cached focus and capability snapshots.
 6. Split correctness-critical turn context from status-only or optional enrichment context.
 7. Ensure turn startup builds or version-checks correctness-critical context exactly where needed.

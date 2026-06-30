@@ -120,6 +120,52 @@
                      321))
       (should (= context-calls 0)))))
 
+(ert-deftest e-context-budget-test-estimate-cache-key-mismatch-recomputes ()
+  "Estimate cache keys force recomputation even when TTL is fresh."
+  (let* ((store (e-session-store-create))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :sessions store
+                   :default-options '(:model "gpt-5.5")))
+         (cache (cons nil nil))
+         (calls 0)
+         (context-calls 0))
+    (e-session-create store :id "budget-key-cache")
+    (e-session-append-message
+     store "budget-key-cache" '(:role user :content "first"))
+    (cl-letf* ((orig (symbol-function 'e-context-budget-context-token-estimate))
+               ((symbol-function 'e-context-budget-context-token-estimate)
+                (lambda (&rest args)
+                  (setq calls (1+ calls))
+                  (apply orig args)))
+               (orig-context (symbol-function 'e-harness-context))
+               ((symbol-function 'e-harness-context)
+                (lambda (&rest args)
+                  (setq context-calls (1+ context-calls))
+                  (apply orig-context args))))
+      (should (integerp
+               (e-context-budget-used-tokens
+                harness "budget-key-cache"
+                :estimate-cache cache
+                :estimate-cache-seconds 100
+                :estimate-cache-key '(:messages 1))))
+      (should (integerp
+               (e-context-budget-used-tokens
+                harness "budget-key-cache"
+                :estimate-cache cache
+                :estimate-cache-seconds 100
+                :estimate-cache-key '(:messages 1))))
+      (e-session-append-message
+       store "budget-key-cache" '(:role assistant :content "second"))
+      (should (integerp
+               (e-context-budget-used-tokens
+                harness "budget-key-cache"
+                :estimate-cache cache
+                :estimate-cache-seconds 100
+                :estimate-cache-key '(:messages 2)))))
+    (should (equal calls 2))
+    (should (equal context-calls 2))))
+
 (provide 'e-context-budget-test)
 
 ;;; e-context-budget-test.el ends here

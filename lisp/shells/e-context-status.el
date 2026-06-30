@@ -120,13 +120,15 @@ BYTES-PER-TOKEN defaults to `e-context-budget-estimate-bytes-per-token'."
 (cl-defun e-context-status-text
     (harness session-id
              &key (prefix "e-context") prefer-token-usage estimate-cache
+             estimate-cache-key
              token-limits token-limit-function bytes-per-token
              (estimate-context t))
   "Return context-state status text for SESSION-ID through HARNESS.
 PREFIX is the leading label.  When PREFER-TOKEN-USAGE is non-nil and fresh
 provider usage exists, skip the expensive context-token estimate.
 ESTIMATE-CACHE is an optional caller-owned cons cell (TOKENS . TIME) reused
-across calls.
+across calls.  ESTIMATE-CACHE-KEY, when non-nil, invalidates cached estimates
+when the caller's semantic context state changes.
 TOKEN-LIMIT-FUNCTION, when non-nil, is called with the model id and should
 return its context window in tokens or nil; it takes precedence over the
 static TOKEN-LIMITS alias.  TOKEN-LIMITS and BYTES-PER-TOKEN override the
@@ -137,7 +139,9 @@ When ESTIMATE-CONTEXT is nil, avoid building full model-facing context."
    (list :session-id session-id
          :metadata (list :prefix prefix
                          :prefer-token-usage (and prefer-token-usage t)
-                         :estimate-context (and estimate-context t)))
+                         :estimate-context (and estimate-context t)
+                         :estimate-cache-key-present
+                         (and estimate-cache-key t)))
    (lambda ()
      (if-let ((status (e-context-budget-status
                        harness session-id
@@ -148,6 +152,7 @@ When ESTIMATE-CONTEXT is nil, avoid building full model-facing context."
                        :bytes-per-token bytes-per-token
                        :estimate-cache-seconds
                        e-context-status-estimate-cache-seconds
+                       :estimate-cache-key estimate-cache-key
                        :estimate-context estimate-context)))
          (let ((model (plist-get status :model))
                (effort (plist-get status :reasoning-effort))

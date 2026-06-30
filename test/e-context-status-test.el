@@ -169,6 +169,47 @@
     (should (equal calls 1))
     (should (equal context-calls 1))))
 
+(ert-deftest e-context-status-test-estimate-cache-key-mismatch-recomputes ()
+  "Status estimate cache keys force recomputation before TTL expiry."
+  (let* ((store (e-session-store-create))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :sessions store
+                   :default-options '(:model "gpt-5.5")))
+         (cache (cons nil nil))
+         (calls 0)
+         (context-calls 0))
+    (e-session-create store :id "status-key-cache")
+    (e-session-append-message
+     store "status-key-cache" '(:role user :content "first"))
+    (cl-letf* ((orig (symbol-function 'e-context-budget-context-token-estimate))
+               ((symbol-function 'e-context-budget-context-token-estimate)
+                (lambda (&rest args)
+                  (setq calls (1+ calls))
+                  (apply orig args)))
+               (orig-context (symbol-function 'e-harness-context))
+               ((symbol-function 'e-harness-context)
+                (lambda (&rest args)
+                  (setq context-calls (1+ context-calls))
+                  (apply orig-context args))))
+      (let ((e-context-status-estimate-cache-seconds 100))
+        (e-context-status-text harness "status-key-cache"
+                               :prefix "e-chat"
+                               :estimate-cache cache
+                               :estimate-cache-key '(:messages 1))
+        (e-context-status-text harness "status-key-cache"
+                               :prefix "e-chat"
+                               :estimate-cache cache
+                               :estimate-cache-key '(:messages 1))
+        (e-session-append-message
+         store "status-key-cache" '(:role assistant :content "second"))
+        (e-context-status-text harness "status-key-cache"
+                               :prefix "e-chat"
+                               :estimate-cache cache
+                               :estimate-cache-key '(:messages 2))))
+    (should (equal calls 2))
+    (should (equal context-calls 2))))
+
 (ert-deftest e-context-status-test-profile-records-status-text ()
   "Enabled dev profiling records context status text computation."
   (let* ((profile-directory (make-temp-file "e-context-status-profile-" t))

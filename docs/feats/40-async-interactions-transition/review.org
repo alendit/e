@@ -660,3 +660,48 @@ rtk eldev test --file test/e-web-tools-test.el --file test/e-tools-test.el --fil
 #+end_src
 
 Result: passed for the touched web behavior and adjacent request/tool contracts.
+
+* Phase 3 Context Estimate Cache Key Slice Review
+
+Status: in progress.
+
+** Scope reviewed
+
+- Added optional semantic estimate-cache keys to =e-context-budget-used-tokens= and =e-context-budget-status=.
+- Preserved legacy caller-owned =(TOKENS . TIME)= cache cells for unkeyed callers.
+- Added keyed cache entries so TTL-fresh estimates are reused only when the caller's key still matches.
+- Threaded the key through =e-context-status-text=.
+- Made =e-chat= mode-line context estimates key off settled session state, active turn, display model/options, and effective layers.
+- This is not the full Slice 9 cached context/status snapshot contract; provider model-info prefetch, Org Canvas cached context providers, and status-only snapshot separation remain open.
+
+** Verification
+
+#+begin_src sh
+rtk eldev test --file test/e-context-budget-test.el --file test/e-context-status-test.el -B
+#+end_src
+
+Result: passed all 17 focused context budget/status tests, including keyed-cache mismatch recomputation coverage.
+
+#+begin_src sh
+rtk eldev emacs --batch --eval "(progn (setq byte-compile-error-on-warn t) (dolist (file '(\"lisp/core/e-context-budget.el\" \"lisp/shells/e-context-status.el\" \"lisp/shells/chat/e-chat.el\" \"test/e-context-budget-test.el\" \"test/e-context-status-test.el\")) (byte-compile-file file)))"
+#+end_src
+
+Result: passed for all touched runtime and test files.
+
+#+begin_src sh
+git diff --check
+#+end_src
+
+Result: passed.
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Result: returned the repository path after reloading changed Lisp.
+
+#+begin_src sh
+emacsclient --eval "...bounded context estimate cache key probe..."
+#+end_src
+
+Result: returned =(:estimate-calls 2 :keyed t :key (:messages 2))= after two calls with the same key and one call with a changed key.
