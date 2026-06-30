@@ -2584,3 +2584,45 @@ emacsclient --eval "(let (openai-start anthropic-start openai-error anthropic-er
 #+end_src
 
 Result: returned =(:openai-start nil :openai-error (e-openai-codex--http-request live-openai-sync) :anthropic-start nil :anthropic-error (e-anthropic--http-request live-anthropic-sync))=, confirming both live provider sync wrappers reject before transport starts.
+
+* Phase 4 Web Sync Helper Hot-Path Guard Slice Review
+
+Status: complete.
+
+** Scope reviewed
+
+- Added a web-layer hot-path rejection helper.
+- Guarded the legacy synchronous process, passive fetch, and rendered-browser helper paths before they can start subprocess, =url-retrieve-synchronously=, or browser-helper waits.
+- Preserved registered model-facing =web_search=, =web_fetch=, and =web_browser= async =:start= paths and long blocking metadata.
+
+** Verification
+
+#+begin_src sh
+rtk eldev emacs --batch --eval "(progn (setq byte-compile-error-on-warn t) (dolist (file '(\"lisp/layers/web/e-web-tools.el\" \"test/e-web-tools-test.el\")) (byte-compile-file file)))"
+#+end_src
+
+Result: passed for the touched web module and tests.
+
+#+begin_src sh
+rtk eldev test -f test/e-web-tools-test.el -B e-web-tools-test-sync-process-helper-rejects-hot-path e-web-tools-test-sync-fetch-helper-rejects-hot-path e-web-tools-test-sync-browser-helper-rejects-hot-path e-web-tools-test-search-start-returns-before-process-exits e-web-tools-test-fetch-start-returns-before-callback e-web-tools-test-browser-start-returns-before-helper-replies
+#+end_src
+
+Result: passed the focused sync-helper guard tests and the existing async-start regressions.
+
+#+begin_src sh
+rtk eldev test -f test/e-web-tools-test.el
+#+end_src
+
+Result: passed all 12 web tools tests.
+
+#+begin_src sh
+emacsclient --eval "(progn (load \"/Users/dimitrivorona/projects/elisp/e/lisp/dev/e-dev.el\" nil 'nomessage) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Result: returned ="/Users/dimitrivorona/projects/elisp/e/"=, so the running Emacs loaded the web helper guard change.
+
+#+begin_src sh
+emacsclient --eval "(let (process-start fetch-start browser-start process-error fetch-error browser-error) ...)"
+#+end_src
+
+Result: returned =(:process-start nil :process-error (e-web-tools--run-process live-web-process) :fetch-start nil :fetch-error (e-web-tools--fetch live-web-fetch) :browser-start nil :browser-error (e-web-tools--browser-request live-web-browser))=, confirming the live direct sync helpers reject before starting blocking work.

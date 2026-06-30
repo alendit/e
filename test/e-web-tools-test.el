@@ -145,6 +145,21 @@ JSON
           (should (e-tools-cancel-request request)))
       (delete-directory directory t))))
 
+(ert-deftest e-web-tools-test-sync-process-helper-rejects-hot-path ()
+  "The synchronous process helper fails before starting a process in hot paths."
+  (let (started)
+    (cl-letf (((symbol-function 'make-process)
+               (lambda (&rest _args)
+                 (setq started t)
+                 (error "process should not start"))))
+      (let ((err (should-error
+                  (e-request-with-hot-path 'web-sync-process
+                    (e-web-tools--run-process "bx" nil 1 "bx"))
+                  :type 'e-request-blocking-call-in-hot-path)))
+        (should (equal (cdr err)
+                       '(e-web-tools--run-process web-sync-process))))
+      (should-not started))))
+
 (ert-deftest e-web-tools-test-fetch-extracts-html-text-links-and-markdown ()
   "web_fetch reads passive HTML responses without browser rendering."
   (let ((captured nil))
@@ -232,6 +247,22 @@ JSON
                          "delayed response")))
       (when (buffer-live-p response-buffer)
         (kill-buffer response-buffer)))))
+
+(ert-deftest e-web-tools-test-sync-fetch-helper-rejects-hot-path ()
+  "The synchronous fetch helper fails before url.el in hot paths."
+  (let (started)
+    (cl-letf (((symbol-function 'url-retrieve-synchronously)
+               (lambda (&rest _args)
+                 (setq started t)
+                 (error "url-retrieve-synchronously should not run"))))
+      (let ((err (should-error
+                  (e-request-with-hot-path 'web-sync-fetch
+                    (e-web-tools--fetch
+                     '(:url "https://example.com/delayed")))
+                  :type 'e-request-blocking-call-in-hot-path)))
+        (should (equal (cdr err)
+                       '(e-web-tools--fetch web-sync-fetch))))
+      (should-not started))))
 
 (ert-deftest e-web-tools-test-fetch-truncates-text-and-rejects-unsupported-inputs ()
   "web_fetch truncates large text and rejects unsupported schemes/content."
@@ -428,6 +459,21 @@ done
           (should (e-tools-cancel-request request)))
       (e-web-tools-browser-reset)
       (delete-directory directory t))))
+
+(ert-deftest e-web-tools-test-sync-browser-helper-rejects-hot-path ()
+  "The synchronous browser helper fails before starting or using the helper."
+  (let (started)
+    (cl-letf (((symbol-function 'e-web-tools--browser-helper-ensure)
+               (lambda ()
+                 (setq started t)
+                 (error "browser helper should not start"))))
+      (let ((err (should-error
+                  (e-request-with-hot-path 'web-sync-browser
+                    (e-web-tools--browser-request "open" nil))
+                  :type 'e-request-blocking-call-in-hot-path)))
+        (should (equal (cdr err)
+                       '(e-web-tools--browser-request web-sync-browser))))
+      (should-not started))))
 
 (ert-deftest e-web-tools-test-browser-reports-unavailable-helper ()
   "Browser tools return a clear error when the helper cannot be started."

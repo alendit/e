@@ -57,6 +57,7 @@ Partly implemented:
 - =mcp_activate= has an async =:start= path for catalog loading and optional invocation.
 - Explicit MCP sync helper/HTTP wrappers reject marked interactive hot paths before helper transport or HTTP primitives run, while preserving batch/test direct-return semantics.
 - OpenAI and Anthropic provider-specific sync transport/stream wrappers reject marked interactive hot paths before starting URL, websocket, or injected request-function waits, while preserving batch/test sync wrappers outside guarded hot paths.
+- Legacy web search/fetch/browser sync helpers reject marked interactive hot paths before starting subprocess, URL, or browser-helper waits, while registered model-facing web tools keep their async =:start= paths.
 - Persistent session transcript replay has a chunked async start API with progress and cancellation.
 - Chat open/resume attaches unloaded indexed sessions through the chunked transcript loader and initially renders a cheap summary/loading shell.
 - Composer =@= file candidates use a buffer-local cached snapshot, start async refreshes on cache miss, show a loading row while refreshing, and drop stale refreshes by generation/key.
@@ -77,7 +78,7 @@ Not yet implemented in the planned sense:
 - Context budget estimates and shared context-status text now support semantic cache keys; chat mode-line, active-session picker rows, and Org Canvas status use formatted-status snapshots, but the broader context/status snapshot contract for turn prep and any other shells remains open.
 - Chat open/resume now uses the chunked replay scheduler for unloaded indexed sessions, a bounded initial tail for large loaded sessions, and timer-driven progressive backfill for older loaded messages, but the complete queued-write critical/derived durability model remains only partially implemented.
 - Nested cheap tool calls still use synchronous return semantics; long-class nested calls now fail fast with model guidance in both harness-owned and core default nested executors instead of waiting.
-- The final obsolete sync API sweep is not done, though MCP, tool execution, harness prompt/wait, provider adapter, backend stream, and loop run-turn sync wrappers now reject marked interactive hot paths before they can wait.
+- The final obsolete sync API sweep is not done, though MCP, web helper, tool execution, harness prompt/wait, provider adapter, backend stream, and loop run-turn sync wrappers now reject marked interactive hot paths before they can wait.
 
 Practical status:
 
@@ -144,7 +145,7 @@ Already acceptable:
 Still blocking or potentially blocking:
 
 - core compaction, auto-compaction, manual chat/Org Canvas commands, the legacy =compact_session= tool registration, and the session compaction action entry point have async lifecycle paths;
-- MCP generated tools, web tools, file/tmp resource discovery tools, MCP refresh, MCP activation, MCP catalog discovery, interactive MCP capability providers, normal chat prompt submit, backend start, and loop start-turn have async/cache-first paths for interactive execution, while explicit batch/provider wrappers keep synchronous waits only outside marked hot paths;
+- MCP generated tools, web tools, file/tmp resource discovery tools, MCP refresh, MCP activation, MCP catalog discovery, interactive MCP capability providers, normal chat prompt submit, backend start, and loop start-turn have async/cache-first paths for interactive execution, while explicit web helper and batch/provider wrappers keep synchronous waits only outside marked hot paths;
 - =file://= and =tmp://= glob/search still expose synchronous direct resource facades for non-interactive callers and tests, but model-facing resource tools route through async =:start= methods and return request handles before =fd= or =rg= exits;
 - nested =e-tools-call= keeps cheap direct-return semantics, but long-class nested calls fail fast with model guidance unless a harness/custom executor handles them;
 - running-status redraw and tool-result previewing are synchronous buffer work; long final assistant Markdown presentation is deferred and processed in configurable line chunks after immediate plain-text insertion, activity-summary details are generated on demand, and large loaded-session opens render a bounded newest-message tail initially before timer-driven older-message backfill;

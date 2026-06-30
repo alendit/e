@@ -12,6 +12,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'e-request)
 (require 'e-tools)
 (require 'json)
 (require 'subr-x)
@@ -141,9 +142,15 @@ LABEL describes the executable in error messages."
         (buffer-string))
     ""))
 
+(defun e-web-tools--reject-sync-in-hot-path (operation)
+  "Reject synchronous web OPERATION from marked interactive hot paths."
+  (when (e-request-hot-path-active-p)
+    (e-request-hot-path-blocking-error operation)))
+
 (defun e-web-tools--run-process (program args timeout &optional label)
   "Run PROGRAM with ARGS and TIMEOUT, returning stdout text.
 LABEL names the backend in error messages and defaults to \"backend\"."
+  (e-web-tools--reject-sync-in-hot-path 'e-web-tools--run-process)
   (let ((stdout (generate-new-buffer " *e-web-stdout*"))
         (stderr (generate-new-buffer " *e-web-stderr*"))
         (label (or label "backend"))
@@ -678,6 +685,7 @@ operators because ddgr's --site accepts only a single domain."
 
 (defun e-web-tools--fetch (arguments)
   "Fetch a passive HTTP resource for ARGUMENTS."
+  (e-web-tools--reject-sync-in-hot-path 'e-web-tools--fetch)
   (let* ((url (e-web-tools--argument-string arguments :url))
          (format (e-web-tools--fetch-format arguments))
          (timeout (or (e-web-tools--optional-number arguments :timeout) 20))
@@ -964,6 +972,7 @@ operators because ddgr's --site accepts only a single domain."
 
 (defun e-web-tools--browser-request (operation arguments &optional timeout)
   "Send browser OPERATION with ARGUMENTS and wait up to TIMEOUT seconds."
+  (e-web-tools--reject-sync-in-hot-path 'e-web-tools--browser-request)
   (let* ((process (e-web-tools--browser-helper-ensure))
          (id (e-web-tools--browser-next-id))
          (request (append (list :id id :op operation) arguments))
