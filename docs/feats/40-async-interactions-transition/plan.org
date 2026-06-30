@@ -58,13 +58,14 @@ Partly implemented:
 - Settled activity summaries no longer precompute expanded detail text during summary rendering; child expansion and details buffers compute details on demand.
 - Opening a loaded session renders an omitted-history marker plus a bounded newest-message tail when the transcript exceeds =e-chat-initial-session-render-message-limit=.
 - Shared context-status text accepts caller-owned formatted snapshot caches, and chat mode-line status uses a semantic snapshot key so repeated refreshes can avoid context rebuilding and model-window lookup.
+- Org Canvas mode-line status uses the shared formatted snapshot cache with a semantic key, so repeated refreshes outside the chat shell avoid budget/status rebuilding while still updating on token usage and session state changes.
 
 Not yet implemented in the planned sense:
 
 - Explicit MCP batch call wrappers still have synchronous waits; generated model-facing MCP tool execution, interactive capability providers, interactive refresh, activation, and catalog discovery start APIs no longer do. Generic batch tool execution now fails fast for long async tools under an interactive hot-path guard.
 - There is no generic raw-result store or cache-driven reference cleanup lifecycle.
 - There is no full cooperative presentation render scheduler, though long final assistant Markdown presentation is now deferred and cancellable.
-- Context budget estimates and shared context-status text now support semantic cache keys; chat mode-line status uses both estimate and formatted-status snapshots, but the broader context/status snapshot contract for turn prep and other shells remains open.
+- Context budget estimates and shared context-status text now support semantic cache keys; chat mode-line and Org Canvas status use formatted-status snapshots, but the broader context/status snapshot contract for turn prep and any other shells remains open.
 - Chat open/resume now uses the chunked replay scheduler for unloaded indexed sessions, a bounded initial tail for large loaded sessions, and timer-driven progressive backfill for older loaded messages, but the complete queued-write critical/derived durability model remains only partially implemented.
 - Nested cheap tool calls still use synchronous return semantics; long-class nested calls now fail fast with model guidance in both harness-owned and core default nested executors instead of waiting.
 - The final obsolete sync API sweep is not done.
@@ -138,7 +139,7 @@ Still blocking or potentially blocking:
 - =file://= and =tmp://= glob/search still expose synchronous direct resource facades for non-interactive callers and tests, but model-facing resource tools route through async =:start= methods and return request handles before =fd= or =rg= exits;
 - nested =e-tools-call= keeps cheap direct-return semantics, but long-class nested calls fail fast with model guidance unless a harness/custom executor handles them;
 - running-status redraw and tool-result previewing are synchronous buffer work; long final assistant Markdown presentation is deferred after immediate plain-text insertion, activity-summary details are generated on demand, and large loaded-session opens render a bounded newest-message tail initially before timer-driven older-message backfill;
-- context/status paths outside the chat mode-line snapshot path can still build full context, run providers, estimate tokens, or query Anthropic model info synchronously;
+- context/status paths outside the chat mode-line and Org Canvas snapshot paths can still build full context, run providers, estimate tokens, or query Anthropic model info synchronously;
 - default live session appends queue persistent JSONL/index writes through a short timer with generation/sequence metadata, stale-generation record dropping, and stale derived-index rebuild when current records flush; unloaded indexed chat open/resume uses the chunked replay start API, while loaded sessions backfill older transcript chunks through a cancellable buffer-local timer;
 - composer =@= candidate discovery is cache-first and refreshed asynchronously; selected file insertion still performs a synchronous but bounded read.
 

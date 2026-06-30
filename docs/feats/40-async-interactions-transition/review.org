@@ -1991,3 +1991,45 @@ rtk eldev emacs --batch --eval "(progn (setq byte-compile-error-on-warn t) (doli
 #+end_src
 
 Result: passed for the touched core tool module and tests.
+
+* Phase 3 Org Canvas Status Snapshot Slice Review
+
+Status: complete.
+
+** Scope reviewed
+
+- Added an Org Canvas buffer-local formatted status snapshot cache.
+- Reused the shared context-status snapshot contract with a semantic key based on message count, active turn, latest token usage, model, effort, and effective layers.
+- Kept Org Canvas status on =:estimate-context nil= so the mode-line indicator still avoids full model-facing context construction.
+
+** Verification
+
+#+begin_src sh
+rtk eldev test -f test/e-org-canvas-test.el -B e-org-canvas-test-mode-shows-cheap-context-state-indicator e-org-canvas-test-mode-status-reuses-fresh-snapshot e-org-canvas-test-mode-refreshes-indicator-on-token-usage
+#+end_src
+
+Result: passed the focused cheap-status, snapshot reuse, and token-usage invalidation tests.
+
+#+begin_src sh
+rtk eldev test -f test/e-org-canvas-test.el
+#+end_src
+
+Result: passed all 61 Org Canvas tests.
+
+#+begin_src sh
+rtk eldev emacs --batch --eval "(progn (setq byte-compile-error-on-warn t) (dolist (file '(\"lisp/shells/e-org-canvas.el\" \"test/e-org-canvas-test.el\")) (byte-compile-file file)))"
+#+end_src
+
+Result: passed for the touched Org Canvas module and tests.
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Result: returned ="/Users/dimitrivorona/projects/elisp/e/"=, so the running Emacs loaded the changed Org Canvas code.
+
+#+begin_src sh
+emacsclient --eval "(progn (load-file \"/private/tmp/e-org-canvas-live-status-snapshot-probe.el\") e-org-canvas-live-status-snapshot-probe-result)"
+#+end_src
+
+Result: returned =(:first "Org Canvas gpt-5.5/high ~13% (~123/1k tok)" :second "Org Canvas gpt-5.5/high ~13% (~123/1k tok)" :calls 1 :same t)=, confirming repeated live Org Canvas status rendering reused the formatted snapshot instead of rebuilding budget status.

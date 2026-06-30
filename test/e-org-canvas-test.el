@@ -697,6 +697,35 @@
       (should (= context-calls 0))
       (e-org-canvas-mode -1))))
 
+(ert-deftest e-org-canvas-test-mode-status-reuses-fresh-snapshot ()
+  "Org Canvas mode-line status snapshots skip repeated budget rebuilds."
+  (let* ((store (e-session-store-create))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :sessions store
+                   :default-options
+                   '(:model "gpt-5.5" :reasoning-effort "high")))
+         (calls 0))
+    (with-temp-buffer
+      (org-mode)
+      (e-session-create store :id "org-canvas-status-cache")
+      (setq-local e-org-canvas-harness harness)
+      (setq-local e-org-canvas-session-id "org-canvas-status-cache")
+      (cl-letf (((symbol-function 'e-context-budget-status)
+                 (lambda (&rest _args)
+                   (setq calls (1+ calls))
+                   '(:model "gpt-5.5"
+                     :reasoning-effort "high"
+                     :used-tokens 123
+                     :window 1000
+                     :approximate t))))
+        (let ((e-context-status-estimate-cache-seconds 100))
+          (should (equal (e-org-canvas--context-status-text)
+                         "Org Canvas gpt-5.5/high ~13% (~123/1k tok)"))
+          (should (equal (e-org-canvas--context-status-text)
+                         "Org Canvas gpt-5.5/high ~13% (~123/1k tok)"))))
+      (should (= calls 1)))))
+
 (ert-deftest e-org-canvas-test-mode-refreshes-indicator-on-token-usage ()
   "Org Canvas indicator updates from durable provider token usage events."
   (let* ((store (e-session-store-create))

@@ -100,6 +100,9 @@
 Passed to `e-context-status-text' to reuse approximate estimates between
 Org Canvas status refreshes for the current buffer.")
 
+(defvar-local e-org-canvas--status-snapshot-cache nil
+  "Caller-owned status text snapshot cache for this Org Canvas buffer.")
+
 (defvar-local e-org-canvas-input--harness nil
   "Harness used by the current input pane.")
 
@@ -187,12 +190,43 @@ Org Canvas status refreshes for the current buffer.")
   "Return Org Canvas context-state status text for the current buffer."
   (unless (consp e-org-canvas--status-estimate-cache)
     (setq-local e-org-canvas--status-estimate-cache (cons nil nil)))
-  (e-context-status-text
-   e-org-canvas-harness e-org-canvas-session-id
-   :prefix e-org-canvas--mode-name
-   :prefer-token-usage t
-   :estimate-context nil
-   :estimate-cache e-org-canvas--status-estimate-cache))
+  (unless (consp e-org-canvas--status-snapshot-cache)
+    (setq-local e-org-canvas--status-snapshot-cache (cons nil nil)))
+  (let ((cache-key (e-org-canvas--context-status-key)))
+    (e-context-status-text
+     e-org-canvas-harness e-org-canvas-session-id
+     :prefix e-org-canvas--mode-name
+     :prefer-token-usage t
+     :estimate-context nil
+     :estimate-cache e-org-canvas--status-estimate-cache
+     :estimate-cache-key cache-key
+     :snapshot-cache e-org-canvas--status-snapshot-cache
+     :snapshot-cache-key
+     (list :status-key cache-key
+           :prefer-token-usage t
+           :estimate-context nil))))
+
+(defun e-org-canvas--context-status-key ()
+  "Return semantic cache key for the current Org Canvas context status."
+  (when (and e-org-canvas-harness e-org-canvas-session-id)
+    (ignore-errors
+      (let* ((state (e-harness-state e-org-canvas-harness
+                                     e-org-canvas-session-id))
+             (options (e-harness-display-options e-org-canvas-harness
+                                                 e-org-canvas-session-id))
+             (usage-event
+              (ignore-errors
+                (e-session-latest-token-usage-event
+                 (e-harness-sessions e-org-canvas-harness)
+                 e-org-canvas-session-id))))
+        (list :message-count (plist-get state :message-count)
+              :active-turn (plist-get state :active-turn)
+              :latest-token-usage-id (plist-get usage-event :id)
+              :model (plist-get options :model)
+              :reasoning-effort (plist-get options :reasoning-effort)
+              :layers (e-harness-effective-layer-ids
+                       e-org-canvas-harness
+                       e-org-canvas-session-id))))))
 
 (defun e-org-canvas--set-mode-name-indicator (enable)
   "Set or restore the major-mode slot indicator when ENABLE is non-nil."
