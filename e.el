@@ -100,7 +100,8 @@
   (require 'e-canvas)
   (require 'e-org-canvas)
   (require 'e-debug)
-  (require 'e-background-session))
+  (require 'e-background-session)
+  (require 'e-task-queue-shell))
 (e-startup-run)
 
 (defgroup e nil
