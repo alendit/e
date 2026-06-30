@@ -84,6 +84,15 @@
   :type 'integer
   :group 'e-chat)
 
+(defcustom e-chat-initial-session-render-message-limit 200
+  "Maximum number of transcript messages rendered when opening a loaded session.
+When a loaded transcript has more messages, the chat buffer renders an omitted
+history marker and the newest messages first.  Unloaded indexed sessions still
+use the asynchronous transcript loader."
+  :type '(choice (const :tag "Render all loaded messages" nil)
+                 integer)
+  :group 'e-chat)
+
 (defcustom e-chat-details-buffer-name "*e-chat-details*"
   "Buffer name for read-only focused block details."
   :type 'string
@@ -1266,6 +1275,23 @@ PROMPT forces completion even when only one/default instance exists."
   (e-chat--insert-protected
    (format "%s Loading transcript...\n\n" e-chat--system-glyph)
    'e-chat-activity-face))
+
+(defun e-chat--render-loaded-session-initial ()
+  "Render the initial view for the attached loaded session."
+  (let ((inhibit-read-only t))
+    (let* ((messages (e-harness-messages e-chat-harness e-chat-session-id))
+           (tail (e-chat--tail-messages
+                  messages
+                  e-chat-initial-session-render-message-limit))
+           (omitted (- (length messages) (length tail))))
+      (when (> omitted 0)
+        (e-chat--insert-protected
+         (format "%s %d earlier transcript message%s omitted from initial render.\n\n"
+                 e-chat--system-glyph
+                 omitted
+                 (if (= omitted 1) "" "s"))
+         'e-chat-activity-face))
+      (e-chat--render-session tail))))
 
 (defun e-chat--session-load-current-p
     (request generation harness session-id instance-id)
@@ -6769,7 +6795,7 @@ HARNESS are internal test seams."
                    instance-id
                    e-chat--session-load-generation)))
         (e-chat--clear)
-        (e-chat--render-session)
+        (e-chat--render-loaded-session-initial)
         (e-chat--mark-buffer-session-read-if-selected buffer))
       (when composer-state
         (e-chat--restore-composer-state composer-state))

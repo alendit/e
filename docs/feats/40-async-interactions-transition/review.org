@@ -1704,3 +1704,64 @@ emacsclient --eval "(progn (load-file \"/private/tmp/e-chat-live-lazy-details-pr
 #+end_src
 
 Result: returned =(:details-calls 0 :summary t)=.
+
+* Phase 3 Loaded Session Initial Tail Slice Review
+
+Status: in progress.
+
+** Scope reviewed
+
+- Added =e-chat-initial-session-render-message-limit= for loaded-session opens.
+- Rendered a cheap omitted-history marker before the bounded newest-message tail when the loaded transcript exceeds the initial limit.
+- Kept unloaded indexed sessions on the existing async transcript loader path.
+- Added a regression that opens a loaded session with a low limit and verifies older messages are not rendered synchronously.
+
+** Verification
+
+#+begin_src sh
+rtk eldev test -f test/e-chat-test.el -B e-chat-test-open-loaded-session-renders-initial-tail
+#+end_src
+
+Result: passed.
+
+#+begin_src sh
+rtk eldev test -f test/e-chat-test.el -B e-chat-test-open-loaded-session-renders-initial-tail e-chat-test-open-session-starts-index-load-asynchronously e-chat-test-open-session-renders-after-async-index-load e-chat-test-resume-selects-existing-session
+#+end_src
+
+Result: passed all four related loaded/open/resume tests.
+
+#+begin_src sh
+rtk eldev test -f test/e-chat-test.el
+#+end_src
+
+Result: passed 272 tests, 1 skipped.
+
+#+begin_src sh
+rtk eldev emacs --batch --eval "(progn (require 'e-chat) (setq byte-compile-error-on-warn t) (byte-compile-file \"lisp/shells/chat/e-chat.el\"))"
+#+end_src
+
+Result: passed for the touched chat source module.
+
+#+begin_src sh
+rtk eldev emacs --batch --eval "(progn (require 'e-chat) (setq byte-compile-error-on-warn t) (dolist (file '(\"lisp/shells/chat/e-chat.el\" \"test/e-chat-test.el\")) (byte-compile-file file)))"
+#+end_src
+
+Result: source compile passed; the test-file compile path still reports the pre-existing free-variable issue at =test/e-chat-test.el:444=.
+
+#+begin_src sh
+git diff --check -- lisp/shells/chat/e-chat.el test/e-chat-test.el docs/feats/40-async-interactions-transition/plan.org docs/feats/40-async-interactions-transition/review.org
+#+end_src
+
+Result: passed.
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Result: returned the repository path after reloading changed Lisp.
+
+#+begin_src sh
+emacsclient --eval "...loaded-session initial tail live probe..."
+#+end_src
+
+Result: returned =(:request nil :marker 200 :first nil :middle nil :last 116)=, meaning no async load request was needed for the loaded session, the omitted-history marker and latest messages were present, and older messages were absent.

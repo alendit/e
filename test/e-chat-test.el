@@ -8186,6 +8186,38 @@ The context-window denominator comes from the live provider lookup
         (kill-buffer buffer))
       (delete-directory directory t))))
 
+(ert-deftest e-chat-test-open-loaded-session-renders-initial-tail ()
+  "Opening a large loaded session renders a tail plus omitted-history marker."
+  (let* ((store (e-session-store-create))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :sessions store))
+         (e-chat-initial-session-render-message-limit 2)
+         buffer)
+    (unwind-protect
+        (progn
+          (e-session-create store :id "loaded-tail"
+                            :metadata '(:name "Loaded tail"))
+          (dolist (message
+                   '((:id "msg-1" :role user :content "first prompt")
+                     (:id "msg-2" :role assistant :content "first response")
+                     (:id "msg-3" :role user :content "middle prompt")
+                     (:id "msg-4" :role user :content "last prompt")
+                     (:id "msg-5" :role assistant :content "last response")))
+            (e-session-append-message store "loaded-tail" message))
+          (setq buffer (e-chat-open-session harness "loaded-tail"))
+          (with-current-buffer buffer
+            (let ((text (buffer-string)))
+              (should-not e-chat--session-load-request)
+              (should (string-match-p
+                       "3 earlier transcript messages omitted" text))
+              (should-not (string-match-p "first prompt" text))
+              (should-not (string-match-p "middle prompt" text))
+              (should (string-match-p "last prompt" text))
+              (should (string-match-p "last response" text)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-active-session-preview-marks-session-read ()
   "Showing a session in the active-session preview records its latest response."
   (let* ((store (e-session-store-create))
