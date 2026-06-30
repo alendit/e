@@ -209,6 +209,74 @@ emacsclient --eval "...bounded auto-compaction active-request probe..."
 
 Result: returned =(:request t :operation compaction)= after prompt submit and before summary completion.
 
+* Phase 2 Manual Compaction Command Slice Review
+
+Status: in progress.
+
+** Scope reviewed
+
+- Added =e-chat-session-compact-start= as the chat-session action surface for starting harness compaction without waiting for the backend summary.
+- Kept =e-chat-session-compact= as a synchronous compatibility wrapper for current unconverted callers.
+- Converted manual chat and Org Canvas compaction commands to call =e-chat-session-compact-start=.
+- Left the session compaction tool/action compatibility path for a later API cleanup slice.
+- Added focused coverage proving the chat-session start API returns a request before the delayed summary completes, and adjusted chat/Org Canvas command tests to expect start semantics.
+
+** Verification
+
+#+begin_src sh
+rtk eldev test --file test/e-chat-session-test.el --file test/e-chat-test.el --file test/e-org-canvas-test.el -B e-chat-session-test-compact-start-returns-before-summary e-chat-test-compact-session-command-renders_activity e-org-canvas-test-compact-starts-session-action
+#+end_src
+
+Result: passed for chat-session start, chat manual compaction command rendering, and Org Canvas compaction delegation.
+
+#+begin_src sh
+rtk eldev test --file test/e-chat-session-test.el --file test/e-chat-test.el --file test/e-org-canvas-test.el -B
+#+end_src
+
+Result: passed 331 tests with 1 existing skipped markdown-render test.
+
+#+begin_src sh
+git diff --check
+#+end_src
+
+Result: passed.
+
+#+begin_src sh
+rtk eldev emacs --batch --eval "(progn (setq byte-compile-error-on-warn t) (dolist (file '(\"lisp/layers/chat/e-chat-session.el\" \"lisp/shells/e-org-canvas.el\" \"test/e-chat-session-test.el\")) (byte-compile-file file)))"
+#+end_src
+
+Result: passed for the cleanly owned source/test files in this slice.
+
+#+begin_src sh
+rtk eldev emacs --batch --eval "(progn (setq byte-compile-error-on-warn t) (byte-compile-file \"lisp/shells/chat/e-chat.el\"))"
+#+end_src
+
+Result: passed for the mixed dirty chat shell file.
+
+#+begin_src sh
+rtk eldev emacs --batch --eval "(progn (setq byte-compile-error-on-warn t) (byte-compile-file \"test/e-org-canvas-test.el\"))"
+#+end_src
+
+Result: passed for the mixed dirty Org Canvas test file.
+
+#+begin_src sh
+rtk eldev emacs --batch --eval "(progn (setq byte-compile-error-on-warn t) (dolist (file '(\"lisp/layers/chat/e-chat-session.el\" \"lisp/shells/chat/e-chat.el\" \"lisp/shells/e-org-canvas.el\" \"test/e-chat-session-test.el\" \"test/e-chat-test.el\" \"test/e-org-canvas-test.el\")) (byte-compile-file file)))"
+#+end_src
+
+Result: failed in already-dirty =test/e-chat-test.el= at line 444 with free variable =harness=, outside this slice's compaction hunk.
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Result: returned the repository path after reloading changed Lisp.
+
+#+begin_src sh
+emacsclient --eval "...bounded chat-session compact-start probe..."
+#+end_src
+
+Result: returned =(:fboundp t :request t :operation compaction :done-immediate nil)=.
+
 * Phase 2 Nested Long-Tool Slice Review
 
 Status: in progress.

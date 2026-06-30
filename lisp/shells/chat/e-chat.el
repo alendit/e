@@ -7706,7 +7706,7 @@ When DISPLAY is non-nil, display the preview buffer."
   (interactive)
   (unless (and e-chat-harness e-chat-session-id)
     (user-error "This buffer is not attached to an e chat session"))
-  (e-chat-session-compact
+  (e-chat-session-compact-start
    e-chat-harness
    e-chat-session-id
    :instructions instructions))

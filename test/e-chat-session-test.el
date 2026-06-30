@@ -171,6 +171,50 @@
                     "session-1")
                    "Renamed"))))
 
+(ert-deftest e-chat-session-test-compact-start-returns-before-summary ()
+  "Chat-session compaction starts asynchronously and settles by callback."
+  (let* ((backend (e-backend-create
+                   :name 'delayed-summary
+                   :start
+                   (cl-function
+                    (lambda (&key messages options on-item on-done
+                                   &allow-other-keys)
+                      (ignore messages options)
+                      (run-at-time
+                       0.05 nil
+                       (lambda ()
+                         (funcall on-item
+                                  '(:type assistant-message
+                                    :content "Compacted summary."))
+                         (funcall on-done '(:status done))))
+                      (e-backend-request-create
+                       :metadata '(:provider delayed-summary))))))
+         (harness (e-harness-create :backend backend))
+         record
+         failure)
+    (e-harness-create-session harness :id "session-1")
+    (let ((store (e-harness-sessions harness)))
+      (e-session-append-message store "session-1"
+                                '(:role user :content "old"))
+      (e-session-append-message store "session-1"
+                                '(:role assistant :content "old answer"))
+      (e-session-append-message store "session-1"
+                                '(:role user :content "new")))
+    (let ((request
+           (e-chat-session-compact-start
+            harness "session-1"
+            :on-done (lambda (value) (setq record value))
+            :on-error (lambda (err) (setq failure err)))))
+      (should (e-backend-request-p request))
+      (should-not record)
+      (should-not failure)
+      (let ((deadline (+ (float-time) 1)))
+        (while (and (not record) (< (float-time) deadline))
+          (accept-process-output nil 0.01)))
+      (should-not failure)
+      (should (equal (plist-get record :summary)
+                     "Compacted summary.")))))
+
 (ert-deftest e-chat-session-test-options-and-context ()
   "Chat-session actions update options and build context preview data."
   (let ((harness (e-harness-create

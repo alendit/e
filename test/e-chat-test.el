@@ -8052,6 +8052,11 @@ The context-window denominator comes from the live provider lookup
             (e-session-append-message store e-chat-session-id
                                       '(:role user :content "new"))
             (e-chat-compact-session)
+            (should-not (e-session-compactions store e-chat-session-id))
+            (should
+             (e-chat-test--wait-until
+              (lambda ()
+                (e-session-compactions store e-chat-session-id))))
             (should (equal (plist-get
                             (car (e-session-compactions
                                   store e-chat-session-id))

@@ -723,12 +723,12 @@
       (should (equal mode-name "Org Canvas gpt-5.5/high 78% (203k/258k tok)"))
       (e-org-canvas-mode -1))))
 
-(ert-deftest e-org-canvas-test-compact-uses-session-action ()
-  "Org Canvas compaction delegates to the shared session compaction action."
+(ert-deftest e-org-canvas-test-compact-starts-session-action ()
+  "Org Canvas compaction starts the shared session compaction action."
   (let* ((harness (e-harness-create
                    :backend (e-backend-fake-create :items nil)))
          (calls nil))
-    (cl-letf (((symbol-function 'e-chat-session-compact)
+    (cl-letf (((symbol-function 'e-chat-session-compact-start)
                (lambda (h session-id &rest args)
                  (push (list h session-id args) calls))))
       (with-temp-buffer

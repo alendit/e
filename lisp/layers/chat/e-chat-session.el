@@ -82,16 +82,37 @@ METADATA is caller-provided turn activity metadata."
   "Reset SESSION-ID through HARNESS."
   (e-harness-reset harness session-id))
 
-(cl-defun e-chat-session-compact
+(cl-defun e-chat-session-compact-start
     (harness session-id &key instructions keep-recent-tokens
-             allow-active-turn turn-id)
-  "Compact SESSION-ID through HARNESS."
-  (e-harness-compact-session
+             allow-active-turn turn-id on-done on-error)
+  "Start compacting SESSION-ID through HARNESS."
+  (e-harness-compact-session-start
    harness session-id
    :instructions instructions
    :keep-recent-tokens keep-recent-tokens
    :allow-active-turn allow-active-turn
-   :turn-id turn-id))
+   :turn-id turn-id
+   :on-done on-done
+   :on-error on-error))
+
+(cl-defun e-chat-session-compact
+    (harness session-id &key instructions keep-recent-tokens
+             allow-active-turn turn-id)
+  "Compact SESSION-ID through HARNESS synchronously."
+  (let (record failure)
+    (e-chat-session-compact-start
+     harness session-id
+     :instructions instructions
+     :keep-recent-tokens keep-recent-tokens
+     :allow-active-turn allow-active-turn
+     :turn-id turn-id
+     :on-done (lambda (value) (setq record value))
+     :on-error (lambda (err) (setq failure err)))
+    (while (not (or record failure))
+      (accept-process-output nil 0.01))
+    (when failure
+      (signal (car failure) (cdr failure)))
+    record))
 
 (defun e-chat-session-rename (harness session-id name)
   "Rename SESSION-ID to NAME through HARNESS session storage."

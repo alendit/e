@@ -1432,7 +1432,7 @@ progress redraws follow output instead of staying pinned at the top."
   (interactive)
   (unless (and e-org-canvas-harness e-org-canvas-session-id)
     (user-error "This buffer is not an Org Canvas"))
-  (e-chat-session-compact
+  (e-chat-session-compact-start
    e-org-canvas-harness
    e-org-canvas-session-id
    :instructions instructions))
