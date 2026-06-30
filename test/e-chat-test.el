@@ -4117,6 +4117,7 @@ the orphaned region and appeared to vanish."
                                         :arguments (:uri "file://x"))))
             (let ((timer e-chat--pending-activity-redraw-timer))
               (should (timerp timer))
+              (should (eq (car e-chat--pending-render-job-timers) timer))
               (should (= redraws 0))
               (e-chat--render-event
                (e-events-make :type 'reasoning-delta
@@ -4127,7 +4128,8 @@ the orphaned region and appeared to vanish."
               (should (= redraws 0))
               (e-chat--run-pending-activity-redraw)
               (should (= redraws 1))
-              (should-not e-chat--pending-activity-redraw-timer))))
+              (should-not e-chat--pending-activity-redraw-timer)
+              (should-not e-chat--pending-render-job-timers))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -4241,7 +4243,10 @@ the orphaned region and appeared to vanish."
             (e-chat--advance-progress-indicator)
             (should (= redraws 0))
             (should (timerp e-chat--pending-activity-redraw-timer))
+            (should (eq (car e-chat--pending-render-job-timers)
+                        e-chat--pending-activity-redraw-timer))
             (e-chat--run-pending-activity-redraw)
+            (should-not e-chat--pending-render-job-timers)
             (should (= redraws 1))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
@@ -8332,6 +8337,8 @@ The context-window denominator comes from the live provider lookup
           (setq buffer (e-chat-open-session harness "loaded-backfill"))
           (with-current-buffer buffer
             (should (timerp e-chat--loaded-session-backfill-timer))
+            (should (memq e-chat--loaded-session-backfill-timer
+                          e-chat--pending-render-job-timers))
             (goto-char (point-max))
             (insert "next")
             (should (equal (e-chat--composer-text) "next"))
@@ -8345,6 +8352,7 @@ The context-window denominator comes from the live provider lookup
               (with-current-buffer buffer
                 (let ((text (buffer-string)))
                   (and (not (timerp e-chat--loaded-session-backfill-timer))
+                       (not e-chat--pending-render-job-timers)
                        (string-match-p "first prompt" text)
                        (string-match-p "first response" text)
                        (string-match-p "middle prompt" text)

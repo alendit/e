@@ -745,6 +745,31 @@ intentionally not persisted in session metadata.")
 (defvar-local e-chat--markdown-presentation-generation 0
   "Generation token for deferred assistant Markdown presentation callbacks.")
 
+(defun e-chat--cancel-render-job-timer (timer)
+  "Cancel deferred render-job TIMER if it is still live."
+  (when (timerp timer)
+    (cancel-timer timer))
+  (setq e-chat--pending-render-job-timers
+        (delq timer e-chat--pending-render-job-timers)))
+
+(defun e-chat--schedule-render-job (delay thunk)
+  "Schedule deferred chat render THUNK after DELAY seconds.
+The returned timer is tracked in the buffer-local render-job registry until it
+runs or is cancelled."
+  (let ((buffer (current-buffer))
+        timer)
+    (setq timer
+          (run-at-time
+           delay nil
+           (lambda ()
+             (when (buffer-live-p buffer)
+               (with-current-buffer buffer
+                 (setq e-chat--pending-render-job-timers
+                       (delq timer e-chat--pending-render-job-timers))
+                 (funcall thunk))))))
+    (push timer e-chat--pending-render-job-timers)
+    timer))
+
 (defvar-local e-chat--mode-line-status nil
   "Current compact e chat status text shown in the mode line.")
 
@@ -1297,8 +1322,7 @@ PROMPT forces completion even when only one/default instance exists."
   "Cancel any pending loaded-session transcript backfill."
   (setq e-chat--loaded-session-backfill-generation
         (1+ e-chat--loaded-session-backfill-generation))
-  (when (timerp e-chat--loaded-session-backfill-timer)
-    (cancel-timer e-chat--loaded-session-backfill-timer))
+  (e-chat--cancel-render-job-timer e-chat--loaded-session-backfill-timer)
   (setq e-chat--loaded-session-backfill-timer nil)
   (setq e-chat--loaded-session-rendered-message-count nil))
 
@@ -1352,40 +1376,35 @@ PROMPT forces completion even when only one/default instance exists."
 (defun e-chat--schedule-loaded-session-backfill (rendered-count total-count)
   "Schedule a loaded-session transcript backfill from RENDERED-COUNT."
   (when (< rendered-count total-count)
-    (let ((buffer (current-buffer))
-          (generation (1+ e-chat--loaded-session-backfill-generation)))
+    (let ((generation (1+ e-chat--loaded-session-backfill-generation)))
       (setq e-chat--loaded-session-backfill-generation generation)
       (setq e-chat--loaded-session-backfill-timer
-            (run-at-time
+            (e-chat--schedule-render-job
              e-chat-loaded-session-backfill-delay
-             nil
-             #'e-chat--loaded-session-backfill
-             buffer
-             generation)))))
+             (lambda ()
+               (e-chat--loaded-session-backfill generation)))))))
 
-(defun e-chat--loaded-session-backfill (buffer generation)
-  "Render the next older loaded-session transcript chunk in BUFFER."
-  (when (buffer-live-p buffer)
-    (with-current-buffer buffer
-      (when (and (derived-mode-p 'e-chat-mode)
-                 (= generation e-chat--loaded-session-backfill-generation)
-                 e-chat-harness
-                 e-chat-session-id)
-        (setq e-chat--loaded-session-backfill-timer nil)
-        (let* ((messages (e-harness-messages e-chat-harness e-chat-session-id))
-               (total-count (length messages))
-               (current-count (or e-chat--loaded-session-rendered-message-count
-                                  total-count))
-               (next-count
-                (e-chat--loaded-session-next-backfill-count
-                 current-count
-                 total-count))
-               (composer-state (e-chat--capture-composer-state)))
-          (e-chat--clear)
-          (let ((inhibit-read-only t))
-            (e-chat--render-loaded-session-messages messages next-count))
-          (e-chat--restore-composer-state composer-state)
-          (e-chat--schedule-loaded-session-backfill next-count total-count))))))
+(defun e-chat--loaded-session-backfill (generation)
+  "Render the next older loaded-session transcript chunk for GENERATION."
+  (when (and (derived-mode-p 'e-chat-mode)
+             (= generation e-chat--loaded-session-backfill-generation)
+             e-chat-harness
+             e-chat-session-id)
+    (setq e-chat--loaded-session-backfill-timer nil)
+    (let* ((messages (e-harness-messages e-chat-harness e-chat-session-id))
+           (total-count (length messages))
+           (current-count (or e-chat--loaded-session-rendered-message-count
+                              total-count))
+           (next-count
+            (e-chat--loaded-session-next-backfill-count
+             current-count
+             total-count))
+           (composer-state (e-chat--capture-composer-state)))
+      (e-chat--clear)
+      (let ((inhibit-read-only t))
+        (e-chat--render-loaded-session-messages messages next-count))
+      (e-chat--restore-composer-state composer-state)
+      (e-chat--schedule-loaded-session-backfill next-count total-count))))
 
 (defun e-chat--render-loaded-session-initial ()
   "Render the initial view for the attached loaded session."
@@ -4664,8 +4683,7 @@ When TURN-ID is non-nil, cancel only a redraw for that turn."
   (when (and e-chat--pending-activity-redraw-turn-id
              (or (not turn-id)
                  (equal turn-id e-chat--pending-activity-redraw-turn-id)))
-    (when (timerp e-chat--pending-activity-redraw-timer)
-      (cancel-timer e-chat--pending-activity-redraw-timer))
+    (e-chat--cancel-render-job-timer e-chat--pending-activity-redraw-timer)
     (cl-incf e-chat--activity-redraw-generation)
     (setq e-chat--pending-activity-redraw-turn-id nil)
     (setq e-chat--pending-activity-redraw-timer nil)
@@ -4698,8 +4716,7 @@ When TURN-ID is non-nil, cancel only a redraw for that turn."
        (lambda ()
          (unwind-protect
              (progn
-               (when (timerp timer)
-                 (cancel-timer timer))
+               (e-chat--cancel-render-job-timer timer)
                (setq e-chat--pending-activity-redraw-turn-id nil)
                (setq e-chat--pending-activity-redraw-timer nil)
                (setq e-chat--pending-activity-redraw-kind nil)
@@ -4741,17 +4758,13 @@ When TURN-ID is non-nil, cancel only a redraw for that turn."
       (setq e-chat--pending-activity-redraw-generation
             (cl-incf e-chat--activity-redraw-generation)))
     (unless (timerp e-chat--pending-activity-redraw-timer)
-      (let ((buffer (current-buffer))
-            (generation e-chat--pending-activity-redraw-generation))
+      (let ((generation e-chat--pending-activity-redraw-generation))
         (setq e-chat--pending-activity-redraw-timer
-              (run-at-time
+              (e-chat--schedule-render-job
                e-chat-activity-redraw-delay
-               nil
                (lambda ()
-                 (when (buffer-live-p buffer)
-                   (with-current-buffer buffer
-                     (e-chat--run-pending-activity-redraw
-                      generation))))))))))
+                 (e-chat--run-pending-activity-redraw
+                  generation))))))))
 
 (defun e-chat--progress-dots ()
   "Return the current active assistant progress glyph string."
@@ -5401,31 +5414,6 @@ Hide REGEXP groups 1 and 3 as Markdown syntax."
        'e-chat-markdown-strong-face)
       (e-chat--apply-markdown-emphasis-face content-start content-end)
       (e-chat--apply-markdown-link-faces content-start content-end))))
-
-(defun e-chat--cancel-render-job-timer (timer)
-  "Cancel deferred render-job TIMER if it is still live."
-  (when (timerp timer)
-    (cancel-timer timer))
-  (setq e-chat--pending-render-job-timers
-        (delq timer e-chat--pending-render-job-timers)))
-
-(defun e-chat--schedule-render-job (delay thunk)
-  "Schedule deferred chat render THUNK after DELAY seconds.
-The returned timer is tracked in the buffer-local render-job registry until it
-runs or is cancelled."
-  (let ((buffer (current-buffer))
-        timer)
-    (setq timer
-          (run-at-time
-           delay nil
-           (lambda ()
-             (when (buffer-live-p buffer)
-               (with-current-buffer buffer
-                 (setq e-chat--pending-render-job-timers
-                       (delq timer e-chat--pending-render-job-timers))
-                 (funcall thunk))))))
-    (push timer e-chat--pending-render-job-timers)
-    timer))
 
 (defun e-chat--cancel-pending-markdown-presentation ()
   "Cancel all pending deferred assistant Markdown presentation jobs."
