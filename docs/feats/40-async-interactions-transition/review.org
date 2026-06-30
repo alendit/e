@@ -2499,3 +2499,45 @@ emacsclient --eval "(let* ((backend-started nil) (loop-messages nil) ...) ...)"
 #+end_src
 
 Result: returned =(:backend (:error e-request-blocking-call-in-hot-path :data (e-backend-stream live-backend-stream)) :backend-started nil :loop (:error e-request-blocking-call-in-hot-path :data (e-loop-run-turn live-loop-run)) :loop-messages 0)=, confirming the live guards reject before backend start or message append.
+
+* Phase 4 Tool Context Sync Hot-Path Guard Slice Review
+
+Status: complete.
+
+** Scope reviewed
+
+- Added the existing long-async hot-path rejection to the context-aware synchronous tool execution helper.
+- Preserved generic batch sync execution behavior outside marked hot paths.
+- Kept cheap/nested direct-return semantics unchanged; long nested calls still fail with model guidance before sync execution.
+
+** Verification
+
+#+begin_src sh
+rtk eldev emacs --batch --eval "(progn (setq byte-compile-error-on-warn t) (dolist (file '(\"lisp/core/e-tools.el\" \"test/e-tools-test.el\")) (byte-compile-file file)))"
+#+end_src
+
+Result: passed for the touched tools module and tests.
+
+#+begin_src sh
+rtk eldev test -f test/e-tools-test.el -B e-tools-test-execute-waits-for-async-only-tool e-tools-test-long-async-batch-execute-rejected-in-hot-path e-tools-test-long-async-context-execute-rejected-in-hot-path
+#+end_src
+
+Result: passed the focused sync execute tests, including existing batch behavior outside marked hot paths.
+
+#+begin_src sh
+rtk eldev test -f test/e-tools-test.el
+#+end_src
+
+Result: passed all 26 tools tests.
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Result: returned ="/Users/dimitrivorona/projects/elisp/e/"=, so the running Emacs loaded the tools guard change.
+
+#+begin_src sh
+emacsclient --eval "(let ((registry ...) started result) ...)"
+#+end_src
+
+Result: returned =(:started nil :status error :metadata (:error e-tools-blocking-execute-rejected :blocking-class process))=, confirming the live context-aware sync execute path rejects without starting the long async tool.

@@ -341,6 +341,32 @@
                        :metadata (:error e-tools-blocking-execute-rejected
                                   :blocking-class network)))))))
 
+(ert-deftest e-tools-test-long-async-context-execute-rejected-in-hot-path ()
+  "Context-aware sync execution cannot wait for long async tools in hot paths."
+  (let ((registry (e-tools-registry-create))
+        started)
+    (e-tools-register registry
+                      :name "async-process"
+                      :description "Pretend async process work."
+                      :blocking-class 'process
+                      :start (lambda (&rest _args)
+                               (setq started t)
+                               (e-tools-request-create)))
+    (let ((result
+           (e-request-with-hot-path 'tool-context-execute
+             (e-tools--execute-with-context
+              registry
+              '(:id "call-1" :name "async-process" :arguments nil)
+              nil))))
+      (should-not started)
+      (should (equal result
+                     '(:tool-call-id "call-1"
+                       :name "async-process"
+                       :status error
+                       :content "Tool async-process is process-class and cannot be synchronously executed in an interactive hot path; use e-tools-start instead."
+                       :metadata (:error e-tools-blocking-execute-rejected
+                                  :blocking-class process)))))))
+
 (ert-deftest e-tools-test-handler-errors-return-structured-results ()
   "Tool handler errors remain structured tool results."
   (let ((registry (e-tools-registry-create)))

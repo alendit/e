@@ -589,24 +589,29 @@ SUMMARY is optional and should stay compact and high value."
 
 (defun e-tools--execute-with-context (registry call context)
   "Execute CALL against REGISTRY with CONTEXT and return a structured result."
-  (let ((done nil)
-        (result nil)
-        (failure nil))
-    (e-tools-start
-     registry
-     call
-     :context context
-     :on-done (lambda (value)
-                (setq result value)
-                (setq done t))
-     :on-error (lambda (err)
-                 (setq failure err)
-                 (setq done t)))
-    (while (not done)
-      (accept-process-output nil 0.01))
-    (when failure
-      (signal (car failure) (cdr failure)))
-    result))
+  (let* ((name (plist-get call :name))
+         (tool (and name
+                    (gethash name (e-tools-registry-tools registry)))))
+    (if (and tool (e-tools--reject-blocking-execute-p tool))
+        (e-tools--blocking-execute-result call tool)
+      (let ((done nil)
+            (result nil)
+            (failure nil))
+        (e-tools-start
+         registry
+         call
+         :context context
+         :on-done (lambda (value)
+                    (setq result value)
+                    (setq done t))
+         :on-error (lambda (err)
+                     (setq failure err)
+                     (setq done t)))
+        (while (not done)
+          (accept-process-output nil 0.01))
+        (when failure
+          (signal (car failure) (cdr failure)))
+        result))))
 
 (defun e-tools--reject-recursive-call (name options)
   "Signal when NAME recursively calls the current tool without OPTIONS opt-in."
