@@ -3955,6 +3955,27 @@ the orphaned region and appeared to vanish."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-stale-activity-redraw-generation-preserves-newer-job ()
+  "A stale deferred redraw callback cannot clear a newer pending redraw."
+  (let ((buffer (e-chat-test--buffer nil "chat-stale-activity-redraw"))
+        (redraws 0))
+    (unwind-protect
+        (with-current-buffer buffer
+          (setq e-chat--activity-redraw-generation 2)
+          (setq e-chat--pending-activity-redraw-turn-id "turn-new")
+          (setq e-chat--pending-activity-redraw-kind 'activity)
+          (setq e-chat--pending-activity-redraw-generation 2)
+          (cl-letf (((symbol-function 'e-chat--render-turn-transient)
+                     (lambda (&rest _args)
+                       (setq redraws (1+ redraws)))))
+            (e-chat--run-pending-activity-redraw 1)
+            (should (= redraws 0))
+            (should (equal e-chat--pending-activity-redraw-turn-id
+                           "turn-new"))
+            (should (equal e-chat--pending-activity-redraw-generation 2))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-profile-records-pending-activity-redraw ()
   "Enabled dev profiling records the actual deferred activity redraw body."
   (let ((buffer (e-chat-test--buffer nil "chat-profile-activity-redraw"))

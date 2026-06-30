@@ -794,3 +794,49 @@ emacsclient --eval "...bounded session tmp expiry probe..."
 #+end_src
 
 Result: returned =(:deleted-count 1 :old-exists nil :fresh-exists t)=.
+
+* Phase 3 Activity Redraw Generation Slice Review
+
+Status: in progress.
+
+** Scope reviewed
+
+- Added buffer-local generation state for deferred =e-chat= activity redraw jobs.
+- Deferred redraw timer callbacks now carry an expected generation and no-op when a newer pending redraw has replaced them.
+- Cancellation increments the generation and clears the pending generation token.
+- Existing manual/test flushing remains supported by calling =e-chat--run-pending-activity-redraw= without an expected generation.
+- This hardens the existing activity redraw timer; it is not the full Slice 8 render scheduler for final Markdown presentation, replay, or block rendering.
+
+** Verification
+
+#+begin_src sh
+rtk eldev test -f test/e-chat-test.el -b e-chat-test-running-activity-schedules-deferred-redraw e-chat-test-stale-activity-redraw-generation-preserves-newer-job
+#+end_src
+
+Result: passed both focused deferred-redraw tests.
+
+#+begin_src sh
+rtk eldev emacs --batch --eval "(progn (setq byte-compile-error-on-warn t) (byte-compile-file \"lisp/shells/chat/e-chat.el\"))"
+#+end_src
+
+Result: passed for the touched runtime file.
+
+Note: compiling the full dirty =test/e-chat-test.el= currently fails on a pre-existing unrelated =harness= free-variable warning at line 444, so this slice used focused ERT coverage for the new test.
+
+#+begin_src sh
+git diff --check
+#+end_src
+
+Result: passed.
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Result: returned the repository path after reloading changed Lisp.
+
+#+begin_src sh
+emacsclient --eval "...bounded stale activity redraw generation probe..."
+#+end_src
+
+Result: returned =(:redraws 0 :pending-turn "turn-new" :pending-generation 2)=.

@@ -38,7 +38,7 @@ Partly implemented:
 
 - Blocking primitive guardrails exist, but they are test and probe helpers rather than a complete proof over every interactive path.
 - Sync tool execution remains available for batch, tests, and nested call paths.
-- Some UI redraw preservation and preview cheapening landed, but this is not a render scheduler.
+- Some UI redraw preservation, stale deferred activity-redraw guards, and preview cheapening landed, but this is not a render scheduler.
 - The session compaction action still calls the synchronous compaction wrapper because actions do not yet have an async dispatch contract.
 - Raw-result storage exists for large tool output through session tmp resources, with explicit, harness-reset, and configured max-age cleanup; there is still no generic raw-result store.
 - Anthropic context-window lookup is cache-only; chat status starts an async model-info refresh on cache miss instead of waiting for gateway I/O.
@@ -442,7 +442,7 @@ Work:
 5. Update running activity/progress rows in place where possible.
 6. Lazy-generate expanded block details.
 7. Render old session turns tail-first or in bounded chunks.
-8. Require each render job to carry buffer identity, session id, block id, and generation.
+8. Require each render job to carry buffer identity, session id, block id, and generation. Initial deferred activity redraw jobs carry buffer identity and generation tokens.
 9. Preserve composer draft, references, point, response navigation, block view, and tool-list state across every scheduled render step.
 
 Acceptance:
