@@ -1,0 +1,303 @@
+#+title: Agent Task Queue
+#+startup: overview
+
+* Goal
+
+Give =e= a native task queue: a durable, bounded-concurrency queue of
+agent work items where each item is a prompt plus metadata, runs as an
+ordinary harness turn, carries an explicit status lifecycle, and
+collects its outputs.  A shell command opens a buffer that lists tasks
+newest-first and lets the operator watch and steer the queue.
+
+The queue is the scheduling primitive that grimoire triage will use to
+hand off follow-up work (research, write-ups, deeper analysis) after a
+capture is triaged, so the org-agenda review step only ever sees items
+an agent has already worked, not raw captures.
+
+* Status
+
+Ready.
+
+* Problem
+
+Two adjacent primitives already exist but neither is a queue:
+
+- =e-background-session= (=lisp/shells/e-background-session.el=) wakes a
+  long-lived session on a filesystem or schedule trigger and submits a
+  fixed prompt.  It is a single standing loop, not a set of discrete
+  work items with their own lifecycle, and it has no concurrency bound
+  across many pieces of work.
+- =e-agent-shell-fleet= (=lisp/layers/agents/e-agent-shell-fleet.el=)
+  tracks work handed to Agent Shell buffers with normalized records and
+  statuses, but every handoff starts immediately; there is no admission
+  control, ordering, or bounded parallelism, and it is tied to the Agent
+  Shell adapter.
+- =e-elisp-job= (=lisp/layers/emacs/e-elisp-job.el=) runs bounded async
+  =emacs -Q --batch= jobs, but its unit of work is Elisp evaluation, not
+  an agent prompt/turn.
+
+What is missing is a general queue: enqueue many prompts, run at most N
+concurrently (default 2), observe each one's status and outputs, and let
+another capability (grimoire) push follow-up work onto it.  Today a
+caller that wants "do this research in the background, but only a couple
+at a time" has to build ad hoc scheduling on top of
+=e-harness-prompt-async=.
+
+This duplication also shows up in triage: today triage and the
+downstream org-agenda review look at the same raw captures.  With a
+queue, triage classifies and enqueues a follow-up task; the agent does
+the deeper work in the background; only the worked result surfaces for
+review.
+
+* Design
+
+Add a queue as an E-owned registry plus a dispatcher plus a capability,
+following the local precedent of =e-agent-shell-work= (registry struct +
+normalized records) and =e-elisp-job= (capability actions, not a
+model-facing tool family).  Keep the harness unaware of the queue: tasks
+run through the ordinary =e-harness-prompt-async= path, exactly as
+=e-background-session= submits a turn.
+
+** Module layout
+
+- =lisp/core/e-task-queue.el= :: the registry, task record, status
+  lifecycle, and the bounded dispatcher.  Core, UI-free, headless-safe
+  (mirrors how =e-background-session= depends only on =e-harness=).
+- =lisp/layers/agents/e-task-queue-actions.el= :: a capability exposing
+  the queue as semantic actions, with a skill describing the contract.
+- =lisp/shells/e-task-queue-shell.el= :: the =tabulated-list= buffer and
+  the interactive command that opens it.
+
+** Task record
+
+A normalized plist, the queue's stable contract:
+
+#+begin_src elisp
+(:task-id "tsk_000123"
+ :status queued|running|done|failed|cancelled
+ :prompt "Research morsel runtime distribution ..."
+ :prompt-summary "Research morsel runtime distribution"
+ :metadata (:source "grimoire:inbox" :origin grimoire-triage ...)
+ :harness-instance-id :chat-project-e   ; nil means the queue default
+ :enqueued-at "2026-06-30T..."
+ :started-at "2026-06-30T..."
+ :finished-at "2026-06-30T..."
+ :session-id "..."
+ :outputs (...)        ; list of normalized output entries
+ :error nil)
+#+end_src
+
+- =prompt= is the only required input.  =metadata= is an opaque plist the
+  enqueuer owns (grimoire stores its provenance link there).
+- =harness-instance-id= selects which configured harness instance runs
+  the task, exactly as a chat buffer picks its instance.  It is optional;
+  =nil= means "use the queue default" (see Harness selection).
+- =outputs= is a list the runner appends to; an output entry is
+  =(:kind text|file|org-link :value STRING :label STRING)=.  This is how
+  a finished research task points back at the topic file or note it
+  produced, so the org-agenda review step has something to open.
+
+** Status lifecycle
+
+#+begin_example
+queued --(dispatch, capacity available)--> running
+running --(turn settles, no error)-------> done
+running --(turn errors / runner signals)-> failed
+queued|running --(cancel)----------------> cancelled
+#+end_example
+
+Terminal states (=done=, =failed=, =cancelled=) are immutable.  Cancel of
+a =running= task interrupts its turn when the runner supports it and
+otherwise marks the record so its result is dropped on settle.
+
+** Dispatcher and concurrency
+
+- =e-task-queue-max-parallel= :: defcustom, default 2.  The dispatcher
+  runs at most this many tasks concurrently.
+- Ordering is FIFO by =enqueued-at= within the queued set; a later slice
+  may add priority, but the first slice is FIFO.
+- The dispatcher is event-driven: it runs on enqueue and on every task
+  settle, starting queued tasks until either the queue is empty or the
+  running count reaches the cap.  No polling timer is required for
+  correctness; a light idle timer may backstop missed wakeups.
+- Each dispatch picks the oldest queued task, transitions it to
+  =running=, and calls the runner.
+
+** Harness selection
+
+The queue is *not* bound to a single harness at construction.  Each task
+carries an optional =harness-instance-id=, resolved at dispatch time,
+mirroring how a chat buffer picks its harness instance and how
+Claude-unleashed lets each unit of work choose its target:
+
+- =e-task-queue-default-harness-instance-id= :: defcustom, the instance
+  used when a task supplies no =harness-instance-id=.  When that is also
+  =nil=, fall back to =(e-harness-instance-default :kind 'chat)=, the same
+  default a new chat uses.
+- The dispatcher resolves the task's instance to a live harness via
+  =e-harness-instance-get-or-create= just before running it, never at
+  enqueue time.  Resolving late means re-pointing the default, or fixing
+  a bad instance id, affects tasks still queued.
+- A task whose instance id is unregistered settles as =failed= with an
+  =:error= naming the missing instance, rather than silently using a
+  fallback.  The dispatcher keeps serving other tasks.
+
+** Runner seam
+
+A task runs through a pluggable runner so the queue is not welded to one
+execution backend:
+
+#+begin_src elisp
+;; runner: (lambda (task harness on-settle) ...) -> handle
+;;   calls (funcall on-settle :status done|failed :outputs ... :error ...)
+#+end_src
+
+- The dispatcher resolves the task's harness instance (see Harness
+  selection) and hands the live harness to the runner; the runner does
+  not own instance resolution.
+- Default runner submits =:prompt= to a (background) session on that
+  harness via =e-harness-prompt-async=, reusing the same machinery
+  =e-background-session= uses, and settles when the turn finishes.
+- The runner contract is small enough that an Agent Shell Fleet runner or
+  an =elisp-job= runner can be dropped in later without changing the
+  registry, dispatcher, or shell.
+
+** Capability actions
+
+Expose the queue as a capability (skill-backed, like Agent Shell Fleet),
+not a model-facing tool family:
+
+- =enqueue= :: input
+  =(:prompt STRING :metadata PLIST :harness-instance-id KEYWORD)=; returns
+  the new task record.  =harness-instance-id= is optional and defaults to
+  the queue default.  This is the action grimoire triage calls.
+- =list-tasks= :: returns compact normalized records, newest-first.
+- =task-status= :: input =(:task-id STRING)=; returns one record.
+- =read-task= :: input =(:task-id STRING)=; returns the task's outputs
+  (and a bounded transcript excerpt when the runner exposes one).
+- =cancel-task= :: input =(:task-id STRING)=; cancels queued or running
+  work.
+
+Callers reach these through =e-actions-call=, e.g.
+
+#+begin_src elisp
+(e-actions-call 'task-queue :enqueue
+                '(:prompt "..." :metadata (:source "grimoire:inbox:...")))
+#+end_src
+
+** Shell
+
+=lisp/shells/e-task-queue-shell.el= provides
+=e-task-queue-list= (an interactive command) opening a =tabulated-list=
+buffer, newest-first, in the style of =e-picker= / =e-workspaces=:
+
+- Columns: enqueued-at, status, prompt-summary, outputs count.
+- Refreshes on queue change events.
+- Row actions: open the task's outputs / session, cancel the task.
+- Respects workspace awareness for display (use =e-workspace-*= helpers,
+  not raw =switch-to-buffer=).
+
+** Grimoire integration (downstream, not in this slice's core)
+
+After triage classifies an actionable capture, grimoire enqueues a
+follow-up task whose =:prompt= describes the deeper work (e.g. "research
+X and write a topic") and whose =:metadata= carries the =:SOURCE= link.
+The agent works it in the background; when the task finishes, its
+=outputs= point at the produced topic/note.  Only then does the item
+become an org-agenda review entry.  Wiring the grimoire side is a
+separate change in the grimoire project layer once this queue exists; it
+is named here only to fix the contract the queue must serve.
+
+* Non-goals
+
+- No priority scheduling, dependency graph, or worker-pool optimizer in
+  the first slice; FIFO with a concurrency cap only.
+- No persistence of the queue across Emacs restarts in this slice; the
+  registry is in-memory like =e-agent-shell-work= and =e-elisp-job=.
+  (Durable queue state is a deliberate later slice.)
+- No new core runtime primitive beside capabilities, sessions, tools,
+  and backends; the queue is a capability + registry + shell over the
+  existing harness turn path.
+- No model-facing =task_queue= tool; actions only, reached via
+  =e-actions-call=, matching =e-elisp-job= and Agent Shell Fleet.
+- Do not change the grimoire triage skill in this slice beyond noting the
+  contract; the grimoire wiring is a follow-up.
+
+* Slices
+
+Each slice ends at a useful stopping point: if work stopped after it, the
+project is better off than without it.
+
+** Slice 1 -- Core registry + dispatcher (headless)
+
+=lisp/core/e-task-queue.el=: task record (with per-task
+=harness-instance-id=), status lifecycle, in-memory registry, FIFO
+bounded dispatcher, dispatch-time harness resolution, and the runner
+seam with a default harness-turn runner.  No capability and no shell
+yet.  Delivers a headless queue callable from Elisp and fully covered by
+ERT with a fake runner.
+
+- Stopping value: a working bounded-concurrency queue other code can
+  drive directly.
+- Verification: the ERT suite (admission control under the cap, status
+  transitions, settle-driven dispatch, cancel of queued and running
+  tasks, newest-first ordering); =git diff --check=.
+
+** Slice 2 -- Capability actions + skill
+
+=lisp/layers/agents/e-task-queue-actions.el=: =enqueue=, =list-tasks=,
+=task-status=, =read-task=, =cancel-task= over the Slice 1 registry, plus
+the skill describing the contract.  No model-facing tool.
+
+- Stopping value: grimoire and other capabilities can enqueue and
+  observe work through =e-actions-call=.
+- Verification: action round-trip tests; the test asserting the queue is
+  absent from model-facing tool definitions, mirroring =elisp-job=.
+
+** Slice 3 -- List shell
+
+=lisp/shells/e-task-queue-shell.el=: =e-task-queue-list= tabulated-list
+buffer, newest-first, refreshing on queue-change events, with row
+actions and workspace-aware display.
+
+- Stopping value: an operator can watch and steer the queue.
+- Verification: shell smoke (renders rows, refreshes on change);
+  =e-dev-reload= and a bounded live probe when a server is available.
+
+Grimoire wiring is explicitly out of these slices (see Non-goals); it is
+a follow-up in the grimoire project layer once Slice 2 lands.
+
+* Acceptance
+
+- =task-queue= =:enqueue= returns a =queued= task record immediately.
+- With =e-task-queue-max-parallel= = 2, enqueuing three tasks runs two
+  concurrently and starts the third only after one settles.
+- A task transitions =queued= -> =running= -> =done= over a real harness
+  turn, and =read-task= returns its outputs.
+- A failing turn lands the task in =failed= with =:error= populated and
+  does not block the dispatcher from starting other tasks.
+- =cancel-task= moves a queued task to =cancelled= without running it and
+  interrupts/abandons a running task's result.
+- A task with an explicit =harness-instance-id= runs on that instance; a
+  task with none runs on the queue default; an unregistered instance id
+  settles the task =failed= without stalling the dispatcher.
+- =e-task-queue-list= opens a newest-first buffer that reflects live
+  status changes.
+- The queue runs headless (no UI shell dependency in =e-task-queue.el=).
+
+* Verification
+
+- Focused ERT tests with a fake runner: enqueue/admission-control under
+  the parallelism cap, status transitions, settle-driven dispatch,
+  cancel of queued and running tasks, newest-first ordering.
+- A test asserting the queue is absent from model-facing tool
+  definitions (actions only), mirroring the =elisp-job= test.
+- Harness selection tests: per-task instance wins over the default, the
+  default applies when a task omits one, and an unregistered instance id
+  fails just that task without stalling the dispatcher.
+- Shell smoke: the list command renders rows and refreshes on a queue
+  change.
+- =git diff --check=.
+- =e-dev-reload= and a bounded live probe of =:enqueue= / =:list-tasks=
+  when an Emacs server is available and the user has not asked to skip
+  reload.
