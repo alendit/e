@@ -54,6 +54,6 @@ Status values for coding agents:
 | 41 | In-progress | 41-perf-regression-testing/ | Performance Regression Testing |
 | 42 | Done | 42-goal-capability/ | Goal Capability |
 | 43 | Done | 43-action-dispatcher/ | Action Dispatcher |
-| 44 | Planned | 44-action-telemetry-tool-surface/ | Action Telemetry and Tool Surface Cleanup |
+| 44 | In-progress | 44-action-telemetry-tool-surface/ | Action Telemetry and Tool Surface Cleanup |
 | 45 | Done | 45-state-lifetime-and-persistence/ | State Lifetime and Persistence Boundaries |
 | 46 | Done | 46-elisp-batch-job-tool/ | Elisp Batch Job Actions |

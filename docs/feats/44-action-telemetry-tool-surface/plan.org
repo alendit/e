@@ -14,7 +14,23 @@ reported as actions in usage summaries.
 
 * Status
 
-Planned.
+In-progress.
+
+Implemented in this slice:
+
+- durable action activity events from the action dispatcher;
+- read-only =e-action://= resources with =read=, =glob=, and =search=;
+- workspace-awareness, Org Canvas, annotations, and context-inspection actions;
+- session compaction action use from =run_elisp=;
+- chat activity rendering that counts actions separately from tools;
+- live reload coverage for the migrated action path.
+
+Still open:
+
+- grimoire and personal layer migrations;
+- =multi_tool_use.parallel= migration or removal;
+- broader usage-report helpers beyond chat activity rendering;
+- removal of obsolete compatibility registration helpers after callers are gone.
 
 * Problem
 
