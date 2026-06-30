@@ -935,6 +935,24 @@ emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona
 Result: returned the repository path after reloading changed Lisp.
 
 #+begin_src sh
+emacsclient --eval "...bounded fake-transport MCP capability-provider probe..."
+#+end_src
+
+Result: returned =(:initial nil :cached t :calls 1 :final ("mcp__live-fixture__echo") :failure nil)=.
+
+#+begin_src sh
+git diff --check
+#+end_src
+
+Result: passed.
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Result: returned the repository path after reloading changed Lisp.
+
+#+begin_src sh
 emacsclient --eval "...bounded fake-transport MCP refresh-start probe..."
 #+end_src
 
@@ -1087,3 +1105,42 @@ emacsclient --eval "...bounded chunked session load probe..."
 #+end_src
 
 Result: returned =(:request t :state finished :messages 4 :progress-count 43 :failure nil)=.
+
+* Phase 2 MCP Capability Provider Async Slice Review
+
+Status: in progress.
+
+** Scope reviewed
+
+- Added cache-presence helpers and in-flight catalog request tracking so MCP providers can tell an empty cached catalog from a missing one.
+- Interactive MCP tool/resource/context providers now return cached catalogs immediately and start async catalog discovery on cache miss instead of waiting during harness construction.
+- Eager and progressive harness builds expose generated tools, Tier-0 cards, and Tier-1 resources after the async catalog fill completes.
+- Explicit batch/direct capability registration still uses the synchronous safe catalog path.
+- =mcp_activate= now has an async =:start= path that loads the catalog and performs optional invocation through async MCP tool calls.
+- =e-mcp-reset= cancels in-flight catalog discovery requests before clearing MCP state.
+
+** Verification
+
+#+begin_src sh
+rtk eldev test -f test/e-mcp-test.el -b e-mcp-test-eager-mode-registers-every-tool e-mcp-test-progressive-mode-registers-only-meta-tool e-mcp-test-progressive-mode-emits-capability-card e-mcp-test-progressive-mode-registers-schema-resources e-mcp-test-activate-promotes-tool-into-active-set e-mcp-test-activate-without-tools-activates-whole-server e-mcp-test-list-tools-start-returns-before-helper-response e-mcp-test-catalogs-safe-skips-failing-servers
+#+end_src
+
+Result: passed all eight focused MCP capability/cache lifecycle tests.
+
+#+begin_src sh
+rtk eldev test -f test/e-mcp-test.el
+#+end_src
+
+Result: passed all 34 MCP tests.
+
+#+begin_src sh
+rtk eldev test -f test/e-mcp-layer-test.el
+#+end_src
+
+Result: passed all four MCP layer tests.
+
+#+begin_src sh
+rtk eldev emacs --batch --eval "(progn (setq byte-compile-error-on-warn t) (dolist (file '(\"lisp/core/e-mcp.el\" \"test/e-mcp-test.el\")) (byte-compile-file file)))"
+#+end_src
+
+Result: passed for the touched MCP module and tests.

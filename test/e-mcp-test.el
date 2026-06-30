@@ -476,10 +476,11 @@
                                             (plist-get request :arguments)
                                             :text)))
                        :isError :json-false)))))
-    (let* ((capability
+    (let* ((server (e-mcp-test--server))
+           (capability
             (e-capability-with-mcp-create
              :id 'fixture-mcp
-             :mcp-servers (list (e-mcp-test--server))))
+             :mcp-servers (list server)))
            (layer (e-layer-create
                    :id 'fixture-mcp-layer
                    :name "Fixture MCP"
@@ -487,6 +488,9 @@
            (harness (e-harness-create
                      :backend (e-backend-fake-create :items nil))))
       (e-harness-set-intrinsic-capabilities harness (e-layer-capabilities layer))
+      (let ((registry (e-harness-tools harness)))
+        (should-not (e-tools-definitions registry)))
+      (e-mcp-test--wait-for-catalog (list server))
       (let ((registry (e-harness-tools harness)))
         (should (equal (mapcar (lambda (definition)
                                  (plist-get definition :name))
@@ -835,10 +839,24 @@ echoed back on `tools/list' and `tools/call'."
          (e-harness-enable-layer-id ,harness-var 'fixture-mcp)
          ,@body))))
 
+(defun e-mcp-test--wait-for-catalog (servers)
+  "Wait until SERVERS have a cached MCP catalog."
+  (let ((deadline (+ (float-time) 1)))
+    (while (and (not (e-mcp--catalog-cached-p servers))
+                (< (float-time) deadline))
+      (accept-process-output nil 0.01))
+    (should (e-mcp--catalog-cached-p servers))))
+
 (ert-deftest e-mcp-test-eager-mode-registers-every-tool ()
   "With progressive disabled (the default), all tool schemas are registered."
   (e-mcp-test--with-progressive-harness harness
     (e-harness-create-session harness :id "s1")
+    (should-not (cl-remove-if-not
+                 (lambda (d)
+                   (string-prefix-p "mcp__" (plist-get d :name)))
+                 (e-tools-definitions
+                  (e-harness-tools harness "s1"))))
+    (e-mcp-test--wait-for-catalog (list (e-mcp-test--server)))
     (should (equal (sort (mapcar (lambda (d) (plist-get d :name))
                                  (e-tools-definitions
                                   (e-harness-tools harness "s1")))
@@ -858,10 +876,22 @@ echoed back on `tools/list' and `tools/call'."
       (should-not (member "mcp__fixture__ping" names)))))
 
 (ert-deftest e-mcp-test-progressive-mode-emits-capability-card ()
-  "Progressive mode injects a single Tier-0 card naming the server tools."
+  "Progressive mode emits loading cards before cached tool names."
   (e-mcp-test--with-progressive-harness harness
     (e-harness-set-capability-config harness 'fixture-mcp '(:progressive t))
     (e-harness-create-session harness :id "s1")
+    (let* ((messages (plist-get (e-harness-context harness "s1") :messages))
+           (card (cl-find-if
+                  (lambda (m)
+                    (and (stringp (plist-get m :content))
+                         (string-match-p "MCP tool families"
+                                         (plist-get m :content))))
+                  messages)))
+      (should card)
+      (should (string-match-p "loading tool catalog"
+                              (plist-get card :content)))
+      (should-not (string-match-p "echo" (plist-get card :content))))
+    (e-mcp-test--wait-for-catalog (list (e-mcp-test--server)))
     (let* ((messages (plist-get (e-harness-context harness "s1") :messages))
            (card (cl-find-if
                   (lambda (m)
@@ -874,10 +904,12 @@ echoed back on `tools/list' and `tools/call'."
       (should (string-match-p "ping" (plist-get card :content))))))
 
 (ert-deftest e-mcp-test-progressive-mode-registers-schema-resources ()
-  "Progressive mode exposes per-tool schemas as on-demand e:// resources."
+  "Progressive mode exposes schema resources after async catalog fill."
   (e-mcp-test--with-progressive-harness harness
     (e-harness-set-capability-config harness 'fixture-mcp '(:progressive t))
     (e-harness-create-session harness :id "s1")
+    (should-not (e-store-list (e-harness-store harness "s1")))
+    (e-mcp-test--wait-for-catalog (list (e-mcp-test--server)))
     (let ((uris (mapcar #'e-store-entry-uri
                         (e-store-list (e-harness-store harness "s1")))))
       (should (member "e://fixture-mcp/mcp/fixture/tools" uris))
@@ -930,6 +962,12 @@ echoed back on `tools/list' and `tools/call'."
     (e-harness-create-session harness :id "s1")
     (e-mcp--activate harness "s1" "fixture" nil)
     (should (equal (e-mcp--active-set harness "s1") '(("fixture" . t))))
+    (should-not (cl-remove-if-not
+                 (lambda (d)
+                   (string-prefix-p "mcp__" (plist-get d :name)))
+                 (e-tools-definitions
+                  (e-harness-tools harness "s1"))))
+    (e-mcp-test--wait-for-catalog (list (e-mcp-test--server)))
     (should (equal (sort (mapcar (lambda (d) (plist-get d :name))
                                  (cl-remove-if-not
                                   (lambda (d)

@@ -95,6 +95,9 @@
   "Alist of (server-id . session-plist) for HTTP MCP sessions.
 Each session plist tracks :url, :headers, :session-id, :initialized.")
 
+(defconst e-mcp--missing-catalog (make-symbol "e-mcp-missing-catalog")
+  "Sentinel used to distinguish absent cache entries from empty catalogs.")
+
 (defvar e-mcp--catalog-cache (make-hash-table :test 'equal)
   "Memoized tools/list catalogs keyed by sorted server id list.
 Progressive disclosure touches each server catalog from several places per
@@ -102,6 +105,10 @@ turn (Tier-0 card, Tier-1 resources, Tier-2 activation, lazy tool
 registration).  Memoizing the helper round trip keeps that fan-out from
 re-listing tools on every turn.  Invalidated by `e-mcp-reset' and
 `e-mcp-refresh'.")
+
+(defvar e-mcp--catalog-starts (make-hash-table :test 'equal)
+  "In-flight async MCP catalog discovery requests.
+Keys match `e-mcp--catalog-cache'.")
 
 (defvar e-mcp-helper-transport-function nil
   "Optional fake helper transport function for tests.
@@ -212,16 +219,34 @@ transport), but not both."
   (setq e-mcp--helper-next-id 0)
   (setq e-mcp--latest-diagnostics nil)
   (setq e-mcp--http-sessions nil)
+  (maphash (lambda (_key request)
+             (when request
+               (e-tools-cancel-request request)))
+           e-mcp--catalog-starts)
   (clrhash e-mcp--catalog-cache)
+  (clrhash e-mcp--catalog-starts)
   t)
 
 (defun e-mcp--catalog-key (servers)
   "Return a stable cache key for SERVERS."
   (sort (mapcar #'e-mcp-server-id servers) #'string<))
 
+(defun e-mcp--catalog-cache-entry (servers)
+  "Return cached catalog for SERVERS, or `e-mcp--missing-catalog'."
+  (gethash (e-mcp--catalog-key servers)
+           e-mcp--catalog-cache
+           e-mcp--missing-catalog))
+
+(defun e-mcp--catalog-cached-p (servers)
+  "Return non-nil when SERVERS has a cached catalog entry."
+  (not (eq (e-mcp--catalog-cache-entry servers)
+           e-mcp--missing-catalog)))
+
 (defun e-mcp--invalidate-catalog (servers)
   "Drop any memoized catalog for SERVERS."
-  (remhash (e-mcp--catalog-key servers) e-mcp--catalog-cache))
+  (let ((key (e-mcp--catalog-key servers)))
+    (remhash key e-mcp--catalog-cache)
+    (remhash key e-mcp--catalog-starts)))
 
 (defun e-mcp-diagnostics ()
   "Return diagnostics from the most recent MCP helper response."
@@ -922,10 +947,12 @@ HTTP servers are handled in-process; stdio servers use the helper."
   "Return discovered MCP tools for SERVERS.
 The catalog is memoized per server set; `e-mcp-refresh' or `e-mcp-reset'
 invalidate it."
-  (let ((key (e-mcp--catalog-key servers)))
-    (if-let ((cached (gethash key e-mcp--catalog-cache)))
+  (let ((cached (e-mcp--catalog-cache-entry servers)))
+    (if (not (eq cached e-mcp--missing-catalog))
         cached
-      (puthash key (e-mcp--list-tools-uncached servers) e-mcp--catalog-cache))))
+      (puthash (e-mcp--catalog-key servers)
+               (e-mcp--list-tools-uncached servers)
+               e-mcp--catalog-cache))))
 
 (cl-defun e-mcp-list-tools-start
     (servers &key on-done on-error on-event &allow-other-keys)
@@ -933,8 +960,8 @@ invalidate it."
 ON-DONE receives the discovered tools and the catalog cache is populated before
 the callback runs."
   (let* ((key (e-mcp--catalog-key servers))
-         (cached (gethash key e-mcp--catalog-cache)))
-    (if cached
+         (cached (e-mcp--catalog-cache-entry servers)))
+    (if (not (eq cached e-mcp--missing-catalog))
         (let ((settled nil)
               timer)
           (setq timer
@@ -1045,6 +1072,51 @@ the callback runs."
            (e-mcp-server-id server)
            (error-message-string err))
    :warning))
+
+(defun e-mcp--ensure-catalog-started (servers)
+  "Start async catalog discovery for SERVERS unless cached or already in flight."
+  (let ((key (e-mcp--catalog-key servers)))
+    (unless (or (e-mcp--catalog-cached-p servers)
+                (gethash key e-mcp--catalog-starts))
+      (condition-case err
+          (let* ((done (lambda (_catalog)
+                         (remhash key e-mcp--catalog-starts)))
+                 (failed (lambda (condition)
+                           (remhash key e-mcp--catalog-starts)
+                           (when (= (length servers) 1)
+                             (e-mcp--warn-server-failure
+                              (car servers) condition))))
+                 (request (e-mcp-list-tools-start
+                           servers
+                           :on-done done
+                           :on-error failed)))
+            (puthash key request e-mcp--catalog-starts)
+            request)
+        (e-mcp-backend-error
+         (remhash key e-mcp--catalog-starts)
+         (when (= (length servers) 1)
+           (e-mcp--warn-server-failure (car servers) err))
+         nil)))))
+
+(defun e-mcp--catalogs-cached-safe (servers &optional start-missing)
+  "Return cached (SERVER . CATALOG) pairs for SERVERS.
+When START-MISSING is non-nil, begin async discovery for missing catalogs."
+  (let (pairs)
+    (dolist (server servers)
+      (let* ((single (list server))
+             (cached (e-mcp--catalog-cache-entry single)))
+        (if (not (eq cached e-mcp--missing-catalog))
+            (push (cons server cached) pairs)
+          (when start-missing
+            (e-mcp--ensure-catalog-started single)))))
+    (nreverse pairs)))
+
+(defun e-mcp--tools-cached-safe (servers &optional start-missing)
+  "Return cached discovered tools for SERVERS.
+When START-MISSING is non-nil, begin async discovery for missing catalogs."
+  (apply #'append
+         (mapcar #'cdr
+                 (e-mcp--catalogs-cached-safe servers start-missing))))
 
 (defun e-mcp--catalogs-safe (servers)
   "Return a list of (SERVER . CATALOG) for SERVERS that discover successfully.
@@ -1490,10 +1562,10 @@ The callable tool name is the generated name the model invokes later."
      catalog))
    "\n"))
 
-(defun e-mcp--register-resources (store capability servers)
-  "Register Tier-1 MCP schema resources for SERVERS in STORE under CAPABILITY."
+(defun e-mcp--register-resource-catalogs (store capability pairs)
+  "Register Tier-1 MCP schema resources from catalog PAIRS in STORE."
   (let ((capability-id (e-capability-id capability)))
-    (dolist (pair (e-mcp--catalogs-safe servers))
+    (dolist (pair pairs)
       (let* ((server (car pair))
              (server-id (e-mcp-server-id server))
              (catalog (cdr pair)))
@@ -1512,6 +1584,11 @@ The callable tool name is the generated name the model invokes later."
            :content (e-mcp--tool-schema-text tool)
            :metadata (e-mcp--tool-metadata tool)))))))
 
+(defun e-mcp--register-resources (store capability servers)
+  "Register Tier-1 MCP schema resources for SERVERS in STORE under CAPABILITY."
+  (e-mcp--register-resource-catalogs
+   store capability (e-mcp--catalogs-safe servers)))
+
 (defun e-mcp--resource-provider (servers capability-id all-options)
   "Return a resource provider registering Tier-1 resources for SERVERS.
 Resources are registered only when CAPABILITY-ID resolves to progressive mode
@@ -1520,7 +1597,10 @@ against ALL-OPTIONS."
    (lambda (store capability &key harness session-id &allow-other-keys)
      (when (e-mcp--progressive-p capability-id all-options
                                  :harness harness :session-id session-id)
-       (e-mcp--register-resources store capability servers)))))
+       (if (or harness session-id)
+           (e-mcp--register-resource-catalogs
+            store capability (e-mcp--catalogs-cached-safe servers t))
+         (e-mcp--register-resources store capability servers))))))
 
 ;;; Tier 0 — capability cards
 
@@ -1538,12 +1618,26 @@ against ALL-OPTIONS."
 
 (defun e-mcp--cards-message (capability-id servers)
   "Return a single Tier-0 context message describing SERVERS for CAPABILITY-ID."
-  (let ((cards (mapcar
-                (lambda (pair)
-                  (e-mcp--server-card-text
-                   capability-id (car pair) (cdr pair)))
-                (e-mcp--catalogs-safe servers))))
-    (when cards
+  (let* ((pairs (e-mcp--catalogs-cached-safe servers t))
+         (cached-ids (mapcar (lambda (pair)
+                               (e-mcp-server-id (car pair)))
+                             pairs))
+         (loading (cl-remove-if
+                   (lambda (server)
+                     (member (e-mcp-server-id server) cached-ids))
+                   servers))
+         (cards (append
+                 (mapcar
+                  (lambda (pair)
+                    (e-mcp--server-card-text
+                     capability-id (car pair) (cdr pair)))
+                  pairs)
+                 (mapcar
+                  (lambda (server)
+                    (format "%s (MCP, loading tool catalog)"
+                            (e-mcp-server-id server)))
+                  loading))))
+    (when (or cards loading)
       (list
        (list :role 'system
              :content
@@ -1588,6 +1682,13 @@ Cards are emitted only when CAPABILITY-ID resolves to progressive mode."
   (when-let ((server (e-mcp--known-server server-id)))
     (cons server (e-mcp-list-tools (list server)))))
 
+(defun e-mcp--catalog-for-server-cached (server-id)
+  "Return cached (SERVER . CATALOG) for SERVER-ID, or nil."
+  (when-let ((server (e-mcp--known-server server-id)))
+    (let ((cached (e-mcp--catalog-cache-entry (list server))))
+      (unless (eq cached e-mcp--missing-catalog)
+        (cons server cached)))))
+
 (defun e-mcp--select-tools (catalog tool-names)
   "Return CATALOG entries whose names are in TOOL-NAMES, or all when empty."
   (let ((names (append tool-names nil)))
@@ -1597,14 +1698,37 @@ Cards are emitted only when CAPABILITY-ID resolves to progressive mode."
        (lambda (tool) (member (e-mcp-tool-name tool) names))
        catalog))))
 
-(defun e-mcp--activate-handler (arguments)
-  "Handle an mcp_activate call described by ARGUMENTS."
-  (let* ((context (e-tools-current-context))
-         (call (plist-get context :tool-call))
+(defun e-mcp--activate-result (arguments server catalog invoke-result context)
+  "Return the model-facing mcp_activate result for ARGUMENTS and CATALOG."
+  (let* ((call (plist-get context :tool-call))
          (harness (plist-get context :harness))
          (session-id (plist-get context :session-id))
-         (server-id (plist-get arguments :server))
+         (server-id (e-mcp-server-id server))
          (requested (plist-get arguments :tools))
+         (selected (e-mcp--select-tools catalog requested))
+         (schema-text (string-join
+                       (mapcar #'e-mcp--tool-schema-text selected)
+                       "\n\n"))
+         (sections (list schema-text)))
+    (when (and harness session-id)
+      (e-mcp--activate harness session-id server-id
+                       (mapcar #'e-mcp-tool-name selected))
+      (push "Activated for this session; the tools above are now callable."
+            sections))
+    (when invoke-result
+      (push (format "Invoke %s result:\n%s"
+                    (plist-get (plist-get arguments :invoke) :tool)
+                    (e-tools-result-content-text
+                     (e-mcp--result-content invoke-result)))
+            sections))
+    (let ((content (string-join (nreverse sections) "\n\n")))
+      (if call
+          (e-tools-result-create call 'ok content (list :kind 'mcp-activate))
+        content))))
+
+(defun e-mcp--activate-handler (arguments)
+  "Handle an mcp_activate call described by ARGUMENTS."
+  (let* ((server-id (plist-get arguments :server))
          (invoke (plist-get arguments :invoke))
          (server+catalog (and server-id (e-mcp--catalog-for-server server-id))))
     (unless server+catalog
@@ -1612,30 +1736,70 @@ Cards are emitted only when CAPABILITY-ID resolves to progressive mode."
               (list (format "Unknown MCP server: %s" server-id))))
     (let* ((server (car server+catalog))
            (catalog (cdr server+catalog))
-           (selected (e-mcp--select-tools catalog requested))
-           (schema-text (string-join
-                         (mapcar #'e-mcp--tool-schema-text selected)
-                         "\n\n"))
-           (sections (list schema-text)))
-      (when (and harness session-id)
-        (e-mcp--activate harness session-id server-id
-                         (mapcar #'e-mcp-tool-name selected))
-        (push "Activated for this session; the tools above are now callable."
-              sections))
-      (when invoke
-        (let* ((tool-name (plist-get invoke :tool))
-               (invoke-args (plist-get invoke :arguments))
-               (result (e-mcp-call-tool (list server) server-id
-                                        tool-name invoke-args)))
-          (push (format "Invoke %s result:\n%s"
-                        tool-name
-                        (e-tools-result-content-text
-                         (e-mcp--result-content result)))
-                sections)))
-      (let ((content (string-join (nreverse sections) "\n\n")))
-        (if call
-            (e-tools-result-create call 'ok content (list :kind 'mcp-activate))
-          content)))))
+           (invoke-result
+            (when invoke
+              (e-mcp-call-tool (list server) server-id
+                               (plist-get invoke :tool)
+                               (plist-get invoke :arguments)))))
+      (e-mcp--activate-result
+       arguments server catalog invoke-result (e-tools-current-context)))))
+
+(defun e-mcp--activate-start ()
+  "Return an async start function for mcp_activate."
+  (cl-function
+   (lambda (&key arguments on-done on-error on-event &allow-other-keys)
+     (let* ((server-id (plist-get arguments :server))
+            (invoke (plist-get arguments :invoke))
+            (context (e-tools-current-context))
+            (server (and server-id (e-mcp--known-server server-id)))
+            child-request
+            cancelled)
+       (unless server
+         (signal 'e-mcp-protocol-error
+                 (list (format "Unknown MCP server: %s" server-id))))
+       (cl-labels
+           ((finish (catalog &optional invoke-result)
+              (unless cancelled
+                (when on-done
+                  (funcall on-done
+                           (e-mcp--activate-result
+                            arguments server catalog invoke-result context)))))
+            (fail (condition)
+              (unless cancelled
+                (when on-error
+                  (funcall on-error condition))))
+            (start-invoke (catalog)
+              (if invoke
+                  (setq child-request
+                        (e-mcp-call-tool-start
+                         (list server) server-id
+                         (plist-get invoke :tool)
+                         (plist-get invoke :arguments)
+                         :on-done (lambda (mcp-result)
+                                    (finish catalog mcp-result))
+                         :on-error #'fail
+                         :on-event on-event))
+                (finish catalog))))
+         (if-let ((server+catalog (e-mcp--catalog-for-server-cached server-id)))
+             (run-at-time 0 nil
+                          (lambda ()
+                            (start-invoke (cdr server+catalog))))
+           (setq child-request
+                 (e-mcp-list-tools-start
+                  (list server)
+                  :on-done #'start-invoke
+                  :on-error #'fail
+                  :on-event on-event)))
+         (e-tools-request-create
+          :cancel (lambda ()
+                    (setq cancelled t)
+                    (when child-request
+                      (e-tools-cancel-request child-request))
+                    t)
+          :metadata (list :transport 'aggregate
+                          :kind 'mcp-activate
+                          :server-id server-id
+                          :cancellable 'cancel-child)))))))
 
 (defun e-mcp--register-meta-tool (registry)
   "Register the always-present mcp_activate meta-tool in REGISTRY."
@@ -1646,6 +1810,8 @@ Cards are emitted only when CAPABILITY-ID resolves to progressive mode."
    "Load full schemas for MCP tools and make them callable for the rest of the session. Pass `server' and optionally `tools' (omit for all). The result returns the full schemas; the named tools become callable on the next turn. Optionally pass `invoke' {tool, arguments} to also call one tool immediately."
    :parameters e-mcp--activate-tool-parameters
    :handler #'e-mcp--activate-handler
+   :start (e-mcp--activate-start)
+   :blocking-class 'process
    :metadata '(:kind mcp-activate)))
 
 (defun e-mcp--tools-provider (servers capability-id all-options)
@@ -1659,11 +1825,15 @@ mcp_activate meta-tool plus only the tools the session has activated."
          (progn
            (e-mcp--register-meta-tool registry)
            (let ((active (e-mcp--active-set harness session-id)))
-             (dolist (tool (e-mcp--tools-safe servers))
+             (dolist (tool (if (or harness session-id)
+                               (e-mcp--tools-cached-safe servers t)
+                             (e-mcp--tools-safe servers)))
                (when (e-mcp--tool-activated-p
                       active (e-mcp-tool-server-id tool) (e-mcp-tool-name tool))
                  (e-mcp--register-tool registry servers tool)))))
-       (dolist (tool (e-mcp--tools-safe servers))
+       (dolist (tool (if (or harness session-id)
+                         (e-mcp--tools-cached-safe servers t)
+                       (e-mcp--tools-safe servers)))
          (e-mcp--register-tool registry servers tool))))))
 
 (cl-defun e-capability-with-mcp-create
