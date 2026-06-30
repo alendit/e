@@ -408,6 +408,68 @@ printf '%s\\n' notes/delayed.txt
                     nil)
                    "abcdefghijklmnopqrstuvwxyz"))))
 
+(ert-deftest e-session-tmp-test-cleanup-raw-result-reference-deletes-file ()
+  "Reference cleanup deletes one raw result without deleting the session root."
+  (should (require 'e-session-tmp-resources nil t))
+  (let* ((harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :intrinsic-capabilities
+                   (list (e-session-tmp-capability-create))))
+         (reference
+          (e-session-tmp-write-raw-result
+           harness
+           "session-1"
+           "raw-results/out.txt"
+           "abcdefghijklmnopqrstuvwxyz"
+           :owner '(:kind cache-entry :key "entry-1")))
+         (root (e-session-tmp-directory harness "session-1"))
+         (path (expand-file-name "raw-results/out.txt" root))
+         (parent (file-name-directory path)))
+    (unwind-protect
+        (progn
+          (should (file-exists-p path))
+          (should (equal (e-session-tmp-cleanup-reference
+                          harness "session-1" reference)
+                         path))
+          (should-not (file-exists-p path))
+          (should-not (file-directory-p parent))
+          (should (file-directory-p root))
+          (should-not (e-session-tmp-cleanup-reference
+                       harness "session-1" reference)))
+      (e-session-tmp-cleanup-harness harness))))
+
+(ert-deftest e-session-tmp-test-cleanup-raw-result-references-for-cache ()
+  "Reference-list cleanup deletes only session-tmp backed raw results."
+  (should (require 'e-session-tmp-resources nil t))
+  (let* ((harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :intrinsic-capabilities
+                   (list (e-session-tmp-capability-create))))
+         (first (e-session-tmp-write-raw-result
+                 harness "session-1" "raw-results/one.txt" "one"
+                 :owner '(:kind cache-entry :key "one")))
+         (second (e-session-tmp-write-raw-result
+                  harness "session-1" "raw-results/two.txt" "two"
+                  :owner '(:kind cache-entry :key "two")))
+         (root (e-session-tmp-directory harness "session-1"))
+         (first-path (expand-file-name "raw-results/one.txt" root))
+         (second-path (expand-file-name "raw-results/two.txt" root)))
+    (unwind-protect
+        (let ((deleted
+               (e-session-tmp-cleanup-references
+                harness
+                "session-1"
+                (list first
+                      '(:uri "file://not-session-tmp" :storage file)
+                      second))))
+          (should (equal (sort (mapcar #'file-name-nondirectory deleted)
+                               #'string<)
+                         '("one.txt" "two.txt")))
+          (should-not (file-exists-p first-path))
+          (should-not (file-exists-p second-path))
+          (should (file-directory-p root)))
+      (e-session-tmp-cleanup-harness harness))))
+
 (provide 'e-session-tmp-resources-test)
 
 ;;; e-session-tmp-resources-test.el ends here

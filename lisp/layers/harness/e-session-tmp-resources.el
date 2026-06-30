@@ -161,7 +161,12 @@ defaults to the current time.  Return a list of deleted root directories."
 (defun e-session-tmp--path (harness session-id relative-name)
   "Return absolute path for RELATIVE-NAME under HARNESS SESSION-ID."
   (let* ((root (e-session-tmp-directory harness session-id))
-         (safe-name (e-session-tmp--safe-relative-name relative-name))
+         (path (e-session-tmp--path-in-root root relative-name)))
+    path))
+
+(defun e-session-tmp--path-in-root (root relative-name)
+  "Return absolute path for RELATIVE-NAME inside existing ROOT."
+  (let* ((safe-name (e-session-tmp--safe-relative-name relative-name))
          (path (expand-file-name safe-name root)))
     (unless (file-in-directory-p path root)
       (signal 'e-session-tmp-resources-invalid-path
@@ -177,6 +182,37 @@ defaults to the current time.  Return a list of deleted root directories."
   (if (string-prefix-p "./" path)
       (substring path 2)
     path))
+
+(defun e-session-tmp--relative-name-from-uri (uri)
+  "Return the relative tmp resource name from URI."
+  (unless (and (stringp uri) (string-prefix-p "tmp://" uri))
+    (signal 'e-session-tmp-resources-invalid-path
+            (list (format "Invalid tmp URI: %S" uri))))
+  (substring uri (length "tmp://")))
+
+(defun e-session-tmp--reference-uri (reference)
+  "Return the tmp URI from raw-result REFERENCE."
+  (cond
+   ((stringp reference) reference)
+   ((and (listp reference)
+         (eq (plist-get reference :storage) 'session-tmp))
+    (plist-get reference :uri))
+   ((listp reference) nil)
+   (t nil)))
+
+(defun e-session-tmp--delete-empty-parents (root path)
+  "Delete empty parent directories from PATH up to ROOT."
+  (let ((root (file-name-as-directory (expand-file-name root)))
+        (directory (file-name-directory (expand-file-name path))))
+    (while (and directory
+                (not (equal (file-name-as-directory directory) root))
+                (file-in-directory-p directory root)
+                (file-directory-p directory)
+                (null (directory-files directory nil
+                                       directory-files-no-dot-files-regexp)))
+      (delete-directory directory)
+      (setq directory (file-name-directory
+                       (directory-file-name directory))))))
 
 (defun e-session-tmp--discovery-limit (limit)
   "Return normalized discovery LIMIT."
@@ -651,6 +687,33 @@ previewed with `e-tools-result-content-preview'."
     (if metadata
         (append reference (list :metadata metadata))
       reference)))
+
+(defun e-session-tmp-cleanup-reference (harness session-id reference)
+  "Delete one session tmp REFERENCE for HARNESS SESSION-ID.
+REFERENCE may be a raw-result reference plist or a =tmp://= URI string.  Return
+the deleted file path, or nil when the reference is not session-tmp backed, its
+session root is already gone, or the referenced file is already absent."
+  (e-session-tmp--require-session harness session-id)
+  (when-let* ((uri (e-session-tmp--reference-uri reference))
+              (table (gethash harness e-session-tmp--roots))
+              (root (gethash session-id table)))
+    (let* ((relative-name (e-session-tmp--relative-name-from-uri uri))
+           (path (e-session-tmp--path-in-root root relative-name)))
+      (when (file-exists-p path)
+        (delete-file path)
+        (e-session-tmp--delete-empty-parents root path)
+        (e-session-tmp--touch-root root)
+        path))))
+
+(defun e-session-tmp-cleanup-references (harness session-id references)
+  "Delete session tmp REFERENCES for HARNESS SESSION-ID.
+Return the list of deleted file paths.  This helper is intended for cache
+invalidation paths that own multiple raw-result references."
+  (delq nil
+        (mapcar (lambda (reference)
+                  (e-session-tmp-cleanup-reference
+                   harness session-id reference))
+                references)))
 
 (defun e-session-tmp-file-path (harness session-id relative-name)
   "Return an absolute file path for RELATIVE-NAME in HARNESS SESSION-ID.

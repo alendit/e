@@ -2402,3 +2402,46 @@ emacsclient --eval "(let* ((backend ...) (harness ...) result) ...)"
 #+end_src
 
 Result: returned =(:error e-request-blocking-call-in-hot-path :data (e-harness-prompt live-sync-prompt) :messages 0 :active nil)=, confirming the live hot-path guard rejects the sync prompt before appending a message or starting a turn.
+
+* Phase 3 Raw Result Reference Cleanup Slice Review
+
+Status: complete.
+
+** Scope reviewed
+
+- Added reference-level cleanup for session-tmp backed raw-result references and =tmp://= URIs.
+- Added reference-list cleanup for cache invalidation paths that own multiple raw-result references.
+- Kept root-wide explicit, harness-reset, and max-age cleanup behavior unchanged.
+- Ensured reference cleanup deletes only the target file, removes empty parent directories under the session root, and leaves the session tmp root available for later resources.
+
+** Verification
+
+#+begin_src sh
+rtk eldev emacs --batch --eval "(progn (setq byte-compile-error-on-warn t) (dolist (file '(\"lisp/layers/harness/e-session-tmp-resources.el\" \"test/e-session-tmp-resources-test.el\")) (byte-compile-file file)))"
+#+end_src
+
+Result: passed for the touched session tmp resource module and tests.
+
+#+begin_src sh
+rtk eldev test -f test/e-session-tmp-resources-test.el -B e-session-tmp-test-raw-result-reference-is-bounded e-session-tmp-test-cleanup-raw-result-reference-deletes-file e-session-tmp-test-cleanup-raw-result-references-for-cache
+#+end_src
+
+Result: passed the focused raw-result reference and cache-invalidation cleanup tests.
+
+#+begin_src sh
+rtk eldev test -f test/e-session-tmp-resources-test.el
+#+end_src
+
+Result: passed all 17 session tmp resource tests.
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Result: returned ="/Users/dimitrivorona/projects/elisp/e/"=, so the running Emacs loaded the raw-result cleanup change.
+
+#+begin_src sh
+emacsclient --eval "(let* ((harness ...) (reference ...) ...) ...)"
+#+end_src
+
+Result: returned =(:before t :deleted t :after nil :root-live t :uri \"tmp://raw-results/out.txt\" :preview \"abcde\")=, confirming live reference cleanup deletes the raw file while keeping the session tmp root alive.
