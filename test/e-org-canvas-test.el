@@ -1737,9 +1737,9 @@ relied on `e-chat--running-status-rendered-hook' to follow the bottom."
            :scope 'thread
            :target-folder directory
            :needs-file-name t)
-          (should (plist-get
-                   (e-harness-turn-options harness "session-1")
-                   :tools))
+          (should-not (plist-get
+                       (e-harness-turn-options harness "session-1")
+                       :tools))
           (e-org-canvas--maybe-save-new-buffer
            harness
            "session-1"
@@ -1902,61 +1902,60 @@ relied on `e-chat--running-status-rendered-hook' to follow the bottom."
       (e-harness-create-session harness :id "org")
       (e-org-canvas--mark-session
        harness "org" (current-buffer) :scope 'thread :target-folder nil)
-      (let ((tools (e-harness-tools harness "org" nil)))
-        (e-tools-execute tools '(:name "org_canvas_overview" :arguments nil))
-        (should (eq (get-char-property (line-end-position) 'invisible)
-                    'outline))
-        (e-tools-execute tools '(:name "org_canvas_show_all" :arguments nil))
-        (should-not (get-char-property (line-end-position) 'invisible))
-        (let ((state (e-tools-execute
-                      tools
-                      '(:name "org_canvas_visibility_state"
-                        :arguments nil))))
-          (should (string-match-p "Parent"
-                                  (e-tools-result-content-text state))))))))
+      (e-actions-call 'org-canvas :overview nil
+                      (list :harness harness :session-id "org"))
+      (should (eq (get-char-property (line-end-position) 'invisible)
+                  'outline))
+      (e-actions-call 'org-canvas :show-all nil
+                      (list :harness harness :session-id "org"))
+      (should-not (get-char-property (line-end-position) 'invisible))
+      (let ((state (e-actions-call 'org-canvas :visibility-state nil
+                                   (list :harness harness :session-id "org"))))
+        (should (string-match-p "Parent" state))))))
 
 (ert-deftest e-org-canvas-test-visibility_tools_accept_heading_path_targets ()
-  "Org visibility tools can target headings by path as well as point."
+  "Org visibility actions can target headings by path as well as point."
   (let ((harness (e-org-canvas-test--harness t)))
     (with-temp-buffer
       (rename-buffer "org-canvas-heading-path-tools" t)
       (org-mode)
-      (insert "* Parent\n** Child\nBody\n* Other\n")
+      (insert "* Parent
+** Child
+Body
+* Other
+")
       (goto-char (point-min))
       (e-harness-create-session harness :id "org")
       (e-org-canvas--mark-session
        harness "org" (current-buffer) :scope 'thread :target-folder nil)
-      (let ((tools (e-harness-tools harness "org" nil)))
-        (e-tools-execute
-         tools
-         '(:name "org_canvas_cycle_heading"
-           :arguments (:heading_path ("Parent" "Child")
-                       :operation "hide")))
-        (goto-char (point-min))
-        (re-search-forward "^\\*\\* Child")
-        (should (eq (get-char-property (line-end-position) 'invisible)
-                    'outline))
-        (let ((result
-               (e-tools-execute
-                tools
-                '(:name "org_canvas_show_context"
-                  :arguments (:heading_path ("Parent" "Child"))))))
-          (should (string-match-p
-                   "Revealed Org Canvas context"
-                   (e-tools-result-content-text result)))
-          (should-not (get-char-property (line-end-position) 'invisible)))))))
+      (e-actions-call
+       'org-canvas
+       :cycle-heading
+       '(:heading_path ["Parent" "Child"] :operation "hide")
+       (list :harness harness :session-id "org"))
+      (goto-char (point-min))
+      (re-search-forward "^\*\* Child")
+      (should (eq (get-char-property (line-end-position) 'invisible)
+                  'outline))
+      (let ((result
+             (e-actions-call
+              'org-canvas
+              :show-context
+              '(:heading_path ["Parent" "Child"])
+              (list :harness harness :session-id "org"))))
+        (should (string-match-p
+                 "Revealed Org Canvas context"
+                 result))
+        (should-not (get-char-property (line-end-position) 'invisible))))))
 
 (ert-deftest e-org-canvas-test-visibility_tools_fail_outside_org_canvas ()
   "Org visibility tools report explicit errors for ordinary chat sessions."
   (let ((harness (e-org-canvas-test--harness t)))
     (e-harness-create-session harness :id "plain")
-    (let* ((tools (e-harness-tools harness "plain" nil))
-           (result (e-tools-execute
-                    tools
-                    '(:name "org_canvas_show_all" :arguments nil))))
-      (should (eq (plist-get result :status) 'error))
-      (should (string-match-p "Not an Org Canvas session"
-                              (e-tools-result-content-text result))))))
+    (should-error
+     (e-actions-call 'org-canvas :show-all nil
+                     (list :harness harness :session-id "plain"))
+     :type 'user-error)))
 
 (ert-deftest e-org-canvas-test-shell_and_default_layer_registration ()
   "Org Canvas is discoverable as a shell and default gated layer."

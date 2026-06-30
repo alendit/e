@@ -250,7 +250,7 @@
                "When editing Org prose, preserve sentence-per-line style: put each sentence on its own physical line and do not hard-wrap sentences to an artificial fill column; let Emacs visual-line/display wrapping handle width."
                "Use lists and nested sublists for prose itemization. Use tables for short-cell data that benefits from column scanning, not for sentences or paragraphs; when table cells may grow, consider Org table width cookies such as | <20> | to keep columns readable."
                "Write durable output to document-uri below (the canonical canvas resource); it matches the <canvas> attachment uri. Do not write to the *e-org-canvas:...* / *e-org-canvas-input:...* helper buffers -- they are editor chrome, not the document, and editing them has no effect on the canvas."
-               "Preserve the reader's fold state by default: the user may be mid-read, and collapsing or reflowing the buffer out from under them loses their place. Do not collapse the whole document (org_canvas_overview) or otherwise churn visibility as a routine post-edit step. Only change fold state when the user explicitly asks, or when you are deliberately presenting a fresh overview; when you must reveal something, reveal just the relevant subtree (org_canvas_show_context / org_canvas_cycle_heading) and leave the rest as the user left it. Editing or reverting can churn fold state as a side effect -- when it does, restore the user's prior visibility (re-reveal the section you changed) rather than collapsing everything."
+               "Preserve the reader's fold state by default: the user may be mid-read, and collapsing or reflowing the buffer out from under them loses their place. Do not collapse the whole document or otherwise churn visibility as a routine post-edit step. Only change fold state when the user explicitly asks, or when you are deliberately presenting a fresh overview; when you must reveal something, reveal just the relevant subtree with org-canvas actions and leave the rest as the user left it. Editing or reverting can churn fold state as a side effect -- when it does, restore the user's prior visibility (re-reveal the section you changed) rather than collapsing everything."
                instructions
                (format "document-uri=%s buffer=%s point=%s"
                        (plist-get metadata :uri)
@@ -426,6 +426,57 @@ CONTEXT carries :harness and :session-id from the active turn."
      harness session-id
      #'e-org-canvas--overview-tool)))
 
+(defun e-org-canvas--action (description handler &optional parameters)
+  "Return an Org Canvas action descriptor for HANDLER."
+  (e-action-create
+   :handler (lambda (arguments) (funcall handler nil arguments))
+   :caller (lambda (context arguments)
+             (funcall handler
+                      (e-org-canvas--require-tool-session
+                       (plist-get context :harness)
+                       (plist-get context :session-id))
+                      arguments))
+   :description description
+   :parameters (or parameters '(:type "object" :properties nil))
+   :requires-session t))
+
+(defun e-org-canvas--actions ()
+  "Return Org Canvas action plist."
+  (let ((empty-object '(:type "object" :properties ())))
+    (list
+     :visibility-state
+     (e-org-canvas--action
+      "Return outline and visibility data for the current Org Canvas buffer."
+      #'e-org-canvas--visibility-state-tool
+      empty-object)
+     :show-context
+     (e-org-canvas--action
+      "Reveal ancestors and current subtree around an optional point or heading path."
+      #'e-org-canvas--show-context-tool
+      '(:type "object"
+        :properties (:point (:type "number")
+                     :heading_path (:type "array"
+                                    :items (:type "string")))))
+     :cycle-heading
+     (e-org-canvas--action
+      "Cycle, show, hide, or reveal one Org heading or subtree by point or heading path."
+      #'e-org-canvas--cycle-heading-tool
+      '(:type "object"
+        :properties (:point (:type "number")
+                     :heading_path (:type "array"
+                                    :items (:type "string"))
+                     :operation (:type "string"))))
+     :show-all
+     (e-org-canvas--action
+      "Show all headings in the current Org Canvas buffer."
+      #'e-org-canvas--show-all-tool
+      empty-object)
+     :overview
+     (e-org-canvas--action
+      "Collapse the current Org Canvas buffer to an overview."
+      #'e-org-canvas--overview-tool
+      empty-object))))
+
 (defun e-org-canvas-capability-create ()
   "Create the Org Canvas gated capability."
   (e-capability-create
@@ -437,7 +488,7 @@ CONTEXT carries :harness and :session-id from the active turn."
           :priority 118
           :cache-placement 'dynamic-context
           :build #'e-org-canvas-context-provider))
-   :tools (list #'e-org-canvas-register-tools)))
+   :actions (e-org-canvas--actions)))
 
 (defun e-org-canvas-layer-create ()
   "Create the Org Canvas layer."
