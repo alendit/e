@@ -25,6 +25,7 @@
 (require 'e-harness-instances)
 (require 'e-harness-registry)
 (require 'e-prompts)
+(require 'e-request)
 (require 'e-store)
 (require 'e-tools)
 (require 'e-picker)
@@ -658,6 +659,12 @@ intentionally not persisted in session metadata.")
 (defvar-local e-chat--project-file-candidate-generation 0
   "Generation token for composer file candidate refresh callbacks.")
 
+(defvar-local e-chat--session-load-request nil
+  "Active async transcript load request for this chat buffer.")
+
+(defvar-local e-chat--session-load-generation 0
+  "Generation token for async transcript load callbacks.")
+
 (defvar-local e-chat--composer-restore-inhibited nil
   "Non-nil when transient chat rendering should not recreate a composer.")
 
@@ -1038,6 +1045,7 @@ and / expands available prompts."
   (add-hook 'kill-buffer-hook #'e-chat--cancel-pending-command-references nil t)
   (add-hook 'kill-buffer-hook
             #'e-chat--cancel-project-file-candidate-refresh nil t)
+  (add-hook 'kill-buffer-hook #'e-chat--cancel-session-load-request nil t)
   (add-hook 'kill-buffer-hook
             #'e-chat--workspace-unread-cache-remove-buffer nil t)
   (add-hook 'evil-local-mode-hook #'e-chat--enforce-modal-editing-policy nil t)
@@ -1216,6 +1224,81 @@ PROMPT forces completion even when only one/default instance exists."
       (e-chat-session-context harness session-id)
     (e-session-missing
      (e-chat--create-session harness session-id instance-id))))
+
+(defun e-chat--unloaded-index-session (harness session-id)
+  "Return unloaded persistent SESSION-ID metadata from HARNESS, or nil."
+  (when (and (e-harness-p harness) session-id)
+    (let* ((store (e-harness-sessions harness))
+           (session (ignore-errors
+                      (e-session--peek-session store session-id))))
+      (when (and session
+                 (e-session--persistent-p store)
+                 (not (plist-get session :loaded)))
+        session))))
+
+(defun e-chat--cancel-session-load-request ()
+  "Cancel the active transcript load request for this chat buffer."
+  (when e-chat--session-load-request
+    (e-request-cancel e-chat--session-load-request
+                      (list :reason 'chat-buffer-cancelled))
+    (setq e-chat--session-load-request nil)))
+
+(defun e-chat--render-session-loading (session)
+  "Render cheap loading state for unloaded indexed SESSION."
+  (when-let ((summary (plist-get session :summary)))
+    (unless (string-empty-p summary)
+      (e-chat--insert-entry "You" summary nil)))
+  (e-chat--insert-protected
+   (format "%s Loading transcript...\n\n" e-chat--system-glyph)
+   'e-chat-activity-face))
+
+(defun e-chat--session-load-current-p
+    (request generation harness session-id instance-id)
+  "Return non-nil when REQUEST still owns this buffer load GENERATION."
+  (and (eq request e-chat--session-load-request)
+       (= generation e-chat--session-load-generation)
+       (eq harness e-chat-harness)
+       (equal session-id e-chat-session-id)
+       (eq instance-id e-chat-harness-instance-id)))
+
+(defun e-chat--start-session-load
+    (buffer harness session-id instance-id generation)
+  "Start async transcript load for BUFFER/HARNESS SESSION-ID."
+  (let* ((store (e-harness-sessions harness))
+         request
+         (on-done
+          (lambda (_session)
+            (when (buffer-live-p buffer)
+              (with-current-buffer buffer
+                (when (e-chat--session-load-current-p
+                       request generation harness session-id instance-id)
+                  (setq e-chat--session-load-request nil)
+                  (e-chat--attach-buffer
+                   buffer harness session-id instance-id))))))
+         (on-error
+          (lambda (err)
+            (when (buffer-live-p buffer)
+              (with-current-buffer buffer
+                (when (e-chat--session-load-current-p
+                       request generation harness session-id instance-id)
+                  (setq e-chat--session-load-request nil)
+                  (e-chat--set-status "session load failed" nil)
+                  (let ((inhibit-read-only t))
+                    (save-excursion
+                      (goto-char (or e-chat--composer-start-marker
+                                     (point-max)))
+                      (e-chat--insert-protected
+                       (format "%s Failed to load transcript: %S\n\n"
+                               e-chat--system-glyph
+                               err)
+                       'e-chat-error-face)))))))))
+    (setq request
+          (e-session-load-session-start
+           store
+           session-id
+           :on-done on-done
+           :on-error on-error))
+    request))
 
 (defun e-chat--git-root (directory)
   "Return Git worktree root containing DIRECTORY, or nil."
@@ -6562,7 +6645,9 @@ HARNESS are internal test seams."
 
 (defun e-chat--attach-buffer (buffer harness session-id &optional instance-id)
   "Attach BUFFER to HARNESS and SESSION-ID."
-  (e-chat--ensure-session harness session-id instance-id)
+  (let ((unloaded-session (e-chat--unloaded-index-session harness session-id)))
+    (unless unloaded-session
+      (e-chat--ensure-session harness session-id instance-id))
   (with-current-buffer buffer
     (let ((composer-state
            (and (eq e-chat-harness harness)
@@ -6570,8 +6655,10 @@ HARNESS are internal test seams."
                 (eq e-chat-harness-instance-id instance-id)
                 (e-chat--capture-composer-state)))
           (existing-workspace (e-buffer-workspace buffer)))
-      (e-chat-session-ensure-project-root
-       harness session-id (e-chat--project-root default-directory))
+      (e-chat--cancel-session-load-request)
+      (unless unloaded-session
+        (e-chat-session-ensure-project-root
+         harness session-id (e-chat--project-root default-directory)))
       (e-chat--unsubscribe)
       (e-chat-mode)
       (e-chat--disable-modal-editing)
@@ -6590,14 +6677,31 @@ HARNESS are internal test seams."
              (e-workspace-current))))
       (e-chat--workspace-unread-cache-update-buffer buffer)
       (e-chat--rename-buffer-for-session)
-      (e-chat--clear)
-      (e-chat--render-session)
-      (e-chat--mark-buffer-session-read-if-selected buffer)
+      (if unloaded-session
+          (progn
+            (let ((inhibit-read-only t))
+              (e-chat--clear t)
+              (e-chat--render-session-loading unloaded-session)
+              (e-chat--insert-composer))
+            (setq e-chat--session-load-generation
+                  (1+ e-chat--session-load-generation))
+            (setq e-chat--session-load-request
+                  (e-chat--start-session-load
+                   buffer
+                   harness
+                   session-id
+                   instance-id
+                   e-chat--session-load-generation)))
+        (e-chat--clear)
+        (e-chat--render-session)
+        (e-chat--mark-buffer-session-read-if-selected buffer))
       (when composer-state
         (e-chat--restore-composer-state composer-state))
-      (e-chat--set-status "idle" t)
+      (e-chat--set-status
+       (if unloaded-session "loading session" "idle")
+       (not unloaded-session))
       (e-chat--subscribe harness buffer session-id)))
-  buffer)
+    buffer))
 
 (defun e-chat-reload-buffers ()
   "Refresh live e chat buffers after development reload."

@@ -8042,6 +8042,90 @@ The context-window denominator comes from the live provider lookup
                   (should-not (string-match-p "last response" text)))))))
       (delete-directory directory t))))
 
+(ert-deftest e-chat-test-open-session-starts-index-load-asynchronously ()
+  "Opening an unloaded indexed session starts replay without sync load."
+  (let* ((directory (make-temp-file "e-chat-open-index-" t))
+         (store (e-session-persistent-store-create directory))
+         buffer
+         started)
+    (unwind-protect
+        (progn
+          (e-session-create store :id "async-open"
+                            :metadata '(:name "Async open"))
+          (e-session-append-message
+           store "async-open"
+           '(:id "msg-1" :role user :content "open prompt"))
+          (e-session-append-message
+           store "async-open"
+           '(:id "msg-2" :role assistant :content "open response"))
+          (let* ((indexed-store
+                  (e-session-persistent-index-store-create directory))
+                 (harness (e-harness-create
+                           :backend (e-backend-fake-create :items nil)
+                           :sessions indexed-store)))
+            (cl-letf (((symbol-function 'e-session-load-session)
+                       (lambda (&rest _args)
+                         (error "opened through sync transcript load")))
+                      ((symbol-function 'e-session-load-session-start)
+                       (lambda (_store session-id &rest _args)
+                         (setq started session-id)
+                         (e-request-lifecycle-create
+                          :owner 'e-chat-test
+                          :session-id session-id
+                          :state 'started))))
+              (setq buffer (e-chat-open-session harness "async-open"))
+              (with-current-buffer buffer
+                (let ((text (buffer-string)))
+                  (should (equal started "async-open"))
+                  (should e-chat--session-load-request)
+                  (should (string-match-p "open prompt" text))
+                  (should (string-match-p "Loading transcript" text))
+                  (should-not (string-match-p "open response" text)))))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (delete-directory directory t))))
+
+(ert-deftest e-chat-test-open-session-renders-after-async-index-load ()
+  "Opening an unloaded indexed session renders transcript after async replay."
+  (let* ((directory (make-temp-file "e-chat-open-index-" t))
+         (store (e-session-persistent-store-create directory))
+         (e-session-load-chunk-bytes 16)
+         buffer)
+    (unwind-protect
+        (progn
+          (e-session-create store :id "async-render"
+                            :metadata '(:name "Async render"))
+          (e-session-append-message
+           store "async-render"
+           '(:id "msg-1" :role user :content "render prompt"))
+          (e-session-append-message
+           store "async-render"
+           '(:id "msg-2" :role assistant :content "render response"))
+          (let* ((indexed-store
+                  (e-session-persistent-index-store-create directory))
+                 (harness (e-harness-create
+                           :backend (e-backend-fake-create :items nil)
+                           :sessions indexed-store)))
+            (setq buffer (e-chat-open-session harness "async-render"))
+            (with-current-buffer buffer
+              (should e-chat--session-load-request)
+              (should (string-match-p "Loading transcript" (buffer-string))))
+            (let ((deadline (+ (float-time) 2.0)))
+              (while (and (buffer-live-p buffer)
+                          (with-current-buffer buffer
+                            e-chat--session-load-request)
+                          (< (float-time) deadline))
+                (accept-process-output nil 0.01)))
+            (with-current-buffer buffer
+              (let ((text (buffer-string)))
+                (should-not e-chat--session-load-request)
+                (should (string-match-p "render prompt" text))
+                (should (string-match-p "render response" text))
+                (should-not (string-match-p "Loading transcript" text))))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (delete-directory directory t))))
+
 (ert-deftest e-chat-test-active-session-preview-marks-session-read ()
   "Showing a session in the active-session preview records its latest response."
   (let* ((store (e-session-store-create))

@@ -508,8 +508,8 @@ Work:
 1. Define critical vs derived session events.
 2. Flush or acknowledge critical events before dependent state is considered durable.
 3. Queue and batch non-critical derived writes with session generation and monotonic sequence numbers. Initial queued JSONL/index persistence is implemented for the default live chat store; queued writes now carry generation, sequence, criticality, and dependency metadata, and flush drops stale-generation record/index writes.
-4. Add chunked session replay/loading for large JSONL transcripts. Initial =e-session-load-session-start= API is implemented; chat resume/render integration remains.
-5. Add lazy transcript rendering that can show latest turns first.
+4. Add chunked session replay/loading for large JSONL transcripts. Initial =e-session-load-session-start= API is implemented, and chat open/resume now attaches unloaded indexed sessions through that async loader instead of forcing synchronous replay.
+5. Add lazy transcript rendering that can show latest turns first. Chat open now renders an index-summary loading shell before async replay finishes; progressive tail-first rendering still remains.
 6. Cache overview/read state and avoid repeated full JSON reads. Active-session picker previews now avoid loading unloaded indexed transcripts and render metadata-only previews instead.
 7. Add recovery behavior for interrupted queued writes and stale generations.
 
