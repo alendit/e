@@ -328,6 +328,50 @@ emacsclient --eval "...bounded compact_session registry probe..."
 
 Result: returned =(:has-start t :blocking-class network)=.
 
+* Phase 3 Session Tmp Result Cleanup Slice Review
+
+Status: in progress.
+
+** Scope reviewed
+
+- Added =e-session-tmp-cleanup-session= to delete a single session's tmp root and forget its owner mapping.
+- Added =e-session-tmp-cleanup-harness= to delete all tmp roots owned by a harness.
+- Preserved the existing large-tool-output path that stores full output in session-owned =tmp://tool-results/...= resources while exposing bounded preview content to the model.
+- Added cleanup tests proving session cleanup deletes the old root and fresh writes get a new root, and harness cleanup deletes every owned session root.
+- This is not a generic raw-result store yet; it closes the owner-scoped cleanup gap for the existing session tmp result-reference path.
+
+** Verification
+
+#+begin_src sh
+rtk eldev test --file test/e-session-tmp-resources-test.el --file test/e-tool-output-truncation-test.el -B
+#+end_src
+
+Result: passed for tmp resource cleanup, tmp:// discovery, and tool-output truncation references.
+
+#+begin_src sh
+git diff --check
+#+end_src
+
+Result: passed.
+
+#+begin_src sh
+rtk eldev emacs --batch --eval "(progn (setq byte-compile-error-on-warn t) (dolist (file '(\"lisp/layers/harness/e-session-tmp-resources.el\" \"test/e-session-tmp-resources-test.el\")) (byte-compile-file file)))"
+#+end_src
+
+Result: passed for the touched tmp resource source and test files.
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Result: returned the repository path after reloading changed Lisp.
+
+#+begin_src sh
+emacsclient --eval "...bounded session tmp cleanup probe..."
+#+end_src
+
+Result: returned =(:uri "tmp://result.txt" :before t :cleaned t :after nil)=.
+
 * Phase 2 Nested Long-Tool Slice Review
 
 Status: in progress.

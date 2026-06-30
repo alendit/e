@@ -18,6 +18,7 @@
 (require 'e-request)
 (require 'e-resources)
 (require 'e-tools)
+(require 'e-session-tmp-resources)
 
 (defun e-session-tmp-test--fake-executable (directory name body)
   "Create executable NAME in DIRECTORY with shell BODY."
@@ -80,6 +81,42 @@ blocked on the interactive coding-system picker."
                    "tmp://notes/new.txt"))
     (should (equal (e-resources-read resources "tmp://notes/new.txt" nil)
                    "created"))))
+
+(ert-deftest e-session-tmp-test-cleanup-session-deletes-owned-root ()
+  "Session tmp cleanup deletes the session root and forgets the owner mapping."
+  (should (require 'e-session-tmp-resources nil t))
+  (let* ((harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :intrinsic-capabilities
+                   (list (e-session-tmp-capability-create))))
+         (first-uri (e-session-tmp-write harness "session-1" "out.txt" "one"))
+         (first-root (e-session-tmp-directory harness "session-1")))
+    (should (equal first-uri "tmp://out.txt"))
+    (should (file-exists-p (expand-file-name "out.txt" first-root)))
+    (should (equal (e-session-tmp-cleanup-session harness "session-1")
+                   first-root))
+    (should-not (file-exists-p first-root))
+    (let ((second-root (e-session-tmp-directory harness "session-1")))
+      (should-not (equal second-root first-root))
+      (should (file-directory-p second-root))
+      (e-session-tmp-cleanup-session harness "session-1"))))
+
+(ert-deftest e-session-tmp-test-cleanup-harness-deletes-all-session-roots ()
+  "Harness tmp cleanup deletes every session root owned by the harness."
+  (should (require 'e-session-tmp-resources nil t))
+  (let* ((harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :intrinsic-capabilities
+                   (list (e-session-tmp-capability-create)))))
+    (e-session-tmp-write harness "session-1" "one.txt" "one")
+    (e-session-tmp-write harness "session-2" "two.txt" "two")
+    (let ((root-1 (e-session-tmp-directory harness "session-1"))
+          (root-2 (e-session-tmp-directory harness "session-2")))
+      (should (file-directory-p root-1))
+      (should (file-directory-p root-2))
+      (should (eq (e-session-tmp-cleanup-harness harness) harness))
+      (should-not (file-exists-p root-1))
+      (should-not (file-exists-p root-2)))))
 
 (ert-deftest e-session-tmp-test-resource-edit-is-strict ()
   "tmp:// edits apply exact replacements to existing files only."

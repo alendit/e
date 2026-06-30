@@ -59,6 +59,29 @@
                    t))
                  table))))
 
+(defun e-session-tmp-cleanup-session (harness session-id)
+  "Delete tmp resources owned by HARNESS SESSION-ID."
+  (e-session-tmp--require-session harness session-id)
+  (let* ((table (gethash harness e-session-tmp--roots))
+         (root (and table (gethash session-id table))))
+    (when table
+      (remhash session-id table))
+    (when (and root (file-directory-p root))
+      (delete-directory root t))
+    root))
+
+(defun e-session-tmp-cleanup-harness (harness)
+  "Delete all tmp resources owned by HARNESS."
+  (let ((table (gethash harness e-session-tmp--roots)))
+    (when table
+      (maphash
+       (lambda (_session-id root)
+         (when (and root (file-directory-p root))
+           (delete-directory root t)))
+       table)
+      (remhash harness e-session-tmp--roots))
+    harness))
+
 (defun e-session-tmp--safe-relative-name (relative-name)
   "Return safe RELATIVE-NAME or signal."
   (unless (and (stringp relative-name)
