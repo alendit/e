@@ -53,6 +53,13 @@
                   (e-task-queue-list e-task-queue-shell--queue)))
     (tabulated-list-print t)))
 
+(defun e-task-queue-shell-refresh ()
+  "Rebuild the list buffer from its backing queue.
+The operator's manual refresh, the escape hatch when a change-hook wakeup is
+missed."
+  (interactive)
+  (e-task-queue-shell--refresh))
+
 (defun e-task-queue-shell--refresh-buffers (_queue)
   "Refresh every live task queue list buffer.
 Bound to `e-task-queue-change-functions' so the list tracks live status."
@@ -102,7 +109,7 @@ settles; this surfaces them in a help buffer for inspection."
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "c") #'e-task-queue-shell-cancel)
     (define-key map (kbd "RET") #'e-task-queue-shell-show-outputs)
-    (define-key map (kbd "g") #'e-task-queue-shell--refresh)
+    (define-key map (kbd "g") #'e-task-queue-shell-refresh)
     map)
   "Keymap for `e-task-queue-shell-mode'.")
 

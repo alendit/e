@@ -73,6 +73,20 @@
         (remove-hook 'e-task-queue-change-functions
                      #'e-task-queue-shell--refresh-buffers)))))
 
+(ert-deftest e-task-queue-shell-test-refresh-key-is-command ()
+  "The `g' refresh keybinding is bound to an interactive command."
+  (e-task-queue-shell-test--with-instances
+    (let ((buffer (e-task-queue-list-buffer
+                   :queue (e-task-queue-shell-test--queue))))
+      (unwind-protect
+          (with-current-buffer buffer
+            (let ((binding (key-binding (kbd "g"))))
+              (should (eq binding #'e-task-queue-shell-refresh))
+              (should (commandp binding))))
+        (kill-buffer buffer)
+        (remove-hook 'e-task-queue-change-functions
+                     #'e-task-queue-shell--refresh-buffers)))))
+
 (provide 'e-task-queue-shell-test)
 
 ;;; e-task-queue-shell-test.el ends here
