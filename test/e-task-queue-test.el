@@ -296,6 +296,25 @@ thunk) so the test settles tasks explicitly."
         (should (cl-find 'text (plist-get record :outputs)
                          :key (lambda (o) (plist-get o :kind))))))))
 
+(ert-deftest e-task-queue-test-synchronous-settle-clears-handle ()
+  "A runner that settles inside its own call leaves no stale handle."
+  (e-task-queue-test--with-instances
+    (e-task-queue-test--register-instance :chat-a t)
+    (let* ((queue (e-task-queue-create
+                   :runner (lambda (_task _harness on-settle)
+                             (funcall on-settle :status 'done)
+                             (list :session-id "s"
+                                   :cancel (lambda () (error "must not run"))))))
+           (task (e-task-queue-enqueue queue :prompt "go"))
+           (task-id (plist-get task :task-id))
+           (internal (gethash task-id (e-task-queue-records queue))))
+      (should (eq (plist-get internal :status) 'done))
+      ;; The settle nilled the handle; the runner-return path must not
+      ;; resurrect it on the now-terminal record.
+      (should (null (plist-get internal :handle)))
+      ;; The session id the handle carried is still recorded.
+      (should (equal (plist-get internal :session-id) "s")))))
+
 (provide 'e-task-queue-test)
 
 ;;; e-task-queue-test.el ends here

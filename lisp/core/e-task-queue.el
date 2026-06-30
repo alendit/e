@@ -221,10 +221,13 @@ is missing or unresolvable settles `failed' without stalling the dispatcher."
                           (apply #'e-task-queue--settle queue task-id
                                  (or (plist-get settle-args :status) 'done)
                                  settle-args)))))
-          (plist-put record :handle handle)
           (when-let ((session-id (and (listp handle)
                                       (plist-get handle :session-id))))
-            (plist-put record :session-id session-id)))))))
+            (plist-put record :session-id session-id))
+          ;; A synchronous runner may already have settled the task and
+          ;; cleared its handle; only a still-running task keeps a live handle.
+          (when (eq (plist-get record :status) 'running)
+            (plist-put record :handle handle)))))))
 
 (defun e-task-queue--dispatch (queue)
   "Start queued tasks in QUEUE up to the parallelism cap.
