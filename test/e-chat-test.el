@@ -7036,7 +7036,12 @@ The context-window denominator comes from the live provider lookup
     (unwind-protect
         (with-current-buffer buffer
           (setq-local e-chat--mode-line-context-estimate-cache
-                      (cons 123 (float-time)))
+                      (cons (list :tokens 123
+                                  :time (float-time)
+                                  :estimate-cache-keyed t
+                                  :estimate-cache-key
+                                  (e-chat--mode-line-context-estimate-key))
+                            nil))
           (cl-letf (((symbol-function 'e-chat--model-context-window)
                      (lambda (model) (and (equal model "gpt-5.5") 1000)))
                     ((symbol-function 'e-harness-context)

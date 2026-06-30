@@ -922,6 +922,24 @@ rtk eldev emacs --batch --eval "(progn (setq byte-compile-error-on-warn t) (doli
 
 Result: passed for the touched MCP module and tests.
 
+#+begin_src sh
+git diff --check
+#+end_src
+
+Result: passed.
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Result: returned the repository path after reloading changed Lisp.
+
+#+begin_src sh
+emacsclient --eval "...bounded fake-transport MCP capability-provider probe..."
+#+end_src
+
+Result: returned =(:initial nil :cached t :calls 1 :final ("mcp__live-fixture__echo") :failure nil)=.
+
 * Phase 3 Action Activity Presentation Slice Review
 
 Status: in progress.
@@ -976,23 +994,34 @@ emacsclient --eval "...bounded temporary chat action-summary probe..."
 
 Result: returned =(:summary 68 :actions 1)=.
 
+* Phase 3 Mode-Line Cache Fixture Slice Review
+
+Status: in progress.
+
+** Scope reviewed
+
+- Updated the chat mode-line cache test fixture to seed a semantic keyed estimate cache entry.
+- This matches the current =e-context-budget= contract, where a keyed caller must only reuse entries recorded with the same key.
+
+** Verification
+
 #+begin_src sh
-git diff --check
+rtk eldev test -f test/e-chat-test.el -B e-chat-test-mode-line-status-reuses-fresh-estimate-cache e-chat-test-prefer-token-usage-skips-missing-context-estimate e-chat-test-set-status-can-explicitly-refresh-mode-line
 #+end_src
 
-Result: passed.
+Result: passed all three focused chat mode-line cache tests.
 
 #+begin_src sh
-emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+rtk eldev test -f test/e-context-budget-test.el test/e-context-status-test.el -B e-context-budget-test-fresh-estimate-cache-skips-context e-context-budget-test-estimate-cache-key-mismatch-recomputes e-context-status-test-estimate-cache-reuses-value e-context-status-test-estimate-cache-key-mismatch-recomputes
 #+end_src
 
-Result: returned the repository path after reloading changed Lisp.
+Result: passed all four lower-level cache contract tests.
 
 #+begin_src sh
-emacsclient --eval "...bounded fake-transport MCP capability-provider probe..."
+rtk eldev test -f test/e-chat-test.el
 #+end_src
 
-Result: returned =(:initial nil :cached t :calls 1 :final ("mcp__live-fixture__echo") :failure nil)=.
+Result: passed all 263 chat tests, with the existing Markdown rendering test skipped.
 
 * Phase 3 Queued Session Write Generation Slice Review
 
