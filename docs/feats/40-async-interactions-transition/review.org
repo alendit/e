@@ -155,6 +155,8 @@ Status: in progress.
 - Kept the existing synchronous =e-harness-compact-session= wrapper unchanged for current callers.
 - The async API emits existing compaction lifecycle events, starts summary generation through =e-backend-start=, returns an =e-backend-request= immediately, and reports completion through callbacks.
 - Cancellation cancels the backend request when possible, emits a visible =compaction-failed= event, and ignores late backend items/completion.
+- Converted auto-compaction inside =e-harness-prompt-async= to start through =e-harness-compact-session-start= before provider sampling, keeping the active request cancellable while the summary runs.
+- Preserved the existing no-useful-prefix skip behavior so a single old message plus the new prompt does not start a pointless summary request.
 - Added focused tests in =test/e-harness-compaction-async-test.el= without editing the already-dirty broader harness test file.
 
 ** Verification
@@ -163,13 +165,19 @@ Status: in progress.
 rtk eldev test --file test/e-harness-compaction-async-test.el -B
 #+end_src
 
-Result: passed for async compaction start, completion, cancellation, and late-callback protection.
+Result: passed for async compaction start, completion, cancellation, late-callback protection, and nonblocking auto-compaction submit.
 
 #+begin_src sh
 rtk eldev test --file test/e-harness-test.el --file test/e-harness-compaction-async-test.el -B
 #+end_src
 
 Result: passed for the existing harness compaction coverage plus the new async lifecycle tests.
+
+#+begin_src sh
+rtk eldev test --file test/e-harness-test.el --file test/e-harness-compaction-async-test.el --file test/e-request-test.el -B
+#+end_src
+
+Result: passed for harness prompt, auto-compaction, cancellation, and request contracts after moving auto-compaction onto the async lifecycle.
 
 #+begin_src sh
 git diff --check
@@ -194,6 +202,12 @@ emacsclient --eval "...bounded async compaction start probe..."
 #+end_src
 
 Result: returned =(:fboundp t :request t :operation compaction)=.
+
+#+begin_src sh
+emacsclient --eval "...bounded auto-compaction active-request probe..."
+#+end_src
+
+Result: returned =(:request t :operation compaction)= after prompt submit and before summary completion.
 
 * Phase 2 MCP Slice Review
 

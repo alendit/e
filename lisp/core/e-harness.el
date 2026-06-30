@@ -1622,6 +1622,16 @@ also emitting the normal compaction failure event."
                   20000)))
       (and suffix-tokens (< suffix-tokens keep)))))
 
+(defun e-harness--auto-compaction-useful-prefix-p
+    (harness session-id exclude-entry-ids)
+  "Return non-nil when auto-compaction has enough prefix messages to summarize."
+  (> (length
+      (cl-remove-if
+       (lambda (message)
+         (member (plist-get message :id) exclude-entry-ids))
+       (e-session-messages (e-harness-sessions harness) session-id)))
+     1))
+
 (defun e-harness--auto-compaction-needed-p (harness session-id &optional context)
   "Return non-nil when SESSION-ID should auto-compact before prompting."
   (when e-harness-auto-compaction-enabled
@@ -2172,78 +2182,116 @@ cancellation.  SESSION-ID identifies the session."
                 turn-id
                 (plist-get entry :context)
                 (nreverse (plist-get entry :provider-anchor-candidates)))
-               (let ((hooked-result
-                      (e-harness--run-turn-finished-hooks
-                       harness session-id turn-id result)))
-                 (plist-put entry :result hooked-result)
-                 (plist-put entry :status 'done)
-                 (e-harness--schedule-queue-drain
-                  harness session-id entry))))
-            (start-turn
-             ()
-             (when (and (active-entry-p) (not (plist-get entry :cancelled)))
-               (let ((context (e-harness-context harness session-id turn-id)))
-                 (plist-put entry :timer nil)
-                 (when (e-harness--maybe-auto-compact-session
-                        harness
-                        session-id
-                        turn-id
-                        (list (plist-get entry :prompt-message-id))
-                        context)
-                   (setq context
-                         (e-harness-context harness session-id turn-id)))
-                 (plist-put entry :context context))
-               (plist-put entry :provider-anchor-candidates nil)
-               (e-harness--run-prompt-turn-async
-                harness session-id turn-id
-                :cancelled-p #'cancelled-p
-                :on-request-start
-                (lambda (request)
-                  (when (and (active-entry-p)
-                             (not (plist-get entry :cancelled)))
-                    (plist-put entry :request request)))
-                :on-done #'finish-done
-                :on-error #'finish-error
-                :on-event
-                (lambda (type payload)
-                  (when (and (active-entry-p)
-                             (not (plist-get entry :cancelled)))
-                    (pcase type
-                      ('tool-started
-                       (plist-put entry :open-tool-call payload))
-                      ('tool-finished
-                       (plist-put entry :open-tool-call nil))
-                      ('provider-anchor-candidate
-                       (plist-put
-                        entry
-                        :provider-anchor-candidates
-                        (cons payload
-                              (plist-get
-                               entry
-                               :provider-anchor-candidates)))))
-                    (e-harness--emit-turn-event
-                     harness session-id turn-id type payload)))
-                :append-message
-                (lambda (message)
-                  (when (and (active-entry-p)
-                             (not (plist-get entry :cancelled)))
-                    (e-harness--append-message
-                     harness session-id turn-id message)))
-                :drain-pending-input
-                (lambda ()
-                  (when (and (active-entry-p)
-                             (not (plist-get entry :cancelled)))
-                    (mapcar
-                     (lambda (item)
-                       (list :role 'user
-                             :content (plist-get item :prompt)
-                             :metadata (plist-get item :metadata)))
-                     (e-harness--drain-pending-steering-input entry))))
-                :context (plist-get entry :context)))))
-         (if (and delay (> delay 0))
-             (plist-put entry :timer (run-at-time delay nil #'start-turn))
-           (start-turn)))
-       turn-id))))
+	               (let ((hooked-result
+	                      (e-harness--run-turn-finished-hooks
+	                       harness session-id turn-id result)))
+	                 (plist-put entry :result hooked-result)
+	                 (plist-put entry :status 'done)
+	                 (e-harness--schedule-queue-drain
+	                  harness session-id entry))))
+	            (start-provider
+	             (context)
+	             (when (and (active-entry-p) (not (plist-get entry :cancelled)))
+	               (plist-put entry :context context)
+	               (plist-put entry :provider-anchor-candidates nil)
+	               (e-harness--run-prompt-turn-async
+	                harness session-id turn-id
+	                :cancelled-p #'cancelled-p
+	                :on-request-start
+	                (lambda (request)
+	                  (when (and (active-entry-p)
+	                             (not (plist-get entry :cancelled)))
+	                    (plist-put entry :request request)))
+	                :on-done #'finish-done
+	                :on-error #'finish-error
+	                :on-event
+	                (lambda (type payload)
+	                  (when (and (active-entry-p)
+	                             (not (plist-get entry :cancelled)))
+	                    (pcase type
+	                      ('tool-started
+	                       (plist-put entry :open-tool-call payload))
+	                      ('tool-finished
+	                       (plist-put entry :open-tool-call nil))
+	                      ('provider-anchor-candidate
+	                       (plist-put
+	                        entry
+	                        :provider-anchor-candidates
+	                        (cons payload
+	                              (plist-get
+	                               entry
+	                               :provider-anchor-candidates)))))
+	                    (e-harness--emit-turn-event
+	                     harness session-id turn-id type payload)))
+	                :append-message
+	                (lambda (message)
+	                  (when (and (active-entry-p)
+	                             (not (plist-get entry :cancelled)))
+	                    (e-harness--append-message
+	                     harness session-id turn-id message)))
+	                :drain-pending-input
+	                (lambda ()
+	                  (when (and (active-entry-p)
+	                             (not (plist-get entry :cancelled)))
+	                    (mapcar
+	                     (lambda (item)
+	                       (list :role 'user
+	                             :content (plist-get item :prompt)
+	                             :metadata (plist-get item :metadata)))
+	                     (e-harness--drain-pending-steering-input entry))))
+	                :context context)))
+	            (start-auto-compaction
+	             (context)
+	             (condition-case err
+	                 (let ((request
+	                        (e-harness-compact-session-start
+	                         harness session-id
+	                         :reason 'auto
+	                         :allow-active-turn t
+	                         :allow-split-turn nil
+	                         :exclude-entry-ids
+	                         (list (plist-get entry :prompt-message-id))
+	                         :turn-id turn-id
+	                         :on-done
+	                         (lambda (_record)
+	                           (when (and (active-entry-p)
+	                                      (not (plist-get entry :cancelled)))
+	                             (start-provider
+	                              (e-harness-context
+	                               harness session-id turn-id))))
+	                         :on-error
+	                         (lambda (err)
+	                           (when (and (active-entry-p)
+	                                      (not (plist-get entry :cancelled)))
+	                             (if (eq (car err) 'e-compaction-error)
+	                                 (start-provider context)
+	                               (finish-error err)))))))
+	                   (when (and (active-entry-p)
+	                              (not (plist-get entry :cancelled)))
+	                     (plist-put entry :request request)))
+	               (e-compaction-error
+	                (when (and (active-entry-p)
+	                           (not (plist-get entry :cancelled)))
+	                  (start-provider context)))
+	               (error
+	                (finish-error err))))
+	            (start-turn
+	             ()
+	             (when (and (active-entry-p) (not (plist-get entry :cancelled)))
+	               (let ((context (e-harness-context harness session-id turn-id))
+	                     (excluded (list (plist-get entry :prompt-message-id))))
+	                 (plist-put entry :timer nil)
+				                 (if (and
+	                      (e-harness--auto-compaction-needed-p
+	                       harness session-id context)
+	                      (e-harness--auto-compaction-useful-prefix-p
+	                       harness session-id excluded))
+		                     (start-auto-compaction context)
+		                   (start-provider context))))))
+	         (if (and delay (> delay 0))
+	             (plist-put entry :timer (run-at-time delay nil #'start-turn))
+	           (start-turn)))
+	       turn-id))))
 
 (cl-defun e-harness-follow-up (harness session-id prompt &key metadata)
   "Submit PROMPT as the next turn for SESSION-ID in HARNESS."

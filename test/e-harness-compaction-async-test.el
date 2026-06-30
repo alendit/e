@@ -14,6 +14,7 @@
 (require 'ert)
 (require 'e)
 (require 'e-backend)
+(require 'e-context-budget)
 (require 'e-harness)
 (require 'e-session)
 
@@ -121,6 +122,66 @@
       (should-not (e-session-compactions
                    (e-harness-sessions harness)
                    "session-1")))))
+
+(ert-deftest e-harness-compaction-async-test-auto-compaction-does-not-block-submit ()
+  "Auto-compaction starts asynchronously before provider sampling."
+  (let ((calls 0))
+    (let* ((backend
+            (e-backend-create
+             :name 'async-auto-summary
+             :start
+             (cl-function
+              (lambda (&key messages options on-item on-done &allow-other-keys)
+                (ignore options)
+                (setq calls (1+ calls))
+                (if (= calls 1)
+                    (run-at-time
+                     0.05 nil
+                     (lambda ()
+                       (funcall on-item
+                                '(:type assistant-message
+                                  :content "Auto summary."))
+                       (funcall on-done '(:status done))))
+                  (progn
+                    (should (equal (caar messages) :role))
+                    (funcall on-item
+                             '(:type assistant-message :content "Answer."))
+                    (funcall on-done '(:status done))))
+                (e-backend-request-create
+                 :metadata (list :provider 'async-auto-summary
+                                 :call calls))))))
+           (harness (e-harness-create
+                     :backend backend
+                     :default-options '(:model "auto-model")))
+           (store (e-harness-sessions harness))
+           (e-context-budget-model-token-limits '(("auto-model" . 100)))
+           (e-harness-auto-compaction-reserve-tokens 10))
+      (e-harness-create-session harness :id "session-1")
+      (e-session-append-message store "session-1"
+                                '(:role user :content "old question"))
+      (e-session-append-message store "session-1"
+                                '(:role assistant :content "old answer"))
+      (e-session-append-message store "session-1"
+                                '(:id "kept" :role user :content "new topic"))
+      (e-session-append-activity-event
+       store "session-1" "turn-1" 'token-usage
+       '(:input-tokens 95 :total-tokens 96))
+      (e-harness-prompt-async harness "session-1" "fresh prompt")
+      (let* ((entry (gethash "session-1" (e-harness-active-turns harness)))
+             (request (plist-get entry :request)))
+        (should (e-backend-request-p request))
+        (should (eq (plist-get (e-backend-request-metadata request)
+                               :operation)
+                    'compaction))
+        (should (= calls 1)))
+      (should (equal (plist-get (e-harness-wait harness "session-1" 1.0)
+                                :status)
+                     'done))
+      (should (= calls 2))
+      (let ((record (car (e-session-compactions store "session-1"))))
+        (should record)
+        (should (eq (plist-get (plist-get record :metadata) :reason)
+                    'auto))))))
 
 (provide 'e-harness-compaction-async-test)
 

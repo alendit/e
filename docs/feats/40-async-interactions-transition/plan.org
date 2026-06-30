@@ -27,6 +27,7 @@ Implemented:
 - Generated MCP stdio tools start through request-id polling of the helper process with timeout/cancellation and deterministic start-before-helper-response coverage.
 - Generated MCP HTTP tools start through async =url-retrieve= with timeout/cancellation and deterministic start-before-network-result coverage.
 - =e-harness-compact-session-start= provides a core async compaction lifecycle with callback completion, backend request cancellation, failure events, and stale-callback protection.
+- Auto-compaction in =e-harness-prompt-async= starts through the async compaction lifecycle before provider sampling and keeps the compaction request cancellable as the active request.
 - The Phase 1 review records focused tests, compile checks, and a live reload.
 
 Partly implemented:
@@ -34,12 +35,12 @@ Partly implemented:
 - Blocking primitive guardrails exist, but they are test and probe helpers rather than a complete proof over every interactive path.
 - Sync tool execution remains available for batch, tests, and nested call paths.
 - Some UI redraw preservation and preview cheapening landed, but this is not a render scheduler.
-- Manual chat compaction, auto-compaction, and the session compaction tool/action still call the synchronous compaction wrapper.
+- Manual chat compaction and the session compaction tool/action still call the synchronous compaction wrapper.
 
 Not yet implemented in the planned sense:
 
 - MCP discovery, refresh, and explicit batch call wrappers still have synchronous waits; generated model-facing MCP tool execution no longer does.
-- Compaction still uses the synchronous wrapper from manual chat, auto-compaction, and session compaction tool/action entry points.
+- Compaction still uses the synchronous wrapper from manual chat and session compaction tool/action entry points.
 - There is no raw-result store or reference lifecycle.
 - There is no cooperative presentation render scheduler.
 - There is no cached context/status snapshot contract broad enough to satisfy Phase 3.
@@ -111,7 +112,7 @@ Already acceptable:
 
 Still blocking or potentially blocking:
 
-- core compaction has an async lifecycle API, but manual chat, auto-compaction, and session compaction tool/action entry points still call =e-harness-compact-session= synchronously and can wait on a backend summary request;
+- core compaction and auto-compaction have async lifecycle paths, but manual chat and session compaction tool/action entry points still call =e-harness-compact-session= synchronously and can wait on a backend summary request;
 - MCP generated tools, web tools, and file/tmp resource discovery tools have async =:start= paths for interactive execution, while MCP discovery/refresh and explicit batch wrappers keep synchronous waits;
 - =file://= and =tmp://= glob/search methods use synchronous =process-file=;
 - nested =e-tools-call= waits for the nested tool by contract;
