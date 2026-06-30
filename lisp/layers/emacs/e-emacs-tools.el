@@ -26,6 +26,15 @@
 (define-error 'e-emacs-tools-blocking-elisp-load
   "Blocking Elisp loading is not allowed in interactive run_elisp")
 
+(defvar e-emacs-tools-bypass-run-elisp-load-guard nil
+  "When non-nil, the interactive `run_elisp' load guard permits blocking loads.
+Trusted runtime code binds this around its own loads so the guard rejects only
+agent-authored loads, not the runtime's own resolution.  In particular,
+capability dispatch through `e-actions-call' re-discovers project-local layers
+and loads their allowlisted `layer.el'/`capability.el'; without this bypass
+the guard would fire on that trusted load and abort the very elisp-job
+run-batch escape hatch it points at.")
+
 (defun e-emacs-tools--buffer (name)
   "Return live buffer NAME or signal an explicit tool error."
   (or (get-buffer name)
@@ -444,26 +453,44 @@ When VISIBLE-ONLY is non-nil, include only buffers visible in windows."
   (declare (indent 0) (debug t))
   `(if (not (e-emacs-tools--interactive-run-elisp-context-p))
        (progn ,@body)
-     (let ((original-require (symbol-function 'require)))
+     ;; Capture the unguarded primitives so a trusted, bypassed load delegates
+     ;; to the real implementation.  Any `advice-add' (e.g. the project-local
+     ;; extensionless-load advice) wraps the symbol-function the guard installs,
+     ;; so it still runs above these originals and its transformation survives.
+     (let ((original-load (symbol-function 'load))
+           (original-load-file (symbol-function 'load-file))
+           (original-require (symbol-function 'require))
+           (original-byte-compile-file (symbol-function 'byte-compile-file))
+           (original-directory-files-recursively
+            (symbol-function 'directory-files-recursively)))
        (cl-letf (((symbol-function 'load)
-                  (lambda (&rest _args)
-                    (e-emacs-tools--reject-blocking-elisp-load 'load)))
+                  (lambda (&rest args)
+                    (if e-emacs-tools-bypass-run-elisp-load-guard
+                        (apply original-load args)
+                      (e-emacs-tools--reject-blocking-elisp-load 'load))))
                  ((symbol-function 'load-file)
-                  (lambda (&rest _args)
-                    (e-emacs-tools--reject-blocking-elisp-load 'load-file)))
+                  (lambda (&rest args)
+                    (if e-emacs-tools-bypass-run-elisp-load-guard
+                        (apply original-load-file args)
+                      (e-emacs-tools--reject-blocking-elisp-load 'load-file))))
                  ((symbol-function 'require)
                   (lambda (feature &optional filename noerror)
-                    (if (featurep feature)
+                    (if (or (featurep feature)
+                            e-emacs-tools-bypass-run-elisp-load-guard)
                         (funcall original-require feature filename noerror)
                       (e-emacs-tools--reject-blocking-elisp-load 'require))))
                  ((symbol-function 'byte-compile-file)
-                  (lambda (&rest _args)
-                    (e-emacs-tools--reject-blocking-elisp-load
-                     'byte-compile-file)))
+                  (lambda (&rest args)
+                    (if e-emacs-tools-bypass-run-elisp-load-guard
+                        (apply original-byte-compile-file args)
+                      (e-emacs-tools--reject-blocking-elisp-load
+                       'byte-compile-file))))
                  ((symbol-function 'directory-files-recursively)
-                  (lambda (&rest _args)
-                    (e-emacs-tools--reject-blocking-elisp-load
-                     'directory-files-recursively))))
+                  (lambda (&rest args)
+                    (if e-emacs-tools-bypass-run-elisp-load-guard
+                        (apply original-directory-files-recursively args)
+                      (e-emacs-tools--reject-blocking-elisp-load
+                       'directory-files-recursively)))))
          ,@body))))
 
 (defun e-emacs-tools-register-list-buffers (registry)

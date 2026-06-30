@@ -405,6 +405,33 @@ When READ-ONLY is non-nil, buffer resources only support reads."
                    "elisp-job"
                    (format "%s" (plist-get result :content)))))))))
 
+(ert-deftest e-emacs-tools-test-run-elisp-bypass-permits-trusted-load ()
+  "Interactive run_elisp permits a load wrapped in the trusted-load bypass.
+Trusted runtime code (e.g. project-local layer resolution reached through
+`e-actions-call') binds `e-emacs-tools-bypass-run-elisp-load-guard' around its
+own loads, so the guard must not reject those even though it rejects bare
+agent-authored loads in the same interactive context."
+  (let* ((registry (e-tools-registry-create))
+         (file (make-temp-file "e-run-elisp-bypass-load-" nil ".el")))
+    (unwind-protect
+        (progn
+          (write-region "(setq e-emacs-tools-test--bypass-loaded t)"
+                        nil file nil 'silent)
+          (e-emacs-tools-register-run-elisp registry)
+          (let ((result (e-emacs-tools-test--run-elisp-result
+                         registry
+                         (format
+                          (concat "(let ((e-emacs-tools-bypass-run-elisp-load-guard t))"
+                                  " (load-file %S)) e-emacs-tools-test--bypass-loaded")
+                          file)
+                         '(:interactive t))))
+            (should (eq (plist-get result :status) 'ok))
+            (should (equal (plist-get result :content)
+                           '(:result "t")))))
+      (when (boundp 'e-emacs-tools-test--bypass-loaded)
+        (makunbound 'e-emacs-tools-test--bypass-loaded))
+      (delete-file file))))
+
 (ert-deftest e-emacs-tools-test-run-elisp-allows-batch-loading ()
   "Batch run_elisp keeps existing direct Elisp loading semantics."
   (let* ((registry (e-tools-registry-create))

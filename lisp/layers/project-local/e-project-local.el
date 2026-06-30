@@ -297,9 +297,16 @@ Intended for `projectile-after-switch-project-hook',
          (advice-remove 'load
                         #'e-project-local--extensionless-load-advice)))))
 
+(defvar e-emacs-tools-bypass-run-elisp-load-guard)
+
 (defun e-project-local--load-project-file (file)
-  "Load project-local Elisp FILE while letting Emacs prefer `.elc' when fresh."
-  (let ((load-prefer-newer t))
+  "Load project-local Elisp FILE while letting Emacs prefer `.elc' when fresh.
+Binds `e-emacs-tools-bypass-run-elisp-load-guard' so the interactive
+`run_elisp' load guard permits this trusted, allowlisted layer/capability load.
+Without it, capability resolution during a turn (e.g. `e-actions-call')
+re-discovers project layers and trips the guard meant for agent-authored loads."
+  (let ((load-prefer-newer t)
+        (e-emacs-tools-bypass-run-elisp-load-guard t))
     (load (file-name-sans-extension file) nil 'nomessage)))
 
 (defun e-project-local--load-capability-file (capability-directory)
