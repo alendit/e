@@ -26,6 +26,7 @@
 (require 'e-harness-registry)
 (require 'e-layer)
 (require 'e-prompts)
+(require 'e-request)
 (require 'e-store)
 (require 'e-tools)
 
@@ -1633,6 +1634,23 @@
       (should (string-match-p (regexp-quote "[Command output truncated]")
                               (plist-get result :output))))))
 
+(ert-deftest e-chat-test-sync-command-output-rejects-hot-path ()
+  "The synchronous command-output helper fails before starting a shell command."
+  (let (started)
+    (cl-letf (((symbol-function 'e-chat--run-shell-command-start)
+               (lambda (&rest _args)
+                 (setq started t)
+                 (error "shell command should not start"))))
+      (let ((err (should-error
+                  (e-request-with-hot-path 'chat-sync-command
+                    (e-chat--run-shell-command
+                     "printf done"
+                     temporary-file-directory))
+                  :type 'e-request-blocking-call-in-hot-path)))
+        (should (equal (cdr err)
+                       '(e-chat--run-shell-command chat-sync-command))))
+      (should-not started))))
+
 (ert-deftest e-chat-test-composer-prefix-cancel-keeps-literal-character ()
   "Cancelling a prefix popup leaves the typed prefix in the composer."
   (let (buffer)
@@ -1760,6 +1778,22 @@
                                 (e-chat--project-file-candidates-sync))))
             (should (equal labels '("from-fd.txt")))))
       (delete-directory directory t))))
+
+(ert-deftest e-chat-test-sync-project-file-candidates-rejects-hot-path ()
+  "The synchronous composer file scanner fails before process work in hot paths."
+  (let (started)
+    (cl-letf (((symbol-function 'process-file)
+               (lambda (&rest _args)
+                 (setq started t)
+                 (error "process-file should not run"))))
+      (let ((err (should-error
+                  (e-request-with-hot-path 'chat-file-candidates
+                    (e-chat--project-file-candidates-sync))
+                  :type 'e-request-blocking-call-in-hot-path)))
+        (should (equal (cdr err)
+                       '(e-chat--project-file-candidates-sync
+                         chat-file-candidates))))
+      (should-not started))))
 
 (ert-deftest e-chat-test-fd-file-candidates-invokes-fd-for-files ()
   "fd candidate collection asks fd for hidden, non-.git regular files."

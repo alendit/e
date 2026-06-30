@@ -74,6 +74,11 @@
       (e-dev-profile-measure-thunk event options thunk)
     (funcall thunk)))
 
+(defun e-chat--reject-sync-in-hot-path (operation)
+  "Reject synchronous chat OPERATION from marked interactive hot paths."
+  (when (e-request-hot-path-active-p)
+    (e-request-hot-path-blocking-error operation)))
+
 (defcustom e-chat-overview-buffer-name "*e-chat-overview*"
   "Buffer name for the chat session overview."
   :type 'string
@@ -2176,6 +2181,7 @@ cancellable process request."
 
 (defun e-chat--run-shell-command (command directory)
   "Run shell COMMAND in DIRECTORY and return captured output metadata."
+  (e-chat--reject-sync-in-hot-path 'e-chat--run-shell-command)
   (let ((done nil)
         result
         failure)
@@ -2348,6 +2354,7 @@ scan."
 
 (defun e-chat--project-file-candidates-sync ()
   "Return project file completion candidates for the active chat session."
+  (e-chat--reject-sync-in-hot-path 'e-chat--project-file-candidates-sync)
   (let ((remaining e-chat-project-file-candidate-limit)
         candidates)
     (dolist (root (e-chat--workspace-roots))
