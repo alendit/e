@@ -19,6 +19,7 @@
 (require 'e-chat-session)
 (require 'e-context-inspection)
 (require 'e-dev-profile)
+(require 'e-emacs-base)
 (require 'e-events)
 (require 'e-harness)
 (require 'e-harness-instances)
@@ -8115,7 +8116,7 @@ The context-window denominator comes from the live provider lookup
         (kill-buffer buffer)))))
 
 (ert-deftest e-chat-test-mid-turn-compact-session-renders-visible-message ()
-  "A model-triggered compaction tool call renders visible chat progress."
+  "A model-triggered compaction action call renders visible chat progress."
   (let* ((calls 0)
          (backend
           (e-backend-create
@@ -8130,8 +8131,9 @@ The context-window denominator comes from the live provider lookup
                  (funcall on-item
                           '(:type tool-call
                             :id "call-1"
-                            :name "compact_session"
-                            :arguments (:keep_recent_tokens 1)))
+                            :name "run_elisp"
+                            :arguments
+                            (:code "(e-actions-call 'session-compaction :compact '(:keep_recent_tokens 1))")))
                  (funcall on-item '(:type done :reason tool-use)))
                 (2
                  (funcall on-item
@@ -8150,7 +8152,8 @@ The context-window denominator comes from the live provider lookup
           (e-harness-set-intrinsic-capabilities
            e-chat-harness
            (append (e-harness-intrinsic-capabilities e-chat-harness)
-                   (e-layer-capabilities (e-core-layer-create))))
+                   (e-layer-capabilities (e-core-layer-create))
+                   (e-layer-capabilities (e-emacs-base-layer-create))))
           (let ((store (e-harness-sessions e-chat-harness)))
             (e-session-append-message store e-chat-session-id
                                       '(:role user :content "old"))

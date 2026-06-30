@@ -106,21 +106,14 @@
                      "second context"
                      "hello")))))
 
-(ert-deftest e-layers-test-e-layer-registers-compact-session-tool ()
-  "The self-management layer exposes a tool for in-turn context compaction."
-  (let* ((backend (e-backend-fake-create
-                   :items '((:type assistant-message :content "ok")
-                            (:type done :reason stop))))
-         (harness (e-harness-create :backend backend)))
-    (setf (e-harness-intrinsic-capabilities harness)
-          (e-layer-capabilities (e-core-layer-create)))
-    (let ((tool (seq-find (lambda (definition)
-                            (equal (plist-get definition :name)
-                                   "compact_session"))
-                          (e-tools-definitions (e-harness-tools harness)))))
-      (should tool)
-      (should (equal (plist-get (plist-get tool :parameters) :type)
-                     "object")))))
+(ert-deftest e-layers-test-e-layer-registers-compact-session-action ()
+  "The self-management layer exposes in-turn context compaction as an action."
+  (let* ((layer (e-core-layer-create))
+         (capability (cl-find 'session-compaction
+                              (e-layer-capabilities layer)
+                              :key #'e-capability-id)))
+    (should capability)
+    (should (e-capabilities-action-spec capability :compact))))
 
 (ert-deftest e-layers-test-registers-known-layer-specs-by-id ()
   "The layer registry stores lazy known layer specs by stable ids."

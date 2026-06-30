@@ -13,6 +13,7 @@
 
 (require 'ert)
 (require 'e)
+(require 'e-actions)
 (require 'e-backend)
 (require 'e-harness)
 (require 'e-layer)
@@ -96,6 +97,58 @@
     (should (string-match-p
              "Session compacted into"
              (e-tools-result-content-text result)))))
+
+(ert-deftest e-layer-compaction-tool-test-action-starts-before-summary ()
+  "The session compaction action starts asynchronously and settles later."
+  (let* ((backend (e-backend-create
+                   :name 'delayed-action-summary
+                   :start
+                   (cl-function
+                    (lambda (&key messages options on-item on-done
+                                   &allow-other-keys)
+                      (ignore messages options)
+                      (run-at-time
+                       0.05 nil
+                       (lambda ()
+                         (funcall on-item
+                                  '(:type assistant-message
+                                    :content "Action compacted summary."))
+                         (funcall on-done '(:status done))))
+                      (e-backend-request-create
+                       :metadata '(:provider delayed-action-summary))))))
+         (harness (e-harness-create :backend backend))
+         result)
+    (e-harness-create-session harness :id "session-1")
+    (e-layer-compaction-tool-test--seed-session harness "session-1")
+    (e-harness-set-intrinsic-capabilities
+     harness
+     (e-layer-capabilities (e-core-layer-create)))
+    (setq result
+          (e-actions-call
+           'session-compaction
+           :compact
+           '(:keep_recent_tokens 1)
+           (list :harness harness
+                 :session-id "session-1"
+                 :turn-id "turn-1")))
+    (should (eq (plist-get result :status) 'started))
+    (should-not (e-session-compactions
+                 (e-harness-sessions harness) "session-1"))
+    (should
+     (e-layer-compaction-tool-test--wait-until
+      (lambda ()
+        (e-session-compactions
+         (e-harness-sessions harness) "session-1"))))
+    (let ((finished
+           (cl-find 'action-finished
+                    (e-session-activity-events
+                     (e-harness-sessions harness) "session-1")
+                    :key (lambda (event) (plist-get event :event-type)))))
+      (should finished)
+      (should (string-match-p
+               "Session compacted into"
+               (plist-get (plist-get (plist-get finished :payload) :result)
+                          :content))))))
 
 (provide 'e-layer-compaction-tool-test)
 

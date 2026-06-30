@@ -107,6 +107,8 @@
                   "lisp/core/e-backend.el"
                   "lisp/core/e-loop.el"
                   "lisp/core/e-harness.el"
+                  "lisp/core/e-actions.el"
+                  "lisp/layers/e-action-resources.el"
                   "lisp/core/e-harness-registry.el"
                   "lisp/core/e-harness-instances.el"
                   "lisp/core/e-core.el"

@@ -45,12 +45,13 @@
 (cl-defstruct (e-action
                (:constructor e-action-create
                              (&key handler caller description parameters
-                                   requires-session tool-metadata)))
+                                   requires-session start tool-metadata)))
   handler
   caller
   description
   parameters
   requires-session
+  start
   ;; Kept for live reload compatibility with earlier action descriptors.
   tool-metadata)
 

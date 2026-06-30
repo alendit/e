@@ -989,6 +989,62 @@ emacsclient --eval "...bounded queued-write generation probe..."
 
 Result: returned =(:record-count 2 :record-generations (1 1) :record-sequences (1 3) :index-generation 1 :index-criticality derived :loaded-count 0)= after forcing a stale generation before flush.
 
+* Phase 2 Async Action Dispatch Compaction Slice Review
+
+Status: in progress.
+
+** Scope reviewed
+
+- Added an async =:start= slot to action descriptors while preserving synchronous action handlers.
+- =e-actions-dispatch= now returns a started action result immediately for async actions, then emits =action-finished= or =action-failed= activity from callbacks.
+- Older live action records are treated as synchronous actions during reload by checking the record length before reading the new start slot.
+- The session compaction action now starts through =e-harness-compact-session-start= and returns before backend summary completion.
+- The legacy =compact_session= model-facing tool remains on its existing async =:start= path.
+
+** Verification
+
+#+begin_src sh
+rtk eldev test -f test/e-actions-test.el test/e-layer-compaction-tool-test.el -b e-actions-test-async-action-starts-before-callback e-layer-compaction-tool-test-action-starts-before-summary e-layer-compaction-tool-test-start-returns-before-summary
+#+end_src
+
+Result: passed all three focused async action and compaction tests.
+
+#+begin_src sh
+rtk eldev test -f test/e-actions-test.el test/e-layer-compaction-tool-test.el test/e-layers-test.el
+#+end_src
+
+Result: passed all 19 affected action/layer tests.
+
+#+begin_src sh
+rtk eldev test -f test/e-chat-test.el -b e-chat-test-mid-turn-compact-session-renders-visible-message
+#+end_src
+
+Result: passed the chat mid-turn compaction action scenario.
+
+#+begin_src sh
+rtk eldev emacs --batch --eval "(progn (setq byte-compile-error-on-warn t) (dolist (file '(\"lisp/core/e-capabilities.el\" \"lisp/core/e-actions.el\" \"lisp/layers/e-action-resources.el\" \"lisp/layers/e-layer.el\" \"test/e-actions-test.el\" \"test/e-layer-compaction-tool-test.el\" \"test/e-layers-test.el\")) (byte-compile-file file)))"
+#+end_src
+
+Result: passed for the touched action and layer modules and tests.
+
+#+begin_src sh
+git diff --check
+#+end_src
+
+Result: passed.
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Result: returned the repository path after reloading changed Lisp.
+
+#+begin_src sh
+emacsclient --eval "...bounded async session-compaction action probe..."
+#+end_src
+
+Result: returned =(:status started :before 0 :after 1 :finished t)=.
+
 #+begin_src sh
 git diff --check
 #+end_src

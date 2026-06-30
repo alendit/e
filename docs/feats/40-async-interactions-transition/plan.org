@@ -32,6 +32,8 @@ Implemented:
 - The legacy =compact_session= tool registration provides an async =:start= path and long-class blocking metadata.
 - Large tool outputs can be truncated into model-visible previews with full content stored as session-owned =tmp://tool-results/...= references, and session tmp roots clean up explicitly or through the harness session-reset hook.
 - Nested long-class tool calls are rejected by the harness with a structured model-facing error instead of synchronously waiting inside another tool.
+- Capability actions support async =:start= dispatch with started/finished/failed activity events.
+- The session compaction action starts through =e-harness-compact-session-start= instead of waiting on the synchronous compaction wrapper.
 - The Phase 1 review records focused tests, compile checks, and a live reload.
 
 Partly implemented:
@@ -39,7 +41,6 @@ Partly implemented:
 - Blocking primitive guardrails exist, but they are test and probe helpers rather than a complete proof over every interactive path.
 - Sync tool execution remains available for batch, tests, and nested call paths.
 - Some UI redraw preservation, stale deferred activity-redraw guards, and preview cheapening landed, but this is not a render scheduler.
-- The session compaction action still calls the synchronous compaction wrapper because actions do not yet have an async dispatch contract.
 - Raw-result storage exists for large tool output through session tmp resources, with explicit, harness-reset, and configured max-age cleanup; there is still no generic raw-result store.
 - Anthropic context-window lookup is cache-only; chat status starts an async model-info refresh on cache miss instead of waiting for gateway I/O.
 - The default live chat session store queues persistent JSONL/index writes behind a short timer, records queued-write generation/sequence/criticality metadata, drops stale-generation queued writes, and has an explicit synchronous flush path.
@@ -52,7 +53,6 @@ Partly implemented:
 Not yet implemented in the planned sense:
 
 - Explicit MCP batch call wrappers still have synchronous waits; generated model-facing MCP tool execution, interactive capability providers, interactive refresh, activation, and catalog discovery start APIs no longer do.
-- Compaction still uses the synchronous wrapper from the session compaction action entry point.
 - There is no generic raw-result store or cache-driven reference cleanup lifecycle.
 - There is no cooperative presentation render scheduler.
 - Context budget estimates now support semantic cache keys for transcript/model/option/layer-sensitive invalidation, but there is no cached context/status snapshot contract broad enough to satisfy Phase 3.
@@ -124,7 +124,7 @@ Already acceptable:
 
 Still blocking or potentially blocking:
 
-- core compaction, auto-compaction, manual chat/Org Canvas commands, and the legacy =compact_session= tool registration have async lifecycle paths, but the session compaction action entry point still calls =e-harness-compact-session= synchronously and can wait on a backend summary request;
+- core compaction, auto-compaction, manual chat/Org Canvas commands, the legacy =compact_session= tool registration, and the session compaction action entry point have async lifecycle paths;
 - MCP generated tools, web tools, file/tmp resource discovery tools, MCP refresh, MCP activation, MCP catalog discovery, and interactive MCP capability providers have async/cache-first paths for interactive execution, while explicit batch wrappers keep synchronous waits;
 - =file://= and =tmp://= glob/search methods use synchronous =process-file=;
 - nested =e-tools-call= waits for the nested tool by contract;
@@ -372,13 +372,15 @@ Work:
 5. Convert manual chat compaction to show progress and return immediately.
 6. Convert =compact_session= to an async =:start= tool.
 7. Convert auto-compaction into a pre-turn async phase without blocking prompt submit on backend latency.
-8. Define how compaction writes participate in session durability and recovery.
+8. Convert the session compaction action entry point to async action dispatch.
+9. Define how compaction writes participate in session durability and recovery.
 
 Acceptance:
 
 - Manual compaction returns before the backend summary completes.
 - Auto-compaction does not block prompt submit before provider start.
 - The =compact_session= tool can run mid-turn without blocking the active tool executor on backend latency.
+- The session compaction action returns a started result before backend summary completion and emits completion through action activity.
 - Cancellation settles visibly and stale compaction callbacks cannot mutate a newer session generation.
 
 Safe to stop:

@@ -15,8 +15,10 @@
 (require 'e)
 (require 'e-actions)
 (require 'e-backend)
+(require 'e-action-resources)
 (require 'e-chat-session)
 (require 'e-harness)
+(require 'e-resources)
 
 (ert-deftest e-actions-test-call-chat-session-action ()
   "Action dispatch resolves active chat-session actions and injects context."
@@ -69,6 +71,77 @@
     (e-actions-call 'chat-session :rename '(:name "Context renamed"))
     (should (equal (e-harness-session-title harness "session-1")
                    "Context renamed"))))
+
+(ert-deftest e-actions-test-async-action-starts-before-callback ()
+  "Async action dispatch returns a started result before callback settlement."
+  (let* ((harness (e-harness-create :backend (e-backend-fake-create :items nil)))
+         finish
+         (capability
+          (e-capability-create
+           :id 'async-capability
+           :actions
+           (list
+            :run
+            (e-action-create
+             :requires-session t
+             :start (cl-function
+                     (lambda (_context arguments &key on-done &allow-other-keys)
+                       (setq finish (lambda ()
+                                      (funcall on-done
+                                               (list :echo
+                                                     (plist-get arguments
+                                                                :value)))))
+                       'fake-action-request)))))))
+    (e-harness-activate-capability harness capability)
+    (e-harness-create-session harness :id "session-1")
+    (let ((result
+           (e-actions-call
+            'async-capability
+            :run
+            '(:value "later")
+            (list :harness harness :session-id "session-1" :turn-id "turn-1"))))
+      (should (eq (plist-get result :status) 'started))
+      (should (functionp finish))
+      (should-not
+       (cl-find 'action-finished
+                (e-session-activity-events
+                 (e-harness-sessions harness) "session-1")
+                :key (lambda (event) (plist-get event :event-type)))))
+    (funcall finish)
+    (let ((finished
+           (cl-find 'action-finished
+                    (e-session-activity-events
+                     (e-harness-sessions harness) "session-1")
+                    :key (lambda (event) (plist-get event :event-type)))))
+      (should finished)
+      (should (string-match-p
+               "later"
+               (plist-get (plist-get (plist-get finished :payload) :result)
+                          :content))))))
+
+
+(ert-deftest e-actions-test-action-description-resources-read-glob-search ()
+  "Action descriptions are exposed as read-only e-action:// resources."
+  (let ((harness (e-harness-create :backend (e-backend-fake-create :items nil))))
+    (e-harness-activate-capability harness (e-action-resources-capability-create))
+    (e-harness-activate-capability harness (e-chat-session-capability-create))
+    (e-harness-create-session harness :id "session-1")
+    (let ((resources (e-harness-resources harness "session-1" "turn-1")))
+      (should (string-match-p
+               "e-action://chat-session"
+               (e-resources-read resources "e-action://active" nil)))
+      (should (string-match-p
+               "rename"
+               (e-resources-read resources "e-action://chat-session" nil)))
+      (should (string-match-p
+               "(e-actions-call 'chat-session :rename ARGUMENTS)"
+               (e-resources-read resources "e-action://chat-session/rename" nil)))
+      (let ((listed (e-resources-glob resources "e-action://" "chat-session/ren*" nil t)))
+        (should (equal (mapcar (lambda (record) (plist-get record :uri))
+                               (append (plist-get listed :resources) nil))
+                       '("e-action://chat-session/rename"))))
+      (let ((matches (e-resources-search resources "e-action://" "rename" nil)))
+        (should (< 0 (length (plist-get matches :matches))))))))
 
 (provide 'e-actions-test)
 

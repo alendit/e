@@ -11,6 +11,7 @@
 
 ;;; Code:
 
+(require 'e-action-resources)
 (require 'e-capabilities)
 (require 'e-context-inspection)
 (require 'e-harness)
@@ -128,19 +129,92 @@
    :start #'e-layer--compact-session-tool-start
    :blocking-class 'network))
 
+
+(defun e-layer--compact-session-action (context arguments)
+  "Compact the current action context session."
+  (let ((harness (plist-get context :harness))
+        (session-id (plist-get context :session-id))
+        (turn-id (plist-get context :turn-id)))
+    (unless (e-harness-p harness)
+      (signal 'e-layer-invalid-tool-context
+              (list "session compaction requires an active harness")))
+    (unless (stringp session-id)
+      (signal 'e-layer-invalid-tool-context
+              (list "session compaction requires an active session id")))
+    (let ((record (e-harness-compact-session
+                   harness session-id
+                   :instructions
+                   (e-layer--compact-session-instructions arguments)
+                   :keep-recent-tokens
+                   (e-layer--compact-session-keep-recent-tokens arguments)
+                   :allow-active-turn (and turn-id t)
+                   :turn-id turn-id)))
+      (e-layer--compact-session-action-result record))))
+
+(defun e-layer--compact-session-action-result (record)
+  "Return the action-facing result plist for compaction RECORD."
+  (list :message (e-layer--compact-session-result-message record)
+        :compaction-id (plist-get record :id)
+        :first-kept-entry-id (plist-get record :first-kept-entry-id)
+        :tokens-before (plist-get record :tokens-before)
+        :tokens-kept (plist-get record :tokens-kept)))
+
+(cl-defun e-layer--compact-session-action-start
+    (context arguments &key on-done on-error &allow-other-keys)
+  "Start compacting the current action context session."
+  (let ((harness (plist-get context :harness))
+        (session-id (plist-get context :session-id))
+        (turn-id (plist-get context :turn-id)))
+    (unless (e-harness-p harness)
+      (signal 'e-layer-invalid-tool-context
+              (list "session compaction requires an active harness")))
+    (unless (stringp session-id)
+      (signal 'e-layer-invalid-tool-context
+              (list "session compaction requires an active session id")))
+    (e-harness-compact-session-start
+     harness session-id
+     :instructions
+     (e-layer--compact-session-instructions arguments)
+     :keep-recent-tokens
+     (e-layer--compact-session-keep-recent-tokens arguments)
+     :allow-active-turn (and turn-id t)
+     :turn-id turn-id
+     :on-done (lambda (record)
+                (when on-done
+                  (funcall on-done
+                           (e-layer--compact-session-action-result record))))
+     :on-error on-error)))
+
+(defun e-layer--session-compaction-action ()
+  "Return the session compaction action descriptor."
+  (e-action-create
+   :handler (lambda (arguments)
+              (e-layer--compact-session-action (e-tools-current-context) arguments))
+   :caller #'e-layer--compact-session-action
+   :start #'e-layer--compact-session-action-start
+   :description "Compact the current session context during this agent turn."
+   :parameters '(:type "object"
+                 :properties (:instructions
+                              (:type "string")
+                              :keep_recent_tokens
+                              (:type "integer"))
+                 :required [])
+   :requires-session t))
+
 (defun e-core-layer-create ()
   "Create the e self-management layer."
   (e-layer-create
    :id 'e
    :name "e"
-   :capabilities (list (e-runtime-context-capability-create)
+   :capabilities (list (e-action-resources-capability-create)
+                       (e-runtime-context-capability-create)
                        (e-layer-selection-capability-create)
                        (e-context-inspection-capability-create)
                        (e-capability-create
                         :id 'session-compaction
                         :name "Session Compaction"
-                        :tools
-                        (list #'e-layer-register-compact-session-tool)))))
+                        :actions (list :compact
+                                       (e-layer--session-compaction-action))))))
 
 (provide 'e-layer)
 

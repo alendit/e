@@ -17,6 +17,7 @@
 (require 'subr-x)
 (require 'e-capabilities)
 (require 'e-harness)
+(require 'e-session)
 (require 'e-tools)
 
 (define-error 'e-actions-error "e action dispatch error")
@@ -163,7 +164,9 @@
           (unless (plist-member arguments key)
             (signal 'e-actions-invalid-arguments
                     (list (format "Missing required action argument: %s"
-                                  (if (stringp name) name (symbol-name name)))))))))))
+                                  (if (stringp name)
+                                      name
+                                    (symbol-name name)))))))))))
 
 (defun e-actions--default-action (handler)
   "Return legacy action descriptor for HANDLER."
@@ -171,6 +174,71 @@
    :handler handler
    :caller (lambda (_action-context arguments)
              (funcall handler arguments))))
+
+(defun e-actions--action-start (action)
+  "Return ACTION's async start function, tolerating older live records."
+  (and (e-action-p action)
+       (>= (length action) 8)
+       (e-action-start action)))
+
+(defun e-actions--preview (value)
+  "Return a compact printable preview for VALUE."
+  (let* ((text (prin1-to-string value))
+         (max-bytes 4096)
+         (original-bytes (string-bytes text))
+         (truncated (> original-bytes max-bytes))
+         (preview
+          (if truncated
+              (let ((bytes 0)
+                    (index 0)
+                    (length (length text)))
+                (while (and (< index length)
+                            (let ((next-bytes
+                                   (string-bytes
+                                    (substring text index (1+ index)))))
+                              (when (<= (+ bytes next-bytes) max-bytes)
+                                (setq bytes (+ bytes next-bytes))
+                                t)))
+                  (setq index (1+ index)))
+                (substring text 0 index))
+            text)))
+    (list :content preview
+          :truncated truncated
+          :original-bytes original-bytes
+          :shown-bytes (string-bytes preview))))
+
+(defun e-actions--parent-tool-call-id (context)
+  "Return parent tool call id from CONTEXT, if any."
+  (when-let ((tool-call (plist-get context :tool-call)))
+    (plist-get tool-call :id)))
+
+(defun e-actions--activity-payload
+    (call-id capability-id action-key arguments context &rest fields)
+  "Return action activity payload."
+  (append
+   (list :action-call-id call-id
+         :capability-id capability-id
+         :action action-key
+         :parent-tool-call-id (e-actions--parent-tool-call-id context)
+         :arguments (e-actions--preview arguments))
+   fields))
+
+(defun e-actions--emit-activity
+    (harness session-id turn-id type payload)
+  "Emit action activity TYPE with PAYLOAD when session context is durable."
+  (when (and (e-harness-p harness)
+             (stringp session-id)
+             (stringp turn-id)
+             (fboundp 'e-harness--emit-turn-event)
+             (ignore-errors
+               (e-session-get (e-harness-sessions harness) session-id)))
+    (e-harness--emit-turn-event harness session-id turn-id type payload)))
+
+(defun e-actions--error-payload-fields (err)
+  "Return payload fields for ERR."
+  (list :status 'error
+        :error-class (car err)
+        :message (error-message-string err)))
 
 (defun e-actions-dispatch (capability action &optional arguments options)
   "Dispatch CAPABILITY ACTION with ARGUMENTS and return a dispatch plist.
@@ -182,47 +250,117 @@ OPTIONS may include `:harness', `:session-id', `:turn-id', or `:context'."
          (turn-id (e-actions--turn-id context options))
          (capability-id (e-actions--capability-id capability))
          (action-key (e-actions--action-key action))
+         (call-id (e-session-generate-ulid))
+         (started-at (float-time))
          (capability-object
           (e-actions--find-capability harness session-id turn-id capability-id)))
-    (unless capability-object
-      (signal 'e-actions-unknown-capability
-              (list (format "Capability %S is not active" capability-id))))
-    (let* ((entry (e-capabilities-action-spec capability-object action-key))
-           (action-spec
-            (cond
-             ((e-action-p entry) entry)
-             ((functionp entry) (e-actions--default-action entry))
-             (t nil))))
-      (unless action-spec
-        (signal 'e-actions-unknown-action
-                (list (format "Capability %S has no action %S"
-                              capability-id action-key))))
-      (when (and (e-action-requires-session action-spec)
-                 (not (stringp session-id)))
-        (signal 'e-actions-no-active-session
-                (list (format "Action %S/%S requires an active session"
-                              capability-id action-key))))
-      (let* ((arguments (e-actions--arguments-plist arguments))
-             (action-context (list :harness harness
-                                   :session-id session-id
-                                   :turn-id turn-id
-                                   :capability capability-object
-                                   :capability-id capability-id
-                                   :action action-key
-                                   :context context))
-             result)
-        (e-actions--validate-arguments action-spec arguments)
-        (setq result
-              (funcall (or (e-action-caller action-spec)
-                           (lambda (_action-context args)
-                             (funcall (e-action-handler action-spec) args)))
-                       action-context
-                       arguments))
-        (list :capability capability-object
-              :capability-id capability-id
-              :action action-key
-              :spec action-spec
-              :result result)))))
+    (e-actions--emit-activity
+     harness session-id turn-id 'action-started
+     (e-actions--activity-payload
+      call-id capability-id action-key arguments context
+      :status 'started))
+    (condition-case err
+        (progn
+          (unless capability-object
+            (signal 'e-actions-unknown-capability
+                    (list (format "Capability %S is not active" capability-id))))
+          (let* ((entry (e-capabilities-action-spec capability-object action-key))
+                 (action-spec
+                  (cond
+                   ((e-action-p entry) entry)
+                   ((functionp entry) (e-actions--default-action entry))
+                   (t nil))))
+            (unless action-spec
+              (signal 'e-actions-unknown-action
+                      (list (format "Capability %S has no action %S"
+                                    capability-id action-key))))
+            (when (and (e-action-requires-session action-spec)
+                       (not (stringp session-id)))
+              (signal 'e-actions-no-active-session
+                      (list (format "Action %S/%S requires an active session"
+                                    capability-id action-key))))
+            (let* ((arguments (e-actions--arguments-plist arguments))
+                   (action-context (list :harness harness
+                                         :session-id session-id
+                                         :turn-id turn-id
+                                         :capability capability-object
+                                         :capability-id capability-id
+                                         :action action-key
+                                         :action-call-id call-id
+                                         :context context))
+                   (started-result
+                    (list :status 'started
+                          :action-call-id call-id
+                          :capability capability-id
+                          :action action-key))
+                   result)
+              (e-actions--validate-arguments action-spec arguments)
+              (if-let ((start (e-actions--action-start action-spec)))
+                  (let* ((settled nil)
+                         (finish
+                          (lambda (value)
+                            (unless settled
+                              (setq settled t)
+                              (e-actions--emit-activity
+                               harness session-id turn-id 'action-finished
+                               (e-actions--activity-payload
+                                call-id capability-id action-key arguments
+                                context
+                                :status 'ok
+                                :elapsed-seconds (- (float-time) started-at)
+                                :result (e-actions--preview value))))))
+                         (fail
+                          (lambda (err)
+                            (unless settled
+                              (setq settled t)
+                              (e-actions--emit-activity
+                               harness session-id turn-id 'action-failed
+                               (apply #'e-actions--activity-payload
+                                      call-id capability-id action-key
+                                      arguments context
+                                      (append
+                                       (list :elapsed-seconds
+                                             (- (float-time) started-at))
+                                       (e-actions--error-payload-fields
+                                        err)))))))
+                         (request
+                          (funcall start action-context arguments
+                                   :on-done finish
+                                   :on-error fail)))
+                    (list :capability capability-object
+                          :capability-id capability-id
+                          :action action-key
+                          :spec action-spec
+                          :request request
+                          :result started-result))
+                (setq result
+                      (funcall (or (e-action-caller action-spec)
+                                   (lambda (_action-context args)
+                                     (funcall (e-action-handler action-spec)
+                                              args)))
+                               action-context
+                               arguments))
+                (e-actions--emit-activity
+                 harness session-id turn-id 'action-finished
+                 (e-actions--activity-payload
+                  call-id capability-id action-key arguments context
+                  :status 'ok
+                  :elapsed-seconds (- (float-time) started-at)
+                  :result (e-actions--preview result)))
+                (list :capability capability-object
+                      :capability-id capability-id
+                      :action action-key
+                      :spec action-spec
+                      :result result)))))
+      (error
+       (e-actions--emit-activity
+        harness session-id turn-id 'action-failed
+        (apply #'e-actions--activity-payload
+               call-id capability-id action-key arguments context
+               (append
+                (list :elapsed-seconds (- (float-time) started-at))
+                (e-actions--error-payload-fields err))))
+       (signal (car err) (cdr err))))))
 
 (defun e-actions-call (capability action &optional arguments options)
   "Call active CAPABILITY ACTION with ARGUMENTS.
