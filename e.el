@@ -86,6 +86,7 @@
   (require 'e-core)
   (require 'e-context-budget)
   (require 'e-agent-shell-fleet)
+  (require 'e-task-queue-actions)
   (require 'e-default-layers)
   (require 'e-project-local)
   (require 'e-default-harnesses)

@@ -66,6 +66,11 @@
      :summary "Agent Shell worker handoff, adoption, and status actions."
      :feature e-agent-shell-fleet
      :factory e-agent-shell-fleet-layer-create)
+    (:id task-queue
+     :name "Task Queue"
+     :summary "Bounded-concurrency agent task queue enqueue and observation actions."
+     :feature e-task-queue-actions
+     :factory e-task-queue-layer-create)
     (:id org-canvas
      :name "Org Canvas"
      :summary "Org document canvas context and visibility tools."
