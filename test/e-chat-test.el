@@ -4318,6 +4318,60 @@ the orphaned region and appeared to vanish."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-long-final-response-defers-markdown-presentation ()
+  "Long assistant text appears before deferred Markdown presentation runs."
+  (let ((buffer (e-chat-test--buffer nil "chat-final-markdown-deferred"))
+        (e-chat-deferred-markdown-threshold-bytes 8))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat--insert-entry
+           "Assistant"
+           "Use **bold** and `code`.")
+          (goto-char (point-min))
+          (search-forward "bold")
+          (let ((faces (ensure-list
+                        (get-text-property (1- (point)) 'face))))
+            (should (memq 'e-chat-final-assistant-face faces))
+            (should-not (memq 'e-chat-markdown-strong-face faces)))
+          (should e-chat--pending-markdown-presentation-timers)
+          (should (e-chat-test--wait-until
+                   (lambda ()
+                     (not e-chat--pending-markdown-presentation-timers))))
+          (goto-char (point-min))
+          (search-forward "bold")
+          (let ((faces (ensure-list
+                        (get-text-property (1- (point)) 'face))))
+            (should (memq 'e-chat-final-assistant-face faces))
+            (should (memq 'e-chat-markdown-strong-face faces)))
+          (search-forward "code")
+          (let ((faces (ensure-list
+                        (get-text-property (1- (point)) 'face))))
+            (should (memq 'e-chat-final-assistant-face faces))
+            (should (memq 'e-chat-markdown-code-face faces))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-deferred-markdown-cancels-on-clear ()
+  "Deferred Markdown callbacks do not apply to stale cleared buffers."
+  (let ((buffer (e-chat-test--buffer nil "chat-markdown-cancel"))
+        (e-chat-deferred-markdown-threshold-bytes 8)
+        (calls 0))
+    (unwind-protect
+        (with-current-buffer buffer
+          (cl-letf (((symbol-function 'e-chat--apply-assistant-markdown)
+                     (lambda (&rest _args)
+                       (setq calls (1+ calls)))))
+            (e-chat--insert-entry
+             "Assistant"
+             "Use **bold** and `code`.")
+            (should e-chat--pending-markdown-presentation-timers)
+            (e-chat--clear)
+            (accept-process-output nil 0.05)
+            (should (= calls 0))
+            (should-not e-chat--pending-markdown-presentation-timers)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-response-navigation-details-shows-intermittent-events ()
   "Details buffer shows intermittent reasoning before metadata."
   (let ((buffer (e-chat-test--buffer nil "chat-intermittent-expand")))

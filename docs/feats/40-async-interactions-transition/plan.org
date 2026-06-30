@@ -53,12 +53,13 @@ Partly implemented:
 - Chat open/resume attaches unloaded indexed sessions through the chunked transcript loader and initially renders a cheap summary/loading shell.
 - Composer =@= file candidates use a buffer-local cached snapshot, start async refreshes on cache miss, show a loading row while refreshing, and drop stale refreshes by generation/key.
 - Selected composer =@= file references read at most =e-chat-file-reference-max-bytes= plus one byte before truncating the inline preview.
+- Long final assistant messages are inserted as plain protected text immediately, with Markdown presentation deferred through a generation-checked timer job.
 
 Not yet implemented in the planned sense:
 
 - Explicit MCP batch call wrappers still have synchronous waits; generated model-facing MCP tool execution, interactive capability providers, interactive refresh, activation, and catalog discovery start APIs no longer do.
 - There is no generic raw-result store or cache-driven reference cleanup lifecycle.
-- There is no cooperative presentation render scheduler.
+- There is no full cooperative presentation render scheduler, though long final assistant Markdown presentation is now deferred and cancellable.
 - Context budget estimates now support semantic cache keys for transcript/model/option/layer-sensitive invalidation, but there is no cached context/status snapshot contract broad enough to satisfy Phase 3.
 - Chat open/resume now uses the chunked replay scheduler for unloaded indexed sessions, but progressive tail-first rendering and the queued-write critical/derived durability model remain only partially implemented.
 - Nested cheap tool calls still use synchronous return semantics; long-class nested calls now fail fast with model guidance in both harness-owned and core default nested executors instead of waiting.
@@ -67,7 +68,7 @@ Not yet implemented in the planned sense:
 Practical status:
 
 - The main external-latency, composer-scan, large-preview, indexed-session-open, and nested-long-tool paths have async/cache-first or fail-fast behavior.
-- The full non-blocking proof remains open because cooperative presentation rendering, tail-first transcript rendering, and the final sync API sweep are not done.
+- The full non-blocking proof remains open because the broader cooperative presentation scheduler, tail-first transcript rendering, and the final sync API sweep are not done.
 - A fair status label is =In-progress=, not close to =Done=.
 - The feature index now says =In-progress= to match the code evidence.
 
@@ -132,7 +133,7 @@ Still blocking or potentially blocking:
 - MCP generated tools, web tools, file/tmp resource discovery tools, MCP refresh, MCP activation, MCP catalog discovery, and interactive MCP capability providers have async/cache-first paths for interactive execution, while explicit batch wrappers keep synchronous waits;
 - =file://= and =tmp://= glob/search methods use synchronous =process-file=;
 - nested =e-tools-call= keeps cheap direct-return semantics, but long-class nested calls fail fast with model guidance unless a harness/custom executor handles them;
-- running-status redraw, final assistant Markdown presentation, tool-result previewing, block details, and full session render are synchronous buffer work;
+- running-status redraw, tool-result previewing, block details, and full session render are synchronous buffer work; long final assistant Markdown presentation is deferred after immediate plain-text insertion;
 - context/status paths can build full context, run providers, estimate tokens, or query Anthropic model info synchronously;
 - default live session appends queue persistent JSONL/index writes through a short timer with generation/sequence metadata and stale-generation dropping; unloaded indexed chat open/resume uses the chunked replay start API, while overview read state and full-session render remain synchronous where they render loaded transcripts;
 - composer =@= candidate discovery is cache-first and refreshed asynchronously; selected file insertion still performs a synchronous but bounded read.
@@ -453,8 +454,8 @@ Work:
 
 1. Use the Slice 2 triage results to avoid scheduling work that was made cheap enough to run synchronously.
 2. Add a render job queue with injected budgets for tests and configurable foreground diagnostics for live use.
-3. Insert final assistant text promptly as plain protected text when Markdown presentation remains expensive.
-4. Defer Markdown/font-lock presentation into chunks only when the content requires it.
+3. Insert final assistant text promptly as plain protected text when Markdown presentation remains expensive. Implemented for assistant messages above =e-chat-deferred-markdown-threshold-bytes=.
+4. Defer Markdown/font-lock presentation into chunks only when the content requires it. Initial implementation defers the Markdown pass as a generation-checked timer job; chunking remains future work.
 5. Update running activity/progress rows in place where possible.
 6. Lazy-generate expanded block details.
 7. Render old session turns tail-first or in bounded chunks.

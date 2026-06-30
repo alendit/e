@@ -1594,3 +1594,58 @@ emacsclient --eval "(progn (load-file \"/private/tmp/e-tools-live-nested-probe.e
 #+end_src
 
 Result: returned =(:started nil :content (:tool-call-id "outer-live/nested-1" :name "inner" :status error :content "Nested tool inner is process-class and cannot run synchronously inside another tool; call it as a top-level tool instead." :metadata (:error e-tools-nested-long-tool-rejected :blocking-class process)))=.
+
+* Phase 3 Deferred Assistant Markdown Slice Review
+
+Status: in progress.
+
+** Scope reviewed
+
+- Added =e-chat-deferred-markdown-threshold-bytes= to keep long assistant message insertion cheap while deferring Markdown presentation work.
+- Added buffer-local Markdown presentation timers and a generation token so buffer clear/kill prevents stale callbacks from touching newer content.
+- Changed assistant insertion to apply final assistant styling immediately, schedule Markdown for long content, and reapply final styling after the deferred Markdown pass.
+- Kept short assistant messages on the existing synchronous Markdown path.
+
+** Verification
+
+#+begin_src sh
+rtk eldev test -f test/e-chat-test.el -B e-chat-test-long-final-response-defers-markdown-presentation e-chat-test-deferred-markdown-cancels-on-clear e-chat-test-final-response-keeps-markdown-faces
+#+end_src
+
+Result: passed all three focused Markdown presentation tests.
+
+#+begin_src sh
+rtk eldev test -f test/e-chat-test.el
+#+end_src
+
+Result: passed 271 tests, 1 skipped.
+
+#+begin_src sh
+rtk eldev emacs --batch --eval "(progn (require 'e-chat) (setq byte-compile-error-on-warn t) (byte-compile-file \"lisp/shells/chat/e-chat.el\"))"
+#+end_src
+
+Result: passed for the touched chat source module.
+
+#+begin_src sh
+rtk eldev emacs --batch --eval "(progn (require 'e-chat) (setq byte-compile-error-on-warn t) (dolist (file '(\"lisp/shells/chat/e-chat.el\" \"test/e-chat-test.el\")) (byte-compile-file file)))"
+#+end_src
+
+Result: source compile passed; the test-file compile path still reports the pre-existing free-variable issue at =test/e-chat-test.el:444=.
+
+#+begin_src sh
+git diff --check -- lisp/shells/chat/e-chat.el test/e-chat-test.el docs/feats/40-async-interactions-transition/plan.org docs/feats/40-async-interactions-transition/review.org
+#+end_src
+
+Result: passed.
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Result: returned the repository path after reloading changed Lisp.
+
+#+begin_src sh
+emacsclient --eval "(progn (load-file \"/private/tmp/e-chat-live-deferred-markdown-probe.el\") e-chat-live-deferred-markdown-probe-result)"
+#+end_src
+
+Result: returned =(:initial-final-face (e-chat-final-assistant-face) :initial-markdown-face nil :initial-pending t :final-final-face (e-chat-final-assistant-face) :final-markdown-face (markdown-bold-face e-chat-final-assistant-face))=.

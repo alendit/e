@@ -99,6 +99,13 @@
   :type 'integer
   :group 'e-chat)
 
+(defcustom e-chat-deferred-markdown-threshold-bytes 8192
+  "Assistant message size above which Markdown presentation is deferred.
+The raw assistant text is inserted immediately; only Markdown faces and syntax
+concealment are scheduled for a later timer tick."
+  :type 'integer
+  :group 'e-chat)
+
 (defcustom e-chat-mode-line-context-estimate-cache-seconds 2.0
   "Seconds to reuse approximate context-token estimates for mode-line refreshes."
   :type 'number
@@ -701,6 +708,12 @@ intentionally not persisted in session metadata.")
 (defvar-local e-chat--activity-redraw-generation 0
   "Latest activity redraw generation for stale timer detection.")
 
+(defvar-local e-chat--pending-markdown-presentation-timers nil
+  "Timers scheduled to apply deferred assistant Markdown presentation.")
+
+(defvar-local e-chat--markdown-presentation-generation 0
+  "Generation token for deferred assistant Markdown presentation callbacks.")
+
 (defvar-local e-chat--mode-line-status nil
   "Current compact e chat status text shown in the mode line.")
 
@@ -1046,6 +1059,8 @@ and / expands available prompts."
   (add-hook 'kill-buffer-hook
             #'e-chat--cancel-project-file-candidate-refresh nil t)
   (add-hook 'kill-buffer-hook #'e-chat--cancel-session-load-request nil t)
+  (add-hook 'kill-buffer-hook
+            #'e-chat--cancel-pending-markdown-presentation nil t)
   (add-hook 'kill-buffer-hook
             #'e-chat--workspace-unread-cache-remove-buffer nil t)
   (add-hook 'evil-local-mode-hook #'e-chat--enforce-modal-editing-policy nil t)
@@ -5260,6 +5275,65 @@ Hide REGEXP groups 1 and 3 as Markdown syntax."
       (e-chat--apply-markdown-emphasis-face content-start content-end)
       (e-chat--apply-markdown-link-faces content-start content-end))))
 
+(defun e-chat--cancel-pending-markdown-presentation ()
+  "Cancel all pending deferred assistant Markdown presentation jobs."
+  (dolist (timer e-chat--pending-markdown-presentation-timers)
+    (when (timerp timer)
+      (cancel-timer timer)))
+  (setq e-chat--pending-markdown-presentation-timers nil)
+  (cl-incf e-chat--markdown-presentation-generation))
+
+(defun e-chat--defer-assistant-markdown-p (content)
+  "Return non-nil when CONTENT should defer Markdown presentation."
+  (and (stringp content)
+       (integerp e-chat-deferred-markdown-threshold-bytes)
+       (> e-chat-deferred-markdown-threshold-bytes 0)
+       (> (string-bytes content)
+          e-chat-deferred-markdown-threshold-bytes)))
+
+(defun e-chat--run-deferred-assistant-markdown
+    (start-marker end-marker generation)
+  "Apply deferred Markdown between START-MARKER and END-MARKER.
+GENERATION must match the current buffer-local Markdown presentation
+generation."
+  (when (and (equal generation e-chat--markdown-presentation-generation)
+             (marker-position start-marker)
+             (marker-position end-marker)
+             (< (marker-position start-marker)
+                (marker-position end-marker)))
+    (let ((inhibit-read-only t)
+          (content-start (marker-position start-marker))
+          (content-end (marker-position end-marker)))
+      (save-excursion
+        (e-chat--apply-assistant-markdown content-start content-end)
+        (e-chat--apply-final-assistant-face content-start content-end)))))
+
+(defun e-chat--schedule-assistant-markdown (content-start content-end)
+  "Schedule deferred Markdown presentation for assistant CONTENT bounds."
+  (let* ((buffer (current-buffer))
+         (start-marker (copy-marker content-start nil))
+         (end-marker (copy-marker content-end t))
+         (generation e-chat--markdown-presentation-generation)
+         timer)
+    (setq timer
+          (run-at-time
+           0 nil
+           (lambda ()
+             (when (buffer-live-p buffer)
+               (with-current-buffer buffer
+                 (setq e-chat--pending-markdown-presentation-timers
+                       (delq timer
+                             e-chat--pending-markdown-presentation-timers))
+                 (unwind-protect
+                     (e-chat--run-deferred-assistant-markdown
+                      start-marker
+                      end-marker
+                      generation)
+                   (set-marker start-marker nil)
+                   (set-marker end-marker nil)))))))
+    (push timer e-chat--pending-markdown-presentation-timers)
+    timer))
+
 (defun e-chat--apply-final-assistant-face (content-start content-end)
   "Apply settled assistant styling from CONTENT-START to CONTENT-END.
 Preserve Markdown faces already present in the range."
@@ -5304,13 +5378,17 @@ non-nil, is used by focused block activation."
              (e-chat--insert-protected
               (e-chat--entry-text title content)
               (e-chat--entry-face title)
-              (when block-id
+             (when block-id
                 `(e-chat-turn-id ,turn-id
                   e-chat-block-id ,block-id)))
              (when (equal title "Assistant")
-               (e-chat--apply-assistant-markdown
-                content-start
-                (point))
+               (if (e-chat--defer-assistant-markdown-p content)
+                   (e-chat--schedule-assistant-markdown
+                    content-start
+                    (point))
+                 (e-chat--apply-assistant-markdown
+                  content-start
+                  (point)))
                (e-chat--apply-final-assistant-face
                 content-start
                 (point)))
@@ -5845,6 +5923,7 @@ signal; route the display to a normal window in that case."
 When OMIT-COMPOSER is non-nil, leave the buffer as transcript-only."
   (e-chat--cancel-pending-command-references)
   (let ((inhibit-read-only t))
+    (e-chat--cancel-pending-markdown-presentation)
     (erase-buffer)
     (setq e-chat--transcript-end-marker nil)
     (setq e-chat--composer-start-marker nil)
