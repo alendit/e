@@ -357,6 +357,95 @@
       (ignore-errors (e-session-flush-write-queue store))
       (delete-directory directory t))))
 
+(ert-deftest e-session-test-flush-write-queue-retries-only-unacknowledged-records ()
+  "Queued flush preserves unacknowledged records after a partial write failure."
+  (let* ((directory (make-temp-file "e-session-" t))
+         (store (e-session-persistent-index-store-create
+                 directory
+                 :write-mode 'queued))
+         (message-failed nil)
+         writes)
+    (unwind-protect
+        (let* ((session (e-session-create store :id "partial-flush"))
+               (session-id (plist-get session :id)))
+          (e-session-append-message
+           store session-id
+           '(:id "msg-1" :role user :content "retry once"))
+          (cl-letf (((symbol-function 'e-session--append-record-now)
+                     (lambda (_store _session-id record)
+                       (let ((type (plist-get record :type)))
+                         (when (and (equal type "message")
+                                    (not message-failed))
+                           (setq message-failed t)
+                           (error "simulated record write failure"))
+                         (push type writes))))
+                    ((symbol-function 'e-session--write-index-now)
+                     (lambda (_store)
+                       (push 'index writes))))
+            (should-error (e-session-flush-write-queue store)
+                          :type 'error)
+            (should (equal (nreverse (copy-sequence writes))
+                           '("session")))
+            (should (= (length (e-session-store-write-queue store)) 1))
+            (should (equal
+                     (plist-get
+                      (e-session--queued-entry-record
+                       (car (e-session-store-write-queue store)))
+                      :type)
+                     "message"))
+            (should (e-session-store-index-write-pending store))
+            (e-session-flush-write-queue store)
+            (should (equal (nreverse writes)
+                           '("session" "message" index)))
+            (should-not (e-session-store-write-queue store))
+            (should-not (e-session-store-index-write-pending store))))
+      (ignore-errors (e-session-flush-write-queue store))
+      (delete-directory directory t))))
+
+(ert-deftest e-session-test-flush-write-queue-retries-rebuilt-stale-index ()
+  "A rebuilt stale derived index remains pending when index persistence fails."
+  (let* ((directory (make-temp-file "e-session-" t))
+         (store (e-session-persistent-index-store-create
+                 directory
+                 :write-mode 'queued))
+         (index-failed nil)
+         writes)
+    (unwind-protect
+        (let* ((session (e-session-create store :id "retry-stale-index"))
+               (session-id (plist-get session :id))
+               (stale-index (copy-sequence
+                             (e-session-store-index-write-pending store))))
+          (e-session-append-message
+           store session-id
+           '(:id "msg-1" :role user :content "retry index"))
+          (plist-put stale-index
+                     :generation
+                     (1- (e-session-store-write-queue-generation store)))
+          (setf (e-session-store-index-write-pending store) stale-index)
+          (cl-letf (((symbol-function 'e-session--append-record-now)
+                     (lambda (_store _session-id record)
+                       (push (plist-get record :type) writes)))
+                    ((symbol-function 'e-session--write-index-now)
+                     (lambda (_store)
+                       (if index-failed
+                           (push 'index writes)
+                         (setq index-failed t)
+                         (error "simulated index write failure")))))
+            (should-error (e-session-flush-write-queue store)
+                          :type 'error)
+            (should-not (e-session-store-write-queue store))
+            (should (e-session-store-index-write-pending store))
+            (should (e-session--queued-index-current-p
+                     store
+                     (e-session-store-index-write-pending store)))
+            (e-session-flush-write-queue store)
+            (should (equal (nreverse writes)
+                           '("session" "message" index)))
+            (should-not (e-session-store-write-queue store))
+            (should-not (e-session-store-index-write-pending store))))
+      (ignore-errors (e-session-flush-write-queue store))
+      (delete-directory directory t))))
+
 (ert-deftest e-session-test-load-session-start-replays-in-chunks ()
   "Chunked persistent session loading returns before replay completion."
   (let* ((directory (make-temp-file "e-session-" t))

@@ -579,11 +579,33 @@ arrays and sometimes inverted key/value pairs."
       (cancel-timer timer)))
   (setf (e-session-store-write-queue-timer store) nil))
 
+(defun e-session--drop-queued-write-entry (store entry)
+  "Drop acknowledged queued write ENTRY from STORE."
+  (setf (e-session-store-write-queue store)
+        (delq entry (e-session-store-write-queue store))))
+
+(defun e-session--drop-stale-queued-write-entries (store)
+  "Remove stale-generation queued writes from STORE."
+  (setf (e-session-store-write-queue store)
+        (cl-remove-if-not
+         (lambda (entry)
+           (e-session--queued-entry-current-p store entry))
+         (e-session-store-write-queue store))))
+
+(defun e-session--flush-queued-records (store entries)
+  "Append queued ENTRIES, acknowledging each successful record write."
+  (dolist (entry entries)
+    (e-session--append-record-now
+     store
+     (e-session--queued-entry-session-id entry)
+     (e-session--queued-entry-record entry))
+    (e-session--drop-queued-write-entry store entry)))
+
 (defun e-session-flush-write-queue (store)
   "Synchronously flush queued persistent writes for STORE.
 Return STORE."
   (e-session--clear-write-queue-timer store)
-  (let* ((raw-entries (nreverse (e-session-store-write-queue store)))
+  (let* ((raw-entries (reverse (e-session-store-write-queue store)))
          (entries (cl-remove-if-not
                    (lambda (entry)
                      (e-session--queued-entry-current-p store entry))
@@ -603,11 +625,11 @@ Return STORE."
                            :stale-index (and stale-index t)
                            :write-index (and (or write-index rebuild-index) t)))
      (lambda ()
-       (dolist (entry entries)
-         (e-session--append-record-now
-          store
-          (e-session--queued-entry-session-id entry)
-          (e-session--queued-entry-record entry)))
+       (e-session--drop-stale-queued-write-entries store)
+       (e-session--flush-queued-records store entries)
+       (when rebuild-index
+         (setf (e-session-store-index-write-pending store)
+               (e-session--queued-index-entry store)))
        (when (or write-index rebuild-index)
          (e-session--write-index-now store))))
     (setf (e-session-store-write-queue store) nil)
