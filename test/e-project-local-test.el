@@ -650,6 +650,84 @@ SOURCE overrides the default layer source."
             (should-not e-project-local-test--unexpected-inspect-load)))
       (delete-directory project t))))
 
+(ert-deftest e-project-local-test-turn-context-reuses-cached-capabilities ()
+  "Live turn context loads extensions once and reuses the warmed snapshot."
+  (let* ((project (make-temp-file "e-project-local-turn-warm-" t))
+         (e-project-local-allowed-roots (list project))
+         (e-project-local-test--unexpected-inspect-load nil)
+         (capability (e-project-local--dynamic-capability project))
+         (provider (car (e-capability-context-providers capability))))
+    (unwind-protect
+        (progn
+          (clrhash e-project-local--capability-snapshots)
+          (e-project-local-test--make-capability
+           project 'topic
+           (mapconcat #'identity
+                      '("(setq e-project-local-test--unexpected-inspect-load t)"
+                        "(e-project-capability-register"
+                        " :id 'topic"
+                        " :factory (lambda (directory)"
+                        "            (e-capability-create"
+                        "             :id 'topic"
+                        "             :name \"Topic\""
+                        "             :instructions"
+                        "             (format \"Cached rooted at %s\" directory))))")
+                      "\n"))
+          ;; First live turn loads the extension file.
+          (should (e-context-provider-build provider :context-purpose 'turn))
+          (should e-project-local-test--unexpected-inspect-load)
+          ;; Second live turn must reuse the snapshot, not re-load.
+          (setq e-project-local-test--unexpected-inspect-load nil)
+          (let ((messages (e-context-provider-build
+                           provider :context-purpose 'turn)))
+            (should (string-match-p
+                     "Cached rooted"
+                     (mapconcat
+                      (lambda (message)
+                        (or (plist-get message :content) ""))
+                      messages
+                      "\n")))
+            (should-not e-project-local-test--unexpected-inspect-load)))
+      (delete-directory project t))))
+
+(ert-deftest e-project-local-test-turn-context-reloads-after-edit ()
+  "Editing a capability file invalidates the warmed snapshot on next turn."
+  (let* ((project (make-temp-file "e-project-local-turn-edit-" t))
+         (e-project-local-allowed-roots (list project))
+         (capability (e-project-local--dynamic-capability project))
+         (provider (car (e-capability-context-providers capability))))
+    (cl-flet ((content (messages)
+                (mapconcat (lambda (message)
+                             (or (plist-get message :content) ""))
+                           messages "\n"))
+              (source (version)
+                (mapconcat
+                 #'identity
+                 (list "(e-project-capability-register"
+                       " :id 'topic"
+                       " :factory (lambda (_dir)"
+                       (format "  (e-capability-create :id 'topic :name \"Topic\" :instructions \"version-%s\")))"
+                               version))
+                 "\n")))
+      (unwind-protect
+          (progn
+            (clrhash e-project-local--capability-snapshots)
+            (e-project-local-test--make-capability project 'topic (source 1))
+            (should (string-match-p
+                     "version-1"
+                     (content (e-context-provider-build
+                               provider :context-purpose 'turn))))
+            ;; Rewrite the capability with a strictly newer mtime.
+            (e-project-local-test--make-capability project 'topic (source 2))
+            (let ((file (expand-file-name
+                         ".e/capabilities/topic/capability.el" project)))
+              (set-file-times file (time-add (current-time) 5)))
+            (should (string-match-p
+                     "version-2"
+                     (content (e-context-provider-build
+                               provider :context-purpose 'turn)))))
+        (delete-directory project t)))))
+
 (ert-deftest e-project-local-test-prime-action-loads-allowed-extensions ()
   "The project-local prime action explicitly loads trusted extension files."
   (let* ((project (make-temp-file "e-project-local-action-prime-" t))

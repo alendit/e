@@ -567,22 +567,61 @@ shells are used."
             (push shell shells)))))
     (nreverse shells)))
 
-(defun e-project-local--discovered-capabilities (directory)
-  "Return project-local capabilities discovered for DIRECTORY without guidance."
+(defun e-project-local--extension-signature (directory)
+  "Return a cheap staleness signature for project-local extensions of DIRECTORY.
+The signature folds in each discovered `layer.el'/`capability.el' path and its
+modification time, so editing, adding, or removing an extension file changes it
+without re-reading file contents."
+  (let ((root (e-skills-normalize-directory directory))
+        entries)
+    (dolist (layer-directory (e-project-local--layer-directories root))
+      (let ((file (expand-file-name "layer.el" layer-directory)))
+        (push (cons file (file-attribute-modification-time
+                          (file-attributes file)))
+              entries)))
+    (dolist (capability-directory (e-project-local--capability-directories root))
+      (let ((file (expand-file-name "capability.el" capability-directory)))
+        (push (cons file (file-attribute-modification-time
+                          (file-attributes file)))
+              entries)))
+    (sort entries (lambda (left right) (string< (car left) (car right))))))
+
+(defun e-project-local--discover-capabilities-uncached (directory)
+  "Discover project-local capabilities for DIRECTORY, loading extension files.
+Stores the result, tagged with the current extension signature, in
+`e-project-local--capability-snapshots' keyed by the normalized root and
+returns it."
   (let* ((root (e-skills-normalize-directory directory))
          (layers (e-project-local--discover-layers root))
-         (capabilities (e-project-local--discover-capabilities root)))
-    (let ((discovered (append
-                       (apply #'append (mapcar #'e-layer-capabilities layers))
-                       capabilities)))
-      (puthash root discovered e-project-local--capability-snapshots)
-      discovered)))
+         (capabilities (e-project-local--discover-capabilities root))
+         (discovered (append
+                      (apply #'append (mapcar #'e-layer-capabilities layers))
+                      capabilities)))
+    (puthash root
+             (cons (e-project-local--extension-signature root) discovered)
+             e-project-local--capability-snapshots)
+    discovered))
+
+(defun e-project-local--discovered-capabilities (directory)
+  "Return project-local capabilities discovered for DIRECTORY without guidance.
+Reuses the cached snapshot when one exists for the normalized root and its
+extension signature is unchanged, so the extension `.el' files are loaded once
+per root rather than on every turn but reloaded after an edit."
+  (let* ((root (and directory (e-skills-normalize-directory directory)))
+         (entry (and root (gethash root e-project-local--capability-snapshots))))
+    (if (and entry
+             (equal (car entry)
+                    (e-project-local--extension-signature root)))
+        (cdr entry)
+      (e-project-local--discover-capabilities-uncached root))))
 
 (defun e-project-local--cached-capabilities (directory)
-  "Return cached project-local capabilities for DIRECTORY, or nil."
+  "Return cached project-local capabilities for DIRECTORY, or nil.
+Reads the cached snapshot without checking staleness; the live turn path
+revalidates via `e-project-local--discovered-capabilities'."
   (and directory
-       (gethash (e-skills-normalize-directory directory)
-                e-project-local--capability-snapshots)))
+       (cdr (gethash (e-skills-normalize-directory directory)
+                     e-project-local--capability-snapshots))))
 
 (defun e-project-local--context-directory (fallback context)
   "Return session project root from CONTEXT, falling back to FALLBACK."
