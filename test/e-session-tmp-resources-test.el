@@ -118,6 +118,29 @@ blocked on the interactive coding-system picker."
       (should-not (file-exists-p root-1))
       (should-not (file-exists-p root-2)))))
 
+(ert-deftest e-session-tmp-test-cleanup-expired-deletes-stale-roots ()
+  "Expired tmp cleanup deletes only roots older than the configured age."
+  (should (require 'e-session-tmp-resources nil t))
+  (let* ((harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :intrinsic-capabilities
+                   (list (e-session-tmp-capability-create))))
+         (now 1000.0))
+    (e-session-tmp-write harness "old-session" "old.txt" "old")
+    (e-session-tmp-write harness "fresh-session" "fresh.txt" "fresh")
+    (let ((old-root (e-session-tmp-directory harness "old-session"))
+          (fresh-root (e-session-tmp-directory harness "fresh-session")))
+      (set-file-times old-root (seconds-to-time 900))
+      (set-file-times fresh-root (seconds-to-time 995))
+      (should (equal (e-session-tmp-cleanup-expired 50 now)
+                     (list old-root)))
+      (should-not (file-exists-p old-root))
+      (should (file-directory-p fresh-root))
+      (let ((new-old-root (e-session-tmp-directory harness "old-session")))
+        (should-not (equal new-old-root old-root))
+        (should (file-directory-p new-old-root)))
+      (e-session-tmp-cleanup-harness harness))))
+
 (ert-deftest e-session-tmp-test-harness-reset-cleans-session-root ()
   "The tmp resource capability cleans session-owned files on harness reset."
   (should (require 'e-session-tmp-resources nil t))

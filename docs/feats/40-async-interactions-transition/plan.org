@@ -40,14 +40,14 @@ Partly implemented:
 - Sync tool execution remains available for batch, tests, and nested call paths.
 - Some UI redraw preservation and preview cheapening landed, but this is not a render scheduler.
 - The session compaction action still calls the synchronous compaction wrapper because actions do not yet have an async dispatch contract.
-- Raw-result storage exists for large tool output through session tmp resources, but there is no generic raw-result store or lifetime policy beyond explicit/harness-reset tmp cleanup.
+- Raw-result storage exists for large tool output through session tmp resources, with explicit, harness-reset, and configured max-age cleanup; there is still no generic raw-result store.
 - Anthropic context-window lookup is cache-only; chat status starts an async model-info refresh on cache miss instead of waiting for gateway I/O.
 
 Not yet implemented in the planned sense:
 
 - MCP discovery, refresh, and explicit batch call wrappers still have synchronous waits; generated model-facing MCP tool execution no longer does.
 - Compaction still uses the synchronous wrapper from the session compaction action entry point.
-- There is no generic raw-result store or time/cache-driven reference cleanup lifecycle.
+- There is no generic raw-result store or cache-driven reference cleanup lifecycle.
 - There is no cooperative presentation render scheduler.
 - Context budget estimates now support semantic cache keys for transcript/model/option/layer-sensitive invalidation, but there is no cached context/status snapshot contract broad enough to satisfy Phase 3.
 - There is no queued session write and chunked replay scheduler.
@@ -415,7 +415,7 @@ Work:
 2. Split model-facing, storage-facing, and display-facing result constructors.
 3. Make tool output previews bounded before chat rendering asks for display content.
 4. Add model-facing summaries or explicit reference handles for large results.
-5. Clean up raw results on session close, buffer kill, cache invalidation, or configured lifetime expiry.
+5. Clean up raw results on session close, buffer kill, cache invalidation, or configured lifetime expiry. Session tmp result references now support explicit, harness-reset, and max-age cleanup.
 
 Acceptance:
 

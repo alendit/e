@@ -37,6 +37,11 @@
 (defvar e-session-tmp--roots (make-hash-table :test 'eq)
   "Session tmp root tables keyed by harness object.")
 
+(defcustom e-session-tmp-default-max-age-seconds (* 24 60 60)
+  "Default maximum idle age before session tmp roots are expired."
+  :type 'number
+  :group 'e)
+
 (defun e-session-tmp--require-session (harness session-id)
   "Signal unless HARNESS and SESSION-ID identify a session tmp root."
   (unless (and harness (stringp session-id) (not (string-empty-p session-id)))
@@ -82,6 +87,53 @@
        table)
       (remhash harness e-session-tmp--roots))
     harness))
+
+(defun e-session-tmp--root-age-seconds (root now)
+  "Return ROOT idle age in seconds at NOW, or nil when ROOT is unavailable."
+  (when (and (stringp root) (file-exists-p root))
+    (let ((attributes (file-attributes root)))
+      (when attributes
+        (- now
+           (float-time
+            (file-attribute-modification-time attributes)))))))
+
+(defun e-session-tmp--touch-root (root)
+  "Mark ROOT as recently used."
+  (when (and (stringp root) (file-directory-p root))
+    (ignore-errors
+      (set-file-times root))))
+
+(defun e-session-tmp-cleanup-expired (&optional max-age-seconds now)
+  "Delete session tmp roots idle longer than MAX-AGE-SECONDS.
+MAX-AGE-SECONDS defaults to `e-session-tmp-default-max-age-seconds'.  NOW
+defaults to the current time.  Return a list of deleted root directories."
+  (let* ((max-age (or max-age-seconds e-session-tmp-default-max-age-seconds))
+         (now (or now (float-time)))
+         expired
+         deleted)
+    (when (and (numberp max-age) (>= max-age 0))
+      (maphash
+       (lambda (harness table)
+         (maphash
+          (lambda (session-id root)
+            (let ((age (e-session-tmp--root-age-seconds root now)))
+              (when (or (null age) (> age max-age))
+                (push (list harness session-id root) expired))))
+          table))
+       e-session-tmp--roots)
+      (dolist (entry expired)
+        (let* ((harness (nth 0 entry))
+               (session-id (nth 1 entry))
+               (root (nth 2 entry))
+               (table (gethash harness e-session-tmp--roots)))
+          (when table
+            (remhash session-id table)
+            (when (= (hash-table-count table) 0)
+              (remhash harness e-session-tmp--roots)))
+          (when (and root (file-directory-p root))
+            (delete-directory root t)
+            (push root deleted)))))
+    (nreverse deleted)))
 
 (defun e-session-tmp--safe-relative-name (relative-name)
   "Return safe RELATIVE-NAME or signal."
@@ -556,9 +608,11 @@ encode; without these bindings `write-region' would invoke
 
 (defun e-session-tmp-write (harness session-id relative-name content)
   "Write CONTENT to RELATIVE-NAME in HARNESS SESSION-ID and return tmp URI."
-  (let ((path (e-session-tmp--path harness session-id relative-name)))
+  (let ((path (e-session-tmp--path harness session-id relative-name))
+        (root (e-session-tmp-directory harness session-id)))
     (make-directory (file-name-directory path) t)
     (e-session-tmp--write-file path (format "%s" content))
+    (e-session-tmp--touch-root root)
     (e-session-tmp--uri relative-name)))
 
 (defun e-session-tmp-file-path (harness session-id relative-name)

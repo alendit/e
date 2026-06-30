@@ -750,3 +750,47 @@ emacsclient --eval "...bounded Anthropic model-info cache probe..."
 #+end_src
 
 Result: returned =(:chat-refreshes 1 :populated t :window 12345)= with synchronous fetch stubbed to error.
+
+* Phase 3 Session Tmp Expiry Cleanup Slice Review
+
+Status: in progress.
+
+** Scope reviewed
+
+- Added =e-session-tmp-cleanup-expired= to delete session tmp roots idle longer than a configured maximum age.
+- Added =e-session-tmp-default-max-age-seconds= as the default lifetime policy.
+- Touched session tmp roots after writes so expiry tracks recent result-reference activity.
+- Kept explicit session cleanup, harness cleanup, and harness reset cleanup intact.
+- This closes configured lifetime expiry for the existing session-owned tmp result-reference store; it is not a generic raw-result store or cache-invalidation lifecycle.
+
+** Verification
+
+#+begin_src sh
+rtk eldev test --file test/e-session-tmp-resources-test.el -B
+#+end_src
+
+Result: passed all 14 session tmp resource tests, including stale-root expiry and existing cleanup paths.
+
+#+begin_src sh
+rtk eldev emacs --batch --eval "(progn (setq byte-compile-error-on-warn t) (dolist (file '(\"lisp/layers/harness/e-session-tmp-resources.el\" \"test/e-session-tmp-resources-test.el\")) (byte-compile-file file)))"
+#+end_src
+
+Result: passed for the touched tmp resource module and tests.
+
+#+begin_src sh
+git diff --check
+#+end_src
+
+Result: passed.
+
+#+begin_src sh
+emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"
+#+end_src
+
+Result: returned the repository path after reloading changed Lisp.
+
+#+begin_src sh
+emacsclient --eval "...bounded session tmp expiry probe..."
+#+end_src
+
+Result: returned =(:deleted-count 1 :old-exists nil :fresh-exists t)=.
