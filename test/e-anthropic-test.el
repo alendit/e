@@ -19,6 +19,15 @@
 (require 'e-harness)
 (require 'e-anthropic)
 
+(defun e-anthropic-test--wait-until (predicate &optional timeout)
+  "Wait until PREDICATE returns non-nil or TIMEOUT seconds elapse."
+  (let ((deadline (+ (float-time) (or timeout 1.0)))
+        value)
+    (while (and (not (setq value (funcall predicate)))
+                (< (float-time) deadline))
+      (accept-process-output nil 0.01))
+    value))
+
 (ert-deftest e-anthropic-test-request-body-maps-neutral-messages ()
   "Anthropic request body uses Messages turns with explicit max_tokens."
   (should
@@ -921,6 +930,65 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
       (should-not (e-anthropic-context-window "claude-opus-4-8"))
       (should (= calls 2))))
   (e-anthropic-reset-context-window-cache))
+
+(ert-deftest e-anthropic-test-http-request-idle-timeout-fires-without-data ()
+  "An HTTP request that never receives data fails after the idle timeout."
+  (let ((e-anthropic-request-timeout-seconds 0.05)
+        (buffer nil)
+        (error-count 0)
+        (complete-count 0)
+        error)
+    (cl-letf (((symbol-function 'url-retrieve)
+               (lambda (_url _callback &rest _args)
+                 (setq buffer (generate-new-buffer " *e-anthropic-test-http*"))
+                 buffer)))
+      (e-anthropic--http-request-start
+       :url "https://example.test/v1/messages"
+       :headers '(("x-api-key" . "test"))
+       :body "{}"
+       :on-complete (lambda (_value) (cl-incf complete-count))
+       :on-error (lambda (err)
+                   (cl-incf error-count)
+                   (setq error err)))
+      (should (e-anthropic-test--wait-until (lambda () error) 0.5))
+      (should (eq (car error) 'e-anthropic-request-timeout))
+      (should (= error-count 1))
+      (should (= complete-count 0))
+      (should-not (buffer-live-p buffer)))))
+
+(ert-deftest e-anthropic-test-http-request-idle-timeout-rearms-on-data ()
+  "Streamed data re-arms the idle timer so a long healthy stream is not killed."
+  (let ((e-anthropic-request-timeout-seconds 0.1)
+        (buffer nil)
+        (error-count 0)
+        (complete-count 0)
+        error)
+    (cl-letf (((symbol-function 'url-retrieve)
+               (lambda (_url _callback &rest _args)
+                 (setq buffer (generate-new-buffer " *e-anthropic-test-http*"))
+                 buffer)))
+      (e-anthropic--http-request-start
+       :url "https://example.test/v1/messages"
+       :headers '(("x-api-key" . "test"))
+       :body "{}"
+       :on-complete (lambda (_value) (cl-incf complete-count))
+       :on-error (lambda (err)
+                   (cl-incf error-count)
+                   (setq error err)))
+      ;; Feed data across several intervals, each shorter than the idle
+      ;; timeout; the whole loop outlasts a single idle window.  A total
+      ;; wall-clock timeout would have fired here; the idle timer must not.
+      (dotimes (_ 5)
+        (when (buffer-live-p buffer)
+          (with-current-buffer buffer
+            (goto-char (point-max))
+            (insert "data chunk\n")))
+        (accept-process-output nil 0.06))
+      (should-not error)
+      (should (= error-count 0))
+      ;; Once data stops, the idle timer eventually fires.
+      (should (e-anthropic-test--wait-until (lambda () error) 0.5))
+      (should (eq (car error) 'e-anthropic-request-timeout)))))
 
 (provide 'e-anthropic-test)
 

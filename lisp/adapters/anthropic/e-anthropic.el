@@ -67,7 +67,11 @@ OpenAI-compatible chat/completions path."
   :group 'e-anthropic)
 
 (defcustom e-anthropic-request-timeout-seconds 180
-  "Seconds before Anthropic HTTP requests fail.
+  "Seconds of inactivity before an Anthropic HTTP request fails.
+This is an idle deadline, not a total wall-clock budget: the timer is re-armed
+whenever the response buffer receives data, so a long but healthy streamed
+generation is never killed mid-flight, while a genuinely stalled connection
+still fails after this many seconds without any bytes.
 Set this to nil to deliberately disable provider HTTP request timeouts."
   :type '(choice (const :tag "No timeout" nil)
                  (number :tag "Seconds"))
@@ -970,8 +974,19 @@ condition list.  Return a cancellable `e-backend-request' handle."
                (funcall
                 on-error
                 (list 'e-anthropic-request-timeout
-                      (format "Anthropic request timed out after %s seconds"
+                      (format "Anthropic request timed out after %s seconds without response data"
                               timeout))))))
+         (arm-timeout ()
+           ;; Idle deadline: re-arm on every chunk of response data so a long
+           ;; but healthy streamed generation is never killed mid-flight; only
+           ;; a connection silent for TIMEOUT seconds fails.
+           (cancel-timeout)
+           (when (and timeout (not settled))
+             (setq timeout-timer
+                   (run-at-time timeout nil #'settle-timeout))))
+         (note-activity (&rest _)
+           (unless settled
+             (arm-timeout)))
          (handle-callback (status)
            (unless settled
              (setq settled t)
@@ -1004,9 +1019,14 @@ condition list.  Return a cancellable `e-backend-request' handle."
             (url-retrieve url
                           (lambda (status) (handle-callback status))
                           nil 'silent nil))
-      (when (and timeout (not settled))
-        (setq timeout-timer
-              (run-at-time timeout nil #'settle-timeout))))
+      ;; Re-arm the idle timer on each chunk of received data.  `url-retrieve'
+      ;; inserts the response into REQUEST-BUFFER incrementally, so a
+      ;; buffer-local `after-change-functions' entry fires on every chunk
+      ;; without depending on url internals.
+      (when (buffer-live-p request-buffer)
+        (with-current-buffer request-buffer
+          (add-hook 'after-change-functions #'note-activity nil t)))
+      (arm-timeout))
     (e-backend-request-create
      :cancel (lambda ()
                (unless settled (setq settled t))
