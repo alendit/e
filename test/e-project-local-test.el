@@ -29,6 +29,7 @@
 (defvar projectile-find-file-hook)
 (defvar e-project-local-test--unexpected-inspect-load)
 (defvar e-project-local-test--prime-action-loaded)
+(defvar e-project-local-test--factory-helper-loaded)
 
 (defun e-project-local-test--write-file (path content)
   "Write CONTENT to PATH, creating parent directories."
@@ -434,6 +435,82 @@ SOURCE overrides the default layer source."
                         'compiled))))
       (when (boundp 'e-project-local-test--factory-helper-loaded)
         (makunbound 'e-project-local-test--factory-helper-loaded))
+      (delete-directory project t))))
+
+(ert-deftest e-project-local-test-factory-file-loads-once-per-session ()
+  "A factory helper file loads once and is skipped on later factory runs."
+  (let* ((project (make-temp-file "e-project-local-load-once-" t))
+         (layer-dir (expand-file-name ".e/layers/topic" project))
+         (helper-file (expand-file-name "helper.el" layer-dir))
+         (e-project-local-allowed-roots (list project))
+         (e-project-local--loaded-files (make-hash-table :test 'equal)))
+    (unwind-protect
+        (progn
+          (setq e-project-local-test--factory-helper-loaded 0)
+          (e-project-local-test--write-file
+           helper-file
+           "(setq e-project-local-test--factory-helper-loaded
+                  (1+ e-project-local-test--factory-helper-loaded))")
+          (e-project-local-test--make-layer
+           project 'topic
+           "(e-project-layer-register
+             :id 'topic
+             :factory (lambda (directory)
+                        (load (expand-file-name \"helper.el\" directory)
+                              nil 'nomessage)
+                        (e-layer-create :id 'topic :name \"Topic\")))")
+          (e-project-local-layer-create project)
+          (e-project-local-layer-create project)
+          (e-project-local-layer-create project)
+          (should (= e-project-local-test--factory-helper-loaded 1)))
+      (makunbound 'e-project-local-test--factory-helper-loaded)
+      (delete-directory project t))))
+
+(ert-deftest e-project-local-test-reset-loaded-files-reloads-factory-file ()
+  "Resetting the loaded-file set makes the next factory run reload the file."
+  (let* ((project (make-temp-file "e-project-local-reset-" t))
+         (layer-dir (expand-file-name ".e/layers/topic" project))
+         (helper-file (expand-file-name "helper.el" layer-dir))
+         (e-project-local-allowed-roots (list project))
+         (e-project-local--loaded-files (make-hash-table :test 'equal)))
+    (unwind-protect
+        (progn
+          (setq e-project-local-test--factory-helper-loaded 0)
+          (e-project-local-test--write-file
+           helper-file
+           "(setq e-project-local-test--factory-helper-loaded
+                  (1+ e-project-local-test--factory-helper-loaded))")
+          (e-project-local-test--make-layer
+           project 'topic
+           "(e-project-layer-register
+             :id 'topic
+             :factory (lambda (directory)
+                        (load (expand-file-name \"helper.el\" directory)
+                              nil 'nomessage)
+                        (e-layer-create :id 'topic :name \"Topic\")))")
+          (e-project-local-layer-create project)
+          (should (= e-project-local-test--factory-helper-loaded 1))
+          (e-project-local-reset-loaded-files)
+          (e-project-local-layer-create project)
+          (should (= e-project-local-test--factory-helper-loaded 2)))
+      (makunbound 'e-project-local-test--factory-helper-loaded)
+      (delete-directory project t))))
+
+(ert-deftest e-project-local-test-registration-file-reloads-each-discovery ()
+  "The `layer.el' registration file re-runs on each discovery despite dedup.
+Its `e-project-layer-register' side effect must repopulate the registration
+list every time, or discovery after the first would find no layers."
+  (let* ((project (make-temp-file "e-project-local-reg-reload-" t))
+         (e-project-local-allowed-roots (list project))
+         (e-project-local--loaded-files (make-hash-table :test 'equal)))
+    (unwind-protect
+        (progn
+          (e-project-local-test--make-layer project 'topic)
+          (let ((first (e-project-local-layer-create project))
+                (second (e-project-local-layer-create project)))
+            (should (cl-find 'topic (e-layer-shells first) :key #'e-shell-id))
+            (should (cl-find 'topic (e-layer-shells second)
+                             :key #'e-shell-id))))
       (delete-directory project t))))
 
 (ert-deftest e-project-local-test-extensionless-loads-use-elc-without-source ()

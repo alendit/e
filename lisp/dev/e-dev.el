@@ -161,6 +161,10 @@
     (e-dev--clear-obsolete-functions)
     (e-dev--clear-obsolete-variables)
     (e-dev--reevaluate-uncustomized-defaults)
+    (when (fboundp 'e-project-local-reset-loaded-files)
+      ;; Project-local factory files are loaded once per session and skipped
+      ;; on later opens; forget them so this reload picks up edits on next open.
+      (e-project-local-reset-loaded-files))
     (load (expand-file-name "e.el" root) nil 'nomessage)
     (when (fboundp 'e-startup-run)
       (e-startup-run))

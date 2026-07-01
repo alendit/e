@@ -108,6 +108,27 @@ can detect they are running inside a sanctioned project layer load.")
 (defvar e-project-local--capability-snapshots (make-hash-table :test 'equal)
   "Cached discovered project-local capabilities keyed by normalized root.")
 
+(defvar e-project-local--loaded-files (make-hash-table :test 'equal)
+  "Set of project-local factory files already loaded this session, by truename.
+A layer/capability factory typically `load's several helper `.el' files each
+time it runs, and factories re-run on every session open and turn.  Re-reading
+and re-evaluating those files dominates session-open time, so the load advice
+records each one here and skips it on later runs.  Registration files
+\(`layer.el'/`capability.el') are never recorded; they must reload so their
+`e-project-layer-register' side effects repopulate the discovery lists.
+`e-project-local-reset-loaded-files' clears the set so the next discovery
+reloads every file, which `e-dev-reload' uses to pick up edits.")
+
+(defun e-project-local-reset-loaded-files ()
+  "Forget cached project-local discovery so the next open reloads factory files.
+Clears both the loaded-file set and the capability snapshots.  The snapshot
+signature only tracks `layer.el'/`capability.el' mtimes, so an edit to a factory
+helper file would otherwise be reused from cache; clearing both lets a live
+reload pick up any project-local edit.  `defvar' does not reset an already-bound
+table, so this must run explicitly after reloading this file."
+  (clrhash e-project-local--loaded-files)
+  (clrhash e-project-local--capability-snapshots))
+
 (cl-defstruct (e-project-local-registration
                (:constructor e-project-local-registration-create))
   id
@@ -267,19 +288,27 @@ Intended for `projectile-after-switch-project-hook',
      e-project-local--extensionless-load-roots)))
 
 (defun e-project-local--extensionless-load-advice (original file &rest args)
-  "Call ORIGINAL `load', stripping `.el' from trusted project-local FILE loads."
-  (let ((load-file
-         (if (and (stringp file)
-                  (string-suffix-p ".el" file)
-                  (e-project-local--under-extensionless-load-root-p file))
-             (let ((elc-file (byte-compile-dest-file file)))
-               (if (and (not (file-exists-p file))
-                        (file-exists-p elc-file))
-                   elc-file
-                 (file-name-sans-extension file)))
-           file)))
+  "Call ORIGINAL `load', stripping `.el' from trusted project-local FILE loads.
+An explicit `.el' load under a trusted root is a factory helper file (the
+registration files arrive here already extensionless).  Such a file is loaded
+once per session and skipped on later factory runs; see
+`e-project-local--loaded-files'."
+  (if (and (stringp file)
+           (string-suffix-p ".el" file)
+           (e-project-local--under-extensionless-load-root-p file))
+      (let ((key (file-truename (expand-file-name file))))
+        (unless (gethash key e-project-local--loaded-files)
+          (let* ((elc-file (byte-compile-dest-file file))
+                 (load-file (if (and (not (file-exists-p file))
+                                     (file-exists-p elc-file))
+                                elc-file
+                              (file-name-sans-extension file)))
+                 (load-prefer-newer t))
+            (apply original load-file args))
+          (puthash key t e-project-local--loaded-files))
+        t)
     (let ((load-prefer-newer t))
-      (apply original load-file args))))
+      (apply original file args))))
 
 (defmacro e-project-local--with-extensionless-loads (roots &rest body)
   "Run BODY with explicit `.el' loads under ROOTS converted to base names."
