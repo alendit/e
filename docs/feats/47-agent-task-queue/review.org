@@ -5,10 +5,28 @@
 
 In-review.
 
-Independent review pass complete.  Implementation of all three plan slices is
-complete and committed.  All three review findings (1 Medium, 2 Low) are now
-resolved with fixes and regression tests; see Findings.  The feature stays
+Independent review pass complete for Slices 1--3, and Slices 4 (pause/resume)
+and 5 (persistence across restarts) are now implemented on the same registry
+and lifecycle.  All three earlier review findings (1 Medium, 2 Low) are resolved
+with fixes and regression tests; see Findings.  The focused ERT suite passes at
+31 tests and the warnings-as-error compile gate is green.  The feature stays
 =In-review= pending operator approval.
+
+Slices 4--5 additions:
+
+- Core: a non-terminal =paused= state, per-task =e-task-queue-pause= /
+  =e-task-queue-resume=, the queue-level =pause-all= / =resume-all= gate, and
+  best-effort durability (=e-task-queue-directory=, debounced change-hook
+  writes, cooperative =e-task-queue-load= with =running= -> =queued=
+  normalization).
+- Actions: =pause-task=, =resume-task=, =pause-all=, =resume-all=; the default
+  queue is now durable and rehydrates on first layer build.
+- Shell: =p= / =r= row pause/resume, =P= / =R= queue-level pause/resume, a
+  =paused= status label, and a paused header-line indicator.
+- Tests: pause of queued (holds, frees no slot) and running (aborts at
+  boundary, frees slot) tasks, resume re-queue/re-run, the queue gate blocks
+  dispatch, a records round-trip preserving order/status, =running= loads as
+  =queued=, terminal/paused preserved, and an in-memory queue writes nothing.
 
 * Review summary
 

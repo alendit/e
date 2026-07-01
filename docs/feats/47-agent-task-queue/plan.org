@@ -16,8 +16,10 @@ an agent has already worked, not raw captures.
 
 * Status
 
-Slices 1--3 implemented and in review.  Slices 4 (pause/resume) and 5
-(persistence) are Planned; they extend the same registry and lifecycle.
+All five slices implemented and in review.  Slices 1--3 (core registry,
+capability actions, list shell) plus Slice 4 (pause/resume) and Slice 5
+(persistence across restarts) are complete; the focused ERT suite passes
+(31 tests) and the warnings-as-error compile gate is green.
 
 * Problem
 
