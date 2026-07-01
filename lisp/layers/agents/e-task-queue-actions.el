@@ -21,7 +21,7 @@
 (require 'e-task-queue)
 
 (defconst e-task-queue-actions-instructions
-  "Use Task Queue actions to enqueue background agent work, list tracked tasks, inspect a task's status and outputs, and cancel queued or running tasks. Read e://task-queue/skills/task-queue for the action contract."
+  "Use Task Queue actions to enqueue background agent work, list tracked tasks, inspect a task's status and outputs, and cancel queued or running tasks, and pause or resume individual tasks or the whole queue. Read e://task-queue/skills/task-queue for the action contract."
   "Compact Task Queue coordinator guidance.")
 
 (defconst e-task-queue-actions-skill
@@ -37,10 +37,13 @@
      "- `task-status`: input `(:task-id STRING)`. Returns one normalized record."
      "- `read-task`: input `(:task-id STRING)`. Returns the task's collected outputs."
      "- `cancel-task`: input `(:task-id STRING)`. Cancels a queued task before it runs or interrupts a running task and drops its result."
+     "- `pause-task`: input `(:task-id STRING)`. Holds a queued task in place or stops a running task at its next turn boundary, landing it `paused`."
+     "- `resume-task`: input `(:task-id STRING)`. Returns a paused task to `queued`, where it re-runs from its prompt."
+     "- `pause-all` / `resume-all`: no input. Set or clear the queue-level pause gate and pause/resume every non-terminal task."
      ""
      "## Status lifecycle"
      ""
-     "`queued` -> `running` -> `done`; a turn error lands `failed`; cancel lands `cancelled`. Terminal states are immutable."
+     "`queued` -> `running` -> `done`; a turn error lands `failed`; cancel lands `cancelled`. Terminal states are immutable. `pause` holds a task in the non-terminal `paused` state and `resume` returns it to `queued`."
      ""
      "## Harness selection"
      ""
@@ -49,8 +52,9 @@
   "Detailed Task Queue action reference.")
 
 (defvar e-task-queue-actions-default-queue
-  (e-task-queue-create)
-  "Default in-memory task queue backing the capability actions.")
+  (e-task-queue-create :directory e-task-queue-directory)
+  "Default durable task queue backing the capability actions.
+It persists to `e-task-queue-directory'; `e-task-queue-load' rehydrates it.")
 
 (defun e-task-queue-actions--task-id (arguments)
   "Return the required task id from ARGUMENTS."
@@ -97,6 +101,24 @@ expects and pass an existing keyword or nil through unchanged."
 (defun e-task-queue-actions--cancel-task (queue arguments)
   "Cancel a task in QUEUE."
   (e-task-queue-cancel queue (e-task-queue-actions--task-id arguments)))
+
+(defun e-task-queue-actions--pause-task (queue arguments)
+  "Pause a task in QUEUE."
+  (e-task-queue-pause queue (e-task-queue-actions--task-id arguments)))
+
+(defun e-task-queue-actions--resume-task (queue arguments)
+  "Resume a task in QUEUE."
+  (e-task-queue-resume queue (e-task-queue-actions--task-id arguments)))
+
+(defun e-task-queue-actions--pause-all (queue _arguments)
+  "Pause QUEUE and return its tasks newest-first."
+  (e-task-queue-pause-all queue)
+  (e-task-queue-list queue))
+
+(defun e-task-queue-actions--resume-all (queue _arguments)
+  "Resume QUEUE and return its tasks newest-first."
+  (e-task-queue-resume-all queue)
+  (e-task-queue-list queue))
 
 (defun e-task-queue-actions--action (handler parameters)
   "Return a task queue action descriptor for HANDLER with PARAMETERS."
@@ -160,7 +182,27 @@ QUEUE defaults to `e-task-queue-actions-default-queue'."
            (e-task-queue-actions--action
             (lambda (arguments)
               (e-task-queue-actions--cancel-task queue arguments))
-            e-task-queue-actions--task-id-parameters))
+            e-task-queue-actions--task-id-parameters)
+           :pause-task
+           (e-task-queue-actions--action
+            (lambda (arguments)
+              (e-task-queue-actions--pause-task queue arguments))
+            e-task-queue-actions--task-id-parameters)
+           :resume-task
+           (e-task-queue-actions--action
+            (lambda (arguments)
+              (e-task-queue-actions--resume-task queue arguments))
+            e-task-queue-actions--task-id-parameters)
+           :pause-all
+           (e-task-queue-actions--action
+            (lambda (arguments)
+              (e-task-queue-actions--pause-all queue arguments))
+            nil)
+           :resume-all
+           (e-task-queue-actions--action
+            (lambda (arguments)
+              (e-task-queue-actions--resume-all queue arguments))
+            nil))
      :skills
      (list
       (e-skill-spec-create
@@ -169,7 +211,12 @@ QUEUE defaults to `e-task-queue-actions-default-queue'."
        :content e-task-queue-actions-skill)))))
 
 (defun e-task-queue-layer-create ()
-  "Create the Task Queue layer."
+  "Create the Task Queue layer.
+Rehydrate the default durable queue from disk the first time the layer is
+built, so queued and paused work survives an Emacs restart."
+  (unless (get 'e-task-queue-actions-default-queue 'loaded)
+    (ignore-errors (e-task-queue-load e-task-queue-actions-default-queue))
+    (put 'e-task-queue-actions-default-queue 'loaded t))
   (e-layer-create
    :id 'task-queue
    :name "Task Queue"

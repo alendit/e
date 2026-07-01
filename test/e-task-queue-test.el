@@ -315,6 +315,169 @@ thunk) so the test settles tasks explicitly."
       ;; The session id the handle carried is still recorded.
       (should (equal (plist-get internal :session-id) "s")))))
 
+(ert-deftest e-task-queue-test-pause-queued-task-holds ()
+  "Pausing a queued task holds it in `paused' and frees no running slot."
+  (e-task-queue-test--with-instances
+    (e-task-queue-test--register-instance :chat-a t)
+    (let* ((recorder (make-e-task-queue-test--recorder))
+           (queue (e-task-queue-create
+                   :max-parallel 1
+                   :runner (e-task-queue-test--fake-runner recorder)))
+           (_a (e-task-queue-enqueue queue :prompt "a"))
+           (b (e-task-queue-enqueue queue :prompt "b"))
+           (before (length (e-task-queue-test--recorder-calls recorder))))
+      (e-task-queue-pause queue (plist-get b :task-id))
+      (should (eq (plist-get (e-task-queue-get queue (plist-get b :task-id))
+                             :status)
+                  'paused))
+      ;; A paused queued task never starts, so the runner was not called.
+      (should (= before (length (e-task-queue-test--recorder-calls recorder)))))))
+
+(ert-deftest e-task-queue-test-pause-running-task-frees-slot ()
+  "Pausing a running task aborts at the boundary, lands `paused', frees its slot."
+  (e-task-queue-test--with-instances
+    (e-task-queue-test--register-instance :chat-a t)
+    (let* ((recorder (make-e-task-queue-test--recorder))
+           (queue (e-task-queue-create
+                   :max-parallel 1
+                   :runner (e-task-queue-test--fake-runner recorder)))
+           (a (e-task-queue-enqueue queue :prompt "a"))
+           (b (e-task-queue-enqueue queue :prompt "b")))
+      ;; a runs, b waits under the cap of 1.
+      (should (eq (plist-get (e-task-queue-get queue (plist-get b :task-id))
+                             :status)
+                  'queued))
+      ;; The fake runner's :cancel calls on-settle with `cancelled', which the
+      ;; pause intent reinterprets as a pause.
+      (e-task-queue-pause queue (plist-get a :task-id))
+      (should (eq (plist-get (e-task-queue-get queue (plist-get a :task-id))
+                             :status)
+                  'paused))
+      ;; The freed slot let the queued task b start.
+      (should (eq (plist-get (e-task-queue-get queue (plist-get b :task-id))
+                             :status)
+                  'running)))))
+
+(ert-deftest e-task-queue-test-resume-requeues-and-reruns ()
+  "Resuming a paused task returns it to queued and re-runs it."
+  (e-task-queue-test--with-instances
+    (e-task-queue-test--register-instance :chat-a t)
+    (let* ((recorder (make-e-task-queue-test--recorder))
+           (queue (e-task-queue-create
+                   :runner (e-task-queue-test--fake-runner recorder)))
+           (a (e-task-queue-enqueue queue :prompt "a"))
+           (task-id (plist-get a :task-id)))
+      (e-task-queue-pause queue task-id)
+      (should (eq (plist-get (e-task-queue-get queue task-id) :status) 'paused))
+      (let ((before (length (e-task-queue-test--recorder-calls recorder))))
+        (e-task-queue-resume queue task-id)
+        (should (eq (plist-get (e-task-queue-get queue task-id) :status)
+                    'running))
+        (should (> (length (e-task-queue-test--recorder-calls recorder))
+                   before))))))
+
+(ert-deftest e-task-queue-test-queue-gate-blocks-dispatch ()
+  "The queue-level pause gate stops the dispatcher from starting new work."
+  (e-task-queue-test--with-instances
+    (e-task-queue-test--register-instance :chat-a t)
+    (let* ((recorder (make-e-task-queue-test--recorder))
+           (queue (e-task-queue-create
+                   :runner (e-task-queue-test--fake-runner recorder))))
+      (e-task-queue-pause-all queue)
+      (let ((task (e-task-queue-enqueue queue :prompt "held")))
+        ;; The gate is set, so an enqueued task stays queued.
+        (should (eq (plist-get (e-task-queue-get queue (plist-get task :task-id))
+                               :status)
+                    'queued))
+        (e-task-queue-resume-all queue)
+        (should (eq (plist-get (e-task-queue-get queue (plist-get task :task-id))
+                               :status)
+                    'running))))))
+
+(ert-deftest e-task-queue-test-persistence-round-trip ()
+  "Records round-trip through a directory, preserving order and statuses."
+  (e-task-queue-test--with-instances
+    (e-task-queue-test--register-instance :chat-a t)
+    (let ((dir (make-temp-file "e-task-queue-test" t)))
+      (unwind-protect
+          (let* ((recorder (make-e-task-queue-test--recorder))
+                 (queue (e-task-queue-create
+                         :max-parallel 1
+                         :directory dir
+                         :runner (e-task-queue-test--fake-runner recorder)))
+                 (a (e-task-queue-enqueue queue :prompt "first"))
+                 (b (e-task-queue-enqueue queue :prompt "second")))
+            ;; a is running under the cap, b is queued.
+            (e-task-queue-flush queue)
+            (let ((reloaded (e-task-queue-create
+                             :max-parallel 1
+                             :directory dir
+                             ;; A runner that never settles keeps re-queued
+                             ;; work observable as running after load.
+                             :runner (e-task-queue-test--fake-runner
+                                      (make-e-task-queue-test--recorder)))))
+              (e-task-queue-load reloaded)
+              (should (equal (mapcar (lambda (r) (plist-get r :task-id))
+                                     (e-task-queue-list reloaded))
+                             (list (plist-get b :task-id)
+                                   (plist-get a :task-id))))
+              ;; The task that was running at "shutdown" re-runs; the queued
+              ;; one waits under the cap of 1.
+              (should (eq (plist-get (e-task-queue-get reloaded
+                                                       (plist-get a :task-id))
+                                     :status)
+                          'running))
+              (should (eq (plist-get (e-task-queue-get reloaded
+                                                       (plist-get b :task-id))
+                                     :status)
+                          'queued))))
+        (delete-directory dir t)))))
+
+(ert-deftest e-task-queue-test-persistence-preserves-terminal-and-paused ()
+  "Terminal tasks keep their status on load; paused tasks stay paused."
+  (e-task-queue-test--with-instances
+    (e-task-queue-test--register-instance :chat-a t)
+    (let ((dir (make-temp-file "e-task-queue-test" t)))
+      (unwind-protect
+          (let* ((recorder (make-e-task-queue-test--recorder))
+                 (queue (e-task-queue-create
+                         :directory dir
+                         :runner (e-task-queue-test--fake-runner recorder)))
+                 (done (e-task-queue-enqueue queue :prompt "done"))
+                 (paused (e-task-queue-enqueue queue :prompt "paused")))
+            (funcall (plist-get (car (last (e-task-queue-test--recorder-calls
+                                            recorder)))
+                                :settle)
+                     :status 'done)
+            (e-task-queue-pause queue (plist-get paused :task-id))
+            (e-task-queue-flush queue)
+            (let ((reloaded (e-task-queue-create :directory dir)))
+              ;; Keep the gate set so paused/done tasks are not re-dispatched.
+              (setf (e-task-queue-paused-p reloaded) t)
+              (e-task-queue-load reloaded)
+              (should (eq (plist-get (e-task-queue-get
+                                      reloaded (plist-get done :task-id))
+                                     :status)
+                          'done))
+              (should (eq (plist-get (e-task-queue-get
+                                      reloaded (plist-get paused :task-id))
+                                     :status)
+                          'paused))))
+        (delete-directory dir t)))))
+
+(ert-deftest e-task-queue-test-in-memory-queue-writes-nothing ()
+  "A queue with no directory persists nothing."
+  (e-task-queue-test--with-instances
+    (e-task-queue-test--register-instance :chat-a t)
+    (let* ((recorder (make-e-task-queue-test--recorder))
+           (queue (e-task-queue-create
+                   :runner (e-task-queue-test--fake-runner recorder))))
+      (e-task-queue-enqueue queue :prompt "a")
+      (should (null (e-task-queue-directory queue)))
+      (should (null (e-task-queue--record-file queue)))
+      ;; Flush is a no-op and must not signal for an in-memory queue.
+      (should (eq (e-task-queue-flush queue) queue)))))
+
 (provide 'e-task-queue-test)
 
 ;;; e-task-queue-test.el ends here

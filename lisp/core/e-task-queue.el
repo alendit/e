@@ -48,6 +48,18 @@ default a new chat uses."
                  (symbol :tag "Harness instance id"))
   :group 'e-task-queue)
 
+(defcustom e-task-queue-directory (locate-user-emacs-file "e/task-queue/")
+  "Default directory the persistent task queue writes its records to.
+Mirrors `e-session-directory'.  A queue constructed without a directory stays
+in-memory."
+  :type 'directory
+  :group 'e-task-queue)
+
+(defcustom e-task-queue-write-delay 0.1
+  "Seconds to coalesce persistent task-queue writes before flushing."
+  :type 'number
+  :group 'e-task-queue)
+
 (defvar e-task-queue-change-functions nil
   "Abnormal hook run after a queue's task set or a task record changes.
 Each function is called with the queue.  Intended for observation (shells,
@@ -60,23 +72,32 @@ tests); handlers must not mutate the queue.")
 RECORDS maps task ids to mutable task plists.  ORDER lists task ids in enqueue
 order (oldest first).  MAX-PARALLEL, DEFAULT-HARNESS-INSTANCE-ID, and RUNNER
 override the module defaults when non-nil.  DISPATCHING guards dispatch
-re-entrancy so a synchronous runner settle does not recurse."
+re-entrancy so a synchronous runner settle does not recurse.  PAUSED-P is the
+queue-level gate that stops the dispatcher from starting new work.  DIRECTORY,
+when non-nil, makes the queue durable and names where records are written;
+WRITE-TIMER coalesces those writes."
   (records (make-hash-table :test 'equal))
   (order nil)
   (sequence 0)
   max-parallel
   default-harness-instance-id
   runner
-  dispatching)
+  dispatching
+  paused-p
+  directory
+  write-timer)
 
-(cl-defun e-task-queue-create (&key max-parallel default-harness-instance-id runner)
+(cl-defun e-task-queue-create (&key max-parallel default-harness-instance-id
+                                    runner directory)
   "Return a new task queue.
 MAX-PARALLEL, DEFAULT-HARNESS-INSTANCE-ID, and RUNNER override the module
-defaults for this queue when non-nil."
+defaults for this queue when non-nil.  DIRECTORY, when non-nil, makes the queue
+durable and stores its records there; without it the queue stays in-memory."
   (e-task-queue--create
    :max-parallel max-parallel
    :default-harness-instance-id default-harness-instance-id
-   :runner runner))
+   :runner runner
+   :directory directory))
 
 ;; --- configuration accessors ------------------------------------------------
 
@@ -174,19 +195,27 @@ Falls back to the default `chat' instance when no explicit default is set."
               (e-task-queue-order queue)))
 
 (defun e-task-queue--settle (queue task-id status &rest args)
-  "Settle a running TASK-ID in QUEUE to terminal STATUS.
+  "Settle a running TASK-ID in QUEUE.
 ARGS may carry `:outputs' and `:error'.  No-op unless the task is still
 running, so a runner that settles after the dispatcher cancelled the task is
-dropped.  Re-dispatches QUEUE after a real transition."
+dropped.  A `cancelled' settle for a task the operator asked to pause lands
+`paused' (non-terminal) instead, preserving any partial outputs.  Re-dispatches
+QUEUE after a real transition."
   (let ((record (gethash task-id (e-task-queue-records queue))))
     (when (and record (eq (plist-get record :status) 'running))
-      (plist-put record :status status)
-      (plist-put record :finished-at (e-task-queue--timestamp))
       (when (plist-member args :outputs)
         (plist-put record :outputs (plist-get args :outputs)))
       (when (plist-member args :error)
         (plist-put record :error (plist-get args :error)))
       (plist-put record :handle nil)
+      (if (and (plist-get record :pausing) (eq status 'cancelled))
+          ;; The abort came from a pause request: hold, do not terminate.
+          (progn
+            (plist-put record :pausing nil)
+            (plist-put record :status 'paused)
+            (plist-put record :started-at nil))
+        (plist-put record :status status)
+        (plist-put record :finished-at (e-task-queue--timestamp)))
       (e-task-queue--notify queue)
       (e-task-queue--dispatch queue))))
 
@@ -231,9 +260,11 @@ is missing or unresolvable settles `failed' without stalling the dispatcher."
 
 (defun e-task-queue--dispatch (queue)
   "Start queued tasks in QUEUE up to the parallelism cap.
-Guards against re-entrancy so a synchronous runner settle does not recurse;
-the loop picks up any task the settle frees."
-  (unless (e-task-queue-dispatching queue)
+The queue-level pause gate blocks all new starts while set.  Guards against
+re-entrancy so a synchronous runner settle does not recurse; the loop picks up
+any task the settle frees."
+  (unless (or (e-task-queue-dispatching queue)
+              (e-task-queue-paused-p queue))
     (setf (e-task-queue-dispatching queue) t)
     (unwind-protect
         (let (next)
@@ -276,18 +307,20 @@ already be running when this returns."
 
 (defun e-task-queue-cancel (queue task-id)
   "Cancel TASK-ID in QUEUE and return its normalized record.
-A queued task becomes `cancelled' without ever running.  A running task is
-interrupted through its runner handle and its result is dropped on settle.
-Terminal tasks are returned unchanged."
+A queued or paused task becomes `cancelled' without ever running.  A running
+task is interrupted through its runner handle and its result is dropped on
+settle.  Terminal tasks are returned unchanged."
   (let ((record (e-task-queue--record queue task-id)))
     (pcase (plist-get record :status)
-      ('queued
+      ((or 'queued 'paused)
        (plist-put record :status 'cancelled)
+       (plist-put record :pausing nil)
        (plist-put record :finished-at (e-task-queue--timestamp))
        (e-task-queue--notify queue))
       ('running
        (let ((handle (plist-get record :handle)))
          (plist-put record :status 'cancelled)
+         (plist-put record :pausing nil)
          (plist-put record :finished-at (e-task-queue--timestamp))
          (plist-put record :handle nil)
          (when (and (listp handle) (functionp (plist-get handle :cancel)))
@@ -295,6 +328,72 @@ Terminal tasks are returned unchanged."
          (e-task-queue--notify queue)
          (e-task-queue--dispatch queue))))
     (e-task-queue--normalize record)))
+
+(defun e-task-queue-pause (queue task-id)
+  "Pause TASK-ID in QUEUE and return its normalized record.
+A queued task moves to `paused' in place.  A running task is asked to stop at
+its next turn boundary: the runner handle aborts the active turn and the
+`cancelled' settle that follows is interpreted as a pause, landing the record
+in `paused' with any partial outputs preserved.  A paused or terminal task is
+returned unchanged."
+  (let ((record (e-task-queue--record queue task-id)))
+    (pcase (plist-get record :status)
+      ('queued
+       (plist-put record :status 'paused)
+       (e-task-queue--notify queue))
+      ('running
+       (let ((handle (plist-get record :handle)))
+         ;; Mark the pause intent so the abort's `cancelled' settle lands
+         ;; `paused' rather than terminating the task.
+         (plist-put record :pausing t)
+         (if (and (listp handle) (functionp (plist-get handle :cancel)))
+             (ignore-errors (funcall (plist-get handle :cancel)))
+           ;; No live handle to abort; hold the task directly.
+           (plist-put record :pausing nil)
+           (plist-put record :status 'paused)
+           (plist-put record :handle nil)
+           (plist-put record :started-at nil)
+           (e-task-queue--notify queue)
+           (e-task-queue--dispatch queue)))))
+    (e-task-queue--normalize record)))
+
+(defun e-task-queue-resume (queue task-id)
+  "Resume a paused TASK-ID in QUEUE and return its normalized record.
+The task returns to `queued', where the dispatcher re-runs it from its prompt
+under the normal cap.  A non-paused task is returned unchanged."
+  (let ((record (e-task-queue--record queue task-id)))
+    (when (eq (plist-get record :status) 'paused)
+      (plist-put record :status 'queued)
+      (plist-put record :started-at nil)
+      (plist-put record :finished-at nil)
+      (e-task-queue--notify queue)
+      (e-task-queue--dispatch queue))
+    (e-task-queue--normalize record)))
+
+(defun e-task-queue-pause-all (queue)
+  "Set QUEUE's pause gate and pause every non-terminal task.
+While the gate is set the dispatcher starts no new work.  Returns QUEUE."
+  (setf (e-task-queue-paused-p queue) t)
+  (dolist (task-id (copy-sequence (e-task-queue-order queue)))
+    (let ((record (gethash task-id (e-task-queue-records queue))))
+      (when (memq (plist-get record :status) '(queued running))
+        (e-task-queue-pause queue task-id))))
+  (e-task-queue--notify queue)
+  queue)
+
+(defun e-task-queue-resume-all (queue)
+  "Clear QUEUE's pause gate, resume every paused task, and re-dispatch.
+Returns QUEUE."
+  (setf (e-task-queue-paused-p queue) nil)
+  (dolist (task-id (copy-sequence (e-task-queue-order queue)))
+    (let ((record (gethash task-id (e-task-queue-records queue))))
+      (when (eq (plist-get record :status) 'paused)
+        (plist-put record :status 'queued)
+        (plist-put record :started-at nil)
+        (plist-put record :finished-at nil))))
+  (e-task-queue--notify queue)
+  (e-task-queue--dispatch queue)
+  queue)
 
 ;; --- default runner ---------------------------------------------------------
 
@@ -350,6 +449,112 @@ function that aborts the active turn."
          (finish 'failed :error (error-message-string err))))
       (list :session-id session-id
             :cancel (lambda () (ignore-errors (e-harness-abort harness session-id)))))))
+
+;; --- persistence ------------------------------------------------------------
+
+(defconst e-task-queue--persist-fields
+  '(:task-id :status :prompt :prompt-summary :metadata :harness-instance-id
+    :enqueued-at :started-at :finished-at :session-id :outputs :error)
+  "Durable task record fields.
+The transient `:handle', `:pausing', and the live harness are never persisted.")
+
+(defun e-task-queue--record-file (queue)
+  "Return the on-disk records file for QUEUE, or nil when in-memory."
+  (when-let ((directory (e-task-queue-directory queue)))
+    (expand-file-name "records.eld" directory)))
+
+(defun e-task-queue--persistable-record (record)
+  "Return a durable copy of RECORD carrying only persisted fields."
+  (let (durable)
+    (dolist (key e-task-queue--persist-fields)
+      (setq durable (plist-put durable key (plist-get record key))))
+    durable))
+
+(defun e-task-queue--serialize (queue)
+  "Return QUEUE's durable state as a plist."
+  (list :sequence (e-task-queue-sequence queue)
+        :order (e-task-queue-order queue)
+        :records (mapcar (lambda (task-id)
+                           (e-task-queue--persistable-record
+                            (gethash task-id (e-task-queue-records queue))))
+                         (e-task-queue-order queue))))
+
+(defun e-task-queue--write-now (queue)
+  "Write QUEUE's durable state to disk immediately."
+  (when-let ((file (e-task-queue--record-file queue)))
+    (make-directory (file-name-directory file) t)
+    (let ((coding-system-for-write 'utf-8))
+      (with-temp-file file
+        (let ((print-length nil)
+              (print-level nil))
+          (prin1 (e-task-queue--serialize queue) (current-buffer)))))))
+
+(defun e-task-queue--schedule-write (queue)
+  "Schedule a coalesced durable write for QUEUE.
+No-op for an in-memory queue.  Reuses a pending timer so a burst of mutations
+collapses into one write off the hot enqueue/settle path."
+  (when (and (e-task-queue-directory queue)
+             (not (timerp (e-task-queue-write-timer queue))))
+    (setf (e-task-queue-write-timer queue)
+          (run-at-time
+           (max 0 (or e-task-queue-write-delay 0)) nil
+           (lambda ()
+             (when (e-task-queue-p queue)
+               (setf (e-task-queue-write-timer queue) nil)
+               (e-task-queue--write-now queue)))))))
+
+(defun e-task-queue-flush (queue)
+  "Flush any pending durable write for QUEUE synchronously.  Return QUEUE."
+  (when-let ((timer (e-task-queue-write-timer queue)))
+    (cancel-timer timer)
+    (setf (e-task-queue-write-timer queue) nil))
+  (when (e-task-queue-directory queue)
+    (e-task-queue--write-now queue))
+  queue)
+
+(defun e-task-queue--persist-on-change (queue)
+  "Persist QUEUE on a change event.
+Bound to `e-task-queue-change-functions' so durable queues write off every
+task mutation without the core knowing about disk on its hot path."
+  (when (e-task-queue-directory queue)
+    (e-task-queue--schedule-write queue)))
+
+(add-hook 'e-task-queue-change-functions #'e-task-queue--persist-on-change)
+
+(defun e-task-queue--load-record (durable)
+  "Return a live internal record from a DURABLE persisted record.
+A task that was `running' at shutdown could not have survived its turn, so it
+is normalized to `queued' for a best-effort re-run."
+  (let ((record (copy-sequence durable)))
+    (when (eq (plist-get record :status) 'running)
+      (setq record (plist-put record :status 'queued))
+      (setq record (plist-put record :started-at nil))
+      (setq record (plist-put record :finished-at nil)))
+    (setq record (plist-put record :handle nil))
+    (setq record (plist-put record :pausing nil))
+    record))
+
+(defun e-task-queue-load (queue)
+  "Load QUEUE's persisted records from disk and re-dispatch.  Return QUEUE.
+A `running' record loads as `queued'; `paused', terminal, and `queued' states
+load unchanged.  A queue with no directory or no records file is left empty."
+  (when-let* ((file (e-task-queue--record-file queue))
+              ((file-exists-p file)))
+    (let ((state (with-temp-buffer
+                   (let ((coding-system-for-read 'utf-8))
+                     (insert-file-contents file))
+                   (goto-char (point-min))
+                   (read (current-buffer)))))
+      (clrhash (e-task-queue-records queue))
+      (setf (e-task-queue-order queue) (plist-get state :order))
+      (setf (e-task-queue-sequence queue) (or (plist-get state :sequence) 0))
+      (dolist (durable (plist-get state :records))
+        (let ((record (e-task-queue--load-record durable)))
+          (puthash (plist-get record :task-id) record
+                   (e-task-queue-records queue))))
+      (e-task-queue--notify queue)
+      (e-task-queue--dispatch queue)))
+  queue)
 
 (provide 'e-task-queue)
 

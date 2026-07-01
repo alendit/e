@@ -101,6 +101,44 @@
       (should (eq (plist-get record :status) 'running))
       (should (eq settled-harness expected)))))
 
+(ert-deftest e-task-queue-actions-test-pause-resume-round-trip ()
+  "Pause and resume actions move a task through `paused' and back.
+The runner's cancel settles like the real harness runner does on abort, so
+pausing a running task lands it `paused' rather than leaving it running."
+  (e-task-queue-actions-test--with-instances
+    (let* ((queue (e-task-queue-create
+                   :runner (lambda (_task _harness on-settle)
+                             (list :cancel
+                                   (lambda () (funcall on-settle
+                                                       :status 'cancelled))))))
+           (capability (e-task-queue-capability-create :queue queue))
+           (enqueue (e-capabilities-action capability :enqueue))
+           (pause (e-capabilities-action capability :pause-task))
+           (resume (e-capabilities-action capability :resume-task))
+           (record (funcall enqueue (list :prompt "work")))
+           (task-id (plist-get record :task-id)))
+      (should (eq (plist-get (funcall pause (list :task-id task-id)) :status)
+                  'paused))
+      (should (eq (plist-get (funcall resume (list :task-id task-id)) :status)
+                  'running)))))
+
+(ert-deftest e-task-queue-actions-test-pause-all-gates-queue ()
+  "The pause-all action gates the queue so enqueued work stays queued."
+  (e-task-queue-actions-test--with-instances
+    (let* ((queue (e-task-queue-actions-test--queue))
+           (capability (e-task-queue-capability-create :queue queue))
+           (enqueue (e-capabilities-action capability :enqueue))
+           (pause-all (e-capabilities-action capability :pause-all))
+           (resume-all (e-capabilities-action capability :resume-all)))
+      (funcall pause-all nil)
+      (let* ((record (funcall enqueue (list :prompt "held")))
+             (task-id (plist-get record :task-id)))
+        (should (eq (plist-get (e-task-queue-get queue task-id) :status)
+                    'queued))
+        (funcall resume-all nil)
+        (should (eq (plist-get (e-task-queue-get queue task-id) :status)
+                    'running))))))
+
 (ert-deftest e-task-queue-actions-test-is-action-not-tool ()
   "The task queue capability exposes actions but no model-facing tools."
   (let* ((capability (e-task-queue-capability-create
@@ -115,7 +153,11 @@
     (should (e-capabilities-action-spec capability :list-tasks))
     (should (e-capabilities-action-spec capability :task-status))
     (should (e-capabilities-action-spec capability :read-task))
-    (should (e-capabilities-action-spec capability :cancel-task))))
+    (should (e-capabilities-action-spec capability :cancel-task))
+    (should (e-capabilities-action-spec capability :pause-task))
+    (should (e-capabilities-action-spec capability :resume-task))
+    (should (e-capabilities-action-spec capability :pause-all))
+    (should (e-capabilities-action-spec capability :resume-all))))
 
 (provide 'e-task-queue-actions-test)
 
