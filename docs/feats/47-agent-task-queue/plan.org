@@ -16,7 +16,8 @@ an agent has already worked, not raw captures.
 
 * Status
 
-Ready.
+Slices 1--3 implemented and in review.  Slices 4 (pause/resume) and 5
+(persistence) are Planned; they extend the same registry and lifecycle.
 
 * Problem
 
@@ -100,15 +101,27 @@ A normalized plist, the queue's stable contract:
 ** Status lifecycle
 
 #+begin_example
-queued --(dispatch, capacity available)--> running
-running --(turn settles, no error)-------> done
-running --(turn errors / runner signals)-> failed
-queued|running --(cancel)----------------> cancelled
+queued  --(dispatch, capacity available)--> running
+running --(turn settles, no error)--------> done
+running --(turn errors / runner signals)--> failed
+queued|running --(cancel)-----------------> cancelled
+queued  --(pause)-------------------------> paused
+running --(pause, at turn boundary)-------> paused
+paused  --(resume)------------------------> queued
 #+end_example
 
 Terminal states (=done=, =failed=, =cancelled=) are immutable.  Cancel of
 a =running= task interrupts its turn when the runner supports it and
 otherwise marks the record so its result is dropped on settle.
+
+=paused= is a non-terminal holding state added in Slice 4.  A =queued= task
+pauses immediately.  A =running= task pauses at the next turn boundary: the
+runner is asked to stop, the in-flight turn is aborted (best-effort, no
+idempotency guarantee -- see Pause/resume), and the record moves to =paused=
+with its partial outputs preserved.  =resume= returns a =paused= task to
+=queued=, where the dispatcher re-runs it from its prompt under the normal
+cap.  A paused task never occupies a running slot, so pausing frees capacity
+for other work.
 
 ** Dispatcher and concurrency
 
@@ -177,6 +190,11 @@ not a model-facing tool family:
   (and a bounded transcript excerpt when the runner exposes one).
 - =cancel-task= :: input =(:task-id STRING)=; cancels queued or running
   work.
+- =pause-task= :: input =(:task-id STRING)=; pauses a queued task in place or
+  a running task at its next turn boundary (see Pause and resume).
+- =resume-task= :: input =(:task-id STRING)=; returns a paused task to =queued=.
+- =pause-all= / =resume-all= :: no input; set or clear the queue-level pause
+  gate and pause/resume each non-terminal task.
 
 Callers reach these through =e-actions-call=, e.g.
 
@@ -193,7 +211,11 @@ buffer, newest-first, in the style of =e-picker= / =e-workspaces=:
 
 - Columns: enqueued-at, status, prompt-summary, outputs count.
 - Refreshes on queue change events.
-- Row actions: open the task's outputs / session, cancel the task.
+- Row actions: open the task's outputs / session, cancel the task, and
+  pause/resume the task on the current row.
+- Queue-level commands =e-task-queue-pause= and =e-task-queue-resume= toggle
+  the pause gate and pause/resume all non-terminal tasks; the header line
+  shows when the queue is paused.
 - Respects workspace awareness for display (use =e-workspace-*= helpers,
   not raw =switch-to-buffer=).
 
@@ -208,13 +230,67 @@ become an org-agenda review entry.  Wiring the grimoire side is a
 separate change in the grimoire project layer once this queue exists; it
 is named here only to fix the contract the queue must serve.
 
+** Pause and resume
+
+Pause is per-task, and =pause-all= / =resume-all= are convenience wrappers
+over the per-task operation, so there is one mechanism to reason about.
+
+- =paused= is non-terminal (see Status lifecycle).  A =queued= task pauses in
+  place.  A =running= task pauses at its turn boundary: the dispatcher asks the
+  runner handle to stop, which aborts the active turn through
+  =e-harness-abort=.  The turn's =turn-cancelled= settle is interpreted as a
+  pause when the task was marked pausing, not as a user cancel, so the record
+  lands in =paused= rather than =cancelled=.
+- Best-effort resume: there is no idempotency contract.  Resuming a paused task
+  moves it back to =queued= and the dispatcher re-runs it from =:prompt= on a
+  fresh session.  Any partial work from the aborted turn is preserved on the
+  record for inspection but is not fed back into the re-run.  This matches the
+  operator's stated intent: paused sessions are effectively aborted and simply
+  started again.
+- Pausing a =running= task frees its slot immediately for admission control, so
+  =pause-all= drains the running set down to zero over the next turn boundaries
+  without cancelling completed work.
+- A queue-level =paused-p= flag gates dispatch: while set, the dispatcher starts
+  no new tasks even if capacity is free.  =resume-all= clears it and re-runs
+  dispatch.  This is the operator's global "stop starting work" switch and is
+  independent of per-task pause.
+
+** Persistence across restarts
+
+The registry becomes durable so a restart does not lose the queue.  Persistence
+is best-effort and follows the =e-session= precedent for on-disk state.
+
+- =e-task-queue-directory= :: defcustom, default
+  =(locate-user-emacs-file "e/task-queue/")=, mirroring =e-session-directory=.
+  The default queue persists its records there; a queue constructed without a
+  directory stays in-memory (tests use in-memory queues).
+- Task records are the durable unit: =task-id=, =status=, =prompt=,
+  =prompt-summary=, =metadata=, =harness-instance-id=, the lifecycle timestamps,
+  =session-id=, =outputs=, and =error=.  The transient =:handle= and the live
+  harness are never persisted.
+- Writes are event-driven off the existing change hook: a task mutation queues a
+  debounced write of the queue's records, reusing the =e-session= write-queue
+  shape (a short delay coalesces bursts).  No synchronous disk write on the hot
+  enqueue/settle path.
+- On load, records are read back and the order list rebuilt.  A task that was
+  =running= at shutdown cannot have survived its turn, so it is normalized to
+  =queued= on load (best-effort resume: it simply re-runs).  =paused=, terminal,
+  and =queued= states load unchanged.  After load, dispatch runs once to pick up
+  re-queued and still-queued work under the cap.
+- The default queue loads at layer/startup time and is not blocking: load is
+  cooperative like =e-session= session loading, so a large backlog does not
+  freeze startup.
+
 * Non-goals
 
 - No priority scheduling, dependency graph, or worker-pool optimizer in
   the first slice; FIFO with a concurrency cap only.
-- No persistence of the queue across Emacs restarts in this slice; the
-  registry is in-memory like =e-agent-shell-work= and =e-elisp-job=.
-  (Durable queue state is a deliberate later slice.)
+- No persistence of the queue across Emacs restarts in Slices 1--3; that
+  registry is in-memory like =e-agent-shell-work= and =e-elisp-job=.  Slice 5
+  adds best-effort durability (see Persistence across restarts).
+- No priority reshuffle, dependency graph, or resume-from-partial-turn.  Resume
+  is best-effort: a paused/interrupted task re-runs from its prompt, with no
+  idempotency guarantee and no replay of the aborted turn's partial work.
 - No new core runtime primitive beside capabilities, sessions, tools,
   and backends; the queue is a capability + registry + shell over the
   existing harness turn path.
@@ -264,6 +340,34 @@ actions and workspace-aware display.
 - Verification: shell smoke (renders rows, refreshes on change);
   =e-dev-reload= and a bounded live probe when a server is available.
 
+** Slice 4 -- Pause and resume
+
+Add the =paused= state, per-task =pause= / =resume=, and the queue-level pause
+gate to the core registry; expose =pause-task=, =resume-task=, =pause-all=,
+=resume-all= actions; add row actions and =e-task-queue-pause= /
+=e-task-queue-resume= commands plus a paused indicator to the shell.
+
+- Stopping value: an operator can hold and release individual tasks or the
+  whole queue at turn boundaries without cancelling work.
+- Verification: ERT with a fake runner -- pause a queued task (holds, frees no
+  slot to take), pause a running task (aborts at boundary, lands =paused=, its
+  slot is freed for the next task), resume re-queues and re-runs, the
+  queue-level gate blocks dispatch while set; shell smoke for the new commands.
+
+** Slice 5 -- Persistence across restarts
+
+Make the default queue durable: =e-task-queue-directory=, debounced
+change-hook-driven writes of task records, cooperative load on startup, and
+the =running= -> =queued= normalization on load.  In-memory queues (no
+directory) are unchanged.
+
+- Stopping value: the queue survives an Emacs restart; queued and paused work
+  is not lost and re-runs best-effort.
+- Verification: ERT round-trip (persist records to a temp dir, reconstruct a
+  queue from disk, assert order and statuses, assert a =running= record loads
+  as =queued=); assert an in-memory queue writes nothing; a bounded live probe
+  that enqueues, simulates reload, and confirms the task reappears.
+
 Grimoire wiring is explicitly out of these slices (see Non-goals); it is
 a follow-up in the grimoire project layer once Slice 2 lands.
 
@@ -284,6 +388,14 @@ a follow-up in the grimoire project layer once Slice 2 lands.
 - =e-task-queue-list= opens a newest-first buffer that reflects live
   status changes.
 - The queue runs headless (no UI shell dependency in =e-task-queue.el=).
+- =pause-task= holds a queued task in =paused= without running it, and pauses a
+  running task at its turn boundary into =paused= while freeing its slot;
+  =resume-task= returns it to =queued= and it re-runs from its prompt.
+- =pause-all= stops the dispatcher from starting new work and drains running
+  tasks to =paused=; =resume-all= releases the gate and re-runs dispatch.
+- After an Emacs restart, the default queue reloads its tasks: queued and
+  paused tasks reappear, terminal tasks keep their status, and a task that was
+  running at shutdown reappears as =queued= and re-runs.
 
 * Verification
 
@@ -301,3 +413,10 @@ a follow-up in the grimoire project layer once Slice 2 lands.
 - =e-dev-reload= and a bounded live probe of =:enqueue= / =:list-tasks=
   when an Emacs server is available and the user has not asked to skip
   reload.
+- Pause/resume tests (Slice 4): queued-task pause holds and frees no slot,
+  running-task pause aborts at the boundary and lands =paused= while freeing
+  its slot, resume re-queues and re-runs, and the queue-level gate blocks
+  dispatch while set.
+- Persistence tests (Slice 5): a records round-trip through a temp directory
+  preserves order and statuses, a =running= record loads as =queued=, and an
+  in-memory queue (no directory) writes nothing.
