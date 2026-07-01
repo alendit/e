@@ -1,0 +1,73 @@
+#+title: run_elisp large result hangs Emacs investigation
+#+startup: overview
+
+* Evidence
+
+The live Emacs process was sampled twice:
+
+- =/private/tmp/emacs-18889.sample.txt=
+- =/private/tmp/emacs-18889-second.sample.txt=
+
+Both samples showed the same path:
+
+#+begin_example
+command_execute
+  completing_read / read_from_minibuffer
+    timer_check
+      timer_event_handler
+        lambda
+          prin1
+            print_object
+              printchar / insert_char
+                signal_after_change
+                  ws-butler-after-change
+                    garbage_collect
+                      current_message_1
+                        make_buffer_string_both
+                          copy_intervals / balance_an_interval
+#+end_example
+
+Physical footprint grew from about 9.6G to 12.6G between samples.
+
+The active session file
+=~/.emacs.d/.local/cache/e/sessions/sessions/20260701T062953-829bd4f64015.jsonl=
+had only four records: session creation, the user message, =turn-started=, and
+=provider-request-started=.  The provider-request diagnostics reported
+=tool-count=13=, but no tool-call record was persisted before the UI Emacs hung.
+
+* Source Path
+
+=run_elisp= is registered in =lisp/layers/emacs/e-emacs-tools.el=.  Before this
+fix, it evaluated the requested forms and returned:
+
+#+begin_example
+(list :result (prin1-to-string result))
+#+end_example
+
+That means the expensive part happened before the generic post-tool-call output
+truncation hook could protect the transcript.  The bash tool already maintains a
+bounded preview while output is produced; =run_elisp= needed equivalent guard
+rails at the result-formatting boundary.
+
+* Fix
+
+=run_elisp= now sanitizes evaluated values before printing:
+
+- strings are byte-bounded even when nested inside shallow containers;
+- lists, vectors, and hash tables are traversed only up to bounded depth and
+  entry counts;
+- cycles are replaced with a compact marker;
+- the final printed result string is byte-capped with a model-facing notice.
+
+This keeps the existing =run_elisp= surface and capability-action escape hatch
+intact while preventing a large return value from monopolizing live Emacs during
+result printing.
+
+* Validation
+
+Added focused ERT coverage in =test/e-emacs-tools-test.el= for:
+
+- bounded sequence previews;
+- top-level large string results;
+- large strings nested in a list;
+- final printed-result byte caps.

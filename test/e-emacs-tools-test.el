@@ -376,6 +376,80 @@ When READ-ONLY is non-nil, buffer resources only support reads."
                     :status)
                    'error))))
 
+(ert-deftest e-emacs-tools-test-run-elisp-bounds-sequence-results ()
+  "run_elisp bounds sequence printing before returning tool output."
+  (let ((registry (e-tools-registry-create))
+        (e-emacs-tools-run-elisp-print-length 3)
+        (e-emacs-tools-run-elisp-print-level 4)
+        (e-emacs-tools-run-elisp-result-max-bytes 1000))
+    (e-emacs-tools-register-run-elisp registry)
+    (should
+     (equal (plist-get
+             (e-tools-execute
+              registry
+              '(:id "call-1"
+                :name "run_elisp"
+                :arguments (:code "(number-sequence 1 10)")))
+             :content)
+            '(:result "(1 2 3 ...)")))))
+
+(ert-deftest e-emacs-tools-test-run-elisp-bounds-string-results ()
+  "run_elisp bounds large string results before printing them."
+  (let ((registry (e-tools-registry-create))
+        (e-emacs-tools-run-elisp-string-max-bytes 5)
+        (e-emacs-tools-run-elisp-result-max-bytes 1000))
+    (e-emacs-tools-register-run-elisp registry)
+    (let* ((result
+            (e-tools-execute
+             registry
+             '(:id "call-1"
+               :name "run_elisp"
+               :arguments (:code "(make-string 20 ?a)"))))
+           (printed (plist-get (plist-get result :content) :result)))
+      (should (eq (plist-get result :status) 'ok))
+      (should (string-match-p "aaaaa" printed))
+      (should-not (string-match-p "aaaaaaaaaaaaaaaaaaaa" printed))
+      (should (string-match-p "run_elisp string truncated" printed)))))
+
+(ert-deftest e-emacs-tools-test-run-elisp-bounds-nested-string-results ()
+  "run_elisp bounds large strings inside shallow containers."
+  (let ((registry (e-tools-registry-create))
+        (e-emacs-tools-run-elisp-string-max-bytes 5)
+        (e-emacs-tools-run-elisp-print-length 10)
+        (e-emacs-tools-run-elisp-print-level 4)
+        (e-emacs-tools-run-elisp-result-max-bytes 1000))
+    (e-emacs-tools-register-run-elisp registry)
+    (let* ((result
+            (e-tools-execute
+             registry
+             '(:id "call-1"
+               :name "run_elisp"
+               :arguments (:code "(list (make-string 20 ?a))"))))
+           (printed (plist-get (plist-get result :content) :result)))
+      (should (eq (plist-get result :status) 'ok))
+      (should (string-match-p "aaaaa" printed))
+      (should-not (string-match-p "aaaaaaaaaaaaaaaaaaaa" printed))
+      (should (string-match-p "run_elisp string truncated" printed)))))
+
+(ert-deftest e-emacs-tools-test-run-elisp-caps-final-printed-result ()
+  "run_elisp caps the final printed text after structural previewing."
+  (let ((registry (e-tools-registry-create))
+        (e-emacs-tools-run-elisp-print-length 100)
+        (e-emacs-tools-run-elisp-print-level 4)
+        (e-emacs-tools-run-elisp-string-max-bytes 100)
+        (e-emacs-tools-run-elisp-result-max-bytes 40))
+    (e-emacs-tools-register-run-elisp registry)
+    (let* ((result
+            (e-tools-execute
+             registry
+             '(:id "call-1"
+               :name "run_elisp"
+               :arguments (:code "(make-list 50 'tool)"))))
+           (printed (plist-get (plist-get result :content) :result)))
+      (should (eq (plist-get result :status) 'ok))
+      (should (<= (string-bytes printed) 200))
+      (should (string-match-p "run_elisp result truncated" printed)))))
+
 (ert-deftest e-emacs-tools-test-run-elisp-rejects-blocking-loads-interactively ()
   "Interactive run_elisp rejects blocking Elisp loading primitives."
   (let ((registry (e-tools-registry-create)))

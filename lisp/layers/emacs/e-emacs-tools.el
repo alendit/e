@@ -35,6 +35,26 @@ and loads their allowlisted `layer.el'/`capability.el'; without this bypass
 the guard would fire on that trusted load and abort the very elisp-job
 run-batch escape hatch it points at.")
 
+(defcustom e-emacs-tools-run-elisp-print-length 200
+  "Maximum sequence entries printed from a `run_elisp' result."
+  :type 'integer
+  :group 'e)
+
+(defcustom e-emacs-tools-run-elisp-print-level 8
+  "Maximum nesting depth printed from a `run_elisp' result."
+  :type 'integer
+  :group 'e)
+
+(defcustom e-emacs-tools-run-elisp-string-max-bytes 4096
+  "Maximum bytes retained from any string inside a `run_elisp' result."
+  :type 'integer
+  :group 'e)
+
+(defcustom e-emacs-tools-run-elisp-result-max-bytes (* 16 1024)
+  "Maximum bytes returned in the printed `run_elisp' result."
+  :type 'integer
+  :group 'e)
+
 (defun e-emacs-tools--buffer (name)
   "Return live buffer NAME or signal an explicit tool error."
   (or (get-buffer name)
@@ -448,6 +468,128 @@ When VISIBLE-ONLY is non-nil, include only buffers visible in windows."
      "%s is blocking in interactive run_elisp; inspect external Elisp with resource/file tools, or use (e-actions-call 'elisp-job :run-batch ...) for expensive validation and byte-compilation that must not freeze the live UI Emacs"
      primitive))))
 
+(defun e-emacs-tools--byte-prefix (text max-bytes)
+  "Return a UTF-8 safe prefix of TEXT no larger than MAX-BYTES."
+  (let ((bytes 0)
+        (index 0)
+        (limit (max 0 max-bytes)))
+    (while (and (< index (length text))
+                (let ((next-bytes
+                       (string-bytes (substring text index (1+ index)))))
+                  (when (<= (+ bytes next-bytes) limit)
+                    (setq bytes (+ bytes next-bytes))
+                    t)))
+      (setq index (1+ index)))
+    (substring text 0 index)))
+
+(defun e-emacs-tools--truncate-string-value (text)
+  "Return TEXT bounded for safe `run_elisp' result printing."
+  (let* ((max-bytes (max 0 e-emacs-tools-run-elisp-string-max-bytes))
+         (original-bytes (string-bytes text)))
+    (if (<= original-bytes max-bytes)
+        text
+      (let* ((preview (e-emacs-tools--byte-prefix text max-bytes))
+             (shown-bytes (string-bytes preview)))
+        (format
+         "%s\n[run_elisp string truncated: showing first %d of %d bytes]"
+         preview shown-bytes original-bytes)))))
+
+(defun e-emacs-tools--result-preview-value (value depth seen)
+  "Return a bounded preview copy of VALUE for `run_elisp' printing.
+DEPTH limits recursive descent.  SEEN tracks container identity to avoid cycles."
+  (cond
+   ((stringp value)
+    (e-emacs-tools--truncate-string-value value))
+   ((or (not value) (symbolp value) (numberp value) (characterp value))
+    value)
+   ((<= depth 0)
+    '...)
+   ((or (consp value) (vectorp value) (hash-table-p value))
+    (if (gethash value seen)
+        "#<cycle>"
+      (puthash value t seen)
+      (cond
+       ((consp value)
+        (let ((tail value)
+              (items nil)
+              (count 0)
+              (limit (max 0 e-emacs-tools-run-elisp-print-length)))
+          (while (and (consp tail) (< count limit))
+            (push (e-emacs-tools--result-preview-value
+                   (car tail) (1- depth) seen)
+                  items)
+            (setq tail (cdr tail))
+            (setq count (1+ count)))
+          (cond
+           ((consp tail)
+            (append (nreverse items) '(...)))
+           ((null tail)
+            (nreverse items))
+           (t
+            (nconc (nreverse items)
+                   (e-emacs-tools--result-preview-value
+                    tail (1- depth) seen))))))
+       ((vectorp value)
+        (let* ((limit (max 0 e-emacs-tools-run-elisp-print-length))
+               (count (min (length value) limit))
+               (items nil))
+          (dotimes (index count)
+            (push (e-emacs-tools--result-preview-value
+                   (aref value index) (1- depth) seen)
+                  items))
+          (apply #'vector
+                 (nreverse
+                  (if (< count (length value))
+                      (cons '... items)
+                    items)))))
+       ((hash-table-p value)
+        (let ((pairs nil)
+              (count 0)
+              (limit (max 0 e-emacs-tools-run-elisp-print-length))
+              (truncated nil))
+          (catch 'done
+            (maphash
+             (lambda (key entry)
+               (if (>= count limit)
+                   (progn
+                     (setq truncated t)
+                     (throw 'done nil))
+                 (push
+                  (cons
+                   (e-emacs-tools--result-preview-value key (1- depth) seen)
+                   (e-emacs-tools--result-preview-value entry (1- depth) seen))
+                  pairs)
+                 (setq count (1+ count))))
+             value))
+          (list :hash-table-preview (nreverse pairs)
+                :truncated truncated
+                :test (hash-table-test value)))))))
+   (t value)))
+
+(defun e-emacs-tools--truncate-printed-result (text)
+  "Return TEXT capped to `e-emacs-tools-run-elisp-result-max-bytes'."
+  (let* ((max-bytes (max 0 e-emacs-tools-run-elisp-result-max-bytes))
+         (original-bytes (string-bytes text)))
+    (if (<= original-bytes max-bytes)
+        text
+      (let* ((preview (e-emacs-tools--byte-prefix text max-bytes))
+             (shown-bytes (string-bytes preview)))
+        (format
+         "%s\n\n[run_elisp result truncated: showing first %d of %d bytes. Return a smaller scalar or use elisp-job for large inspection.]"
+         preview shown-bytes original-bytes)))))
+
+(defun e-emacs-tools--bounded-result-string (value)
+  "Return a bounded printed representation of VALUE for `run_elisp'."
+  (let* ((preview
+          (e-emacs-tools--result-preview-value
+           value
+           (max 0 e-emacs-tools-run-elisp-print-level)
+           (make-hash-table :test 'eq)))
+         (print-length (max 0 e-emacs-tools-run-elisp-print-length))
+         (print-level (max 0 e-emacs-tools-run-elisp-print-level)))
+    (e-emacs-tools--truncate-printed-result
+     (prin1-to-string preview))))
+
 (defmacro e-emacs-tools--with-run-elisp-load-guard (&rest body)
   "Run BODY while rejecting blocking Elisp loading in interactive contexts."
   (declare (indent 0) (debug t))
@@ -568,7 +710,7 @@ When VISIBLE-ONLY is non-nil, include only buffers visible in windows."
        (e-emacs-tools--with-run-elisp-load-guard
          (dolist (form forms)
            (setq result (eval form t))))
-       (list :result (prin1-to-string result))))))
+       (list :result (e-emacs-tools--bounded-result-string result))))))
 
 (defun e-emacs-tools-register-elisp-eval (registry)
   "Register explicit elisp evaluation tools in REGISTRY."

@@ -1,0 +1,19 @@
+#+title: run_elisp large result hangs Emacs
+#+startup: overview
+
+* Report
+
+The running Emacs became unresponsive after an =e= chat turn asked:
+
+#+begin_quote
+How many tools are loaded in this session?
+#+end_quote
+
+A macOS stack sample showed the main thread repeatedly inside a timer handler
+printing a large Lisp object with =prin1=.  The insertion then triggered
+=ws-butler-after-change= and heavy GC/text-property interval work.  Even a small
+=emacsclient --timeout=2 --eval ...= probe timed out while the hang was active.
+
+The expected behavior is that =run_elisp= cannot freeze the live UI Emacs merely
+by returning a large value.  It should return a bounded, model-facing preview and
+direct large inspection work toward batch =elisp-job=.
