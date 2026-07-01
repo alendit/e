@@ -479,6 +479,77 @@ When READ-ONLY is non-nil, buffer resources only support reads."
                    "elisp-job"
                    (format "%s" (plist-get result :content)))))))))
 
+(defun e-emacs-tools-test--run-elisp-arguments (registry arguments &optional context)
+  "Run ARGUMENTS through REGISTRY's `run_elisp' tool and return the result."
+  (let (result)
+    (e-tools-start
+     registry
+     (list :id "call-1"
+           :name "run_elisp"
+           :arguments arguments)
+     :context context
+     :on-done (lambda (value) (setq result value)))
+    (while (not result)
+      (accept-process-output nil 0.01))
+    result))
+
+(ert-deftest e-emacs-tools-test-run-elisp-timeout-resolves-effective-value ()
+  "The run_elisp timeout resolver honors overrides and the default cap."
+  (let ((e-emacs-tools-run-elisp-default-timeout 10))
+    ;; No override falls back to the default cap.
+    (should (equal (e-emacs-tools--run-elisp-timeout '()) 10))
+    ;; A positive override wins over the default.
+    (should (equal (e-emacs-tools--run-elisp-timeout '(:timeout 2)) 2))
+    ;; A non-positive override disables the cap for that call.
+    (should (null (e-emacs-tools--run-elisp-timeout '(:timeout 0))))
+    (should (null (e-emacs-tools--run-elisp-timeout '(:timeout -1))))
+    ;; A nil default with no override runs uncapped.
+    (let ((e-emacs-tools-run-elisp-default-timeout nil))
+      (should (null (e-emacs-tools--run-elisp-timeout '()))))
+    ;; A non-numeric timeout is rejected.
+    (should-error (e-emacs-tools--run-elisp-timeout '(:timeout "soon"))
+                  :type 'wrong-type-argument)))
+
+(ert-deftest e-emacs-tools-test-run-elisp-default-timeout-aborts-runaway ()
+  "The default cap aborts a long-running eval and nudges toward elisp-job.
+The eval blocks in `sleep-for'; `with-timeout' only fires at such a wait
+point, so the test loop must yield rather than spin the CPU."
+  (let ((registry (e-tools-registry-create))
+        (e-emacs-tools-run-elisp-default-timeout 0.1))
+    (e-emacs-tools-register-run-elisp registry)
+    (let ((result (e-emacs-tools-test--run-elisp-arguments
+                   registry
+                   '(:code "(sleep-for 30)"))))
+      (should (eq (plist-get result :status) 'error))
+      (let ((content (format "%s" (plist-get result :content))))
+        (should (string-match-p "aborted after" content))
+        (should (string-match-p "elisp-job" content))
+        (should (string-match-p ":timeout" content))))))
+
+(ert-deftest e-emacs-tools-test-run-elisp-timeout-argument-overrides-default ()
+  "A per-call :timeout lowers the cap below a generous default."
+  (let ((registry (e-tools-registry-create))
+        (e-emacs-tools-run-elisp-default-timeout 60))
+    (e-emacs-tools-register-run-elisp registry)
+    (let ((result (e-emacs-tools-test--run-elisp-arguments
+                   registry
+                   '(:code "(sleep-for 30)" :timeout 0.1))))
+      (should (eq (plist-get result :status) 'error))
+      (should (string-match-p
+               "aborted after 0.1 seconds"
+               (format "%s" (plist-get result :content)))))))
+
+(ert-deftest e-emacs-tools-test-run-elisp-timeout-allows-quick-eval ()
+  "A quick evaluation returns its value even under a tight cap."
+  (let ((registry (e-tools-registry-create))
+        (e-emacs-tools-run-elisp-default-timeout 5))
+    (e-emacs-tools-register-run-elisp registry)
+    (let ((result (e-emacs-tools-test--run-elisp-arguments
+                   registry
+                   '(:code "(+ 1 2)" :timeout 0.5))))
+      (should (eq (plist-get result :status) 'ok))
+      (should (equal (plist-get result :content) '(:result "3"))))))
+
 (ert-deftest e-emacs-tools-test-run-elisp-bypass-permits-trusted-load ()
   "Interactive run_elisp permits a load wrapped in the trusted-load bypass.
 Trusted runtime code (e.g. project-local layer resolution reached through
@@ -664,6 +735,44 @@ agent-authored loads in the same interactive context."
       (should (eq (plist-get result :status) 'ok))
       (should (equal (plist-get result :content)
                      '(:result "t"))))))
+
+(ert-deftest e-emacs-tools-test-run-elisp-elisp-job-loads-tmp-resources-under-guard ()
+  "run_elisp's elisp-job dispatch resolves tmp resources through the load guard.
+Regression: `e-elisp-job--output-target' requires `e-session-tmp-resources'
+while the interactive `run_elisp' load guard is active.  The guard lets a
+require through only for an already-loaded feature or a bypassed load, so the
+trusted runtime require must bind the bypass.  Shadowing `features' here
+removes the feature so the guard's featurep shortcut cannot mask the bug: the
+job errors unless the bypass is bound."
+  (pcase-let* ((context (e-emacs-tools-test--elisp-job-harness))
+               (`(:harness ,harness :session-id ,session-id) context)
+               (loaded (featurep 'e-session-tmp-resources)))
+    ;; `run_elisp' evaluates on a timer, outside this body's dynamic extent,
+    ;; and dispatching through `e-actions-call' reloads the feature via trusted
+    ;; layer discovery, so neither the full path nor a `let'-shadow of
+    ;; `features' can reproduce the bug.  Exercise the exact guarded require
+    ;; directly: run `e-elisp-job--output-target' under the same load guard in
+    ;; an interactive context, with `e-session-tmp-resources' genuinely absent
+    ;; from `features'.
+    ;;
+    ;; `featurep' reads the C `Vfeatures' cell and ignores a `let'-binding of
+    ;; `features', so the feature must be removed from the global list with
+    ;; `setq' (restored in `unwind-protect').  With the feature absent, the
+    ;; guard's require shim rejects the load unless `output-target' binds the
+    ;; bypass -- which is exactly the regression this guards.
+    (unwind-protect
+        (let ((e-tools--current-context (list :interactive t
+                                              :harness harness
+                                              :session-id session-id)))
+          (setq features (remq 'e-session-tmp-resources features))
+          (should-not (featurep 'e-session-tmp-resources))
+          (let ((target (e-emacs-tools--with-run-elisp-load-guard
+                          (e-elisp-job--output-target
+                           (list :harness harness :session-id session-id)
+                           "elisp-job-test-1"))))
+            (should (string-prefix-p "tmp://" (plist-get target :uri)))))
+      (when (and loaded (not (featurep 'e-session-tmp-resources)))
+        (add-to-list 'features 'e-session-tmp-resources)))))
 
 (ert-deftest e-emacs-tools-test-run-elisp-never-enters-debugger ()
   "run_elisp surfaces errors as tool errors without popping the debugger.

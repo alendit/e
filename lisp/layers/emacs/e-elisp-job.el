@@ -35,6 +35,11 @@ When nil, prefer the current Emacs executable and fall back to `emacs' on
   :type 'number
   :group 'e-elisp-job)
 
+;; Declared by `e-emacs-tools'.  A worker job is dispatched from `run_elisp'
+;; through `e-actions-call', so this file's own trusted loads run inside the
+;; interactive load guard; binding the bypass lets them resolve.
+(defvar e-emacs-tools-bypass-run-elisp-load-guard)
+
 (define-error 'e-elisp-job-invalid "Elisp job input is invalid")
 
 (defvar e-elisp-job--jobs (make-hash-table :test #'equal)
@@ -193,7 +198,11 @@ When nil, prefer the current Emacs executable and fall back to `emacs' on
          (session-id (plist-get action-context :session-id)))
     (if (and harness
              session-id
-             (require 'e-session-tmp-resources nil t)
+             ;; This is a trusted runtime load, not agent-authored code.  Bind
+             ;; the bypass so the interactive `run_elisp' load guard permits it
+             ;; instead of rejecting the require that backs the job output file.
+             (let ((e-emacs-tools-bypass-run-elisp-load-guard t))
+               (require 'e-session-tmp-resources nil t))
              (fboundp 'e-session-tmp-file-path))
         (list :path (e-session-tmp-file-path harness session-id relative)
               :uri (concat "tmp://" relative))

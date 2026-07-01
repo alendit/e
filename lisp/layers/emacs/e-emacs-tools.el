@@ -25,6 +25,8 @@
 (define-error 'e-emacs-tools-save-invalid "Emacs buffer cannot be saved")
 (define-error 'e-emacs-tools-blocking-elisp-load
   "Blocking Elisp loading is not allowed in interactive run_elisp")
+(define-error 'e-emacs-tools-run-elisp-timeout
+  "run_elisp evaluation exceeded its time budget")
 
 (defvar e-emacs-tools-bypass-run-elisp-load-guard nil
   "When non-nil, the interactive `run_elisp' load guard permits blocking loads.
@@ -53,6 +55,22 @@ run-batch escape hatch it points at.")
 (defcustom e-emacs-tools-run-elisp-result-max-bytes (* 16 1024)
   "Maximum bytes returned in the printed `run_elisp' result."
   :type 'integer
+  :group 'e)
+
+(defcustom e-emacs-tools-run-elisp-default-timeout 10
+  "Default seconds before interactive `run_elisp' evaluation is aborted.
+A `run_elisp' call may override this with its own `:timeout' argument.  When
+nil, evaluation runs uncapped unless the call supplies a timeout.
+
+The timeout is a cooperative backstop, not a hard kill.  It fires from a
+timer on the single Emacs thread, and that timer only runs when execution
+reaches a wait point (`sleep-for', `sit-for', `accept-process-output',
+I/O).  So it aborts an eval that blocks or waits, but it cannot preempt a
+tight compute loop such as (while t) -- that spins until the process is
+killed.  Long or guaranteed-killable work belongs in `elisp-job', which
+runs a separate process."
+  :type '(choice (const :tag "Uncapped" nil)
+                 number)
   :group 'e)
 
 (defun e-emacs-tools--buffer (name)
@@ -468,6 +486,26 @@ When VISIBLE-ONLY is non-nil, include only buffers visible in windows."
      "%s is blocking in interactive run_elisp; inspect external Elisp with resource/file tools, or use (e-actions-call 'elisp-job :run-batch ...) for expensive validation and byte-compilation that must not freeze the live UI Emacs"
      primitive))))
 
+(defun e-emacs-tools--run-elisp-timeout (arguments)
+  "Return the effective `run_elisp' timeout in seconds from ARGUMENTS.
+A positive numeric `:timeout' argument overrides
+`e-emacs-tools-run-elisp-default-timeout'.  A non-positive `:timeout' disables
+the cap for that call.  Returns nil when evaluation should run uncapped."
+  (let ((value (plist-get arguments :timeout)))
+    (cond
+     ((null value) e-emacs-tools-run-elisp-default-timeout)
+     ((numberp value) (and (> value 0) value))
+     (t (signal 'wrong-type-argument (list 'numberp :timeout))))))
+
+(defun e-emacs-tools--reject-run-elisp-timeout (timeout)
+  "Signal that `run_elisp' evaluation exceeded TIMEOUT seconds."
+  (signal
+   'e-emacs-tools-run-elisp-timeout
+   (list
+    (format
+     "run_elisp evaluation aborted after %s seconds; move long-running work to (e-actions-call 'elisp-job :run-batch ...), which runs a separate process you can poll and cancel, or pass a larger :timeout for a one-off"
+     timeout))))
+
 (defun e-emacs-tools--byte-prefix (text max-bytes)
   "Return a UTF-8 safe prefix of TEXT no larger than MAX-BYTES."
   (let ((bytes 0)
@@ -687,14 +725,21 @@ DEPTH limits recursive descent.  SEEN tracks container identity to avoid cycles.
     "not load, require, byte-compile, or recursively scan external Elisp here "
     "during an interactive turn. Use "
     "(e-actions-call 'elisp-job :run-batch ...) for expensive validation or "
-    "byte-compilation that must not freeze the live UI Emacs.")
+    "byte-compilation that must not freeze the live UI Emacs. Evaluation is "
+    "time-capped; pass :timeout seconds to raise or lower the cap for one "
+    "call, and move long-running work to elisp-job.")
    :parameters '(:type "object"
-                 :properties (:code (:type "string"))
+                 :properties
+                 (:code (:type "string")
+                  :timeout
+                  (:type "number"
+                   :description "Seconds before evaluation is aborted. Overrides the default cap; a value <= 0 disables it for this call. Aborts evals that block or wait; it cannot stop a tight compute loop, so use elisp-job for that."))
                  :required ["code"])
    :handler
    (lambda (arguments)
      (let* ((code (e-emacs-tools--argument-string arguments :code))
             (forms (e-emacs-tools--read-forms code))
+            (timeout (e-emacs-tools--run-elisp-timeout arguments))
             ;; Never let agent code pop the interactive debugger.  This runs
             ;; with no human to dismiss it, so an error (or agent code that
             ;; sets `debug-on-error') would otherwise enter `debug', whose own
@@ -708,8 +753,18 @@ DEPTH limits recursive descent.  SEEN tracks container identity to avoid cycles.
             (eval-expression-debug-on-error nil)
             result)
        (e-emacs-tools--with-run-elisp-load-guard
-         (dolist (form forms)
-           (setq result (eval form t))))
+         ;; `with-timeout' arms a timer that throws only when execution
+         ;; reaches a wait point.  It aborts an eval that blocks or waits
+         ;; (sleep-for, I/O, process waits) but cannot preempt a tight compute
+         ;; loop such as (while t); the guaranteed kill is elisp-job's separate
+         ;; process, which the timeout message points agents toward.
+         (if timeout
+             (with-timeout (timeout
+                            (e-emacs-tools--reject-run-elisp-timeout timeout))
+               (dolist (form forms)
+                 (setq result (eval form t))))
+           (dolist (form forms)
+             (setq result (eval form t)))))
        (list :result (e-emacs-tools--bounded-result-string result))))))
 
 (defun e-emacs-tools-register-elisp-eval (registry)
