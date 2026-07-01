@@ -25,12 +25,19 @@ Implemented in this feature:
 - chat activity rendering that counts actions separately from tools;
 - reusable usage reporting through =e-usage-report-session= with separate tool/action rows and optional zero-use active-surface rows;
 - removal of obsolete e built-in semantic tool registration helpers for workspace awareness, Org Canvas, annotations, session compaction, and context inspection;
-- live reload coverage for the migrated action path.
+- live reload coverage for the migrated action path;
+- grimoire project-local migration: the topic capability's 26 verbs plus the
+  agenda-apply, agenda-review, agenda-triage, and quest-backfill capabilities
+  are now =:actions= plists reached via =e-actions-call=, with instructions,
+  README, shell prompts, AGENTS.md, and all SKILL.md guidance updated;
+- personal dev-sync layer migration: =dev_sync_*= became the =dev-sync=
+  capability actions =:preflight=, =:compile-check=, =:integrate=, =:push=,
+  with the =/e-dev-sync= prompt and instructions updated.
 
 Still open:
 
-- grimoire and personal layer migrations outside this repository;
-- =multi_tool_use.parallel= migration or removal.
+- =multi_tool_use.parallel= migration or removal (the only remaining item; the
+  Slack MCP tool surface stays a tool surface as an explicit follow-up).
 
 Current implementation state as of 2026-06-30:
 
@@ -43,8 +50,10 @@ Current implementation state as of 2026-06-30:
   Workspace awareness, Org Canvas, annotations, session compaction, and context inspection expose action descriptors.
   Guidance for =run_elisp= and workspace and annotation workflows points agents to =e-actions-call= and =e-action://= contracts.
   Obsolete model-facing semantic tool registration helpers were removed from e source.
-- Phase 3 remains external follow-up work.
-  The grimoire and personal layer migrations remain planned work outside this repository.
+- Phase 3 is implemented for the grimoire and personal layers.
+  The grimoire topic capability exposes 26 actions; agenda-apply, agenda-review, agenda-triage, and quest-backfill expose their verbs as actions; and the personal dev-sync layer exposes preflight/compile-check/integrate/push as actions.
+  All four capability files plus dev-sync byte-compile clean under =byte-compile-error-on-warn=, and guidance (instructions, README, shell prompts, AGENTS.md, SKILL.md) was updated to the =e-actions-call= forms.
+  The =multi_tool_use.parallel= decision and the Slack MCP tool surface remain the only open follow-ups.
 - The focused verification currently passes.
   =eldev test test/e-loop-test.el test/e-org-canvas-test.el test/e-session-compaction-action-test.el test/e-usage-report-test.el test/e-actions-test.el test/e-harness-test.el test/e-annotation-tools-test.el test/e-context-inspection-test.el= passed 220/220 tests.
 
