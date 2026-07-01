@@ -1,0 +1,38 @@
+#+title: Composer Clear-All and Previous-Message Recall
+#+startup: overview
+
+* Change
+
+Add two chat composer commands:
+
+- *Clear all* — wipe the composer in one keystroke. =C-g C-g= (double
+  =C-g=) is the wanted gesture, but a single =C-g= is already keyboard-quit
+  and the debug layer binds a =C-g= sequence, so resolve the conflict rather
+  than shadow either: bind clear-all to a distinct key (or a prefixed
+  =C-c=-based binding) that does not collide with quit or debug, and only
+  treat a deliberate double-=C-g= as clear-all if it can be done without
+  weakening quit.
+- *Go back to the previous message* — recall the previously submitted
+  prompt into the composer for re-editing, like shell history previous. It
+  must be reversible: after going back, a forward command returns to "what I
+  just typed" (the draft that was in the composer before recall), so a
+  mis-press never loses the current draft.
+
+* Why tiny
+
+This is composer-local keybinding + a small history ring (previous submitted
+prompt + stashed current draft). No session, backend, or context changes.
+The only real care is the =C-g= conflict, which is a binding decision, not
+new machinery.
+
+* Open decision (resolve in implementation)
+
+The exact keys: confirm whether double-=C-g= for clear-all is achievable
+without degrading =keyboard-quit= and the debug =C-g= sequence; if not, pick
+clean =C-c=-prefixed bindings and note them in the composer help.
+
+* Validation
+
+- Focused test: submitting a prompt then invoking previous-message recalls
+  it; forward returns the stashed draft; clear-all empties the composer.
+- =git diff --check=.

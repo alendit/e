@@ -1,0 +1,92 @@
+#+title: Annotation-Reactive Background Sessions
+#+startup: overview
+
+* Goal
+
+Let =e= react to a new Simply Annotate thread — or a new reply on an
+existing thread — without an explicit prompt: a background session wakes on
+the annotation change, reads the thread, and produces a response (a reply
+annotation, or an edit proposal) on its own.
+
+* Status
+
+Planned.
+
+* Problem
+
+Annotation review today is pull-based: a human opens the thread and asks the
+agent to respond. The agenda review loop wants the opposite — when a
+reviewer leaves a note on a proposal, the agent should notice and react in
+the background, so the human comes back to an answer rather than an empty
+thread. =e= already has the two halves but they are not connected:
+
+- =e-background-session= wakes a long-lived session on a filesystem or
+  schedule trigger and submits a fixed prompt. Its trigger is paths/time,
+  not "an annotation thread changed".
+- The annotations capability exposes =list= / =add= / =resolve= over a
+  Simply Annotate database, but nothing watches it for change.
+
+* Design
+
+** Annotation change trigger
+
+Add an annotation-change trigger that fires a background session when the
+annotation database gains a new top-level thread or a new reply:
+
+- Watch the annotation store (file-notify on the DB file is enough for the
+  Simply Annotate JSON store; a hook on the capability's add path is
+  cleaner when available).
+- Debounce and busy-skip exactly like =e-background-session= (coalesce a
+  burst, never stack turns on a running session).
+- The trigger payload identifies the changed thread (org-id / annotation id)
+  so the woken prompt is scoped to that thread, not the whole DB.
+
+** What the woken session does
+
+The submitted prompt is fixed and scoped: "thread X changed; read it and
+react." The session uses the annotations actions to read the thread and then
+either:
+
+- posts a reply annotation (answering a reviewer question), or
+- emits a review verdict proposal through the existing
+  =agenda_review_resolve= path when the human reply is an accept/reject —
+
+never accepting on the user's behalf beyond what that path already allows.
+Domain policy stays in the annotation/agenda tools; the trigger only submits
+a prompt, mirroring the background-session contract.
+
+** Loop, not a one-off
+
+This is the annotation case of the deferred generic "loop" idea. Build it as
+a background *session* over the ordinary harness turn path (like
+=e-background-session=), not a new core primitive. It should be startable
+headless so a triage session can leave it running.
+
+* Non-goals
+
+- No new core runtime primitive; reuse the background-session turn path.
+- No auto-accept of proposals beyond existing =agenda_review_resolve=
+  semantics.
+- No polling of remote services; the trigger is local annotation-store
+  change.
+- Do not build the generic multi-trigger loop engine here; just the
+  annotation trigger.
+
+* Acceptance
+
+- Adding a new annotation thread (or reply) wakes a background session that
+  reads that thread and posts a scoped reaction, with no human prompt.
+- A burst of annotation edits coalesces into one fire; a fire is skipped
+  while the session has a running turn.
+- The reaction is confined to the changed thread.
+- The session runs headless and never accepts beyond the existing review
+  path.
+
+* Verification
+
+- Focused ERT tests: trigger fires on add/reply, debounce coalescing,
+  busy-skip, thread-scoped prompt payload.
+- =git diff --check=.
+- =e-dev-reload= and a bounded live probe adding a fixture annotation and
+  asserting one scoped fire when an Emacs server is available and the user
+  has not asked to skip reload.

@@ -1,0 +1,97 @@
+#+title: Chat Image Support
+#+startup: overview
+
+* Goal
+
+Let a user put images into an =e= chat turn and let the model see them:
+attach an image from a file or the kill-ring/clipboard, show a compact
+placeholder in the composer/transcript, and send it to the provider as an
+image content block alongside the text of the turn.
+
+* Status
+
+Planned.
+
+* Problem
+
+=e= turns are text-only today. The chat composer collects a string, the
+session submit path validates non-empty text, and the backend request
+carries text content blocks. There is no way to hand the model a
+screenshot, a diagram, or a pasted image, even though every supported
+provider accepts image input. For an Emacs-hosted agent that reasons about
+UI state, crash screenshots, plots, and whiteboard photos, that is a real
+gap.
+
+* Design
+
+** Attachment model
+
+Add an *image reference* to the same reference/attachment channel the
+composer already uses for context, rather than inventing a parallel
+mechanism:
+
+- An image reference carries =:kind 'image=, a source (=:file= path or
+  in-memory =:data= + =:media-type=), and an optional short =:label=.
+- The composer renders it as a one-line placeholder (e.g.
+  =[image: screenshot.png]=) so the buffer stays readable; the bytes are
+  not inlined into the visible text.
+
+** Entry points
+
+- =e-chat-attach-image-file= :: prompt for a file, attach it to the pending
+  turn.
+- =e-chat-yank-image= :: pull an image from the system clipboard / kill-ring
+  when one is present (macOS =pngpaste=-style and Linux paths behind a small
+  capability check), else say so.
+- Drag-and-drop onto the chat buffer is a later nicety, not in this slice.
+
+** Backend content blocks
+
+Extend the request content shape so a turn's user message can carry image
+blocks in addition to text. The provider adapters translate the neutral
+image block into the provider wire format:
+
+- Anthropic: an =image= content block with base64 =source=.
+- The neutral block is =(:type image :media-type STRING :data BASE64)= or a
+  provider-side file upload when the provider prefers a handle.
+
+Adapters that cannot accept images degrade with a clear, non-silent error
+on send, leaving the composer intact (mirroring how steering reports an
+un-steerable backend).
+
+** Size / cost guards
+
+- Enforce a configurable max encoded size and downscale oversized images
+  before send, with a defcustom for the cap.
+- Count image blocks in the turn's context budget so a large paste does not
+  silently blow the window.
+
+* Non-goals
+
+- No image *generation* or model image *output* handling in this slice.
+- No OCR or local vision preprocessing.
+- No drag-and-drop or inline thumbnail rendering in the transcript yet.
+- No new model-facing tool; this is composer/session/adapter wiring.
+
+* Acceptance
+
+- A user can attach a PNG/JPEG file to a chat turn and the model's reply
+  demonstrates it saw the image.
+- A pasted clipboard image attaches when the platform helper is available,
+  and reports clearly when it is not.
+- The composer shows a compact placeholder, not raw bytes.
+- Oversized images are downscaled or rejected per the configured cap, never
+  sent unbounded.
+- A provider that cannot accept images returns a clear send-time error and
+  preserves the composer.
+
+* Verification
+
+- Focused ERT tests: image reference attach/detach, neutral->Anthropic block
+  translation, size-cap downscale/reject, budget accounting.
+- A provider-unsupported path test asserting the clear error and intact
+  composer.
+- =git diff --check=.
+- =e-dev-reload= and a bounded live probe attaching a small fixture image
+  when an Emacs server is available and the user has not asked to skip
+  reload.

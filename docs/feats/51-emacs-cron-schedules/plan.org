@@ -1,0 +1,94 @@
+#+title: Emacs Cron Schedules for e
+#+startup: overview
+
+* Goal
+
+Give =e= a first-class, declarative way to run agent work on a schedule:
+cron-like recurrence ("every weekday at 09:00", "every 30 min") that wakes a
+session or enqueues a task, defined in config and inspectable/cancelable at
+runtime — built on Emacs timers, no external cron.
+
+* Status
+
+Planned.
+
+* Problem
+
+=e-background-session= already supports a =schedule-seconds= trigger, but it
+is a single fixed interval per trigger, configured in Lisp, with no calendar
+recurrence (time of day, day of week), no central registry to list/cancel
+schedules, and no integration with the new task queue. There is no way to
+say "run the inbox triage sweep every morning" or "refresh sources nightly"
+without hand-rolling a timer.
+
+* Design
+
+** Schedule spec
+
+A declarative schedule entry:
+
+- =id= :: stable identifier.
+- =when= :: a recurrence — either an interval (=:every 1800=) or a
+  calendar spec (=:at "09:00" :on (mon tue wed thu fri)=). Keep the
+  calendar surface small and explicit; do not reimplement full crontab
+  syntax in the first slice.
+- =action= :: what to fire — =:enqueue= a task-queue prompt, or =:wake= a
+  background session, or call a named handler.
+- =metadata= :: opaque, passed through to the fired work.
+
+** Engine
+
+- A registry of schedule entries plus an Emacs-timer scheduler that computes
+  the next fire time from =when= and re-arms after each fire (calendar specs
+  recompute against local time; interval specs re-add).
+- Fires route to the existing primitives: a =:enqueue= schedule calls
+  =e-task-queue-enqueue=; a =:wake= schedule submits to a background session.
+  The engine owns *timing only*; it does not run turns itself.
+- Busy-skip / catch-up policy is explicit per entry (skip a missed fire vs.
+  run once on resume); default skip, matching background-session semantics.
+
+** Inspect and control
+
+- A registry list + a shell command/buffer to see schedules, their next
+  fire time, and last fire, and to enable/disable/cancel one.
+- Schedules are config-defined (global/project) and runtime-inspectable; a
+  disabled schedule survives restart as config but does not arm.
+
+** Relationship to other features
+
+- This is the *timing* source; the task queue (47) is the *execution*
+  substrate and the background session is the *prompt* substrate. A nightly
+  triage is "schedule -> enqueue triage prompt"; a periodic source refresh
+  is "schedule -> wake the sources session".
+- Annotation-reactive sessions (50) are the push-triggered counterpart;
+  together they cover schedule and push, the two triggers the loops idea
+  called for.
+
+* Non-goals
+
+- No full crontab string parser in the first slice; a small explicit
+  calendar spec only.
+- No persistence of fire history beyond the last fire in this slice.
+- No distributed/multi-Emacs scheduling; timers run in the live Emacs.
+- No new core primitive; the engine is a registry + timers feeding existing
+  task-queue / background-session entry points.
+
+* Acceptance
+
+- A calendar schedule ("weekdays at 09:00") and an interval schedule
+  ("every 30 min") both fire at the right times in a test clock.
+- A =:enqueue= schedule lands a task on the queue; a =:wake= schedule submits
+  to a background session.
+- Schedules are listable with next/last fire and can be disabled/cancelled
+  at runtime.
+- A missed fire follows the entry's catch-up policy (default skip).
+
+* Verification
+
+- Focused ERT tests with an injected clock: next-fire computation for
+  interval and calendar specs, re-arm after fire, busy-skip/catch-up,
+  enqueue vs. wake routing, disable/cancel.
+- =git diff --check=.
+- =e-dev-reload= and a bounded live probe arming a short interval schedule
+  and asserting one fire when an Emacs server is available and the user has
+  not asked to skip reload.

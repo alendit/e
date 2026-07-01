@@ -1,0 +1,85 @@
+#+title: Chat Org Output Mode
+#+startup: overview
+
+* Goal
+
+Add an optional chat *output mode* that renders assistant responses as Org
+instead of the default Markdown: real Org headings, lists, source blocks,
+and clickable Org links. It is a per-session/per-project setting, off by
+default, for users who live in Org and want to yank chat output straight
+into a note.
+
+* Status
+
+Planned.
+
+* Problem
+
+The chat transcript renders assistant text as Markdown. For a user whose
+knowledge base is Org (grimoire, daily notes, topics), that means every
+useful response has to be hand-converted before it lands in a note: heading
+syntax, list bullets, code fences, and especially links all differ. The
+model also has no signal that Org is the wanted target, so it emits
+Markdown link syntax that is dead in an Org buffer.
+
+This is the chat-buffer analogue of the existing =output-style= capability,
+but about *output format/markup*, not prose voice — the two compose.
+
+* Design
+
+** A setting, not a default
+
+- A defcustom / capability-config flag (=e-chat-output-mode=, default
+  =markdown=) selectable globally and per project, plus a command to toggle
+  the active session.
+- When =org=: the chat buffer renders the assistant message region in
+  =org-mode= fontification (or an Org-aware view), and the model is told to
+  emit Org markup.
+
+** Telling the model
+
+When Org output mode is active, the chat layer contributes a small system
+instruction (same system channel the output-style capability uses) that
+says: emit Org markup — =*=/=**= headings, =-=/=1.= lists, =#+begin_src=
+blocks, and Org link syntax =[[target][text]]= — not Markdown. This is the
+"rich links etc." part: links the user can actually click in Org.
+
+** Rendering
+
+- The transcript renderer gains an Org branch: fontify assistant regions
+  with Org, keep the existing Markdown branch as default.
+- Keep the composer plain; this is about *output* rendering, not input.
+- A "copy response as Org" affordance is natural here but optional.
+
+** Interaction with org-canvas
+
+Org-canvas already makes an Org *document* the surface. This feature is the
+lighter case: an ordinary chat buffer whose *responses* are Org. They share
+the Org-link convention; do not entangle them — output mode must work in a
+plain chat session with no canvas attached.
+
+* Non-goals
+
+- Not a full Org renderer with tables/babel execution in the transcript;
+  render markup, do not execute.
+- No automatic Markdown<->Org conversion of historical messages on toggle;
+  the mode applies to new turns.
+- Does not replace org-canvas; it is the no-canvas, response-only case.
+
+* Acceptance
+
+- With output mode =org=, a new assistant response renders as Org and its
+  links are clickable Org links.
+- The setting is per-project and per-session, default =markdown=, with a
+  toggle command.
+- It composes with =output-style= (e.g. =hemingway= + =org= works).
+- A plain chat session with no canvas honors the mode.
+
+* Verification
+
+- Focused ERT tests: mode resolution (global/project/session), presence of
+  the Org-output system instruction when active, renderer branch selection.
+- =git diff --check=.
+- =e-dev-reload= and a bounded live probe toggling the mode and checking the
+  contributed instruction when an Emacs server is available and the user has
+  not asked to skip reload.
