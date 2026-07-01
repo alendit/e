@@ -224,13 +224,11 @@ buffer, newest-first, in the style of =e-picker= / =e-workspaces=:
 ** Grimoire integration (downstream, not in this slice's core)
 
 After triage classifies an actionable capture, grimoire enqueues a
-follow-up task whose =:prompt= describes the deeper work (e.g. "research
-X and write a topic") and whose =:metadata= carries the =:SOURCE= link.
+follow-up task whose =:prompt= describes the deeper work (e.g. "research X and write a topic") and whose =:metadata= carries the =:SOURCE= link.
 The agent works it in the background; when the task finishes, its
 =outputs= point at the produced topic/note.  Only then does the item
 become an org-agenda review entry.  Wiring the grimoire side is a
-separate change in the grimoire project layer once this queue exists; it
-is named here only to fix the contract the queue must serve.
+separate change in the grimoire project layer once this queue exists; it is named here only to fix the contract the queue must serve.
 
 ** Pause and resume
 
