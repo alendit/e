@@ -35,6 +35,7 @@
     ('done "done")
     ('failed "failed")
     ('cancelled "cancelled")
+    ('paused "paused")
     (_ (format "%s" status))))
 
 (defun e-task-queue-shell--entry (record)
@@ -48,6 +49,9 @@
 (defun e-task-queue-shell--refresh ()
   "Rebuild the list buffer from its backing queue, preserving point."
   (when (derived-mode-p 'e-task-queue-shell-mode)
+    (setq header-line-format
+          (when (e-task-queue-paused-p e-task-queue-shell--queue)
+            "Queue paused: dispatch is halted (R to resume all)"))
     (setq tabulated-list-entries
           (mapcar #'e-task-queue-shell--entry
                   (e-task-queue-list e-task-queue-shell--queue)))
@@ -80,6 +84,32 @@ Bound to `e-task-queue-change-functions' so the list tracks live status."
                        (e-task-queue-shell--task-id-at-point))
   (e-task-queue-shell--refresh))
 
+(defun e-task-queue-shell-pause ()
+  "Pause the task on the current row."
+  (interactive)
+  (e-task-queue-pause e-task-queue-shell--queue
+                      (e-task-queue-shell--task-id-at-point))
+  (e-task-queue-shell--refresh))
+
+(defun e-task-queue-shell-resume ()
+  "Resume the task on the current row."
+  (interactive)
+  (e-task-queue-resume e-task-queue-shell--queue
+                       (e-task-queue-shell--task-id-at-point))
+  (e-task-queue-shell--refresh))
+
+(defun e-task-queue-shell-pause-all ()
+  "Set the queue pause gate and pause every non-terminal task."
+  (interactive)
+  (e-task-queue-pause-all e-task-queue-shell--queue)
+  (e-task-queue-shell--refresh))
+
+(defun e-task-queue-shell-resume-all ()
+  "Clear the queue pause gate and resume every paused task."
+  (interactive)
+  (e-task-queue-resume-all e-task-queue-shell--queue)
+  (e-task-queue-shell--refresh))
+
 (defun e-task-queue-shell-show-outputs ()
   "Show the outputs and session of the task on the current row.
 The default runner records a session id and assistant outputs once a task
@@ -108,6 +138,10 @@ settles; this surfaces them in a help buffer for inspection."
 (defvar e-task-queue-shell-mode-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "c") #'e-task-queue-shell-cancel)
+    (define-key map (kbd "p") #'e-task-queue-shell-pause)
+    (define-key map (kbd "r") #'e-task-queue-shell-resume)
+    (define-key map (kbd "P") #'e-task-queue-shell-pause-all)
+    (define-key map (kbd "R") #'e-task-queue-shell-resume-all)
     (define-key map (kbd "RET") #'e-task-queue-shell-show-outputs)
     (define-key map (kbd "g") #'e-task-queue-shell-refresh)
     map)

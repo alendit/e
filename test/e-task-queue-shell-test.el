@@ -87,6 +87,38 @@
         (remove-hook 'e-task-queue-change-functions
                      #'e-task-queue-shell--refresh-buffers)))))
 
+(ert-deftest e-task-queue-shell-test-pause-commands-are-commands ()
+  "The pause/resume shell commands are interactive and bound."
+  (e-task-queue-shell-test--with-instances
+    (let ((buffer (e-task-queue-list-buffer
+                   :queue (e-task-queue-shell-test--queue))))
+      (unwind-protect
+          (with-current-buffer buffer
+            (dolist (cell '(("p" . e-task-queue-shell-pause)
+                            ("r" . e-task-queue-shell-resume)
+                            ("P" . e-task-queue-shell-pause-all)
+                            ("R" . e-task-queue-shell-resume-all)))
+              (let ((binding (key-binding (kbd (car cell)))))
+                (should (eq binding (cdr cell)))
+                (should (commandp binding)))))
+        (kill-buffer buffer)
+        (remove-hook 'e-task-queue-change-functions
+                     #'e-task-queue-shell--refresh-buffers)))))
+
+(ert-deftest e-task-queue-shell-test-paused-queue-sets-header ()
+  "Pausing the queue shows a paused header line in the list buffer."
+  (e-task-queue-shell-test--with-instances
+    (let* ((queue (e-task-queue-shell-test--queue))
+           (buffer (e-task-queue-list-buffer :queue queue)))
+      (unwind-protect
+          (with-current-buffer buffer
+            (should (null header-line-format))
+            (e-task-queue-shell-pause-all)
+            (should (stringp header-line-format)))
+        (kill-buffer buffer)
+        (remove-hook 'e-task-queue-change-functions
+                     #'e-task-queue-shell--refresh-buffers)))))
+
 (provide 'e-task-queue-shell-test)
 
 ;;; e-task-queue-shell-test.el ends here
