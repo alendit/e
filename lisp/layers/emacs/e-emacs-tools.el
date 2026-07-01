@@ -23,19 +23,8 @@
 (define-error 'e-emacs-tools-buffer-missing "Emacs buffer is missing")
 (define-error 'e-emacs-tools-edit-invalid "Emacs buffer edit is invalid")
 (define-error 'e-emacs-tools-save-invalid "Emacs buffer cannot be saved")
-(define-error 'e-emacs-tools-blocking-elisp-load
-  "Blocking Elisp loading is not allowed in interactive run_elisp")
 (define-error 'e-emacs-tools-run-elisp-timeout
   "run_elisp evaluation exceeded its time budget")
-
-(defvar e-emacs-tools-bypass-run-elisp-load-guard nil
-  "When non-nil, the interactive `run_elisp' load guard permits blocking loads.
-Trusted runtime code binds this around its own loads so the guard rejects only
-agent-authored loads, not the runtime's own resolution.  In particular,
-capability dispatch through `e-actions-call' re-discovers project-local layers
-and loads their allowlisted `layer.el'/`capability.el'; without this bypass
-the guard would fire on that trusted load and abort the very elisp-job
-run-batch escape hatch it points at.")
 
 (defcustom e-emacs-tools-run-elisp-print-length 200
   "Maximum sequence entries printed from a `run_elisp' result."
@@ -470,22 +459,6 @@ When VISIBLE-ONLY is non-nil, include only buffers visible in windows."
         (setq position (1+ position))))
     (nreverse forms)))
 
-(defun e-emacs-tools--interactive-run-elisp-context-p ()
-  "Return non-nil when `run_elisp' is evaluating in an interactive context."
-  (let ((context (e-tools-current-context)))
-    (or (e-tools--interactive-context-p context)
-        (and (plist-get context :session-id)
-             (plist-get context :turn-id)))))
-
-(defun e-emacs-tools--reject-blocking-elisp-load (primitive)
-  "Signal that PRIMITIVE cannot run from interactive `run_elisp'."
-  (signal
-   'e-emacs-tools-blocking-elisp-load
-   (list
-    (format
-     "%s is blocking in interactive run_elisp; inspect external Elisp with resource/file tools, or use (e-actions-call 'elisp-job :run-batch ...) for expensive validation and byte-compilation that must not freeze the live UI Emacs"
-     primitive))))
-
 (defun e-emacs-tools--run-elisp-timeout (arguments)
   "Return the effective `run_elisp' timeout in seconds from ARGUMENTS.
 A positive numeric `:timeout' argument overrides
@@ -628,51 +601,6 @@ DEPTH limits recursive descent.  SEEN tracks container identity to avoid cycles.
     (e-emacs-tools--truncate-printed-result
      (prin1-to-string preview))))
 
-(defmacro e-emacs-tools--with-run-elisp-load-guard (&rest body)
-  "Run BODY while rejecting blocking Elisp loading in interactive contexts."
-  (declare (indent 0) (debug t))
-  `(if (not (e-emacs-tools--interactive-run-elisp-context-p))
-       (progn ,@body)
-     ;; Capture the unguarded primitives so a trusted, bypassed load delegates
-     ;; to the real implementation.  Any `advice-add' (e.g. the project-local
-     ;; extensionless-load advice) wraps the symbol-function the guard installs,
-     ;; so it still runs above these originals and its transformation survives.
-     (let ((original-load (symbol-function 'load))
-           (original-load-file (symbol-function 'load-file))
-           (original-require (symbol-function 'require))
-           (original-byte-compile-file (symbol-function 'byte-compile-file))
-           (original-directory-files-recursively
-            (symbol-function 'directory-files-recursively)))
-       (cl-letf (((symbol-function 'load)
-                  (lambda (&rest args)
-                    (if e-emacs-tools-bypass-run-elisp-load-guard
-                        (apply original-load args)
-                      (e-emacs-tools--reject-blocking-elisp-load 'load))))
-                 ((symbol-function 'load-file)
-                  (lambda (&rest args)
-                    (if e-emacs-tools-bypass-run-elisp-load-guard
-                        (apply original-load-file args)
-                      (e-emacs-tools--reject-blocking-elisp-load 'load-file))))
-                 ((symbol-function 'require)
-                  (lambda (feature &optional filename noerror)
-                    (if (or (featurep feature)
-                            e-emacs-tools-bypass-run-elisp-load-guard)
-                        (funcall original-require feature filename noerror)
-                      (e-emacs-tools--reject-blocking-elisp-load 'require))))
-                 ((symbol-function 'byte-compile-file)
-                  (lambda (&rest args)
-                    (if e-emacs-tools-bypass-run-elisp-load-guard
-                        (apply original-byte-compile-file args)
-                      (e-emacs-tools--reject-blocking-elisp-load
-                       'byte-compile-file))))
-                 ((symbol-function 'directory-files-recursively)
-                  (lambda (&rest args)
-                    (if e-emacs-tools-bypass-run-elisp-load-guard
-                        (apply original-directory-files-recursively args)
-                      (e-emacs-tools--reject-blocking-elisp-load
-                       'directory-files-recursively)))))
-         ,@body))))
-
 (defun e-emacs-tools-register-list-buffers (registry)
   "Register a tool that lists live Emacs buffers in REGISTRY."
   (e-tools-register
@@ -721,13 +649,13 @@ DEPTH limits recursive descent.  SEEN tracks container identity to avoid cycles.
     "Evaluate explicit Emacs Lisp in Emacs and return the printed result. "
     "When this tool runs in an active e tool context, code may call currently "
     "active tools with e-tools-call/e-tools-call! and active capability actions "
-    "with e-actions-call. Inspect external Elisp with resource/file tools; do "
-    "not load, require, byte-compile, or recursively scan external Elisp here "
-    "during an interactive turn. Use "
-    "(e-actions-call 'elisp-job :run-batch ...) for expensive validation or "
-    "byte-compilation that must not freeze the live UI Emacs. Evaluation is "
-    "time-capped; pass :timeout seconds to raise or lower the cap for one "
-    "call, and move long-running work to elisp-job.")
+    "with e-actions-call. This runs in the live UI Emacs, so anything that "
+    "blocks it -- loading or byte-compiling large Elisp, recursive directory "
+    "scans, long computations -- freezes the interface while it runs. "
+    "Evaluation is time-capped; pass :timeout seconds to raise or lower the cap "
+    "for one call. Move expensive validation or byte-compilation to "
+    "(e-actions-call 'elisp-job :run-batch ...), which runs in a separate "
+    "process that cannot freeze the UI.")
    :parameters '(:type "object"
                  :properties
                  (:code (:type "string")
@@ -752,19 +680,19 @@ DEPTH limits recursive descent.  SEEN tracks container identity to avoid cycles.
             (debug-on-quit nil)
             (eval-expression-debug-on-error nil)
             result)
-       (e-emacs-tools--with-run-elisp-load-guard
-         ;; `with-timeout' arms a timer that throws only when execution
-         ;; reaches a wait point.  It aborts an eval that blocks or waits
-         ;; (sleep-for, I/O, process waits) but cannot preempt a tight compute
-         ;; loop such as (while t); the guaranteed kill is elisp-job's separate
-         ;; process, which the timeout message points agents toward.
-         (if timeout
-             (with-timeout (timeout
-                            (e-emacs-tools--reject-run-elisp-timeout timeout))
-               (dolist (form forms)
-                 (setq result (eval form t))))
-           (dolist (form forms)
-             (setq result (eval form t)))))
+       ;; `with-timeout' arms a timer that throws only when execution reaches a
+       ;; wait point.  It aborts an eval that blocks or waits (sleep-for, I/O,
+       ;; process waits) but cannot preempt a tight compute loop such as
+       ;; (while t); the guaranteed kill is elisp-job's separate process, which
+       ;; the timeout message points agents toward.  The timeout is also the
+       ;; backstop for a slow `load'/`require': there is no separate load guard.
+       (if timeout
+           (with-timeout (timeout
+                          (e-emacs-tools--reject-run-elisp-timeout timeout))
+             (dolist (form forms)
+               (setq result (eval form t))))
+         (dolist (form forms)
+           (setq result (eval form t))))
        (list :result (e-emacs-tools--bounded-result-string result))))))
 
 (defun e-emacs-tools-register-elisp-eval (registry)

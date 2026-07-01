@@ -450,34 +450,27 @@ When READ-ONLY is non-nil, buffer resources only support reads."
       (should (<= (string-bytes printed) 200))
       (should (string-match-p "run_elisp result truncated" printed)))))
 
-(ert-deftest e-emacs-tools-test-run-elisp-rejects-blocking-loads-interactively ()
-  "Interactive run_elisp rejects blocking Elisp loading primitives."
-  (let ((registry (e-tools-registry-create)))
-    (e-emacs-tools-register-run-elisp registry)
-    (dolist (case '(("load" "(load \"e-test-missing-feature\")")
-                    ("load-file" "(load-file \"/tmp/e-test-missing.el\")")
-                    ("require" "(require 'e-test-missing-feature)")
-                    ("byte-compile-file"
-                     "(byte-compile-file \"/tmp/e-test-missing.el\")")
-                    ("directory-files-recursively"
-                     "(directory-files-recursively default-directory \"\\\\.el\\\\'\")")))
-      (pcase-let ((`(,primitive ,code) case))
-        (let ((result (e-emacs-tools-test--run-elisp-result
-                       registry
-                       code
-                       '(:interactive t))))
-          (should (eq (plist-get result :status) 'error))
-          (should (string-match-p primitive
-                                  (format "%s" (plist-get result :content))))
-          (should (string-match-p
-                   "resource/file tools"
-                   (format "%s" (plist-get result :content))))
-          (should (string-match-p
-                   "e-actions-call"
-                   (format "%s" (plist-get result :content))))
-          (should (string-match-p
-                   "elisp-job"
-                   (format "%s" (plist-get result :content)))))))))
+(ert-deftest e-emacs-tools-test-run-elisp-allows-loads-interactively ()
+  "Interactive run_elisp loads Elisp directly; there is no blocking-load guard.
+The timeout is the only backstop, so a load that resolves quickly succeeds in
+the live UI Emacs just as it does in batch."
+  (let* ((registry (e-tools-registry-create))
+         (file (make-temp-file "e-run-elisp-interactive-load-" nil ".el")))
+    (unwind-protect
+        (progn
+          (write-region "(setq e-emacs-tools-test--interactive-loaded t)"
+                        nil file nil 'silent)
+          (e-emacs-tools-register-run-elisp registry)
+          (let ((result (e-emacs-tools-test--run-elisp-result
+                         registry
+                         (format "(load-file %S) e-emacs-tools-test--interactive-loaded"
+                                 file)
+                         '(:interactive t))))
+            (should (eq (plist-get result :status) 'ok))
+            (should (equal (plist-get result :content) '(:result "t")))))
+      (when (boundp 'e-emacs-tools-test--interactive-loaded)
+        (makunbound 'e-emacs-tools-test--interactive-loaded))
+      (delete-file file))))
 
 (defun e-emacs-tools-test--run-elisp-arguments (registry arguments &optional context)
   "Run ARGUMENTS through REGISTRY's `run_elisp' tool and return the result."
@@ -550,33 +543,6 @@ point, so the test loop must yield rather than spin the CPU."
       (should (eq (plist-get result :status) 'ok))
       (should (equal (plist-get result :content) '(:result "3"))))))
 
-(ert-deftest e-emacs-tools-test-run-elisp-bypass-permits-trusted-load ()
-  "Interactive run_elisp permits a load wrapped in the trusted-load bypass.
-Trusted runtime code (e.g. project-local layer resolution reached through
-`e-actions-call') binds `e-emacs-tools-bypass-run-elisp-load-guard' around its
-own loads, so the guard must not reject those even though it rejects bare
-agent-authored loads in the same interactive context."
-  (let* ((registry (e-tools-registry-create))
-         (file (make-temp-file "e-run-elisp-bypass-load-" nil ".el")))
-    (unwind-protect
-        (progn
-          (write-region "(setq e-emacs-tools-test--bypass-loaded t)"
-                        nil file nil 'silent)
-          (e-emacs-tools-register-run-elisp registry)
-          (let ((result (e-emacs-tools-test--run-elisp-result
-                         registry
-                         (format
-                          (concat "(let ((e-emacs-tools-bypass-run-elisp-load-guard t))"
-                                  " (load-file %S)) e-emacs-tools-test--bypass-loaded")
-                          file)
-                         '(:interactive t))))
-            (should (eq (plist-get result :status) 'ok))
-            (should (equal (plist-get result :content)
-                           '(:result "t")))))
-      (when (boundp 'e-emacs-tools-test--bypass-loaded)
-        (makunbound 'e-emacs-tools-test--bypass-loaded))
-      (delete-file file))))
-
 (ert-deftest e-emacs-tools-test-run-elisp-allows-batch-loading ()
   "Batch run_elisp keeps existing direct Elisp loading semantics."
   (let* ((registry (e-tools-registry-create))
@@ -620,10 +586,8 @@ agent-authored loads in the same interactive context."
       (should (string-match-p "e-actions-call" description))
       (should (string-match-p "active tools" description))
       (should (string-match-p "active capability actions" description))
-      (should (string-match-p "Inspect external Elisp with resource/file tools"
-                              description))
-      (should (string-match-p "do not load, require, byte-compile"
-                              description))
+      (should (string-match-p "freezes the interface" description))
+      (should (string-match-p "time-capped" description))
       (should (string-match-p "e-actions-call" description))
       (should (string-match-p "elisp-job" description))
       (should (string-match-p "run-batch" description)))))
@@ -736,40 +700,25 @@ agent-authored loads in the same interactive context."
       (should (equal (plist-get result :content)
                      '(:result "t"))))))
 
-(ert-deftest e-emacs-tools-test-run-elisp-elisp-job-loads-tmp-resources-under-guard ()
-  "run_elisp's elisp-job dispatch resolves tmp resources through the load guard.
-Regression: `e-elisp-job--output-target' requires `e-session-tmp-resources'
-while the interactive `run_elisp' load guard is active.  The guard lets a
-require through only for an already-loaded feature or a bypassed load, so the
-trusted runtime require must bind the bypass.  Shadowing `features' here
-removes the feature so the guard's featurep shortcut cannot mask the bug: the
-job errors unless the bypass is bound."
+(ert-deftest e-emacs-tools-test-elisp-job-output-target-loads-tmp-resources ()
+  "`e-elisp-job--output-target' resolves tmp resources even when unloaded.
+Regression: the target requires `e-session-tmp-resources' lazily to build the
+`tmp://' output URI.  Removing the feature from `features' first proves the
+require actually loads it rather than relying on it already being present."
   (pcase-let* ((context (e-emacs-tools-test--elisp-job-harness))
                (`(:harness ,harness :session-id ,session-id) context)
                (loaded (featurep 'e-session-tmp-resources)))
-    ;; `run_elisp' evaluates on a timer, outside this body's dynamic extent,
-    ;; and dispatching through `e-actions-call' reloads the feature via trusted
-    ;; layer discovery, so neither the full path nor a `let'-shadow of
-    ;; `features' can reproduce the bug.  Exercise the exact guarded require
-    ;; directly: run `e-elisp-job--output-target' under the same load guard in
-    ;; an interactive context, with `e-session-tmp-resources' genuinely absent
-    ;; from `features'.
-    ;;
     ;; `featurep' reads the C `Vfeatures' cell and ignores a `let'-binding of
     ;; `features', so the feature must be removed from the global list with
     ;; `setq' (restored in `unwind-protect').  With the feature absent, the
-    ;; guard's require shim rejects the load unless `output-target' binds the
-    ;; bypass -- which is exactly the regression this guards.
+    ;; target's own require must load it for the tmp URI to resolve.
     (unwind-protect
-        (let ((e-tools--current-context (list :interactive t
-                                              :harness harness
-                                              :session-id session-id)))
+        (progn
           (setq features (remq 'e-session-tmp-resources features))
           (should-not (featurep 'e-session-tmp-resources))
-          (let ((target (e-emacs-tools--with-run-elisp-load-guard
-                          (e-elisp-job--output-target
-                           (list :harness harness :session-id session-id)
-                           "elisp-job-test-1"))))
+          (let ((target (e-elisp-job--output-target
+                         (list :harness harness :session-id session-id)
+                         "elisp-job-test-1")))
             (should (string-prefix-p "tmp://" (plist-get target :uri)))))
       (when (and loaded (not (featurep 'e-session-tmp-resources)))
         (add-to-list 'features 'e-session-tmp-resources)))))
