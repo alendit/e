@@ -41,6 +41,16 @@ When nil, `shell-command-switch' is used."
                  string)
   :group 'e-base-tools)
 
+(defcustom e-base-tools-default-shell-timeout 30
+  "Default hard timeout (seconds) for the base bash tool.
+Applied when a call omits an explicit :timeout so an ordinary command that
+hangs fails fast instead of stalling the turn.  A caller may still pass a
+larger explicit :timeout for a genuinely long command.  nil disables the
+default and restores unbounded runs, which is discouraged."
+  :type '(choice (const :tag "No default timeout (unbounded)" nil)
+                 number)
+  :group 'e-base-tools)
+
 (define-error 'e-base-tools-read-invalid "Base read tool input is invalid")
 (define-error 'e-base-tools-path-outside-root
   "Base file resource path escapes the configured root")
@@ -1749,7 +1759,7 @@ streaming progress events."
    :parameters '(:type "object"
                  :properties (:command (:type "string")
                               :timeout (:type "number"
-                                        :description "Hard timeout in seconds. When reached, e kills the process and returns a tool error. Use modest values for routine commands; long-running commands need an explicit control pattern.")
+                                        :description "Hard timeout in seconds. When reached, e kills the process and returns a tool error. Keep this SMALL: default to about 10s for routine commands and 30s at most for anything you expect to be quick. Setting no timeout, or a large one, is a mistake for ordinary commands -- a bounded command that hangs should fail fast, not stall the turn. Only exceed 30s when the command is genuinely expected to run long (a real build, a large test suite, a slow network fetch), and prefer an explicit control pattern (backgrounding, polling) over a big blocking timeout.")
                               :resource_usage
                               (:type "object"
                                :description "Optional high-value resource usage for future context. Use only when the command reads, writes, or edits resources that matter for future work."
@@ -1771,8 +1781,9 @@ streaming progress events."
    (cl-function
     (lambda (&key arguments on-done on-error on-request-start
                   on-event &allow-other-keys)
-      (let ((command (e-base-tools--argument-string arguments :command))
-            (timeout (e-base-tools--optional-positive-number arguments :timeout)))
+      (let* ((command (e-base-tools--argument-string arguments :command))
+             (timeout (or (e-base-tools--optional-positive-number arguments :timeout)
+                          e-base-tools-default-shell-timeout)))
         (e-base-tools--run-shell-command-start
          command
          directory
