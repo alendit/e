@@ -3767,8 +3767,9 @@ When APPEND is non-nil, merge CONTENT into the previous reasoning child."
                            (list batch)))
         batch)))
 
-(defun e-chat--append-round-tool-call (record payload)
-  "Append tool call PAYLOAD to RECORD's current round."
+(defun e-chat--append-round-tool-call (record payload &optional created-at)
+  "Append tool call PAYLOAD to RECORD's current round.
+CREATED-AT records when the tool started so the running row can tick."
   (when-let ((round (e-chat--round-record-for-child record)))
     (let* ((batch (e-chat--current-round-tool-batch round))
            (items (plist-get batch :items))
@@ -3782,6 +3783,8 @@ When APPEND is non-nil, merge CONTENT into the previous reasoning child."
                                      :id tool-id
                                      :call (e-chat--format-tool-call payload)
                                      :call-payload payload
+                                     :started-at (or created-at
+                                                     (e-chat--current-time-seconds))
                                      :output nil)))))))
 
 (defun e-chat--tool-finished-id (payload)
@@ -3978,15 +3981,74 @@ ACTIVE-AT is used for active thinking duration."
        (t
         lines)))))
 
+(defun e-chat--round-running-tool-items (round)
+  "Return ROUND's tool items that have started but not yet produced output."
+  (cl-remove-if
+   (lambda (item)
+     (plist-get item :output))
+   (e-chat--round-tool-items round)))
+
+(defun e-chat--tool-item-name (item)
+  "Return a compact display name for tool ITEM."
+  (or (plist-get (plist-get item :call-payload) :name)
+      (car (split-string (or (plist-get item :call) "") "\n"))
+      "tool"))
+
+(defun e-chat--round-tool-names-text (round)
+  "Return a comma-joined list of the distinct tool names called in ROUND.
+Returns nil when ROUND recorded no tool calls."
+  (when-let ((names (delete-dups
+                     (mapcar #'e-chat--tool-item-name
+                             (e-chat--round-tool-items round)))))
+    (string-join names ", ")))
+
+(defun e-chat--round-running-tools-text (round)
+  "Return live running-tool row text for ROUND, or nil when nothing runs.
+Shows a spinner, the running tool name (or a count when several run at once),
+and how long the oldest running tool has been active."
+  (when-let ((running (e-chat--round-running-tool-items round)))
+    (let* ((names (delete-dups
+                   (mapcar #'e-chat--tool-item-name running)))
+           (started (delq nil (mapcar (lambda (item)
+                                        (e-chat--time-seconds
+                                         (plist-get item :started-at)))
+                                      running)))
+           (oldest (and started (apply #'min started)))
+           (label (if (> (length running) 1)
+                      (format "%d tools (%s)"
+                              (length running)
+                              (string-join names ", "))
+                    (car names))))
+      (format "%s Running %s%s"
+              (e-chat--progress-dots)
+              label
+              (if oldest
+                  (format " for %s"
+                          (e-chat--format-duration
+                           oldest (e-chat--current-time-seconds)))
+                "")))))
+
 (defun e-chat--activity-round-visible-text (round)
   "Return visible text for semantic activity ROUND."
-  (let* ((thought (e-chat--round-thought-text round))
+  (let* ((running-text (e-chat--round-running-tools-text round))
+         ;; While tools are running, replace the frozen \"Thought for ...\"
+         ;; left cell with a live spinner naming the running tool and its
+         ;; elapsed time.  The shared progress timer already reticks this row.
+         (thought (or running-text (e-chat--round-thought-text round)))
          (tool-count (e-chat--round-tool-count round))
          (tool-text (and (> tool-count 0)
-                         (let ((count-text
-                                (e-chat--activity-tool-count-text tool-count))
-                               (progress-text
-                                (e-chat--round-tool-progress-text round)))
+                         (let* ((count-text
+                                 (e-chat--activity-tool-count-text tool-count))
+                                (names-text (e-chat--round-tool-names-text round))
+                                (progress-text
+                                 (e-chat--round-tool-progress-text round))
+                                ;; Keep the called tool names on the row even
+                                ;; after the calls finish, e.g. "1 tool call
+                                ;; (bash)".
+                                (count-text (if names-text
+                                                (format "%s (%s)"
+                                                        count-text names-text)
+                                              count-text)))
                            (if progress-text
                                (format "%s, %s" count-text progress-text)
                              count-text))))
@@ -4327,9 +4389,10 @@ STATUS defaults to `done'."
   (e-chat--append-round-reasoning record content append)
   (e-chat--add-intermittent-entry record "Reasoning" content append source))
 
-(defun e-chat--record-tool-started (record payload &optional source)
-  "Record tool-started PAYLOAD in RECORD."
-  (e-chat--append-round-tool-call record payload)
+(defun e-chat--record-tool-started (record payload &optional source created-at)
+  "Record tool-started PAYLOAD in RECORD.
+CREATED-AT records the tool start time for the running-tool row."
+  (e-chat--append-round-tool-call record payload created-at)
   (e-chat--add-intermittent-entry
    record
    "Tool call"
@@ -5170,7 +5233,8 @@ SOURCE identifies where the entry came from for duplicate suppression."
        (e-chat--record-tool-started
         record
         (plist-get activity-event :payload)
-        'activity))
+        'activity
+        (plist-get activity-event :created-at)))
       ('tool-finished
        (e-chat--record-tool-finished
         record
@@ -6840,7 +6904,8 @@ When REFRESH-MODE-LINE is non-nil, also refresh context-aware mode-line text."
        (e-chat--record-tool-started
         record
         (plist-get event :payload)
-        'activity)
+        'activity
+        (plist-get event :created-at))
        (e-chat--request-activity-redraw (plist-get event :turn-id))))
     ('tool-finished
      (e-chat--set-status "tool done")

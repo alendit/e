@@ -2968,7 +2968,8 @@ the orphaned region and appeared to vanish."
         (kill-buffer buffer)))))
 
 (ert-deftest e-chat-test-tool-count-renders-on-thinking-row ()
-  "A round's tool count renders on the same line as its thought row."
+  "A round's tool count renders on the same line as its activity row.
+Once a tool completes, the left cell settles back to \"Thought for ...\"."
   (let ((buffer (e-chat-test--buffer nil "chat-tool-count-thinking-row")))
     (unwind-protect
         (with-current-buffer buffer
@@ -2995,6 +2996,12 @@ the orphaned region and appeared to vanish."
                           :turn-id "turn-1"
                           :created-at 11
                           :payload '(:id "call-1" :name "read")))
+          (e-chat--render-event
+           (e-events-make :type 'tool-finished
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 12
+                          :payload '(:id "call-1" :result "done")))
           (e-chat-test--flush-pending-activity-redraw)
           (let ((content (buffer-string)))
             (should (string-match-p
@@ -3002,6 +3009,98 @@ the orphaned region and appeared to vanish."
             (should-not (string-match-p
                          "Thought for 0min 10sec\n\n1 tool call"
                          content))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-running-tool-row-names-tool-and-ticks ()
+  "While a tool runs, the activity row shows a live spinner, name, and duration."
+  (let ((buffer (e-chat-test--buffer nil "chat-running-tool-row")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat--render-event
+           (e-events-make :type 'turn-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 0))
+          (e-chat--render-event
+           (e-events-make :type 'provider-request-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 0
+                          :payload '(:status started)))
+          (e-chat--render-event
+           (e-events-make :type 'provider-request-finished
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 10
+                          :payload '(:status done)))
+          ;; Freeze the clock so the elapsed duration is deterministic.
+          (cl-letf (((symbol-function 'e-chat--current-time-seconds)
+                     (lambda () 25)))
+            (e-chat--render-event
+             (e-events-make :type 'tool-started
+                            :session-id e-chat-session-id
+                            :turn-id "turn-1"
+                            :created-at 20
+                            :payload '(:id "call-1" :name "bash")))
+            (e-chat-test--flush-pending-activity-redraw)
+            (let ((content (buffer-string)))
+              ;; The running tool is named with its live elapsed time, and the
+              ;; frozen "Thought for" text is gone from the row while it runs.
+              (should (string-match-p "Running bash for 0min 5sec" content))
+              (should (string-match-p "1 tool call" content))
+              (should-not (string-match-p "Thought for" content))))
+          ;; When the tool finishes, the row settles back to the thought text.
+          (e-chat--render-event
+           (e-events-make :type 'tool-finished
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 30
+                          :payload '(:id "call-1" :result "ok")))
+          (e-chat-test--flush-pending-activity-redraw)
+          (let ((content (buffer-string)))
+            (should (string-match-p "Thought for 0min 10sec" content))
+            (should-not (string-match-p "Running bash" content))
+            ;; The finished tool's name stays on the summary row.
+            (should (string-match-p "1 tool call (bash)" content))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-running-tool-row-collapses-parallel-tools ()
+  "Several tools running at once collapse into a counted running row."
+  (let ((buffer (e-chat-test--buffer nil "chat-running-tools-parallel")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat--render-event
+           (e-events-make :type 'turn-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 0))
+          (e-chat--render-event
+           (e-events-make :type 'provider-request-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 0
+                          :payload '(:status started)))
+          (e-chat--render-event
+           (e-events-make :type 'provider-request-finished
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 10
+                          :payload '(:status done)))
+          (dolist (tool '(("call-1" "read")
+                          ("call-2" "grep")))
+            (e-chat--render-event
+             (e-events-make :type 'tool-started
+                            :session-id e-chat-session-id
+                            :turn-id "turn-1"
+                            :created-at 11
+                            :payload (list :id (nth 0 tool)
+                                           :name (nth 1 tool)))))
+          (e-chat-test--flush-pending-activity-redraw)
+          (let ((content (buffer-string)))
+            (should (string-match-p "Running 2 tools (read, grep)" content))
+            (should (string-match-p "2 tool calls" content))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -3045,7 +3144,7 @@ the orphaned region and appeared to vanish."
           (e-chat-test--flush-pending-activity-redraw)
           (let ((content (buffer-string)))
             (should (string-match-p
-                     "1 tool call, 128 bytes output" content))))
+                     "1 tool call (bash), 128 bytes output" content))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
