@@ -180,6 +180,49 @@ implementation."
        (cl-loop for (key _value) on value by #'cddr
                 always (keywordp key))))
 
+(defun e-tools--reparse-json-string (value)
+  "Return VALUE parsed from a JSON string, or VALUE unchanged on parse failure.
+Uses the adapter decode settings: objects become plists, arrays become lists."
+  (condition-case nil
+      (json-parse-string value
+                         :object-type 'plist
+                         :array-type 'list
+                         :null-object nil
+                         :false-object :json-false)
+    (error value)))
+
+(defun e-tools--coerce-argument (value schema)
+  "Return VALUE coerced to SCHEMA's declared JSON type.
+When SCHEMA declares an object or array but VALUE arrived as a JSON string,
+parse it back into data.  Providers that JSON-stringify nested tool arguments
+\(notably Bedrock) deliver object- and array-typed arguments this way.  Scalar
+schemas and non-string values pass through unchanged, so a field the schema
+declares a string is never reparsed even when its text is valid JSON."
+  (let ((type (and (listp schema) (plist-get schema :type))))
+    (cond
+     ((and (stringp value) (member type '("object" "array")))
+      ;; Reparse once, then re-run: a stringified object may still hold
+      ;; inner values the same provider stringified independently.
+      (e-tools--coerce-argument (e-tools--reparse-json-string value) schema))
+     ((and (equal type "object") (e-tools--plist-p value))
+      (e-tools--coerce-arguments value schema))
+     (t value))))
+
+(defun e-tools--coerce-arguments (arguments parameters)
+  "Return ARGUMENTS with each value coerced to PARAMETERS' declared types.
+PARAMETERS is the tool's JSON Schema.  Non-plist ARGUMENTS pass through
+unchanged.  See `e-tools--coerce-argument'."
+  (if (not (e-tools--plist-p arguments))
+      arguments
+    (let ((properties (and (listp parameters) (plist-get parameters :properties)))
+          (result nil))
+      (cl-loop for (key value) on arguments by #'cddr do
+               (push key result)
+               (push (e-tools--coerce-argument
+                      value (and properties (plist-get properties key)))
+                     result))
+      (nreverse result))))
+
 (defun e-tools--json-key (key)
   "Return stable JSON object key text for KEY."
   (cond
@@ -682,6 +725,15 @@ dynamically visible to tool start functions through
           (when on-done
             (funcall on-done result))
           nil)
+      ;; Coerce arguments to the tool's declared schema types before dispatch.
+      ;; Providers that JSON-stringify nested tool arguments (notably Bedrock)
+      ;; deliver object- and array-typed arguments as strings; reparse them
+      ;; against the schema so every tool sees structured data, not just those
+      ;; that special-case the malformed shape.
+      (setq call (plist-put call :arguments
+                            (e-tools--coerce-arguments
+                             (plist-get call :arguments)
+                             (plist-get tool :parameters))))
       (let ((start (plist-get tool :start))
             (handler (plist-get tool :handler)))
         (cl-labels

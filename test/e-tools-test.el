@@ -635,6 +635,62 @@
     (should (equal (plist-get (plist-get inner-context :tool-call) :id)
                    "outer-1/nested-1"))))
 
+(ert-deftest e-tools-test-coerce-arguments-reparses-stringified-nested ()
+  "Schema-typed object/array arguments arriving as JSON strings are reparsed.
+
+Providers that JSON-stringify nested tool arguments (notably Bedrock) deliver
+object- and array-typed arguments as strings.  The coercion parses them back to
+data, keyed off the declared schema type, and leaves scalars and already-typed
+values untouched."
+  (let ((schema '(:type "object"
+                  :properties (:uri (:type "string")
+                               :edits (:type "array")
+                               :range (:type "object")))))
+    ;; A stringified array decodes to a list.
+    (should (equal (e-tools--coerce-arguments
+                    '(:uri "file://x"
+                      :edits "[{\"oldText\": \"a\", \"newText\": \"b\"}]")
+                    schema)
+                   '(:uri "file://x"
+                     :edits ((:oldText "a" :newText "b")))))
+    ;; A stringified object decodes to a plist.
+    (should (equal (e-tools--coerce-arguments
+                    '(:uri "file://x" :range "{\"start\": 1, \"end\": 2}")
+                    schema)
+                   '(:uri "file://x" :range (:start 1 :end 2))))
+    ;; Well-formed data passes through unchanged.
+    (should (equal (e-tools--coerce-arguments
+                    '(:uri "file://x" :edits ((:oldText "a" :newText "b")))
+                    schema)
+                   '(:uri "file://x" :edits ((:oldText "a" :newText "b")))))))
+
+(ert-deftest e-tools-test-coerce-arguments-preserves-json-valued-strings ()
+  "A schema-declared string is never reparsed, even when it holds valid JSON."
+  (let ((schema '(:type "object"
+                  :properties (:content (:type "string")))))
+    (should (equal (e-tools--coerce-arguments
+                    '(:content "{\"not\": \"reparsed\"}")
+                    schema)
+                   '(:content "{\"not\": \"reparsed\"}")))))
+
+(ert-deftest e-tools-test-start-coerces-stringified-arguments-before-dispatch ()
+  "Tool handlers receive schema-typed data even from stringifying providers."
+  (let ((registry (e-tools-registry-create))
+        seen)
+    (e-tools-register registry
+                      :name "edit"
+                      :description "Capture edits."
+                      :parameters '(:type "object"
+                                    :properties (:edits (:type "array")))
+                      :handler (lambda (arguments)
+                                 (setq seen (plist-get arguments :edits))
+                                 "ok"))
+    (e-tools-execute
+     registry
+     '(:id "call-1" :name "edit"
+       :arguments (:edits "[{\"oldText\": \"a\", \"newText\": \"b\"}]")))
+    (should (equal seen '((:oldText "a" :newText "b"))))))
+
 (provide 'e-tools-test)
 
 ;;; e-tools-test.el ends here
