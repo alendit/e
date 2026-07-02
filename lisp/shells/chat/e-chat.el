@@ -3862,12 +3862,17 @@ CREATED-AT records when the tool started so the running row can tick."
                  (if uri (format ". Full output: %s" uri) "")))
       preview)))
 
-(defun e-chat--complete-round-tool-result (record payload)
-  "Attach tool result PAYLOAD to the matching semantic tool item in RECORD."
+(defun e-chat--complete-round-tool-result (record payload &optional finished-at)
+  "Attach tool result PAYLOAD to the matching semantic tool item in RECORD.
+FINISHED-AT records when the tool completed so the settled row can show
+how long it ran."
   (let* ((tool-id (e-chat--tool-finished-id payload))
          (item (or (e-chat--find-round-tool-item record tool-id)
                    (e-chat--latest-incomplete-tool-item record))))
     (when item
+      (plist-put item
+                 :finished-at (or finished-at
+                                  (e-chat--current-time-seconds)))
       (plist-put item
                  :output
                  (e-chat--tool-result-display-text
@@ -4002,6 +4007,26 @@ Returns nil when ROUND recorded no tool calls."
                              (e-chat--round-tool-items round)))))
     (string-join names ", ")))
 
+(defun e-chat--round-tools-duration-text (round)
+  "Return elapsed run time for ROUND's finished tools, or nil.
+Spans the earliest tool start to the latest tool finish so the settled
+row keeps showing how long the sub-turn's tools ran after they complete.
+Returns nil while any tool is still running or when timing is missing."
+  (let ((items (e-chat--round-tool-items round)))
+    (when (and items
+               (not (e-chat--round-running-tool-items round)))
+      (let ((started (delq nil (mapcar (lambda (item)
+                                         (e-chat--time-seconds
+                                          (plist-get item :started-at)))
+                                       items)))
+            (finished (delq nil (mapcar (lambda (item)
+                                          (e-chat--time-seconds
+                                           (plist-get item :finished-at)))
+                                        items))))
+        (when (and started finished)
+          (e-chat--format-duration (apply #'min started)
+                                   (apply #'max finished)))))))
+
 (defun e-chat--round-running-tools-text (round)
   "Return live running-tool row text for ROUND, or nil when nothing runs.
 Shows a spinner, the running tool name (or a count when several run at once),
@@ -4042,12 +4067,21 @@ and how long the oldest running tool has been active."
                                 (names-text (e-chat--round-tool-names-text round))
                                 (progress-text
                                  (e-chat--round-tool-progress-text round))
+                                (duration-text
+                                 (e-chat--round-tools-duration-text round))
                                 ;; Keep the called tool names on the row even
                                 ;; after the calls finish, e.g. "1 tool call
                                 ;; (bash)".
                                 (count-text (if names-text
                                                 (format "%s (%s)"
                                                         count-text names-text)
+                                              count-text))
+                                ;; Keep the run duration on the row after the
+                                ;; sub-turn settles, e.g. "1 tool call (bash)
+                                ;; for 0min 5sec".
+                                (count-text (if duration-text
+                                                (format "%s for %s"
+                                                        count-text duration-text)
                                               count-text)))
                            (if progress-text
                                (format "%s, %s" count-text progress-text)
@@ -4400,9 +4434,11 @@ CREATED-AT records the tool start time for the running-tool row."
    nil
    source))
 
-(defun e-chat--record-tool-finished (record payload &optional source)
-  "Record tool-finished PAYLOAD in RECORD."
-  (e-chat--complete-round-tool-result record payload)
+(defun e-chat--record-tool-finished (record payload &optional source finished-at)
+  "Record tool-finished PAYLOAD in RECORD.
+FINISHED-AT records when the tool completed so the settled row can show
+its run duration."
+  (e-chat--complete-round-tool-result record payload finished-at)
   (e-chat--add-intermittent-entry
    record
    "Tool"
@@ -5239,7 +5275,8 @@ SOURCE identifies where the entry came from for duplicate suppression."
        (e-chat--record-tool-finished
         record
         (plist-get activity-event :payload)
-        'activity))
+        'activity
+        (plist-get activity-event :created-at)))
       ('action-started
        (e-chat--record-action-started
         record
@@ -6914,7 +6951,8 @@ When REFRESH-MODE-LINE is non-nil, also refresh context-aware mode-line text."
        (e-chat--record-tool-finished
         record
         (plist-get event :payload)
-        'activity)
+        'activity
+        (plist-get event :created-at))
        (e-chat--request-activity-redraw (plist-get event :turn-id))))
     ('action-started
      (e-chat--set-status "action")

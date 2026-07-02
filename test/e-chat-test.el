@@ -3061,8 +3061,10 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
           (let ((content (buffer-string)))
             (should (string-match-p "Thought for 0min 10sec" content))
             (should-not (string-match-p "Running bash" content))
-            ;; The finished tool's name stays on the summary row.
-            (should (string-match-p "1 tool call (bash)" content))))
+            ;; The finished tool's name and run duration stay on the summary
+            ;; row (started at 20, finished at 30 -> 0min 10sec).
+            (should (string-match-p "1 tool call (bash) for 0min 10sec"
+                                    content))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
