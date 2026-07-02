@@ -119,6 +119,32 @@ records each one here and skips it on later runs.  Registration files
 `e-project-local-reset-loaded-files' clears the set so the next discovery
 reloads every file, which `e-dev-reload' uses to pick up edits.")
 
+(defvar e-project-local--load-transaction nil
+  "When non-nil, a one-element mutable cell collecting loaded-file keys.
+The load advice records every key it commits to `e-project-local--loaded-files'
+during the active transaction here, so a factory run that signals partway can
+roll those keys back.  Without this, a helper file that loaded before the
+failure would stay marked loaded and be skipped on the next prime, cementing a
+partial layer for the session.")
+
+(defmacro e-project-local--with-load-transaction (&rest body)
+  "Run BODY as an atomic project-local load transaction.
+Helper files recorded in `e-project-local--loaded-files' during BODY are rolled
+back when BODY exits non-locally, so a failed factory never leaves a subset of
+its files marked loaded.  Nested transactions join the outermost one and do not
+commit or roll back independently."
+  (declare (indent 0))
+  `(if e-project-local--load-transaction
+       (progn ,@body)
+     (let ((e-project-local--load-transaction (list nil))
+           (committed nil))
+       (unwind-protect
+           (prog1 (progn ,@body)
+             (setq committed t))
+         (unless committed
+           (dolist (key (car e-project-local--load-transaction))
+             (remhash key e-project-local--loaded-files)))))))
+
 (defun e-project-local-reset-loaded-files ()
   "Forget cached project-local discovery so the next open reloads factory files.
 Clears both the loaded-file set and the capability snapshots.  The snapshot
@@ -224,7 +250,14 @@ project-local extension roots or is not allowlisted.
 
 The normal trust gate still applies: repository elisp is only loaded when
 DIRECTORY is at or below `e-project-local-allowed-roots'.  Harness activation
-continues to own model-facing tool, resource, and scoped shell registration."
+continues to own model-facing tool, resource, and scoped shell registration.
+
+Layer construction runs inside a load transaction, so a helper-file load that
+signals partway rolls its `e-project-local--loaded-files' entries back and this
+function propagates the error uncaught -- it never leaves a subset of a layer's
+files marked loaded.  Callers on a convenience path (project entry) must guard
+the call so a transient failure cannot abort project switching; see
+`e-project-local-prime-projectile-project'."
   (let ((root (e-skills-normalize-directory (or directory default-directory))))
     (when (and (e-project-local--project-has-extensions-p root)
                (e-project-local--root-allowed-p root))
@@ -243,10 +276,25 @@ continues to own model-facing tool, resource, and scoped shell registration."
   "Prime project-local extensions for the current Projectile project.
 
 Intended for `projectile-after-switch-project-hook',
-`projectile-find-file-hook', and `projectile-find-dir-hook'."
+`projectile-find-file-hook', and `projectile-find-dir-hook'.
+
+A prime is a convenience, so a failure must never abort the project switch it
+rides on.  A byte-compile or helper-load error is caught, logged as a warning,
+and the just-touched discovery cache is reset so the next project entry
+re-primes cleanly instead of reusing a half-loaded layer."
   (when e-project-local-projectile-prime-on-project-entry
     (when-let ((root (e-project-local--projectile-project-root)))
-      (e-project-local-prime-project root))))
+      (condition-case err
+          (e-project-local-prime-project root)
+        (error
+         (e-project-local-reset-loaded-files)
+         (display-warning
+          'e-project-local
+          (format "Priming project-local extensions for %s failed: %s"
+                  (abbreviate-file-name root)
+                  (error-message-string err))
+          :warning)
+         nil)))))
 
 (defun e-project-local-projectile-hooks-install ()
   "Install Projectile hooks that prime project-local extensions on entry."
@@ -305,7 +353,9 @@ once per session and skipped on later factory runs; see
                               (file-name-sans-extension file)))
                  (load-prefer-newer t))
             (apply original load-file args))
-          (puthash key t e-project-local--loaded-files))
+          (puthash key t e-project-local--loaded-files)
+          (when e-project-local--load-transaction
+            (push key (car e-project-local--load-transaction))))
         t)
     (let ((load-prefer-newer t))
       (apply original file args))))
@@ -405,9 +455,10 @@ project-local `.el' file."
   "Return the capability built by REGISTRATION for DIRECTORY.
 Signals when the factory does not return an `e-capability' with matching id."
   (let ((capability
-         (e-project-local--with-extensionless-loads (list directory)
-           (funcall (e-project-local-registration-factory registration)
-                    directory))))
+         (e-project-local--with-load-transaction
+           (e-project-local--with-extensionless-loads (list directory)
+             (funcall (e-project-local-registration-factory registration)
+                      directory)))))
     (unless (e-capability-p capability)
       (signal 'wrong-type-argument (list 'e-capability-p capability)))
     (unless (eq (e-capability-id capability)
@@ -426,10 +477,11 @@ Signals when the factory does not return an `e-capability' with matching id."
   "Return the layer built by REGISTRATION for DIRECTORY.
 Signals when the factory does not return an `e-layer' with matching id."
   (let ((layer
-         (e-project-local--with-extensionless-loads (list directory)
-           (funcall (e-project-local-layer-registration-factory
-                     registration)
-                    directory))))
+         (e-project-local--with-load-transaction
+           (e-project-local--with-extensionless-loads (list directory)
+             (funcall (e-project-local-layer-registration-factory
+                       registration)
+                      directory)))))
     (unless (e-layer-p layer)
       (signal 'wrong-type-argument (list 'e-layer-p layer)))
     (unless (eq (e-layer-id layer)

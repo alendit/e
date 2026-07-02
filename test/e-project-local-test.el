@@ -496,6 +496,71 @@ SOURCE overrides the default layer source."
       (makunbound 'e-project-local-test--factory-helper-loaded)
       (delete-directory project t))))
 
+(ert-deftest e-project-local-test-failed-factory-rolls-back-loaded-files ()
+  "A factory that signals after loading one helper does not mark it loaded.
+The next discovery must reload every helper so a transient failure cannot
+cement a partial layer for the session."
+  (let* ((project (make-temp-file "e-project-local-rollback-" t))
+         (layer-dir (expand-file-name ".e/layers/topic" project))
+         (helper-file (expand-file-name "helper.el" layer-dir))
+         (fail-marker (expand-file-name "fail.marker" layer-dir))
+         (e-project-local-allowed-roots (list project))
+         (e-project-local--loaded-files (make-hash-table :test 'equal)))
+    (unwind-protect
+        (progn
+          (setq e-project-local-test--factory-helper-loaded 0)
+          (e-project-local-test--write-file
+           helper-file
+           "(setq e-project-local-test--factory-helper-loaded
+                  (1+ e-project-local-test--factory-helper-loaded))")
+          (e-project-local-test--write-file fail-marker "x")
+          (e-project-local-test--make-layer
+           project 'topic
+           "(e-project-layer-register
+             :id 'topic
+             :factory (lambda (directory)
+                        (load (expand-file-name \"helper.el\" directory)
+                              nil 'nomessage)
+                        (when (file-exists-p
+                               (expand-file-name \"fail.marker\" directory))
+                          (error \"boom\"))
+                        (e-layer-create :id 'topic :name \"Topic\")))")
+          (should-error (e-project-local-layer-create project))
+          (should (= e-project-local-test--factory-helper-loaded 1))
+          (should (zerop (hash-table-count e-project-local--loaded-files)))
+          (delete-file fail-marker)
+          (let ((layer (e-project-local-layer-create project)))
+            (should (eq (e-layer-id layer) 'project-local))
+            (should (= e-project-local-test--factory-helper-loaded 2))))
+      (makunbound 'e-project-local-test--factory-helper-loaded)
+      (delete-directory project t))))
+
+(ert-deftest e-project-local-test-projectile-prime-guards-failure ()
+  "A failing prime on project entry is caught and resets the discovery cache."
+  (let* ((project (make-temp-file "e-project-local-prime-guard-" t))
+         (e-project-local-allowed-roots (list project))
+         (e-project-local-projectile-prime-on-project-entry t)
+         (e-project-local--loaded-files (make-hash-table :test 'equal))
+         (reset-called nil)
+         (warned nil))
+    (unwind-protect
+        (progn
+          (e-project-local-test--make-layer
+           project 'topic
+           "(e-project-layer-register
+             :id 'topic
+             :factory (lambda (_dir) (error \"prime boom\")))")
+          (cl-letf (((symbol-function 'e-project-local--projectile-project-root)
+                     (lambda () (e-skills-normalize-directory project)))
+                    ((symbol-function 'e-project-local-reset-loaded-files)
+                     (lambda () (setq reset-called t)))
+                    ((symbol-function 'display-warning)
+                     (lambda (&rest _args) (setq warned t))))
+            (should-not (e-project-local-prime-projectile-project))
+            (should reset-called)
+            (should warned)))
+      (delete-directory project t))))
+
 (ert-deftest e-project-local-test-registration-file-reloads-each-discovery ()
   "The `layer.el' registration file re-runs on each discovery despite dedup.
 Its `e-project-layer-register' side effect must repopulate the registration
