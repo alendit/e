@@ -20,6 +20,7 @@
 (require 'e-harness-instances)
 (require 'e-task-queue)
 (require 'e-task-queue-shell)
+(require 'e-task-queue-actions)
 
 (defmacro e-task-queue-shell-test--with-instances (&rest body)
   "Run BODY with isolated harness and harness-instance registries."
@@ -118,6 +119,38 @@
         (kill-buffer buffer)
         (remove-hook 'e-task-queue-change-functions
                      #'e-task-queue-shell--refresh-buffers)))))
+
+(ert-deftest e-task-queue-shell-test-list-buffer-rehydrates-default-queue ()
+  "Opening the list buffer for the default queue rehydrates persisted tasks.
+The buffer must show disk-backed tasks even when no harness built the
+task-queue layer to trigger rehydration first."
+  (e-task-queue-shell-test--with-instances
+    (let* ((dir (make-temp-file "e-task-queue-shell-rehydrate-" t))
+           (e-task-queue-directory (file-name-as-directory dir))
+           (e-task-queue-actions-default-queue
+            (e-task-queue-create
+             :directory (file-name-as-directory dir)
+             :runner (lambda (_t _h _s) (list :cancel #'ignore)))))
+      (unwind-protect
+          (progn
+            ;; Persist a task through a separate queue on the same directory.
+            (let ((writer (e-task-queue-create
+                           :directory (file-name-as-directory dir)
+                           :runner (lambda (_t _h _s) (list :cancel #'ignore)))))
+              (e-task-queue-enqueue writer :prompt "persisted")
+              (e-task-queue-flush writer))
+            ;; Default queue is empty and unloaded, as after a restart.
+            (put 'e-task-queue-actions-default-queue 'loaded nil)
+            (clrhash (e-task-queue-records e-task-queue-actions-default-queue))
+            (let ((buffer (e-task-queue-list-buffer)))
+              (unwind-protect
+                  (with-current-buffer buffer
+                    (should (= (length tabulated-list-entries) 1)))
+                (kill-buffer buffer)
+                (remove-hook 'e-task-queue-change-functions
+                             #'e-task-queue-shell--refresh-buffers))))
+        (put 'e-task-queue-actions-default-queue 'loaded nil)
+        (delete-directory dir t)))))
 
 (provide 'e-task-queue-shell-test)
 

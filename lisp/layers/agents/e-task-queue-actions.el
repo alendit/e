@@ -56,6 +56,18 @@
   "Default durable task queue backing the capability actions.
 It persists to `e-task-queue-directory'; `e-task-queue-load' rehydrates it.")
 
+(defun e-task-queue-actions-ensure-loaded ()
+  "Rehydrate the default durable queue from disk once, and return it.
+Idempotent: the `loaded' property guards against repeated disk reads.  Every
+path that first touches the shared default queue -- the layer factory and the
+list buffer alike -- calls this, so rehydration and re-dispatch of persisted
+queued work never depend on a harness happening to build the task-queue layer
+first."
+  (unless (get 'e-task-queue-actions-default-queue 'loaded)
+    (ignore-errors (e-task-queue-load e-task-queue-actions-default-queue))
+    (put 'e-task-queue-actions-default-queue 'loaded t))
+  e-task-queue-actions-default-queue)
+
 (defun e-task-queue-actions--task-id (arguments)
   "Return the required task id from ARGUMENTS."
   (let ((value (plist-get arguments :task-id)))
@@ -214,9 +226,7 @@ QUEUE defaults to `e-task-queue-actions-default-queue'."
   "Create the Task Queue layer.
 Rehydrate the default durable queue from disk the first time the layer is
 built, so queued and paused work survives an Emacs restart."
-  (unless (get 'e-task-queue-actions-default-queue 'loaded)
-    (ignore-errors (e-task-queue-load e-task-queue-actions-default-queue))
-    (put 'e-task-queue-actions-default-queue 'loaded t))
+  (e-task-queue-actions-ensure-loaded)
   (e-layer-create
    :id 'task-queue
    :name "Task Queue"
