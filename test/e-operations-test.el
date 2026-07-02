@@ -84,32 +84,24 @@
                        :multiline t
                        :limit 7)))))))
 
-(ert-deftest e-operations-test-edit-coerces-stringified-and-bare-edits ()
-  "The edit dispatcher accepts the malformed `edits' shapes providers emit.
+(ert-deftest e-operations-test-edit-coerces-bare-edit-object ()
+  "The edit dispatcher wraps a lone edit object into a one-element array.
 
-Bedrock-routed models JSON-stringify nested tool arguments and sometimes send
-a lone edit object instead of a one-element array; both must normalize to a
-list of edit plists rather than tripping the resource validator."
+Some models send a single edit object instead of a one-element array; it must
+normalize to a list of edit plists rather than tripping the resource validator.
+Stringified arguments are reparsed upstream in `e-tools--coerce-arguments', so
+`edits' arrives here as data."
   ;; A well-formed array passes through unchanged.
   (should (equal (e-operations--coerce-edits '((:oldText "a" :newText "b")))
                  '((:oldText "a" :newText "b"))))
   ;; A bare edit object is wrapped into a one-element array.
   (should (equal (e-operations--coerce-edits '(:oldText "a" :newText "b"))
                  '((:oldText "a" :newText "b"))))
-  ;; A JSON-stringified single object decodes and wraps.
-  (should (equal (e-operations--coerce-edits
-                  "{\"oldText\": \"a\", \"newText\": \"b\"}")
-                 '((:oldText "a" :newText "b"))))
-  ;; A JSON-stringified array decodes to the list.
-  (should (equal (e-operations--coerce-edits
-                  "[{\"oldText\": \"a\", \"newText\": \"b\"}]")
-                 '((:oldText "a" :newText "b"))))
   ;; The dispatcher applies the coercion before calling the resource handler.
   (let (calls)
     (funcall (e-operation-dispatch e-operation-edit)
              (lambda (&rest args) (push args calls) "edit-result")
-             '(:uri "test://edit"
-               :edits "{\"oldText\": \"a\", \"newText\": \"b\"}"))
+             '(:uri "test://edit" :edits (:oldText "a" :newText "b")))
     (should (equal (nreverse calls)
                    '(("test://edit" ((:oldText "a" :newText "b"))))))))
 

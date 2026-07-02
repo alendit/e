@@ -40,28 +40,16 @@
 (defun e-operations--coerce-edits (edits)
   "Return EDITS normalized to a list of edit plists.
 
-Models routed through providers that JSON-stringify nested tool arguments
-\(notably Bedrock) send the `edits' array as a JSON string, and some send a
-single edit object instead of a one-element array.  Both decode to the same
-intended value here, so accept them rather than rejecting the call: parse a
-string back into data, and wrap a lone edit object into a single-item list.
-A well-formed list is returned unchanged."
-  (let ((value edits))
-    ;; A stringified array/object -> parse it back into Elisp data, matching
-    ;; the adapter's decode (objects to plists, arrays to lists).
-    (when (stringp value)
-      (setq value
-            (condition-case nil
-                (json-parse-string value
-                                   :object-type 'plist
-                                   :array-type 'list
-                                   :null-object nil
-                                   :false-object :json-false)
-              (error value))))
-    ;; A lone edit object (a plist with :oldText) -> a one-element list.
-    (if (and (listp value) (plist-member value :oldText))
-        (list value)
-      value)))
+Some models send a single edit object instead of a one-element array; wrap a
+lone edit object (a plist bearing `:oldText') into a single-item list.  A
+well-formed list is returned unchanged.
+
+Stringified arguments are not handled here.  Providers that JSON-stringify
+nested tool arguments (notably Bedrock) are reparsed against the tool schema in
+`e-tools--coerce-arguments' before dispatch, so `edits' arrives as data."
+  (if (and (listp edits) (plist-member edits :oldText))
+      (list edits)
+    edits))
 
 (defconst e-operation-read
   (e-operation-create
