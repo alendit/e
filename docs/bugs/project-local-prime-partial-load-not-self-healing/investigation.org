@@ -1,0 +1,133 @@
+#+title: Investigation — project-local prime partial load
+#+startup: overview
+
+* Summary
+
+Two independent defects on the Projectile "prime on project entry" path let a
+project-local layer end up half-loaded and stuck that way:
+
+1. The prime path is unguarded, so any error mid-prime (a byte-compile failure,
+   a load error in one helper file) escapes into the Projectile hook and aborts
+   the rest of layer construction.
+2. Helper-file loads are recorded in =e-project-local--loaded-files= one at a
+   time as each =load= succeeds, with no rollback. If construction aborts after
+   file N, files 1..N-1 stay recorded as loaded, so the next prime skips them
+   and never re-runs the sequence that would define the missing commands.
+
+Together: one transient failure produces a durable partial state for the rest of
+the session.
+
+* Load-path map: two halves, two triggers
+
+Project entry and agent sessions take different paths, which alone explains part
+of the "not everything is there" feeling:
+
+- *Projectile entry → prime.* =e-project-local-prime-projectile-project= (on
+  =projectile-after-switch-project-hook=, =projectile-find-file-hook=,
+  =projectile-find-dir-hook=) calls =e-project-local-prime-project=. Its own
+  docstring calls it "a presentation convenience": it byte-recompiles stale
+  =.e/= elisp (when =e-project-local-auto-byte-recompile=), loads the layer
+  helper files so interactive =grimoire-*= commands become =fboundp=, and runs
+  =grimoire-agenda-setup=.
+- *Harness/session activation → the rest.* The model-facing half — capability
+  *actions* (=topic=, =agenda-triage=, =agenda-apply=, …), the scoped
+  =grimoire-topic= shell, context providers, guidance — attaches only when a
+  harness session rooted in the project is created. The prime path comment says
+  as much: "Harness activation continues to own model-facing tool, resource,
+  and scoped shell registration."
+
+So a projectile-only open legitimately gives the command + agenda half and not
+the agent-tool/shell half. That is by design; the *bug* is that even the prime
+half can partially fail and stick.
+
+* Defect 1: unguarded prime aborts and escapes
+
+=e-project-local-prime-project= (=lisp/layers/project-local/e-project-local.el=):
+
+#+begin_src emacs-lisp
+(let ((default-directory root))
+  (when e-project-local-auto-byte-recompile
+    (e-project-local-byte-compile-project root))   ; can (error ...)
+  (e-project-local-layer-create root))              ; can signal mid-build
+#+end_src
+
+Neither the byte-compile nor =layer-create= is guarded, and
+=e-project-local-prime-projectile-project= does not wrap the call either.
+=e-project-local-byte-compile-project= explicitly =(error "Failed to
+byte-compile ...")= on a nil result. With =e-project-local-auto-byte-recompile
+t= (the user's config), every first find-file in the repo can run a compile on
+the UI thread, so the most fragile step sits right on the hot path. Any error
+propagates into the Projectile hook.
+
+* Defect 2: loaded-files cache records per-file with no rollback
+
+=grimoire-topic-layer-create= (grimoire =.e/layers/topic/layer.el=) loads its
+helpers sequentially:
+
+: capabilities/topic.el → sources.el → quest.el → shells/topic.el → agenda.el
+: → agenda-apply.el → agenda-review.el → agenda-triage.el → quest-backfill.el
+: → commit.el
+
+Each =load= flows through =e-project-local--extensionless-load-advice=, which
+does =(puthash key t e-project-local--loaded-files)= immediately after that one
+file loads. There is no transaction around the whole factory. If file N throws,
+files 1..N-1 are already marked loaded. =grimoire-agenda-setup= is the only step
+wrapped in =ignore-errors=, so agenda typically survives while a command defined
+in an unloaded later file goes missing — exactly the observed shape.
+
+On the next prime, =e-project-local--discover-layers= re-runs the factory, but
+the advice skips every already-recorded file, so the sequence that would define
+the missing command never re-executes. The partial state is now sticky for the
+session.
+
+Recovery today is manual:
+
+#+begin_src emacs-lisp
+(e-project-local-reset-loaded-files)   ; clears loaded-files + snapshots
+#+end_src
+
+then re-open a project file, or =M-x e-dev-reload=, or start an e session
+(harness activation rediscovers cleanly).
+
+* Live state at investigation time
+
+This session is *fully* loaded (all eleven files in
+=e-project-local--loaded-files=, every =grimoire-*= command and capability
+factory =fboundp=, agenda files set) — because sessions were run, which takes
+the harness path. That is consistent with the theory: the harness path is
+robust; the prime path is the fragile one.
+
+* Byte-compile gate check (warning-as-error)
+
+Ran a batch byte-compile of all eleven grimoire topic-layer files via
+=elisp-job= with the correct =load_path= (=lisp=, =lisp/core=, =lisp/shells=,
+=lisp/layers=, =lisp/layers/project-local=). All eleven compile *ok*. Two
+non-fatal warnings only, both in =capabilities/topic.el=:
+
+- =topic.el:254: reference to free variable ‘repo-root’=
+- =topic.el:189: the function ‘e-harness-state’ is not known to be defined=
+
+So the current grimoire layer does not itself trip an abort; the risk is
+structural on the prime path, plus =auto-byte-recompile= adding a compile
+failure surface on project entry. (Note: a naive =byte-compile-error-on-warn t=
+run reports a spurious "Defining as dynamic an already lexical var" because the
+=let=-bound flag var is itself compiled; that is a harness artifact of the probe,
+not a grimoire warning.)
+
+* Fix implemented
+
+In =lisp/layers/project-local/e-project-local.el=:
+
+1. *Guard the prime.* =e-project-local-prime-projectile-project= wraps the prime
+   in =condition-case=, logs a warning, and returns nil on failure so a project
+   switch is never aborted by a convenience hook. =e-project-local-prime-project=
+   resets the just-touched loaded-file/snapshot cache on failure so the next
+   entry re-primes from scratch instead of reusing a partial cache.
+
+2. *Make helper loads transactional.* =e-project-local--load-project-file= (used
+   for factory helper files under the extensionless-load advice) records loaded
+   files into a batch that is only committed to =e-project-local--loaded-files=
+   when the surrounding factory run completes; a signal mid-factory rolls the
+   batch back, so a failed prime never leaves a subset of files marked loaded.
+
+See the review notes and tests for the exact shape.

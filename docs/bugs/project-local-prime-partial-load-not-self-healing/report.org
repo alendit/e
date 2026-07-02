@@ -1,0 +1,31 @@
+#+title: Project-local prime can half-load a layer and cement a partial state
+#+startup: overview
+
+* Report
+
+Opening a project through Projectile (find-file / switch-project / find-dir)
+sometimes leaves only *part* of that project's project-local layer active: some
+interactive =grimoire-*= commands are defined, the agenda files are set, but
+other commands, the scoped shell, or the layer's capabilities are missing.
+Re-opening files in the same session does not heal it.
+
+Reported against the grimoire repo, whose =.e/layers/topic/= layer loads eleven
+helper =.el= files in sequence and contributes both interactive commands and a
+scoped shell.
+
+* Impact
+
+- Project entry is the common path, and it silently yields a *partial* runtime:
+  the user sees some project commands but not others, with no error, so it reads
+  as "not all of it loads."
+- Because the partial state is cached for the session, the user cannot recover
+  by re-visiting a file; only a full reset or restart fixes it.
+- The failure is environment-dependent (only projects with project-local layers,
+  only when a load/compile hiccup occurs), so it is easy to misattribute.
+
+* Expected
+
+Priming a project on entry should be all-or-nothing and self-healing: either the
+whole layer loads, or the attempt fails loudly without cementing a partial
+cache, and the next entry re-primes cleanly. A convenience hook on project entry
+should never abort project switching or leave a half-initialized layer behind.
