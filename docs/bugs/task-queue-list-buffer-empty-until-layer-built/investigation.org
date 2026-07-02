@@ -1,0 +1,89 @@
+#+title: Investigation — task queue list buffer empty after restart
+#+startup: overview
+
+* Summary
+
+The durable default queue is rehydrated from disk in exactly one place —
+=e-task-queue-layer-create= (=lisp/layers/agents/e-task-queue-actions.el=),
+guarded by a =(get 'e-task-queue-actions-default-queue 'loaded)= property. If
+anything reads the queue before that layer is built, it sees an empty queue.
+The list buffer entrypoint does exactly that.
+
+* Persistence is fine
+
+The records file is written on every change through
+=e-task-queue--persist-on-change= (bound to =e-task-queue-change-functions=) and
+was intact at investigation time: seven completed grimoire triage tasks,
+correct final states, full outputs, in
+=~/.config/emacs/.local/cache/e/task-queue/records.eld=. So this is a load /
+rehydration bug, not a persistence bug.
+
+* The rehydration is lazy and single-sited
+
+=e-task-queue-layer-create=:
+
+#+begin_src emacs-lisp
+(unless (get 'e-task-queue-actions-default-queue 'loaded)
+  (ignore-errors (e-task-queue-load e-task-queue-actions-default-queue))
+  (put 'e-task-queue-actions-default-queue 'loaded t))
+#+end_src
+
+The module-level =e-task-queue-actions-default-queue= is constructed empty at
+load time. It only gains its persisted records when the task-queue *layer* is
+built, which happens during harness/session activation. Until then the queue is
+empty in memory.
+
+=e-task-queue-list-buffer= (=lisp/shells/e-task-queue-shell.el=) does not
+rehydrate:
+
+#+begin_src emacs-lisp
+(let ((queue (or queue e-task-queue-actions-default-queue))
+      (buffer (get-buffer-create e-task-queue-shell-buffer-name)))
+  (with-current-buffer buffer
+    ...
+    (setq e-task-queue-shell--queue queue)
+    (e-task-queue-shell--refresh)))
+#+end_src
+
+So opening =*e-task-queue*= after a restart, before any session built the
+task-queue layer, binds the buffer to the empty in-memory queue and refreshes
+against it — an empty list, even though disk has the tasks. Confirmed live:
+=(get 'e-task-queue-actions-default-queue 'loaded)= was nil and the queue had 0
+records; calling =(e-task-queue-load e-task-queue-actions-default-queue)= then
+refreshing brought all seven rows back.
+
+* Second consequence: queued work stalls
+
+The same lazy gate delays re-dispatch. =e-task-queue-load= ends with
+=e-task-queue--dispatch=, which restarts =queued= (and shutdown-orphaned
+=running=→=queued=) tasks. If the queue is never loaded because no session built
+the layer, persisted queued work does not resume until something incidentally
+builds the layer. Rehydration should not depend on that timing.
+
+* Fix implemented
+
+Give the default queue a single idempotent rehydration entrypoint and call it
+from *every* path that first touches the queue, not just the layer factory:
+
+- New =e-task-queue-actions-ensure-loaded= in
+  =lisp/layers/agents/e-task-queue-actions.el= owns the =loaded= guard + the
+  =e-task-queue-load= call. =e-task-queue-layer-create= now delegates to it.
+- =e-task-queue-list-buffer= calls =e-task-queue-actions-ensure-loaded= before
+  binding/refreshing when it is showing the default queue, so opening the buffer
+  rehydrates from disk and re-dispatches queued work regardless of whether a
+  session built the layer first.
+
+This keeps rehydration idempotent (the =loaded= property still guards against
+repeated disk reads) while removing the dependency on layer-build ordering. An
+explicit caller that passes its own =:queue= is left untouched — only the shared
+default queue is auto-rehydrated.
+
+* Verification
+
+- New ERT test asserts that opening the list buffer against a freshly
+  constructed default queue with a populated records file rehydrates the rows
+  (=loaded= flag was nil before, tasks present after).
+- Full =e-task-queue= and =e-task-queue-shell= suites pass.
+- Live check: reset the =loaded= flag and cleared the in-memory queue, then
+  opened the list buffer and confirmed the persisted tasks reappeared without
+  any session building the layer.

@@ -1,0 +1,30 @@
+#+title: Task queue list buffer shows empty after restart until a layer is built
+#+startup: overview
+
+* Report
+
+After restarting Emacs, the =*e-task-queue*= list buffer shows no tasks, even
+though tasks from the previous session (including finished ones) were completed
+and should be listed. The durable records file on disk is intact; the buffer
+just does not show them.
+
+Reproduction observed with the grimoire triage tasks: seven tasks ran to
+completion, their records persisted to
+=~/.config/emacs/.local/cache/e/task-queue/records.eld=, but after a restart the
+list buffer was empty. Explicitly loading the queue and refreshing the buffer
+brought all rows back.
+
+* Impact
+
+- The list buffer is the operator's window into background work. An empty buffer
+  after restart reads as "my finished/queued tasks were lost," when in fact they
+  are persisted and merely not rehydrated yet.
+- Queued (not-yet-run) tasks are also affected: they exist on disk but do not
+  re-dispatch until something builds the task-queue layer, so background work
+  silently stalls until an unrelated action wakes it.
+
+* Expected
+
+Opening or showing the task queue list buffer should display the persisted
+tasks. Rehydration of the durable default queue must not depend on a harness
+happening to build the task-queue layer first.
