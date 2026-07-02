@@ -6,17 +6,10 @@
 Add two chat composer commands:
 
 - *Clear all* — wipe the composer in one keystroke. =C-g C-g= (double
-  =C-g=) is the wanted gesture, but a single =C-g= is already keyboard-quit
-  and the debug layer binds a =C-g= sequence, so resolve the conflict rather
-  than shadow either: bind clear-all to a distinct key (or a prefixed
-  =C-c=-based binding) that does not collide with quit or debug, and only
-  treat a deliberate double-=C-g= as clear-all if it can be done without
-  weakening quit.
+  =C-g=) is the wanted gesture, but a single =C-g= is already keyboard-quit and the debug layer binds a =C-g= sequence, so resolve the conflict rather than shadow either: bind clear-all to a distinct key (or a prefixed =C-c=-based binding) that does not collide with quit or debug, and only treat a deliberate double-=C-g= as clear-all if it can be done without weakening quit.
+- Alternative is C-l
 - *Go back to the previous message* — recall the previously submitted
-  prompt into the composer for re-editing, like shell history previous. It
-  must be reversible: after going back, a forward command returns to "what I
-  just typed" (the draft that was in the composer before recall), so a
-  mis-press never loses the current draft.
+  prompt into the composer for re-editing, like shell history previous. It must be reversible: after going back, a forward command returns to "what I just typed" (the draft that was in the composer before recall), so a mis-press never loses the current draft. [what key bindings should this be?]
 
 * Why tiny
 

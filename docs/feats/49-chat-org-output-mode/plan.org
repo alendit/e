@@ -3,11 +3,7 @@
 
 * Goal
 
-Add an optional chat *output mode* that renders assistant responses as Org
-instead of the default Markdown: real Org headings, lists, source blocks,
-and clickable Org links. It is a per-session/per-project setting, off by
-default, for users who live in Org and want to yank chat output straight
-into a note.
+Add an optional chat *output mode* that renders assistant responses as Org instead of the default Markdown: real Org headings, lists, source blocks, and clickable Org links. It is a per-session/per-project setting, off by default, for users who live in Org and want to yank chat output straight into a note.
 
 * Status
 
@@ -17,17 +13,15 @@ Planned.
 
 The chat transcript renders assistant text as Markdown. For a user whose
 knowledge base is Org (grimoire, daily notes, topics), that means every
-useful response has to be hand-converted before it lands in a note: heading
-syntax, list bullets, code fences, and especially links all differ. The
-model also has no signal that Org is the wanted target, so it emits
-Markdown link syntax that is dead in an Org buffer.
+useful response has to be hand-converted before it lands in a note: heading syntax, list bullets, code fences, and especially links all differ. The model also has no signal that Org is the wanted target, so it emits Markdown link syntax that is dead in an Org buffer.
 
-This is the chat-buffer analogue of the existing =output-style= capability,
-but about *output format/markup*, not prose voice — the two compose.
+This is the chat-buffer analogue of the existing =output-style= capability, but about *output format/markup*, not prose voice — the two compose.
 
 * Design
 
 ** A setting, not a default
+
+Yes, a setting, but also make it the default
 
 - A defcustom / capability-config flag (=e-chat-output-mode=, default
   =markdown=) selectable globally and per project, plus a command to toggle

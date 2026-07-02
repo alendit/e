@@ -59,6 +59,6 @@ Status values for coding agents:
 | 46 | Done | 46-elisp-batch-job-tool/ | Elisp Batch Job Actions |
 | 47 | In-review | 47-agent-task-queue/ | Agent Task Queue |
 | 48 | Planned | 48-chat-image-support/ | Chat Image Support |
-| 49 | Planned | 49-chat-org-output-mode/ | Chat Org Output Mode |
+| 49 | Ready | 49-chat-org-output-mode/ | Chat Org Output Mode |
 | 50 | Planned | 50-annotation-reactive-sessions/ | Annotation-Reactive Background Sessions |
 | 51 | Planned | 51-emacs-cron-schedules/ | Emacs Cron Schedules for e |

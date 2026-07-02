@@ -8,6 +8,10 @@ cron-like recurrence ("every weekday at 09:00", "every 30 min") that wakes a
 session or enqueues a task, defined in config and inspectable/cancelable at
 runtime — built on Emacs timers, no external cron.
 
+The scheduled action should support a deterministic check that decides whether the agent actually needs to be fired/queued, so a wakeup with no work is a cheap no-op instead of an empty turn.
+
+There should be an =e= command that gives an overview of all scheduled crons.
+
 * Status
 
 Planned.
@@ -34,6 +38,11 @@ A declarative schedule entry:
   syntax in the first slice.
 - =action= :: what to fire — =:enqueue= a task-queue prompt, or =:wake= a
   background session, or call a named handler.
+- =guard= :: an optional deterministic predicate evaluated at fire time that
+  decides whether the fire happens. Non-nil fires; nil skips. This lets a
+  schedule ask "is there anything to do?" (unread inbox items, stale sources)
+  before waking a session or enqueuing a task. The guard runs synchronously
+  in the live Emacs and must be cheap and side-effect free.
 - =metadata= :: opaque, passed through to the fired work.
 
 ** Engine
@@ -46,11 +55,18 @@ A declarative schedule entry:
   The engine owns *timing only*; it does not run turns itself.
 - Busy-skip / catch-up policy is explicit per entry (skip a missed fire vs.
   run once on resume); default skip, matching background-session semantics.
+- When an entry has a =guard=, the engine evaluates it at fire time before
+  routing to the action. A nil result skips this fire without disarming: the
+  schedule still recomputes and re-arms for its next time. The guard decides
+  *whether* to fire; it does not affect *when* the next fire is scheduled.
 
 ** Inspect and control
 
-- A registry list + a shell command/buffer to see schedules, their next
-  fire time, and last fire, and to enable/disable/cancel one.
+- An =e= command opens an overview buffer listing every schedule with its
+  =when=, next fire time, last fire, guard result at last check, and enabled
+  state; from that buffer the user can enable/disable/cancel an entry.
+- The overview reads the same registry the engine arms from, so what it
+  shows is the live schedule state, not a separate copy.
 - Schedules are config-defined (global/project) and runtime-inspectable; a
   disabled schedule survives restart as config but does not arm.
 
@@ -79,14 +95,17 @@ A declarative schedule entry:
   ("every 30 min") both fire at the right times in a test clock.
 - A =:enqueue= schedule lands a task on the queue; a =:wake= schedule submits
   to a background session.
-- Schedules are listable with next/last fire and can be disabled/cancelled
-  at runtime.
+- A schedule with a =guard= fires only when the guard returns non-nil; a nil
+  guard skips the fire and the schedule still re-arms for its next time.
+- The overview command lists every schedule with its next/last fire and
+  enabled state, and can disable/cancel an entry at runtime.
 - A missed fire follows the entry's catch-up policy (default skip).
 
 * Verification
 
 - Focused ERT tests with an injected clock: next-fire computation for
   interval and calendar specs, re-arm after fire, busy-skip/catch-up,
+  guard gating (non-nil fires, nil skips and still re-arms),
   enqueue vs. wake routing, disable/cancel.
 - =git diff --check=.
 - =e-dev-reload= and a bounded live probe arming a short interval schedule
