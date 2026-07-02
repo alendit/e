@@ -37,6 +37,32 @@
         (setq options (cons (plist-get arguments key)
                             (cons key options)))))))
 
+(defun e-operations--coerce-edits (edits)
+  "Return EDITS normalized to a list of edit plists.
+
+Models routed through providers that JSON-stringify nested tool arguments
+\(notably Bedrock) send the `edits' array as a JSON string, and some send a
+single edit object instead of a one-element array.  Both decode to the same
+intended value here, so accept them rather than rejecting the call: parse a
+string back into data, and wrap a lone edit object into a single-item list.
+A well-formed list is returned unchanged."
+  (let ((value edits))
+    ;; A stringified array/object -> parse it back into Elisp data, matching
+    ;; the adapter's decode (objects to plists, arrays to lists).
+    (when (stringp value)
+      (setq value
+            (condition-case nil
+                (json-parse-string value
+                                   :object-type 'plist
+                                   :array-type 'list
+                                   :null-object nil
+                                   :false-object :json-false)
+              (error value))))
+    ;; A lone edit object (a plist with :oldText) -> a one-element list.
+    (if (and (listp value) (plist-member value :oldText))
+        (list value)
+      value)))
+
 (defconst e-operation-read
   (e-operation-create
    :id 'read
@@ -85,12 +111,17 @@
   (e-operation-create
    :id 'edit
    :tool-name "edit"
-   :description "Edit a URI-addressed text resource using exact text replacements."
+   :description (concat
+                 "Edit a URI-addressed text resource using exact text replacements. "
+                 "`edits' is always a JSON array of {oldText, newText} objects, even "
+                 "for a single change: pass [{\"oldText\": ..., \"newText\": ...}]. "
+                 "Do not send `edits' as a JSON-encoded string and do not send a bare "
+                 "object; it must be a real array.")
    :parameters '(:type "object"
                  :properties (:uri (:type "string"
                                     :description "Resource URI to edit, such as file://README.md or buffer://*scratch*.")
                               :edits (:type "array"
-                                      :description "Exact text replacements to apply to the resource."
+                                      :description "Array of exact text replacements to apply, in order. Always an array of objects, even for one edit: [{\"oldText\": \"...\", \"newText\": \"...\"}]. Never a JSON-encoded string and never a bare object."
                                       :items (:type "object"
                                               :properties (:oldText (:type "string"
                                                                    :description "Exact current text to replace. Must match exactly once.")
@@ -101,7 +132,8 @@
    :dispatch (lambda (call arguments)
                (funcall call
                         (e-operations--argument-string arguments :uri)
-                        (plist-get arguments :edits)))))
+                        (e-operations--coerce-edits
+                         (plist-get arguments :edits))))))
 
 (defconst e-operation-glob
   (e-operation-create
