@@ -71,6 +71,11 @@
      :summary "Bounded-concurrency agent task queue enqueue and observation actions."
      :feature e-task-queue-actions
      :factory e-task-queue-layer-create)
+    (:id cron
+     :name "Cron Schedule"
+     :summary "Cron-like schedules that fire agent work on a recurrence."
+     :feature e-cron-actions
+     :factory e-cron-layer-create)
     (:id org-canvas
      :name "Org Canvas"
      :summary "Org document canvas context and visibility tools."

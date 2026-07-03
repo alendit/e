@@ -530,6 +530,39 @@
       (should (>= d 20.0))
       (should (<= d (* 20.0 1.25))))))
 
+(ert-deftest e-harness-test-retry-reset-seconds-parses-hints ()
+  "A named rate-limit reset yields a bounded wait; unnamed resets yield nil."
+  (let ((e-harness-retry-reset-max-wait-seconds 900.0)
+        (now (float-time
+              (encode-time (parse-time-string "2026-07-03 08:20:00 +0000")))))
+    ;; Absolute "resets at" UTC timestamp: wait until the stated reopen.
+    (should (= 182.0
+               (e-harness--retry-reset-seconds
+                (concat "None: 429: Rate limit exceeded for api_key: abc. "
+                        "Limit resets at: 2026-07-03 08:23:02 UTC")
+                nil now)))
+    ;; A reset farther out than the cap falls back to backoff (nil).
+    (should-not (e-harness--retry-reset-seconds
+                 "resets at: 2026-07-03 09:00:00 UTC" nil now))
+    ;; Relative hints in seconds and minutes.
+    (should (= 30 (e-harness--retry-reset-seconds
+                   "429 rate limit, try again in 30s" nil now)))
+    (should (= 120.0 (e-harness--retry-reset-seconds
+                      "please retry after 2 minutes" nil now)))
+    ;; A structured Retry-After delay wins over text parsing.
+    (should (= 45 (e-harness--retry-reset-seconds
+                   "429" '(:retry-after 45) now)))
+    ;; A reset already in the past clamps to a small positive wait.
+    (should (= 1.0 (e-harness--retry-reset-seconds
+                    "resets at: 2026-07-03 08:19:00 UTC" nil now)))
+    ;; No parseable hint: nil, so the caller uses ordinary backoff.
+    (should-not (e-harness--retry-reset-seconds
+                 "429 rate limit exceeded" nil now)))
+  ;; A zero cap disables reset-aware waiting entirely.
+  (let ((e-harness-retry-reset-max-wait-seconds 0))
+    (should-not (e-harness--retry-reset-seconds
+                 "try again in 5s" nil (float-time)))))
+
 (defun e-harness-test--rate-limited-backend (failures)
   "Return a backend that fails with HTTP 429 FAILURES times, then succeeds.
 Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."

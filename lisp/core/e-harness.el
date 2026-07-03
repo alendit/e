@@ -795,6 +795,51 @@ The delay grows geometrically and is capped at
                    0)))
     (+ base jitter)))
 
+(defun e-harness--retry-reset-seconds (message details &optional now)
+  "Return seconds to wait for a rate-limit reset named in a retryable error.
+MESSAGE and DETAILS are the backend error text and structured payload.  Return
+a positive delay when the error names a concrete reopen — a structured
+`:retry-after' delay, a relative \"try again in Ns\", or an absolute
+\"resets at <ISO-8601 UTC>\" timestamp — else nil.  NOW defaults to the current
+time and is injectable for tests.  A reset in the past yields a small positive
+delay so the immediate retry still clears the window boundary; a delay past
+`e-harness-retry-reset-max-wait-seconds' yields nil so the caller falls back to
+ordinary backoff."
+  (when (> e-harness-retry-reset-max-wait-seconds 0)
+    (let* ((now (or now (float-time)))
+           (text (or message ""))
+           (seconds
+            (cond
+             ;; Structured provider hint wins: an explicit Retry-After delay.
+             ((and (listp details)
+                   (let ((after (or (plist-get details :retry-after)
+                                    (plist-get details :retry-after-seconds))))
+                     (and (numberp after) after))))
+             ;; "try again in 30s" / "retry after 12 seconds".
+             ((string-match
+               "\\(?:try again in\\|retry after\\|retry in\\)[^0-9]*\\([0-9]+\\(?:\\.[0-9]+\\)?\\)[[:space:]]*\\(m\\|min\\|s\\|sec\\|seconds?\\|minutes?\\)?"
+               (downcase text))
+              (let ((n (string-to-number (match-string 1 (downcase text))))
+                    (unit (match-string 2 (downcase text))))
+                (if (and unit (string-prefix-p "m" unit)) (* n 60.0) n)))
+             ;; "Limit resets at: 2026-07-03 08:23:02 UTC" (absolute UTC time).
+             ((string-match
+               "resets? at[:[:space:]]+\\([0-9]\\{4\\}-[0-9]\\{2\\}-[0-9]\\{2\\}[T[:space:]][0-9]\\{2\\}:[0-9]\\{2\\}\\(?::[0-9]\\{2\\}\\)?\\)"
+               text)
+              (let* ((stamp (replace-regexp-in-string
+                             "T" " " (match-string 1 text)))
+                     ;; The provider states these in UTC; parse as UTC.
+                     (parsed (ignore-errors
+                               (float-time
+                                (encode-time
+                                 (parse-time-string
+                                  (concat stamp " +0000")))))))
+                (and parsed (- parsed now)))))))
+      (when (numberp seconds)
+        (let ((wait (max 1.0 seconds)))
+          (when (<= wait e-harness-retry-reset-max-wait-seconds)
+            wait))))))
+
 (defun e-harness--durable-activity-event-p (type)
   "Return non-nil when TYPE should be stored as session activity."
   (let ((class (e-harness-activity-event-class type)))
@@ -2193,27 +2238,43 @@ cancellation.  SESSION-ID identifies the session."
                   (not (active-entry-p))))
             (maybe-retry-error
              (message details)
-             ;; Schedule a backoff retry for a retryable error (e.g. 429)
-             ;; while inside the elapsed budget.  Return non-nil when a retry
-             ;; was scheduled so the caller skips settling the turn as failed.
+             ;; Schedule a retry for a retryable error (e.g. 429) while inside
+             ;; the elapsed budget.  Return non-nil when a retry was scheduled
+             ;; so the caller skips settling the turn as failed.
+             ;;
+             ;; When the error names a concrete reset time, wait until then
+             ;; instead of using blind exponential backoff, and let that known
+             ;; reopen extend the budget so the turn is not abandoned minutes
+             ;; before capacity returns.
              (when (and (> e-harness-retry-max-elapsed-seconds 0)
                         (e-harness--retryable-error-p message details))
-               (let* ((deadline (or (plist-get entry :retry-deadline)
-                                    (+ (float-time)
+               (let* ((now (float-time))
+                      (deadline (or (plist-get entry :retry-deadline)
+                                    (+ now
                                        e-harness-retry-max-elapsed-seconds)))
                       (attempt (1+ (or (plist-get entry :retry-attempt) 0)))
-                      (backoff (e-harness--retry-backoff-seconds attempt)))
-                 (plist-put entry :retry-deadline deadline)
-                 (when (< (+ (float-time) backoff) deadline)
+                      (reset-wait
+                       (e-harness--retry-reset-seconds message details now))
+                      (wait (or reset-wait
+                                (e-harness--retry-backoff-seconds attempt)))
+                      ;; A known reset can push the deadline out (bounded by
+                      ;; the reset helper's own cap) so we do not give up right
+                      ;; before the window reopens.
+                      (effective-deadline (if reset-wait
+                                              (max deadline (+ now wait 1.0))
+                                            deadline)))
+                 (plist-put entry :retry-deadline effective-deadline)
+                 (when (< (+ now wait) effective-deadline)
                    (plist-put entry :retry-attempt attempt)
                    (e-harness--emit-turn-event
                     harness session-id turn-id 'turn-retrying
                     (list :error message
                           :details details
                           :attempt attempt
-                          :backoff-seconds backoff))
+                          :backoff-seconds wait
+                          :reset-wait reset-wait))
                    (plist-put entry :timer
-                              (run-at-time backoff nil #'start-turn))
+                              (run-at-time wait nil #'start-turn))
                    t))))
             (finish-error
              (err)

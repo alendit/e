@@ -14,7 +14,9 @@ There should be an =e= command that gives an overview of all scheduled crons.
 
 * Status
 
-Planned.
+In-progress. Engine, routing/capability layer, and overview command
+implemented with focused ERT coverage; live-reloaded and probed in the running
+Emacs.
 
 * Problem
 

@@ -61,4 +61,4 @@ Status values for coding agents:
 | 48 | Planned | 48-chat-image-support/ | Chat Image Support |
 | 49 | Ready | 49-chat-org-output-mode/ | Chat Org Output Mode |
 | 50 | Planned | 50-annotation-reactive-sessions/ | Annotation-Reactive Background Sessions |
-| 51 | Planned | 51-emacs-cron-schedules/ | Emacs Cron Schedules for e |
+| 51 | In-progress | 51-emacs-cron-schedules/ | Emacs Cron Schedules for e |
