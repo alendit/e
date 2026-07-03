@@ -32,7 +32,7 @@
      ""
      "## Actions"
      ""
-     "- `enqueue`: input `(:prompt STRING :metadata PLIST :harness-instance-id STRING)`. Returns a `queued` task record immediately; the dispatcher may start it before the call returns. `metadata` is an opaque plist the enqueuer owns. `harness-instance-id` is optional (an instance id string such as `chat-project-e`) and defaults to the queue default, resolved at dispatch time."
+     "- `enqueue`: input `(:prompt STRING :summary STRING :metadata PLIST :harness-instance-id STRING)`. Returns a `queued` task record immediately; the dispatcher may start it before the call returns. `summary` is a short human-worded stub (like a topic title) shown in the queue list; supply it so the list is scannable instead of showing a prompt prefix. `metadata` is an opaque plist the enqueuer owns. `harness-instance-id` is optional (an instance id string such as `chat-project-e`) and defaults to the queue default, resolved at dispatch time."
      "- `list-tasks`: returns compact normalized records, newest-first."
      "- `task-status`: input `(:task-id STRING)`. Returns one normalized record."
      "- `read-task`: input `(:task-id STRING)`. Returns the task's collected outputs."
@@ -92,6 +92,7 @@ expects and pass an existing keyword or nil through unchanged."
   (e-task-queue-enqueue
    queue
    :prompt (plist-get arguments :prompt)
+   :summary (plist-get arguments :summary)
    :metadata (plist-get arguments :metadata)
    :harness-instance-id (e-task-queue-actions--instance-id
                          (plist-get arguments :harness-instance-id))))
@@ -142,6 +143,9 @@ expects and pass an existing keyword or nil through unchanged."
     (:prompt
      (:type "string"
       :description "Prompt the queued task submits as one harness turn.")
+     :summary
+     (:type "string"
+      :description "Short human-worded stub describing the task, shown in the queue list (like a topic title). Optional; falls back to a prompt prefix.")
      :metadata
      (:type "object"
       :description "Opaque provenance plist the enqueuer owns.")

@@ -152,6 +152,74 @@ task-queue layer to trigger rehydration first."
         (put 'e-task-queue-actions-default-queue 'loaded nil)
         (delete-directory dir t)))))
 
+(ert-deftest e-task-queue-shell-test-shows-summary-stub-over-prompt ()
+  "The Task column shows the agent-authored summary when present."
+  (e-task-queue-shell-test--with-instances
+    (let* ((queue (e-task-queue-shell-test--queue))
+           (_ (e-task-queue-enqueue
+               queue
+               :prompt "A long verbose prompt that should not be shown verbatim"
+               :summary "Morsel runtime analysis"))
+           (buffer (e-task-queue-list-buffer :queue queue)))
+      (unwind-protect
+          (with-current-buffer buffer
+            (let ((cols (cadr (car tabulated-list-entries))))
+              ;; The Task column (index 3) shows the stub, not the prompt.
+              (should (equal (aref cols 3) "Morsel runtime analysis"))))
+        (kill-buffer buffer)))))
+
+(ert-deftest e-task-queue-shell-test-falls-back-to-prompt-prefix ()
+  "Without a summary, the Task column falls back to the prompt prefix."
+  (e-task-queue-shell-test--with-instances
+    (let* ((queue (e-task-queue-shell-test--queue))
+           (_ (e-task-queue-enqueue queue :prompt "Research the thing"))
+           (buffer (e-task-queue-list-buffer :queue queue)))
+      (unwind-protect
+          (with-current-buffer buffer
+            (let ((cols (cadr (car tabulated-list-entries))))
+              (should (string-prefix-p "Research the thing" (aref cols 3)))))
+        (kill-buffer buffer)))))
+
+(ert-deftest e-task-queue-shell-test-renders-key-hint-footer ()
+  "The list buffer renders a key hint footer with the row actions."
+  (e-task-queue-shell-test--with-instances
+    (let* ((queue (e-task-queue-shell-test--queue))
+           (_ (e-task-queue-enqueue queue :prompt "task"))
+           (buffer (e-task-queue-list-buffer :queue queue)))
+      (unwind-protect
+          (with-current-buffer buffer
+            (let ((text (buffer-substring-no-properties (point-min) (point-max))))
+              (should (string-match-p "\\[RET\\] open session" text))
+              (should (string-match-p "\\[c\\] cancel" text))))
+        (kill-buffer buffer)))))
+
+(ert-deftest e-task-queue-shell-test-open-session-key-is-command ()
+  "RET is bound to the open-session command."
+  (e-task-queue-shell-test--with-instances
+    (let ((buffer (e-task-queue-list-buffer
+                   :queue (e-task-queue-shell-test--queue))))
+      (unwind-protect
+          (with-current-buffer buffer
+            (should (eq (keymap-lookup e-task-queue-shell-mode-map "RET")
+                        #'e-task-queue-shell-open-session))
+            (should (commandp #'e-task-queue-shell-open-session)))
+        (kill-buffer buffer)))))
+
+(ert-deftest e-task-queue-shell-test-open-session-without-session-errors ()
+  "Opening a task that never started a session signals a user error."
+  (e-task-queue-shell-test--with-instances
+    (let* ((queue (e-task-queue-shell-test--queue))
+           (_ (e-task-queue-enqueue queue :prompt "queued only"))
+           (buffer (e-task-queue-list-buffer :queue queue)))
+      (unwind-protect
+          (with-current-buffer buffer
+            (goto-char (point-min))
+            ;; Move onto the first data row.
+            (when (get-text-property (point) 'tabulated-list-id)
+              (should-error (e-task-queue-shell-open-session)
+                            :type 'user-error)))
+        (kill-buffer buffer)))))
+
 (provide 'e-task-queue-shell-test)
 
 ;;; e-task-queue-shell-test.el ends here

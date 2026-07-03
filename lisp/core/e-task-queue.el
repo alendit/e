@@ -135,6 +135,14 @@ Falls back to the default `chat' instance when no explicit default is set."
      (string-trim (replace-regexp-in-string "[\n\t ]+" " " prompt))
      80 nil nil t)))
 
+(defun e-task-queue-record-display-summary (record)
+  "Return the best short display label for RECORD.
+Prefers an explicit agent-authored `:summary' stub, falling back to the
+truncated prompt prefix in `:prompt-summary'."
+  (or (plist-get record :summary)
+      (plist-get record :prompt-summary)
+      ""))
+
 (defun e-task-queue--record (queue task-id)
   "Return the mutable internal record for TASK-ID in QUEUE, or signal."
   (or (gethash task-id (e-task-queue-records queue))
@@ -145,6 +153,7 @@ Falls back to the default `chat' instance when no explicit default is set."
   (list :task-id (plist-get record :task-id)
         :status (plist-get record :status)
         :prompt (plist-get record :prompt)
+        :summary (plist-get record :summary)
         :prompt-summary (plist-get record :prompt-summary)
         :metadata (plist-get record :metadata)
         :harness-instance-id (plist-get record :harness-instance-id)
@@ -276,18 +285,23 @@ any task the settle frees."
 
 ;; --- public mutations -------------------------------------------------------
 
-(cl-defun e-task-queue-enqueue (queue &key prompt metadata harness-instance-id)
+(cl-defun e-task-queue-enqueue (queue &key prompt summary metadata harness-instance-id)
   "Enqueue PROMPT on QUEUE and return its normalized record.
-METADATA is an opaque plist the enqueuer owns.  HARNESS-INSTANCE-ID selects the
-configured harness instance the task runs on; nil uses the queue default,
-resolved at dispatch time.  Dispatch runs before returning, so a task may
-already be running when this returns."
+SUMMARY is an optional short, human-worded stub describing the task, the way a
+new topic is auto-titled; when nil, a truncated prefix of PROMPT is used for
+display.  METADATA is an opaque plist the enqueuer owns.  HARNESS-INSTANCE-ID
+selects the configured harness instance the task runs on; nil uses the queue
+default, resolved at dispatch time.  Dispatch runs before returning, so a task
+may already be running when this returns."
   (unless (and (stringp prompt) (not (string-empty-p (string-trim prompt))))
     (signal 'wrong-type-argument (list 'stringp :prompt)))
   (let* ((task-id (e-task-queue--next-id queue))
          (record (list :task-id task-id
                        :status 'queued
                        :prompt prompt
+                       :summary (and (stringp summary)
+                                     (not (string-empty-p (string-trim summary)))
+                                     (string-trim summary))
                        :prompt-summary (e-task-queue--prompt-summary prompt)
                        :metadata metadata
                        :harness-instance-id harness-instance-id
@@ -453,7 +467,7 @@ function that aborts the active turn."
 ;; --- persistence ------------------------------------------------------------
 
 (defconst e-task-queue--persist-fields
-  '(:task-id :status :prompt :prompt-summary :metadata :harness-instance-id
+  '(:task-id :status :prompt :summary :prompt-summary :metadata :harness-instance-id
     :enqueued-at :started-at :finished-at :session-id :outputs :error)
   "Durable task record fields.
 The transient `:handle', `:pausing', and the live harness are never persisted.")
