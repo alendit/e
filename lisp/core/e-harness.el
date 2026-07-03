@@ -680,13 +680,15 @@ preview to avoid duplicating large outputs in session JSONL files."
   :type 'integer
   :group 'e)
 
-(defcustom e-harness-retry-max-elapsed-seconds 600.0
+(defcustom e-harness-retry-max-elapsed-seconds 1800.0
   "Total wall-clock budget for retrying a transient backend turn.
 Retries of a turn that keeps failing with a retryable error (rate limiting,
 overload, or a transport reset) stop once this much time has elapsed since the
 first attempt; the turn then settles as `turn-failed' as before.  The default
-mirrors Claude Code's patience: several minutes of backoff across roughly ten
-attempts.  Set to 0 to disable retrying."
+mirrors Claude Code's patience: many minutes of backoff across a long burst of
+rate limiting.  When a retryable error names a concrete reset time, that known
+reopen can extend this budget (see `e-harness-retry-reset-max-wait-seconds').
+Set to 0 to disable retrying."
   :type 'number
   :group 'e)
 
@@ -710,6 +712,18 @@ attempts.  Set to 0 to disable retrying."
 Jitter spreads concurrent retries so a recovering backend is not hit by a
 synchronized burst.  A value of 0.25 adds up to 25% of the computed backoff.
 Set to 0 to disable jitter (backoff becomes fully deterministic)."
+  :type 'number
+  :group 'e)
+
+(defcustom e-harness-retry-reset-max-wait-seconds 900.0
+  "Maximum seconds to wait for a rate-limit reset named in a retryable error.
+When a retryable error states a concrete reopen time (an absolute \"resets at\"
+timestamp or a relative \"try again in Ns\"), the harness waits until that time
+instead of using blind exponential backoff, and a wait shorter than this cap
+extends the retry budget so a turn is not abandoned minutes before capacity
+returns.  This bounds how long a single named reset may stall a turn; a reset
+farther out than this falls back to ordinary backoff.  Set to 0 to ignore reset
+hints entirely."
   :type 'number
   :group 'e)
 
@@ -2404,11 +2418,17 @@ active state when it is no longer running."
         (entry (gethash session-id (e-harness-active-turns harness))))
     (unless entry
       (signal 'e-harness-no-active-turn (list session-id)))
+    ;; Wait on the ENTRY object itself, not a fresh hash lookup each pass.
+    ;; `finish-done'/`finish-error' mutate this plist in place, so its status
+    ;; and result stay observable even after the queue-drain timer -- which can
+    ;; fire inside `accept-process-output' below -- removes it from the hash.
     (while (and (e-harness--active-turn-running-p entry)
                 (or (not deadline) (< (float-time) deadline)))
-      (accept-process-output nil 0.01)
-      (setq entry (gethash session-id (e-harness-active-turns harness))))
-    (unless (e-harness--active-turn-running-p entry)
+      (accept-process-output nil 0.01))
+    ;; Only clear the slot when it still holds this settled entry; a drained
+    ;; queue may already have replaced it with the next turn.
+    (when (and (eq (gethash session-id (e-harness-active-turns harness)) entry)
+               (not (e-harness--active-turn-running-p entry)))
       (remhash session-id (e-harness-active-turns harness)))
     entry))
 
