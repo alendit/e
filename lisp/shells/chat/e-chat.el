@@ -7877,7 +7877,7 @@ operation."
 (defun e-chat-switch-session ()
   "Switch to a recent persisted e chat session."
   (interactive)
-  (e-chat-resume))
+  (e-chat--pop-to-buffer (e-chat-resume)))
 
 (defun e-chat-overview--read-marker-key (&optional instance-id)
   "Return the process-local read marker key for INSTANCE-ID."
