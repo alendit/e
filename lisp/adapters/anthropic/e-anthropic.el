@@ -677,17 +677,23 @@ is no system prompt) so Anthropic caches tools + system on the prefix match.
   "Return a provider-neutral token usage item.
 INPUT-TOKENS, OUTPUT-TOKENS, CACHED-TOKENS (cache reads), and CREATED-TOKENS
 \(cache writes) come from Messages usage fields.  On the Messages API
-`input_tokens' excludes both cache reads and cache writes, so a downstream total
-must sum all three."
-  (list :type 'token-usage
-        :usage (list :input-tokens (e-anthropic--number-or-nil input-tokens)
-                     :cached-input-tokens (e-anthropic--number-or-nil
-                                           cached-tokens)
-                     :cache-creation-input-tokens (e-anthropic--number-or-nil
-                                                   created-tokens)
-                     :output-tokens (e-anthropic--number-or-nil output-tokens)
-                     :reasoning-output-tokens nil
-                     :total-tokens nil)))
+`input_tokens' excludes both cache reads and cache writes, so the total sums all
+three plus output.  Messages does not report a total itself; derive it here so
+downstream consumers see the same `:total-tokens' field the other adapters
+provide."
+  (let* ((input (e-anthropic--number-or-nil input-tokens))
+         (cached (e-anthropic--number-or-nil cached-tokens))
+         (created (e-anthropic--number-or-nil created-tokens))
+         (output (e-anthropic--number-or-nil output-tokens))
+         (parts (delq nil (list input cached created output)))
+         (total (and parts (apply #'+ parts))))
+    (list :type 'token-usage
+          :usage (list :input-tokens input
+                       :cached-input-tokens cached
+                       :cache-creation-input-tokens created
+                       :output-tokens output
+                       :reasoning-output-tokens nil
+                       :total-tokens total))))
 
 (defun e-anthropic--sse-data (stream-text)
   "Return parsed JSON events from Messages SSE STREAM-TEXT, in order."

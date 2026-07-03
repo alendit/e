@@ -254,7 +254,7 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
                :cache-creation-input-tokens nil
                :output-tokens 5
                :reasoning-output-tokens nil
-               :total-tokens nil))
+               :total-tokens 15))
       (:type done :reason stop)))))
 
 (ert-deftest e-anthropic-test-parse-thinking-delta-as-raw-reasoning ()
@@ -288,7 +288,7 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"))
               :cache-creation-input-tokens 6
               :output-tokens 5
               :reasoning-output-tokens nil
-              :total-tokens nil)))))
+              :total-tokens 25)))))
 
 (ert-deftest e-anthropic-test-emits-cache-anchor-candidate ()
   "Successful cached Anthropic responses emit a durable provider anchor candidate."
