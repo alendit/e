@@ -36,8 +36,15 @@
           (e-dev-profile--enabled nil)
           (e-dev-profile--current-file nil)
           (e-dev-profile--latest-file nil)
+          (e-dev-profile--current-prefix nil)
+          (e-dev-profile--latest-prefix nil)
+          (e-dev-profile--latest-native-files nil)
           (e-dev-profile--file-sequence 0))
-     ,@body))
+     (cl-letf (((symbol-function 'profiler-start) #'ignore)
+               ((symbol-function 'profiler-running-p) #'ignore)
+               ((symbol-function 'profiler-stop) #'ignore)
+               ((symbol-function 'e-dev-profile--save-native-profiles) #'ignore))
+       ,@body)))
 
 (ert-deftest e-dev-profile-test-disabled-record-does-not-write ()
   "Recording while disabled is cheap and does not create trace files."
@@ -56,10 +63,16 @@
       (should (file-exists-p e-dev-profile-directory))
       (should (equal e-dev-profile--current-file file))
       (should (equal e-dev-profile--latest-file file))
+      (should (equal e-dev-profile--current-prefix
+                     (string-remove-suffix ".jsonl" file)))
+      (should (equal e-dev-profile--latest-prefix e-dev-profile--current-prefix))
       (should (equal (e-dev-profile-stop) file))
       (should-not (e-dev-profile-enabled-p))
       (should-not e-dev-profile--current-file)
+      (should-not e-dev-profile--current-prefix)
       (should (equal e-dev-profile--latest-file file))
+      (should (equal e-dev-profile--latest-prefix
+                     (string-remove-suffix ".jsonl" file)))
       (should (equal (e-dev-profile-stop) file)))))
 
 (ert-deftest e-dev-profile-test-rapid-starts-use-unique-files ()
@@ -196,6 +209,35 @@
                    (setq report-count (1+ report-count)))))
         (should (equal (e-dev-profile-stop-trace) file))
         (should (= report-count 0))))))
+
+(ert-deftest e-dev-profile-test-start-starts-native-profiler ()
+  "Starting e profiling also starts native CPU and memory profiling."
+  (e-dev-profile-test--with-temp-profile
+    (let (started-mode)
+      (cl-letf (((symbol-function 'profiler-start)
+                 (lambda (mode) (setq started-mode mode))))
+        (e-dev-profile-start)
+        (should (eq started-mode 'cpu+mem))))))
+
+(ert-deftest e-dev-profile-test-stop-saves-native-profiles ()
+  "Stopping e profiling saves native profiler outputs beside the e trace."
+  (e-dev-profile-test--with-temp-profile
+    (let (stopped saved-prefix)
+      (cl-letf (((symbol-function 'profiler-running-p) (lambda (&optional _mode) t))
+                ((symbol-function 'profiler-stop) (lambda () (setq stopped t)))
+                ((symbol-function 'e-dev-profile--save-native-profiles)
+                 (lambda (prefix)
+                   (setq saved-prefix prefix)
+                   (list :cpu (e-dev-profile--native-file prefix "cpu")
+                         :mem (e-dev-profile--native-file prefix "mem")))))
+        (let* ((file (e-dev-profile-start))
+               (prefix (string-remove-suffix ".jsonl" file)))
+          (should (equal (e-dev-profile-stop-trace) file))
+          (should stopped)
+          (should (equal saved-prefix prefix))
+          (should (equal e-dev-profile--latest-native-files
+                         (list :cpu (e-dev-profile--native-file prefix "cpu")
+                               :mem (e-dev-profile--native-file prefix "mem")))))))))
 
 (ert-deftest e-dev-profile-test-report-tolerates-empty-trace ()
   "Report data remains useful when a trace was started but wrote no events."

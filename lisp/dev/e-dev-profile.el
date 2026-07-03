@@ -14,6 +14,7 @@
 
 (require 'cl-lib)
 (require 'json)
+(require 'profiler)
 (require 'seq)
 (require 'e)
 
@@ -23,8 +24,8 @@
   :prefix "e-dev-profile-")
 
 (defcustom e-dev-profile-directory
-  (expand-file-name ".e/dev-profiles/" (e-source-directory))
-  "Directory where developer profiling trace files are written."
+  "/tmp/e-profile/"
+  "Directory where developer profiling outputs are written."
   :type 'directory
   :group 'e-dev-profile)
 
@@ -37,6 +38,15 @@
 (defvar e-dev-profile--latest-file nil
   "Most recent JSONL profiling trace file.")
 
+(defvar e-dev-profile--current-prefix nil
+  "Current profiling output file prefix, without extension.")
+
+(defvar e-dev-profile--latest-prefix nil
+  "Most recent profiling output file prefix, without extension.")
+
+(defvar e-dev-profile--latest-native-files nil
+  "Most recent native profiler output files.")
+
 (defvar e-dev-profile--file-sequence 0
   "Monotonic suffix used to keep trace file names unique.")
 
@@ -44,12 +54,40 @@
   "Return non-nil when developer profiling is enabled."
   e-dev-profile--enabled)
 
-(defun e-dev-profile--timestamp-file-name ()
-  "Return a timestamped JSONL trace file name."
+(defun e-dev-profile--timestamp-file-prefix ()
+  "Return a timestamped profile file prefix."
   (setq e-dev-profile--file-sequence (1+ e-dev-profile--file-sequence))
-  (format "%s-%06d.jsonl"
+  (format "%s-%06d"
           (format-time-string "%Y%m%d-%H%M%S")
           e-dev-profile--file-sequence))
+
+(defun e-dev-profile--native-file (prefix kind)
+  "Return native profiler file path for PREFIX and KIND."
+  (concat prefix "-emacs-" kind ".profile"))
+
+(defun e-dev-profile--write-native-profile (profile file)
+  "Write native profiler PROFILE to FILE."
+  (let ((coding-system-for-write 'utf-8))
+    (profiler-write-profile profile file nil))
+  file)
+
+(defun e-dev-profile--save-native-profiles (prefix)
+  "Save native CPU and memory profiles for PREFIX.
+Return a plist containing written profiler files."
+  (let ((cpu-file (e-dev-profile--native-file prefix "cpu"))
+        (mem-file (e-dev-profile--native-file prefix "mem")))
+    (list :cpu (when (fboundp 'profiler-cpu-profile)
+                 (e-dev-profile--write-native-profile
+                  (profiler-cpu-profile) cpu-file))
+          :mem (e-dev-profile--write-native-profile
+                (profiler-memory-profile) mem-file))))
+
+(defun e-dev-profile--ensure-trace-file (file)
+  "Ensure e profiler trace FILE exists, even when no events were recorded."
+  (when file
+    (make-directory (file-name-directory file) t)
+    (unless (file-exists-p file)
+      (with-temp-file file))))
 
 (defun e-dev-profile--metadata-alist (metadata)
   "Return METADATA as an alist suitable for JSON encoding."
@@ -136,16 +174,23 @@ written with compact error metadata and the original error is re-signaled."
 
 ;;;###autoload
 (defun e-dev-profile-start ()
-  "Start a new developer profiling trace and return its file path."
+  "Start a new developer profiling trace and native Emacs profilers.
+Return the e JSONL trace file path."
   (interactive)
   (make-directory e-dev-profile-directory t)
-  (let ((file (expand-file-name (e-dev-profile--timestamp-file-name)
-                                e-dev-profile-directory)))
+  (let* ((prefix (expand-file-name (e-dev-profile--timestamp-file-prefix)
+                                   e-dev-profile-directory))
+         (file (concat prefix ".jsonl")))
+    (profiler-start 'cpu+mem)
     (setq e-dev-profile--enabled t
           e-dev-profile--current-file file
-          e-dev-profile--latest-file file)
+          e-dev-profile--latest-file file
+          e-dev-profile--current-prefix prefix
+          e-dev-profile--latest-prefix prefix
+          e-dev-profile--latest-native-files nil)
     (when (called-interactively-p 'interactive)
-      (message "Started e profile trace: %s" (abbreviate-file-name file)))
+      (message "Started e profile trace and Emacs profilers: %s"
+               (abbreviate-file-name prefix)))
     file))
 
 ;;;###autoload
@@ -162,12 +207,25 @@ written with compact error metadata and the original error is re-signaled."
     file))
 
 (defun e-dev-profile-stop-trace ()
-  "Stop trace recording without opening a report buffer.
-Return the latest trace file path, or nil when no trace has been recorded."
-  (let ((file (or e-dev-profile--current-file e-dev-profile--latest-file)))
+  "Stop profiling without opening a report buffer.
+Return the latest e trace file path, or nil when no trace has been recorded.
+Also stop native Emacs CPU and memory profilers and save their output beside
+the e trace in `e-dev-profile-directory'."
+  (let ((file (or e-dev-profile--current-file e-dev-profile--latest-file))
+        (prefix (or e-dev-profile--current-prefix e-dev-profile--latest-prefix))
+        native-files)
+    (when e-dev-profile--current-prefix
+      (e-dev-profile--ensure-trace-file file)
+      (when (profiler-running-p)
+        (profiler-stop))
+      (setq native-files
+            (e-dev-profile--save-native-profiles e-dev-profile--current-prefix)))
     (setq e-dev-profile--enabled nil
           e-dev-profile--current-file nil
-          e-dev-profile--latest-file file)
+          e-dev-profile--latest-file file
+          e-dev-profile--current-prefix nil
+          e-dev-profile--latest-prefix prefix
+          e-dev-profile--latest-native-files native-files)
     file))
 
 (defun e-dev-profile--read-json-lines (file)

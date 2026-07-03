@@ -1,0 +1,22 @@
+#+title: Native Profiler Profile Output
+#+startup: overview
+
+* Change
+
+=e-dev-profile-start= now starts Emacs native CPU and memory profiling with =profiler-start= using =cpu+mem=.
+
+=e-dev-profile-stop-trace= now stops the native profilers and saves the e JSONL trace plus native CPU and memory profile files under =/tmp/e-profile/=.
+
+The e trace keeps the =.jsonl= suffix.
+The native files use =-emacs-cpu.profile= and =-emacs-mem.profile= suffixes.
+
+* Why tiny
+
+This is a small behavior extension to the existing developer profiling command.
+It does not change tracing call sites or the report aggregation format.
+
+* Validation
+
+#+begin_src sh
+eldev test -f test/e-dev-profile-test.el
+#+end_src
