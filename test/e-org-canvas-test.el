@@ -2083,6 +2083,65 @@ Body
           (should-error (e-org-canvas-respond-to-threads)
                         :type 'user-error))))))
 
+(ert-deftest e-org-canvas-test-reflow-splits-and-indents ()
+  "Reflow puts each sentence on its own line and indents list continuations."
+  (with-temp-buffer
+    (org-mode)
+    (insert "* Heading\n\nFirst sentence here. Second sentence follows. Third one too.\n\n- A bullet with two sentences. This is the second one.\n")
+    (let ((changed (e-org-canvas-reflow-sentences-in-buffer)))
+      (should (= changed 2)))
+    (should (string-match-p
+             (regexp-quote
+              "First sentence here.\nSecond sentence follows.\nThird one too.")
+             (buffer-string)))
+    (should (string-match-p
+             (regexp-quote
+              "- A bullet with two sentences.\n  This is the second one.")
+             (buffer-string)))))
+
+(ert-deftest e-org-canvas-test-reflow-leaves-structure-untouched ()
+  "Reflow never rewrites source blocks, tables, or inline links/verbatim."
+  (with-temp-buffer
+    (org-mode)
+    (insert "#+begin_src emacs-lisp\n(message \"one. two.\") ; keep. this.\n#+end_src\n\n| c. d. | e |\n\nSee =foo.bar= and [[file:x.org][Desc. here]] link. Done.\n")
+    (e-org-canvas-reflow-sentences-in-buffer)
+    (should (string-match-p
+             (regexp-quote "(message \"one. two.\") ; keep. this.")
+             (buffer-string)))
+    (should (string-match-p (regexp-quote "| c. d. | e |") (buffer-string)))
+    ;; The link/verbatim periods must not trigger an interior break.
+    (should (string-match-p
+             (regexp-quote "See =foo.bar= and [[file:x.org][Desc. here]] link.")
+             (buffer-string)))))
+
+(ert-deftest e-org-canvas-test-reflow-abbreviations-and-initials ()
+  "Abbreviations, initials, and decimals do not create spurious line breaks."
+  (with-temp-buffer
+    (org-mode)
+    (insert "Use e.g. this and i.e. that in one sentence. Julia J. Neumann posted version 0.1.0 today. Done.\n")
+    (e-org-canvas-reflow-sentences-in-buffer)
+    (should (string-match-p
+             (regexp-quote
+              "Use e.g. this and i.e. that in one sentence.")
+             (buffer-string)))
+    (should (string-match-p
+             (regexp-quote
+              "Julia J. Neumann posted version 0.1.0 today.")
+             (buffer-string)))))
+
+(ert-deftest e-org-canvas-test-reflow-idempotent-and-rejects-non-org ()
+  "A second pass makes no changes, and non-Org buffers signal an error."
+  (with-temp-buffer
+    (org-mode)
+    (insert "One sentence. Two sentences. Three.\n")
+    (should (> (e-org-canvas-reflow-sentences-in-buffer) 0))
+    (should (= (e-org-canvas-reflow-sentences-in-buffer) 0)))
+  (with-temp-buffer
+    (fundamental-mode)
+    (insert "Not org.\n")
+    (should-error (e-org-canvas-reflow-sentences-in-buffer)
+                  :type 'user-error)))
+
 (provide 'e-org-canvas-test)
 
 ;;; e-org-canvas-test.el ends here

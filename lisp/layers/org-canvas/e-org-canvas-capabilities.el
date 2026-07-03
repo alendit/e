@@ -21,6 +21,7 @@
 (require 'e-session)
 (require 'e-workspaces)
 (require 'org)
+(require 'org-element)
 (require 'seq)
 (require 'subr-x)
 
@@ -384,6 +385,159 @@
     "Updated Org Canvas heading visibility."))
 
 
+(defconst e-org-canvas--sentence-abbreviations
+  '("e.g" "i.e" "etc" "vs" "cf" "al" "resp" "approx" "no" "vol" "pp" "sec"
+    "mr" "mrs" "ms" "dr" "prof" "sr" "jr" "st" "inc" "ltd" "co" "fig" "eq")
+  "Lowercased abbreviations whose trailing period does not end a sentence.
+A single letter (an initial such as the J. in \"Julia J. Neumann\") is treated
+like an abbreviation regardless of this list.")
+
+(defun e-org-canvas--sentence-start-char-p (char)
+  "Return non-nil when CHAR can begin a new prose sentence.
+Uppercase letters, digits, and Org inline-markup openers all qualify, so a
+break is only taken when what follows looks like a fresh sentence rather than a
+mid-sentence lowercase continuation."
+  (or (and (>= char ?A) (<= char ?Z))
+      (and (>= char ?0) (<= char ?9))
+      (memq char '(?= ?* ?/ ?~ ?_ ?\[ ?\( ?\" ?'))))
+
+(defun e-org-canvas--sentence-abbrev-before-p (text pos)
+  "Return non-nil when the word ending at POS in TEXT is an initial or abbrev.
+POS is the index of the terminating period.  This guards decimals and dotted
+tokens too, because the preceding word scan includes digits and interior dots."
+  (let ((index pos))
+    (while (and (> index 0)
+                (let ((char (aref text (1- index))))
+                  (or (and (>= char ?a) (<= char ?z))
+                      (and (>= char ?A) (<= char ?Z))
+                      (and (>= char ?0) (<= char ?9))
+                      (memq char '(?. ?-)))))
+      (setq index (1- index)))
+    (let ((word (substring text index pos)))
+      (or (= (length word) 1)
+          (member (downcase (string-trim-right word "[.]+"))
+                  e-org-canvas--sentence-abbreviations)))))
+
+(defun e-org-canvas--sentence-protected-ranges (text)
+  "Return (START . END) spans in TEXT where a sentence break is forbidden.
+Inline code, verbatim, and links can contain periods that must not be read as
+sentence terminators."
+  (let ((case-fold-search nil) ranges)
+    (dolist (regexp '("\\[\\[\\(?:[^][]\\|\\]\\[\\)*\\]\\]"
+                      "=[^=\n]+="
+                      "~[^~\n]+~"))
+      (let ((start 0))
+        (while (string-match regexp text start)
+          (push (cons (match-beginning 0) (match-end 0)) ranges)
+          (setq start (match-end 0)))))
+    ranges))
+
+(defun e-org-canvas--sentence-in-protected-p (ranges pos)
+  "Return non-nil when POS falls inside one of the protected RANGES."
+  (cl-some (lambda (range) (and (>= pos (car range)) (< pos (cdr range))))
+           ranges))
+
+(defun e-org-canvas--sentence-break-end (text pos ranges)
+  "Return the index just past a sentence ending at POS in TEXT, or nil.
+POS is the index of a terminating punctuation char.  RANGES are protected spans.
+A break is taken only when the punctuation run is followed by whitespace and a
+sentence-starting character, and the word before it is not an initial or abbrev."
+  (unless (e-org-canvas--sentence-in-protected-p ranges pos)
+    (let ((len (length text)) (index pos))
+      (while (and (< index len) (memq (aref text index) '(?. ?! ??)))
+        (setq index (1+ index)))
+      (while (and (< index len) (memq (aref text index) '(?\" ?' ?\) ?\] ?})))
+        (setq index (1+ index)))
+      (cond
+       ((= index len) nil)
+       ((memq (aref text index) '(?\s ?\t))
+        (let ((next index))
+          (while (and (< next len) (memq (aref text next) '(?\s ?\t)))
+            (setq next (1+ next)))
+          (and (< next len)
+               (e-org-canvas--sentence-start-char-p (aref text next))
+               (not (e-org-canvas--sentence-abbrev-before-p text pos))
+               index)))
+       (t nil)))))
+
+(defun e-org-canvas--split-sentences (text)
+  "Split TEXT into a list of sentences for sentence-per-line prose.
+Returns TEXT trimmed as a single element when no interior break is found."
+  (let* ((case-fold-search nil) (len (length text)) (start 0) (pos 0)
+         (ranges (e-org-canvas--sentence-protected-ranges text)) result)
+    (while (< pos len)
+      (let ((break-end (and (memq (aref text pos) '(?. ?! ??))
+                            (e-org-canvas--sentence-break-end text pos ranges))))
+        (if break-end
+            (progn
+              (push (string-trim (substring text start break-end)) result)
+              (setq pos break-end)
+              (while (and (< pos len) (memq (aref text pos) '(?\s ?\t)))
+                (setq pos (1+ pos)))
+              (setq start pos))
+          (setq pos (1+ pos)))))
+    (when (< start len)
+      (push (string-trim (substring text start)) result))
+    (or (nreverse (delete "" result)) (list (string-trim text)))))
+
+(defun e-org-canvas--paragraph-regions (buffer)
+  "Return prose paragraph (BEGIN . END) regions in BUFFER, latest first.
+Only `paragraph' elements are collected, so source blocks, tables, example and
+verse blocks, and keywords are left untouched.  Regions are sorted descending so
+editing one does not shift the positions of those not yet processed."
+  (with-current-buffer buffer
+    (let (regions)
+      (org-element-map (org-element-parse-buffer) 'paragraph
+        (lambda (element)
+          (let ((begin (org-element-property :contents-begin element))
+                (end (org-element-property :contents-end element)))
+            (when (and begin end)
+              (push (cons begin end) regions)))))
+      (sort regions (lambda (a b) (> (car a) (car b)))))))
+
+(defun e-org-canvas--reflow-region (begin end)
+  "Rewrite the paragraph text between BEGIN and END to one sentence per line.
+Joins the existing physical lines, re-splits into sentences, and indents
+continuation lines to the paragraph's body column so list items stay attached.
+Returns non-nil when the buffer text actually changed."
+  (let* ((indent (save-excursion (goto-char begin) (current-column)))
+         (prefix (make-string indent ?\s))
+         (raw (buffer-substring-no-properties begin end))
+         (trailing-newline (string-suffix-p "\n" raw))
+         (body (string-trim-right raw "\n"))
+         (flowed (mapconcat #'string-trim (split-string body "\n") " "))
+         (sentences (e-org-canvas--split-sentences flowed))
+         (rebuilt (concat (mapconcat #'identity sentences (concat "\n" prefix))
+                          (if trailing-newline "\n" ""))))
+    (unless (string= rebuilt raw)
+      (goto-char begin)
+      (delete-region begin end)
+      (insert rebuilt)
+      t)))
+
+(defun e-org-canvas-reflow-sentences-in-buffer (&optional buffer)
+  "Rewrite prose in BUFFER (or current buffer) to one sentence per physical line.
+Operates only on Org prose paragraphs, preserves outline visibility and point,
+and returns the number of paragraphs whose text changed."
+  (with-current-buffer (or buffer (current-buffer))
+    (unless (derived-mode-p 'org-mode)
+      (user-error "Sentence reflow only applies to Org buffers"))
+    (let ((changed 0))
+      (org-save-outline-visibility t
+        (save-excursion
+          (dolist (region (e-org-canvas--paragraph-regions (current-buffer)))
+            (when (e-org-canvas--reflow-region (car region) (cdr region))
+              (setq changed (1+ changed))))))
+      changed)))
+
+(defun e-org-canvas--reflow-sentences-tool (buffer _arguments)
+  "Reflow prose in the Org Canvas BUFFER to one sentence per line."
+  (let ((changed (e-org-canvas-reflow-sentences-in-buffer buffer)))
+    (if (zerop changed)
+        "Prose already uses one sentence per line; no changes made."
+      (format "Reflowed %d paragraph%s to one sentence per line."
+              changed (if (= changed 1) "" "s")))))
+
 (defun e-org-canvas--action (description handler &optional parameters)
   "Return an Org Canvas action descriptor for HANDLER."
   (e-action-create
@@ -433,6 +587,11 @@
      (e-org-canvas--action
       "Collapse the current Org Canvas buffer to an overview."
       #'e-org-canvas--overview-tool
+      empty-object)
+     :reflow-sentences
+     (e-org-canvas--action
+      "Rewrite Org prose in the current canvas to one sentence per physical line, indenting list-item continuations and leaving code blocks, tables, links, and inline code untouched."
+      #'e-org-canvas--reflow-sentences-tool
       empty-object))))
 
 (defun e-org-canvas-capability-create ()

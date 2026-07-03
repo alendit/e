@@ -13,6 +13,14 @@
   came due while Emacs was down runs once on the next start under the existing
   `run` catch-up policy.
 
+- Org Canvas gains a sentence-per-line reflow remediation: the
+  `e-org-canvas-reflow-sentences` command (`C-c C-q`), a `reflow-sentences`
+  shell command, and an `org-canvas` `:reflow-sentences` action rewrite prose
+  paragraphs so each sentence sits on its own physical line, indenting
+  list-item continuations and leaving headings, code/verbatim blocks, tables,
+  drawers, and inline links/`=verbatim=` spans untouched.  Abbreviations,
+  initials, and decimals do not trigger spurious breaks.
+
 - Org Canvas / chat-session canvas guidance now directs durable writes to the
   canvas attachment uri (document-uri) and explicitly warns against writing to
   the look-alike *e-org-canvas:...* / *e-org-canvas-input:...* helper buffers,
