@@ -10,6 +10,14 @@
 ;; ERT tests that exercise the real harness/backend/tool/session path against
 ;; live provider APIs.  These tests are intentionally gated by E_E2E and are not
 ;; in the default Eldev test fileset.
+;;
+;; The tests are backend-agnostic: they build the configured `:chat-default'
+;; harness from `e-default-harness-specs' rather than naming a provider, so they
+;; run against whatever backend the Emacs installation is configured to use.
+;; Point E_E2E_CONFIG at a file that configures that backend (typically the same
+;; `e-default-harness-specs' / `e-default-chat-harness-factory' the interactive
+;; installation sets), for example:
+;;   E_E2E=1 E_E2E_CONFIG=~/e2e-harness.el eldev test -f e2e/e-live-e2e-test.el
 
 ;;; Code:
 
@@ -20,14 +28,18 @@
 (require 'e)
 (require 'e-backend)
 (require 'e-capabilities)
+(require 'e-default-harnesses)
 (require 'e-harness)
+(require 'e-harness-registry)
 (require 'e-layers)
-(require 'e-openai)
 (require 'e-session)
 (require 'e-tools)
 
-(defconst e-live-e2e--openai-provider 'e2e-openai
-  "Provider id used for token-auth live OpenAI e2e runs.")
+(defconst e-live-e2e--harness-id :chat-default
+  "Registry id of the default chat harness exercised by live e2e tests.")
+
+(defvar e-live-e2e--config-loaded nil
+  "Non-nil once the E_E2E_CONFIG backend configuration file has been loaded.")
 
 (defun e-live-e2e--env (name &optional fallback)
   "Return non-empty environment variable NAME, or FALLBACK."
@@ -40,58 +52,53 @@
   "Return non-nil when live e2e validation is explicitly enabled."
   (e-live-e2e--env "E_E2E"))
 
-(defun e-live-e2e--provider-kind ()
-  "Return the configured live provider kind."
-  (downcase (e-live-e2e--env "E_E2E_PROVIDER" "codex")))
+(defun e-live-e2e--config-file ()
+  "Return the readable backend configuration file, or nil.
+The file configures the default `:chat-default' harness the same way the
+interactive installation does; a batch e2e run has no user init, so the backend
+choice is loaded from here."
+  (when-let ((path (e-live-e2e--env "E_E2E_CONFIG")))
+    (expand-file-name path)))
 
-(defun e-live-e2e--timeout-seconds ()
-  "Return live request timeout seconds."
-  (string-to-number (e-live-e2e--env "E_E2E_TIMEOUT_SECONDS" "240")))
-
-(defun e-live-e2e--token-env-key ()
-  "Return the env var containing the token-auth API key."
-  (cond
-   ((e-live-e2e--env "E_E2E_OPENAI_API_KEY") "E_E2E_OPENAI_API_KEY")
-   ((e-live-e2e--env "OPENAI_API_KEY") "OPENAI_API_KEY")
-   (t "E_E2E_OPENAI_API_KEY")))
+(defun e-live-e2e--load-config ()
+  "Load the backend configuration file once and register default harnesses.
+Signal nothing when unconfigured; callers skip in that case."
+  (unless e-live-e2e--config-loaded
+    (when-let ((path (e-live-e2e--config-file)))
+      (when (file-readable-p path)
+        (load path nil t)
+        ;; The config sets `e-default-harness-specs' /
+        ;; `e-default-chat-harness-factory'; make its factory the live one.
+        (e-default-harnesses-register)
+        (e-harness-registry-clear-instance e-live-e2e--harness-id)
+        (setq e-live-e2e--config-loaded t)))))
 
 (defun e-live-e2e--require-enabled ()
   "Skip the current test unless live e2e validation can run."
   (unless (e-live-e2e--enabled-p)
     (ert-skip "Set E_E2E=1 to run live e2e tests."))
-  (pcase (e-live-e2e--provider-kind)
-    ("codex"
-     (unless (file-readable-p (e-openai-codex-auth-file))
-       (ert-skip (format "Codex auth file is not readable: %s"
-                         (e-openai-codex-auth-file)))))
-    ("openai"
-     (unless (e-live-e2e--env (e-live-e2e--token-env-key))
-       (ert-skip "Set E_E2E_OPENAI_API_KEY or OPENAI_API_KEY.")))
-    (other
-     (ert-skip (format "Unsupported E_E2E_PROVIDER=%s" other)))))
+  (let ((path (e-live-e2e--config-file)))
+    (unless path
+      (ert-skip "Set E_E2E_CONFIG to a file configuring the default harness."))
+    (unless (file-readable-p path)
+      (ert-skip (format "E_E2E_CONFIG file is not readable: %s" path))))
+  (e-live-e2e--load-config)
+  (unless (or (e-harness-registry-get e-live-e2e--harness-id)
+              (ignore-errors
+                (e-harness-registry-get-or-create e-live-e2e--harness-id)))
+    (ert-skip
+     (format "No harness registered for %S after loading E_E2E_CONFIG."
+             e-live-e2e--harness-id))))
 
-(defun e-live-e2e--provider-id ()
-  "Return the provider id for this live e2e run."
-  (pcase (e-live-e2e--provider-kind)
-    ("codex" 'codex)
-    ("openai" e-live-e2e--openai-provider)
-    (_ 'codex)))
-
-(defun e-live-e2e--provider-profiles ()
-  "Return provider profiles with the optional token-auth e2e provider added."
-  (let* ((base-url (e-live-e2e--env "E_E2E_OPENAI_BASE_URL"
-                                    "https://api.openai.com/v1"))
-         (model (e-live-e2e--env "E_E2E_MODEL" e-openai-default-model))
-         (profiles (copy-tree e-openai-model-providers))
-         (profile (list :name "E2E OpenAI"
-                        :base-url base-url
-                        :wire-api 'responses
-                        :responses-transport 'http
-                        :continuation t
-                        :env-key (e-live-e2e--token-env-key)
-                        :default-model model)))
-    (cons (cons e-live-e2e--openai-provider profile)
-          (assq-delete-all e-live-e2e--openai-provider profiles))))
+(defun e-live-e2e--make-harness (store)
+  "Return the configured default chat harness bound to session STORE.
+Resolves the same `:chat-default' factory the installation uses, so the live
+backend is whatever the configuration selected."
+  (let* ((spec (e-default-harness--effective-chat-spec))
+         (factory (plist-get spec :factory)))
+    (unless (functionp factory)
+      (error "No :chat-default harness factory configured"))
+    (funcall factory :sessions store)))
 
 (defun e-live-e2e--nonce ()
   "Return a short nonce suitable for deterministic live assertions."
@@ -193,20 +200,7 @@ SPEC is (HARNESS SESSION-ID &key LAYERS PERSISTENT)."
               (,store (if ,(plist-get options :persistent)
                           (e-session-persistent-store-create ,root)
                         (e-session-store-create)))
-              (e-openai-model-providers (e-live-e2e--provider-profiles))
-              (e-openai-default-model
-               (e-live-e2e--env "E_E2E_MODEL" e-openai-default-model))
-              (e-openai-default-reasoning-effort
-               (e-live-e2e--env "E_E2E_REASONING_EFFORT" "low"))
-              (e-openai-request-timeout-seconds
-               (e-live-e2e--timeout-seconds))
-              (e-openai-websocket-idle-timeout-seconds
-               (e-live-e2e--timeout-seconds))
-              (,harness
-               (e-openai-create-harness
-                :provider (e-live-e2e--provider-id)
-                :model (e-live-e2e--env "E_E2E_MODEL")
-                :sessions ,store))
+              (,harness (e-live-e2e--make-harness ,store))
               (,session-id
                (plist-get
                 (e-harness-create-session
@@ -353,11 +347,12 @@ SPEC is (HARNESS SESSION-ID &key LAYERS PERSISTENT)."
     (e-harness-prompt
      harness session-id
      "Reply with exactly: ANCHOR-CHECK")
-    (if (plist-get (e-openai-provider-profile (e-live-e2e--provider-id))
-                   :continuation)
+    ;; Continuation support is backend-specific; assert anchors when the
+    ;; configured backend records them, otherwise skip rather than assume.
+    (if (e-session-provider-anchors (e-harness-sessions harness) session-id)
         (should (e-session-provider-anchors
                  (e-harness-sessions harness) session-id))
-      (ert-skip "The selected live provider does not enable continuation anchors."))))
+      (ert-skip "The configured live backend does not record continuation anchors."))))
 
 (ert-deftest e-live-e2e-test-active-request-can-be-cancelled ()
   "An active live turn can be cancelled through the harness."
