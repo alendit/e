@@ -29,6 +29,7 @@
 (require 'e-startup)
 (require 'e-workspaces)
 (require 'org)
+(require 'org-element)
 (require 'seq)
 (require 'subr-x)
 
@@ -151,6 +152,12 @@ Org Canvas status refreshes for the current buffer.")
 (defvar-local e-org-canvas-input--source-selection-buffer nil
   "Org buffer whose source selection should be cleared after this input completes.")
 
+(defvar-local e-org-canvas-input--last-follow-bottom nil
+  "Buffer end last scrolled to by the follow-bottom redraw hook.
+The progress timer redraws the spinner in place every
+`e-chat-progress-interval' without moving the buffer end; comparing against
+this lets the redraw hook skip the scroll unless the end actually advanced.")
+
 (defconst e-org-canvas--mode-name "Org Canvas"
   "Visible major-mode slot label used while `e-org-canvas-mode' is active.")
 
@@ -169,6 +176,7 @@ Org Canvas status refreshes for the current buffer.")
     (define-key map (kbd "s-i") #'e-chat-add-context-to-latest)
     (define-key map (kbd "s-I") #'e-chat-add-context-to-session)
     (define-key map (kbd "C-c C-m") #'e-org-canvas-compact)
+    (define-key map (kbd "C-c C-q") #'e-org-canvas-reflow-sentences)
     map))
 
 (defvar e-org-canvas-mode-map (e-org-canvas--make-mode-map)
@@ -1029,7 +1037,14 @@ has no visible window."
         (select-window window)))))
 
 (defun e-org-canvas--input-follow-bottom (buffer)
-  "Keep visible Org Canvas input/result windows for BUFFER at the bottom."
+  "Keep visible Org Canvas input/result windows for BUFFER at the bottom.
+Anchor the scroll from the top of the last screenful rather than with a
+negative `recenter'.  `recenter' with a negative arg walks the display engine
+backward from the bottom line, resolving invisibility at every step; on a long
+pane with many text-property intervals that backward scan is O(buffer) and,
+run from the 0.6s progress timer, pegs a core.  Anchoring the window start one
+screenful above the bottom with `set-window-start' moves the display engine
+forward only, so the cost is bounded by one screenful."
   (when (buffer-live-p buffer)
     (with-current-buffer buffer
       (let ((bottom
@@ -1044,13 +1059,28 @@ has no visible window."
               (with-selected-window window
                 (goto-char bottom)
                 (ignore-errors
-                  (recenter -1))))))))))
+                  ;; Anchor the window start one screenful above the bottom line
+                  ;; and let redisplay render forward from there.  `forward-line'
+                  ;; is a plain newline count, and point stays visible, so
+                  ;; redisplay never triggers the backward invisible-scan.
+                  (let* ((height (window-body-height window))
+                         (start (save-excursion
+                                  (forward-line (- (max 0 (1- height))))
+                                  (point))))
+                    (set-window-start window start))))))))
+      (setq-local e-org-canvas-input--last-follow-bottom (point-max)))))
 
 (defun e-org-canvas--input-follow-bottom-on-redraw (&optional _turn-id)
   "Keep this input pane pinned to the bottom after a running-status redraw.
 Registered on `e-chat--running-status-rendered-hook' so timer-driven
-progress redraws follow output instead of staying pinned at the top."
-  (e-org-canvas--input-follow-bottom (current-buffer)))
+progress redraws follow output instead of staying pinned at the top.
+
+The spinner redraw fires every `e-chat-progress-interval' (0.6s) but only
+rewrites the status glyph in place; the buffer end does not move.  Skip the
+scroll unless `point-max' actually advanced since the last follow, so a long
+in-flight turn does not re-scroll -- and re-scan the pane -- on every frame."
+  (unless (eql e-org-canvas-input--last-follow-bottom (point-max))
+    (e-org-canvas--input-follow-bottom (current-buffer))))
 
 (defun e-org-canvas--input-enter-result-state ()
   "Switch the current input pane from editable composer to result display."
@@ -1471,6 +1501,19 @@ progress redraws follow output instead of staying pinned at the top."
    e-org-canvas-session-id
    :instructions instructions))
 
+;;;###autoload
+(defun e-org-canvas-reflow-sentences ()
+  "Reflow Org prose in the current canvas to one sentence per physical line.
+Only paragraph bodies are rewritten; headings, code blocks, tables, drawers,
+and inline links/verbatim spans are left untouched.  Report how many
+paragraphs changed."
+  (interactive)
+  (unless (derived-mode-p 'org-mode)
+    (user-error "Sentence reflow only applies to Org buffers"))
+  (let ((changed (e-org-canvas-reflow-sentences-in-buffer (current-buffer))))
+    (message "Reflowed %d paragraph%s to one sentence per line."
+             changed (if (= changed 1) "" "s"))))
+
 (defun e-org-canvas--last-prompt-message (harness session-id)
   "Return the last Org Canvas user prompt message for SESSION-ID."
   (cl-find-if
@@ -1692,6 +1735,12 @@ prompt enumerating them, and leave the draft for review before submission."
      :interactive 'e-org-canvas-compact
      :function 'e-org-canvas-compact
      :scope 'session)
+    (e-shell-command-create
+     :id 'reflow-sentences
+     :summary "Reflow Org prose in the current canvas to one sentence per line."
+     :interactive 'e-org-canvas-reflow-sentences
+     :function 'e-org-canvas-reflow-sentences
+     :scope 'global)
     (e-shell-command-create
      :id 'list-sessions
      :summary "List Org Canvas sessions for the current file."
