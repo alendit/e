@@ -18,6 +18,7 @@
 (require 'project)
 (require 'subr-x)
 (require 'e-chat-session)
+(require 'e-chat-output-mode)
 (require 'e-context-inspection)
 (require 'e-context-status)
 (require 'e-capabilities)
@@ -5738,6 +5739,100 @@ Hide REGEXP groups 1 and 3 as Markdown syntax."
       (e-chat--apply-markdown-emphasis-face content-start content-end)
       (e-chat--apply-markdown-link-faces content-start content-end))))
 
+(defun e-chat--output-mode ()
+  "Return the effective assistant output markup mode for this chat buffer.
+Defaults to `markdown' outside an attached session."
+  (if (and e-chat-harness e-chat-session-id)
+      (ignore-errors
+        (e-chat-output-mode-resolve e-chat-harness e-chat-session-id))
+    'markdown))
+
+(defun e-chat--apply-org-mode-properties (content-start content-end)
+  "Fontify assistant Org markup between CONTENT-START and CONTENT-END.
+Return non-nil when Org fontification ran."
+  (when (< content-start content-end)
+    (let ((content (buffer-substring-no-properties content-start content-end))
+          (target-buffer (current-buffer)))
+      (e-chat--clear-markdown-presentation content-start content-end)
+      (with-temp-buffer
+        (let ((org-mode-hook nil)
+              (org-inhibit-startup t))
+          (delay-mode-hooks (org-mode)))
+        (insert content)
+        (font-lock-ensure (point-min) (point-max))
+        (let ((source-end (point-max))
+              (source-pos (point-min)))
+          (while (< source-pos source-end)
+            (let ((next-pos (or (next-property-change source-pos nil source-end)
+                                source-end)))
+              (dolist (property e-chat--markdown-mode-copied-properties)
+                (let ((value (get-text-property source-pos property)))
+                  (when value
+                    (with-current-buffer target-buffer
+                      (add-text-properties
+                       (+ content-start (1- source-pos))
+                       (+ content-start (1- next-pos))
+                       (if (eq property 'face)
+                           (list 'face value 'font-lock-face value)
+                         (list property value)))))))
+              (setq source-pos next-pos)))))
+      t)))
+
+(defun e-chat--apply-org-link-metadata (content-start content-end)
+  "Attach clickable link metadata to Org links between CONTENT-START/END.
+Org links `[[target][description]]' and `[[target]]' get a `help-echo' and
+`e-chat-link-url' target; the surrounding bracket syntax is concealed so only
+the description (or the bare target) remains visible."
+  (save-excursion
+    (goto-char content-start)
+    (while (re-search-forward
+            "\\[\\[\\([^]
+]+?\\)\\(?:\\]\\[\\([^]
+]+?\\)\\)?\\]\\]"
+            content-end t)
+      (let* ((target (match-string-no-properties 1))
+             (has-description (match-beginning 2))
+             (visible-start (or has-description (match-beginning 1)))
+             (visible-end (or (match-end 2) (match-end 1))))
+        (e-chat--add-markdown-face visible-start visible-end
+                                   'e-chat-markdown-link-face)
+        (add-text-properties visible-start visible-end
+                             `(help-echo ,target e-chat-link-url ,target))
+        (e-chat--conceal-markdown-syntax (match-beginning 0) visible-start)
+        (e-chat--conceal-markdown-syntax visible-end (match-end 0))))))
+
+(defun e-chat--apply-assistant-org (content-start content-end)
+  "Apply Org presentation between CONTENT-START and CONTENT-END."
+  (when (< content-start content-end)
+    (e-chat--apply-org-mode-properties content-start content-end)
+    (e-chat--apply-org-link-metadata content-start content-end)))
+
+(defun e-chat--apply-assistant-presentation (content-start content-end)
+  "Apply the buffer's output-mode presentation between CONTENT-START/END."
+  (if (eq (e-chat--output-mode) 'org)
+      (e-chat--apply-assistant-org content-start content-end)
+    (e-chat--apply-assistant-markdown content-start content-end))
+  (e-chat--apply-final-assistant-face content-start content-end))
+
+(defun e-chat--rerender-assistant-blocks ()
+  "Re-render already-visible final assistant blocks for the current output mode.
+Toggling output mode applies only to new turns' markup, but the visible
+transcript should still match the new rendering so the toggle is not confusing."
+  (when (hash-table-p e-chat--block-registry)
+    (e-chat--cancel-pending-markdown-presentation)
+    (let ((inhibit-read-only t))
+      (save-excursion
+        (dolist (block-id e-chat--block-order)
+          (let ((block (gethash block-id e-chat--block-registry)))
+            (when (eq (plist-get block :kind) 'final)
+              (let* ((bounds (ignore-errors
+                               (e-chat--block-content-bounds block)))
+                     (start (car-safe bounds))
+                     (end (cdr-safe bounds)))
+                (when (and start end (< start end))
+                  (e-chat--clear-markdown-presentation start end)
+                  (e-chat--apply-assistant-presentation start end))))))))))
+
 (defun e-chat--deferred-markdown-chunk-end (chunk-start content-end)
   "Return the end of the deferred Markdown chunk after CHUNK-START."
   (save-excursion
@@ -5919,14 +6014,16 @@ non-nil, is used by focused block activation."
                 `(e-chat-turn-id ,turn-id
                   e-chat-block-id ,block-id)))
              (when (equal title "Assistant")
-               (if (e-chat--defer-assistant-markdown-p content)
-                   (e-chat--schedule-assistant-markdown
+               (if (eq (e-chat--output-mode) 'org)
+                   (e-chat--apply-assistant-org content-start (point))
+                 (if (e-chat--defer-assistant-markdown-p content)
+                     (e-chat--schedule-assistant-markdown
+                      content-start
+                      (point)
+                      block-id)
+                   (e-chat--apply-assistant-markdown
                     content-start
-                    (point)
-                    block-id)
-                 (e-chat--apply-assistant-markdown
-                  content-start
-                  (point)))
+                    (point))))
                (e-chat--apply-final-assistant-face
                 content-start
                 (point)))
@@ -8802,6 +8899,33 @@ When DISPLAY is non-nil, display the preview buffer."
            (if (string-empty-p effort) "default" effort)))
 
 ;;;###autoload
+(defun e-chat-set-output-mode (mode)
+  "Set the assistant output markup MODE for the current chat session.
+Choosing the empty selection clears the per-session override, falling back to
+the configured global/project default.  Re-renders already-visible responses so
+the transcript matches the new mode immediately."
+  (interactive
+   (let* ((current (and e-chat-harness e-chat-session-id
+                        (e-chat-output-mode-resolve
+                         e-chat-harness e-chat-session-id)))
+          (choices (mapcar #'symbol-name e-chat-output-mode-values))
+          (choice (completing-read
+                   (format "Output mode (current %s, empty to clear override): "
+                           (or current 'markdown))
+                   choices nil t)))
+     (list (and (not (string-empty-p choice)) (intern choice)))))
+  (unless (and e-chat-harness e-chat-session-id)
+    (user-error "This buffer is not attached to an e chat session"))
+  (e-chat-output-mode-session-set e-chat-harness e-chat-session-id mode)
+  (e-chat--rerender-assistant-blocks)
+  (e-chat--set-status "idle" t)
+  (message "Set e chat output mode to %s"
+           (or mode
+               (format "default (%s)"
+                       (e-chat-output-mode-resolve
+                        e-chat-harness e-chat-session-id)))))
+
+;;;###autoload
 (defun e-chat-show-context ()
   "Show the current chat session context in a read-only temp buffer."
   (interactive)
@@ -8983,6 +9107,12 @@ plain submit steers an active turn and prefix submit queues a follow-up."
      :summary "Set the current chat session reasoning effort."
      :interactive 'e-chat-set-effort
      :function 'e-chat-set-effort
+     :scope 'session)
+    (e-shell-command-create
+     :id 'set-output-mode
+     :summary "Set the current chat session output markup mode."
+     :interactive 'e-chat-set-output-mode
+     :function 'e-chat-set-output-mode
      :scope 'session)
     (e-shell-command-create
      :id 'show-context

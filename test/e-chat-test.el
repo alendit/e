@@ -2454,6 +2454,59 @@ inherited base, so the blocks stay distinguishable in any theme."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-assistant-org-output-mode-renders-org-links ()
+  "With output mode `org' the renderer uses Org faces and clickable Org links."
+  (let ((buffer (e-chat-test--buffer nil "chat-org-output")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat-output-mode-session-set
+           e-chat-harness e-chat-session-id 'org)
+          (should (eq (e-chat--output-mode) 'org))
+          (e-chat--insert-entry
+           "Assistant"
+           "* Heading
+See [[https://example.test][docs]] and [[file:notes.org]].")
+          (save-excursion
+            (goto-char (point-min))
+            (search-forward "docs")
+            (should (memq 'e-chat-markdown-link-face
+                          (ensure-list (get-text-property (1- (point)) 'face))))
+            (should (equal (get-text-property (1- (point)) 'e-chat-link-url)
+                           "https://example.test"))
+            ;; The [[...][ bracket syntax around the description is concealed.
+            (search-backward "[[https")
+            (should (get-text-property (point) 'invisible))
+            (goto-char (point-min))
+            (search-forward "notes.org")
+            (should (equal (get-text-property (1- (point)) 'e-chat-link-url)
+                           "file:notes.org"))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-set-output-mode-rerenders-visible-blocks ()
+  "Toggling output mode re-renders visible final assistant blocks."
+  (let ((buffer (e-chat-test--buffer nil "chat-output-toggle")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat--insert-entry
+           "Assistant"
+           "See [[https://example.test][docs]]."
+           nil
+           "turn-org-toggle")
+          ;; Default markdown mode leaves the Org link text literal.
+          (save-excursion
+            (goto-char (point-min))
+            (search-forward "docs")
+            (should-not (get-text-property (1- (point)) 'e-chat-link-url)))
+          (e-chat-set-output-mode 'org)
+          (save-excursion
+            (goto-char (point-min))
+            (search-forward "docs")
+            (should (equal (get-text-property (1- (point)) 'e-chat-link-url)
+                           "https://example.test"))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-hides-empty-output-diagnostic ()
   "The chat buffer renders empty backend output as an error."
   (let ((buffer (e-chat-test--buffer

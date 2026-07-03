@@ -11,6 +11,7 @@
 
 ;;; Code:
 
+(require 'e-chat-output-mode)
 (require 'e-file-capabilities)
 (require 'e-layers)
 (require 'e-output-style)
@@ -43,7 +44,8 @@ or `find ~/.config/doom -name ...`, rather than `.`, `~`, or the filesystem root
                           :instruction-priority 230)
                          (e-file-handling-capability-create root)
                          (e-shell-process-capability-create root)
-                         (e-output-style-capability-create root)))))
+                         (e-output-style-capability-create root)
+                         (e-chat-output-mode-capability-create root)))))
 
 (provide 'e-base)
 

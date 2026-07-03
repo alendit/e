@@ -1,0 +1,80 @@
+#+title: Chat Org Output Mode — Review
+#+startup: overview
+
+* Summary
+
+Implemented feature 49: an optional chat *output mode* that renders assistant
+responses as Org instead of Markdown and tells the model to emit Org markup. The
+mode is capability configuration (=chat-output-mode=) with global, project, and
+per-session precedence, defaulting to =markdown=.
+
+* What shipped
+
+- =lisp/layers/base/e-chat-output-mode.el= :: new capability. Owns mode
+  resolution (=e-chat-output-mode-resolve=), the config option (=:mode=,
+  default =markdown=, validated to =markdown=/=org=), the per-session override
+  stored as durable capability state, a context provider that contributes the
+  Org-output system instruction only when the resolved mode is =org=, and the
+  global set helper/command.
+- =lisp/layers/base/e-base.el= :: OS-base layer now also carries the
+  =chat-output-mode= capability alongside =output-style=. The two compose.
+- =lisp/shells/chat/e-chat.el= :: renderer gains an Org branch. When the
+  buffer's resolved output mode is =org=, assistant blocks are fontified with a
+  disposable =org-mode= buffer and Org links =[[target][desc]]= / =[[target]]=
+  get clickable =e-chat-link-url= metadata with the bracket syntax concealed.
+  Markdown remains the default branch. Added the session command
+  =e-chat-set-output-mode= (scope =session=), which sets the per-session
+  override and re-renders already-visible final assistant blocks so the toggle
+  is not confusing.
+- =lisp/dev/e-dev.el= :: reload list includes the new module.
+
+* Verification
+
+- New ERT: =test/e-chat-output-mode-test.el= (8 tests) — mode resolution across
+  default/global/session precedence, unknown-value rejection, session override
+  wins and clears, and Org vs. markdown instruction gating. All pass.
+- Extended =test/e-chat-test.el= with two renderer tests: Org output renders Org
+  link metadata with concealed bracket syntax, and toggling output mode
+  re-renders visible blocks. Full =e-chat-test= suite: 288 pass, 1 skipped
+  (pre-existing markdown-mode skip).
+- =test/e-base-test.el= updated for the added capability; passes.
+- =git diff --check= clean.
+- Live: =e-dev-reload= succeeded; probed the running Emacs — the default chat
+  harness resolves =markdown= by default, lists the =chat-output-mode=
+  capability, and a per-session =org= override makes the Org-output system
+  instruction appear in the built context, then restores cleanly.
+
+* Design self-check
+
+1. Better off if stopped here? Yes — Org users get clickable Org output and a
+   correct model signal; nothing else regresses.
+2. Direction: markup output is a first-class, config-driven concern parallel to
+   prose voice (=output-style=).
+3. Uncertain decisions local: the Org instruction text and rendering live in
+   one capability + one renderer branch; both are easy to change.
+4. Ownership: =chat-output-mode= owns mode/instruction; =e-chat= owns
+   rendering. One reason to change each.
+5. Coupling: the renderer depends on the capability only through
+   =e-chat-output-mode-resolve=; no new cross-module coupling.
+6. Dependency direction: presentation depends on the capability resolver, not
+   the reverse.
+7. Side effects: none added to core; rendering side effects stay in the shell.
+8. State: per-session override is durable capability state, the smallest scope
+   that survives restart and matches the acceptance requirement.
+9. Performance: Org fontification reuses the same disposable-buffer approach as
+   markdown-mode; only runs when mode is =org=.
+10. Substitutability: both modes satisfy the same render contract.
+11. Compatibility: default is =markdown=; existing sessions are unaffected.
+12. Legacy: none to remove.
+13. Errors: unknown mode values signal via capability-config validation or the
+    session setter; expected.
+14. Tests prove mode resolution and instruction gating independent of the UI,
+    and the renderer branch through the presentation surface.
+
+* Open notes
+
+- Historical messages are re-rendered on an in-session toggle for visible final
+  blocks only; the plan's non-goal (no Markdown<->Org conversion of message
+  *text*) still holds — this re-fontifies, it does not rewrite content.
+- A "copy response as Org" affordance was called optional in the plan and is not
+  implemented.

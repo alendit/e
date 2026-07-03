@@ -44,7 +44,8 @@
                    '(base-guidance
                      file-handling
                      shell-process
-                     output-style)))))
+                     output-style
+                     chat-output-mode)))))
 
 (ert-deftest e-base-test-layer-output-style-inert-by-default ()
   "The OS base layer carries an output-style capability inert by default."
