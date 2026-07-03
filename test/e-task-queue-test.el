@@ -55,6 +55,16 @@ thunk) so the test settles tasks explicitly."
           (e-task-queue-test--recorder-calls recorder))
     (list :cancel (lambda () (funcall on-settle :status 'cancelled)))))
 
+(defun e-task-queue-test--fake-runner-with-session (recorder)
+  "Like `e-task-queue-test--fake-runner' but returns a `:session-id' handle.
+Auto-retry only arms for a task that produced a session to reference, so retry
+tests need a runner whose handle carries one."
+  (lambda (task harness on-settle)
+    (push (list :task task :harness harness :settle on-settle)
+          (e-task-queue-test--recorder-calls recorder))
+    (list :session-id "sess-1"
+          :cancel (lambda () (funcall on-settle :status 'cancelled)))))
+
 (defun e-task-queue-test--running-ids (queue)
   "Return task ids in QUEUE whose status is running."
   (mapcar (lambda (r) (plist-get r :task-id))
@@ -477,6 +487,129 @@ thunk) so the test settles tasks explicitly."
       (should (null (e-task-queue--record-file queue)))
       ;; Flush is a no-op and must not signal for an in-memory queue.
       (should (eq (e-task-queue-flush queue) queue)))))
+
+(ert-deftest e-task-queue-test-failed-task-auto-retries ()
+  "A failed task with retries left is re-armed as a fresh queued attempt.
+The retry references the failed session, carries an analyze-and-continue
+prompt, preserves the original prompt in `:origin-prompt', and bumps the retry
+counter."
+  (e-task-queue-test--with-instances
+    (e-task-queue-test--register-instance :chat-a t)
+    (let* ((recorder (make-e-task-queue-test--recorder))
+           (queue (e-task-queue-create
+                   :max-retries 1
+                   :runner (e-task-queue-test--fake-runner-with-session
+                            recorder)))
+           (task (e-task-queue-enqueue queue :prompt "do the thing"))
+           (task-id (plist-get task :task-id))
+           (settle (plist-get (car (e-task-queue-test--recorder-calls recorder))
+                              :settle)))
+      (funcall settle :status 'failed :error "boom")
+      (let ((record (e-task-queue-get queue task-id)))
+        ;; Re-armed rather than terminated.
+        (should (eq (plist-get record :status) 'running))
+        (should (= (plist-get record :retries) 1))
+        (should (equal (plist-get record :origin-prompt) "do the thing"))
+        ;; The retry prompt references the failed session and original task.
+        (should (string-match-p "sess-1" (plist-get record :prompt)))
+        (should (string-match-p "do the thing" (plist-get record :prompt)))
+        (should (string-match-p "boom" (plist-get record :prompt))))
+      ;; The retry was actually dispatched: the runner ran a second time.
+      (should (= (length (e-task-queue-test--recorder-calls recorder)) 2)))))
+
+(ert-deftest e-task-queue-test-retries-exhaust-to-failed ()
+  "Once retries are exhausted, a further failure lands terminal `failed'."
+  (e-task-queue-test--with-instances
+    (e-task-queue-test--register-instance :chat-a t)
+    (let* ((recorder (make-e-task-queue-test--recorder))
+           (queue (e-task-queue-create
+                   :max-retries 1
+                   :runner (e-task-queue-test--fake-runner-with-session
+                            recorder)))
+           (task (e-task-queue-enqueue queue :prompt "do the thing"))
+           (task-id (plist-get task :task-id)))
+      ;; First failure arms retry 1.
+      (funcall (plist-get (car (e-task-queue-test--recorder-calls recorder))
+                          :settle)
+               :status 'failed :error "boom-1")
+      (should (eq (plist-get (e-task-queue-get queue task-id) :status) 'running))
+      ;; Second failure has no retries left: terminal failed, error retained.
+      (funcall (plist-get (car (e-task-queue-test--recorder-calls recorder))
+                          :settle)
+               :status 'failed :error "boom-2")
+      (let ((record (e-task-queue-get queue task-id)))
+        (should (eq (plist-get record :status) 'failed))
+        (should (= (plist-get record :retries) 1))
+        (should (equal (plist-get record :error) "boom-2"))
+        (should (plist-get record :finished-at))))))
+
+(ert-deftest e-task-queue-test-no-retry-when-disabled ()
+  "With retries disabled, a failure terminates immediately."
+  (e-task-queue-test--with-instances
+    (e-task-queue-test--register-instance :chat-a t)
+    (let* ((recorder (make-e-task-queue-test--recorder))
+           (queue (e-task-queue-create
+                   :max-retries 0
+                   :runner (e-task-queue-test--fake-runner-with-session
+                            recorder)))
+           (task (e-task-queue-enqueue queue :prompt "do the thing"))
+           (task-id (plist-get task :task-id))
+           (settle (plist-get (car (e-task-queue-test--recorder-calls recorder))
+                              :settle)))
+      (funcall settle :status 'failed :error "boom")
+      (let ((record (e-task-queue-get queue task-id)))
+        (should (eq (plist-get record :status) 'failed))
+        (should (= (plist-get record :retries) 0))))))
+
+(ert-deftest e-task-queue-test-no-retry-without-session ()
+  "A failed task with no session to reference is not retried.
+The retry prompt must be able to point the new attempt at the failed session;
+without one there is nothing to analyze, so the task terminates."
+  (e-task-queue-test--with-instances
+    (e-task-queue-test--register-instance :chat-a t)
+    (let* ((recorder (make-e-task-queue-test--recorder))
+           (queue (e-task-queue-create
+                   :max-retries 2
+                   ;; The plain fake runner returns no `:session-id'.
+                   :runner (e-task-queue-test--fake-runner recorder)))
+           (task (e-task-queue-enqueue queue :prompt "do the thing"))
+           (task-id (plist-get task :task-id))
+           (settle (plist-get (car (e-task-queue-test--recorder-calls recorder))
+                              :settle)))
+      (funcall settle :status 'failed :error "boom")
+      (should (eq (plist-get (e-task-queue-get queue task-id) :status)
+                  'failed)))))
+
+(ert-deftest e-task-queue-test-retry-persists-fields ()
+  "Retry counter and origin prompt round-trip through persistence."
+  (e-task-queue-test--with-instances
+    (e-task-queue-test--register-instance :chat-a t)
+    (let ((dir (make-temp-file "e-task-queue-test" t)))
+      (unwind-protect
+          (let* ((recorder (make-e-task-queue-test--recorder))
+                 (queue (e-task-queue-create
+                         :max-retries 1
+                         :directory dir
+                         :runner (e-task-queue-test--fake-runner-with-session
+                                  recorder)))
+                 (task (e-task-queue-enqueue queue :prompt "do the thing"))
+                 (task-id (plist-get task :task-id))
+                 (settle (plist-get (car (e-task-queue-test--recorder-calls
+                                          recorder))
+                                    :settle)))
+            (funcall settle :status 'failed :error "boom")
+            (e-task-queue-flush queue)
+            (let ((reloaded (e-task-queue-create
+                             :max-retries 1
+                             :directory dir
+                             :runner (e-task-queue-test--fake-runner-with-session
+                                      (make-e-task-queue-test--recorder)))))
+              (e-task-queue-load reloaded)
+              (let ((record (e-task-queue-get reloaded task-id)))
+                (should (= (plist-get record :retries) 1))
+                (should (equal (plist-get record :origin-prompt)
+                               "do the thing")))))
+        (delete-directory dir t)))))
 
 (provide 'e-task-queue-test)
 

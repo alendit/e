@@ -60,6 +60,20 @@ in-memory."
   :type 'number
   :group 'e-task-queue)
 
+(defcustom e-task-queue-max-retries 1
+  "How many times a `failed' task is automatically retried.
+A retry runs a fresh session that references the failed one and is prompted to
+analyze the failure and continue the original task.  0 disables auto-retry.
+A queue may override this via its `max-retries' slot."
+  :type 'integer
+  :group 'e-task-queue)
+
+(defvar e-task-queue-retry-prompt-function #'e-task-queue-default-retry-prompt
+  "Function building the prompt for an auto-retry of a failed task.
+Called with the failed task's normalized record and must return the prompt
+string the retry submits.  The record carries `:origin-prompt' (the true
+original task), `:session-id' (the failed session to reference), and `:error'.")
+
 (defvar e-task-queue-change-functions nil
   "Abnormal hook run after a queue's task set or a task record changes.
 Each function is called with the queue.  Intended for observation (shells,
@@ -84,19 +98,22 @@ WRITE-TIMER coalesces those writes."
   runner
   dispatching
   paused-p
+  max-retries
   directory
   write-timer)
 
 (cl-defun e-task-queue-create (&key max-parallel default-harness-instance-id
-                                    runner directory)
+                                    runner max-retries directory)
   "Return a new task queue.
-MAX-PARALLEL, DEFAULT-HARNESS-INSTANCE-ID, and RUNNER override the module
-defaults for this queue when non-nil.  DIRECTORY, when non-nil, makes the queue
-durable and stores its records there; without it the queue stays in-memory."
+MAX-PARALLEL, DEFAULT-HARNESS-INSTANCE-ID, MAX-RETRIES, and RUNNER override the
+module defaults for this queue when non-nil.  DIRECTORY, when non-nil, makes the
+queue durable and stores its records there; without it the queue stays
+in-memory."
   (e-task-queue--create
    :max-parallel max-parallel
    :default-harness-instance-id default-harness-instance-id
    :runner runner
+   :max-retries max-retries
    :directory directory))
 
 ;; --- configuration accessors ------------------------------------------------
@@ -104,6 +121,10 @@ durable and stores its records there; without it the queue stays in-memory."
 (defun e-task-queue--max-parallel (queue)
   "Return the effective parallelism cap for QUEUE."
   (or (e-task-queue-max-parallel queue) e-task-queue-max-parallel))
+
+(defun e-task-queue--max-retries (queue)
+  "Return the effective auto-retry cap for QUEUE."
+  (or (e-task-queue-max-retries queue) e-task-queue-max-retries 0))
 
 (defun e-task-queue--runner (queue)
   "Return the effective runner for QUEUE."
@@ -153,6 +174,7 @@ truncated prompt prefix in `:prompt-summary'."
   (list :task-id (plist-get record :task-id)
         :status (plist-get record :status)
         :prompt (plist-get record :prompt)
+        :origin-prompt (plist-get record :origin-prompt)
         :summary (plist-get record :summary)
         :prompt-summary (plist-get record :prompt-summary)
         :metadata (plist-get record :metadata)
@@ -161,6 +183,7 @@ truncated prompt prefix in `:prompt-summary'."
         :started-at (plist-get record :started-at)
         :finished-at (plist-get record :finished-at)
         :session-id (plist-get record :session-id)
+        :retries (or (plist-get record :retries) 0)
         :outputs (plist-get record :outputs)
         :error (plist-get record :error)))
 
@@ -203,6 +226,55 @@ truncated prompt prefix in `:prompt-summary'."
                     'queued))
               (e-task-queue-order queue)))
 
+(defun e-task-queue-default-retry-prompt (record)
+  "Return the default auto-retry prompt for a failed task RECORD.
+References the failed session and asks the agent to analyze the failure before
+resuming the original task."
+  (let ((origin (or (plist-get record :origin-prompt)
+                    (plist-get record :prompt)))
+        (session (plist-get record :session-id))
+        (error (plist-get record :error)))
+    (concat
+     "A previous attempt at this task failed and is being auto-retried.\n\n"
+     (when session
+       (format "Failed session: %s (inspect it for its transcript and partial progress).\n"
+               session))
+     (when error
+       (format "Reported failure: %s\n" error))
+     "\nFirst analyze what went wrong in that attempt, then continue and complete "
+     "the original task below.  Do not repeat the failing step blindly; adjust your "
+     "approach based on the failure.\n\n"
+     "Original task:\n" origin)))
+
+(defun e-task-queue--build-retry-prompt (record)
+  "Build the retry prompt for RECORD via `e-task-queue-retry-prompt-function'."
+  (condition-case nil
+      (funcall e-task-queue-retry-prompt-function record)
+    (error (e-task-queue-default-retry-prompt record))))
+
+(defun e-task-queue--maybe-retry (queue record)
+  "Auto-retry a just-failed RECORD in QUEUE when retries remain.
+Rewrites the failed RECORD in place into a fresh `queued' attempt: its prompt
+becomes an analyze-the-failure-and-continue prompt that references the failed
+session, the retry counter increments, and lifecycle stamps reset.  Returns
+non-nil when a retry was armed.  The original prompt is preserved in
+`:origin-prompt' so successive retries always reference the true task."
+  (when (and (< (or (plist-get record :retries) 0)
+                (e-task-queue--max-retries queue))
+             ;; A retry needs a failed session to reference and analyze.
+             (plist-get record :session-id))
+    (let ((retry-prompt (e-task-queue--build-retry-prompt
+                         (e-task-queue--normalize record))))
+      (plist-put record :retries (1+ (or (plist-get record :retries) 0)))
+      (plist-put record :prompt retry-prompt)
+      (plist-put record :status 'queued)
+      (plist-put record :started-at nil)
+      (plist-put record :finished-at nil)
+      (plist-put record :handle nil)
+      ;; Keep the failing error visible until the retry starts; the display
+      ;; still shows the last failure reason while the task waits to re-run.
+      t)))
+
 (defun e-task-queue--settle (queue task-id status &rest args)
   "Settle a running TASK-ID in QUEUE.
 ARGS may carry `:outputs' and `:error'.  No-op unless the task is still
@@ -217,14 +289,20 @@ QUEUE after a real transition."
       (when (plist-member args :error)
         (plist-put record :error (plist-get args :error)))
       (plist-put record :handle nil)
-      (if (and (plist-get record :pausing) (eq status 'cancelled))
-          ;; The abort came from a pause request: hold, do not terminate.
-          (progn
-            (plist-put record :pausing nil)
-            (plist-put record :status 'paused)
-            (plist-put record :started-at nil))
+      (cond
+       ((and (plist-get record :pausing) (eq status 'cancelled))
+        ;; The abort came from a pause request: hold, do not terminate.
+        (plist-put record :pausing nil)
+        (plist-put record :status 'paused)
+        (plist-put record :started-at nil))
+       ((and (eq status 'failed)
+             (e-task-queue--maybe-retry queue record))
+        ;; A failed task with retries left was re-armed as `queued'; the
+        ;; dispatcher below will start the analyze-and-continue retry.
+        nil)
+       (t
         (plist-put record :status status)
-        (plist-put record :finished-at (e-task-queue--timestamp)))
+        (plist-put record :finished-at (e-task-queue--timestamp))))
       (e-task-queue--notify queue)
       (e-task-queue--dispatch queue))))
 
@@ -299,6 +377,7 @@ may already be running when this returns."
          (record (list :task-id task-id
                        :status 'queued
                        :prompt prompt
+                       :origin-prompt prompt
                        :summary (and (stringp summary)
                                      (not (string-empty-p (string-trim summary)))
                                      (string-trim summary))
@@ -309,6 +388,7 @@ may already be running when this returns."
                        :started-at nil
                        :finished-at nil
                        :session-id nil
+                       :retries 0
                        :outputs nil
                        :error nil
                        :handle nil)))
@@ -467,8 +547,9 @@ function that aborts the active turn."
 ;; --- persistence ------------------------------------------------------------
 
 (defconst e-task-queue--persist-fields
-  '(:task-id :status :prompt :summary :prompt-summary :metadata :harness-instance-id
-    :enqueued-at :started-at :finished-at :session-id :outputs :error)
+  '(:task-id :status :prompt :origin-prompt :summary :prompt-summary :metadata
+    :harness-instance-id :enqueued-at :started-at :finished-at :session-id
+    :retries :outputs :error)
   "Durable task record fields.
 The transient `:handle', `:pausing', and the live harness are never persisted.")
 

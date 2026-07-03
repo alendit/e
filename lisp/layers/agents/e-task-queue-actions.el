@@ -43,7 +43,7 @@
      ""
      "## Status lifecycle"
      ""
-     "`queued` -> `running` -> `done`; a turn error lands `failed`; cancel lands `cancelled`. Terminal states are immutable. `pause` holds a task in the non-terminal `paused` state and `resume` returns it to `queued`."
+     "`queued` -> `running` -> `done`; a turn error lands `failed`; cancel lands `cancelled`. Terminal states are immutable. `pause` holds a task in the non-terminal `paused` state and `resume` returns it to `queued`. A `failed` task with retries left and a session to reference is auto-retried: it re-arms as `queued` with an analyze-the-failure-and-continue prompt that references the failed session, tracked by the record's `retries` counter (see `e-task-queue-max-retries`)."
      ""
      "## Harness selection"
      ""

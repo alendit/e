@@ -43,6 +43,17 @@
     ('paused "paused")
     (_ (format "%s" status))))
 
+(defun e-task-queue-shell--status-cell (record)
+  "Return the Status cell for RECORD, annotating auto-retries.
+A record that has been re-armed after failure carries a non-zero `:retries'
+count; showing it makes the analyze-and-continue retry visible while the task
+waits or re-runs."
+  (let ((label (e-task-queue-shell--status-label (plist-get record :status)))
+        (retries (or (plist-get record :retries) 0)))
+    (if (> retries 0)
+        (format "%s (retry %d)" label retries)
+      label)))
+
 (defun e-task-queue-shell--format-time (iso)
   "Return a short HH:MM display for ISO-8601 ISO, or empty when nil.
 Keeps the date off when it matches today so the common case reads compactly."
@@ -61,7 +72,7 @@ The Task column shows the agent-authored summary stub when present, falling
 back to a prompt prefix; the Finished column shows when the task settled."
   (list (plist-get record :task-id)
         (vector (e-task-queue-shell--format-time (plist-get record :enqueued-at))
-                (e-task-queue-shell--status-label (plist-get record :status))
+                (e-task-queue-shell--status-cell record)
                 (e-task-queue-shell--format-time (plist-get record :finished-at))
                 (e-task-queue-record-display-summary record)
                 (number-to-string (length (plist-get record :outputs))))))
@@ -157,11 +168,12 @@ settles; this surfaces them in a help buffer for inspection."
          (record (e-task-queue-get e-task-queue-shell--queue task-id)))
     (with-help-window (format "*e-task-queue: %s*" task-id)
       (with-current-buffer standard-output
-        (insert (format "Task: %s\nSummary: %s\nStatus: %s\nSession: %s\n\n"
+        (insert (format "Task: %s\nSummary: %s\nStatus: %s\nRetries: %d\nSession: %s\n\n"
                         task-id
                         (e-task-queue-record-display-summary record)
                         (e-task-queue-shell--status-label
                          (plist-get record :status))
+                        (or (plist-get record :retries) 0)
                         (or (plist-get record :session-id) "-")))
         (insert (format "Prompt:\n%s\n\n" (plist-get record :prompt)))
         (when-let ((error (plist-get record :error)))
@@ -210,7 +222,7 @@ a queued task has no session yet."
   "Major mode listing agent task queue tasks newest-first."
   (setq tabulated-list-format
         [("Enqueued" 14 t)
-         ("Status" 10 t)
+         ("Status" 16 t)
          ("Finished" 14 t)
          ("Task" 48 nil)
          ("Outputs" 8 nil)])

@@ -220,6 +220,30 @@ task-queue layer to trigger rehydration first."
                             :type 'user-error)))
         (kill-buffer buffer)))))
 
+(ert-deftest e-task-queue-shell-test-status-shows-retry-count ()
+  "The Status column annotates a re-armed task with its retry count."
+  (e-task-queue-shell-test--with-instances
+    (let* ((queue (e-task-queue-create
+                   :max-retries 1
+                   :runner (lambda (_task _harness _on-settle)
+                             (list :session-id "sess-1"
+                                   :cancel #'ignore))))
+           (task (e-task-queue-enqueue queue :prompt "do the thing"))
+           (task-id (plist-get task :task-id))
+           (buffer (e-task-queue-list-buffer :queue queue)))
+      (unwind-protect
+          (progn
+            ;; Fail the running task; with a session and a retry left it is
+            ;; re-armed and its retry counter bumps to 1.
+            (e-task-queue--settle queue task-id 'failed :error "boom")
+            (with-current-buffer buffer
+              (let ((cols (cadr (car tabulated-list-entries))))
+                ;; Status column (index 1) carries the retry annotation.
+                (should (string-match-p "retry 1" (aref cols 1))))))
+        (kill-buffer buffer)
+        (remove-hook 'e-task-queue-change-functions
+                     #'e-task-queue-shell--refresh-buffers)))))
+
 (provide 'e-task-queue-shell-test)
 
 ;;; e-task-queue-shell-test.el ends here

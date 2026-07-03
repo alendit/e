@@ -1,0 +1,46 @@
+#+title: Task Queue Auto-Retry of Failed Tasks
+#+startup: overview
+
+* Change
+
+Auto-retry a =failed= task in the agent task queue (feature 47) instead of
+leaving it terminal.  When a running task settles =failed=, the queue re-arms
+it as a fresh =queued= attempt whose prompt asks the agent to first analyze the
+prior failure, then continue the original task.  The retry references the
+failed session so the new attempt can inspect its transcript and partial
+progress.
+
+Mechanics:
+
+- =e-task-queue-max-retries= (defcustom, default 1) and a per-queue
+  =max-retries= slot cap the automatic retries; 0 disables the behavior.
+- Each record gains =:retries= (attempt counter) and =:origin-prompt= (the
+  true original task, preserved across successive retries so the prompt never
+  degrades into a retry-of-a-retry). Both persist across restart.
+- =e-task-queue-retry-prompt-function= builds the retry prompt; the default
+  =e-task-queue-default-retry-prompt= references the failed session id and the
+  reported error, then restates the original task.
+- Retry only arms when a session exists to reference — a task that failed
+  before producing a session terminates =failed= as before, since there is
+  nothing to analyze.
+- The list buffer's Status column annotates a re-armed task as
+  =failed (retry N)= via =e-task-queue-shell--status-cell=; the outputs popup
+  shows the retry count.
+
+* Why tiny
+
+It is a focused behavior added to one settle branch plus two persisted fields
+and a display annotation. No new backend, harness, or scheduling machinery: a
+retry is just the existing dispatch path re-running a re-queued record with a
+rewritten prompt. The only real care is not retrying without a session to
+analyze and preserving the original prompt across retries, both covered by
+tests.
+
+* Validation
+
+- Focused ERT: =e-task-queue-test.el= (auto-retry arms and dispatches;
+  exhaustion lands terminal =failed=; disabled retries terminate immediately;
+  no retry without a session; retry counter and origin prompt round-trip
+  through persistence) and =e-task-queue-shell-test.el= (Status column shows
+  the retry count). Full suites pass: task-queue 25, shell 12, keymap-hints 6.
+- Warnings-as-error compile gate green for the touched files.
