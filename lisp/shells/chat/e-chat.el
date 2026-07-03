@@ -36,7 +36,10 @@
 (require 'e-workspaces)
 
 (declare-function markdown-mode "markdown-mode")
+(declare-function org-mode "org")
 (declare-function +workspace/display "ext:doom-workspaces")
+(defvar org-inhibit-startup)
+(defvar org-mode-hook)
 (declare-function e-dev-profile-enabled-p "e-dev-profile")
 (declare-function e-dev-profile-measure-thunk "e-dev-profile")
 
