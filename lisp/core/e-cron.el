@@ -14,6 +14,17 @@
 ;; calls, so this module never depends on the task queue or background sessions.
 ;; A higher layer builds the closures that route a fire to those primitives.
 ;;
+;; Definitions vs. state.  A schedule *definition* (id, recurrence, action) is
+;; declarative configuration: the owning layer or init re-registers it on every
+;; load.  The *last-fire* time is runtime state, persisted to
+;; `e-cron-state-file' under the user emacs directory.  Registration is
+;; therefore idempotent in timing: the next fire is anchored on the persisted
+;; last-fire (or a persisted first-registration anchor), never on the moment of
+;; re-registration, so reloading a layer does not push an interval schedule's
+;; fire out and a schedule that came due while Emacs was down fires once on the
+;; next start.  The due time is last-fire plus the recurrence's interval; the
+;; interval is derived once from the definition and cached on the schedule.
+;;
 ;; Two knobs shape a fire:
 ;;
 ;;   - `guard': an optional deterministic predicate evaluated at fire time.  A
@@ -41,6 +52,14 @@
   :group 'e
   :prefix "e-cron-")
 
+(defcustom e-cron-state-file (locate-user-emacs-file "e/cron-state.eld")
+  "File persisting per-schedule runtime state (last-fire and anchor).
+The engine reads it once and rewrites it after each fire, so a schedule's
+cadence survives Emacs restarts and layer reloads.  Nil disables persistence
+(state stays in memory only); tests bind it nil."
+  :type '(choice (const :tag "No persistence" nil) file)
+  :group 'e-cron)
+
 (defvar e-cron-current-time-function #'current-time
   "Function returning the current time as an Emacs time value.
 Rebind in tests to drive next-fire computation from an injected clock.")
@@ -63,16 +82,22 @@ empty or absent `:on' means every day.  ACTION is a one-argument function the
 engine calls with the schedule when it fires.  GUARD is nil or a zero-argument
 predicate gating each fire.  CATCH-UP is `skip' or `run'.  METADATA is opaque.
 
+INTERVAL is the fixed inter-fire span in seconds derived once from WHEN, or
+nil for a calendar recurrence with no constant interval; it anchors the due
+time and avoids recomputing the span on every tick.
+
 Runtime fields track the live timer and last observations:
 TIMER is the armed Emacs timer.  NEXT-FIRE is the computed next fire time.
-LAST-FIRE is when the action last ran.  LAST-GUARD-RESULT and LAST-GUARD-AT
-record the most recent guard evaluation.  ENABLED gates arming."
+LAST-FIRE is when the action last ran (hydrated from persisted state at
+registration).  LAST-GUARD-RESULT and LAST-GUARD-AT record the most recent
+guard evaluation.  ENABLED gates arming."
   id
   when
   action
   guard
   (catch-up 'skip)
   metadata
+  interval
   ;; runtime
   timer
   next-fire
@@ -83,6 +108,14 @@ record the most recent guard evaluation.  ENABLED gates arming."
 
 (defvar e-cron--schedules (make-hash-table :test 'equal)
   "Registered schedules keyed by id.")
+
+(defvar e-cron--state (make-hash-table :test 'equal)
+  "In-memory cron runtime state: id -> plist of persisted floats.
+Each plist holds `:last-fire' and `:anchor' as `float-time' values.  Loaded
+lazily from `e-cron-state-file' and rewritten after each fire.")
+
+(defvar e-cron--state-loaded nil
+  "Non-nil once `e-cron--state' has been hydrated from disk this session.")
 
 ;; --- time helpers -----------------------------------------------------------
 
@@ -151,6 +184,119 @@ DST transitions) apply."
     (e-cron--next-calendar (plist-get when :at) (plist-get when :on) now))
    (t (signal 'e-cron-invalid-when (list when)))))
 
+(defun e-cron--derive-interval (when)
+  "Return the fixed inter-fire span in seconds for WHEN, or nil.
+An `:every' recurrence has a constant interval.  A daily `:at' recurrence with
+no `:on' restriction repeats every 86400 s, so it too has a constant span; an
+`:at' with weekday restrictions has no single span and returns nil (its due
+time is computed by calendar scan instead).  Validates WHEN as a side effect."
+  (cond
+   ((plist-member when :every)
+    (let ((seconds (plist-get when :every)))
+      (unless (and (numberp seconds) (> seconds 0))
+        (signal 'e-cron-invalid-when (list :every seconds)))
+      seconds))
+   ((plist-member when :at)
+    ;; Parse to validate; a per-day recurrence has a 24h span, a
+    ;; weekday-restricted one does not.
+    (e-cron--parse-hh-mm (plist-get when :at))
+    (and (null (plist-get when :on)) 86400))
+   (t (signal 'e-cron-invalid-when (list when)))))
+
+(defun e-cron--basis (schedule)
+  "Return the float-time basis for SCHEDULE's due computation.
+The basis is the last-fire when known, else the persisted first-registration
+anchor -- so a never-fired schedule's first fire is anchored to when it was
+first registered rather than to the moment of the current re-registration."
+  (let ((last (e-cron-schedule-last-fire schedule)))
+    (if last (float-time last) (e-cron--state-ensure-anchor schedule))))
+
+(defun e-cron--due-time (schedule)
+  "Return the time SCHEDULE is next due, possibly in the past.
+For a fixed-INTERVAL recurrence the due time is basis-plus-interval: the
+schedule is due one interval after the basis (last-fire, or the persisted
+first-registration anchor when it has never fired).  A due time in the past
+means a fire came due while Emacs was down or between reloads; `e-cron-start'
+detects that and applies the catch-up policy.  A weekday calendar recurrence
+has no constant span, so its due time is simply the next calendar fire."
+  (let ((interval (e-cron-schedule-interval schedule)))
+    (if interval
+        (seconds-to-time (+ (e-cron--basis schedule) interval))
+      (e-cron--next-fire (e-cron-schedule-when schedule) (e-cron--now)))))
+
+(defun e-cron--next-after (schedule now)
+  "Return SCHEDULE's next fire time strictly after NOW.
+For a fixed-INTERVAL recurrence this is the earliest basis-plus-k*interval
+strictly after NOW, preserving the schedule's phase across missed fires and
+re-registrations instead of resetting it to now.  A weekday calendar
+recurrence has no constant span and defers to the calendar scan."
+  (let ((interval (e-cron-schedule-interval schedule)))
+    (if interval
+        (let* ((basis (e-cron--basis schedule))
+               (elapsed (- (float-time now) basis))
+               (steps (if (< elapsed 0) 0 (1+ (floor elapsed interval)))))
+          (seconds-to-time (+ basis (* interval steps))))
+      (e-cron--next-fire (e-cron-schedule-when schedule) now))))
+
+;; --- runtime state persistence ----------------------------------------------
+
+(defun e-cron--state-load ()
+  "Hydrate `e-cron--state' from `e-cron-state-file' once per session.
+A malformed or missing file leaves the state empty rather than signaling."
+  (unless e-cron--state-loaded
+    (setq e-cron--state-loaded t)
+    (when (and e-cron-state-file (file-readable-p e-cron-state-file))
+      (ignore-errors
+        (with-temp-buffer
+          (insert-file-contents e-cron-state-file)
+          (goto-char (point-min))
+          (let ((data (read (current-buffer))))
+            (when (hash-table-p data)
+              (setq e-cron--state data)))))))
+  e-cron--state)
+
+(defun e-cron--state-write ()
+  "Persist `e-cron--state' to `e-cron-state-file' atomically.
+No-op when persistence is disabled (`e-cron-state-file' nil)."
+  (when e-cron-state-file
+    (ignore-errors
+      (make-directory (file-name-directory e-cron-state-file) t)
+      (let ((tmp (make-temp-file
+                  (expand-file-name ".cron-state-"
+                                    (file-name-directory e-cron-state-file)))))
+        (with-temp-file tmp
+          (let ((print-length nil) (print-level nil))
+            (prin1 e-cron--state (current-buffer))))
+        (rename-file tmp e-cron-state-file t)))))
+
+(defun e-cron--state-get (id)
+  "Return the persisted state plist for ID, or nil."
+  (gethash (format "%s" id) (e-cron--state-load)))
+
+(defun e-cron--state-record-fire (schedule fire-time)
+  "Record SCHEDULE's FIRE-TIME in the persisted state and flush to disk."
+  (let* ((key (format "%s" (e-cron-schedule-id schedule)))
+         (existing (gethash key e-cron--state))
+         (anchor (or (plist-get existing :anchor)
+                     (float-time fire-time))))
+    (puthash key (list :last-fire (float-time fire-time) :anchor anchor)
+             e-cron--state))
+  (e-cron--state-write))
+
+(defun e-cron--state-ensure-anchor (schedule)
+  "Ensure SCHEDULE has a persisted first-registration anchor, returning it.
+The anchor is the first time the schedule was ever seen; it seeds the due-time
+computation for a schedule that has never fired so re-registration does not
+keep pushing the first fire forward."
+  (let* ((key (format "%s" (e-cron-schedule-id schedule)))
+         (existing (gethash key (e-cron--state-load))))
+    (or (plist-get existing :anchor)
+        (let ((anchor (float-time (e-cron--now))))
+          (puthash key (plist-put (copy-sequence existing) :anchor anchor)
+                   e-cron--state)
+          (e-cron--state-write)
+          anchor))))
+
 ;; --- registry ---------------------------------------------------------------
 
 (defun e-cron-get (id)
@@ -168,8 +314,11 @@ DST transitions) apply."
                                 metadata (enabled t))
   "Register a schedule entry and return it.
 An existing schedule with the same ID is stopped and replaced.  See
-`e-cron-schedule' for the field meanings.  Registration validates WHEN by
-computing an initial next-fire; an enabled entry is armed immediately."
+`e-cron-schedule' for the field meanings.  Registration validates WHEN (via
+the cached interval), hydrates LAST-FIRE from persisted state, and anchors the
+next fire on that persisted history rather than on registration time -- so
+re-registering an unchanged definition does not shift its cadence.  An enabled
+entry is armed immediately."
   (unless id (signal 'e-cron-invalid-when (list :id nil)))
   (unless (functionp action)
     (signal 'wrong-type-argument (list 'functionp :action)))
@@ -177,18 +326,25 @@ computing an initial next-fire; an enabled entry is armed immediately."
     (signal 'e-cron-invalid-when (list :catch-up catch-up)))
   (when-let ((existing (e-cron-get id)))
     (e-cron-stop existing))
-  (let ((schedule (e-cron-schedule--create
-                   :id id
-                   :when when
-                   :action action
-                   :guard guard
-                   :catch-up catch-up
-                   :metadata metadata
-                   :enabled enabled)))
-    ;; Compute an initial next-fire so an invalid WHEN fails at registration
-    ;; rather than at the first tick.
-    (setf (e-cron-schedule-next-fire schedule)
-          (e-cron--next-fire when (e-cron--now)))
+  (let* (;; Derive the fixed interval once; also validates WHEN so an invalid
+         ;; recurrence fails at registration rather than at the first tick.
+         (interval (e-cron--derive-interval when))
+         (persisted (e-cron--state-get id))
+         (last (when-let ((secs (plist-get persisted :last-fire)))
+                 (seconds-to-time secs)))
+         (schedule (e-cron-schedule--create
+                    :id id
+                    :when when
+                    :action action
+                    :guard guard
+                    :catch-up catch-up
+                    :metadata metadata
+                    :interval interval
+                    :last-fire last
+                    :enabled enabled)))
+    ;; Anchor the initial next-fire on persisted history (last-fire or the
+    ;; first-registration anchor), not on the moment of registration.
+    (setf (e-cron-schedule-next-fire schedule) (e-cron--due-time schedule))
     (puthash id schedule e-cron--schedules)
     (when enabled (e-cron-start schedule))
     schedule))
@@ -234,16 +390,17 @@ stale closure."
 (defun e-cron--advance (schedule now)
   "Set SCHEDULE's next-fire to the next occurrence strictly after NOW."
   (setf (e-cron-schedule-next-fire schedule)
-        (e-cron--next-fire (e-cron-schedule-when schedule) now)))
+        (e-cron--next-after schedule now)))
 
 (defun e-cron-fire (schedule)
   "Fire SCHEDULE now, honoring its guard, and return non-nil when it fired.
 Evaluates the guard first and records the result; a nil guard skips the action
-but still returns from a normal fire so the caller re-arms.  The action is
-called with the schedule.  A `skip'-policy entry whose next-fire is already in
-the past and whose guard passes still fires here -- the missed-fire decision
-belongs to the caller (`e-cron-start'), not to a fire it has already chosen to
-run."
+but still returns from a normal fire so the caller re-arms.  A fire records and
+persists LAST-FIRE, so the schedule's cadence and due time survive restarts.
+The action is called with the schedule.  A `skip'-policy entry whose next-fire
+is already in the past and whose guard passes still fires here -- the
+missed-fire decision belongs to the caller (`e-cron-start'), not to a fire it
+has already chosen to run."
   (let ((now (e-cron--now)))
     (setf (e-cron-schedule-last-guard-at schedule) now)
     (let ((guard (e-cron-schedule-guard schedule)))
@@ -253,19 +410,23 @@ run."
         (when (null guard)
           (setf (e-cron-schedule-last-guard-result schedule) t))
         (setf (e-cron-schedule-last-fire schedule) now)
+        (e-cron--state-record-fire schedule now)
         (funcall (e-cron-schedule-action schedule) schedule)
         (run-hook-with-args 'e-cron-fire-functions schedule)
         t))))
 
 (defun e-cron-start (schedule)
   "Enable SCHEDULE and arm its timer, applying the catch-up policy.
-When the computed next-fire is already in the past -- Emacs was asleep across
-one or more occurrences -- `skip' advances to the next future fire and arms,
-while `run' fires once now before advancing.  Returns SCHEDULE."
+The due time is derived from persisted state (last-fire plus interval, or the
+first-registration anchor), so a fire that came due while Emacs was down --
+or while a layer was between reloads -- is detected here.  When the due time
+has passed, `skip' advances to the next future occurrence and arms, while
+`run' fires once now before advancing.  Returns SCHEDULE."
   (setf (e-cron-schedule-enabled schedule) t)
-  (let ((now (e-cron--now)))
-    (when (or (null (e-cron-schedule-next-fire schedule))
-              (not (time-less-p now (e-cron-schedule-next-fire schedule))))
+  (let ((now (e-cron--now))
+        (due (e-cron--due-time schedule)))
+    (setf (e-cron-schedule-next-fire schedule) due)
+    (unless (time-less-p now due)
       (when (eq (e-cron-schedule-catch-up schedule) 'run)
         (e-cron-fire schedule))
       (e-cron--advance schedule now)))

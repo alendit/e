@@ -22,9 +22,14 @@
 (defmacro e-cron-test--with-registry (&rest body)
   "Run BODY with an isolated schedule registry and no armed timers.
 Timers are stubbed to no-ops so registration and start do not touch the real
-event loop; tests drive firing directly."
+event loop; tests drive firing directly.  Persisted state is isolated to a
+fresh in-memory table with persistence to disk disabled, so tests never touch
+`e-cron-state-file'."
   (declare (indent 0) (debug t))
-  `(let ((e-cron--schedules (make-hash-table :test 'equal)))
+  `(let ((e-cron--schedules (make-hash-table :test 'equal))
+         (e-cron--state (make-hash-table :test 'equal))
+         (e-cron--state-loaded t)
+         (e-cron-state-file nil))
      (cl-letf (((symbol-function 'run-at-time)
                 (lambda (&rest _) 'stub-timer))
                ((symbol-function 'cancel-timer) #'ignore)
@@ -198,6 +203,114 @@ event loop; tests drive firing directly."
       (should (e-cron-get 'gone))
       (e-cron-remove 'gone)
       (should-not (e-cron-get 'gone)))))
+
+;; --- persisted state / reload idempotence -----------------------------------
+
+(ert-deftest e-cron-test-interval-cached ()
+  "The fixed interval is derived once and cached on the schedule."
+  (e-cron-test--with-registry
+    (e-cron-test--with-clock "2026-06-15 09:00:00"
+      (should (= 60 (e-cron-schedule-interval
+                     (e-cron-register :id 'i :when '(:every 60)
+                                      :action #'ignore))))
+      ;; A daily calendar recurrence has a constant 24h span.
+      (should (= 86400 (e-cron-schedule-interval
+                        (e-cron-register :id 'd :when '(:at "09:00")
+                                         :action #'ignore))))
+      ;; A weekday-restricted calendar recurrence has no single span.
+      (should-not (e-cron-schedule-interval
+                   (e-cron-register :id 'w :when '(:at "09:00" :on (mon))
+                                    :action #'ignore))))))
+
+(ert-deftest e-cron-test-fire-persists-last-fire ()
+  "Firing records last-fire in the shared state table."
+  (e-cron-test--with-registry
+    (e-cron-test--with-clock "2026-06-15 09:00:00"
+      (let ((schedule (e-cron-register :id 'p :when '(:every 60)
+                                       :action #'ignore :enabled nil)))
+        (e-cron-fire schedule)
+        (should (= (float-time (e-cron-test--time "2026-06-15 09:00:00"))
+                   (plist-get (e-cron--state-get 'p) :last-fire)))))))
+
+(ert-deftest e-cron-test-reregister-preserves-cadence ()
+  "Re-registering an unchanged definition does not push the next fire out.
+The next fire is anchored on the persisted last-fire plus the interval, so a
+reload between fires keeps the same due time instead of resetting to now."
+  (e-cron-test--with-registry
+    (e-cron-test--with-clock "2026-06-15 09:00:00"
+      ;; First registration + fire at 09:00 -> next due 10:00 (hourly).
+      (let ((schedule (e-cron-register :id 'h :when '(:every 3600)
+                                       :action #'ignore :enabled nil)))
+        (e-cron-fire schedule))
+      ;; A reload 20 minutes later must keep the 10:00 due time, not 10:20.
+      (setq e-cron-test--clock (e-cron-test--time "2026-06-15 09:20:00"))
+      (let ((schedule (e-cron-register :id 'h :when '(:every 3600)
+                                       :action #'ignore)))
+        (should (string= "2026-06-15 10:00:00"
+                         (format-time-string
+                          "%F %T" (e-cron-schedule-next-fire schedule))))))))
+
+(ert-deftest e-cron-test-due-while-down-fires-on-start ()
+  "A fire that came due while Emacs was down runs once on the next start.
+The due time is last-fire plus interval; when that has passed, `run' catch-up
+fires once and re-arms to the next future occurrence."
+  (e-cron-test--with-registry
+    (e-cron-test--with-clock "2026-06-15 09:00:00"
+      (let ((schedule (e-cron-register :id 'due :when '(:every 3600)
+                                       :action #'ignore :enabled nil)))
+        (e-cron-fire schedule))
+      ;; "Restart" three hours later: due time (10:00) is well past.
+      (setq e-cron-test--clock (e-cron-test--time "2026-06-15 12:30:00"))
+      (let* ((fired 0)
+             (schedule (e-cron-register
+                        :id 'due :when '(:every 3600) :catch-up 'run
+                        :action (lambda (_s) (cl-incf fired)))))
+        (should (= 1 fired))
+        ;; The catch-up fire records last-fire = now (12:30), so the phase
+        ;; follows the actual fire and the next due is now + interval (13:30).
+        (should (string= "2026-06-15 13:30:00"
+                         (format-time-string
+                          "%F %T" (e-cron-schedule-next-fire schedule))))))))
+
+(ert-deftest e-cron-test-never-fired-anchor-is-stable ()
+  "A never-fired interval schedule anchors its first fire to first registration.
+Re-registering before the first fire keeps the original due time rather than
+re-basing to the new registration moment."
+  (e-cron-test--with-registry
+    (e-cron-test--with-clock "2026-06-15 09:00:00"
+      ;; First registration anchors at 09:00 -> first due 10:00.
+      (e-cron-register :id 'n :when '(:every 3600) :action #'ignore)
+      (setq e-cron-test--clock (e-cron-test--time "2026-06-15 09:30:00"))
+      (let ((schedule (e-cron-register :id 'n :when '(:every 3600)
+                                       :action #'ignore)))
+        (should (string= "2026-06-15 10:00:00"
+                         (format-time-string
+                          "%F %T" (e-cron-schedule-next-fire schedule))))))))
+
+(ert-deftest e-cron-test-state-round-trips-through-file ()
+  "Fire state written to `e-cron-state-file' hydrates a fresh session."
+  (let ((file (make-temp-file "e-cron-state-test-" nil ".eld")))
+    (unwind-protect
+        (progn
+          ;; Session 1: fire and persist to the real file.
+          (let ((e-cron--schedules (make-hash-table :test 'equal))
+                (e-cron--state (make-hash-table :test 'equal))
+                (e-cron--state-loaded t)
+                (e-cron-state-file file))
+            (cl-letf (((symbol-function 'run-at-time) (lambda (&rest _) 'stub))
+                      ((symbol-function 'cancel-timer) #'ignore)
+                      ((symbol-function 'timerp) (lambda (v) (eq v 'stub))))
+              (e-cron-test--with-clock "2026-06-15 09:00:00"
+                (e-cron-fire (e-cron-register :id 'rt :when '(:every 3600)
+                                              :action #'ignore :enabled nil)))))
+          ;; Session 2: a fresh in-memory state loads last-fire from disk.
+          (let ((e-cron--schedules (make-hash-table :test 'equal))
+                (e-cron--state (make-hash-table :test 'equal))
+                (e-cron--state-loaded nil)
+                (e-cron-state-file file))
+            (should (= (float-time (e-cron-test--time "2026-06-15 09:00:00"))
+                       (plist-get (e-cron--state-get 'rt) :last-fire)))))
+      (delete-file file))))
 
 (provide 'e-cron-test)
 

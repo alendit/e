@@ -21,9 +21,14 @@
 (require 'e-cron-actions)
 
 (defmacro e-cron-actions-test--with-registry (&rest body)
-  "Run BODY with an isolated schedule registry and stubbed timers."
+  "Run BODY with an isolated schedule registry and stubbed timers.
+Runtime state is kept in-memory with disk persistence disabled so tests never
+touch `e-cron-state-file'."
   (declare (indent 0) (debug t))
-  `(let ((e-cron--schedules (make-hash-table :test 'equal)))
+  `(let ((e-cron--schedules (make-hash-table :test 'equal))
+         (e-cron--state (make-hash-table :test 'equal))
+         (e-cron--state-loaded t)
+         (e-cron-state-file nil))
      (cl-letf (((symbol-function 'run-at-time) (lambda (&rest _) 'stub-timer))
                ((symbol-function 'cancel-timer) #'ignore)
                ((symbol-function 'timerp) (lambda (v) (eq v 'stub-timer))))
