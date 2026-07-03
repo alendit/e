@@ -1,0 +1,103 @@
+#+title: e Activity Log View
+#+startup: overview
+
+* Goal
+
+Give =e= a low-overhead *activity log* and a *log view* that provides a
+glance at its recent runtime activity — tool calls, action dispatches, turn
+boundaries, hook runs, provider builds — so both the user and agents can debug
+what just happened, especially the slowdowns and freezes. The log must be cheap
+to record at runtime: capturing it must not itself slow down or block the hot
+path it is meant to observe.
+
+* Problem
+
+When the UI Emacs stutters or a turn hangs, there is no fast, structured record
+of what =e= was doing in the moments before. The user sees a freeze; the agent
+has no way to inspect its own recent activity. Diagnosis today means re-running
+with ad-hoc logging or guessing. We want a ring of recent activity events,
+always on and always cheap, that answers "what was e doing for the last N
+seconds/events?" — usable by a human (a view) and by an agent (a resource or
+action).
+
+The hard constraint is the reason this is a design topic, not a one-liner: the
+observability must not degrade the runtime it observes. Naive logging on the
+turn/tool hot path (synchronous formatting, string building, buffer insertion)
+is exactly the kind of thing that *causes* the freezes we are trying to debug.
+
+* Design
+
+** What an event is
+
+- A compact record: timestamp (monotonic), event type (=turn-start=,
+  =turn-finish=, =tool-call=, =tool-result=, =action=, =hook=,
+  =provider-build=, =compaction=, …), a short subject (tool/action/hook id),
+  duration when the event is a span, session/turn id, and a tiny status.
+- Store structured data, not preformatted strings — format lazily at view
+  time. Keep per-event allocation minimal.
+
+** Recording cheaply (the core constraint)
+
+- A fixed-size ring buffer of plain structs/vectors; overwrite oldest. No
+  unbounded growth, no disk I/O on the hot path.
+- Recording is O(1): push a small record, advance an index. No logging
+  framework, no =format=, no buffer insertion at record time.
+- Spans (turn, tool call) record start and end timestamps so durations fall
+  out of subtraction; this is how the view highlights what was slow.
+- Reuse existing instrumentation points (turn lifecycle, tool pre/post,
+  action dispatch telemetry from feat 44, hook runs) rather than sprinkling new
+  probes. Wire the ring at those seams.
+- Guard behind a defcustom so it can be disabled entirely, but the default
+  should be cheap enough to leave on.
+
+** The view (human surface)
+
+- A =e-activity-log= command opening a tabulated, newest-first view: time,
+  Δduration, type, subject, session. Sort/filter by session or type.
+- Highlight slow spans (over a threshold) so a freeze is visually obvious.
+- Auto-refresh optional; the view formats from the ring on demand, so opening
+  it never touches the hot path.
+
+** The agent surface
+
+- Expose recent activity as a resource (e.g. =raw-result://= or a dedicated
+  scheme) and/or an =e-actions-call= action returning the last N events as
+  structured data, so an agent debugging a freeze can read its own recent
+  activity without a screenshot.
+- Same lazy-format rule: the agent read path reads the ring, it does not add
+  recording cost.
+
+** Relationship to existing telemetry
+
+- Action telemetry (feat 44) records action outcomes; perf-regression testing
+  (feat 41) measures aggregate latency. This activity log is the *live,
+  recent, cross-cutting* timeline that ties them together for
+  incident-style debugging ("what happened in the last 5 seconds"). Feed from
+  the same seams; do not duplicate their stores.
+
+* Non-goals
+
+- Not a persistent, queryable log store or metrics backend; it is an in-memory
+  recent-activity ring. Durable analytics is a separate concern.
+- Not a profiler; it records coarse spans, not sampled stacks. It should make
+  it obvious *which* operation was slow, then the user reaches for the profiler
+  (feat 21) for the why.
+- Must not itself become a hot-path cost — if recording cannot be made cheap
+  for an event type, do not record that type.
+
+* Acceptance
+
+- Recent runtime activity is recorded into a bounded ring at O(1) per event
+  with no hot-path formatting or I/O.
+- =e-activity-log= shows a newest-first view with per-span durations and slow
+  spans highlighted.
+- An agent-readable surface returns the last N events as structured data.
+- Enabling the log at its default setting shows no measurable turn/tool
+  latency regression (verify against feat 41's harness).
+
+* Provenance
+
+Captured in grimoire inbox: "E should have a sort of \"log view\" which
+provides a glance in it's recent activity, e.g. to debug the slowdowns/freezes
+which just happend. If should be available to both agents and the user. It must
+not slow down the rest of the executing at runtime." Triaged 2026-07-03.

@@ -62,3 +62,6 @@ Status values for coding agents:
 | 49 | In-review | 49-chat-org-output-mode/ | Chat Org Output Mode |
 | 50 | Planned | 50-annotation-reactive-sessions/ | Annotation-Reactive Background Sessions |
 | 51 | In-progress | 51-emacs-cron-schedules/ | Emacs Cron Schedules for e |
+| 52 | Planned | 52-agent-bug-report-tool/ | Agent Bug-Report Tool |
+| 53 | Planned | 53-e-doom-keymap/ | e Doom Keymap |
+| 54 | Planned | 54-activity-log-view/ | e Activity Log View |

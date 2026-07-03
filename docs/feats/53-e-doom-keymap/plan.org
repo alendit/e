@@ -1,0 +1,67 @@
+#+title: e Doom Keymap
+#+startup: overview
+
+* Goal
+
+Give =e= a coherent, discoverable Doom Emacs keymap: a leader-prefixed set of
+bindings (under Doom's =SPC= leader, likely =SPC e=) covering the common =e=
+entry points — start/select a session, open the composer, the active-sessions
+picker, layer selection, and the frequently used project/grimoire commands —
+so a Doom user drives =e= without memorizing =M-x= command names.
+
+* Problem
+
+=e= exposes its functionality as interactive commands, but there is no curated
+keymap. A Doom user either binds things by hand or runs =M-x e-...= every time.
+There is no discoverable, which-key-labeled surface for "what can I do with =e=
+right now," and no consistent prefix that groups e's commands the way Doom
+groups everything else. The composer already grew Doom-aware bindings (feat 31
+prefix shortcuts, the C-w work), but the *entry points* into e are unbound.
+
+* Design
+
+** A Doom module-style leader map
+
+- Define bindings under the Doom leader, grouped beneath a single prefix
+  (=SPC e=) with which-key descriptions so the group is self-documenting.
+- Candidate entries (curate, do not dump every command):
+  - session: new session, select/switch session, active-sessions picker,
+    rename, abort/steer.
+  - composer: focus composer, clear-all, previous-message recall.
+  - layers: layer selection (enable/disable/toggle).
+  - project: prime/refresh project-local, project shells.
+  - grimoire (when the topic layer is active): new topic, inbox capture,
+    inbox triage, daily, agenda views.
+
+** Opt-in, Doom-aware
+
+- Bindings install only when Doom's leader machinery is present, mirroring how
+  the composer already gates Doom-specific behavior. On non-Doom Emacs the map
+  is a no-op or falls back to a plain prefix keymap.
+- Keep it a thin binding layer over existing commands — no new behavior, just a
+  discoverable front door. If a target command does not exist yet, bind what
+  exists and leave a TODO rather than inventing commands.
+
+** Discoverability
+
+- which-key labels for the prefix and each binding.
+- A one-line doc/README note in the e docs so a Doom user knows the map exists
+  and how to enable/customize it.
+
+* Non-goals
+
+- Not a rebinding of e's internal mode maps (chat-mode, picker-mode); those
+  keep their own bindings. This is about *global* entry-point access.
+- Not evil-state-specific motion tweaks (that is the separate cursor-speed /
+  composer-shortcut work).
+- No hard dependency on Doom: degrade cleanly when the leader is absent.
+
+* Acceptance
+
+- With Doom active, =SPC e= opens a which-key-labeled group whose bindings
+  invoke the corresponding e commands.
+- Installing the map is opt-in and a no-op on non-Doom Emacs.
+
+* Provenance
+
+Captured in grimoire inbox: "add a e doom keymap." Triaged 2026-07-03.

@@ -1,0 +1,95 @@
+#+title: Agent Bug-Report Tool
+#+startup: overview
+
+* Goal
+
+Give the agent a first-class =bug_report= tool/action it can call to record
+something that *didn't work* — a broken tool call, a wrong result, a confusing
+API, a missing capability — into a durable, reviewable store, without
+derailing the current turn. The point is to capture friction at the moment the
+agent hits it, so those reports accumulate into a backlog the human (and future
+agents) can mine for real defects and UX fixes.
+
+* Problem
+
+When a tool errors, returns the wrong shape, or an action is missing, the agent
+today has no place to *record* that fact. It either works around the problem
+silently or narrates it in chat, where it is lost as soon as the transcript
+scrolls. There is no accumulation: the same rough edge gets rediscovered every
+session and never becomes a tracked defect. We want the agent's lived
+experience of the runtime to feed back into improving the runtime.
+
+This is the agent-facing analogue of a human "file a bug" affordance: cheap to
+invoke, structured enough to triage later, and decoupled from the task at hand.
+
+* Design
+
+** A tool, not chat narration
+
+- A =bug_report= tool (and matching =e-actions-call= action for Elisp
+  composition) the agent can call mid-turn. It returns quickly and does not
+  block or steer the current work.
+- Calling it is explicitly *encouraged* in guidance: when a tool call fails in
+  a way that looks like a defect (not the agent's own mistake), or an obviously
+  needed action is missing, record it.
+
+** What a report captures
+
+- =summary= :: one-line what-didn't-work.
+- =detail= :: optional longer description, expected vs actual.
+- =context= :: auto-attached — capability/tool/action name, arguments preview,
+  error class/message when the trigger was a failed call, session id, turn id,
+  and project root. The agent should not have to restate what the runtime
+  already knows.
+- =severity= / =kind= :: optional, small controlled vocabulary
+  (bug | missing-capability | confusing | perf), for later triage.
+
+** Where reports land
+
+- Append-only store, cheap to write, easy to inspect. Options to weigh:
+  1. A session-scoped log surfaced through a resource (=raw-result://= /
+     =tmp://=) plus a durable per-project file (e.g. under the project's =.e/=
+     or an =e= data dir).
+  2. A dedicated =bug-report= capability that owns the store and exposes
+     =list= / =read= actions so a later triage pass (human or agent) can sweep
+     them.
+- Reports must never contain secrets by construction: the arguments preview
+  and error text reuse the existing telemetry-preview redaction path rather
+  than dumping raw payloads.
+
+** Surfacing and triage
+
+- A =list=/=read= action (and optionally a picker) so the human can review
+  accumulated reports and turn the real ones into feature/defect work.
+- Natural grimoire tie-in: an inbox-triage-style sweep could pull open bug
+  reports into topics or PRs. Keep that integration out of the first slice;
+  first make the capture reliable.
+
+** Relationship to existing telemetry
+
+- The action-telemetry surface (feat 44) already records action *outcomes*
+  mechanically. =bug_report= is different: it is the agent's *judgment* that
+  something is wrong, with intent and expected-behavior context telemetry
+  cannot infer. They compose — a report can reference the telemetry call id.
+
+* Non-goals
+
+- Not automatic error capture: a failed tool call is not itself a bug report.
+  The agent decides when a failure is defect-worthy. (A future heuristic could
+  suggest filing one, but the tool stays intentional.)
+- Not a full issue tracker: no assignment, status workflow, or comments in the
+  first slice — just structured capture + list/read.
+- Not user-facing bug reporting; this is the *agent's* channel.
+
+* Acceptance
+
+- The agent can call =bug_report= mid-turn; it returns without disrupting the
+  turn and the report persists.
+- A report auto-captures the triggering call context (capability/tool/action,
+  redacted args, error) when invoked after a failed call.
+- A =list=/=read= path lets the human review accumulated reports later.
+
+* Provenance
+
+Captured in grimoire inbox: "A \"bug_report\" tool / action for the agent which
+they can use to store things which didn't work." Triaged 2026-07-03.
