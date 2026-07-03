@@ -229,6 +229,18 @@ a queued task has no session yet."
   (setq tabulated-list-padding 1)
   (tabulated-list-init-header))
 
+(defun e-task-queue-shell--configure-modal-editing ()
+  "Keep this read-only listing in Evil `emacs' state so the mode map is honored.
+In Evil's normal/motion states RET is `evil-ret' and single keys like `g' are
+motion prefixes, which shadow every documented row action.  This is a read-only
+tabulated list, not a text buffer, so -- like `e-picker-mode' -- it belongs in
+Emacs state, where the whole mode map works verbatim (RET, g, c, o, ...)."
+  (when (fboundp 'evil-set-initial-state)
+    (evil-set-initial-state 'e-task-queue-shell-mode 'emacs)))
+
+(with-eval-after-load 'evil
+  (e-task-queue-shell--configure-modal-editing))
+
 ;;;###autoload
 (cl-defun e-task-queue-list-buffer (&key queue)
   "Open the task queue list buffer for QUEUE and return it.
