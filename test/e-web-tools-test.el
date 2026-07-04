@@ -63,7 +63,7 @@ JSON
                (process-environment
                 (cons (concat "E_WEB_TEST_ARGS=" args-file)
                       process-environment))
-               (result (e-tools-execute
+               (result (e-tools-execute-batch
                         (e-web-tools-test--registry)
                         '(:id "call-1"
                           :name "web_search"
@@ -174,7 +174,7 @@ JSON
                    (with-current-buffer buffer
                      (funcall callback nil))
                    buffer))))
-      (let* ((result (e-tools-execute
+      (let* ((result (e-tools-execute-batch
                       (e-web-tools-test--registry)
                       '(:id "call-1"
                         :name "web_fetch"
@@ -316,7 +316,7 @@ JSON
                  (with-current-buffer buffer
                    (funcall callback nil))
                  buffer))))
-    (let* ((result (e-tools-execute
+    (let* ((result (e-tools-execute-batch
                     (e-web-tools-test--registry)
                     '(:id "call-1"
                       :name "web_fetch"
@@ -327,7 +327,7 @@ JSON
       (should (equal (plist-get content :text) "abcd"))
       (should (plist-get (plist-get content :diagnostics) :truncated))))
   (let ((bad-scheme
-         (e-tools-execute
+         (e-tools-execute-batch
           (e-web-tools-test--registry)
           '(:id "call-1"
             :name "web_fetch"
@@ -346,7 +346,7 @@ JSON
                    (funcall callback nil))
                  buffer))))
     (let ((binary
-           (e-tools-execute
+           (e-tools-execute-batch
             (e-web-tools-test--registry)
             '(:id "call-1"
               :name "web_fetch"
@@ -422,7 +422,7 @@ done
                                        :session "session-1"))))
                  results)
             (dolist (call calls)
-              (push (e-tools-execute registry call) results))
+              (push (e-tools-execute-batch registry call) results))
             (setq results (nreverse results))
             (dolist (result results)
               (should (equal (plist-get result :status) 'ok))
@@ -538,7 +538,7 @@ done
         (e-web-browser-helper-args nil))
     (e-web-tools-browser-reset)
     (let ((result
-           (e-tools-execute
+           (e-tools-execute-batch
             (e-web-tools-test--registry)
             '(:id "call-1"
               :name "web_browser"
@@ -569,7 +569,7 @@ exit 7
             ((search-with
               (program)
               (let ((e-web-bx-program program))
-                (e-tools-execute
+                (e-tools-execute-batch
                  (e-web-tools-test--registry)
                  '(:id "call-1"
                    :name "web_search"

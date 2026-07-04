@@ -48,8 +48,27 @@
                       :description "Return the input text."
                       :handler (lambda (arguments)
                                  (plist-get arguments :text)))
-    (should (equal (e-tools-execute registry
+    (should (equal (e-tools-execute-batch registry
                                     '(:id "call-1" :name "echo" :arguments (:text "hi")))
+                   '(:tool-call-id "call-1"
+                     :name "echo"
+                     :status ok
+	                     :content "hi"
+	                     :metadata nil)))))
+
+(ert-deftest e-tools-test-generic-execute-requires-batch-scope ()
+  "The old generic synchronous execute name is guarded from accidental use."
+  (let ((registry (e-tools-registry-create))
+        (call '(:id "call-1" :name "echo" :arguments (:text "hi"))))
+    (e-tools-register registry
+                      :name "echo"
+                      :description "Return the input text."
+                      :handler (lambda (arguments)
+                                 (plist-get arguments :text)))
+    (should-error (e-tools-execute registry call)
+                  :type 'e-tools-batch-execute-not-allowed)
+    (should (equal (e-tools-with-batch-execute
+                     (e-tools-execute registry call))
                    '(:tool-call-id "call-1"
                      :name "echo"
                      :status ok
@@ -128,7 +147,7 @@
 (ert-deftest e-tools-test-missing-tool-returns-structured-error ()
   "Unknown tools return structured error results."
   (let ((registry (e-tools-registry-create)))
-    (should (equal (e-tools-execute registry
+    (should (equal (e-tools-execute-batch registry
                                     '(:id "call-1" :name "missing" :arguments nil))
                    '(:tool-call-id "call-1"
                      :name "missing"
@@ -258,8 +277,8 @@
                      :content "done"
                      :metadata nil)))))
 
-(ert-deftest e-tools-test-execute-waits-for-async-only-tool ()
-  "The sync execute wrapper waits for async-only tools."
+(ert-deftest e-tools-test-execute-batch-waits-for-async-only-tool ()
+  "The explicit batch execute wrapper waits for async-only tools."
   (let ((registry (e-tools-registry-create)))
     (e-tools-register registry
                       :name "later"
@@ -275,7 +294,7 @@
                             (funcall on-done
                                      (plist-get arguments :text))))
                          nil)))
-    (should (equal (e-tools-execute
+    (should (equal (e-tools-execute-batch
                     registry
                     '(:id "call-1" :name "later" :arguments (:text "done")))
                    '(:tool-call-id "call-1"
@@ -328,14 +347,14 @@
                      :metadata (:error e-tools-blocking-handler-rejected))))))
 
 (ert-deftest e-tools-test-long-sync-handler-allowed-for-explicit-batch-execute ()
-  "Long blocking metadata only rejects marked interactive contexts in Phase 1."
+  "Long blocking sync handlers are only available through explicit batch execute."
   (let ((registry (e-tools-registry-create)))
     (e-tools-register registry
                       :name "batch-network"
                       :description "Pretend batch network work."
                       :blocking-class 'network
                       :handler (lambda (_arguments) "ok"))
-    (should (equal (e-tools-execute
+    (should (equal (e-tools-execute-batch
                     registry
                     '(:id "call-1" :name "batch-network" :arguments nil))
                    '(:tool-call-id "call-1"
@@ -345,7 +364,7 @@
                      :metadata nil)))))
 
 (ert-deftest e-tools-test-long-async-batch-execute-rejected-in-hot-path ()
-  "Batch execution cannot synchronously wait for a long async tool in hot paths."
+  "Batch execution cannot synchronously wait in hot paths."
   (let ((registry (e-tools-registry-create))
         started)
     (e-tools-register registry
@@ -355,20 +374,13 @@
                       :start (lambda (&rest _args)
                                (setq started t)
                                (e-tools-request-create)))
-    (let ((result
-           (e-request-with-blocking-primitive-guard
-             (e-request-with-hot-path 'tool-batch-execute
-               (e-tools-execute
-                registry
-                '(:id "call-1" :name "async-network" :arguments nil))))))
-      (should-not started)
-      (should (equal result
-                     '(:tool-call-id "call-1"
-                       :name "async-network"
-                       :status error
-                       :content "Tool async-network is network-class and cannot be synchronously executed in an interactive hot path; use e-tools-start instead."
-                       :metadata (:error e-tools-blocking-execute-rejected
-                                  :blocking-class network)))))))
+    (should-error
+     (e-request-with-hot-path 'tool-batch-execute
+       (e-tools-execute-batch
+        registry
+        '(:id "call-1" :name "async-network" :arguments nil)))
+     :type 'e-tools-batch-execute-not-allowed)
+    (should-not started)))
 
 (ert-deftest e-tools-test-long-async-context-execute-rejected-in-hot-path ()
   "Context-aware sync execution cannot wait for long async tools in hot paths."
@@ -381,20 +393,15 @@
                       :start (lambda (&rest _args)
                                (setq started t)
                                (e-tools-request-create)))
-    (let ((result
-           (e-request-with-hot-path 'tool-context-execute
-             (e-tools--execute-with-context
-              registry
-              '(:id "call-1" :name "async-process" :arguments nil)
-              nil))))
-      (should-not started)
-      (should (equal result
-                     '(:tool-call-id "call-1"
-                       :name "async-process"
-                       :status error
-                       :content "Tool async-process is process-class and cannot be synchronously executed in an interactive hot path; use e-tools-start instead."
-                       :metadata (:error e-tools-blocking-execute-rejected
-                                  :blocking-class process)))))))
+    (should-error
+     (e-tools-with-batch-execute
+       (e-request-with-hot-path 'tool-context-execute
+         (e-tools--execute-batch-with-context
+          registry
+          '(:id "call-1" :name "async-process" :arguments nil)
+          nil)))
+     :type 'e-tools-batch-execute-not-allowed)
+    (should-not started)))
 
 (ert-deftest e-tools-test-handler-errors-return-structured-results ()
   "Tool handler errors remain structured tool results."
@@ -404,7 +411,7 @@
                       :description "Fail."
                       :handler (lambda (_arguments)
                                  (error "tool exploded")))
-    (should (equal (e-tools-execute
+    (should (equal (e-tools-execute-batch
                     registry
                     '(:id "call-1" :name "boom" :arguments nil))
                    '(:tool-call-id "call-1"
@@ -714,7 +721,7 @@ values untouched."
                       :handler (lambda (arguments)
                                  (setq seen (plist-get arguments :edits))
                                  "ok"))
-    (e-tools-execute
+    (e-tools-execute-batch
      registry
      '(:id "call-1" :name "edit"
        :arguments (:edits "[{\"oldText\": \"a\", \"newText\": \"b\"}]")))

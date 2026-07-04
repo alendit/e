@@ -23,6 +23,7 @@
 (define-error 'e-work-error "e work error")
 (define-error 'e-work-invalid-spec "Invalid e work spec" 'e-work-error)
 (define-error 'e-work-unsupported-execution "Unsupported e work execution carrier" 'e-work-error)
+(define-error 'e-work-await-not-allowed "e work batch await requires an explicit batch/test scope" 'e-work-error)
 (define-error 'e-work-await-in-hot-path "e work batch await rejected in interactive hot path" 'e-work-error)
 (define-error 'e-work-await-timeout "e work batch await timed out" 'e-work-error)
 (define-error 'e-work-cancelled "e work was cancelled" 'e-work-error)
@@ -39,6 +40,15 @@
 
 (defvar e-work--sequence 0
   "Monotonic fallback sequence for work handles.")
+
+(defvar e-work--batch-await-allowed nil
+  "Non-nil while explicit batch/test code may block on work handles.")
+
+(defmacro e-work-with-batch-await (&rest body)
+  "Run BODY in an explicit batch/test scope that may await work handles."
+  (declare (indent 0) (debug t))
+  `(let ((e-work--batch-await-allowed t))
+     ,@body))
 
 (cl-defstruct (e-work-spec
                (:constructor e-work-spec--create)
@@ -210,6 +220,9 @@ Every spec must declare explicit :execution and :interactive-policy values."
 (cl-defun e-work-await-batch (handle &key timeout)
   "Wait for HANDLE in batch/test code and return its result.
 This function is rejected from interactive hot paths."
+  (unless e-work--batch-await-allowed
+    (signal 'e-work-await-not-allowed
+            (list "Wrap batch/test waits in e-work-with-batch-await")))
   (when (e-request-hot-path-active-p)
     (signal 'e-work-await-in-hot-path
             (list "Use callbacks/status in interactive code")))

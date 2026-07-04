@@ -2072,7 +2072,7 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
                            (e-tools-definitions (e-harness-tools harness)))
                    '("derived_tool")))
     (should (equal (plist-get
-                    (e-tools-execute
+                    (e-tools-execute-batch
                      (e-harness-tools harness)
                      '(:id "call-1"
                        :name "derived_tool"
@@ -2659,7 +2659,7 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
            harness
            :id "session-1"
            :metadata (list :project-root project-root))
-          (let ((result (e-tools-execute
+          (let ((result (e-tools-execute-batch
                          (e-harness-tools harness "session-1" "turn-1")
                          '(:id "call-1"
                            :name "bash"
@@ -2764,7 +2764,7 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
                    :intrinsic-capabilities (e-layer-capabilities layer)))
          (tools (e-harness-tools harness)))
     (should (equal (plist-get
-                    (e-tools-execute
+                    (e-tools-execute-batch
                      tools
                      '(:id "call-1"
                        :name "read"
@@ -2773,7 +2773,7 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
                     :content)
                    "read-result"))
     (should (equal (plist-get
-                    (e-tools-execute
+                    (e-tools-execute-batch
                      tools
                      '(:id "call-2"
                        :name "write"
@@ -2781,7 +2781,7 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
                     :content)
                    "write-result"))
     (should (equal (plist-get
-                    (e-tools-execute
+                    (e-tools-execute-batch
                      tools
                      '(:id "call-3"
                        :name "edit"
@@ -2790,7 +2790,7 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
                     :content)
                    "edit-result"))
     (should (equal (plist-get
-                    (e-tools-execute
+                    (e-tools-execute-batch
                      tools
                      '(:id "call-4"
                        :name "glob"
@@ -2801,7 +2801,7 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
                    '(:resources [(:uri "test://value" :name "value")]
                      :truncated nil)))
     (should (equal (plist-get
-                    (e-tools-execute
+                    (e-tools-execute-batch
                      tools
                      '(:id "call-5"
                        :name "search"
@@ -3004,7 +3004,7 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
                       :name "read"
                       :arguments (:uri "e://skill-capability/skills/planner"))))
     (e-harness-set-intrinsic-capabilities harness (e-layer-capabilities layer))
-    (let ((result (e-tools-execute (e-harness-tools harness) read-call)))
+    (let ((result (e-tools-execute-batch (e-harness-tools harness) read-call)))
       (should (equal (plist-get result :status) 'ok))
       (should (equal (plist-get result :content)
                      "Full planning instructions.")))))
@@ -3033,7 +3033,7 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
                       :arguments (:uri
                                   "e://reference-capability/refs/guide.md"))))
     (e-harness-set-intrinsic-capabilities harness (e-layer-capabilities layer))
-    (let ((result (e-tools-execute (e-harness-tools harness) read-call)))
+    (let ((result (e-tools-execute-batch (e-harness-tools harness) read-call)))
       (should (equal (plist-get result :status) 'ok))
       (should (equal (plist-get result :content)
                      "Reference guide content.")))))
@@ -3060,7 +3060,7 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
     (e-harness-set-intrinsic-capabilities harness (e-layer-capabilities layer))
     (should
      (equal (plist-get
-             (e-tools-execute
+             (e-tools-execute-batch
               (e-harness-tools harness)
               '(:id "call-1"
                 :name "glob"
@@ -3074,7 +3074,7 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
               :truncated nil)))
     (should
      (equal (plist-get
-             (e-tools-execute
+             (e-tools-execute-batch
               (e-harness-tools harness)
               '(:id "call-2"
                 :name "search"

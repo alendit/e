@@ -93,7 +93,7 @@
                      "evidence_activity_events"
                      "evidence_tool_result")))
     (should (equal (plist-get
-                    (e-tools-execute
+                    (e-tools-execute-batch
                      registry
                      '(:id "call-fetch"
                        :name "evidence_tool_result"

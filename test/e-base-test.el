@@ -102,7 +102,7 @@
            harness (e-layer-capabilities layer))
           (should
            (equal (plist-get
-                   (e-tools-execute
+                   (e-tools-execute-batch
                     (e-harness-tools harness)
                     '(:id "call-1"
                       :name "read"

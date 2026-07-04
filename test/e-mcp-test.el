@@ -327,7 +327,7 @@
                (registry (e-tools-registry-create)))
           (e-capabilities-register-tools capability registry)
           (should
-           (equal (e-tools-execute
+           (equal (e-tools-execute-batch
                    registry
                    '(:id "call-1"
                      :name "mcp__fixture__value"
@@ -361,7 +361,7 @@
              :mcp-servers (list (e-mcp-test--server))))
            (registry (e-tools-registry-create)))
       (e-capabilities-register-tools capability registry)
-      (should (equal (e-tools-execute
+      (should (equal (e-tools-execute-batch
                       registry
                       '(:id "call-1"
                         :name "mcp__fixture__fail"
@@ -449,7 +449,7 @@
            (registry (e-tools-registry-create)))
       (e-capabilities-register-tools capability registry)
       (should (equal (plist-get
-                      (e-tools-execute
+                      (e-tools-execute-batch
                        registry
                        '(:id "call-1"
                          :name "mcp__fixture__image"
@@ -479,7 +479,7 @@
            (registry (e-tools-registry-create)))
       (e-capabilities-register-tools capability registry)
       (should-error
-       (e-tools-execute registry
+       (e-tools-execute-batch registry
                         '(:id "call-1"
                           :name "mcp__fixture__boom"
                           :arguments nil))
@@ -599,7 +599,7 @@
                                (e-tools-definitions registry))
                        '("mcp__fixture__echo")))
         (should (equal (plist-get
-                        (e-tools-execute
+                        (e-tools-execute-batch
                          registry
                          '(:id "call-1"
                            :name "mcp__fixture__echo"

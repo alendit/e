@@ -47,9 +47,22 @@
   "Long synchronous tool handler rejected in interactive execution")
 (define-error 'e-tools-blocking-execute-rejected
   "Long synchronous tool batch execution rejected in interactive execution")
+(define-error 'e-tools-batch-execute-not-allowed
+  "Synchronous tool execution requires an explicit batch/test scope")
+(define-error 'e-tools-nested-async-tool-rejected
+  "Nested async tool call rejected")
 
 (defconst e-tools-nested-tool-default-budget 20
   "Default maximum number of nested tool calls per parent tool execution.")
+
+(defvar e-tools--batch-execute-allowed nil
+  "Non-nil while explicit batch/test code may block on tool execution.")
+
+(defmacro e-tools-with-batch-execute (&rest body)
+  "Run BODY in an explicit batch/test scope that may wait for tool results."
+  (declare (indent 0) (debug t))
+  `(let ((e-tools--batch-execute-allowed t))
+     ,@body))
 
 (defun e-tools-current-context ()
   "Return the current tool start context, or nil."
@@ -419,7 +432,9 @@ strings."
                              e-tools-nested-tool-budget-exceeded
                              e-tools-no-active-registry
                              e-tools-blocking-handler-rejected
-                             e-tools-blocking-execute-rejected))
+                             e-tools-blocking-execute-rejected
+                             e-tools-batch-execute-not-allowed
+                             e-tools-nested-async-tool-rejected))
            (stringp (cadr err)))
       (cadr err)
     (error-message-string err)))
@@ -564,6 +579,34 @@ SUMMARY is optional and should stay compact and high value."
   "Return a structured tool result for CALL with STATUS, CONTENT, and METADATA."
   (e-tools-result-create call status content metadata))
 
+(defun e-tools--ok-result-from-content (call name content)
+  "Return a structured ok result for CALL/NAME using CONTENT.
+When CONTENT is already a result for CALL, preserve it and merge argument-level
+resource metadata."
+  (if (e-tools--result-for-call-p content call)
+      (let ((argument-metadata
+             (e-tools-resource-usage-metadata-from-arguments
+              name (plist-get call :arguments))))
+        (if argument-metadata
+            (plist-put
+             content :metadata
+             (e-tools-merge-metadata
+              (plist-get content :metadata)
+              argument-metadata))
+          content))
+    (e-tools--result
+     call 'ok content
+     (e-tools-resource-usage-metadata-from-arguments
+      name (plist-get call :arguments)))))
+
+(defun e-tools--error-result-from-condition (call err)
+  "Return a structured error result for CALL from condition ERR."
+  (e-tools--result
+   call
+   'error
+   (e-tools--condition-message err)
+   (list :error (car err))))
+
 (defun e-tools--interactive-context-p (context)
   "Return non-nil when CONTEXT marks an interactive tool execution path."
   (or (plist-get context :interactive)
@@ -591,6 +634,19 @@ SUMMARY is optional and should stay compact and high value."
      (list :error 'e-tools-nested-long-tool-rejected
            :blocking-class class))))
 
+(defun e-tools--nested-async-tool-result (call tool)
+  "Return a structured rejection result for nested CALL to async TOOL."
+  (let ((class (or (e-tools--blocking-class tool) 'unknown))
+        (name (plist-get call :name)))
+    (e-tools--result
+     call
+     'error
+     (format
+      "Nested tool %s is async-backed and cannot run through the synchronous nested path; provide a tool executor or call it as a top-level tool."
+      name)
+     (list :error 'e-tools-nested-async-tool-rejected
+           :blocking-class class))))
+
 (defun e-tools--reject-blocking-execute-p (tool)
   "Return non-nil when TOOL must not use sync batch execution here."
   (and (or (functionp (plist-get tool :start))
@@ -611,33 +667,18 @@ SUMMARY is optional and should stay compact and high value."
      (list :error 'e-tools-blocking-execute-rejected
            :blocking-class class))))
 
-(defun e-tools-execute (registry call)
-  "Execute CALL against REGISTRY and return a structured tool result."
-  (let* ((name (plist-get call :name))
-         (tool (and name
-                    (gethash name (e-tools-registry-tools registry)))))
-    (if (and tool (e-tools--reject-blocking-execute-p tool))
-        (e-tools--blocking-execute-result call tool)
-      (let ((done nil)
-            (result nil)
-            (failure nil))
-        (e-tools-start
-         registry
-         call
-         :on-done (lambda (value)
-                    (setq result value)
-                    (setq done t))
-         :on-error (lambda (err)
-                     (setq failure err)
-                     (setq done t)))
-        (while (not done)
-          (accept-process-output nil 0.01))
-        (when failure
-          (signal (car failure) (cdr failure)))
-        result))))
+(defun e-tools--ensure-batch-execute-allowed ()
+  "Signal unless the caller has explicitly opted into batch tool waits."
+  (unless e-tools--batch-execute-allowed
+    (signal 'e-tools-batch-execute-not-allowed
+            (list "Use e-tools-execute-batch from batch/test code or e-tools-start from interactive code")))
+  (when (e-request-hot-path-active-p)
+    (signal 'e-tools-batch-execute-not-allowed
+            (list "Batch tool execution is not allowed in interactive hot paths"))))
 
-(defun e-tools--execute-with-context (registry call context)
-  "Execute CALL against REGISTRY with CONTEXT and return a structured result."
+(defun e-tools--execute-batch-with-context (registry call context)
+  "Execute CALL against REGISTRY with CONTEXT in an explicit batch/test scope."
+  (e-tools--ensure-batch-execute-allowed)
   (let* ((name (plist-get call :name))
          (tool (and name
                     (gethash name (e-tools-registry-tools registry)))))
@@ -661,6 +702,89 @@ SUMMARY is optional and should stay compact and high value."
         (when failure
           (signal (car failure) (cdr failure)))
         result))))
+
+(defun e-tools-execute-batch (registry call)
+  "Execute CALL against REGISTRY from explicit batch/test code."
+  (e-tools-with-batch-execute
+    (e-tools--execute-batch-with-context registry call nil)))
+
+(defun e-tools-execute (registry call)
+  "Compatibility wrapper for old synchronous tool execution.
+Call `e-tools-execute-batch' from batch/test code or `e-tools-start' from
+interactive code.  This wrapper only works inside `e-tools-with-batch-execute'."
+  (e-tools--execute-batch-with-context registry call nil))
+
+(defun e-tools--execute-with-context (registry call context)
+  "Compatibility wrapper for old context-aware synchronous tool execution.
+Use `e-tools--execute-batch-with-context' only from explicit batch/test code."
+  (e-tools--execute-batch-with-context registry call context))
+
+(defun e-tools--execute-nested-cheap-with-context (registry call context)
+  "Execute cheap nested CALL against REGISTRY with CONTEXT without batch waits."
+  (let* ((name (plist-get call :name))
+         (tool (and name
+                    (gethash name (e-tools-registry-tools registry)))))
+    (cond
+     ((not tool)
+      (e-tools--result
+       call
+       'error
+       (format "Unknown tool: %s" name)
+       '(:error e-tool-missing)))
+     ((e-tools-long-blocking-class-p (e-tools--blocking-class tool))
+      (e-tools--nested-long-tool-result call tool))
+     (t
+      (setq call (plist-put call :arguments
+                            (e-tools--coerce-arguments
+                             (plist-get call :arguments)
+                             (plist-get tool :parameters))))
+      (let* ((nested-state (or (plist-get context :nested-tool-state)
+                               (list :count 0 :sequence 0)))
+             (tool-context (append (list :tool-call call
+                                         :tools registry
+                                         :nested-tool-state nested-state)
+                                   context))
+             (work (plist-get tool :work))
+             (start (plist-get tool :start))
+             (handler (plist-get tool :handler)))
+        (condition-case err
+            (e-request-profile-span
+             'tool.nested-cheap
+             (list :tool name
+                   :blocking-class (or (e-tools--blocking-class tool) 'cheap))
+             (lambda ()
+               (let ((e-tools--current-context tool-context))
+                 (cond
+                  ((and (e-work-spec-p work)
+                        (eq (e-work-spec-execution work) 'cheap))
+                   (let ((done nil)
+                         result
+                         failure)
+                     (e-work-start
+                      work
+                      (plist-get call :arguments)
+                      :context tool-context
+                      :on-done (lambda (value)
+                                 (setq result value)
+                                 (setq done t))
+                      :on-error (lambda (err)
+                                  (setq failure err)
+                                  (setq done t)))
+                     (cond
+                      (failure (e-tools--error-result-from-condition call failure))
+                      (done (e-tools--ok-result-from-content call name result))
+                      (t (e-tools--nested-async-tool-result call tool)))))
+                  ((e-work-spec-p work)
+                   (e-tools--nested-async-tool-result call tool))
+                  ((functionp start)
+                   (e-tools--nested-async-tool-result call tool))
+                  ((functionp handler)
+                   (e-tools--ok-result-from-content
+                    call name (funcall handler (plist-get call :arguments))))
+                  (t
+                   (e-tools--nested-async-tool-result call tool))))))
+          (quit (e-tools--error-result-from-condition call err))
+          (error (e-tools--error-result-from-condition call err))))))))
 
 (defun e-tools--reject-recursive-call (name options)
   "Signal when NAME recursively calls the current tool without OPTIONS opt-in."
@@ -690,10 +814,10 @@ OPTIONS is a plist.  Supported keys are `:call-id', `:allow-recursive', and
           (funcall executor call options context)
         (let ((tool (gethash name (e-tools-registry-tools registry))))
           (if (and tool
-                   (e-tools-long-blocking-class-p
-                    (e-tools--blocking-class tool)))
-              (e-tools--nested-long-tool-result call tool)
-            (e-tools--execute-with-context
+	                   (e-tools-long-blocking-class-p
+	                    (e-tools--blocking-class tool)))
+	              (e-tools--nested-long-tool-result call tool)
+            (e-tools--execute-nested-cheap-with-context
              registry
              call
              (e-tools--nested-context context))))))))
@@ -748,21 +872,8 @@ dynamically visible to tool start functions through
               (content)
               (when on-done
                 (funcall on-done
-                         (if (e-tools--result-for-call-p content call)
-                             (let ((argument-metadata
-                                    (e-tools-resource-usage-metadata-from-arguments
-                                     name (plist-get call :arguments))))
-                               (if argument-metadata
-                                   (plist-put
-                                    content :metadata
-                                    (e-tools-merge-metadata
-                                     (plist-get content :metadata)
-                                     argument-metadata))
-                                 content))
-                           (e-tools--result
-                            call 'ok content
-                            (e-tools-resource-usage-metadata-from-arguments
-                             name (plist-get call :arguments)))))))
+                         (e-tools--ok-result-from-content
+                          call name content))))
              (finish-error
               (err)
               (if (and (get (car err) 'e-tools-infrastructure-error)

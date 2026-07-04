@@ -33,7 +33,7 @@
     ("lisp/core/e-request.el" "process-file" 2)
     ("lisp/core/e-request.el" "url-retrieve-synchronously" 2)
     ("lisp/core/e-session.el" "e-session-load-session" 2)
-    ("lisp/core/e-tools.el" "accept-process-output" 2)
+    ("lisp/core/e-tools.el" "accept-process-output" 1)
     ("lisp/core/e-work.el" "accept-process-output" 1)
     ("lisp/dev/e-dev-perf.el" "accept-process-output" 2)
     ("lisp/dev/e-dev-perf.el" "call-process" 1)

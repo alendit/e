@@ -69,7 +69,7 @@ When READ-ONLY is non-nil, buffer resources only support reads."
             (setq buffer-file-name "/tmp/e-test-list.txt")
             (set-buffer-modified-p t))
           (e-emacs-tools-register-list-buffers registry)
-          (let* ((result (e-tools-execute
+          (let* ((result (e-tools-execute-batch
                           registry
                           '(:id "call-1" :name "list_buffers" :arguments nil)))
                  (buffers (plist-get (plist-get result :content) :buffers))
@@ -93,7 +93,7 @@ When READ-ONLY is non-nil, buffer resources only support reads."
             (insert "abcdef"))
           (should
            (equal (plist-get
-                   (e-tools-execute
+                   (e-tools-execute-batch
                     registry
                     `(:id "call-1"
                       :name "read"
@@ -110,7 +110,7 @@ When READ-ONLY is non-nil, buffer resources only support reads."
         (beta (generate-new-buffer "e-test-glob-beta")))
     (unwind-protect
         (let* ((content (plist-get
-                         (e-tools-execute
+                         (e-tools-execute-batch
                           registry
                           `(:id "call-1"
                             :name "glob"
@@ -142,7 +142,7 @@ When READ-ONLY is non-nil, buffer resources only support reads."
             (insert "alpha NEEDLE\nneedle again\n"))
           (should
            (equal (plist-get
-                   (e-tools-execute
+                   (e-tools-execute-batch
                     registry
                     `(:id "call-1"
                       :name "search"
@@ -158,7 +158,7 @@ When READ-ONLY is non-nil, buffer resources only support reads."
                     :truncated nil)))
           (should
            (equal (plist-get
-                   (e-tools-execute
+                   (e-tools-execute-batch
                     registry
                     `(:id "call-2"
                       :name "search"
@@ -185,7 +185,7 @@ When READ-ONLY is non-nil, buffer resources only support reads."
           (with-current-buffer buffer
             (setq buffer-file-name "/tmp/e-test-write.txt")
             (insert "old"))
-          (let ((result (e-tools-execute
+          (let ((result (e-tools-execute-batch
                          registry
                          `(:id "call-1"
                            :name "write"
@@ -211,7 +211,7 @@ When READ-ONLY is non-nil, buffer resources only support reads."
     (unwind-protect
         (progn
           (should-not (get-buffer name))
-          (let ((result (e-tools-execute
+          (let ((result (e-tools-execute-batch
                          registry
                          `(:id "call-1"
                            :name "write"
@@ -239,7 +239,7 @@ When READ-ONLY is non-nil, buffer resources only support reads."
         (progn
           (with-current-buffer buffer
             (insert "alpha beta gamma"))
-          (let ((result (e-tools-execute
+          (let ((result (e-tools-execute-batch
                          registry
                          `(:id "call-1"
                            :name "edit"
@@ -265,7 +265,7 @@ When READ-ONLY is non-nil, buffer resources only support reads."
           (with-current-buffer buffer
             (insert "alpha beta beta"))
           (should (equal (plist-get
-                          (e-tools-execute
+                          (e-tools-execute-batch
                            registry
                            `(:id "call-1"
                              :name "edit"
@@ -275,7 +275,7 @@ When READ-ONLY is non-nil, buffer resources only support reads."
                           :status)
                          'error))
           (should (equal (plist-get
-                          (e-tools-execute
+                          (e-tools-execute-batch
                            registry
                            `(:id "call-2"
                              :name "edit"
@@ -285,7 +285,7 @@ When READ-ONLY is non-nil, buffer resources only support reads."
                           :status)
                          'error))
           (should (equal (plist-get
-                          (e-tools-execute
+                          (e-tools-execute-batch
                            registry
                            `(:id "call-3"
                              :name "edit"
@@ -300,7 +300,7 @@ When READ-ONLY is non-nil, buffer resources only support reads."
   "The edit tool stays strict and does not create missing buffers."
   (let* ((registry (e-emacs-tools-test--resource-tools))
          (name (generate-new-buffer-name " *e-test-edit-missing*")))
-    (let ((result (e-tools-execute
+    (let ((result (e-tools-execute-batch
                    registry
                    `(:id "call-1"
                      :name "edit"
@@ -324,7 +324,7 @@ When READ-ONLY is non-nil, buffer resources only support reads."
             (erase-buffer)
             (insert "saved content"))
           (e-emacs-tools-register-save-buffer registry)
-          (let ((result (e-tools-execute
+          (let ((result (e-tools-execute-batch
                          registry
                          `(:id "call-1"
                            :name "save_buffer"
@@ -345,7 +345,7 @@ When READ-ONLY is non-nil, buffer resources only support reads."
     (unwind-protect
         (progn
           (e-emacs-tools-register-save-buffer registry)
-          (let ((result (e-tools-execute
+          (let ((result (e-tools-execute-batch
                          registry
                          `(:id "call-1"
                            :name "save_buffer"
@@ -360,7 +360,7 @@ When READ-ONLY is non-nil, buffer resources only support reads."
   (let ((registry (e-tools-registry-create)))
     (e-emacs-tools-register-run-elisp registry)
     (should (equal (plist-get
-                    (e-tools-execute
+                    (e-tools-execute-batch
                      registry
                      '(:id "call-1"
                        :name "run_elisp"
@@ -368,7 +368,7 @@ When READ-ONLY is non-nil, buffer resources only support reads."
                     :content)
                    '(:result "3")))
     (should (equal (plist-get
-                    (e-tools-execute
+                    (e-tools-execute-batch
                      registry
                      '(:id "call-2"
                        :name "run_elisp"
@@ -385,7 +385,7 @@ When READ-ONLY is non-nil, buffer resources only support reads."
     (e-emacs-tools-register-run-elisp registry)
     (should
      (equal (plist-get
-             (e-tools-execute
+             (e-tools-execute-batch
               registry
               '(:id "call-1"
                 :name "run_elisp"
@@ -400,7 +400,7 @@ When READ-ONLY is non-nil, buffer resources only support reads."
         (e-emacs-tools-run-elisp-result-max-bytes 1000))
     (e-emacs-tools-register-run-elisp registry)
     (let* ((result
-            (e-tools-execute
+            (e-tools-execute-batch
              registry
              '(:id "call-1"
                :name "run_elisp"
@@ -420,7 +420,7 @@ When READ-ONLY is non-nil, buffer resources only support reads."
         (e-emacs-tools-run-elisp-result-max-bytes 1000))
     (e-emacs-tools-register-run-elisp registry)
     (let* ((result
-            (e-tools-execute
+            (e-tools-execute-batch
              registry
              '(:id "call-1"
                :name "run_elisp"
@@ -440,7 +440,7 @@ When READ-ONLY is non-nil, buffer resources only support reads."
         (e-emacs-tools-run-elisp-result-max-bytes 40))
     (e-emacs-tools-register-run-elisp registry)
     (let* ((result
-            (e-tools-execute
+            (e-tools-execute-batch
              registry
              '(:id "call-1"
                :name "run_elisp"
@@ -735,7 +735,7 @@ returns a normal tool error instead."
         (debugger (lambda (&rest _) (error "debugger must not be entered"))))
     (e-emacs-tools-register-run-elisp registry)
     ;; Agent code that turns the debugger on and then errors.
-    (let ((result (e-tools-execute
+    (let ((result (e-tools-execute-batch
                    registry
                    '(:id "call-1"
                      :name "run_elisp"

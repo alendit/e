@@ -76,7 +76,7 @@
     (should (eq (plist-get (e-work-status handle) :state) 'cancelled))))
 
 (ert-deftest e-work-test-await-is-batch-only ()
-  "Batch await rejects interactive hot paths."
+  "Batch await requires an explicit batch/test scope and rejects hot paths."
   (let* ((spec (e-work-spec-create
                 :id "await"
                 :execution 'render
@@ -84,9 +84,13 @@
                 :runner (lambda (_arguments _context) :done)))
          (handle (e-work-start spec '(:delay 60))))
     (unwind-protect
-        (e-request-with-hot-path 'test
+        (progn
           (should-error (e-work-await-batch handle :timeout 0.01)
-                        :type 'e-work-await-in-hot-path))
+                        :type 'e-work-await-not-allowed)
+          (e-work-with-batch-await
+            (e-request-with-hot-path 'test
+              (should-error (e-work-await-batch handle :timeout 0.01)
+                            :type 'e-work-await-in-hot-path))))
       (e-work-cancel handle))))
 
 (ert-deftest e-work-test-process-carrier-starts-before-exit ()
@@ -101,7 +105,8 @@
          (handle (e-work-start spec nil)))
     (should (memq (plist-get (e-work-status handle) :state)
                   '(started progress)))
-    (let ((result (e-work-await-batch handle :timeout 2)))
+    (let ((result (e-work-with-batch-await
+                    (e-work-await-batch handle :timeout 2))))
       (should (equal (plist-get result :stdout) "ok"))
       (should (equal (plist-get result :lines) '("ok"))))))
 
@@ -135,7 +140,8 @@
                     :on-progress
                     (lambda (payload)
                       (push payload progress-events)))))
-      (let ((result (e-work-await-batch handle :timeout 2)))
+      (let ((result (e-work-with-batch-await
+                      (e-work-await-batch handle :timeout 2))))
         (should (equal (plist-get result :status) 'ok))
         (should (equal (plist-get result :seen) "onetwo"))
         (should progress-events)
@@ -165,7 +171,9 @@
         (should (eq (plist-get (e-work-status handle) :state) 'progress))
         (with-current-buffer buffer
           (funcall callback nil))
-        (should (eq (e-work-await-batch handle :timeout 1) t))
+        (should (eq (e-work-with-batch-await
+                      (e-work-await-batch handle :timeout 1))
+                    t))
         (should-not (buffer-live-p buffer))))))
 
 (ert-deftest e-work-test-render-carrier-runs-through-timer ()
@@ -180,7 +188,9 @@
                             :rendered)))
            (handle (e-work-start spec '(:delay 0))))
       (should (timerp (plist-get (e-work-handle-metadata handle) :timer)))
-      (should (eq (e-work-await-batch handle :timeout 1) :rendered))
+      (should (eq (e-work-with-batch-await
+                    (e-work-await-batch handle :timeout 1))
+                  :rendered))
       (should ran))))
 
 (ert-deftest e-work-test-agent-task-carrier-returns-task-record ()

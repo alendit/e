@@ -43,7 +43,7 @@ When READ-ONLY is non-nil, file resources only support reads."
 
 (defun e-base-tools-test--execute (registry name arguments)
   "Execute NAME with ARGUMENTS against REGISTRY."
-  (e-tools-execute
+  (e-tools-execute-batch
    registry
    (list :id "call-1" :name name :arguments arguments)))
 
