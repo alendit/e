@@ -63,6 +63,13 @@
     ("lisp/core/e-harness.el" "e-harness-wait" 1))
   "Audited generic sync calls kept inside compatibility wrappers only.")
 
+(defconst e-nonblocking-sweep-test--expected-start-function-slots
+  '(("lisp/adapters/anthropic/e-anthropic.el" ":start-function" 1)
+    ("lisp/adapters/openai/e-openai.el" ":start-function" 1)
+    ("lisp/core/e-backend.el" ":start-function" 1)
+    ("lisp/core/e-harness.el" ":start-function" 1))
+  "Audited callback start slots kept only at backend/lifecycle boundaries.")
+
 (defun e-nonblocking-sweep-test--root ()
   "Return the repository root for this test run."
   (file-name-as-directory
@@ -129,6 +136,29 @@
             (string< (format "%s:%s" (car a) (cadr a))
                      (format "%s:%s" (car b) (cadr b)))))))
 
+(defun e-nonblocking-sweep-test--scan-start-function-slots ()
+  "Return callback `:start' function slot counts in lisp sources."
+  (let* ((root (e-nonblocking-sweep-test--root))
+         (lisp-root (expand-file-name "lisp" root))
+         (regexp ":start[ \t\n\r]+\\((cl-function\\|#'\\|(lambda\\|(function\\)")
+         counts)
+    (dolist (file (directory-files-recursively lisp-root "\\.el\\'"))
+      (with-temp-buffer
+        (insert-file-contents file)
+        (goto-char (point-min))
+        (while (re-search-forward regexp nil t)
+          (setq counts
+                (e-nonblocking-sweep-test--record-count
+                 counts
+                 (file-relative-name file root)
+                 ":start-function")))))
+    (sort (mapcar (lambda (entry)
+                    (append (car entry) (list (cdr entry))))
+                  counts)
+          (lambda (a b)
+            (string< (format "%s:%s" (car a) (cadr a))
+                     (format "%s:%s" (car b) (cadr b)))))))
+
 (ert-deftest e-nonblocking-sweep-test-reviewed-blocking-sites ()
   "Every remaining blocking primitive in lisp/ is part of the reviewed inventory."
   (should (equal (e-nonblocking-sweep-test--scan)
@@ -138,6 +168,11 @@
   "Generic blocking compatibility APIs stay confined to audited wrappers."
   (should (equal (e-nonblocking-sweep-test--scan-legacy-sync-calls)
                  e-nonblocking-sweep-test--expected-legacy-sync-calls)))
+
+(ert-deftest e-nonblocking-sweep-test-start-functions-stay-at-boundaries ()
+  "Legacy callback start slots stay out of tool/action registrations."
+  (should (equal (e-nonblocking-sweep-test--scan-start-function-slots)
+                 e-nonblocking-sweep-test--expected-start-function-slots)))
 
 (provide 'e-nonblocking-sweep-test)
 
