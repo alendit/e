@@ -23,6 +23,7 @@
 (require 'e-request)
 (require 'e-resources)
 (require 'e-tools)
+(require 'e-work)
 
 (define-error 'e-session-tmp-resources-invalid-path
   "tmp:// resource path is invalid")
@@ -261,77 +262,6 @@ OK-STATUSES defaults to only zero."
   "Return non-empty lines from BUFFER."
   (split-string (e-session-tmp--buffer-string buffer) "\n" t))
 
-(cl-defun e-session-tmp--process-lines-start
-    (program directory args &key ok-statuses on-done on-error metadata)
-  "Start PROGRAM in DIRECTORY with ARGS and settle with output lines."
-  (let ((accepted (or ok-statuses '(0)))
-        (stdout (generate-new-buffer " *e-session-tmp-stdout*"))
-        (stderr (generate-new-buffer " *e-session-tmp-stderr*"))
-        (settled nil)
-        process)
-    (cl-labels
-        ((cleanup ()
-           (when (buffer-live-p stdout)
-             (kill-buffer stdout))
-           (when (buffer-live-p stderr)
-             (kill-buffer stderr)))
-         (fail (condition)
-           (unless settled
-             (setq settled t)
-             (cleanup)
-             (when on-error
-               (funcall on-error condition))))
-         (finish ()
-           (unless settled
-             (let ((status (process-exit-status process)))
-               (if (member status accepted)
-                   (let ((lines (e-session-tmp--buffer-lines stdout)))
-                     (setq settled t)
-                     (cleanup)
-                     (when on-done
-                       (funcall on-done lines)))
-                 (fail
-                  (list 'e-session-tmp-resources-process-failed
-                        (format "%s failed with exit status %s: %s"
-                                program
-                                status
-                                (string-trim
-                                 (e-session-tmp--buffer-string stderr))))))))))
-      (let ((started nil))
-        (unwind-protect
-            (let ((default-directory directory))
-              (setq process
-                    (make-process
-                     :name "e-session-tmp-resource-process"
-                     :buffer stdout
-                     :stderr stderr
-                     :command (cons program args)
-                     :connection-type 'pipe
-                     :coding 'utf-8-unix
-                     :noquery t
-                     :sentinel
-                     (lambda (proc _event)
-                       (when (and (eq proc process)
-                                  (memq (process-status proc) '(exit signal)))
-                         (if (eq (process-status proc) 'signal)
-                             (fail
-                              (list 'e-session-tmp-resources-process-failed
-                                    (format "%s was interrupted" program)))
-                           (finish))))))
-              (set-process-query-on-exit-flag process nil)
-              (setq started t)
-              (e-tools-request-create
-               :cancel (lambda ()
-                         (unless settled
-                           (setq settled t)
-                           (when (and process (process-live-p process))
-                             (kill-process process))
-                           (cleanup))
-                         t)
-               :metadata (append metadata (list :process process))))
-          (unless started
-            (cleanup)))))))
-
 (defun e-session-tmp--scope-relative-name (uri)
   "Return discovery scope name for parsed tmp URI."
   (let ((address (plist-get uri :address)))
@@ -459,66 +389,6 @@ OK-STATUSES defaults to only zero."
             selected))
           :truncated truncated)))
 
-(cl-defun e-session-tmp--glob-resource-start
-    (harness session-id uri arguments &key on-done on-error &allow-other-keys)
-  "Start tmp resource glob under parsed URI with ARGUMENTS."
-  (pcase-let ((`(,pattern ,limit ,case-sensitive) arguments))
-    (let* ((root (e-session-tmp-directory harness session-id))
-           (scope (e-session-tmp--scope-path harness session-id uri))
-           (scope-relative (e-session-tmp--scope-relative-name uri))
-           (actual-pattern (or pattern "*"))
-           (fd-pattern (e-resource-pattern-glob-fd-pattern actual-pattern))
-           (fd-max-depth (e-resource-pattern-glob-max-depth actual-pattern))
-           (actual-limit (e-session-tmp--discovery-limit limit))
-           (actual-case-sensitive (if (null case-sensitive) t case-sensitive)))
-      (e-resource-pattern-compile-glob actual-pattern)
-      (if (file-regular-p scope)
-          (progn
-            (when on-done
-              (funcall
-               on-done
-               (list :resources
-                     (if-let ((single (e-session-tmp--glob-single-result
-                                       scope
-                                       scope-relative
-                                       actual-pattern
-                                       actual-case-sensitive)))
-                         (vector single)
-                       [])
-                     :truncated nil)))
-            nil)
-        (e-session-tmp--process-lines-start
-         (e-session-tmp--find-executable "fd" '("fdfind"))
-         root
-         (append
-          (list "--glob"
-                "--color" "never"
-                "--base-directory" root
-                "--search-path" scope-relative
-                "--type" "file"
-                "--max-results" (number-to-string (1+ actual-limit)))
-          (when fd-max-depth
-            (list "--max-depth" (number-to-string fd-max-depth)))
-          (list (if actual-case-sensitive
-                    "--case-sensitive"
-                  "--ignore-case"))
-          (list fd-pattern))
-         :on-done (lambda (lines)
-                    (when on-done
-                      (funcall
-                       on-done
-                       (e-session-tmp--glob-content
-                        lines
-                        root
-                        scope
-                        actual-pattern
-                        actual-case-sensitive
-                        actual-limit))))
-         :on-error on-error
-         :metadata (list :transport 'process
-                         :operation 'glob
-                         :scheme "tmp"))))))
-
 (defun e-session-tmp--rg-json-text (object)
   "Return text value from rg JSON OBJECT."
   (or (plist-get object :text)
@@ -606,44 +476,150 @@ OK-STATUSES defaults to only zero."
     (list :matches (vconcat (seq-take matches actual-limit))
           :truncated (> (length matches) actual-limit))))
 
-(cl-defun e-session-tmp--search-resource-start
-    (harness session-id uri arguments &key on-done on-error &allow-other-keys)
-  "Start tmp resource search under parsed URI with ARGUMENTS."
-  (pcase-let ((`(,query ,options) arguments))
-    (let* ((root (e-session-tmp-directory harness session-id))
-           (scope (e-session-tmp--scope-path harness session-id uri))
-           (scope-relative (e-session-tmp--scope-relative-name uri))
-           (glob-pattern (plist-get options :glob))
-           (query-regexp (e-resource-pattern-search-rg-regexp query options))
-           (actual-limit (e-session-tmp--discovery-limit
-                          (plist-get options :limit)))
-           (args (append
-                  (list "--json"
-                        "--line-number"
-                        "--column"
-                        "--color" "never")
-                  (unless (plist-get options :case-sensitive)
-                    (list "--ignore-case"))
-                  (when (plist-get options :multiline)
-                    (list "--multiline"))
-                  (list "-e" query-regexp scope-relative))))
-      (when glob-pattern
-        (e-resource-pattern-compile-glob glob-pattern))
-      (e-session-tmp--process-lines-start
-       (e-session-tmp--find-executable "rg")
-       root
-       args
-       :ok-statuses '(0 1)
-       :on-done (lambda (lines)
-                  (when on-done
-                    (funcall
-                     on-done
-                     (e-session-tmp--search-content
-                      lines root scope glob-pattern actual-limit))))
-       :on-error on-error
-       :metadata (list :transport 'process
-                       :operation 'search
-                       :scheme "tmp")))))
+(defun e-session-tmp--glob-work-command
+    (harness session-id work-arguments _context)
+  "Return process command for tmp glob WORK-ARGUMENTS."
+  (let ((uri (plist-get work-arguments :uri))
+        (arguments (plist-get work-arguments :operation-arguments)))
+    (pcase-let ((`(,pattern ,limit ,case-sensitive) arguments))
+      (let* ((root (e-session-tmp-directory harness session-id))
+             (scope (e-session-tmp--scope-path harness session-id uri))
+             (scope-relative (e-session-tmp--scope-relative-name uri))
+             (actual-pattern (or pattern "*"))
+             (fd-pattern (e-resource-pattern-glob-fd-pattern actual-pattern))
+             (fd-max-depth (e-resource-pattern-glob-max-depth actual-pattern))
+             (actual-limit (e-session-tmp--discovery-limit limit))
+             (actual-case-sensitive (if (null case-sensitive) t case-sensitive))
+             (metadata (list :operation 'glob :scheme "tmp")))
+        (e-resource-pattern-compile-glob actual-pattern)
+        (if (file-regular-p scope)
+            (list :immediate
+                  (list :resources
+                        (if-let ((single (e-session-tmp--glob-single-result
+                                          scope
+                                          scope-relative
+                                          actual-pattern
+                                          actual-case-sensitive)))
+                            (vector single)
+                          [])
+                        :truncated nil)
+                  :metadata metadata)
+          (list :program (e-session-tmp--find-executable "fd" '("fdfind"))
+                :directory root
+                :args (append
+                       (list "--glob"
+                             "--color" "never"
+                             "--base-directory" root
+                             "--search-path" scope-relative
+                             "--type" "file"
+                             "--max-results" (number-to-string
+                                              (1+ actual-limit)))
+                       (when fd-max-depth
+                         (list "--max-depth"
+                               (number-to-string fd-max-depth)))
+                       (list (if actual-case-sensitive
+                                 "--case-sensitive"
+                               "--ignore-case"))
+                       (list fd-pattern))
+                :metadata metadata))))))
+
+(defun e-session-tmp--glob-work-result
+    (harness session-id raw work-arguments _context)
+  "Return tmp glob resource content from process RAW result."
+  (if (plist-member raw :resources)
+      raw
+    (let ((uri (plist-get work-arguments :uri))
+          (arguments (plist-get work-arguments :operation-arguments)))
+      (pcase-let ((`(,pattern ,limit ,case-sensitive) arguments))
+        (let* ((root (e-session-tmp-directory harness session-id))
+               (scope (e-session-tmp--scope-path harness session-id uri))
+               (actual-pattern (or pattern "*"))
+               (actual-limit (e-session-tmp--discovery-limit limit))
+               (actual-case-sensitive
+                (if (null case-sensitive) t case-sensitive)))
+          (e-session-tmp--glob-content
+           (plist-get raw :lines)
+           root
+           scope
+           actual-pattern
+           actual-case-sensitive
+           actual-limit))))))
+
+(defun e-session-tmp--glob-work (harness session-id)
+  "Return tmp glob work spec for HARNESS SESSION-ID."
+  (e-work-spec-create
+   :id "tmp_glob"
+   :description "Glob session tmp resources through fd."
+   :execution 'process
+   :interactive-policy 'async
+   :owner 'resources
+   :command (lambda (work-arguments context)
+              (e-session-tmp--glob-work-command
+               harness session-id work-arguments context))
+   :result-shaper (lambda (raw work-arguments context)
+                    (e-session-tmp--glob-work-result
+                     harness session-id raw work-arguments context))))
+
+(defun e-session-tmp--search-work-command
+    (harness session-id work-arguments _context)
+  "Return process command for tmp search WORK-ARGUMENTS."
+  (let ((uri (plist-get work-arguments :uri))
+        (arguments (plist-get work-arguments :operation-arguments)))
+    (pcase-let ((`(,query ,options) arguments))
+      (let* ((root (e-session-tmp-directory harness session-id))
+             (scope-relative (e-session-tmp--scope-relative-name uri))
+             (glob-pattern (plist-get options :glob))
+             (query-regexp (e-resource-pattern-search-rg-regexp query options))
+             (args (append
+                    (list "--json"
+                          "--line-number"
+                          "--column"
+                          "--color" "never")
+                    (unless (plist-get options :case-sensitive)
+                      (list "--ignore-case"))
+                    (when (plist-get options :multiline)
+                      (list "--multiline"))
+                    (list "-e" query-regexp scope-relative))))
+        (when glob-pattern
+          (e-resource-pattern-compile-glob glob-pattern))
+        (list :program (e-session-tmp--find-executable "rg")
+              :directory root
+              :args args
+              :ok-statuses '(0 1)
+              :metadata (list :operation 'search :scheme "tmp"))))))
+
+(defun e-session-tmp--search-work-result
+    (harness session-id raw work-arguments _context)
+  "Return tmp search resource content from process RAW result."
+  (let ((uri (plist-get work-arguments :uri))
+        (arguments (plist-get work-arguments :operation-arguments)))
+    (pcase-let ((`(,_query ,options) arguments))
+      (let* ((root (e-session-tmp-directory harness session-id))
+             (scope (e-session-tmp--scope-path harness session-id uri))
+             (glob-pattern (plist-get options :glob))
+             (actual-limit (e-session-tmp--discovery-limit
+                            (plist-get options :limit))))
+        (e-session-tmp--search-content
+         (plist-get raw :lines)
+         root
+         scope
+         glob-pattern
+         actual-limit)))))
+
+(defun e-session-tmp--search-work (harness session-id)
+  "Return tmp search work spec for HARNESS SESSION-ID."
+  (e-work-spec-create
+   :id "tmp_search"
+   :description "Search session tmp resources through rg."
+   :execution 'process
+   :interactive-policy 'async
+   :owner 'resources
+   :command (lambda (work-arguments context)
+              (e-session-tmp--search-work-command
+               harness session-id work-arguments context))
+   :result-shaper (lambda (raw work-arguments context)
+                    (e-session-tmp--search-work-result
+                     harness session-id raw work-arguments context))))
 
 (defun e-session-tmp--write-file (path content)
   "Write CONTENT to PATH as UTF-8 without a coding-system prompt.
@@ -848,38 +824,34 @@ root and is suitable for streaming writes."
    (e-resource-method-create
     :scheme "tmp"
     :operation e-operation-glob
-    :description "List ephemeral session-scoped temporary text resources."
-    :uri-patterns '("tmp://<relative-path-or-directory>"
-                    "tmp://")
-	    :handler (lambda (uri pattern limit case-sensitive)
-	               (e-session-tmp--glob-resource
-	                harness
-	                session-id
-	                uri
-	                pattern
-	                limit
-	                case-sensitive))
-	    :start (lambda (uri arguments &rest callbacks)
-	             (apply #'e-session-tmp--glob-resource-start
-	                    harness session-id uri arguments callbacks))))
+   :description "List ephemeral session-scoped temporary text resources."
+   :uri-patterns '("tmp://<relative-path-or-directory>"
+                   "tmp://")
+   :handler (lambda (uri pattern limit case-sensitive)
+              (e-session-tmp--glob-resource
+               harness
+               session-id
+               uri
+               pattern
+               limit
+               case-sensitive))
+   :work (e-session-tmp--glob-work harness session-id)))
   (e-resources-register
    registry
    (e-resource-method-create
     :scheme "tmp"
     :operation e-operation-search
-    :description "Search ephemeral session-scoped temporary text resources."
-    :uri-patterns '("tmp://<relative-path-or-directory>"
-                    "tmp://")
-	    :handler (lambda (uri query options)
-	               (e-session-tmp--search-resource
-	                harness
-	                session-id
-	                uri
-	                query
-	                options))
-	    :start (lambda (uri arguments &rest callbacks)
-	             (apply #'e-session-tmp--search-resource-start
-	                    harness session-id uri arguments callbacks))))
+   :description "Search ephemeral session-scoped temporary text resources."
+   :uri-patterns '("tmp://<relative-path-or-directory>"
+                   "tmp://")
+   :handler (lambda (uri query options)
+              (e-session-tmp--search-resource
+               harness
+               session-id
+               uri
+               query
+               options))
+   :work (e-session-tmp--search-work harness session-id)))
   nil)
 
 (defun e-session-tmp-capability-create ()

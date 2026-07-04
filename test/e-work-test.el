@@ -193,6 +193,32 @@
                   :rendered))
       (should ran))))
 
+(ert-deftest e-work-test-cooperative-carrier-self-settles ()
+  "The cooperative carrier lets a runner settle through the returned handle."
+  (let (progress handle)
+    (setq handle
+          (e-work-start
+           (e-work-spec-create
+            :id "cooperative"
+            :execution 'cooperative
+            :interactive-policy 'async
+            :runner (lambda (work-handle _arguments _context)
+                      (run-at-time
+                       0 nil
+                       (lambda ()
+                         (e-work-progress work-handle '(:step "running"))
+                         (e-work-finish work-handle :done)))
+                      :deferred))
+           nil
+           :on-progress (lambda (payload)
+                          (setq progress payload))))
+    (should (e-work-handle-p handle))
+    (should (eq (plist-get (e-work-status handle) :state) 'started))
+    (should (eq (e-work-with-batch-await
+                  (e-work-await-batch handle :timeout 1))
+                :done))
+    (should (equal progress '(:step "running")))))
+
 (ert-deftest e-work-test-agent-task-carrier-returns-task-record ()
   "The agent-task carrier enqueues and finishes with a task record."
   (let* ((queue (e-task-queue-create :max-parallel 0 :directory nil))

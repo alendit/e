@@ -626,77 +626,6 @@ OK-STATUSES defaults to only zero."
                                 (string-trim (buffer-string)))))))
 	      (split-string (buffer-string) "\n" t))))
 
-(cl-defun e-base-tools--process-lines-start
-    (program directory args &key ok-statuses on-done on-error metadata)
-  "Start PROGRAM in DIRECTORY with ARGS and settle with output lines."
-  (let ((accepted (or ok-statuses '(0)))
-        (stdout (generate-new-buffer " *e-base-process-stdout*"))
-        (stderr (generate-new-buffer " *e-base-process-stderr*"))
-        (settled nil)
-        process)
-    (cl-labels
-        ((cleanup ()
-           (when (buffer-live-p stdout)
-             (kill-buffer stdout))
-           (when (buffer-live-p stderr)
-             (kill-buffer stderr)))
-         (fail (condition)
-           (unless settled
-             (setq settled t)
-             (cleanup)
-             (when on-error
-               (funcall on-error condition))))
-         (finish ()
-           (unless settled
-             (let ((status (process-exit-status process)))
-               (if (member status accepted)
-                   (let ((lines (e-base-tools--buffer-lines stdout)))
-                     (setq settled t)
-                     (cleanup)
-                     (when on-done
-                       (funcall on-done lines)))
-                 (fail
-                  (list 'e-base-tools-process-failed
-                        (format "%s failed with exit status %s: %s"
-                                program
-                                status
-                                (string-trim
-                                 (e-base-tools--buffer-string stderr))))))))))
-      (let ((started nil))
-        (unwind-protect
-            (let ((default-directory directory))
-              (setq process
-                    (make-process
-                     :name "e-base-resource-process"
-                     :buffer stdout
-                     :stderr stderr
-                     :command (cons program args)
-                     :connection-type 'pipe
-                     :coding 'utf-8-unix
-                     :noquery t
-                     :sentinel
-                     (lambda (proc _event)
-                       (when (and (eq proc process)
-                                  (memq (process-status proc) '(exit signal)))
-                         (if (eq (process-status proc) 'signal)
-                             (fail
-                              (list 'e-base-tools-process-failed
-                                    (format "%s was interrupted" program)))
-                           (finish))))))
-              (set-process-query-on-exit-flag process nil)
-              (setq started t)
-              (e-tools-request-create
-               :cancel (lambda ()
-                         (unless settled
-                           (setq settled t)
-                           (when (and process (process-live-p process))
-                             (kill-process process))
-                           (cleanup))
-                         t)
-               :metadata (append metadata (list :process process))))
-          (unless started
-            (cleanup)))))))
-
 (defun e-base-tools--buffer-string (buffer)
   "Return BUFFER contents, or an empty string when BUFFER is dead."
   (if (buffer-live-p buffer)
@@ -827,66 +756,6 @@ OK-STATUSES defaults to only zero."
                       :metadata (list :bytes (file-attribute-size attributes)))))
             selected))
           :truncated truncated)))
-
-(cl-defun e-base-tools--file-glob-resource-start
-    (uri arguments directory &key on-done on-error &allow-other-keys)
-  "Start file resource glob under parsed URI with ARGUMENTS."
-  (pcase-let ((`(,pattern ,limit ,case-sensitive) arguments))
-    (let* ((primary (e-base-tools--primary-root directory))
-           (scope (e-base-tools--resource-path uri directory))
-           (scope-relative (e-base-tools--file-scope-relative-path uri directory))
-           (actual-pattern (or pattern "*"))
-           (fd-pattern (e-resource-pattern-glob-fd-pattern actual-pattern))
-           (fd-max-depth (e-resource-pattern-glob-max-depth actual-pattern))
-           (actual-limit (e-base-tools--file-discovery-limit limit))
-           (actual-case-sensitive (if (null case-sensitive) t case-sensitive)))
-      (e-resource-pattern-compile-glob actual-pattern)
-      (if (file-regular-p scope)
-          (progn
-            (when on-done
-              (funcall
-               on-done
-               (list :resources
-                     (if-let ((single (e-base-tools--file-glob-single-result
-                                       scope
-                                       scope-relative
-                                       actual-pattern
-                                       actual-case-sensitive)))
-                         (vector single)
-                       [])
-                     :truncated nil)))
-            nil)
-        (e-base-tools--process-lines-start
-         (e-base-tools--find-executable "fd" '("fdfind"))
-         primary
-         (append
-          (list "--glob"
-                "--color" "never"
-                "--base-directory" primary
-                "--search-path" scope-relative
-                "--type" "file"
-                "--max-results" (number-to-string (1+ actual-limit)))
-          (when fd-max-depth
-            (list "--max-depth" (number-to-string fd-max-depth)))
-          (list (if actual-case-sensitive
-                    "--case-sensitive"
-                  "--ignore-case"))
-          (list fd-pattern))
-         :on-done (lambda (lines)
-                    (when on-done
-                      (funcall
-                       on-done
-                       (e-base-tools--file-glob-content
-                        lines
-                        primary
-                        scope
-                        actual-pattern
-                        actual-case-sensitive
-                        actual-limit))))
-         :on-error on-error
-         :metadata (list :transport 'process
-                         :operation 'glob
-                         :scheme "file"))))))
 
 (defun e-base-tools--file-glob-work-command (directory work-arguments _context)
   "Return process command for file glob WORK-ARGUMENTS rooted at DIRECTORY."
@@ -1057,45 +926,6 @@ OK-STATUSES defaults to only zero."
     (setq matches (nreverse matches))
     (list :matches (vconcat (seq-take matches actual-limit))
           :truncated (> (length matches) actual-limit))))
-
-(cl-defun e-base-tools--file-search-resource-start
-    (uri arguments directory &key on-done on-error &allow-other-keys)
-  "Start file resource search under parsed URI with ARGUMENTS."
-  (pcase-let ((`(,query ,options) arguments))
-    (let* ((primary (e-base-tools--primary-root directory))
-           (scope (e-base-tools--resource-path uri directory))
-           (scope-relative (e-base-tools--file-scope-relative-path uri directory))
-           (glob-pattern (plist-get options :glob))
-           (query-regexp (e-resource-pattern-search-rg-regexp query options))
-           (actual-limit (e-base-tools--file-discovery-limit
-                          (plist-get options :limit)))
-           (args (append
-                  (list "--json"
-                        "--line-number"
-                        "--column"
-                        "--color" "never")
-                  (unless (plist-get options :case-sensitive)
-                    (list "--ignore-case"))
-                  (when (plist-get options :multiline)
-                    (list "--multiline"))
-                  (list "-e" query-regexp scope-relative))))
-      (when glob-pattern
-        (e-resource-pattern-compile-glob glob-pattern))
-      (e-base-tools--process-lines-start
-       (e-base-tools--find-executable "rg")
-       primary
-       args
-       :ok-statuses '(0 1)
-       :on-done (lambda (lines)
-                  (when on-done
-                    (funcall
-                     on-done
-                     (e-base-tools--file-search-content
-                      lines directory scope glob-pattern actual-limit))))
-       :on-error on-error
-       :metadata (list :transport 'process
-                       :operation 'search
-                       :scheme "file")))))
 
 (defun e-base-tools--file-search-work-command (directory work-arguments _context)
   "Return process command for file search WORK-ARGUMENTS rooted at DIRECTORY."
@@ -1321,9 +1151,6 @@ OK-STATUSES defaults to only zero."
    :handler (lambda (uri pattern limit case-sensitive)
               (e-base-tools--file-glob-resource
                uri pattern limit case-sensitive directory))
-   :start (lambda (uri arguments &rest callbacks)
-            (apply #'e-base-tools--file-glob-resource-start
-                   uri arguments directory callbacks))
    :work (e-base-tools--file-glob-work directory)))
 
 (defun e-base-tools--file-search-method (directory)
@@ -1336,9 +1163,6 @@ OK-STATUSES defaults to only zero."
    :handler (lambda (uri query options)
               (e-base-tools--file-search-resource
                uri query options directory))
-   :start (lambda (uri arguments &rest callbacks)
-            (apply #'e-base-tools--file-search-resource-start
-                   uri arguments directory callbacks))
    :work (e-base-tools--file-search-work directory)))
 
 (defun e-base-tools-register-file-read-resource (registry directory)

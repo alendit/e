@@ -404,9 +404,17 @@ operators because ddgr's --site accepts only a single domain."
       (setq content (append content (list :raw (car payload-results)))))
     content))
 
-(cl-defun e-web-tools--search-start
-    (&key arguments on-done on-error on-event &allow-other-keys)
-  "Start web search for ARGUMENTS asynchronously."
+(defun e-web-tools--search-work-setup (_arguments _context)
+  "Reserve a web request slot for search work."
+  (let ((reservation (e-web-tools--reserve-request-slot 'search)))
+    (list :metadata '(:web-kind search)
+          :cleanup (lambda (_handle)
+                     (when reservation
+                       (e-web-tools--release-request-slot reservation)
+                       (setq reservation nil))))))
+
+(defun e-web-tools--search-work-command (arguments _context)
+  "Return process command for web search ARGUMENTS."
   (let* ((backend e-web-search-backend)
          (program-args
           (pcase backend
@@ -422,111 +430,63 @@ operators because ddgr's --site accepts only a single domain."
          (timeout (pcase backend
                     ('bx e-web-bx-timeout)
                     ('ddgr e-web-ddgr-timeout)))
-         (label (format "%s backend" backend))
-         (reservation (e-web-tools--reserve-request-slot 'search))
-         (stdout (generate-new-buffer " *e-web-stdout*"))
-         (stderr (generate-new-buffer " *e-web-stderr*"))
-         (settled nil)
-         timer
-         process)
-    (cl-labels
-        ((cleanup ()
-           (when (timerp timer)
-             (cancel-timer timer))
-           (when (buffer-live-p stdout)
-             (kill-buffer stdout))
-           (when (buffer-live-p stderr)
-             (kill-buffer stderr))
-           (when reservation
-             (e-web-tools--release-request-slot reservation)
-             (setq reservation nil)))
-         (fail (condition)
-           (unless settled
-             (setq settled t)
-             (cleanup)
-             (when on-error
-               (funcall on-error condition))))
-         (finish ()
-           (unless settled
-             (condition-case condition
-                 (let ((exit-code (process-exit-status process))
-                       (out (e-web-tools--buffer-string stdout))
-                       (err-text (string-trim
-                                  (e-web-tools--buffer-string stderr))))
-                   (if (not (zerop exit-code))
-                       (fail
-                        (list
-                         'e-web-backend-error
-                         (string-trim
-                          (format "%s exited with exit code %s%s"
-                                  label
-                                  exit-code
-                                  (if (string-empty-p err-text)
-                                      ""
-                                    (concat ": " err-text))))))
-                     (let* ((payload (e-web-tools--parse-json out))
-                            (payload-results
-                             (cons payload
-                                   (pcase backend
-                                     ('bx (e-web-tools--normalize-search-results
-                                           payload))
-                                     ('ddgr (e-web-tools--normalize-ddgr-results
-                                             payload)))))
-                            (content (e-web-tools--search-content
-                                      arguments backend payload-results)))
-                       (setq settled t)
-                       (cleanup)
-                       (when on-done
-                         (funcall on-done content)))))
-               (error
-                (fail condition)))))
-         (timeout! ()
-           (when (and process (process-live-p process))
-             (kill-process process))
-           (fail
-            (list 'e-web-backend-timeout
-                  (format "%s timed out after %s seconds" label timeout)))))
-      (let ((started nil))
-        (unwind-protect
-            (progn
-              (setq process
-                    (make-process
-                     :name "e-web-backend"
-                     :buffer stdout
-                     :stderr stderr
-                     :command program-args
-                     :connection-type 'pipe
-                     :coding 'utf-8-unix
-                     :noquery t
-                     :sentinel
-                     (lambda (proc _event)
-                       (when (and (eq proc process)
-                                  (memq (process-status proc) '(exit signal)))
-                         (if (eq (process-status proc) 'signal)
-                             (fail
-                              (list 'e-web-backend-error
-                                    (format "%s was interrupted" label)))
-                           (finish))))))
-              (set-process-query-on-exit-flag process nil)
-              (when on-event
-                (funcall on-event 'tool-progress
-                         (list :message (format "%s started" label))))
-              (when timeout
-                (setq timer (run-at-time timeout nil #'timeout!)))
-              (setq started t)
-              (e-tools-request-create
-               :cancel (lambda ()
-                         (unless settled
-                           (setq settled t)
-                           (when (and process (process-live-p process))
-                             (kill-process process))
-                           (cleanup))
-                         t)
-               :metadata (list :transport 'process
-                               :process process
-                               :backend label)))
-          (unless started
-            (cleanup)))))))
+         (label (format "%s backend" backend)))
+    (list :program (car program-args)
+          :args (cdr program-args)
+          :name "e-web-backend"
+          :timeout timeout
+          :timeout-message (format "%s timed out after %s seconds"
+                                   label timeout)
+          :finish-on-nonzero t
+          :finish-on-timeout t
+          :metadata (list :backend label :web-backend backend)
+          :state (list :backend backend :label label)
+          :progress (lambda (_handle _process _state)
+                      (list :message (format "%s started" label))))))
+
+(defun e-web-tools--search-work-result (raw arguments _context)
+  "Return normalized web search content from process RAW result."
+  (let ((backend (plist-get (plist-get raw :state) :backend))
+        (label (plist-get (plist-get raw :state) :label)))
+    (setq backend (or backend e-web-search-backend))
+    (setq label (or label (format "%s backend" backend)))
+    (pcase (plist-get raw :reason)
+      ('timeout
+       (signal 'e-web-backend-timeout (list (plist-get raw :suffix))))
+      ('signal
+       (signal 'e-web-backend-error
+               (list (format "%s was interrupted" label))))
+      (_
+       (if (eq (plist-get raw :status) 'ok)
+           (let* ((payload (e-web-tools--parse-json (plist-get raw :stdout)))
+                  (payload-results
+                   (cons payload
+                         (pcase backend
+                           ('bx (e-web-tools--normalize-search-results payload))
+                           ('ddgr (e-web-tools--normalize-ddgr-results payload))))))
+             (e-web-tools--search-content arguments backend payload-results))
+         (let ((err (string-trim (or (plist-get raw :stderr) ""))))
+           (signal
+            'e-web-backend-error
+            (list (string-trim
+                   (format "%s exited with exit code %s%s"
+                           label
+                           (plist-get raw :exit-code)
+                           (if (string-empty-p err)
+                               ""
+                             (concat ": " err))))))))))))
+
+(defun e-web-tools--search-work ()
+  "Return work spec for the web search tool."
+  (e-work-spec-create
+   :id "web_search"
+   :description "Search the web using the configured backend."
+   :execution 'process
+   :interactive-policy 'async
+   :owner 'web
+   :setup #'e-web-tools--search-work-setup
+   :command #'e-web-tools--search-work-command
+   :result-shaper #'e-web-tools--search-work-result))
 
 (defun e-web-tools--url-scheme (url)
   "Return lowercase scheme for URL."
@@ -848,80 +808,6 @@ operators because ddgr's --site accepts only a single domain."
         (setq content (append content (list :links links))))
       content)))
 
-(cl-defun e-web-tools--fetch-start
-    (&key arguments on-done on-error on-event &allow-other-keys)
-  "Start passive HTTP fetch for ARGUMENTS asynchronously."
-  (let* ((url (e-web-tools--argument-string arguments :url))
-         (timeout (or (e-web-tools--optional-number arguments :timeout) 20))
-         (settled nil)
-         reservation
-         timer
-         response-buffer)
-    (e-web-tools--validate-http-url url)
-    (setq reservation (e-web-tools--reserve-request-slot 'fetch))
-    (cl-labels
-        ((cleanup ()
-           (when (timerp timer)
-             (cancel-timer timer))
-           (when (buffer-live-p response-buffer)
-             (kill-buffer response-buffer))
-           (when reservation
-             (e-web-tools--release-request-slot reservation)
-             (setq reservation nil)))
-         (fail (err)
-           (unless settled
-             (setq settled t)
-             (cleanup)
-             (when on-error
-               (funcall on-error err))))
-         (finish (buffer)
-           (unless settled
-             (setq response-buffer buffer)
-             (condition-case err
-                 (let* ((response (if (buffer-live-p buffer)
-                                      (with-current-buffer buffer
-                                        (e-web-tools--parse-http-buffer buffer))
-                                    (signal 'e-web-backend-error
-                                            (list (format "No response for URL: %s"
-                                                          url)))))
-                        (content (e-web-tools--fetch-content
-                                  arguments url response)))
-                   (setq settled t)
-                   (cleanup)
-                   (when on-done
-                     (funcall on-done content)))
-               (error
-                (fail err)))))
-         (timeout! ()
-           (fail
-            (list 'e-web-backend-timeout
-                  (format "HTTP fetch timed out after %s seconds" timeout)))))
-      (condition-case err
-          (progn
-            (when on-event
-              (funcall on-event 'tool-progress
-                       (list :message (format "Fetching %s" url))))
-            (setq timer (run-at-time timeout nil #'timeout!))
-            (setq response-buffer
-                  (url-retrieve
-                   url
-                   (lambda (_status)
-                     (finish (current-buffer)))
-                   nil
-                   t
-                   nil))
-            (e-tools-request-create
-             :cancel (lambda ()
-                       (unless settled
-                         (setq settled t)
-                         (cleanup))
-                       t)
-             :metadata (list :transport 'url
-                             :url url)))
-        (error
-         (fail err)
-         nil)))))
-
 (defun e-web-tools--fetch-work-url (arguments _context)
   "Return validated URL for asynchronous fetch work."
   (let ((url (e-web-tools--argument-string arguments :url)))
@@ -1149,9 +1035,8 @@ operators because ddgr's --site accepts only a single domain."
                   timeout)))
     (e-web-tools--browser-content operation request-arguments result)))
 
-(cl-defun e-web-tools--browser-start
-    (&key arguments on-done on-error on-event &allow-other-keys)
-  "Start rendered browser operation for ARGUMENTS asynchronously."
+(defun e-web-tools--browser-work-runner (handle arguments _context)
+  "Start rendered browser operation for ARGUMENTS on cooperative HANDLE."
   (let* ((operation (e-web-tools--argument-string arguments :operation))
          (request-arguments
           (or (e-web-tools--browser-arguments operation arguments) nil))
@@ -1165,7 +1050,7 @@ operators because ddgr's --site accepts only a single domain."
          (settled nil)
          timer)
     (cl-labels
-        ((cleanup ()
+        ((cleanup (_handle)
            (when (timerp timer)
              (cancel-timer timer))
            (when reservation
@@ -1174,17 +1059,14 @@ operators because ddgr's --site accepts only a single domain."
          (fail (condition)
            (unless settled
              (setq settled t)
-             (cleanup)
-             (when on-error
-               (funcall on-error condition))))
+             (e-work-fail handle condition)))
          (finish (result)
            (unless settled
              (setq settled t)
-             (cleanup)
-             (when on-done
-               (funcall on-done
-                        (e-web-tools--browser-content
-                         operation request-arguments result)))))
+             (e-work-finish
+              handle
+              (e-web-tools--browser-content
+               operation request-arguments result))))
          (schedule ()
            (setq timer (run-at-time 0.01 nil #'check)))
          (check ()
@@ -1218,6 +1100,12 @@ operators because ddgr's --site accepts only a single domain."
                      (schedule))))
                (error
                 (fail condition))))))
+      (e-work-add-cleanup handle #'cleanup)
+      (setf (e-work-handle-cancel-function handle)
+            (lambda (_handle)
+              (unless settled
+                (setq settled t))
+              t))
       (condition-case condition
           (progn
             (setq reservation (e-web-tools--reserve-request-slot 'browser))
@@ -1227,29 +1115,30 @@ operators because ddgr's --site accepts only a single domain."
                                   request-arguments))
             (setq deadline (+ (float-time) timeout))
             (process-send-string process (concat (json-encode request) "\n"))
-            (when on-event
-              (funcall on-event 'tool-progress
-                       (list :message (format "Browser %s started"
-                                             operation))))
+            (setf (e-work-handle-metadata handle)
+                  (append (e-work-handle-metadata handle)
+                          (list :process process
+                                :backend "playwright"
+                                :operation operation
+                                :request-id id)))
+            (e-work-progress
+             handle
+             (list :message (format "Browser %s started" operation)))
             (schedule)
-            (e-tools-request-create
-             :cancel (lambda ()
-                       (unless settled
-                         (setq settled t)
-                         (cleanup))
-                       t)
-             :metadata (list :transport 'process
-                             :process process
-                             :backend "playwright"
-                             :operation operation
-                             :request-id id)))
+            :deferred)
         (error
-         (cleanup)
-         (if on-error
-             (progn
-               (funcall on-error condition)
-               nil)
-           (signal (car condition) (cdr condition))))))))
+         (fail condition)
+         :deferred)))))
+
+(defun e-web-tools--browser-work ()
+  "Return work spec for rendered browser operations."
+  (e-work-spec-create
+   :id "web_browser"
+   :description "Run a rendered browser operation."
+   :execution 'cooperative
+   :interactive-policy 'async
+   :owner 'web
+   :runner #'e-web-tools--browser-work-runner))
 
 (defun e-web-tools--unimplemented (operation _arguments)
   "Signal that OPERATION is not implemented yet."
@@ -1274,7 +1163,7 @@ operators because ddgr's --site accepts only a single domain."
                  :required ["query"])
    :handler (lambda (arguments)
               (e-web-tools--search arguments))
-   :start #'e-web-tools--search-start
+   :work (e-web-tools--search-work)
    :blocking-class 'process))
 
 (defun e-web-tools-register-fetch (registry)
@@ -1293,7 +1182,6 @@ operators because ddgr's --site accepts only a single domain."
                  :required ["url"])
    :handler (lambda (arguments)
               (e-web-tools--fetch arguments))
-   :start #'e-web-tools--fetch-start
    :work (e-web-tools--fetch-work)
    :blocking-class 'network))
 
@@ -1317,7 +1205,7 @@ operators because ddgr's --site accepts only a single domain."
               (e-web-tools--browser
                (e-web-tools--argument-string arguments :operation)
                arguments))
-   :start #'e-web-tools--browser-start
+   :work (e-web-tools--browser-work)
    :blocking-class 'process))
 
 (provide 'e-web-tools)

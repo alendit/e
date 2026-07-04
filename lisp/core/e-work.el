@@ -157,8 +157,15 @@ Every spec must declare explicit :execution and :interactive-policy values."
             (if previous
                 (lambda (current-handle)
                   (funcall cleanup current-handle)
-                  (funcall previous current-handle))
-              cleanup)))))
+	                  (funcall previous current-handle))
+	              cleanup)))))
+
+(defun e-work-add-cleanup (handle cleanup)
+  "Add CLEANUP to HANDLE's terminal cleanup chain."
+  (unless (e-work-handle-p handle)
+    (signal 'wrong-type-argument (list 'e-work-handle-p handle)))
+  (e-work--add-cleanup handle cleanup)
+  handle)
 
 (defun e-work--terminal-event (handle state payload)
   "Emit terminal STATE for HANDLE with PAYLOAD."
@@ -592,10 +599,29 @@ This function is rejected from interactive hot paths."
                    arguments context))
                (error
                 (e-work-fail handle err))))))
+	    (setf (e-work-handle-metadata handle)
+	          (append (e-work-handle-metadata handle)
+	                  (list :transport (e-work-spec-execution spec)
+	                        :timer timer)))
+	    handle))
+
+(defun e-work--start-cooperative (handle arguments context)
+  "Start HANDLE on the cooperative self-settling carrier."
+  (let ((runner (e-work-spec-runner (e-work-handle-spec handle))))
+    (unless (functionp runner)
+      (signal 'e-work-invalid-spec
+              (list "Cooperative work requires :runner")))
     (setf (e-work-handle-metadata handle)
           (append (e-work-handle-metadata handle)
-                  (list :transport (e-work-spec-execution spec)
-                        :timer timer)))
+                  '(:transport cooperative)))
+    (let ((result (funcall runner handle arguments context)))
+      (unless (eq result :deferred)
+        (e-work-finish
+         handle
+         (e-work--shape-result
+          (e-work-handle-spec handle)
+          result
+          arguments context))))
     handle))
 
 (defun e-work--start-agent-task (handle arguments context)
@@ -655,8 +681,8 @@ function returns, but still records the same lifecycle."
             ('cheap (e-work--start-cheap handle arguments context))
             ('process (e-work--start-process handle arguments context))
             ('url (e-work--start-url handle arguments context))
-            ((or 'cooperative 'render)
-             (e-work--start-timer-runner handle arguments context))
+            ('cooperative (e-work--start-cooperative handle arguments context))
+            ('render (e-work--start-timer-runner handle arguments context))
             ('agent-task (e-work--start-agent-task handle arguments context))
             (_ (signal 'e-work-unsupported-execution
                        (list (e-work-spec-execution spec)))))

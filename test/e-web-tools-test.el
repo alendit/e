@@ -17,6 +17,7 @@
 (require 'e-request)
 (require 'e-tools)
 (require 'e-web-tools)
+(require 'e-work)
 (require 'url-http)
 
 (defun e-web-tools-test--fake-executable (directory name body)
@@ -138,8 +139,15 @@ JSON
                      :on-error (lambda (err)
                                  (setq failure err))))))
           (should (e-tools-request-p request))
-          (should (process-live-p
-                   (plist-get (e-tools-request-metadata request) :process)))
+          (should (eq (plist-get (e-tools-request-metadata request)
+                                 :transport)
+                      'work))
+          (let ((handle (plist-get (e-tools-request-metadata request)
+                                   :work-handle)))
+            (should (e-work-handle-p handle))
+            (should (process-live-p
+                     (plist-get (e-work-handle-metadata handle)
+                                :process))))
           (should-not result)
           (should-not failure)
           (should (e-tools-cancel-request request)))
@@ -252,15 +260,30 @@ JSON
   "web_fetch fails before starting URL transport when web slots are full."
   (let ((e-web-tools-max-concurrent-requests 1)
         (e-web-tools--active-request-count 1)
-        started)
+        started
+        result
+        failure
+        request)
     (cl-letf (((symbol-function 'url-retrieve)
                (lambda (&rest _args)
                  (setq started t)
                  (error "url-retrieve should not start"))))
-      (should-error
-       (e-web-tools--fetch-start
-        :arguments '(:url "https://example.com/full"))
-       :type 'e-web-backpressure)
+      (setq request
+            (e-tools-start
+             (e-web-tools-test--registry)
+             '(:id "call-1"
+               :name "web_fetch"
+               :arguments (:url "https://example.com/full"))
+             :context '(:interactive t)
+             :on-done (lambda (value)
+                        (setq result value))
+             :on-error (lambda (err)
+                         (setq failure err))))
+      (should (e-tools-request-p request))
+      (should (equal (plist-get result :status) 'error))
+      (should (equal (plist-get (plist-get result :metadata) :error)
+                     'e-web-backpressure))
+      (should-not failure)
       (should-not started)
       (should (= e-web-tools--active-request-count 1)))))
 
@@ -278,10 +301,17 @@ JSON
                      (setq response-buffer
                            (generate-new-buffer " *e-web-test-response*")))))
           (setq request
-                (e-web-tools--fetch-start
-                 :arguments '(:url "https://example.com/pending")))
+                (e-tools-start
+                 (e-web-tools-test--registry)
+                 '(:id "call-1"
+                   :name "web_fetch"
+                   :arguments (:url "https://example.com/pending"))
+                 :context '(:interactive t)))
           (should callback)
           (should (e-tools-request-p request))
+          (should (eq (plist-get (e-tools-request-metadata request)
+                                 :transport)
+                      'work))
           (should (= e-web-tools--active-request-count 1))
           (should (e-tools-cancel-request request))
           (should (= e-web-tools--active-request-count 0)))
@@ -492,8 +522,15 @@ done
                      :on-error (lambda (err)
                                  (setq failure err))))))
           (should (e-tools-request-p request))
-          (should (process-live-p
-                   (plist-get (e-tools-request-metadata request) :process)))
+          (should (eq (plist-get (e-tools-request-metadata request)
+                                 :transport)
+                      'work))
+          (let ((handle (plist-get (e-tools-request-metadata request)
+                                   :work-handle)))
+            (should (e-work-handle-p handle))
+            (should (process-live-p
+                     (plist-get (e-work-handle-metadata handle)
+                                :process))))
           (should-not result)
           (should-not failure)
           (should (e-tools-cancel-request request)))
@@ -504,17 +541,30 @@ done
   "A browser helper startup failure releases its reserved web slot."
   (let ((e-web-tools-max-concurrent-requests 1)
         (e-web-tools--active-request-count 0)
-        failure)
+        result
+        failure
+        request)
     (cl-letf (((symbol-function 'e-web-tools--browser-helper-ensure)
                (lambda ()
                  (signal 'e-web-backend-unavailable
                          '("browser helper missing")))))
-      (should-not
-       (e-web-tools--browser-start
-        :arguments '(:operation "open" :url "https://example.com")
-        :on-error (lambda (err)
-                    (setq failure err))))
-      (should (eq (car failure) 'e-web-backend-unavailable))
+      (setq request
+            (e-tools-start
+             (e-web-tools-test--registry)
+             '(:id "call-1"
+               :name "web_browser"
+               :arguments (:operation "open"
+                           :url "https://example.com"))
+             :context '(:interactive t)
+             :on-done (lambda (value)
+                        (setq result value))
+             :on-error (lambda (err)
+                         (setq failure err))))
+      (should (e-tools-request-p request))
+      (should (equal (plist-get result :status) 'error))
+      (should (equal (plist-get (plist-get result :metadata) :error)
+                     'e-web-backend-unavailable))
+      (should-not failure)
       (should (= e-web-tools--active-request-count 0)))))
 
 (ert-deftest e-web-tools-test-sync-browser-helper-rejects-hot-path ()
