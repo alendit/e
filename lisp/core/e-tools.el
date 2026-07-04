@@ -16,6 +16,7 @@
 (require 'seq)
 (require 'subr-x)
 (require 'e-request)
+(require 'e-work)
 
 (cl-defstruct (e-tools-registry (:constructor e-tools-registry-create))
   (tools (make-hash-table :test 'equal))
@@ -146,15 +147,17 @@
   (memq class e-tools-cheap-blocking-classes))
 
 (cl-defun e-tools-register
-    (registry &key name description parameters handler start metadata blocking-class)
+    (registry &key name description parameters handler start work metadata blocking-class)
   "Register tool NAME in REGISTRY.
-DESCRIPTION, PARAMETERS, HANDLER, START, and METADATA describe the tool.
+DESCRIPTION, PARAMETERS, HANDLER, START, WORK, and METADATA describe the tool.
 BLOCKING-CLASS may be `cheap', `network', `process', `helper', `filesystem',
 `render', or `unknown'.
 HANDLER is a synchronous implementation.  START is a callback-driven async
-implementation."
-  (unless (or (functionp handler) (functionp start))
-    (signal 'wrong-type-argument (list 'functionp (or handler start))))
+implementation.  WORK is an `e-work-spec' that supplies the canonical work
+lifecycle for migrated tools."
+  (unless (or (functionp handler) (functionp start) (e-work-spec-p work))
+    (signal 'wrong-type-argument
+            (list '(or functionp e-work-spec-p) (or handler start work))))
   (when blocking-class
     (setq metadata (plist-put metadata :blocking-class blocking-class)))
   (unless (gethash name (e-tools-registry-tools registry))
@@ -166,7 +169,8 @@ implementation."
                  :parameters parameters
                  :metadata metadata
                  :handler handler
-                 :start start)
+                 :start start
+                 :work work)
            (e-tools-registry-tools registry)))
 
 (defun e-tools--empty-json-object ()
@@ -568,7 +572,8 @@ SUMMARY is optional and should stay compact and high value."
 
 (defun e-tools--reject-long-sync-handler-p (tool context)
   "Return non-nil when TOOL must not use a sync handler under CONTEXT."
-  (and (not (functionp (plist-get tool :start)))
+  (and (not (or (functionp (plist-get tool :start))
+                (e-work-spec-p (plist-get tool :work))))
        (functionp (plist-get tool :handler))
        (e-tools--interactive-context-p context)
        (e-tools-long-blocking-class-p (e-tools--blocking-class tool))))
@@ -588,7 +593,8 @@ SUMMARY is optional and should stay compact and high value."
 
 (defun e-tools--reject-blocking-execute-p (tool)
   "Return non-nil when TOOL must not use sync batch execution here."
-  (and (functionp (plist-get tool :start))
+  (and (or (functionp (plist-get tool :start))
+           (e-work-spec-p (plist-get tool :work)))
        (e-request-hot-path-active-p)
        (e-tools-long-blocking-class-p (e-tools--blocking-class tool))))
 
@@ -734,7 +740,8 @@ dynamically visible to tool start functions through
                             (e-tools--coerce-arguments
                              (plist-get call :arguments)
                              (plist-get tool :parameters))))
-      (let ((start (plist-get tool :start))
+      (let ((work (plist-get tool :work))
+            (start (plist-get tool :start))
             (handler (plist-get tool :handler)))
         (cl-labels
             ((finish-ok
@@ -785,7 +792,32 @@ dynamically visible to tool start functions through
                      (signal 'e-tools-blocking-handler-rejected
                              (list (format "Tool %s is %s-class and must provide :start in interactive execution"
                                            name (e-tools--blocking-class tool)))))
-                   (if (functionp start)
+                   (if (e-work-spec-p work)
+                       (let* ((handle
+                               (e-work-start
+                                work
+                                (plist-get call :arguments)
+                                :context tool-context
+                                :on-done #'finish-ok
+                                :on-error #'finish-error
+                                :on-progress
+                                (lambda (payload)
+                                  (when on-event
+                                    (funcall on-event 'tool-progress payload)))))
+                              (request
+                               (e-tools-request-create
+                                :cancel (lambda ()
+                                          (e-work-cancel handle)
+                                          t)
+                                :metadata (append
+                                           (list :transport 'work
+                                                 :work-id
+                                                 (e-work-handle-id handle)
+                                                 :work-handle handle)
+                                           (e-work-handle-metadata handle)))))
+                         (publish-request request)
+                         request)
+                     (if (functionp start)
                        (let ((reported-request nil))
                          (let* ((start-arguments
                                  (list
@@ -802,34 +834,34 @@ dynamically visible to tool start functions through
                            (when (and request (not (eq request reported-request)))
                              (publish-request request))
                            request))
-                     (let ((cancelled nil)
-                           (timer nil)
-                           request)
-                       (setq request
-                             (e-tools-request-create
-                              :cancel (lambda ()
-                                        (setq cancelled t)
-                                        (when (timerp timer)
-                                          (cancel-timer timer))
-                                        t)
-                              :metadata '(:transport timer
-                                          :cancellable queued-only)))
-                       (publish-request request)
-                       (setq timer
-                             (run-at-time
-                              0 nil
-                              (lambda ()
-                                (let ((e-tools--current-context tool-context))
-                                  (unless cancelled
-                                    (condition-case err
-                                        (finish-ok
-                                         (funcall handler
-                                                  (plist-get call :arguments)))
-                                      (quit
-                                       (finish-error err))
-                                      (error
-                                       (finish-error err))))))))
-                       request)))))
+                       (let ((cancelled nil)
+                             (timer nil)
+                             request)
+                         (setq request
+                               (e-tools-request-create
+                                :cancel (lambda ()
+                                          (setq cancelled t)
+                                          (when (timerp timer)
+                                            (cancel-timer timer))
+                                          t)
+                                :metadata '(:transport timer
+                                            :cancellable queued-only)))
+                         (publish-request request)
+                         (setq timer
+                               (run-at-time
+                                0 nil
+                                (lambda ()
+                                  (let ((e-tools--current-context tool-context))
+                                    (unless cancelled
+                                      (condition-case err
+                                          (finish-ok
+                                           (funcall handler
+                                                    (plist-get call :arguments)))
+                                        (quit
+                                         (finish-error err))
+                                        (error
+                                         (finish-error err))))))))
+                         request))))))
             (quit
              (finish-error err)
              nil)

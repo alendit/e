@@ -19,6 +19,7 @@
 (require 'e-harness)
 (require 'e-session)
 (require 'e-tools)
+(require 'e-work)
 
 (define-error 'e-actions-error "e action dispatch error")
 (define-error 'e-actions-no-active-harness
@@ -181,6 +182,12 @@
        (>= (length action) 8)
        (e-action-start action)))
 
+(defun e-actions--action-work (action)
+  "Return ACTION's work spec, tolerating older live records."
+  (and (e-action-p action)
+       (>= (length action) 9)
+       (e-action-work action)))
+
 (defun e-actions--preview (value)
   "Return a compact printable preview for VALUE."
   (let* ((text (prin1-to-string value))
@@ -295,63 +302,86 @@ OPTIONS may include `:harness', `:session-id', `:turn-id', or `:context'."
                           :action action-key))
                    result)
               (e-actions--validate-arguments action-spec arguments)
-              (if-let ((start (e-actions--action-start action-spec)))
-                  (let* ((settled nil)
-                         (finish
-                          (lambda (value)
-                            (unless settled
-                              (setq settled t)
-                              (e-actions--emit-activity
-                               harness session-id turn-id 'action-finished
-                               (e-actions--activity-payload
-                                call-id capability-id action-key arguments
-                                context
-                                :status 'ok
-                                :elapsed-seconds (- (float-time) started-at)
-                                :result (e-actions--preview value))))))
-                         (fail
-                          (lambda (err)
-                            (unless settled
-                              (setq settled t)
-                              (e-actions--emit-activity
-                               harness session-id turn-id 'action-failed
-                               (apply #'e-actions--activity-payload
-                                      call-id capability-id action-key
-                                      arguments context
-                                      (append
-                                       (list :elapsed-seconds
-                                             (- (float-time) started-at))
-                                       (e-actions--error-payload-fields
-                                        err)))))))
+              (cl-labels
+                  ((make-finish
+                    (settled)
+                    (lambda (value)
+                      (unless (car settled)
+                        (setcar settled t)
+                        (e-actions--emit-activity
+                         harness session-id turn-id 'action-finished
+                         (e-actions--activity-payload
+                          call-id capability-id action-key arguments context
+                          :status 'ok
+                          :elapsed-seconds (- (float-time) started-at)
+                          :result (e-actions--preview value))))))
+                   (make-fail
+                    (settled)
+                    (lambda (err)
+                      (unless (car settled)
+                        (setcar settled t)
+                        (e-actions--emit-activity
+                         harness session-id turn-id 'action-failed
+                         (apply #'e-actions--activity-payload
+                                call-id capability-id action-key
+                                arguments context
+                                (append
+                                 (list :elapsed-seconds
+                                       (- (float-time) started-at))
+                                 (e-actions--error-payload-fields err))))))))
+                (cond
+                 ((e-work-spec-p (e-actions--action-work action-spec))
+                  (let* ((settled (cons nil nil))
+                         (work (e-actions--action-work action-spec))
                          (request
-                          (funcall start action-context arguments
-                                   :on-done finish
-                                   :on-error fail)))
+                          (e-work-start work arguments
+                                        :context action-context
+                                        :on-done (make-finish settled)
+                                        :on-error (make-fail settled)))
+                         (dispatch-result
+                          (if (eq (plist-get (e-work-status request) :state)
+                                  'finished)
+                              (e-work-handle-result request)
+                            started-result)))
                     (list :capability capability-object
                           :capability-id capability-id
                           :action action-key
                           :spec action-spec
                           :request request
-                          :result started-result))
-                (setq result
-                      (funcall (or (e-action-caller action-spec)
-                                   (lambda (_action-context args)
-                                     (funcall (e-action-handler action-spec)
-                                              args)))
-                               action-context
-                               arguments))
-                (e-actions--emit-activity
-                 harness session-id turn-id 'action-finished
-                 (e-actions--activity-payload
-                  call-id capability-id action-key arguments context
-                  :status 'ok
-                  :elapsed-seconds (- (float-time) started-at)
-                  :result (e-actions--preview result)))
-                (list :capability capability-object
-                      :capability-id capability-id
-                      :action action-key
-                      :spec action-spec
-                      :result result)))))
+                          :result dispatch-result)))
+                 ((functionp (e-actions--action-start action-spec))
+                  (let* ((settled (cons nil nil))
+                         (start (e-actions--action-start action-spec))
+                         (request
+                          (funcall start action-context arguments
+                                   :on-done (make-finish settled)
+                                   :on-error (make-fail settled))))
+                    (list :capability capability-object
+                          :capability-id capability-id
+                          :action action-key
+                          :spec action-spec
+                          :request request
+                          :result started-result)))
+                 (t
+                  (setq result
+                        (funcall (or (e-action-caller action-spec)
+                                     (lambda (_action-context args)
+                                       (funcall (e-action-handler action-spec)
+                                                args)))
+                                 action-context
+                                 arguments))
+                  (e-actions--emit-activity
+                   harness session-id turn-id 'action-finished
+                   (e-actions--activity-payload
+                    call-id capability-id action-key arguments context
+                    :status 'ok
+                    :elapsed-seconds (- (float-time) started-at)
+                    :result (e-actions--preview result)))
+                  (list :capability capability-object
+                        :capability-id capability-id
+                        :action action-key
+                        :spec action-spec
+                        :result result)))))))
       (error
        (e-actions--emit-activity
         harness session-id turn-id 'action-failed

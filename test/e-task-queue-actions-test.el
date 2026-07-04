@@ -24,6 +24,7 @@
 (require 'e-tools)
 (require 'e-task-queue)
 (require 'e-task-queue-actions)
+(require 'e-work)
 
 (defmacro e-task-queue-actions-test--with-instances (&rest body)
   "Run BODY with isolated harness and harness-instance registries."
@@ -60,6 +61,15 @@
     (should (string-match-p
              "enqueue"
              (e-store-read store "e://task-queue/skills/task-queue" nil)))))
+
+(ert-deftest e-task-queue-actions-test-enqueue-action-has-agent-task-work ()
+  "The enqueue action exposes the generic agent-task work carrier."
+  (let* ((queue (e-task-queue-actions-test--queue))
+         (capability (e-task-queue-capability-create :queue queue))
+         (spec (e-capabilities-action-spec capability :enqueue))
+         (work (e-action-work spec)))
+    (should (e-work-spec-p work))
+    (should (eq (e-work-spec-execution work) 'agent-task))))
 
 (ert-deftest e-task-queue-actions-test-round-trip ()
   "Enqueue, list, status, read, and cancel round-trip through the actions."

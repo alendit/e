@@ -33,6 +33,7 @@
 (require 'e-session)
 (require 'e-shells)
 (require 'e-startup)
+(require 'e-work)
 (require 'e-workspaces)
 
 (declare-function markdown-mode "markdown-mode")
@@ -798,7 +799,8 @@ intentionally not persisted in session metadata.")
   session-id
   block-id
   buffer
-  timer)
+  timer
+  work-handle)
 
 (defun e-chat--render-job-matches-p (job owner key)
   "Return non-nil when JOB matches OWNER and KEY."
@@ -819,11 +821,19 @@ intentionally not persisted in session metadata.")
               e-chat--pending-render-job-timers))
   (e-chat--refresh-render-job-diagnostics))
 
+(defun e-chat--render-job-work-handle (job)
+  "Return JOB's work handle, tolerating older live render-job records."
+  (and (e-chat-render-job-p job)
+       (>= (length job) 10)
+       (e-chat-render-job-work-handle job)))
+
 (defun e-chat--cancel-render-job (job)
   "Cancel pending render JOB."
   (when job
-    (when (timerp (e-chat-render-job-timer job))
-      (cancel-timer (e-chat-render-job-timer job)))
+    (if-let ((handle (e-chat--render-job-work-handle job)))
+        (e-work-cancel handle)
+      (when (timerp (e-chat-render-job-timer job))
+        (cancel-timer (e-chat-render-job-timer job))))
     (e-chat--drop-render-job job)))
 
 (defun e-chat--cancel-render-jobs (owner key)
@@ -857,16 +867,28 @@ KEY before scheduling the new one."
                               e-chat-session-id)))
          (id (cl-incf e-chat--render-job-counter))
          job
+         handle
          timer)
-    (setq timer
-          (run-at-time
-           delay nil
-           (lambda ()
-             (when (buffer-live-p buffer)
-               (with-current-buffer buffer
-                 (when (memq job e-chat--pending-render-jobs)
-                   (e-chat--drop-render-job job)
-                   (funcall thunk)))))))
+    (setq handle
+          (e-work-start
+           (e-work-spec-create
+            :id "chat_render"
+            :description "Deferred chat render job."
+            :execution 'render
+            :interactive-policy 'async
+            :owner 'chat
+            :runner (lambda (_arguments _context)
+                      (when (buffer-live-p buffer)
+                        (with-current-buffer buffer
+                          (when (memq job e-chat--pending-render-jobs)
+                            (e-chat--drop-render-job job)
+                            (funcall thunk))))))
+           (list :delay delay)
+           :context (list :owner owner
+                          :key key
+                          :session-id session-id
+                          :block-id block-id)))
+    (setq timer (plist-get (e-work-handle-metadata handle) :timer))
     (setq job
           (e-chat-render-job-create
            :id id
@@ -876,7 +898,8 @@ KEY before scheduling the new one."
            :session-id session-id
            :block-id block-id
            :buffer buffer
-           :timer timer))
+           :timer timer
+           :work-handle handle))
     (push job e-chat--pending-render-jobs)
     (push timer e-chat--pending-render-job-timers)
     (e-chat--refresh-render-job-diagnostics)

@@ -1,0 +1,80 @@
+#+title: Review: Generic Work API
+#+startup: overview
+
+* Status
+
+Done.
+
+The first representative slice is implemented.  No unresolved review notes.
+
+* Scope
+
+Source:
+
+- =lisp/core/e-work.el= -- work specs, handles, lifecycle helpers, batch await,
+  and built-in carriers.
+- =lisp/core/e-tools.el= -- tool registration/start support for =:work=.
+- =lisp/core/e-actions.el= and =lisp/core/e-capabilities.el= -- action work slot
+  and dispatch support.
+- =lisp/core/e-resources.el= and =lisp/core/e-harness.el= -- resource method work
+  slot and resource-operation adapter.
+- =lisp/layers/web/e-web-tools.el= -- =web_fetch= as URL work.
+- =lisp/layers/base/e-base-tools.el= -- file glob/search as process work.
+- =lisp/layers/agents/e-task-queue-actions.el= -- enqueue as agent-task work.
+- =lisp/shells/chat/e-chat.el= -- deferred render jobs as render work.
+- Grimoire project-local source action files -- =sources-graphify-refresh= as
+  process work.
+
+Tests:
+
+- =test/e-work-test.el=.
+- Adapter coverage in =test/e-tools-test.el=, =test/e-actions-test.el=,
+  =test/e-task-queue-actions-test.el=, =test/e-base-tools-test.el=,
+  =test/e-web-tools-test.el=, and =test/e-chat-test.el=.
+- Grimoire source tests for graphify work shape.
+
+* Validation
+
+- =rtk eldev test -f test/e-work-test.el -f test/e-tools-test.el -f test/e-actions-test.el -f test/e-task-queue-actions-test.el -f test/e-web-tools-test.el -f test/e-base-tools-test.el -f test/e-chat-test.el=
+  passed: 395 expected, 1 skipped.
+- =emacs -Q --batch --eval "(setq load-prefer-newer t)" -l /Users/dimitrivorona/projects/org/grimoire/.e/layers/topic/test/sources-test.el -f ert-run-tests-batch-and-exit=
+  passed: 19 expected.
+
+* Findings
+
+None.
+
+* Architecture self-check
+
+1. If this work package stopped here, the project is better off: representative
+   long-running surfaces now share one lifecycle and handle shape.
+2. It moves toward the final direction where interactive =e= code starts work
+   through policy-declared APIs instead of inline unbounded calls.
+3. Stable decisions: every work start returns a handle, policy is explicit, and
+   waits are batch/test-only.  Uncertain decisions such as concurrency/coalescing
+   enforcement remain local metadata until more call sites need them.
+4. =e-work= owns lifecycle and carriers.  Tools/actions/resources/render/task
+   code own only their adapters and result shaping.
+5. Coupling is reduced by replacing parallel async contracts with a narrow
+   consumer-shaped work spec.  Compatibility fallbacks remain for unmigrated
+   code.
+6. Dependencies still flow from adapters toward the core work contract; core
+   policy does not depend on UI, web, resource, or Grimoire modules.
+7. Side effects live in carriers or adapters: processes, URL callbacks, timers,
+   and queue enqueue stay outside pure result shaping.
+8. Added state is handle/lifecycle state with request-lifetime durability only.
+   Existing render/task/resource state stays with its current owner.
+9. Performance impact is intended positive for interactive paths: starts return
+   with handles, and controlled delayed-completion tests prove shape rather than
+   stopwatch thresholds.
+10. The abstraction is semantically real: carriers all provide start/status/
+    cancel/settle behavior without forcing unsupported operations on callers.
+11. Compatibility remains explicit.  Old =:handler= and =:start= paths stay only
+    as migration fallbacks.
+12. Legacy code removable next: broad sync helper entrypoints and ad hoc start
+    wrappers after enough call sites move to =:work=.
+13. Expected carrier failures settle through =e-work-fail=; unexpected errors
+    surface through callbacks or batch await.
+14. Core lifecycle tests are independent of the full system, and adapter tests
+    prove each representative surface uses the work contract while preserving
+    result shape.

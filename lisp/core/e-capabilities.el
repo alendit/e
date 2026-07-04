@@ -45,7 +45,7 @@
 (cl-defstruct (e-action
                (:constructor e-action-create
                              (&key handler caller description parameters
-                                   requires-session start tool-metadata)))
+                                   requires-session start tool-metadata work)))
   handler
   caller
   description
@@ -53,7 +53,8 @@
   requires-session
   start
   ;; Kept for live reload compatibility with earlier action descriptors.
-  tool-metadata)
+  tool-metadata
+  work)
 
 (defun e-capability-id (capability)
   "Return CAPABILITY id."
@@ -90,6 +91,7 @@
        :actions actions))))
 
 (put 'e-capability-create 'compiler-macro nil)
+(put 'e-action-create 'compiler-macro nil)
 
 (defun e-capability-resource-methods (capability)
   "Return CAPABILITY resource method providers.

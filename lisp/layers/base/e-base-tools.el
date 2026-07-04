@@ -22,6 +22,7 @@
 (require 'e-request)
 (require 'e-resources)
 (require 'e-tools)
+(require 'e-work)
 
 (defgroup e-base-tools nil
   "Base filesystem and shell tools for e."
@@ -887,6 +888,90 @@ OK-STATUSES defaults to only zero."
                          :operation 'glob
                          :scheme "file"))))))
 
+(defun e-base-tools--file-glob-work-command (directory work-arguments _context)
+  "Return process command for file glob WORK-ARGUMENTS rooted at DIRECTORY."
+  (let ((uri (plist-get work-arguments :uri))
+        (arguments (plist-get work-arguments :operation-arguments)))
+    (pcase-let ((`(,pattern ,limit ,case-sensitive) arguments))
+      (let* ((primary (e-base-tools--primary-root directory))
+             (scope (e-base-tools--resource-path uri directory))
+             (scope-relative (e-base-tools--file-scope-relative-path
+                              uri directory))
+             (actual-pattern (or pattern "*"))
+             (fd-pattern (e-resource-pattern-glob-fd-pattern actual-pattern))
+             (fd-max-depth (e-resource-pattern-glob-max-depth actual-pattern))
+             (actual-limit (e-base-tools--file-discovery-limit limit))
+             (actual-case-sensitive (if (null case-sensitive) t case-sensitive))
+             (metadata (list :operation 'glob :scheme "file")))
+        (e-resource-pattern-compile-glob actual-pattern)
+        (if (file-regular-p scope)
+            (list :immediate
+                  (list :resources
+                        (if-let ((single
+                                  (e-base-tools--file-glob-single-result
+                                   scope
+                                   scope-relative
+                                   actual-pattern
+                                   actual-case-sensitive)))
+                            (vector single)
+                          [])
+                        :truncated nil)
+                  :metadata metadata)
+          (list :program (e-base-tools--find-executable "fd" '("fdfind"))
+                :directory primary
+                :args (append
+                       (list "--glob"
+                             "--color" "never"
+                             "--base-directory" primary
+                             "--search-path" scope-relative
+                             "--type" "file"
+                             "--max-results" (number-to-string
+                                              (1+ actual-limit)))
+                       (when fd-max-depth
+                         (list "--max-depth"
+                               (number-to-string fd-max-depth)))
+                       (list (if actual-case-sensitive
+                                 "--case-sensitive"
+                               "--ignore-case"))
+                       (list fd-pattern))
+                :metadata metadata))))))
+
+(defun e-base-tools--file-glob-work-result (directory raw work-arguments _context)
+  "Return file glob resource content from process RAW result."
+  (if (plist-member raw :resources)
+      raw
+    (let ((uri (plist-get work-arguments :uri))
+          (arguments (plist-get work-arguments :operation-arguments)))
+      (pcase-let ((`(,pattern ,limit ,case-sensitive) arguments))
+        (let* ((primary (e-base-tools--primary-root directory))
+               (scope (e-base-tools--resource-path uri directory))
+               (actual-pattern (or pattern "*"))
+               (actual-limit (e-base-tools--file-discovery-limit limit))
+               (actual-case-sensitive
+                (if (null case-sensitive) t case-sensitive)))
+          (e-base-tools--file-glob-content
+           (plist-get raw :lines)
+           primary
+           scope
+           actual-pattern
+           actual-case-sensitive
+           actual-limit))))))
+
+(defun e-base-tools--file-glob-work (directory)
+  "Return file glob work spec rooted at DIRECTORY."
+  (e-work-spec-create
+   :id "file_glob"
+   :description "Glob workspace file resources through fd."
+   :execution 'process
+   :interactive-policy 'async
+   :owner 'resources
+   :command (lambda (work-arguments context)
+              (e-base-tools--file-glob-work-command
+               directory work-arguments context))
+   :result-shaper (lambda (raw work-arguments context)
+                    (e-base-tools--file-glob-work-result
+                     directory raw work-arguments context))))
+
 (defun e-base-tools--rg-json-text (object)
   "Return text value from rg JSON OBJECT."
   (or (plist-get object :text)
@@ -1011,6 +1096,66 @@ OK-STATUSES defaults to only zero."
        :metadata (list :transport 'process
                        :operation 'search
                        :scheme "file")))))
+
+(defun e-base-tools--file-search-work-command (directory work-arguments _context)
+  "Return process command for file search WORK-ARGUMENTS rooted at DIRECTORY."
+  (let ((uri (plist-get work-arguments :uri))
+        (arguments (plist-get work-arguments :operation-arguments)))
+    (pcase-let ((`(,query ,options) arguments))
+      (let* ((primary (e-base-tools--primary-root directory))
+             (scope-relative (e-base-tools--file-scope-relative-path
+                              uri directory))
+             (glob-pattern (plist-get options :glob))
+             (query-regexp (e-resource-pattern-search-rg-regexp query options))
+             (args (append
+                    (list "--json"
+                          "--line-number"
+                          "--column"
+                          "--color" "never")
+                    (unless (plist-get options :case-sensitive)
+                      (list "--ignore-case"))
+                    (when (plist-get options :multiline)
+                      (list "--multiline"))
+                    (list "-e" query-regexp scope-relative))))
+        (when glob-pattern
+          (e-resource-pattern-compile-glob glob-pattern))
+        (list :program (e-base-tools--find-executable "rg")
+              :directory primary
+              :args args
+              :ok-statuses '(0 1)
+              :metadata (list :operation 'search :scheme "file"))))))
+
+(defun e-base-tools--file-search-work-result
+    (directory raw work-arguments _context)
+  "Return file search resource content from process RAW result."
+  (let ((uri (plist-get work-arguments :uri))
+        (arguments (plist-get work-arguments :operation-arguments)))
+    (pcase-let ((`(,_query ,options) arguments))
+      (let* ((scope (e-base-tools--resource-path uri directory))
+             (glob-pattern (plist-get options :glob))
+             (actual-limit (e-base-tools--file-discovery-limit
+                            (plist-get options :limit))))
+        (e-base-tools--file-search-content
+         (plist-get raw :lines)
+         directory
+         scope
+         glob-pattern
+         actual-limit)))))
+
+(defun e-base-tools--file-search-work (directory)
+  "Return file search work spec rooted at DIRECTORY."
+  (e-work-spec-create
+   :id "file_search"
+   :description "Search workspace file resources through rg."
+   :execution 'process
+   :interactive-policy 'async
+   :owner 'resources
+   :command (lambda (work-arguments context)
+              (e-base-tools--file-search-work-command
+               directory work-arguments context))
+   :result-shaper (lambda (raw work-arguments context)
+                    (e-base-tools--file-search-work-result
+                     directory raw work-arguments context))))
 
 (defun e-base-tools--write-file-resource (uri content directory)
   "Write CONTENT to parsed file URI in DIRECTORY."
@@ -1178,7 +1323,8 @@ OK-STATUSES defaults to only zero."
                uri pattern limit case-sensitive directory))
    :start (lambda (uri arguments &rest callbacks)
             (apply #'e-base-tools--file-glob-resource-start
-                   uri arguments directory callbacks))))
+                   uri arguments directory callbacks))
+   :work (e-base-tools--file-glob-work directory)))
 
 (defun e-base-tools--file-search-method (directory)
   "Return a file search resource method rooted at DIRECTORY."
@@ -1192,7 +1338,8 @@ OK-STATUSES defaults to only zero."
                uri query options directory))
    :start (lambda (uri arguments &rest callbacks)
             (apply #'e-base-tools--file-search-resource-start
-                   uri arguments directory callbacks))))
+                   uri arguments directory callbacks))
+   :work (e-base-tools--file-search-work directory)))
 
 (defun e-base-tools-register-file-read-resource (registry directory)
   "Register read-only file resource methods in REGISTRY rooted at DIRECTORY."
@@ -1759,7 +1906,7 @@ streaming progress events."
    :parameters '(:type "object"
                  :properties (:command (:type "string")
                               :timeout (:type "number"
-                                        :description "Hard timeout in seconds. When reached, e kills the process and returns a tool error. Keep this SMALL: default to about 10s for routine commands and 30s at most for anything you expect to be quick. Setting no timeout, or a large one, is a mistake for ordinary commands -- a bounded command that hangs should fail fast, not stall the turn. Only exceed 30s when the command is genuinely expected to run long (a real build, a large test suite, a slow network fetch), and prefer an explicit control pattern (backgrounding, polling) over a big blocking timeout.")
+                                        :description "Hard timeout in seconds. When reached, e kills the process and returns a tool error. Keep this SMALL and modest: default to about 10s for routine commands and 30s at most for anything you expect to be quick. Setting no timeout, or a large one, is a mistake for ordinary commands -- a bounded command that hangs should fail fast, not stall the turn. Only exceed 30s when the command is genuinely expected to run long (a real build, a large test suite, a slow network fetch), and prefer an explicit control pattern (backgrounding, polling) over a big blocking timeout.")
                               :resource_usage
                               (:type "object"
                                :description "Optional high-value resource usage for future context. Use only when the command reads, writes, or edits resources that matter for future work."

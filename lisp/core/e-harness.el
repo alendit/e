@@ -30,6 +30,7 @@
 (require 'e-shells)
 (require 'e-store)
 (require 'e-tools)
+(require 'e-work)
 (require 'subr-x)
 
 (declare-function e-dev-profile-enabled-p "e-dev-profile")
@@ -376,6 +377,12 @@ SESSION-ID and TURN-ID are passed to context-aware resource providers."
    uri
    (apply #'e-resources-call resources operation uri arguments)))
 
+(defun e-harness--resource-method-work (method)
+  "Return METHOD's work spec, tolerating older live resource records."
+  (and (e-resource-method-p method)
+       (>= (length method) 11)
+       (e-resource-method-work method)))
+
 (defun e-harness--resource-operation-start
     (resources operation arguments on-done on-error on-event)
   "Start async resource OPERATION over ARGUMENTS when its method supports it."
@@ -385,8 +392,41 @@ SESSION-ID and TURN-ID are passed to context-aware resource providers."
      (lambda (uri &rest operation-arguments)
        (let* ((parsed-uri (e-resources-parse-uri uri))
               (method (e-resources--method resources operation parsed-uri))
+              (work (e-harness--resource-method-work method))
               (start (e-resource-method-start method)))
-         (if (functionp start)
+         (if (e-work-spec-p work)
+             (let* ((handle
+                     (e-work-start
+                      work
+                      (list :uri parsed-uri
+                            :operation-arguments operation-arguments
+                            :resource-operation operation)
+                      :context (list :resource-uri uri
+                                     :resource-operation
+                                     (e-operation-id-of operation))
+                      :on-done (lambda (content)
+                                 (when on-done
+                                   (funcall
+                                    on-done
+                                    (e-harness--resource-operation-result
+                                     operation uri content))))
+                      :on-error on-error
+                      :on-progress
+                      (lambda (payload)
+                        (when on-event
+                          (funcall on-event 'tool-progress payload)))))
+                    (request
+                     (e-tools-request-create
+                      :cancel (lambda ()
+                                (e-work-cancel handle)
+                                t)
+                      :metadata (append
+                                 (list :transport 'work
+                                       :work-id (e-work-handle-id handle)
+                                       :work-handle handle)
+                                 (e-work-handle-metadata handle)))))
+               request)
+           (if (functionp start)
              (funcall
               start
               parsed-uri
@@ -404,7 +444,7 @@ SESSION-ID and TURN-ID are passed to context-aware resource providers."
               on-done
               (e-harness--resource-operation-call
                resources operation uri operation-arguments)))
-           nil)))
+           nil))))
      arguments)))
 
 (defun e-harness--resource-operation-async-p (operation)

@@ -15,6 +15,7 @@
 (require 'json)
 (require 'e)
 (require 'e-tools)
+(require 'e-work)
 
 (defun e-tools-test--wait-until (predicate &optional timeout)
   "Wait until PREDICATE returns non-nil or TIMEOUT seconds elapse."
@@ -54,6 +55,34 @@
                      :status ok
                      :content "hi"
                      :metadata nil)))))
+
+(ert-deftest e-tools-test-start-prefers-work-spec ()
+  "Work-backed tools expose a work handle through the existing request shape."
+  (let ((registry (e-tools-registry-create))
+        request
+        result)
+    (e-tools-register
+     registry
+     :name "work_echo"
+     :description "Return text through work."
+     :work (e-work-spec-create
+            :id "work_echo"
+            :execution 'render
+            :interactive-policy 'async
+            :runner (lambda (arguments _context)
+                      (plist-get arguments :text))))
+    (e-tools-start
+     registry
+     '(:id "call-work" :name "work_echo" :arguments (:text "hi" :delay 0))
+     :on-request-start (lambda (value) (setq request value))
+     :on-done (lambda (value) (setq result value)))
+    (should (e-tools-request-p request))
+    (should (eq (plist-get (e-tools-request-metadata request) :transport)
+                'work))
+    (should (e-work-handle-p
+             (plist-get (e-tools-request-metadata request) :work-handle)))
+    (should (e-tools-test--wait-until (lambda () result)))
+    (should (equal (plist-get result :content) "hi"))))
 
 (ert-deftest e-tools-test-definitions-are-backend-neutral-function-tools ()
   "Registered tools expose backend-neutral function definitions."

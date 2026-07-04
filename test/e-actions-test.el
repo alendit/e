@@ -19,6 +19,7 @@
 (require 'e-chat-session)
 (require 'e-harness)
 (require 'e-resources)
+(require 'e-work)
 
 (ert-deftest e-actions-test-call-chat-session-action ()
   "Action dispatch resolves active chat-session actions and injects context."
@@ -32,6 +33,33 @@
      (list :harness harness :session-id "session-1"))
     (should (equal (e-harness-session-title harness "session-1")
                    "Renamed"))))
+
+(ert-deftest e-actions-test-work-action-preserves-immediate-result ()
+  "Work-backed actions return a handle while preserving cheap result shape."
+  (let* ((harness (e-harness-create :backend (e-backend-fake-create :items nil)))
+         (capability
+          (e-capability-create
+           :id 'work-action
+           :name "Work Action"
+           :actions
+           (list :run
+                 (e-action-create
+                  :parameters nil
+                  :work (e-work-spec-create
+                         :id "action_work"
+                         :execution 'cheap
+                         :interactive-policy 'cheap
+                         :runner (lambda (arguments _context)
+                                   (plist-get arguments :value))))))))
+    (e-harness-activate-capability harness capability)
+    (e-harness-create-session harness :id "session-1")
+    (let ((dispatch (e-actions-dispatch
+                     'work-action
+                     :run
+                     '(:value "done")
+                     (list :harness harness :session-id "session-1"))))
+      (should (e-work-handle-p (plist-get dispatch :request)))
+      (should (equal (plist-get dispatch :result) "done")))))
 
 (ert-deftest e-actions-test-call-validates-required-arguments ()
   "Action dispatch reports missing descriptor-required arguments."

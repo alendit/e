@@ -28,6 +28,7 @@
 (require 'e-prompts)
 (require 'e-request)
 (require 'e-store)
+(require 'e-work)
 (require 'e-tools)
 
 (defvar evil-local-mode)
@@ -4393,6 +4394,8 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
                            "chat-render-job-coalesce"))
             (should (equal (e-chat-render-job-block-id second-job)
                            "block-2"))
+            (should (e-work-handle-p
+                     (e-chat-render-job-work-handle second-job)))
             (funcall (timer--function second))
             (should (equal ran '(second)))
             (should-not e-chat--pending-render-jobs)

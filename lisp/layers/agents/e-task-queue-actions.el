@@ -19,6 +19,7 @@
 (require 'e-layers)
 (require 'e-skills)
 (require 'e-task-queue)
+(require 'e-work)
 
 (defconst e-task-queue-actions-instructions
   "Use Task Queue actions to enqueue background agent work, list tracked tasks, inspect a task's status and outputs, and cancel queued or running tasks, and pause or resume individual tasks or the whole queue. Read e://task-queue/skills/task-queue for the action contract."
@@ -137,6 +138,20 @@ expects and pass an existing keyword or nil through unchanged."
   "Return a task queue action descriptor for HANDLER with PARAMETERS."
   (e-action-create :handler handler :parameters parameters))
 
+(defun e-task-queue-actions--enqueue-work (queue)
+  "Return work spec that enqueues background agent work on QUEUE."
+  (e-work-spec-create
+   :id "task_queue_enqueue"
+   :description "Enqueue background agent work."
+   :execution 'agent-task
+   :interactive-policy 'async
+   :owner 'task-queue
+   :task-queue (lambda (_arguments _context) queue)
+   :prompt (lambda (arguments _context)
+             (plist-get arguments :prompt))
+   :summary (lambda (arguments _context)
+              (plist-get arguments :summary))))
+
 (defconst e-task-queue-actions--enqueue-parameters
   '(:type "object"
     :properties
@@ -175,10 +190,11 @@ QUEUE defaults to `e-task-queue-actions-default-queue'."
      :instructions e-task-queue-actions-instructions
      :actions
      (list :enqueue
-           (e-task-queue-actions--action
-            (lambda (arguments)
-              (e-task-queue-actions--enqueue queue arguments))
-            e-task-queue-actions--enqueue-parameters)
+           (e-action-create
+            :handler (lambda (arguments)
+                       (e-task-queue-actions--enqueue queue arguments))
+            :parameters e-task-queue-actions--enqueue-parameters
+            :work (e-task-queue-actions--enqueue-work queue))
            :list-tasks
            (e-task-queue-actions--action
             (lambda (arguments)

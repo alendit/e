@@ -27,7 +27,8 @@
   uri-patterns
   range-modes
   examples
-  metadata)
+  metadata
+  work)
 
 (cl-defstruct (e-resources-registry (:constructor e-resources-registry-create))
   (methods (make-hash-table :test 'equal))

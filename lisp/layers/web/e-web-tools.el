@@ -14,6 +14,7 @@
 (require 'cl-lib)
 (require 'e-request)
 (require 'e-tools)
+(require 'e-work)
 (require 'json)
 (require 'subr-x)
 (require 'url)
@@ -921,6 +922,50 @@ operators because ddgr's --site accepts only a single domain."
          (fail err)
          nil)))))
 
+(defun e-web-tools--fetch-work-url (arguments _context)
+  "Return validated URL for asynchronous fetch work."
+  (let ((url (e-web-tools--argument-string arguments :url)))
+    (e-web-tools--validate-http-url url)
+    url))
+
+(defun e-web-tools--fetch-work-timeout (arguments _context)
+  "Return timeout seconds for asynchronous fetch work."
+  (or (e-web-tools--optional-number arguments :timeout) 20))
+
+(defun e-web-tools--fetch-work-setup (_arguments _context)
+  "Reserve a web request slot for fetch work."
+  (let ((reservation (e-web-tools--reserve-request-slot 'fetch)))
+    (list :metadata '(:web-kind fetch)
+          :cleanup (lambda (_handle)
+                     (when reservation
+                       (e-web-tools--release-request-slot reservation)
+                       (setq reservation nil))))))
+
+(defun e-web-tools--fetch-work-result (raw arguments _context)
+  "Return `web_fetch' content from URL work RAW result."
+  (let* ((url (plist-get raw :url))
+         (buffer (plist-get raw :buffer))
+         (response
+          (if (buffer-live-p buffer)
+              (with-current-buffer buffer
+                (e-web-tools--parse-http-buffer buffer))
+            (signal 'e-web-backend-error
+                    (list (format "No response for URL: %s" url))))))
+    (e-web-tools--fetch-content arguments url response)))
+
+(defun e-web-tools--fetch-work ()
+  "Return work spec for the passive web fetch tool."
+  (e-work-spec-create
+   :id "web_fetch"
+   :description "Fetch HTTP or HTTPS content without browser rendering."
+   :execution 'url
+   :interactive-policy 'async
+   :owner 'web
+   :setup #'e-web-tools--fetch-work-setup
+   :url #'e-web-tools--fetch-work-url
+   :timeout #'e-web-tools--fetch-work-timeout
+   :result-shaper #'e-web-tools--fetch-work-result))
+
 (defun e-web-tools--browser-helper-script ()
   "Return bundled browser helper script path."
   (expand-file-name "e-web-browser-helper.mjs" e-web-tools--directory))
@@ -1249,6 +1294,7 @@ operators because ddgr's --site accepts only a single domain."
    :handler (lambda (arguments)
               (e-web-tools--fetch arguments))
    :start #'e-web-tools--fetch-start
+   :work (e-web-tools--fetch-work)
    :blocking-class 'network))
 
 (defun e-web-tools-register-browser (registry)

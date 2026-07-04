@@ -1,0 +1,86 @@
+#+title: Generic Work API
+#+startup: overview
+
+* Goal
+
+Make non-freezing execution a core API property of =e=: potentially long work
+must start through one lifecycle, return a handle, declare explicit execution
+and interactive policy, and settle through progress, done, error, or cancel.
+
+This first slice proves the generic substrate on real call paths without trying
+to migrate every existing operation at once.
+
+* Problem
+
+Emacs is fundamentally single-threaded.  Any significant work on the main thread
+freezes the UI, and assertion-style checks are not enough: they find violations
+after a caller already chose the wrong execution shape.
+
+Before this slice, =e= had several adjacent async contracts:
+
+- model-facing tools had =:handler= and callback-style =:start=;
+- capability actions had synchronous handlers plus ad hoc =:start= semantics;
+- resource operations delegated to method-specific =:start= functions;
+- chat render jobs used bespoke timers;
+- task queue prompts had their own lifecycle vocabulary;
+- Grimoire project-local actions could still call process work synchronously.
+
+Those shapes made the right thing possible but not the easiest common path.
+
+* Design
+
+Add =lisp/core/e-work.el= as the shared substrate:
+
+- =e-work-spec-create= declares =:id=, =:description=, =:parameters=,
+  =:execution=, =:interactive-policy=, ownership metadata, concurrency metadata,
+  setup/cleanup, command/url/task prompt builders, and optional result shaping.
+- =e-work-start= always returns an =e-work-handle=.  Cheap work may settle before
+  return, but still uses the same lifecycle.
+- =e-work-cancel= and =e-work-status= work for all carriers.
+- =e-work-await-batch= is explicit batch/test-only waiting and rejects hot paths.
+- Built-in carriers in this slice: =cheap=, =process=, =url=, =cooperative=,
+  =render=, and =agent-task=.
+- Missing =:execution= or =:interactive-policy= is an error at spec creation and
+  start time.
+
+* Representative migrations
+
+This slice wires =:work= into the existing registries while keeping old
+=:handler= / =:start= paths as compatibility fallbacks:
+
+- Tools: =e-tools-register= accepts =:work= and =e-tools-start= prefers it,
+  returning the existing =e-tools-request= wrapper with the work handle in
+  metadata.
+- Actions: =e-action= gains a tail =work= slot and =e-actions-dispatch= prefers
+  it.  Already-finished cheap/agent-task work preserves the old immediate result
+  shape while still returning a request handle in dispatch metadata.
+- Resources: =e-resource-method= gains a tail =work= slot and the harness
+  resource-operation wrapper starts that work for glob/search when present.
+- Render: chat deferred render jobs are scheduled through a =render= work handle
+  while preserving the existing timer registry and timer return value.
+- Task queue: =:enqueue= is represented as =agent-task= work.
+- Web: =web_fetch= is represented as =url= work with request-slot setup/cleanup,
+  URL timeout, and the existing response parser/result shape.
+- Base resources: file glob/search methods expose =process= work specs reusing
+  the existing =fd= / =rg= command construction and result parsers.
+- Grimoire: =sources-graphify-refresh= gets a project-local =process= work spec
+  for the action path while retaining the explicit synchronous function for
+  batch/test callers.
+
+* Follow-up work
+
+The first slice intentionally does not migrate every runtime operation.  Likely
+next slices:
+
+- Rename broad synchronous compatibility entrypoints into explicit batch/test
+  names where they remain necessary.
+- Move more model tools and project-local actions onto work specs.
+- Add first-class progress event typing and optional coalescing/concurrency
+  enforcement for specs that declare those policies.
+- Make compaction-like jobs and remaining render/task flows use =e-work= without
+  local lifecycle vocabulary.
+
+* Status
+
+Implemented and reviewed in this slice.
+
