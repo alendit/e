@@ -494,9 +494,10 @@
            '(:response-kind text)))
   (should (e-harness--retryable-error-p "connection reset by peer" nil))
   (should (e-harness--retryable-error-p "broken pipe" nil))
-  ;; A provider timeout is a genuine failure (the request ran its full budget),
-  ;; not a transport reset, so it is not retried here.
-  (should-not (e-harness--retryable-error-p "provider timed out" nil))
+  ;; Provider idleness and local request timeouts are transient and should retry.
+  (should (e-harness--retryable-error-p "OpenAI/Codex request timed out" nil))
+  (should (e-harness--retryable-error-p
+           "OpenAI WebSocket idle timed out after 60 seconds" nil))
   ;; Genuine faults are not retried.  A bare "500" in free text (no structured
   ;; status) is not enough to retry; only a parsed :status of 5xx is.
   (should-not (e-harness--retryable-error-p "500: internal error" nil))
@@ -1169,45 +1170,52 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
       (should (numberp (plist-get (plist-get finished :payload)
                                   :elapsed-seconds))))))
 
-(ert-deftest e-harness-test-provider-timeout-settles-as-failed-turn ()
-  "Provider timeout errors settle as turn-failed, not turn-cancelled."
-  (let* ((backend
+(ert-deftest e-harness-test-provider-timeout-retries-then-succeeds ()
+  "Provider timeout errors retry with backoff instead of failing immediately."
+  (let* ((e-harness-retry-initial-backoff-seconds 0.02)
+         (e-harness-retry-backoff-multiplier 1.0)
+         (e-harness-retry-max-backoff-seconds 0.02)
+         (attempts 0)
+         (events nil)
+         (backend
           (e-backend-create
            :name "timeout"
            :start
            (cl-function
             (lambda (&key messages options on-item on-done on-error
                            on-request-start)
-              (ignore messages options on-item on-done)
+              (ignore messages options)
+              (cl-incf attempts)
               (funcall on-request-start
                        (e-backend-request-create
                         :metadata '(:provider codex
                                     :transport url-retrieve
                                     :url-host "example.test"
                                     :url-path "/codex/responses"
-                                    :timeout-seconds 180)))
-              (run-at-time 0 nil
-                           (lambda ()
-                             (funcall on-error
-                                      '(e-openai-request-timeout
-                                        "provider timed out"))))
+                                    :timeout-seconds 60)))
+              (run-at-time
+               0 nil
+               (lambda ()
+                 (if (= attempts 1)
+                     (funcall on-error
+                              '(e-openai-request-timeout
+                                "provider timed out"))
+                   (funcall on-item
+                            '(:type assistant-message :content "recovered"))
+                   (funcall on-item '(:type done :reason stop))
+                   (funcall on-done '(:status done)))))
               nil))))
          (harness (e-harness-create :backend backend)))
+    (e-harness-subscribe harness (lambda (event) (push event events)))
     (e-harness-create-session harness :id "session-1")
     (e-harness-prompt-async harness "session-1" "question")
     (let ((settled (e-harness-wait harness "session-1" 1.0)))
-      (should (equal (plist-get settled :status) 'error))
-      (should (string-match-p "provider timed out"
-                              (plist-get settled :error))))
-    (let* ((activity (e-harness-session-activity-events harness "session-1"))
-           (types (mapcar (lambda (event)
-                            (plist-get event :event-type))
-                          activity)))
-      (should (equal types
-                     '(turn-started
-                       provider-request-started
-                       provider-request-finished
-                       turn-failed)))
+      (should (equal (plist-get settled :status) 'done))
+      (should (= attempts 2)))
+    (let ((types (mapcar (lambda (event) (plist-get event :type)) events)))
+      (should (member 'turn-retrying types))
+      (should (member 'turn-finished types))
+      (should-not (member 'turn-failed types))
       (should-not (member 'turn-cancelled types)))))
 
 (ert-deftest e-harness-test-abort-ignores-stale-provider-callbacks ()

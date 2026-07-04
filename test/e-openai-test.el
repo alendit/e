@@ -61,7 +61,7 @@
                    "/tmp/e-codex-home/auth.json"))))
 
 (ert-deftest e-openai-test-websocket-timeout-default-migrates-on-reload ()
-  "A live old nil WebSocket timeout default migrates when uncustomized."
+  "Live old WebSocket timeout defaults migrate when uncustomized."
   (let* ((symbol 'e-openai-websocket-idle-timeout-seconds)
          (saved (get symbol 'saved-value))
          (customized (get symbol 'customized-value))
@@ -73,7 +73,10 @@
           (put symbol 'theme-value nil)
           (let ((e-openai-websocket-idle-timeout-seconds nil))
             (e-openai--migrate-websocket-idle-timeout-default)
-            (should (equal e-openai-websocket-idle-timeout-seconds 180)))
+            (should (equal e-openai-websocket-idle-timeout-seconds 60)))
+          (let ((e-openai-websocket-idle-timeout-seconds 180))
+            (e-openai--migrate-websocket-idle-timeout-default)
+            (should (equal e-openai-websocket-idle-timeout-seconds 60)))
           (put symbol 'saved-value '(nil))
           (let ((e-openai-websocket-idle-timeout-seconds nil))
             (e-openai--migrate-websocket-idle-timeout-default)

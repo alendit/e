@@ -93,7 +93,7 @@ Set this to nil to deliberately disable provider HTTP request timeouts."
                  (number :tag "Seconds"))
   :group 'e-openai)
 
-(defcustom e-openai-websocket-idle-timeout-seconds 180
+(defcustom e-openai-websocket-idle-timeout-seconds 60
   "Seconds without Responses WebSocket events before a request fails.
 When nil, Responses WebSocket requests do not time out locally."
   :type '(choice (const :tag "No timeout" nil)
@@ -110,12 +110,12 @@ When nil, Responses WebSocket requests do not time out locally."
   "Adopt the current WebSocket idle timeout default across live reloads.
 
 Reloading this file with an older live value leaves the defcustom variable
-bound to the old nil default.  Preserve real Custom/theme overrides, but move
-the uncustomized old default to the new bounded value."
-  (when (and (null e-openai-websocket-idle-timeout-seconds)
+bound to the old default.  Preserve real Custom/theme overrides, but move
+uncustomized old defaults to the current bounded value."
+  (when (and (memq e-openai-websocket-idle-timeout-seconds '(nil 180))
              (not (e-openai--custom-override-p
                    'e-openai-websocket-idle-timeout-seconds)))
-    (setq e-openai-websocket-idle-timeout-seconds 180)))
+    (setq e-openai-websocket-idle-timeout-seconds 60)))
 
 (e-openai--migrate-websocket-idle-timeout-default)
 
