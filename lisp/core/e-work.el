@@ -15,6 +15,7 @@
 
 (require 'cl-lib)
 (require 'subr-x)
+(require 'e-backend)
 (require 'url)
 (require 'e-request)
 
@@ -31,7 +32,7 @@
 (define-error 'e-work-url-failed "e work URL request failed" 'e-work-error)
 
 (defconst e-work-execution-carriers
-  '(cheap process url cooperative render agent-task)
+  '(cheap process url cooperative render agent-task backend)
   "Built-in work execution carriers.")
 
 (defconst e-work-interactive-policies
@@ -67,6 +68,11 @@
   runner
   command
   url
+  backend
+  messages
+  options
+  request-handler
+  item-handler
   timeout
   task-queue
   prompt
@@ -115,13 +121,15 @@
     (&rest args
            &key id description parameters execution interactive-policy owner
            metadata concurrency coalesce-key result-shaper setup runner command
-           url timeout task-queue prompt summary
+           url backend messages options request-handler item-handler timeout
+           task-queue prompt summary
            &allow-other-keys)
   "Create a validated work spec.
 Every spec must declare explicit :execution and :interactive-policy values."
   (ignore id description parameters execution interactive-policy owner
           metadata concurrency coalesce-key result-shaper setup runner command
-          url timeout task-queue prompt summary)
+          url backend messages options request-handler item-handler timeout
+          task-queue prompt summary)
   (e-work--validate-spec (apply #'e-work-spec--create args)))
 
 (put 'e-work-spec-create 'compiler-macro nil)
@@ -624,6 +632,80 @@ This function is rejected from interactive hot paths."
           arguments context))))
     handle))
 
+(defun e-work--start-backend (handle arguments context)
+  "Start HANDLE on the backend carrier."
+  (let* ((spec (e-work-handle-spec handle))
+         (backend (e-work--call (e-work-spec-backend spec) arguments context))
+         (messages (e-work--call (e-work-spec-messages spec) arguments context))
+         (options (e-work--call (e-work-spec-options spec) arguments context))
+         (request-handler (e-work-spec-request-handler spec))
+         (item-handler (e-work-spec-item-handler spec))
+         backend-request)
+    (unless (e-backend-p backend)
+      (signal 'e-work-invalid-spec
+              (list "Backend work requires :backend resolving to an e-backend")))
+    (cl-labels
+        ((terminal-p ()
+           (e-request-terminal-p (e-work-handle-lifecycle handle)))
+         (remember-request
+          (request)
+          (when (and request (not (eq request backend-request)))
+            (setq backend-request request)
+            (setf (e-work-handle-metadata handle)
+                  (append (e-work-handle-metadata handle)
+                          (list :backend-request request
+                                :backend-request-metadata
+                                (and (e-backend-request-p request)
+                                     (e-backend-request-metadata request)))))
+            (when request-handler
+              (condition-case err
+                  (funcall request-handler handle request arguments context)
+                (error
+                 (fail err))))))
+         (cancel-backend ()
+          (when (and backend-request
+                     (e-backend-request-p backend-request))
+            (ignore-errors (e-backend-cancel-request backend-request))))
+         (fail (err)
+          (unless (terminal-p)
+            (cancel-backend)
+            (e-work-fail handle err))))
+      (setf (e-work-handle-cancel-function handle)
+            (lambda (_handle)
+              (cancel-backend)
+              t))
+      (setf (e-work-handle-metadata handle)
+            (append (e-work-handle-metadata handle)
+                    (list :transport 'backend
+                          :backend (e-backend--name backend))))
+      (remember-request
+       (e-backend-start
+        backend
+        :messages messages
+        :options options
+        :on-request-start #'remember-request
+        :on-item
+        (lambda (item)
+          (unless (terminal-p)
+            (condition-case err
+                (progn
+                  (when item-handler
+                    (funcall item-handler handle item arguments context))
+                  (e-work-progress handle (list :item item)))
+              (error
+               (fail err)))))
+        :on-done
+        (lambda (result)
+          (unless (terminal-p)
+            (condition-case err
+                (e-work-finish
+                 handle
+                 (e-work--shape-result spec result arguments context))
+              (error
+               (fail err)))))
+        :on-error #'fail))
+      handle)))
+
 (defun e-work--start-agent-task (handle arguments context)
   "Start HANDLE on the agent task queue carrier."
   (let* ((spec (e-work-handle-spec handle))
@@ -683,6 +765,7 @@ function returns, but still records the same lifecycle."
             ('url (e-work--start-url handle arguments context))
             ('cooperative (e-work--start-cooperative handle arguments context))
             ('render (e-work--start-timer-runner handle arguments context))
+            ('backend (e-work--start-backend handle arguments context))
             ('agent-task (e-work--start-agent-task handle arguments context))
             (_ (signal 'e-work-unsupported-execution
                        (list (e-work-spec-execution spec)))))

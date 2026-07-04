@@ -19,6 +19,7 @@
 (require 'e-loop)
 (require 'e-request)
 (require 'e-tools)
+(require 'e-work)
 
 (defun e-loop-test--wait-until (predicate &optional timeout)
   "Wait until PREDICATE returns non-nil or TIMEOUT seconds elapse."
@@ -742,6 +743,7 @@
                             (:type done :reason stop))))
          (events nil)
          (messages nil)
+         (request nil)
          (settled nil))
     (e-loop-start-turn
      :session-id "session-1"
@@ -752,12 +754,17 @@
      :options nil
      :on-event (lambda (type payload)
                  (push (list :type type :payload payload) events))
+     :on-request-start (lambda (value)
+                         (setq request value))
      :append-message (lambda (message) (push message messages))
      :on-done (lambda (result) (setq settled result))
      :on-error (lambda (err) (setq settled (list :error err))))
     (should (null settled))
     (should (null messages))
     (should (e-loop-test--wait-until (lambda () settled)))
+    (should (e-work-handle-p
+             (plist-get (e-backend-request-metadata request)
+                        :work-handle)))
     (should (equal (plist-get settled :status) 'done))
     (should (equal (mapcar (lambda (message) (plist-get message :role))
                            (nreverse messages))

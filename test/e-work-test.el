@@ -13,6 +13,7 @@
 
 (require 'ert)
 (require 'e)
+(require 'e-backend)
 (require 'e-request)
 (require 'e-task-queue)
 (require 'e-work)
@@ -218,6 +219,96 @@
                   (e-work-await-batch handle :timeout 1))
                 :done))
     (should (equal progress '(:step "running")))))
+
+(ert-deftest e-work-test-backend-carrier-streams-progress ()
+  "The backend carrier starts provider work and publishes request/item progress."
+  (let (cancelled progress request-seen seen)
+    (let* ((backend
+            (e-backend-create
+             :name 'work-backend
+             :start
+             (cl-function
+              (lambda (&key messages options on-item on-done on-request-start
+                            &allow-other-keys)
+                (ignore messages options)
+                (let ((request
+                       (e-backend-request-create
+                        :cancel (lambda ()
+                                  (setq cancelled t)
+                                  t)
+                        :metadata '(:provider fake :transport timer))))
+                  (funcall on-request-start request)
+                  (run-at-time
+                   0 nil
+                   (lambda ()
+                     (funcall on-item
+                              '(:type assistant-delta :content "hi"))
+                     (funcall on-done '(:status done))))
+                  request)))))
+           (spec
+            (e-work-spec-create
+             :id "backend"
+             :execution 'backend
+             :interactive-policy 'async
+             :backend (lambda (_arguments _context) backend)
+             :messages (lambda (_arguments _context)
+                         '((:role user :content "hello")))
+             :options (lambda (_arguments _context)
+                        '(:model "fake"))
+             :request-handler
+             (lambda (_handle request _arguments _context)
+               (setq request-seen request))
+             :item-handler
+             (lambda (_handle item _arguments _context)
+               (push item seen)))))
+      (let ((handle (e-work-start
+                     spec
+                     nil
+                     :on-progress (lambda (payload)
+                                    (push payload progress)))))
+        (should (e-work-handle-p handle))
+        (should (eq (plist-get (e-work-handle-metadata handle)
+                               :transport)
+                    'backend))
+        (should (equal (plist-get
+                        (plist-get (e-work-handle-metadata handle)
+                                   :backend-request-metadata)
+                        :provider)
+                       'fake))
+        (should (e-backend-request-p request-seen))
+        (should (equal (e-work-with-batch-await
+                         (e-work-await-batch handle :timeout 1))
+                       '(:status done)))
+        (should (equal (plist-get (car progress) :item)
+                       '(:type assistant-delta :content "hi")))
+        (should (equal seen '((:type assistant-delta :content "hi"))))
+        (e-work-cancel handle)
+        (should-not cancelled)))
+    (let* ((backend
+            (e-backend-create
+             :name 'cancellable-work-backend
+             :start
+             (cl-function
+              (lambda (&key on-done &allow-other-keys)
+                (let ((request
+                       (e-backend-request-create
+                        :cancel (lambda ()
+                                  (setq cancelled t)
+                                  t)
+                        :metadata '(:provider fake :transport timer))))
+                  (run-at-time 60 nil (lambda ()
+                                        (funcall on-done '(:status done))))
+                  request)))))
+           (handle
+            (e-work-start
+             (e-work-spec-create
+              :id "backend-cancel"
+              :execution 'backend
+              :interactive-policy 'async
+              :backend (lambda (_arguments _context) backend))
+             nil)))
+      (e-work-cancel handle)
+      (should cancelled))))
 
 (ert-deftest e-work-test-agent-task-carrier-returns-task-record ()
   "The agent-task carrier enqueues and finishes with a task record."

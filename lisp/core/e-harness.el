@@ -1582,7 +1582,21 @@ the live dynamic providers needed for the model-facing request."
          (e-harness--emit-turn-event
           harness session-id turn-id 'compaction-failed
           (list :message message :details details :reason reason))
-         (signal (car err) (cdr err)))))))
+	         (signal (car err) (cdr err)))))))
+
+(defun e-harness--backend-work-request-metadata (handle)
+  "Return provider-facing request metadata projected from backend work HANDLE."
+  (when (e-work-handle-p handle)
+    (let* ((metadata (e-work-handle-metadata handle))
+           (backend-metadata
+            (copy-sequence
+             (or (plist-get metadata :backend-request-metadata) nil))))
+      (append backend-metadata
+              (list :work-id (e-work-handle-id handle)
+                    :work-handle handle
+                    :work-transport (plist-get metadata :transport)
+                    :backend-request
+                    (plist-get metadata :backend-request))))))
 
 (cl-defun e-harness-compact-session-start
     (harness session-id &key instructions keep-recent-tokens allow-active-turn
@@ -1601,7 +1615,7 @@ also emitting the normal compaction failure event."
         summary-parts
         summary-message
         summary-item-types
-        backend-request
+        work-handle
         settled
         cancelled)
     (cl-labels
@@ -1616,8 +1630,10 @@ also emitting the normal compaction failure event."
          (finish-error (err)
            (unless settled
              (setq settled t)
-             (when (and backend-request (e-backend-request-p backend-request))
-               (ignore-errors (e-backend-cancel-request backend-request)))
+             (when (and work-handle
+                        (not (e-request-terminal-p
+                              (e-work-handle-lifecycle work-handle))))
+               (ignore-errors (e-work-cancel work-handle)))
              (record-failure err)))
          (finish-done (_result)
            (unless (or settled cancelled)
@@ -1631,7 +1647,11 @@ also emitting the normal compaction failure event."
                              (list
                               "Compaction backend returned an empty summary"
                               (list :request-started
-                                    (and backend-request t)
+                                    (and work-handle
+                                         (plist-get
+                                          (e-work-handle-metadata work-handle)
+                                          :backend-request)
+                                         t)
                                     :item-types
                                     (nreverse (delq nil summary-item-types))
                                     :summary-source
@@ -1667,8 +1687,8 @@ also emitting the normal compaction failure event."
            (unless settled
              (setq cancelled t)
              (setq settled t)
-             (when (and backend-request (e-backend-request-p backend-request))
-               (ignore-errors (e-backend-cancel-request backend-request)))
+             (when work-handle
+               (ignore-errors (e-work-cancel work-handle)))
              (record-failure
               (list 'quit "Context compaction cancelled")))
            t))
@@ -1701,32 +1721,43 @@ also emitting the normal compaction failure event."
             (e-harness--emit-turn-event
              harness session-id turn-id 'compaction-summary-started
              (list :backend t :reason reason))
-            (setq backend-request
-                  (e-backend-start
-                   (e-harness-backend harness)
-                   :messages (e-compaction-summary-messages preparation)
-                   :options (e-harness--options-without-tools
-                             (e-harness-turn-options harness session-id))
-                   :on-request-start (lambda (value)
-                                       (setq backend-request value))
-                   :on-item
-                   (lambda (item)
-                     (unless (or settled cancelled)
-                       (push (plist-get item :type) summary-item-types)
-                       (pcase (plist-get item :type)
-                         ('assistant-message
-                          (setq summary-message (plist-get item :content)))
-                         ('assistant-delta
-                          (push (or (plist-get item :content) "")
-                                summary-parts)))))
+            (setq work-handle
+                  (e-work-start
+                   (e-work-spec-create
+                    :id "compact_session"
+                    :description "Summarize older session context."
+                    :execution 'backend
+                    :interactive-policy 'async
+                    :owner 'harness
+                    :backend (lambda (_arguments _context)
+                               (e-harness-backend harness))
+                    :messages (lambda (_arguments _context)
+                                (e-compaction-summary-messages preparation))
+                    :options (lambda (_arguments _context)
+                               (e-harness--options-without-tools
+                                (e-harness-turn-options harness session-id)))
+                    :item-handler
+                    (lambda (_handle item _arguments _context)
+                      (unless (or settled cancelled)
+                        (push (plist-get item :type) summary-item-types)
+                        (pcase (plist-get item :type)
+                          ('assistant-message
+                           (setq summary-message (plist-get item :content)))
+                          ('assistant-delta
+                           (push (or (plist-get item :content) "")
+                                 summary-parts))))))
+                   nil
+                   :context (list :session-id session-id :turn-id turn-id)
                    :on-done #'finish-done
                    :on-error #'finish-error))
             (e-backend-request-create
              :cancel #'cancel
-             :metadata (list :operation 'compaction
-                             :session-id session-id
-                             :turn-id turn-id
-                             :request backend-request)))
+             :metadata (append
+                        (list :operation 'compaction
+                              :session-id session-id
+                              :turn-id turn-id)
+                        (e-harness--backend-work-request-metadata
+                         work-handle))))
         (error
          (record-failure err)
          (signal (car err) (cdr err)))))))

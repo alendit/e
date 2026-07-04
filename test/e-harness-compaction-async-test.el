@@ -17,6 +17,7 @@
 (require 'e-context-budget)
 (require 'e-harness)
 (require 'e-session)
+(require 'e-work)
 
 (defun e-harness-compaction-async-test--wait-until (predicate &optional timeout)
   "Wait until PREDICATE returns non-nil or TIMEOUT seconds elapse."
@@ -67,6 +68,9 @@
             :on-done (lambda (value) (setq record value))
             :on-error (lambda (err) (setq failure err)))))
       (should (e-backend-request-p request))
+      (should (e-work-handle-p
+               (plist-get (e-backend-request-metadata request)
+                          :work-handle)))
       (should-not record)
       (should-not failure)
       (should (e-harness-compaction-async-test--wait-until
@@ -114,6 +118,9 @@
             :on-done (lambda (value) (setq record value))
             :on-error (lambda (err) (setq failure err)))))
       (should (e-backend-request-p request))
+      (should (e-work-handle-p
+               (plist-get (e-backend-request-metadata request)
+                          :work-handle)))
       (should (e-backend-cancel-request request))
       (should backend-request-cancelled)
       (should (equal failure '(quit "Context compaction cancelled")))
@@ -170,6 +177,9 @@
       (let* ((entry (gethash "session-1" (e-harness-active-turns harness)))
              (request (plist-get entry :request)))
         (should (e-backend-request-p request))
+        (should (e-work-handle-p
+                 (plist-get (e-backend-request-metadata request)
+                            :work-handle)))
         (should (eq (plist-get (e-backend-request-metadata request)
                                :operation)
                     'compaction))

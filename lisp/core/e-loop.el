@@ -16,6 +16,7 @@
 (require 'e-backend)
 (require 'e-request)
 (require 'e-tools)
+(require 'e-work)
 
 (declare-function e-dev-profile-enabled-p "e-dev-profile")
 (declare-function e-dev-profile-measure-thunk "e-dev-profile")
@@ -91,6 +92,26 @@ published, used to calculate `:elapsed-seconds' for finished events."
                                                    started-at)))))
                     1000)))
     payload))
+
+(defun e-loop--backend-work-request (handle)
+  "Return an `e-backend-request' projection for backend work HANDLE."
+  (let* ((metadata (and (e-work-handle-p handle)
+                        (e-work-handle-metadata handle)))
+         (provider-metadata
+          (copy-sequence
+           (or (plist-get metadata :backend-request-metadata) nil))))
+    (e-backend-request-create
+     :cancel (lambda ()
+               (when (e-work-handle-p handle)
+                 (e-work-cancel handle)))
+     :metadata
+     (append provider-metadata
+             (list :work-id (and (e-work-handle-p handle)
+                                 (e-work-handle-id handle))
+                   :work-handle handle
+                   :work-transport (plist-get metadata :transport)
+                   :backend-request
+                   (plist-get metadata :backend-request))))))
 
 (cl-defun e-loop-start-turn
     (&key session-id turn-id messages backend tools tool-lifecycle options on-event
@@ -300,6 +321,58 @@ tool I/O, and turn settlement are callback-driven."
                                 (setq active-tool request))))
                         (error
                          (fail err)))))
+                  (handle-backend-item
+                   (item)
+                   (unless (or settled (cancelled))
+                     (condition-case err
+                         (pcase (plist-get item :type)
+                           ('assistant-delta
+                            (setq response-assistant-content
+                                  (concat response-assistant-content
+                                          (plist-get item :content)))
+                            (e-loop--emit :on-event on-event
+                                          :type 'assistant-delta
+                                          :payload item))
+                           ('assistant-message
+                            (setq response-assistant-message
+                                  (plist-get item :content)))
+                           ('reasoning-delta
+                            (e-loop--emit :on-event on-event
+                                          :type 'reasoning-delta
+                                          :payload item))
+                           ('reasoning-raw-delta
+                            (e-loop--emit :on-event on-event
+                                          :type 'reasoning-raw-delta
+                                          :payload item))
+                           ('tool-call
+                            (enqueue-tool-call item))
+                           ('token-usage
+                            (setq token-usage
+                                  (plist-get item :usage))
+                            (e-loop--emit
+                             :on-event on-event
+                             :type 'token-usage
+                             :payload token-usage))
+                           ('provider-anchor-candidate
+                            (e-loop--emit
+                             :on-event on-event
+                             :type 'provider-anchor-candidate
+                             :payload item))
+                           ('done
+                            (setq done-reason
+                                  (plist-get item :reason)))
+                           ('backend-error
+                            (fail-provider
+                             (list 'e-loop-backend-error
+                                   (plist-get item :content)
+                                   (plist-get item :payload))))
+                           (_
+                            (e-loop--emit
+                             :on-event on-event
+                             :type 'backend-item-ignored
+                             :payload item)))
+                       (error
+                        (fail-provider err)))))
                   (enqueue-tool-call
                    (item)
                    (setq tool-called t)
@@ -311,107 +384,81 @@ tool I/O, and turn settlement are callback-driven."
                active-request
                (condition-case err
                    (let ((reported-request nil))
-                     (let ((request
-                            (e-loop--profile-call
-                             'loop.backend-start
-                             (list :session-id session-id
-                                   :turn-id turn-id
-                                   :metadata
-                                   (list :message-count (length turn-messages)
-                                         :tool-count (length tools)))
-                             (lambda ()
-                               (e-backend-start
-                                backend
-                                :messages turn-messages
-                                :options options
-                                :on-request-start
-                                (lambda (request)
-                                  (setq reported-request request)
-                                  (publish-provider-request request))
-                                :on-item
-                             (lambda (item)
-                               (unless (or settled (cancelled))
-                                 (condition-case err
-                                     (pcase (plist-get item :type)
-                                       ('assistant-delta
-                                        (setq response-assistant-content
-                                              (concat response-assistant-content
-                                                      (plist-get item :content)))
-                                        (e-loop--emit :on-event on-event
-                                                      :type 'assistant-delta
-                                                      :payload item))
-                                       ('assistant-message
-                                        (setq response-assistant-message
-                                              (plist-get item :content)))
-                                       ('reasoning-delta
-                                        (e-loop--emit :on-event on-event
-                                                      :type 'reasoning-delta
-                                                      :payload item))
-                                       ('reasoning-raw-delta
-                                        (e-loop--emit :on-event on-event
-                                                      :type 'reasoning-raw-delta
-                                                      :payload item))
-                                       ('tool-call
-                                        (enqueue-tool-call item))
-                                       ('token-usage
-                                        (setq token-usage
-                                              (plist-get item :usage))
-                                       (e-loop--emit
-                                        :on-event on-event
-                                        :type 'token-usage
-                                        :payload token-usage))
-                                       ('provider-anchor-candidate
-                                        (e-loop--emit
-                                         :on-event on-event
-                                         :type 'provider-anchor-candidate
-                                         :payload item))
-                                       ('done
-                                        (setq done-reason
-                                              (plist-get item :reason)))
-                                       ('backend-error
-                                        (fail-provider
-                                         (list 'e-loop-backend-error
-                                               (plist-get item :content)
-                                               (plist-get item :payload))))
-                                       (_
-                                        (e-loop--emit
-                                         :on-event on-event
-                                         :type 'backend-item-ignored
-                                         :payload item)))
-                                   (error
-                                    (fail-provider err)))))
-                             :on-done
-                             (lambda (_backend-result)
-                               (unless (or settled (cancelled))
-                                 (condition-case err
-                                     (progn
-                                       (finish-provider-request 'done)
-                                       (setq provider-done t)
-                                       (if tool-called
-                                           (maybe-start-followup)
-                                         (if (string-empty-p
-                                              (or (response-text) ""))
-                                             (progn
-                                               (e-loop--emit
-                                                :on-event on-event
-                                                :type 'backend-empty-output
-                                                :payload (list :reason
-                                                               done-reason))
-                                               (fail '(e-loop-empty-output)))
-                                           (let ((message
-                                                  (e-loop--assistant-message
-                                                   (response-text))))
-                                             (setq turn-messages
-                                                   (append turn-messages
-                                                           (list message)))
-                                             (funcall append-message message)
-                                             (if (drain-pending)
-                                                 (start-request)
-                                               (finish done-reason
-                                                       (response-text)))))))
-                                   (error
-                                    (fail-provider err)))))
-                             :on-error #'fail-provider)))))
+                     (let* ((work-handle
+                             (e-loop--profile-call
+                              'loop.backend-start
+                              (list :session-id session-id
+                                    :turn-id turn-id
+                                    :metadata
+                                    (list :message-count (length turn-messages)
+                                          :tool-count (length tools)))
+                              (lambda ()
+                                (e-work-start
+                                 (e-work-spec-create
+                                  :id "backend_turn"
+                                  :description "Run one provider turn."
+                                  :execution 'backend
+                                  :interactive-policy 'async
+                                  :owner 'loop
+                                  :backend (lambda (_arguments _context)
+                                             backend)
+                                  :messages (lambda (_arguments _context)
+                                              turn-messages)
+                                  :options (lambda (_arguments _context)
+                                             options)
+                                  :request-handler
+                                  (lambda (handle _request _arguments _context)
+                                    (let ((request
+                                           (e-loop--backend-work-request
+                                            handle)))
+                                      (setq reported-request request)
+                                      (publish-provider-request request)))
+                                  :item-handler
+                                  (lambda (_handle item _arguments _context)
+                                    (handle-backend-item item)))
+                                 nil
+                                 :context (list :session-id session-id
+                                                :turn-id turn-id)
+                                 :on-done
+                                 (lambda (_backend-result)
+                                   (unless (or settled (cancelled))
+                                     (condition-case err
+                                         (progn
+                                           (finish-provider-request 'done)
+                                           (setq provider-done t)
+                                           (if tool-called
+                                               (maybe-start-followup)
+                                             (if (string-empty-p
+                                                  (or (response-text) ""))
+                                                 (progn
+                                                   (e-loop--emit
+                                                    :on-event on-event
+                                                    :type 'backend-empty-output
+                                                    :payload (list :reason
+                                                                   done-reason))
+                                                   (fail '(e-loop-empty-output)))
+                                               (let ((message
+                                                      (e-loop--assistant-message
+                                                       (response-text))))
+                                                 (setq turn-messages
+                                                       (append turn-messages
+                                                               (list message)))
+                                                 (funcall append-message message)
+                                                 (if (drain-pending)
+                                                     (start-request)
+                                                   (finish done-reason
+                                                           (response-text)))))))
+                                       (error
+                                        (fail-provider err)))))
+                                 :on-error #'fail-provider))))
+                            (request
+                             (or reported-request
+                                 (when (and work-handle (not settled))
+                                   (when (plist-get
+                                          (e-work-handle-metadata work-handle)
+                                          :backend-request)
+                                     (e-loop--backend-work-request
+                                      work-handle))))))
                        (when (and request
                                   (not settled)
                                   (not (eq request reported-request)))
