@@ -20,6 +20,7 @@
 (require 'e-request)
 (require 'e-store)
 (require 'e-tools)
+(require 'e-work)
 (require 'json)
 (require 'subr-x)
 (require 'url)
@@ -1391,23 +1392,6 @@ this string."
                         arguments)))
       (e-mcp--tool-result call tool mcp-result))))
 
-(defun e-mcp--tool-start (servers tool)
-  "Return a generated async start function for MCP TOOL through SERVERS."
-  (cl-function
-   (lambda (&key arguments on-done on-error on-event &allow-other-keys)
-     (let ((call (plist-get (e-tools-current-context) :tool-call)))
-       (e-mcp-call-tool-start
-        servers
-        (e-mcp-tool-server-id tool)
-        (e-mcp-tool-name tool)
-        arguments
-        :on-done (lambda (mcp-result)
-                   (when on-done
-                     (funcall on-done
-                              (e-mcp--tool-result call tool mcp-result))))
-        :on-error on-error
-        :on-event on-event)))))
-
 (defun e-mcp--tool-blocking-class (servers tool)
   "Return the blocking class for generated MCP TOOL through SERVERS."
   (let ((server (cl-find (e-mcp-tool-server-id tool) servers
@@ -1415,6 +1399,66 @@ this string."
     (if (and server (e-mcp--server-http-p server))
         'network
       'process)))
+
+(defun e-mcp--work-progress (handle type payload)
+  "Publish MCP event TYPE with PAYLOAD through HANDLE progress."
+  (e-work-progress
+   handle
+   (if (eq type 'tool-progress)
+       payload
+     (list :event type :payload payload))))
+
+(defun e-mcp--work-adopt-request (handle request kind)
+  "Attach child REQUEST metadata and cancellation to HANDLE for KIND."
+  (when (e-tools-request-p request)
+    (let ((metadata (e-tools-request-metadata request)))
+      (setf (e-work-handle-metadata handle)
+            (append (e-work-handle-metadata handle)
+                    (list :mcp-child-kind kind
+                          :mcp-child-request request
+                          :mcp-child-request-metadata metadata)))
+      (setf (e-work-handle-cancel-function handle)
+            (lambda (_handle)
+              (e-tools-cancel-request request)
+              t))))
+  request)
+
+(defun e-mcp--tool-work (servers tool)
+  "Return a Work spec for generated MCP TOOL through SERVERS."
+  (let ((blocking-class (e-mcp--tool-blocking-class servers tool)))
+    (e-work-spec-create
+     :id (format "mcp-tool:%s:%s"
+                 (e-mcp-tool-server-id tool)
+                 (e-mcp-tool-name tool))
+     :description (format "MCP tool %s/%s"
+                          (e-mcp-tool-server-id tool)
+                          (e-mcp-tool-name tool))
+     :parameters (e-mcp-tool-input-schema tool)
+     :execution 'cooperative
+     :interactive-policy 'async
+     :owner 'e-mcp
+     :metadata (append (e-mcp--tool-metadata tool)
+                       (list :blocking-class blocking-class))
+     :runner
+     (lambda (handle arguments context)
+       (let ((call (plist-get context :tool-call)))
+         (e-mcp--work-adopt-request
+          handle
+          (e-mcp-call-tool-start
+           servers
+           (e-mcp-tool-server-id tool)
+           (e-mcp-tool-name tool)
+           arguments
+           :on-done (lambda (mcp-result)
+                      (e-work-finish
+                       handle
+                       (e-mcp--tool-result call tool mcp-result)))
+           :on-error (lambda (err)
+                       (e-work-fail handle err))
+           :on-event (lambda (type payload)
+                       (e-mcp--work-progress handle type payload)))
+          'tool-call)
+         :deferred)))))
 
 (defun e-mcp--register-tool (registry servers tool)
   "Register generated e TOOL in REGISTRY for SERVERS."
@@ -1427,7 +1471,7 @@ this string."
    :parameters (e-mcp-tool-input-schema tool)
    :metadata (e-mcp--tool-metadata tool)
    :handler (e-mcp--tool-handler servers tool)
-   :start (e-mcp--tool-start servers tool)
+   :work (e-mcp--tool-work servers tool)
    :blocking-class (e-mcp--tool-blocking-class servers tool)))
 
 (defun e-mcp--remember-servers (servers)
@@ -1796,62 +1840,84 @@ Cards are emitted only when CAPABILITY-ID resolves to progressive mode."
       (e-mcp--activate-result
        arguments server catalog invoke-result (e-tools-current-context)))))
 
-(defun e-mcp--activate-start ()
-  "Return an async start function for mcp_activate."
-  (cl-function
-   (lambda (&key arguments on-done on-error on-event &allow-other-keys)
+(defun e-mcp--activate-work ()
+  "Return a Work spec for mcp_activate."
+  (e-work-spec-create
+   :id "mcp-activate"
+   :description "Load and activate MCP tool schemas"
+   :parameters e-mcp--activate-tool-parameters
+   :execution 'cooperative
+   :interactive-policy 'async
+   :owner 'e-mcp
+   :metadata '(:kind mcp-activate)
+   :runner
+   (lambda (handle arguments context)
      (let* ((server-id (plist-get arguments :server))
             (invoke (plist-get arguments :invoke))
-            (context (e-tools-current-context))
             (server (and server-id (e-mcp--known-server server-id)))
             child-request
-            cancelled)
+            timer)
        (unless server
          (signal 'e-mcp-protocol-error
                  (list (format "Unknown MCP server: %s" server-id))))
+       (setf (e-work-handle-metadata handle)
+             (append (e-work-handle-metadata handle)
+                     (list :server-id server-id)))
        (cl-labels
-           ((finish (catalog &optional invoke-result)
-              (unless cancelled
-                (when on-done
-                  (funcall on-done
-                           (e-mcp--activate-result
-                            arguments server catalog invoke-result context)))))
+           ((terminal-p ()
+              (e-request-terminal-p (e-work-handle-lifecycle handle)))
+            (cleanup (_handle)
+              (when (timerp timer)
+                (cancel-timer timer)))
+            (remember (request kind)
+              (setq child-request request)
+              (e-mcp--work-adopt-request handle request kind))
             (fail (condition)
-              (unless cancelled
-                (when on-error
-                  (funcall on-error condition))))
+              (unless (terminal-p)
+                (e-work-fail handle condition)))
+            (finish (catalog &optional invoke-result)
+              (unless (terminal-p)
+                (e-work-finish
+                 handle
+                 (e-mcp--activate-result
+                  arguments server catalog invoke-result context))))
             (start-invoke (catalog)
               (if invoke
-                  (setq child-request
-                        (e-mcp-call-tool-start
-                         (list server) server-id
-                         (plist-get invoke :tool)
-                         (plist-get invoke :arguments)
-                         :on-done (lambda (mcp-result)
-                                    (finish catalog mcp-result))
-                         :on-error #'fail
-                         :on-event on-event))
+                  (remember
+                   (e-mcp-call-tool-start
+                    (list server) server-id
+                    (plist-get invoke :tool)
+                    (plist-get invoke :arguments)
+                    :on-done (lambda (mcp-result)
+                               (finish catalog mcp-result))
+                    :on-error #'fail
+                    :on-event (lambda (type payload)
+                                (e-mcp--work-progress handle type payload)))
+                   'activate-invoke)
                 (finish catalog))))
+         (e-work-add-cleanup handle #'cleanup)
+         (setf (e-work-handle-cancel-function handle)
+               (lambda (_handle)
+                 (when (timerp timer)
+                   (cancel-timer timer))
+                 (when child-request
+                   (e-tools-cancel-request child-request))
+                 t))
          (if-let ((server+catalog (e-mcp--catalog-for-server-cached server-id)))
-             (run-at-time 0 nil
-                          (lambda ()
-                            (start-invoke (cdr server+catalog))))
-           (setq child-request
-                 (e-mcp-list-tools-start
-                  (list server)
-                  :on-done #'start-invoke
-                  :on-error #'fail
-                  :on-event on-event)))
-         (e-tools-request-create
-          :cancel (lambda ()
-                    (setq cancelled t)
-                    (when child-request
-                      (e-tools-cancel-request child-request))
-                    t)
-          :metadata (list :transport 'aggregate
-                          :kind 'mcp-activate
-                          :server-id server-id
-                          :cancellable 'cancel-child)))))))
+             (setq timer
+                   (run-at-time 0 nil
+                                (lambda ()
+                                  (unless (terminal-p)
+                                    (start-invoke (cdr server+catalog))))))
+           (remember
+            (e-mcp-list-tools-start
+             (list server)
+             :on-done #'start-invoke
+             :on-error #'fail
+             :on-event (lambda (type payload)
+                         (e-mcp--work-progress handle type payload)))
+            'activate-list))
+         :deferred)))))
 
 (defun e-mcp--register-meta-tool (registry)
   "Register the always-present mcp_activate meta-tool in REGISTRY."
@@ -1862,7 +1928,7 @@ Cards are emitted only when CAPABILITY-ID resolves to progressive mode."
    "Load full schemas for MCP tools and make them callable for the rest of the session. Pass `server' and optionally `tools' (omit for all). The result returns the full schemas; the named tools become callable on the next turn. Optionally pass `invoke' {tool, arguments} to also call one tool immediately."
    :parameters e-mcp--activate-tool-parameters
    :handler #'e-mcp--activate-handler
-   :start (e-mcp--activate-start)
+   :work (e-mcp--activate-work)
    :blocking-class 'process
    :metadata '(:kind mcp-activate)))
 

@@ -20,6 +20,7 @@
 (require 'e-mcp)
 (require 'e-request)
 (require 'e-tools)
+(require 'e-work)
 
 (defconst e-mcp-test--schema
   '(:type "object" :properties (:text (:type "string")))
@@ -275,7 +276,8 @@
                          :server-id "fixture"
                          :tool-name "echo"
                          :blocking-class process)))
-        (should (functionp (plist-get stored :start)))))))
+        (should-not (plist-get stored :start))
+        (should (e-work-spec-p (plist-get stored :work)))))))
 
 (ert-deftest e-mcp-test-list-tools-keeps-multiple-server-catalogs-distinct ()
   "Flattened helper catalogs retain the originating MCP server id."
@@ -799,6 +801,14 @@ echoed back on `tools/list' and `tools/call'."
             (should (e-tools-request-p request))
             (should (eq (plist-get (e-tools-request-metadata request)
                                    :transport)
+                        'work))
+            (should (e-work-handle-p
+                     (plist-get (e-tools-request-metadata request)
+                                :work-handle)))
+            (should (eq (plist-get
+                         (plist-get (e-tools-request-metadata request)
+                                    :mcp-child-request-metadata)
+                         :transport)
                         'url))
             (should-not result)
             (should-not failure)
