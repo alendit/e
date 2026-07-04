@@ -383,69 +383,69 @@ SESSION-ID and TURN-ID are passed to context-aware resource providers."
        (>= (length method) 11)
        (e-resource-method-work method)))
 
-(defun e-harness--resource-operation-start
-    (resources operation arguments on-done on-error on-event)
-  "Start async resource OPERATION over ARGUMENTS when its method supports it."
-  (let ((dispatch (e-operation-dispatch operation)))
-    (funcall
-     dispatch
-     (lambda (uri &rest operation-arguments)
-       (let* ((parsed-uri (e-resources-parse-uri uri))
-              (method (e-resources--method resources operation parsed-uri))
-              (work (e-harness--resource-method-work method))
-              (start (e-resource-method-start method)))
-         (if (e-work-spec-p work)
-             (let* ((handle
-                     (e-work-start
-                      work
-                      (list :uri parsed-uri
-                            :operation-arguments operation-arguments
-                            :resource-operation operation)
-                      :context (list :resource-uri uri
-                                     :resource-operation
-                                     (e-operation-id-of operation))
-                      :on-done (lambda (content)
-                                 (when on-done
-                                   (funcall
-                                    on-done
-                                    (e-harness--resource-operation-result
-                                     operation uri content))))
-                      :on-error on-error
-                      :on-progress
-                      (lambda (payload)
-                        (when on-event
-                          (funcall on-event 'tool-progress payload)))))
-                    (request
-                     (e-tools-request-create
-                      :cancel (lambda ()
-                                (e-work-cancel handle)
-                                t)
-                      :metadata (append
-                                 (list :transport 'work
-                                       :work-id (e-work-handle-id handle)
-                                       :work-handle handle)
-                                 (e-work-handle-metadata handle)))))
-               request)
-           (if (functionp start)
-             (funcall
-              start
-              parsed-uri
-              operation-arguments
-              :on-done (lambda (content)
-                         (when on-done
-                           (funcall
-                            on-done
-                            (e-harness--resource-operation-result
-                             operation uri content))))
-              :on-error on-error
-              :on-event on-event)
-           (when on-done
-             (funcall
-              on-done
-              (e-harness--resource-operation-call
-               resources operation uri operation-arguments)))
-           nil))))
-     arguments)))
+(defun e-harness--resource-operation-work (resources operation)
+  "Return a Work spec for async resource OPERATION over RESOURCES."
+  (e-work-spec-create
+   :id (format "resource.%s" (e-operation-tool-name operation))
+   :description (format "Run resource operation %s."
+                        (e-operation-tool-name operation))
+   :execution 'cooperative
+   :interactive-policy 'async
+   :owner 'resources
+   :runner
+   (lambda (handle arguments _context)
+     (let ((dispatch (e-operation-dispatch operation))
+           child-handle)
+       (funcall
+        dispatch
+        (lambda (uri &rest operation-arguments)
+          (let* ((parsed-uri (e-resources-parse-uri uri))
+                 (method (e-resources--method resources operation parsed-uri))
+                 (work (e-harness--resource-method-work method)))
+            (if (e-work-spec-p work)
+                (progn
+                  (setf (e-work-handle-cancel-function handle)
+                        (lambda (_handle)
+                          (when (e-work-handle-p child-handle)
+                            (e-work-cancel child-handle))
+                          t))
+                  (setq child-handle
+                        (e-work-start
+                         work
+                         (list :uri parsed-uri
+                               :operation-arguments operation-arguments
+                               :resource-operation operation)
+                         :context (list :resource-uri uri
+                                        :resource-operation
+                                        (e-operation-id-of operation))
+                         :on-done (lambda (content)
+                                    (e-work-finish
+                                     handle
+                                     (e-harness--resource-operation-result
+                                      operation uri content)))
+                         :on-error (lambda (err)
+                                     (e-work-fail handle err))
+                         :on-progress (lambda (payload)
+                                        (e-work-progress handle payload))))
+                  (setf (e-work-handle-metadata handle)
+                        (append (e-work-handle-metadata handle)
+                                (list :resource-uri uri
+                                      :resource-operation
+                                      (e-operation-id-of operation)
+                                      :child-work-handle child-handle)
+                                (e-work-handle-metadata child-handle))))
+              (setf (e-work-handle-metadata handle)
+                    (append (e-work-handle-metadata handle)
+                            (list :resource-uri uri
+                                  :resource-operation
+                                  (e-operation-id-of operation)
+                                  :resource-work 'inline)))
+              (e-work-finish
+               handle
+               (e-harness--resource-operation-call
+                resources operation uri operation-arguments)))))
+        arguments))
+     :deferred)))
 
 (defun e-harness--resource-operation-async-p (operation)
   "Return non-nil when OPERATION should expose an async tool start."
@@ -472,12 +472,7 @@ SESSION-ID and TURN-ID are passed to context-aware resource providers."
          (append
           (when async-p
             (list
-             :start
-             (cl-function
-              (lambda (&key arguments on-done on-error on-event
-                            &allow-other-keys)
-                (e-harness--resource-operation-start
-                 resources operation arguments on-done on-error on-event)))
+             :work (e-harness--resource-operation-work resources operation)
              :blocking-class 'process))))))))
 
 (defun e-harness--register-resource-operation-tools (registry resources)
