@@ -1,0 +1,189 @@
+#+title: Session Resource
+#+startup: overview
+
+* Status
+
+Planned
+
+* Goal
+
+Expose persisted =e= sessions as a read-only resource scheme for agents and host code.
+
+The first slice should let an agent discover prior sessions, inspect metadata, read a transcript or entry stream, and search session text through the existing resource operation tools.
+
+* Problem
+
+=e= has durable session storage, but the agent-facing surface is tied to the current session.
+
+Today an agent can:
+
+- inspect the current session context through =chat-session/context= or =context-inspection=;
+- search visible chat buffers through =buffer://= when those buffers are live;
+- inspect persisted session files only by knowing implementation paths and using file tools.
+
+That is not a semantic session API.
+It also pushes callers toward the session store's private filesystem layout.
+
+A session is better modeled as a resource than as a new action family.
+The caller wants to list, read, and search addressable material.
+There is no clear write or edit meaning yet, so the first version should be read-only.
+
+* Resource scheme
+
+Add a =session://= scheme backed by the active harness's session store.
+
+Initial URI shapes:
+
+- =session://= lists sessions from the active store.
+- =session://<session-id>= reads one session summary and transcript overview.
+- =session://<session-id>/messages= reads normalized messages in insertion order.
+- =session://<session-id>/activity= reads durable activity events.
+- =session://<session-id>/events= reads session events.
+- =session://<session-id>/compactions= reads compaction records.
+- =session://<session-id>/provider-anchors= reads provider anchor records.
+
+The exact text format can be Org or plain text, but it must be stable enough for agent reading and search snippets.
+Prefer a human-readable text projection over raw JSON for the first slice.
+Raw JSON can be a later explicit variant if needed.
+
+* Resource operations
+
+** Read
+
+Register a =read= resource method for =session://=.
+
+The method should:
+
+- resolve sessions through the active harness's =e-harness-sessions= store;
+- use public =e-session= accessors instead of reading JSONL files directly;
+- preserve lazy loading for persistent sessions by calling accessors such as =e-session-get= and =e-session-messages=;
+- support existing read ranges only where they make sense for the rendered text;
+- fail clearly for unknown session ids and unsupported subpaths.
+
+** Glob
+
+Register a =glob= resource method for =session://=.
+
+Listing =session://= should return compact entries for sessions sorted by =e-session-list=, newest first.
+
+Entries should include:
+
+- =:uri=, e.g. =session://01K...=;
+- =:name=, preferably the display title or session id;
+- =:kind=, e.g. =session=;
+- =:metadata= with stable fields such as =:id=, =:title=, =:created-at=, =:updated-at=, =:last-message-at=, =:project-root=, and =:harness-instance-id= when present.
+
+A glob pattern should match session id and display title.
+Subpath listing can be small and explicit: listing =session://<session-id>= may return the known child resources above.
+
+** Search
+
+Register a =search= resource method for =session://=.
+
+Search should inspect the text projection for selected sessions and return normal resource match records:
+
+- =:uri= pointing at the closest readable resource, such as =session://<id>/messages=;
+- =:line= and =:column= in the projection;
+- =:text= with the matched line.
+
+The first slice may use Emacs-native string search over rendered session text.
+It should honor the shared facade parameters: =:query=, =:glob=, =:case-sensitive=, =:whole-word=, =:multiline=, and =:limit=.
+
+* Read-only contract
+
+Do not register =write= or =edit= methods for =session://= in this feature.
+
+Session mutation already has explicit semantic operations: submit, steer, reset, rename, compact, metadata updates, and future specialized APIs.
+A generic edit against a rendered transcript would be ambiguous and unsafe.
+
+If future work needs mutation, add narrow actions or specialized session operations rather than making =session://= editable by default.
+
+* Architecture
+
+Owner: a harness or runtime self-management capability, not the chat shell.
+
+The resource method needs access to the active harness/session context, but it must not depend on chat buffers or presentation state.
+Good candidate owners:
+
+- the existing =e= layer runtime self-management capability; or
+- a small dedicated =session-resource= capability enabled by the =e= or =harness-base= layer.
+
+Keep dependencies flowing toward core contracts:
+
+- resource methods depend on =e-resources= and =e-session=;
+- formatting helpers can live near the capability or in a small session projection module;
+- the session store remains the source of truth;
+- no filesystem path assumptions should leak into callers.
+
+* Privacy and safety
+
+Sessions can contain private data, tool outputs, source snippets, and user text.
+The resource is agent-readable only when the layer is active, so the capability description must make that scope explicit.
+
+The first slice should not expose a cross-store global search.
+It should search only the current harness's active session store.
+
+Add conservative limits for search and read projections.
+Large transcripts should be readable by range or by subresource instead of forcing one huge response.
+
+* Implementation slices
+
+** Slice 1: Plan and contracts
+
+Files:
+
+- =docs/feats/56-session-resource/plan.org=
+- =docs/feats/index.org=
+
+Work:
+
+1. Record this plan.
+2. Keep status =Planned= until reviewed.
+
+** Slice 2: Resource method and projection helpers
+
+Likely files:
+
+- =lisp/layers/e/e-session-resources.el= or nearby runtime-self-management layer file.
+- =lisp/core/e-session.el= only if a missing public accessor is needed.
+- =test/e-session-resources-test.el= or nearby layer tests.
+
+Work:
+
+1. Add rendering helpers for session summary, messages, activity, events, compactions, and provider anchors.
+2. Register read/glob/search resource methods for =session://=.
+3. Ensure methods operate on the active harness session store through the resource method context.
+4. Keep mutation unsupported.
+
+** Slice 3: Tool descriptions and docs
+
+Likely files:
+
+- runtime self-management capability or layer registration files;
+- =docs/architecture.md= if it lists active resource schemes;
+- tests that assert generated tool descriptions include =session://= when active.
+
+Work:
+
+1. Describe =session://= in the generated resource operation surfaces.
+2. Add tests for read, glob, search, unsupported write/edit, unknown session id, and range behavior.
+3. Update docs if public surfaces mention resource schemes.
+
+* Verification
+
+Run the focused tests first:
+
+#+begin_src sh
+rtk eldev test test/e-session-test.el test/e-resources-test.el test/e-harness-test.el
+#+end_src
+
+Run any new resource tests added by the implementation slice.
+
+For a behavior change, reload the running Emacs and inspect that =glob= / =read= / =search= expose =session://= in a live chat session when the owning layer is active.
+
+* Open questions
+
+- Should =session://<id>= render the full transcript or only a summary plus links to subresources?
+- Should search include activity events by default, or should =session://*/messages= and =session://*/activity= be separate searchable scopes?
+- Should the resource expose branch/current-head structure explicitly in v1?
+- Is a raw JSON projection useful enough to add as =session://<id>/raw= later?
