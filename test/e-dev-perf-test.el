@@ -163,7 +163,24 @@
       (should (member "session.metadata-state" ids))
       (should (member "chat.activity-burst" ids))
       (should (member "chat.final-assistant-render" ids))
-      (should (member "tool.lifecycle-dispatch" ids)))))
+      (should (member "tool.lifecycle-dispatch" ids))
+      (should (member "work.lifecycle-cheap" ids))
+      (should (member "work.tool-render-dispatch" ids)))))
+
+(ert-deftest e-dev-perf-test-work-scenarios-produce-work-metrics ()
+  "Work performance scenarios expose scalar lifecycle and dispatch metrics."
+  (e-dev-perf-test--with-isolated-registry
+    (e-dev-perf-register-default-scenarios)
+    (let* ((cheap (e-dev-perf-get-scenario "work.lifecycle-cheap"))
+           (tool (e-dev-perf-get-scenario "work.tool-render-dispatch"))
+           (cheap-metrics (funcall (e-dev-perf-scenario-run cheap) nil))
+           (tool-metrics (funcall (e-dev-perf-scenario-run tool) nil)))
+      (should (= (plist-get cheap-metrics :work.start.count) 100))
+      (should (= (plist-get cheap-metrics :work.handle.count) 100))
+      (should (= (plist-get cheap-metrics :work.finished.count) 100))
+      (should (= (plist-get tool-metrics :work.tool.request.count) 25))
+      (should (= (plist-get tool-metrics :work.tool.finished.count) 25))
+      (should (numberp (plist-get tool-metrics :tool.start.ms))))))
 
 (provide 'e-dev-perf-test)
 

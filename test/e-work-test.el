@@ -105,6 +105,44 @@
       (should (equal (plist-get result :stdout) "ok"))
       (should (equal (plist-get result :lines) '("ok"))))))
 
+(ert-deftest e-work-test-process-carrier-publishes-streaming-progress ()
+  "The process carrier can publish push-style progress from output chunks."
+  (let ((seen "")
+        progress-events)
+    (let* ((spec (e-work-spec-create
+                  :id "stream-process"
+                  :execution 'process
+                  :interactive-policy 'async
+                  :command
+                  (lambda (_arguments _context)
+                    (list :program "/bin/sh"
+                          :args '("-c" "printf one; printf two")
+                          :capture-output nil
+                          :on-output
+                          (lambda (_handle _process chunk _state)
+                            (setq seen (concat seen chunk)))
+                          :progress
+                          (lambda (_handle _process _state)
+                            (list :preview seen))
+                          :progress-interval 0))
+                  :result-shaper
+                  (lambda (raw _arguments _context)
+                    (list :status (plist-get raw :status)
+                          :seen seen))))
+           (handle (e-work-start
+                    spec
+                    nil
+                    :on-progress
+                    (lambda (payload)
+                      (push payload progress-events)))))
+      (let ((result (e-work-await-batch handle :timeout 2)))
+        (should (equal (plist-get result :status) 'ok))
+        (should (equal (plist-get result :seen) "onetwo"))
+        (should progress-events)
+        (should (string-match-p
+                 "one"
+                 (plist-get (car (last progress-events)) :preview)))))))
+
 (ert-deftest e-work-test-url-carrier-starts-before-callback ()
   "The URL carrier returns a handle before its callback settles."
   (let (callback buffer)

@@ -20,6 +20,7 @@
 (require 'e-request)
 (require 'e-resources)
 (require 'e-tools)
+(require 'e-work)
 (require 'seq)
 
 (defun e-base-tools-test--fake-executable (directory name body)
@@ -1065,6 +1066,14 @@ picker."
       (should (string-match-p "kills the process" description))
       (should (string-match-p "modest" description)))))
 
+(ert-deftest e-base-tools-test-bash-registers-work-spec ()
+  "The model-facing bash tool uses the generic work API."
+  (let ((registry (e-tools-registry-create)))
+    (e-base-tools-register-bash registry default-directory)
+    (let ((tool (gethash "bash" (e-tools-registry-tools registry))))
+      (should (e-work-spec-p (plist-get tool :work)))
+      (should-not (plist-get tool :start)))))
+
 (ert-deftest e-base-tools-test-bash-streams-large-output-to-session-tmp ()
   "The bash start path writes full large output directly to session tmp."
   (let* ((directory (make-temp-file "e-base-bash-session-tmp-" t))
@@ -1087,6 +1096,12 @@ picker."
                    :arguments (:command "printf 'one\ntwo\nthree\nfour\n'"))
                  :on-done (lambda (value) (setq result value))))
           (should (e-tools-request-p request))
+          (should (eq (plist-get (e-tools-request-metadata request)
+                                 :transport)
+                      'work))
+          (should (e-work-handle-p
+                   (plist-get (e-tools-request-metadata request)
+                              :work-handle)))
           (should (plist-get (e-tools-request-metadata request) :output-file))
           (should-not (plist-get (e-tools-request-metadata request) :buffer))
           (should (e-base-tools-test--wait-until
@@ -1123,6 +1138,12 @@ picker."
                     :arguments (:command "sleep 0.1; printf done"))
                   :on-done (lambda (value) (setq result value)))))
             (should (e-tools-request-p request))
+            (should (eq (plist-get (e-tools-request-metadata request)
+                                   :transport)
+                        'work))
+            (should (e-work-handle-p
+                     (plist-get (e-tools-request-metadata request)
+                                :work-handle)))
             (should (null result))
             (should (e-base-tools-test--wait-until
                      (lambda () result)

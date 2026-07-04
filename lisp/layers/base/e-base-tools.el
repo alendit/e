@@ -1720,145 +1720,109 @@ OK-STATUSES defaults to only zero."
         (e-tools-result-create call status content metadata)
       content)))
 
+(defun e-base-tools--bash-work-command (directory arguments context)
+  "Return the process carrier command for bash ARGUMENTS in DIRECTORY.
+CONTEXT is the current tool context, used for session-tmp output ownership and
+tool-call progress metadata."
+  (let* ((command (e-base-tools--argument-string arguments :command))
+         (timeout (if (plist-member arguments :timeout)
+                      (e-base-tools--optional-positive-number arguments :timeout)
+                    e-base-tools-default-shell-timeout))
+         (command-prefix (e-base-tools--shell-command))
+         (shell-command (format "{\n%s\n} 2>&1" command))
+         (collector (e-base-tools--bash-collector-start context))
+         (call (plist-get context :tool-call)))
+    (list :name "e-base-bash"
+          :program (car command-prefix)
+          :args (append (cdr command-prefix) (list shell-command))
+          :directory directory
+          :capture-output nil
+          :finish-on-nonzero t
+          :finish-on-timeout t
+          :timeout timeout
+          :timeout-message
+          (and timeout
+               (format "Command timed out after %s seconds" timeout))
+          :state collector
+          :metadata (list :output-file
+                          (e-base-tools--bash-collector-output-file collector)
+                          :output-uri
+                          (e-base-tools--bash-collector-output-uri collector)
+                          :cancellable t)
+          :on-output
+          (lambda (_handle _process chunk active-collector)
+            (e-base-tools--bash-collector-append active-collector chunk))
+          :progress
+          (lambda (_handle _process active-collector)
+            (when (> (e-base-tools--bash-collector-total-bytes
+                      active-collector)
+                     0)
+              (e-base-tools--bash-progress-payload active-collector call)))
+          :progress-interval e-base-tools--bash-progress-interval)))
+
+(defun e-base-tools--bash-work-result (raw _arguments context)
+  "Shape bash process carrier RAW output into the existing tool result."
+  (let* ((collector (plist-get raw :state))
+         (call (plist-get context :tool-call))
+         (status (plist-get raw :status))
+         (reason (plist-get raw :reason))
+         (exit-code (plist-get raw :exit-code))
+         (suffix (pcase reason
+                   ('exit
+                    (unless (eq status 'ok)
+                      (format "Command exited with code %s" exit-code)))
+                   (_ (plist-get raw :suffix)))))
+    (if (or call (eq status 'ok))
+        (e-base-tools--bash-finish-value collector call status suffix)
+      (signal 'e-base-tools-bash-invalid
+              (list (e-base-tools--bash-collector-content collector suffix))))))
+
+(defun e-base-tools--bash-work (directory)
+  "Return the work spec backing the bash tool rooted at DIRECTORY."
+  (e-work-spec-create
+   :id "bash"
+   :description "Run a shell command through the base bash tool."
+   :execution 'process
+   :interactive-policy 'async
+   :owner 'base-tools
+   :command (lambda (arguments context)
+              (e-base-tools--bash-work-command directory arguments context))
+   :result-shaper #'e-base-tools--bash-work-result))
+
 (cl-defun e-base-tools--run-shell-command-start
     (command directory timeout &key on-done on-error on-request-start on-event)
   "Start shell COMMAND in DIRECTORY with optional TIMEOUT seconds.
 ON-DONE receives captured output.  ON-ERROR receives an Emacs condition list.
 ON-REQUEST-START receives the cancellable process request.  ON-EVENT receives
 streaming progress events."
-  (let* ((default-directory directory)
-         (command-prefix (e-base-tools--shell-command))
-         (shell-command (format "{\n%s\n} 2>&1" command))
-         (tool-context (e-tools-current-context))
-         (call (plist-get tool-context :tool-call))
-         (collector (e-base-tools--bash-collector-start tool-context))
-         (settled nil)
-         (last-progress-time nil)
-         (progress-pending nil)
-         process
-         progress-timer
-         timeout-timer
-         request)
-    (cl-labels
-        ((cleanup
-          ()
-          (when (timerp timeout-timer)
-            (cancel-timer timeout-timer))
-          (when (timerp progress-timer)
-            (cancel-timer progress-timer)))
-         (emit-progress
-          ()
-          (when (and on-event
-                     (> (e-base-tools--bash-collector-total-bytes collector) 0))
-            (when (timerp progress-timer)
-              (cancel-timer progress-timer))
-            (setq progress-timer nil)
-            (setq progress-pending nil)
-            (setq last-progress-time (float-time))
-            (funcall on-event
-                     'tool-progress
-                     (e-base-tools--bash-progress-payload collector call))))
-         (request-progress
-          ()
-          (when on-event
-            (setq progress-pending t)
-            (let* ((interval (max 0 e-base-tools--bash-progress-interval))
-                   (now (float-time))
-                   (elapsed (and last-progress-time
-                                 (- now last-progress-time))))
-              (cond
-               ((or (zerop interval)
-                    (not last-progress-time)
-                    (and elapsed (>= elapsed interval)))
-                (emit-progress))
-               ((not (timerp progress-timer))
-                (setq progress-timer
-                      (run-at-time
-                       (max 0 (- interval (or elapsed 0)))
-                       nil
-                       (lambda ()
-                         (setq progress-timer nil)
-                         (when (and progress-pending (not settled))
-                           (emit-progress))))))))))
-         (finish
-          (status &optional suffix)
-          (unless settled
-            (when (and on-event
-                       (> (e-base-tools--bash-collector-total-bytes collector)
-                          0))
-              (emit-progress))
-            (setq settled t)
-            (let ((value (e-base-tools--bash-finish-value
-                          collector
-                          call
-                          status
-                          suffix)))
-              (cleanup)
-              (if (or (eq status 'ok) call)
-                  (when on-done
-                    (funcall on-done value))
-                (when on-error
-                  (funcall on-error
-                           (list 'e-base-tools-bash-invalid value)))))))
-         (cancel
-          ()
-          (unless settled
-            (setq settled t)
-            (when (timerp timeout-timer)
-              (cancel-timer timeout-timer))
-            (when (timerp progress-timer)
-              (cancel-timer progress-timer))
-            (when (and process (process-live-p process))
-              (kill-process process)))
-          t))
-      (setq process
-            (make-process
-             :name "e-base-bash"
-             :command (append command-prefix (list shell-command))
-             :connection-type 'pipe
-             :coding 'utf-8-unix
-             :noquery t
-             :filter
-             (lambda (_proc chunk)
-               (e-base-tools--bash-collector-append collector chunk)
-               (request-progress))
-             :sentinel
-             (lambda (proc _event)
-               (when (and (not settled)
-                          (memq (process-status proc) '(exit signal)))
-                 (let ((exit-code (process-exit-status proc)))
-                   (if (zerop exit-code)
-                       (finish 'ok)
-                     (finish
-                      'error
-                      (format "Command exited with code %d"
-                              exit-code))))))))
-      (set-process-query-on-exit-flag process nil)
-      (setq request
-            (e-tools-request-create
-             :cancel #'cancel
-             :metadata (list :transport 'process
-                             :process process
-                             :output-file
-                             (e-base-tools--bash-collector-output-file collector)
-                             :output-uri
-                             (e-base-tools--bash-collector-output-uri collector)
-                             :cancellable t)))
-      (when on-request-start
-        (funcall on-request-start request))
-      (when timeout
-        (setq timeout-timer
-              (run-at-time
-               timeout nil
-               (lambda ()
-                 (unless settled
-                   (when (process-live-p process)
-                     (kill-process process))
-                   (finish
-                    'error
-                    (format "Command timed out after %s seconds"
-                            timeout)))))))
-      request)))
+  (let* ((context (e-tools-current-context))
+         (arguments (list :command command :timeout timeout))
+         (handle (e-work-start
+                  (e-base-tools--bash-work directory)
+                  arguments
+                  :context context
+                  :on-done (lambda (value)
+                             (when on-done
+                               (funcall on-done value)))
+                  :on-error (lambda (err)
+                              (when on-error
+                                (funcall on-error err)))
+                  :on-progress
+                  (lambda (payload)
+                    (when on-event
+                      (funcall on-event 'tool-progress payload)))))
+         (request (e-tools-request-create
+                   :cancel (lambda ()
+                             (e-work-cancel handle)
+                             t)
+                   :metadata (append
+                              (list :transport 'work
+                                    :work-id (e-work-handle-id handle)
+                                    :work-handle handle)
+                              (e-work-handle-metadata handle)))))
+    (when on-request-start
+      (funcall on-request-start request))
+    request))
 
 (defun e-base-tools--run-shell-command (command directory timeout)
   "Run shell COMMAND in DIRECTORY with optional TIMEOUT seconds."
@@ -1924,21 +1888,7 @@ streaming progress events."
                                             (:type "string"
                                              :description "Compact summary of why these resources matter."))))
                  :required ["command"])
-   :start
-   (cl-function
-    (lambda (&key arguments on-done on-error on-request-start
-                  on-event &allow-other-keys)
-      (let* ((command (e-base-tools--argument-string arguments :command))
-             (timeout (or (e-base-tools--optional-positive-number arguments :timeout)
-                          e-base-tools-default-shell-timeout)))
-        (e-base-tools--run-shell-command-start
-         command
-         directory
-         timeout
-         :on-request-start on-request-start
-         :on-event on-event
-         :on-done on-done
-         :on-error on-error))))))
+   :work (e-base-tools--bash-work directory)))
 
 (provide 'e-base-tools)
 

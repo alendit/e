@@ -285,39 +285,169 @@ This function is rejected from interactive hot paths."
              (args (plist-get command :args))
              (directory (or (plist-get command :directory) default-directory))
              (ok-statuses (or (plist-get command :ok-statuses) '(0)))
+             (name (or (plist-get command :name) "e-work-process"))
+             (on-output (plist-get command :on-output))
+             (progress (plist-get command :progress))
+             (progress-interval (or (plist-get command :progress-interval) 0))
+             (timeout (or (plist-get command :timeout)
+                          (e-work--call (e-work-spec-timeout spec)
+                                        arguments context)))
+             (finish-on-nonzero (plist-get command :finish-on-nonzero))
+             (finish-on-timeout (plist-get command :finish-on-timeout))
+             (capture-output
+              (if (plist-member command :capture-output)
+                  (plist-get command :capture-output)
+                (not on-output)))
+             (state (plist-get command :state))
              (stdout (generate-new-buffer " *e-work-process-stdout*"))
              (stderr (generate-new-buffer " *e-work-process-stderr*"))
-             process)
+             process
+             progress-timer
+             timeout-timer
+             last-progress-time
+             progress-pending)
         (unless (stringp program)
           (signal 'e-work-invalid-spec
                   (list "Process work requires a string :program")))
         (cl-labels
             ((cleanup (_handle)
+               (when (timerp progress-timer)
+                 (cancel-timer progress-timer))
+               (when (timerp timeout-timer)
+                 (cancel-timer timeout-timer))
                (when (buffer-live-p stdout)
                  (kill-buffer stdout))
                (when (buffer-live-p stderr)
                  (kill-buffer stderr)))
+             (terminal-p ()
+               (e-request-terminal-p (e-work-handle-lifecycle handle)))
+             (ok-status-p (status)
+               (or (eq ok-statuses t)
+                   (member status ok-statuses)))
+             (insert-output (chunk)
+               (when (and capture-output (buffer-live-p stdout))
+                 (with-current-buffer stdout
+                   (insert chunk))))
+             (progress-payload ()
+               (when progress
+                 (funcall progress handle process state)))
+             (emit-progress ()
+               (when-let ((payload (progress-payload)))
+                 (when (timerp progress-timer)
+                   (cancel-timer progress-timer))
+                 (setq progress-timer nil)
+                 (setq progress-pending nil)
+                 (setq last-progress-time (float-time))
+                 (e-work-progress handle payload)))
+             (request-progress ()
+               (when progress
+                 (setq progress-pending t)
+                 (let* ((interval (max 0 progress-interval))
+                        (now (float-time))
+                        (elapsed (and last-progress-time
+                                      (- now last-progress-time))))
+                   (cond
+                    ((or (zerop interval)
+                         (not last-progress-time)
+                         (and elapsed (>= elapsed interval)))
+                     (emit-progress))
+                    ((not (timerp progress-timer))
+                     (setq progress-timer
+                           (run-at-time
+                            (max 0 (- interval (or elapsed 0)))
+                            nil
+                            (lambda ()
+                              (setq progress-timer nil)
+                              (when (and progress-pending
+                                         (not (terminal-p)))
+                                (emit-progress))))))))))
+             (raw-result (status reason &optional suffix exit-code)
+               (let ((stdout-text (e-work--buffer-string stdout))
+                     (stderr-text (e-work--buffer-string stderr)))
+                 (list :status status
+                       :reason reason
+                       :exit-code exit-code
+                       :stdout stdout-text
+                       :stderr stderr-text
+                       :lines (split-string stdout-text "\n" t)
+                       :process process
+                       :command (cons program args)
+                       :state state
+                       :suffix suffix)))
+             (finish-with-raw (raw)
+               (condition-case err
+                   (e-work-finish
+                    handle
+                    (e-work--shape-result spec raw arguments context))
+                 (error
+                  (e-work-fail handle err))))
              (finish-process ()
-               (let* ((status (process-exit-status process))
-                      (stdout-text (e-work--buffer-string stdout))
-                      (stderr-text (e-work--buffer-string stderr)))
-                 (if (member status ok-statuses)
-                     (e-work-finish
+               (unless (terminal-p)
+                 (when progress
+                   (emit-progress))
+                 (let* ((status (process-exit-status process))
+                        (tool-status (if (ok-status-p status) 'ok 'error))
+                        (stderr-text (e-work--buffer-string stderr)))
+                   (cond
+                    ((ok-status-p status)
+                     (finish-with-raw
+                      (raw-result tool-status 'exit nil status)))
+                    (finish-on-nonzero
+                     (finish-with-raw
+                      (raw-result
+                       tool-status
+                       'exit
+                       (format "%s exited with status %s" program status)
+                       status)))
+                    (t
+                     (e-work-fail
                       handle
-                      (e-work--shape-result
-                       spec
-                       (list :exit-code status
-                             :stdout stdout-text
-                             :stderr stderr-text
-                             :lines (split-string stdout-text "\n" t)
-                             :process process
-                             :command (cons program args))
-                       arguments context))
+                      (list 'e-work-process-failed
+                            (format "%s failed with exit status %s: %s"
+                                    program status
+                                    (string-trim stderr-text)))))))))
+             (finish-signal ()
+               (unless (terminal-p)
+                 (when progress
+                   (emit-progress))
+                 (if finish-on-nonzero
+                     (finish-with-raw
+                      (raw-result
+                       'error
+                       'signal
+                       (format "%s was interrupted" program)
+                       (process-exit-status process)))
                    (e-work-fail
                     handle
                     (list 'e-work-process-failed
-                          (format "%s failed with exit status %s: %s"
-                                  program status (string-trim stderr-text))))))))
+                          (format "%s was interrupted" program))))))
+             (finish-timeout ()
+               (unless (terminal-p)
+                 (when progress
+                   (emit-progress))
+                 (let ((suffix (or (plist-get command :timeout-message)
+                                   (format "%s timed out after %s seconds"
+                                           program timeout))))
+                   (if finish-on-timeout
+                       (finish-with-raw
+                        (raw-result 'error 'timeout suffix nil))
+                     (e-work-fail
+                      handle
+                      (list 'e-work-process-failed suffix))))
+                 (when (and process (process-live-p process))
+                   (kill-process process))))
+             (record-output (_proc chunk)
+               (unless (terminal-p)
+                 (condition-case err
+                     (progn
+                       (insert-output chunk)
+                       (when on-output
+                         (funcall on-output handle process chunk state))
+                       (request-progress))
+                   (error
+                    (when (and process (process-live-p process))
+                      (kill-process process))
+                    (e-work-fail handle err))))))
           (e-work--add-cleanup handle #'cleanup)
           (setf (e-work-handle-cancel-function handle)
                 (lambda (_handle)
@@ -328,29 +458,33 @@ This function is rejected from interactive hot paths."
                 (let ((default-directory directory))
                   (setq process
                         (make-process
-                         :name "e-work-process"
+                         :name name
                          :buffer stdout
                          :stderr stderr
                          :command (cons program args)
-                         :connection-type 'pipe
-                         :coding 'utf-8-unix
+                         :connection-type
+                         (or (plist-get command :connection-type) 'pipe)
+                         :coding (or (plist-get command :coding)
+                                     'utf-8-unix)
                          :noquery t
+                         :filter (when (or on-output progress)
+                                   #'record-output)
                          :sentinel
                          (lambda (proc _event)
                            (when (and (eq proc process)
                                       (memq (process-status proc)
                                             '(exit signal)))
                              (if (eq (process-status proc) 'signal)
-                                 (e-work-fail
-                                  handle
-                                  (list 'e-work-process-failed
-                                        (format "%s was interrupted" program)))
+                                 (finish-signal)
                                (finish-process)))))))
                   (set-process-query-on-exit-flag process nil)
                   (setf (e-work-handle-metadata handle)
                         (append (e-work-handle-metadata handle)
                                 (list :process process
                                       :transport 'process)))
+                  (when timeout
+                    (setq timeout-timer
+                          (run-at-time timeout nil #'finish-timeout)))
                   (setq started t)
                   handle)
               (unless started

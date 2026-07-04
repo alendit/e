@@ -23,6 +23,7 @@
 (require 'e-harness)
 (require 'e-session)
 (require 'e-tools)
+(require 'e-work)
 (require 'e-dev-profile)
 
 (declare-function e-chat-open "e-chat")
@@ -914,6 +915,80 @@ artifacts under `e-dev-perf-run-directory'."
     (list :tool.lifecycle-event.count events
           :tool.dispatch.count 1)))
 
+(defun e-dev-perf--scenario-work-cheap-run (_state)
+  "Run cheap work lifecycle start/settle scenario."
+  (let ((spec (e-work-spec-create
+               :id "perf-cheap-work"
+               :description "Cheap work performance fixture."
+               :execution 'cheap
+               :interactive-policy 'async
+               :owner 'e-work
+               :runner (lambda (arguments _context)
+                         (plist-get arguments :value))))
+        (handles nil)
+        (finished 0))
+    (e-dev-perf--profile-spans
+     (lambda ()
+       (dotimes (index 100)
+         (push
+          (e-work-start
+           spec
+           (list :value index)
+           :context '(:turn-id "perf-turn")
+           :on-done (lambda (_result)
+                      (setq finished (1+ finished))))
+          handles)))
+     nil)
+    (list :work.start.count (length handles)
+          :work.handle.count (cl-count-if #'e-work-handle-p handles)
+          :work.finished.count finished)))
+
+(defun e-dev-perf--scenario-work-tool-render-run (_state)
+  "Run work-backed render tool dispatch scenario."
+  (let* ((registry (e-tools-registry-create))
+         (done 0)
+         (requests nil)
+         (spec (e-work-spec-create
+                :id "perf-render-tool"
+                :description "Render work tool performance fixture."
+                :execution 'render
+                :interactive-policy 'async
+                :owner 'e-work
+                :runner (lambda (arguments _context)
+                          (plist-get arguments :text)))))
+    (e-tools-register
+     registry
+     :name "perf_render_tool"
+     :description "Return text through render work."
+     :work spec)
+    (let ((metrics
+           (e-dev-perf--profile-spans
+            (lambda ()
+              (dotimes (index 25)
+                (e-tools-start
+                 registry
+                 (list :id (format "call-%d" index)
+                       :name "perf_render_tool"
+                       :arguments (list :text "ok" :delay 0))
+                 :on-request-start (lambda (request)
+                                     (push request requests))
+                 :on-done (lambda (_result)
+                            (setq done (1+ done)))
+                 :on-error (lambda (err)
+                             (signal (car err) (cdr err)))))
+              (let ((deadline (+ (float-time) 1.0)))
+                (while (and (< done 25)
+                            (< (float-time) deadline))
+                  (accept-process-output nil 0.01)))
+              (unless (= done 25)
+                (signal 'e-work-error
+                        (list "Timed out waiting for perf render work"))))
+            '(tool.start))))
+      (append
+       metrics
+       (list :work.tool.request.count (length requests)
+             :work.tool.finished.count done)))))
+
 (defun e-dev-perf-register-default-scenarios ()
   "Register built-in performance scenarios."
   (interactive)
@@ -993,7 +1068,25 @@ artifacts under `e-dev-perf-run-directory'."
       :run #'e-dev-perf--scenario-tool-lifecycle-run
       :samples 5
       :warmups 1
-      :tags '(tools)))))
+      :tags '(tools)))
+    (e-dev-perf-register-scenario
+     (e-dev-perf-scenario-create
+      :id "work.lifecycle-cheap"
+      :title "Cheap work lifecycle fixture"
+      :owner 'e-work
+      :run #'e-dev-perf--scenario-work-cheap-run
+      :samples 5
+      :warmups 1
+      :tags '(work lifecycle)))
+    (e-dev-perf-register-scenario
+     (e-dev-perf-scenario-create
+      :id "work.tool-render-dispatch"
+      :title "Work-backed render tool dispatch fixture"
+      :owner 'e-work
+      :run #'e-dev-perf--scenario-work-tool-render-run
+      :samples 5
+      :warmups 1
+      :tags '(work tools render)))))
 
 (provide 'e-dev-perf)
 

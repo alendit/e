@@ -19,9 +19,12 @@ Source:
 - =lisp/core/e-resources.el= and =lisp/core/e-harness.el= -- resource method work
   slot and resource-operation adapter.
 - =lisp/layers/web/e-web-tools.el= -- =web_fetch= as URL work.
-- =lisp/layers/base/e-base-tools.el= -- file glob/search as process work.
+- =lisp/layers/base/e-base-tools.el= -- file glob/search and the streaming
+  =bash= tool as process work.
 - =lisp/layers/agents/e-task-queue-actions.el= -- enqueue as agent-task work.
 - =lisp/shells/chat/e-chat.el= -- deferred render jobs as render work.
+- =Eldev= -- source subdirectories are on =load-path= during byte-compilation
+  so direct layer compiles see sibling modules.
 - Grimoire project-local source action files -- =sources-graphify-refresh= as
   process work.
 
@@ -31,14 +34,52 @@ Tests:
 - Adapter coverage in =test/e-tools-test.el=, =test/e-actions-test.el=,
   =test/e-task-queue-actions-test.el=, =test/e-base-tools-test.el=,
   =test/e-web-tools-test.el=, and =test/e-chat-test.el=.
+- Deterministic opt-in e2e coverage in =e2e/e-work-e2e-test.el=.
+- Work API performance scenarios in =lisp/dev/e-dev-perf.el=:
+  =work.lifecycle-cheap= and =work.tool-render-dispatch=.
 - Grimoire source tests for graphify work shape.
 
 * Validation
 
 - =rtk eldev test -f test/e-work-test.el -f test/e-tools-test.el -f test/e-actions-test.el -f test/e-task-queue-actions-test.el -f test/e-web-tools-test.el -f test/e-base-tools-test.el -f test/e-chat-test.el=
   passed: 395 expected, 1 skipped.
+- =rtk eldev test -f test/e-work-test.el -f test/e-base-tools-test.el=
+  passed: 49 expected after moving =bash= to =:work= and adding process-stream
+  progress coverage.
+- =rtk eldev test -f test/e-work-test.el -f test/e-tools-test.el -f test/e-base-tools-test.el -f test/e-nonblocking-sweep-test.el=
+  passed: 80 expected after the bash migration.
 - =emacs -Q --batch --eval "(setq load-prefer-newer t)" -l /Users/dimitrivorona/projects/org/grimoire/.e/layers/topic/test/sources-test.el -f ert-run-tests-batch-and-exit=
   passed: 19 expected.
+- =rtk eldev test -f test/e-work-test.el -f test/e-tools-test.el -f test/e-dev-perf-test.el=
+  passed: 46 expected.
+- =E_E2E=1 rtk eldev test -f e2e/e-provider-continuation-e2e-test.el -f e2e/e-session-restart-e2e-test.el -f e2e/e-work-e2e-test.el=
+  passed: 3 expected.
+- =E_E2E=1 E_E2E_TIMEOUT_SECONDS=120 rtk eldev test -f e2e/e-live-e2e-test.el=
+  skipped all 10 live tests because =E_E2E_CONFIG= was not set.
+- =rtk eldev compile= passed after adding the e2e/perf coverage and the Eldev
+  source-load-path fix.
+- =rtk eldev compile= passed after moving =bash= to =:work= and extending the
+  process carrier with streaming progress hooks.
+- =rtk eldev eval "(progn (require 'e-dev-perf) (let ((run (e-dev-perf-run :owner 'e-work :write-artifacts t))) (princ (e-dev-perf-format-report run))))"=
+  wrote =.e/perf-runs/20260704-102021-000001.json= and reported Work metrics:
+  =work.lifecycle-cheap= started/finished 100 handles per sample, median
+  =elapsed-ms= 3.583; =work.tool-render-dispatch= completed 25 work-backed tool
+  requests per sample, median =tool.start.ms= 0.684 and =elapsed-ms= 19.811.
+  Verdicts were skipped because reviewed Work baselines do not exist yet.
+- =rtk eldev eval "(progn (require 'e-dev-perf) (let ((run (e-dev-perf-run :write-artifacts t))) (princ (e-dev-perf-format-report run))))"=
+  wrote =.e/perf-runs/20260704-102026-000001.json= and reported
+  =regression=0=, =warning=0=, =improvement=7=, =noisy=1=, =skipped=54=.
+- =rtk eldev test= passed: 1446 expected, 1 skipped, 0 unexpected out of 1447
+  tests.  The nonblocking sweep inventory was updated to include the reviewed
+  batch/dev Work API waits and to avoid counting prose as a blocking call site.
+- =emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"=
+  reloaded the running Emacs.
+- A follow-up live source load of =e-work.el= and =e-base-tools.el= refreshed
+  the changed process-carrier function body in the running Emacs; a bounded live
+  probe of the registered =bash= tool returned =(:transport work :work-handle t
+  :state finished :status ok :content "live")=.
+- Live probe after reload confirmed the default perf registry contains
+  =work.lifecycle-cheap= and =work.tool-render-dispatch=.
 
 * Findings
 

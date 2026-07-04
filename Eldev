@@ -9,6 +9,29 @@
 ;; otherwise treat them as Lisp sources.
 (setenv "COPYFILE_DISABLE" "1")
 
+(let ((root (file-name-directory (or load-file-name default-directory))))
+  (dolist (subdirectory
+           (reverse
+            '("lisp/core"
+              "lisp/layers"
+              "lisp/layers/agents"
+              "lisp/layers/base"
+              "lisp/layers/harness"
+              "lisp/layers/emacs"
+              "lisp/layers/evidence"
+              "lisp/layers/web"
+              "lisp/layers/text-editing"
+              "lisp/layers/org-canvas"
+              "lisp/layers/project-local"
+              "lisp/layers/chat"
+              "lisp/defaults"
+              "lisp/shells"
+              "lisp/shells/chat"
+              "lisp/adapters/openai"
+              "lisp/adapters/anthropic"
+              "lisp/dev")))
+    (add-to-list 'load-path (expand-file-name subdirectory root))))
+
 (setf eldev-test-framework 'ert)
 
 ;; Live e2e tests intentionally sit outside the default test fileset because
