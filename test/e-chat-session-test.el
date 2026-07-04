@@ -19,6 +19,7 @@
 (require 'e-chat-session)
 (require 'e-harness)
 (require 'e-session)
+(require 'e-work)
 
 (ert-deftest e-chat-session-test-submit-validates-and-queues-prompt ()
   "Submitting validates prompt text and queues an async harness turn."
@@ -301,8 +302,8 @@
                       :set-model :set-effort
                       :attach-context :detach-context :context))
       (should (functionp (e-capabilities-action capability action))))
-    (should (functionp
-             (e-action-start
+    (should (e-work-spec-p
+             (e-action-work
               (e-capabilities-action-spec capability :compact))))))
 
 (ert-deftest e-chat-session-test-attachments-are-current-state-context ()

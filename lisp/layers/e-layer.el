@@ -12,12 +12,14 @@
 ;;; Code:
 
 (require 'e-action-resources)
+(require 'e-backend)
 (require 'e-capabilities)
 (require 'e-context-inspection)
 (require 'e-harness)
 (require 'e-layer-selection)
 (require 'e-layers)
 (require 'e-runtime-context)
+(require 'e-work)
 
 (define-error 'e-layer-invalid-tool-context
   "e self-management tool context is invalid")
@@ -75,9 +77,9 @@
         :tokens-before (plist-get record :tokens-before)
         :tokens-kept (plist-get record :tokens-kept)))
 
-(cl-defun e-layer--compact-session-action-start
+(cl-defun e-layer--compact-session-action-request
     (context arguments &key on-done on-error &allow-other-keys)
-  "Start compacting the current action context session."
+  "Request compaction for the current action context session."
   (let ((harness (plist-get context :harness))
         (session-id (plist-get context :session-id))
         (turn-id (plist-get context :turn-id)))
@@ -101,11 +103,41 @@
                            (e-layer--compact-session-action-result record))))
      :on-error on-error)))
 
+(defun e-layer--compact-session-action-work-runner (handle arguments context)
+  "Start session compaction action ARGUMENTS from action CONTEXT on HANDLE."
+  (let ((request
+         (e-layer--compact-session-action-request
+          context arguments
+          :on-done (lambda (result)
+                     (e-work-finish handle result))
+          :on-error (lambda (err)
+                      (e-work-fail handle err)))))
+    (setf (e-work-handle-cancel-function handle)
+          (lambda (_handle)
+            (when (e-backend-request-p request)
+              (e-backend-cancel-request request))
+            t))
+    (setf (e-work-handle-metadata handle)
+          (append (e-work-handle-metadata handle)
+                  (list :operation 'session-compaction
+                        :request request)))
+    :deferred))
+
+(defun e-layer--compact-session-action-work ()
+  "Return Work spec for the session compaction action."
+  (e-work-spec-create
+   :id "session_compaction"
+   :description "Compact the current session context during this agent turn."
+   :execution 'cooperative
+   :interactive-policy 'async
+   :owner 'actions
+   :runner #'e-layer--compact-session-action-work-runner))
+
 (defun e-layer--session-compaction-action ()
   "Return the session compaction action descriptor."
   (e-action-create
    :caller #'e-layer--compact-session-action
-   :start #'e-layer--compact-session-action-start
+   :work (e-layer--compact-session-action-work)
    :description "Compact the current session context during this agent turn."
    :parameters '(:type "object"
                  :properties (:instructions

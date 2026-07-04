@@ -12,10 +12,12 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'e-backend)
 (require 'e-capabilities)
 (require 'e-context)
 (require 'e-harness)
 (require 'e-session)
+(require 'e-work)
 (require 'subr-x)
 
 (cl-defun e-chat-session-submit
@@ -221,18 +223,18 @@ attachment."
   "Return CONTEXT session id for a chat-session action."
   (plist-get context :session-id))
 
-(defun e-chat-session--action (handler caller &optional parameters start)
+(defun e-chat-session--action (handler caller &optional parameters work)
   "Return chat-session action descriptor for HANDLER."
   (e-action-create
    :handler handler
    :caller caller
    :parameters parameters
    :requires-session t
-   :start start))
+   :work work))
 
-(cl-defun e-chat-session--compact-action-start
+(cl-defun e-chat-session--compact-action-request
     (context arguments &key on-done on-error &allow-other-keys)
-  "Start chat-session compaction from action CONTEXT and ARGUMENTS."
+  "Request chat-session compaction from action CONTEXT and ARGUMENTS."
   (e-chat-session-compact-start
    (e-chat-session--action-harness context)
    (e-chat-session--action-session-id context)
@@ -242,6 +244,37 @@ attachment."
    :turn-id (plist-get context :turn-id)
    :on-done on-done
    :on-error on-error))
+
+(defun e-chat-session--compact-action-work-runner
+    (handle arguments context)
+  "Start chat-session compaction ARGUMENTS from action CONTEXT on HANDLE."
+  (let ((request
+         (e-chat-session--compact-action-request
+          context arguments
+          :on-done (lambda (record)
+                     (e-work-finish handle record))
+          :on-error (lambda (err)
+                      (e-work-fail handle err)))))
+    (setf (e-work-handle-cancel-function handle)
+          (lambda (_handle)
+            (when (e-backend-request-p request)
+              (e-backend-cancel-request request))
+            t))
+    (setf (e-work-handle-metadata handle)
+          (append (e-work-handle-metadata handle)
+                  (list :operation 'chat-session-compact
+                        :request request)))
+    :deferred))
+
+(defun e-chat-session--compact-action-work ()
+  "Return Work spec for the chat-session compact action."
+  (e-work-spec-create
+   :id "chat_session_compact"
+   :description "Compact the active chat session."
+   :execution 'cooperative
+   :interactive-policy 'async
+   :owner 'actions
+   :runner #'e-chat-session--compact-action-work-runner))
 
 (defun e-chat-session--uri-file-name (uri)
   "Return local filename for file URI, or nil."
@@ -424,7 +457,7 @@ in the next turn's context."
                      :properties (:instructions (:type "string")
                                   :keep_recent_tokens (:type "integer"))
                      :required [])
-                   #'e-chat-session--compact-action-start)
+                   (e-chat-session--compact-action-work))
                   :rename
                   (e-chat-session--action
                    #'e-chat-session-rename
