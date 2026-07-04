@@ -1199,7 +1199,7 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
                  (if (= attempts 1)
                      (funcall on-error
                               '(e-openai-request-timeout
-                                "provider timed out"))
+                                "request timed out"))
                    (funcall on-item
                             '(:type assistant-message :content "recovered"))
                    (funcall on-item '(:type done :reason stop))
