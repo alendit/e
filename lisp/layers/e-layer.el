@@ -59,7 +59,7 @@
     (unless (stringp session-id)
       (signal 'e-layer-invalid-tool-context
               (list "session compaction requires an active session id")))
-    (let ((record (e-harness-compact-session
+    (let ((record (e-harness-compact-session-batch
                    harness session-id
                    :instructions
                    (e-layer--compact-session-instructions arguments)

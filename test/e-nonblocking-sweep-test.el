@@ -48,6 +48,21 @@
     ("lisp/shells/chat/e-chat.el" "process-file" 2))
   "Audited blocking primitive counts for Feature 40.")
 
+(defconst e-nonblocking-sweep-test--legacy-sync-call-symbols
+  '("e-backend-stream"
+    "e-loop-run-turn"
+    "e-harness-compact-session"
+    "e-harness-follow-up"
+    "e-harness-prompt"
+    "e-harness-wait")
+  "Generic blocking compatibility APIs that production code must not call.")
+
+(defconst e-nonblocking-sweep-test--expected-legacy-sync-calls
+  '(("lisp/core/e-harness.el" "e-harness-follow-up" 1)
+    ("lisp/core/e-harness.el" "e-harness-prompt" 2)
+    ("lisp/core/e-harness.el" "e-harness-wait" 1))
+  "Audited generic sync calls kept inside compatibility wrappers only.")
+
 (defun e-nonblocking-sweep-test--root ()
   "Return the repository root for this test run."
   (file-name-as-directory
@@ -89,10 +104,40 @@
             (string< (format "%s:%s" (car a) (cadr a))
                      (format "%s:%s" (car b) (cadr b)))))))
 
+(defun e-nonblocking-sweep-test--scan-legacy-sync-calls ()
+  "Return generic blocking compatibility call counts in lisp sources."
+  (let* ((root (e-nonblocking-sweep-test--root))
+         (lisp-root (expand-file-name "lisp" root))
+         (regexp (format "(\\s-*\\(%s\\)\\_>"
+                         (regexp-opt
+                          e-nonblocking-sweep-test--legacy-sync-call-symbols)))
+         counts)
+    (dolist (file (directory-files-recursively lisp-root "\\.el\\'"))
+      (with-temp-buffer
+        (insert-file-contents file)
+        (goto-char (point-min))
+        (while (re-search-forward regexp nil t)
+          (setq counts
+                (e-nonblocking-sweep-test--record-count
+                 counts
+                 (file-relative-name file root)
+                 (match-string-no-properties 1))))))
+    (sort (mapcar (lambda (entry)
+                    (append (car entry) (list (cdr entry))))
+                  counts)
+          (lambda (a b)
+            (string< (format "%s:%s" (car a) (cadr a))
+                     (format "%s:%s" (car b) (cadr b)))))))
+
 (ert-deftest e-nonblocking-sweep-test-reviewed-blocking-sites ()
   "Every remaining blocking primitive in lisp/ is part of the reviewed inventory."
   (should (equal (e-nonblocking-sweep-test--scan)
                  e-nonblocking-sweep-test--expected-counts)))
+
+(ert-deftest e-nonblocking-sweep-test-no-production-legacy-sync-calls ()
+  "Generic blocking compatibility APIs stay confined to audited wrappers."
+  (should (equal (e-nonblocking-sweep-test--scan-legacy-sync-calls)
+                 e-nonblocking-sweep-test--expected-legacy-sync-calls)))
 
 (provide 'e-nonblocking-sweep-test)
 

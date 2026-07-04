@@ -827,7 +827,7 @@ artifacts under `e-dev-perf-run-directory'."
     (e-harness-create-session harness :id "turn-start")
     (e-dev-perf--profile-spans
      (lambda ()
-       (e-harness-prompt harness "turn-start" "hello"))
+       (e-harness-prompt-batch harness "turn-start" "hello"))
      '(harness.prompt harness.prompt-async harness.context
        harness.message-append loop.backend-start))))
 

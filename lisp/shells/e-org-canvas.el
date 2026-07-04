@@ -14,7 +14,6 @@
 ;;; Code:
 
 (require 'cl-lib)
-(require 'e-backend)
 (require 'e-canvas)
 (require 'e-chat)
 (require 'e-chat-session)
@@ -828,31 +827,10 @@ Org file."
     options))
 
 (defun e-org-canvas--suggest-file-name (harness session-id prompt buffer)
-  "Ask HARNESS backend to suggest a file name for PROMPT and BUFFER."
-  (let (message parts)
-    (condition-case nil
-        (e-backend-stream
-         (e-harness-backend harness)
-         :messages
-         (list
-          (list :role 'system
-                :content e-org-canvas--file-name-suggestion-instructions)
-          (list :role 'user
-                :content
-                (e-org-canvas--file-name-suggestion-context prompt buffer)))
-         :options (e-org-canvas--file-name-suggestion-options harness session-id)
-         :on-item
-         (lambda (item)
-           (pcase (plist-get item :type)
-             ('assistant-message
-              (setq message (plist-get item :content)))
-             ('assistant-delta
-              (push (or (plist-get item :content) "") parts)))))
-      (error nil))
-    (or (e-org-canvas--clean-file-name-suggestion
-         (or message
-             (and parts (string-join (nreverse parts) ""))))
-        (e-org-canvas--fallback-file-name-suggestion buffer))))
+  "Return a cheap file-name suggestion for PROMPT and BUFFER.
+HARNESS and SESSION-ID are kept for call-site compatibility."
+  (ignore harness session-id prompt)
+  (e-org-canvas--fallback-file-name-suggestion buffer))
 
 (defun e-org-canvas--maybe-save-new-buffer (harness session-id prompt)
   "Save a new unsaved Org Canvas before first PROMPT when safe."

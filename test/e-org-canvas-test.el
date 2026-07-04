@@ -1667,19 +1667,19 @@ relied on `e-chat--running-status-rendered-hook' to follow the bottom."
         (kill-buffer buffer))
       (delete-directory directory t))))
 
-(ert-deftest e-org-canvas-test-first_prompt_asks_backend_for_file_name ()
-  "The first prompt for a new unsaved canvas asks the backend for a file name."
+(ert-deftest e-org-canvas-test-first_prompt_does_not_ask_backend_for_file_name ()
+  "The first prompt for a new unsaved canvas names the file locally."
   (let* ((directory (file-name-as-directory
                      (make-temp-file "e-org-canvas-target-" t)))
-         captured-messages
+         backend-called
          (backend
           (e-backend-create
            :name "file-name-suggester"
            :stream
            (cl-function
             (lambda (&key messages options on-item)
-              (ignore options)
-              (setq captured-messages messages)
+              (ignore messages options)
+              (setq backend-called t)
               (funcall on-item
                        '(:type assistant-message
                          :content "knowledge-agenda-system"))))))
@@ -1700,14 +1700,11 @@ relied on `e-chat--running-status-rendered-hook' to follow the bottom."
            "session-1"
            "Let's design a knowledge and agenda management system for the repo")
           (should (equal (file-name-nondirectory buffer-file-name)
-                         "knowledge-agenda-system.org"))
-          (should captured-messages)
-          (should (string-match-p
-                   "knowledge and agenda management system"
-                   (plist-get (cadr captured-messages) :content))))
+                         "org-canvas.org"))
+          (should-not backend-called))
       (when-let ((buffer (find-buffer-visiting
                           (expand-file-name
-                           "knowledge-agenda-system.org"
+                           "org-canvas.org"
                            directory))))
         (kill-buffer buffer))
       (delete-directory directory t))))
@@ -1738,21 +1735,19 @@ relied on `e-chat--running-status-rendered-hook' to follow the bottom."
         (kill-buffer buffer))
       (delete-directory directory t))))
 
-(ert-deftest e-org-canvas-test-first_prompt_file_name_request_omits_tools ()
-  "File name suggestion requests use the session model options without tools."
+(ert-deftest e-org-canvas-test-first_prompt_file_name_does_not_request_backend ()
+  "File name suggestion does not make a synchronous backend request."
   (let* ((directory (file-name-as-directory
                      (make-temp-file "e-org-canvas-target-" t)))
          backend-called
-         captured-options
          (backend
           (e-backend-create
            :name "file-name-suggester"
            :stream
            (cl-function
             (lambda (&key messages options on-item)
-              (ignore messages)
+              (ignore messages options)
               (setq backend-called t)
-              (setq captured-options options)
               (funcall on-item
                        '(:type assistant-message
                          :content "tool-free-title"))))))
@@ -1777,13 +1772,10 @@ relied on `e-chat--running-status-rendered-hook' to follow the bottom."
            "session-1"
            "Name this canvas")
           (should (equal (file-name-nondirectory buffer-file-name)
-                         "tool-free-title.org"))
-          (should backend-called)
-          (should (equal (plist-get captured-options :model)
-                         "model-for-names"))
-          (should-not (plist-get captured-options :tools)))
+                         "org-canvas.org"))
+          (should-not backend-called))
       (when-let ((buffer (find-buffer-visiting
-                          (expand-file-name "tool-free-title.org" directory))))
+                          (expand-file-name "org-canvas.org" directory))))
         (kill-buffer buffer))
       (delete-directory directory t))))
 

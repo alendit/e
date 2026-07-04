@@ -1517,7 +1517,7 @@ the live dynamic providers needed for the model-facing request."
           (e-harness--emit-turn-event
            harness session-id turn-id 'compaction-summary-started
            (list :backend t :reason reason))
-          (e-backend-stream
+          (e-backend-stream-batch
            (e-harness-backend harness)
            :messages (e-compaction-summary-messages preparation)
            ;; Summarization is a pure text task.  Strip the tool set from the
@@ -1578,6 +1578,10 @@ the live dynamic providers needed for the model-facing request."
           harness session-id turn-id 'compaction-failed
           (list :message message :details details :reason reason))
 	         (signal (car err) (cdr err)))))))
+
+(defun e-harness-compact-session-batch (harness session-id &rest args)
+  "Synchronously compact SESSION-ID in HARNESS from explicit batch/test code."
+  (apply #'e-harness-compact-session harness session-id args))
 
 (defun e-harness--backend-work-request-metadata (handle)
   "Return provider-facing request metadata projected from backend work HANDLE."
@@ -1845,7 +1849,9 @@ also emitting the normal compaction failure event."
                                 :allow-split-turn nil
                                 :exclude-entry-ids exclude-entry-ids
                                 :turn-id active-turn-id))))
-          (apply #'e-harness-compact-session harness session-id args))
+          (apply #'e-harness-compact-session-start
+                 harness session-id
+                 (append args (list :on-error #'ignore))))
       (e-compaction-error nil))))
 
 (defun e-harness--cancel-active-request (entry)
@@ -2157,35 +2163,6 @@ When a turn produced multiple assistant messages, return the last one."
          :assistant-message
          (e-harness--turn-assistant-message harness session-id turn-id))))
 
-(cl-defun e-harness--run-prompt-turn
-    (harness session-id turn-id &key on-request-start)
-  "Run the queued prompt turn for SESSION-ID and TURN-ID in HARNESS."
-  (e-harness--profile-call
-   'harness.prompt-turn
-   (list :session-id session-id
-         :turn-id turn-id)
-   (lambda ()
-     (let ((context (e-harness-turn-context harness session-id turn-id)))
-       (e-loop-run-turn
-        :session-id session-id
-        :turn-id turn-id
-        :messages (plist-get context :messages)
-        :backend (e-harness-backend harness)
-        :tools (e-harness-tools harness session-id turn-id)
-        :tool-lifecycle (e-harness-tool-lifecycle harness session-id turn-id)
-        :options (plist-get context :options)
-        :on-event (lambda (type payload)
-                    (e-harness--emit-turn-event
-                     harness session-id turn-id type payload))
-        :on-request-start on-request-start
-        :refresh-messages
-        (lambda ()
-          (plist-get (e-harness-turn-context harness session-id turn-id)
-                     :messages))
-        :append-message
-        (lambda (message)
-          (e-harness--append-message harness session-id turn-id message)))))))
-
 (cl-defun e-harness--run-prompt-turn-async
     (harness session-id turn-id &key on-request-start on-done on-error
              cancelled-p append-message on-event context drain-pending-input)
@@ -2236,7 +2213,9 @@ When a turn produced multiple assistant messages, return the last one."
 
 (cl-defun e-harness-prompt (harness session-id prompt &key metadata)
   "Append PROMPT and run one backend turn for SESSION-ID in HARNESS.
-This is the synchronous convenience wrapper over `e-harness-prompt-async'."
+This is the compatibility wrapper over `e-harness-prompt-async'.  Prefer
+`e-harness-prompt-async' for interactive code and `e-harness-prompt-batch' for
+explicit batch/test callers."
   (when (e-request-hot-path-active-p)
     (e-request-hot-path-blocking-error 'e-harness-prompt))
   (e-harness--profile-call
@@ -2244,7 +2223,7 @@ This is the synchronous convenience wrapper over `e-harness-prompt-async'."
    (list :session-id session-id)
    (lambda ()
      (e-harness-prompt-async harness session-id prompt :metadata metadata)
-     (let ((entry (e-harness-wait harness session-id)))
+     (let ((entry (e-harness-wait-batch harness session-id)))
        (pcase (plist-get entry :status)
          ('done
           (plist-get entry :result))
@@ -2257,6 +2236,10 @@ This is the synchronous convenience wrapper over `e-harness-prompt-async'."
          ('cancelled
           (signal 'e-harness-no-active-turn (list session-id)))
          (_ entry))))))
+
+(cl-defun e-harness-prompt-batch (harness session-id prompt &key metadata)
+  "Synchronously prompt SESSION-ID in HARNESS from explicit batch/test code."
+  (e-harness-prompt harness session-id prompt :metadata metadata))
 
 (cl-defun e-harness-prompt-async
     (harness session-id prompt &key delay metadata)
@@ -2480,8 +2463,12 @@ cancellation.  SESSION-ID identifies the session."
 	       turn-id))))
 
 (cl-defun e-harness-follow-up (harness session-id prompt &key metadata)
-  "Submit PROMPT as the next turn for SESSION-ID in HARNESS."
+  "Compatibility wrapper for a synchronous follow-up prompt."
   (e-harness-prompt harness session-id prompt :metadata metadata))
+
+(cl-defun e-harness-follow-up-batch (harness session-id prompt &key metadata)
+  "Synchronously prompt a follow-up from explicit batch/test code."
+  (e-harness-follow-up harness session-id prompt :metadata metadata))
 
 (defun e-harness--run-session-reset-hooks (harness session-id)
   "Run `:session-reset' hooks for HARNESS SESSION-ID."
@@ -2538,9 +2525,10 @@ cancellation.  SESSION-ID identifies the session."
       (signal 'e-harness-no-active-turn (list session-id)))))
 
 (defun e-harness-wait (harness session-id &optional timeout)
-  "Wait for SESSION-ID's async turn in HARNESS to settle.
+  "Compatibility wrapper that waits for SESSION-ID's async turn in HARNESS.
 TIMEOUT is in seconds.  Return the settled active-turn entry and clear it from
-active state when it is no longer running."
+active state when it is no longer running.  Prefer callbacks/status in
+interactive code and `e-harness-wait-batch' in explicit batch/test callers."
   (when (e-request-hot-path-active-p)
     (e-request-hot-path-blocking-error 'e-harness-wait))
   (let ((deadline (and timeout (+ (float-time) timeout)))
@@ -2560,6 +2548,10 @@ active state when it is no longer running."
                (not (e-harness--active-turn-running-p entry)))
       (remhash session-id (e-harness-active-turns harness)))
     entry))
+
+(defun e-harness-wait-batch (harness session-id &optional timeout)
+  "Wait for SESSION-ID's async turn in HARNESS from explicit batch/test code."
+  (e-harness-wait harness session-id timeout))
 
 (provide 'e-harness)
 

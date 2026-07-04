@@ -42,10 +42,12 @@
 
 (cl-defun e-backend-stream
     (backend &key messages options on-item on-request-start)
-  "Stream a backend turn through BACKEND.
+  "Compatibility wrapper that synchronously streams a backend turn through BACKEND.
 MESSAGES and OPTIONS are backend-neutral plists/lists.  ON-ITEM receives
 backend-neutral stream items.  ON-REQUEST-START receives an optional
-`e-backend-request' handle when the adapter can expose request state."
+`e-backend-request' handle when the adapter can expose request state.
+Prefer `e-backend-start' for interactive code and `e-backend-stream-batch' for
+explicit batch/test callers."
   (when (e-request-hot-path-active-p)
     (e-request-hot-path-blocking-error 'e-backend-stream))
   (cond
@@ -79,6 +81,10 @@ backend-neutral stream items.  ON-REQUEST-START receives an optional
    (t
     (signal 'wrong-type-argument
             (list 'functionp (e-backend--stream backend))))))
+
+(defun e-backend-stream-batch (backend &rest args)
+  "Synchronously stream BACKEND with ARGS from explicit batch/test code."
+  (apply #'e-backend-stream backend args))
 
 (cl-defun e-backend-start
     (backend &key messages options on-item on-done on-error on-request-start)
@@ -117,7 +123,7 @@ receives an Emacs condition list.  ON-REQUEST-START receives an optional
                (unless cancelled
                  (condition-case err
                      (progn
-                       (e-backend-stream
+                       (e-backend-stream-batch
                         backend
                         :messages messages
                         :options options
