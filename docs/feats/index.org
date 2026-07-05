@@ -66,4 +66,4 @@ Status values for coding agents:
 | 53 | Planned | 53-e-doom-keymap/ | e Doom Keymap |
 | 54 | Planned | 54-activity-log-view/ | e Activity Log View |
 | 55 | Done | 55-generic-work-api/ | Generic Work API |
-| 56 | Planned | 56-session-resource/ | Session Resource |
+| 56 | Done | 56-session-resource/ | Session Resource |

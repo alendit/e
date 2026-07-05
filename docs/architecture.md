@@ -302,7 +302,7 @@ recreated by the factory/sync path and are excluded from the recorded
 | `e` | e | yes | `e-runtime-context`, `layer-selection`, `context-inspection`, `session-compaction` |
 | `e-dev` | e Dev | no | `context-inspection` |
 | `agents-std-context` | Agents Std Context | yes | `agents-std-context` |
-| `harness-base` | Harness Base | yes | `harness-base-context`, `session-tmp-resources`, `tool-output-truncation` |
+| `harness-base` | Harness Base | yes | `harness-base-context`, `session-tmp-resources`, `session-resources`, `tool-output-truncation` |
 | `os-base` | OS Base | yes | `base-guidance`, `file-handling`, `shell-process`, `output-style` |
 | `emacs-base` | Emacs Base | yes | `emacs-awareness`, `buffer-read`, `selection-context`, `buffer-edit`, `elisp-eval` |
 | `web` | Web | yes | `web` (Web Access) |
@@ -313,8 +313,9 @@ recreated by the factory/sync path and are excluded from the recorded
 
 The `e` layer is where runtime self-management lives: layer selection, context
 inspection, runtime context, and the `session-compaction` action. `harness-base`
-supplies harness-owned support (the `tmp://` resources and tool-output
-truncation guards) and is not optional user-facing behavior. `os-base` and
+supplies harness-owned support (the `tmp://` resources, read-only `session://`
+session resources, and tool-output truncation guards) and is not optional
+user-facing behavior. `os-base` and
 `emacs-base` are the execution surfaces (workspace files/shell and live Emacs
 buffers/elisp). `project-local` is an aggregate layer whose capabilities are
 discovered from the project root, so its concrete capability set is
@@ -331,6 +332,7 @@ their capabilities actually contributes:
 | --- | --- | --- |
 | `harness-base` | `harness-base-context` | Instructions only (priority 240): the reasoning-message guidance. No tools/resources. |
 | `harness-base` | `session-tmp-resources` | Resource methods for the `tmp://` scheme (session-scoped read/write/edit of temporary text resources). |
+| `harness-base` | `session-resources` | Read-only resource methods for the `session://` scheme, with glob-first discovery across the built-in `e` session store and configured opt-in engines. |
 | `harness-base` | `tool-output-truncation` | A `:post-tool-call` hook (`50-tool-output-truncation`) that replaces oversized tool output with a bounded preview plus metadata. |
 | `os-base` | `base-guidance` | Instructions only (priority 230): use workspace file/shell tools; never traverse outside the project. No tools/resources. |
 | `os-base` | `file-handling` | `resource_sync_status` tool + read/write/edit `file://` resource methods, scoped to workspace roots. |
@@ -405,7 +407,8 @@ awareness, buffer read/edit resources, elisp evaluation, and selection context.
 that persists file-backed buffer contents.
 
 Harness support capabilities live under `lisp/layers/harness/`. They own
-session-scoped `tmp://` resources and tool-output truncation hooks.
+session-scoped `tmp://` resources, read-only `session://` session projections,
+and tool-output truncation hooks.
 
 Optional capability layers include:
 

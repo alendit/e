@@ -16,6 +16,7 @@
 (require 'e-layers)
 (require 'e-raw-results)
 (require 'e-session-tmp-resources)
+(require 'e-session-resources)
 (require 'e-raw-result-cleanup)
 (require 'e-tool-output-truncation)
 
@@ -39,6 +40,7 @@
    :capabilities (list (e-harness-base-context-capability-create)
                        (e-raw-results-capability-create)
                        (e-session-tmp-capability-create)
+                       (e-session-resources-capability-create)
                        (e-tool-output-truncation-capability-create))))
 
 (provide 'e-harness-base)

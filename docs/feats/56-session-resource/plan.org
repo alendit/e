@@ -3,26 +3,31 @@
 
 * Status
 
-Planned
+Done
 
 * Goal
 
-Expose persisted =e= sessions as a read-only resource scheme for agents and host code.
+Expose persisted agent sessions as a read-only resource scheme for agents and host code.
 
-The first slice should let an agent discover prior sessions, inspect metadata, read a transcript or entry stream, and search session text through the existing resource operation tools.
+=e= sessions are always available through the built-in =e= engine.
+Additional local or remote engines can be configured explicitly.
+
+The first slice should let an agent discover prior sessions across enabled engines, inspect metadata, read a transcript or entry stream, and search session text through the existing resource operation tools.
 
 * Problem
 
-=e= has durable session storage, but the agent-facing surface is tied to the current session.
+=e= has durable session storage, and other installed agent engines such as Codex can have their own durable session stores.
+The agent-facing surface is still tied to the current =e= session.
 
 Today an agent can:
 
-- inspect the current session context through =chat-session/context= or =context-inspection=;
+- inspect the current session context through actions such as =chat-session/context=, which calls =e-harness-context= for a preview of the current session, or =context-inspection/export-context=, which writes the assembled LLM context to a URI;
 - search visible chat buffers through =buffer://= when those buffers are live;
-- inspect persisted session files only by knowing implementation paths and using file tools.
+- inspect persisted =e= session files only by knowing implementation paths and using file tools.
 
 That is not a semantic session API.
-It also pushes callers toward the session store's private filesystem layout.
+It also pushes callers toward private filesystem layouts for each engine.
+For non-=e= engines, the problem is worse because there is no shared discovery surface at all.
 
 A session is better modeled as a resource than as a new action family.
 The caller wants to list, read, and search addressable material.
@@ -30,21 +35,58 @@ There is no clear write or edit meaning yet, so the first version should be read
 
 * Resource scheme
 
-Add a =session://= scheme backed by the active harness's session store.
+Add a =session://= scheme backed by a small engine registry.
+The built-in =e= engine is always present and uses the active harness's session store.
+Additional engines can be registered through a configuration option.
 
-Initial URI shapes:
+Initial URI namespace:
 
-- =session://= lists sessions from the active store.
-- =session://<session-id>= reads one session summary and transcript overview.
-- =session://<session-id>/messages= reads normalized messages in insertion order.
-- =session://<session-id>/activity= reads durable activity events.
-- =session://<session-id>/events= reads session events.
-- =session://<session-id>/compactions= reads compaction records.
-- =session://<session-id>/provider-anchors= reads provider anchor records.
+- =session://= is a glob root that lists enabled session engines.
+- =session://<engine-id>/sessions/= is a glob root that lists sessions for one enabled engine.
+- =session://<engine-id>/sessions/<session-id>/= is a glob root that lists readable projections for one session.
+- =session://<engine-id>/sessions/<session-id>/<projection>= reads one concrete projection.
+
+The agent-facing rule should be simple: glob first, then read returned leaf URIs.
+Agents should not have to synthesize or memorize the full path grammar.
+The generated tool description should present this as a three-step workflow:
+
+1. Glob =session://= to discover engines.
+2. Glob =session://<engine-id>/sessions/= to discover sessions.
+3. Glob =session://<engine-id>/sessions/<session-id>/= to discover readable projections, then read one returned URI.
+
+Initial projection names can include:
+
+- =summary= for one session summary and transcript overview;
+- =messages= for normalized messages in insertion order;
+- =activity= for durable activity events when supported;
+- =events= for session events when supported;
+- =compactions= for compaction records when supported;
+- =provider-anchors= for provider anchor records when supported.
+
+Keep directory-like URIs for =glob= only.
+Do not make =session://=, =session://<engine-id>/sessions/=, or =session://<engine-id>/sessions/<session-id>/= readable.
+=read= should only work on leaf projection URIs returned by =glob= or documented as stable examples.
 
 The exact text format can be Org or plain text, but it must be stable enough for agent reading and search snippets.
 Prefer a human-readable text projection over raw JSON for the first slice.
 Raw JSON can be a later explicit variant if needed.
+
+* Engine configuration
+
+=e= is always registered as the built-in engine with id =e=.
+Additional engines are opt-in through a user option such as =e-session-resource-engines=.
+Each configured engine entry should declare a stable engine id, a display name, and an adapter that can list sessions and render supported subresources.
+Adapters can read local stores or remote APIs, but remote adapters must be explicit because they may send credentials or queries over the network.
+
+The first adapter contract should stay narrow:
+
+- list sessions;
+- render one session summary;
+- render messages or transcript text;
+- report which optional subresources are supported;
+- search rendered text, or allow the generic resource method to search the rendered projection.
+
+Codex can be a later configured engine once its local or remote session store shape is understood.
 
 * Resource operations
 
@@ -54,27 +96,31 @@ Register a =read= resource method for =session://=.
 
 The method should:
 
-- resolve sessions through the active harness's =e-harness-sessions= store;
-- use public =e-session= accessors instead of reading JSONL files directly;
-- preserve lazy loading for persistent sessions by calling accessors such as =e-session-get= and =e-session-messages=;
+- resolve the engine id first;
+- resolve =session://e/sessions/<session-id>/...= through the active harness's =e-harness-sessions= store;
+- use public =e-session= accessors for =e= sessions instead of reading JSONL files directly;
+- call configured engine adapters for non-=e= engines instead of assuming filesystem paths;
+- preserve lazy loading for persistent =e= sessions by calling accessors such as =e-session-get= and =e-session-messages=;
 - support existing read ranges only where they make sense for the rendered text;
-- fail clearly for unknown session ids and unsupported subpaths.
+- fail clearly for unknown engines, unknown session ids, and unsupported subpaths.
 
 ** Glob
 
 Register a =glob= resource method for =session://=.
 
-Listing =session://= should return compact entries for sessions sorted by =e-session-list=, newest first.
+Listing =session://= should return compact entries for enabled engines.
+Listing =session://e/sessions/= should return compact entries for =e= sessions sorted by =e-session-list=, newest first.
+Listing a configured non-=e= engine should use that engine adapter's list operation.
 
 Entries should include:
 
-- =:uri=, e.g. =session://01K...=;
+- =:uri=, e.g. =session://e/sessions/01K.../summary= for a readable projection or =session://e/sessions/01K.../= for a glob root;
 - =:name=, preferably the display title or session id;
 - =:kind=, e.g. =session=;
-- =:metadata= with stable fields such as =:id=, =:title=, =:created-at=, =:updated-at=, =:last-message-at=, =:project-root=, and =:harness-instance-id= when present.
+- =:metadata= with stable fields such as =:engine-id=, =:id=, =:title=, =:created-at=, =:updated-at=, =:last-message-at=, =:project-root=, and =:harness-instance-id= when present.
 
-A glob pattern should match session id and display title.
-Subpath listing can be small and explicit: listing =session://<session-id>= may return the known child resources above.
+A glob pattern should match engine id, session id, and display title.
+Subpath listing can be small and explicit: listing =session://<engine-id>/sessions/<session-id>/= may return the known readable child projections above.
 
 ** Search
 
@@ -82,11 +128,12 @@ Register a =search= resource method for =session://=.
 
 Search should inspect the text projection for selected sessions and return normal resource match records:
 
-- =:uri= pointing at the closest readable resource, such as =session://<id>/messages=;
+- =:uri= pointing at the closest readable resource, such as =session://<engine-id>/sessions/<id>/messages=;
 - =:line= and =:column= in the projection;
 - =:text= with the matched line.
 
 The first slice may use Emacs-native string search over rendered session text.
+It should search across enabled engines unless a glob or URI narrows the engine.
 It should honor the shared facade parameters: =:query=, =:glob=, =:case-sensitive=, =:whole-word=, =:multiline=, and =:limit=.
 
 * Read-only contract
@@ -110,9 +157,10 @@ Good candidate owners:
 
 Keep dependencies flowing toward core contracts:
 
-- resource methods depend on =e-resources= and =e-session=;
+- resource methods depend on =e-resources= and the engine adapter contract;
+- the built-in =e= adapter depends on =e-session=;
 - formatting helpers can live near the capability or in a small session projection module;
-- the session store remains the source of truth;
+- each engine store remains the source of truth for its own sessions;
 - no filesystem path assumptions should leak into callers.
 
 * Privacy and safety
@@ -120,8 +168,9 @@ Keep dependencies flowing toward core contracts:
 Sessions can contain private data, tool outputs, source snippets, and user text.
 The resource is agent-readable only when the layer is active, so the capability description must make that scope explicit.
 
-The first slice should not expose a cross-store global search.
-It should search only the current harness's active session store.
+The first slice should not expose an unbounded global search.
+It should search only the built-in =e= store and explicitly configured engines.
+Remote engines should be opt-in and should document what endpoint or storage they read.
 
 Add conservative limits for search and read projections.
 Large transcripts should be readable by range or by subresource instead of forcing one huge response.
@@ -146,14 +195,17 @@ Likely files:
 
 - =lisp/layers/e/e-session-resources.el= or nearby runtime-self-management layer file.
 - =lisp/core/e-session.el= only if a missing public accessor is needed.
+- a small engine adapter definition if it does not fit cleanly in the resource file.
 - =test/e-session-resources-test.el= or nearby layer tests.
 
 Work:
 
 1. Add rendering helpers for session summary, messages, activity, events, compactions, and provider anchors.
-2. Register read/glob/search resource methods for =session://=.
-3. Ensure methods operate on the active harness session store through the resource method context.
-4. Keep mutation unsupported.
+2. Add an engine registry with built-in =e= and an option for configured additional engines.
+3. Register read/glob/search resource methods for =session://=.
+4. Ensure =e= methods operate on the active harness session store through the resource method context.
+5. Ensure non-=e= methods operate only through configured engine adapters.
+6. Keep mutation unsupported.
 
 ** Slice 3: Tool descriptions and docs
 
@@ -165,9 +217,11 @@ Likely files:
 
 Work:
 
-1. Describe =session://= in the generated resource operation surfaces.
-2. Add tests for read, glob, search, unsupported write/edit, unknown session id, and range behavior.
-3. Update docs if public surfaces mention resource schemes.
+1. Describe =session://= in the generated resource operation surfaces as a discovery workflow, not as a path grammar agents must memorize.
+2. Include examples that tell agents to glob =session://=, glob an engine's =sessions/= root, glob one session root, then read a returned leaf URI.
+3. Add tests for read, glob, search, unsupported write/edit, unknown engine id, unknown session id, and range behavior.
+4. Add tests that =e= is present by default and configured engines are opt-in.
+5. Update docs if public surfaces mention resource schemes.
 
 * Verification
 
@@ -179,11 +233,22 @@ rtk eldev test test/e-session-test.el test/e-resources-test.el test/e-harness-te
 
 Run any new resource tests added by the implementation slice.
 
-For a behavior change, reload the running Emacs and inspect that =glob= / =read= / =search= expose =session://= in a live chat session when the owning layer is active.
+For a behavior change, reload the running Emacs and inspect that =glob= / =read= / =search= expose =session://=, =session://e/sessions/=, and readable leaf projections such as =session://e/sessions/<id>/messages= in a live chat session when the owning layer is active.
 
-* Open questions
+* Resolved questions
 
-- Should =session://<id>= render the full transcript or only a summary plus links to subresources?
-- Should search include activity events by default, or should =session://*/messages= and =session://*/activity= be separate searchable scopes?
-- Should the resource expose branch/current-head structure explicitly in v1?
-- Is a raw JSON projection useful enough to add as =session://<id>/raw= later?
+All initial review questions now have decisions.
+
+- Summary projection:
+  - =session://<engine-id>/sessions/<id>/summary= should render summary metadata, a transcript overview, and links to readable subresources.
+  - It should not duplicate the full transcript.
+- Search scope:
+  - Default search should favor the least surprising transcript search behavior while still giving agents control.
+  - In v1, searching a session root should search the =messages= projection by default.
+  - Activity, events, compactions, and provider anchors should remain separate searchable projections when explicitly narrowed by URI or glob.
+  - If a broad all-projections search becomes useful later, add it as a documented scope rather than hiding it in the default.
+- Branch and current-head structure:
+  - Do not expose branch or current-head structure in v1.
+- Raw projection:
+  - A raw JSON projection is useful later.
+  - Use =session://<engine-id>/sessions/<id>/raw= as the likely stable name when a consumer needs raw data.

@@ -1,0 +1,97 @@
+#+title: Review: Session Resource
+#+author: e implementation
+#+date: 2026-07-05
+#+startup: overview
+
+* Status
+
+Done.
+
+* Review summary
+
+The implemented slice adds read-only =session://= resources behind the =harness-base= layer.
+The implementation matches the reviewed URI shape: glob engines, glob sessions, glob one session root, then read a leaf projection.
+No unresolved review findings remain in this implementation pass.
+
+* Scope reviewed
+
+Files reviewed:
+
+- =lisp/layers/harness/e-session-resources.el=
+- =lisp/layers/harness/e-harness-base.el=
+- =test/e-session-resources-test.el=
+- =docs/architecture.md=
+- =docs/feats/56-session-resource/plan.org=
+- =docs/feats/index.org=
+
+Plan slices reviewed:
+
+- Slice 2: resource method and projection helpers.
+- Slice 3: tool descriptions and docs.
+
+* What looks good
+
+- =session://= is read-only because only =read=, =glob=, and =search= methods are registered.
+- The built-in =e= engine uses the active harness session store and public =e-session= accessors.
+- Configured engines are opt-in through =e-session-resource-engines= and are accessed only through adapter functions.
+- Search defaults to =messages= for session roots, while explicit projection URIs and projection globs can search activity and other optional projections.
+- Tool descriptions describe the glob-first workflow instead of requiring agents to memorize the path grammar.
+
+* Verification
+
+#+begin_src sh
+rtk eldev test test/e-session-resources-test.el test/e-resources-test.el test/e-harness-test.el
+#+end_src
+
+#+begin_example
+Ran 120 tests, 120 results as expected, 0 unexpected.
+#+end_example
+
+#+begin_src sh
+rtk eldev test test/e-session-test.el test/e-session-resources-test.el test/e-resources-test.el test/e-harness-test.el
+#+end_src
+
+#+begin_example
+Ran 180 tests, 180 results as expected, 0 unexpected.
+#+end_example
+
+* UX and performance playthrough
+
+- Model-facing discovery flow is covered by tests that glob =session://=, =session://e/sessions/=, and =session://e/sessions/<id>/= before reading projections.
+- Empty and missing-state behavior is covered by unknown engine, unknown session, unsupported projection, and read-only write/edit tests.
+- Large transcript behavior relies on existing read line ranges and search limits.
+- No live UI surface was added, so no visual buffer playthrough was required.
+
+* Live reload
+
+The running Emacs was left unchanged.
+A full reload is required before the live chat harness exposes the new =session://= methods in the current process.
+
+* Architecture review
+
+The owner is =harness-base=, which already owns harness-scoped support resources.
+The resource method depends on =e-resources=, =e-session=, and an adapter contract.
+It does not depend on chat buffers or presentation shell state.
+Configured engines remain explicit because they may read local stores or remote APIs.
+Mutation stays outside =session://= and remains owned by semantic session actions or future narrow APIs.
+
+* Design self-check
+
+1. This package leaves the project better off because sessions become discoverable through the existing resource tools instead of private files.
+2. It moves toward a semantic session API that can cover =e= and later opt-in engines.
+3. The stable decision is the glob-first URI workflow; the uncertain parts are remote engine details and raw JSON, both left outside v1.
+4. =harness-base= owns this because the behavior is harness-scoped support, not chat presentation.
+5. Coupling is reduced for callers because they depend on resource contracts, not store paths.
+6. Dependencies point toward core contracts and configured adapters.
+7. Side effects are limited to reading existing session stores or configured adapters.
+8. No new durable runtime state is added beyond the user option for configured engines.
+9. Search renders text in Emacs and applies limits; no broad unbounded filesystem or network search is introduced.
+10. The adapter interface is narrow and substitutable for list and render operations.
+11. No legacy path was added.
+12. No legacy code was removed.
+13. Expected errors surface as specific resource errors; unexpected adapter errors surface to callers.
+14. Tests prove discovery, read, search, range, read-only behavior, errors, and configured-engine opt-in behavior.
+
+* Unresolved
+
+None.
