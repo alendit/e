@@ -1,0 +1,74 @@
+#+title: e-chat Activity Redraw Recenter Loop Investigation
+#+startup: overview
+
+* Live evidence
+
+- A bounded =emacsclient --eval= scalar probe did not return within the timeout,
+  which means the running Emacs was not servicing normal eval requests.
+- =ps= showed the Emacs process running at about 99% CPU with no visible =bash=
+  child process under it.
+- =sample= showed the hot stack in the main thread under:
+  =e-chat--run-pending-activity-redraw=,
+  =e-chat--render-turn-transient=,
+  =e-chat--render-running-status=,
+  =e-chat--restore-running-status-display-state=,
+  =e-chat--show-latest-output=, and =recenter=.
+- The same sample showed Redisplay and timer processing reentered below
+  =recenter=, with a websocket/process sentinel completing work through
+  =e-work-finish= during that display path.
+- The sample reported a physical footprint around 45GB; the user's Force Quit
+  dialog later showed Emacs around 50GB.
+
+* Source inspected
+
+- =lisp/shells/chat/e-chat.el=: activity redraws are scheduled through
+  =e-chat--request-activity-redraw= and run through
+  =e-chat--run-pending-activity-redraw=.
+- =e-chat--run-pending-activity-redraw= restored display state after rendering.
+  For tail-following state this called =e-chat--show-latest-output=.
+- =e-chat--show-latest-output= always called =recenter=.  On a timer-driven
+  redraw this can force Redisplay while timers and sentinels are also able to
+  run, making the redraw path reentrant.
+- There was no activity-redraw critical-section guard.  If work completion or
+  other activity events arrived during Redisplay, a new activity redraw could be
+  entered before the current one had unwound.
+
+* Conclusion
+
+The hang is not explained by a stuck shell command.  The sampled process had no
+visible =bash= child and spent its CPU in the chat rendering path.  The concrete
+bug is that an automatic activity redraw performed a viewport side effect
+(=recenter=) that can enter Redisplay, and Redisplay can process timers and
+sentinels that schedule or complete more async work.
+
+That made the new nonblocking work surface visible as a trigger, but the broken
+component was the presentation redraw contract: timer-driven render work must
+not perform unbounded focus/recenter side effects, and redraws must coalesce
+when another redraw is already running.
+
+* Fix
+
+Implemented in =lisp/shells/chat/e-chat.el=:
+
+- Add =e-chat--activity-redraw-running= so activity redraws form a
+  non-reentrant critical section.
+- Add =e-chat--ensure-pending-activity-redraw-timer= so requests that arrive
+  during a redraw remain pending and are scheduled after the current redraw
+  exits.
+- Add =e-chat--recenter-inhibited= and bind it during timer-driven activity
+  redraws, so automatic redraws may restore point/window state but do not call
+  =recenter=.
+
+Regression coverage in =test/e-chat-test.el=:
+
+- =e-chat-test-activity-redraw-does-not-recenter= proves timer-driven activity
+  redraw does not call =recenter=.
+- =e-chat-test-activity-redraw-coalesces-reentrant-run= proves a redraw
+  requested during another redraw is deferred instead of nested.
+
+Validation:
+
+- =eldev test -f test/e-chat-test.el e-chat-test-activity-redraw-does-not-recenter e-chat-test-activity-redraw-coalesces-reentrant-run=
+- =eldev test -f test/e-chat-test.el=
+- =eldev test -f test/e-org-canvas-test.el=
+- =eldev compile -f lisp/shells/chat/e-chat.el=

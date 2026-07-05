@@ -1,0 +1,13 @@
+#+title: e-chat Activity Redraw Recenter Loop
+#+startup: overview
+
+* Report
+
+An =e-chat:Org Canvas= session can hang mid-turn while the status line shows a
+running tool such as =Running bash for 0min 0sec=.  In the reported case the
+session stopped making visible progress, a trivial =emacsclient --eval= probe
+did not return, and macOS reported Emacs using roughly 50GB of memory.
+
+The visible running-tool row may be stale presentation state.  The important
+runtime symptom is that the Emacs main thread is busy and does not service light
+eval requests.

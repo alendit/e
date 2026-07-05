@@ -3122,6 +3122,75 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-activity-redraw-does-not-recenter ()
+  "Timer-driven activity redraws do not enter redisplay through `recenter'."
+  (let ((buffer (e-chat-test--buffer nil "chat-activity-redraw-no-recenter"))
+        (window nil)
+        recenter-called)
+    (unwind-protect
+        (progn
+          (setq window (display-buffer buffer))
+          (with-current-buffer buffer
+            (e-chat--render-event
+             (e-events-make :type 'turn-started
+                            :session-id e-chat-session-id
+                            :turn-id "turn-1"
+                            :created-at 0))
+            (e-chat-test--mark-active-turn "turn-1")
+            (e-chat--render-event
+             (e-events-make :type 'provider-request-started
+                            :session-id e-chat-session-id
+                            :turn-id "turn-1"
+                            :created-at 0
+                            :payload '(:status started)))
+            (when-let ((bounds (e-chat--running-status-bounds)))
+              (goto-char (cdr bounds))
+              (set-window-point window (point))))
+          (cl-letf (((symbol-function 'recenter)
+                     (lambda (&rest _ignored)
+                       (setq recenter-called t))))
+            (with-current-buffer buffer
+              (e-chat-test--flush-pending-activity-redraw)))
+          (should-not recenter-called))
+      (when (window-live-p window)
+        (delete-window window))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-activity-redraw-coalesces-reentrant-run ()
+  "A redraw requested during an activity redraw is deferred, not nested."
+  (let ((buffer (e-chat-test--buffer nil "chat-activity-redraw-reentrant"))
+        render-count
+        reentered)
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat--render-event
+           (e-events-make :type 'turn-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 0))
+          (e-chat--render-event
+           (e-events-make :type 'provider-request-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 0
+                          :payload '(:status started)))
+          (cl-letf (((symbol-function 'e-chat--render-turn-transient)
+                     (lambda (turn-id _record)
+                       (setq render-count (1+ (or render-count 0)))
+                       (unless reentered
+                         (setq reentered t)
+                         (e-chat--request-activity-redraw turn-id 'activity)
+                         (e-chat--run-pending-activity-redraw)))))
+            (e-chat-test--flush-pending-activity-redraw))
+          (should (= render-count 1))
+          (should (equal e-chat--pending-activity-redraw-turn-id "turn-1"))
+          (should (timerp e-chat--pending-activity-redraw-timer)))
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer
+          (e-chat--cancel-pending-activity-redraw))
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-running-tool-row-collapses-parallel-tools ()
   "Several tools running at once collapse into a counted running row."
   (let ((buffer (e-chat-test--buffer nil "chat-running-tools-parallel")))

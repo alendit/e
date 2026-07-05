@@ -774,6 +774,12 @@ intentionally not persisted in session metadata.")
 (defvar-local e-chat--activity-redraw-generation 0
   "Latest activity redraw generation for stale timer detection.")
 
+(defvar-local e-chat--activity-redraw-running nil
+  "Non-nil while this buffer is executing an activity redraw.")
+
+(defvar e-chat--recenter-inhibited nil
+  "Non-nil when chat display restoration must not call `recenter'.")
+
 (defvar-local e-chat--pending-render-job-timers nil
   "Timers scheduled for deferred chat render jobs.")
 
@@ -5032,52 +5038,84 @@ When TURN-ID is non-nil, cancel only a redraw for that turn."
     (setq e-chat--pending-activity-redraw-kind nil)
     (setq e-chat--pending-activity-redraw-generation nil)))
 
+(defun e-chat--ensure-pending-activity-redraw-timer ()
+  "Ensure the pending activity redraw has a timer when it can run safely."
+  (when (and e-chat--pending-activity-redraw-turn-id
+             e-chat--pending-activity-redraw-generation
+             (not e-chat--activity-redraw-running)
+             (not (timerp e-chat--pending-activity-redraw-timer)))
+    (let ((turn-id e-chat--pending-activity-redraw-turn-id)
+          (generation e-chat--pending-activity-redraw-generation))
+      (setq e-chat--pending-activity-redraw-timer
+            (e-chat--schedule-render-job
+             e-chat-activity-redraw-delay
+             (lambda ()
+               (e-chat--run-pending-activity-redraw
+                generation))
+             :owner 'activity-redraw
+             :key turn-id
+             :generation generation
+             :session-id e-chat-session-id
+             :block-id turn-id
+             :coalesce t)))))
+
 (defun e-chat--run-pending-activity-redraw (&optional expected-generation)
   "Run and clear the pending activity redraw for this chat buffer."
   (when (or (null expected-generation)
             (equal expected-generation
                    e-chat--pending-activity-redraw-generation))
-    (let ((turn-id e-chat--pending-activity-redraw-turn-id)
-          (timer e-chat--pending-activity-redraw-timer)
-          (kind e-chat--pending-activity-redraw-kind)
-          (point-marker (copy-marker (point) nil))
-          (window (e-chat--visible-window))
-          (display-state (e-chat--capture-running-status-display-state))
-          (window-point nil)
-          (window-start nil))
-      (when (window-live-p window)
-        (setq window-point (window-point window))
-        (setq window-start (window-start window)))
-      (e-chat--profile-call
-       'chat.activity-redraw
-       (list :session-id e-chat-session-id
-             :turn-id turn-id
-             :buffer-name (buffer-name)
-             :metadata (list :kind (and kind (symbol-name kind))
-                             :generation expected-generation))
-       (lambda ()
-         (unwind-protect
-             (progn
-               (e-chat--cancel-render-job-timer timer)
-               (setq e-chat--pending-activity-redraw-turn-id nil)
-               (setq e-chat--pending-activity-redraw-timer nil)
-               (setq e-chat--pending-activity-redraw-kind nil)
-               (setq e-chat--pending-activity-redraw-generation nil)
-               (when turn-id
-                 (pcase kind
-                   ('progress
-                    (e-chat--render-progress-indicator turn-id))
-                   (_
-                    (when-let ((record (e-chat--existing-turn-record turn-id)))
-                      (e-chat--render-turn-transient turn-id record))))))
-           (when (marker-position point-marker)
-             (goto-char (min (marker-position point-marker) (point-max))))
-           (when (window-live-p window)
-             (when window-start
-               (set-window-start window (min window-start (point-max)) t))
-             (when window-point
-               (set-window-point window (min window-point (point-max)))))
-           (e-chat--restore-running-status-display-state display-state)))))))
+    (if e-chat--activity-redraw-running
+        (when expected-generation
+          ;; The render job that called us has already fired and was removed
+          ;; from the job registry.  Leave the work pending for the outer
+          ;; redraw to schedule after it exits.
+          (setq e-chat--pending-activity-redraw-timer nil))
+      (let ((turn-id e-chat--pending-activity-redraw-turn-id)
+            (timer e-chat--pending-activity-redraw-timer)
+            (kind e-chat--pending-activity-redraw-kind)
+            (point-marker (copy-marker (point) nil))
+            (window (e-chat--visible-window))
+            (display-state (e-chat--capture-running-status-display-state))
+            (window-point nil)
+            (window-start nil))
+        (when (window-live-p window)
+          (setq window-point (window-point window))
+          (setq window-start (window-start window)))
+        (setq e-chat--activity-redraw-running t)
+        (unwind-protect
+            (let ((e-chat--recenter-inhibited t))
+              (e-chat--profile-call
+               'chat.activity-redraw
+               (list :session-id e-chat-session-id
+                     :turn-id turn-id
+                     :buffer-name (buffer-name)
+                     :metadata (list :kind (and kind (symbol-name kind))
+                                     :generation expected-generation))
+               (lambda ()
+                 (unwind-protect
+                     (progn
+                       (e-chat--cancel-render-job-timer timer)
+                       (setq e-chat--pending-activity-redraw-turn-id nil)
+                       (setq e-chat--pending-activity-redraw-timer nil)
+                       (setq e-chat--pending-activity-redraw-kind nil)
+                       (setq e-chat--pending-activity-redraw-generation nil)
+                       (when turn-id
+                         (pcase kind
+                           ('progress
+                            (e-chat--render-progress-indicator turn-id))
+                           (_
+                            (when-let ((record (e-chat--existing-turn-record turn-id)))
+                              (e-chat--render-turn-transient turn-id record))))))
+                   (when (marker-position point-marker)
+                     (goto-char (min (marker-position point-marker) (point-max))))
+                   (when (window-live-p window)
+                     (when window-start
+                       (set-window-start window (min window-start (point-max)) t))
+                     (when window-point
+                       (set-window-point window (min window-point (point-max)))))
+                   (e-chat--restore-running-status-display-state display-state)))))
+          (setq e-chat--activity-redraw-running nil)
+          (e-chat--ensure-pending-activity-redraw-timer))))))
 
 (defun e-chat--activity-redraw-kind (existing requested)
   "Return coalesced redraw kind from EXISTING and REQUESTED kinds."
@@ -5099,20 +5137,7 @@ When TURN-ID is non-nil, cancel only a redraw for that turn."
     (unless e-chat--pending-activity-redraw-generation
       (setq e-chat--pending-activity-redraw-generation
             (cl-incf e-chat--activity-redraw-generation)))
-    (unless (timerp e-chat--pending-activity-redraw-timer)
-      (let ((generation e-chat--pending-activity-redraw-generation))
-        (setq e-chat--pending-activity-redraw-timer
-              (e-chat--schedule-render-job
-               e-chat-activity-redraw-delay
-               (lambda ()
-                 (e-chat--run-pending-activity-redraw
-                  generation))
-               :owner 'activity-redraw
-               :key turn-id
-               :generation generation
-               :session-id e-chat-session-id
-               :block-id turn-id
-               :coalesce t))))))
+    (e-chat--ensure-pending-activity-redraw-timer)))
 
 (defun e-chat--progress-dots ()
   "Return the current active assistant progress glyph string."
@@ -6446,9 +6471,10 @@ non-nil, is used by focused block activation."
   (goto-char (point-max))
   (when-let ((window (e-chat--visible-window)))
     (set-window-point window (point))
-    (with-selected-window window
-      (ignore-errors
-        (recenter -2)))))
+    (unless e-chat--recenter-inhibited
+      (with-selected-window window
+        (ignore-errors
+          (recenter -2))))))
 
 (defun e-chat--show-latest-output ()
   "Show the latest chat output while keeping input focus in the composer."
@@ -6458,9 +6484,10 @@ non-nil, is used by focused block activation."
     (goto-char position)
     (when-let ((window (e-chat--visible-window)))
       (set-window-point window (point))
-      (with-selected-window window
-        (ignore-errors
-          (recenter -2))))))
+      (unless e-chat--recenter-inhibited
+        (with-selected-window window
+          (ignore-errors
+            (recenter -2)))))))
 
 (defun e-chat--enter-composer-input-state ()
   "Leave chat-local navigation states and focus editable composer input."
