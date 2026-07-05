@@ -235,9 +235,23 @@ tool I/O, and turn settlement are callback-driven."
                                :stream-kind 'summary
                                :content (response-text))))
                       (start-request)))
+                   (current-tool-p
+                    (token)
+                    (and (listp active-tool)
+                         (eq (plist-get active-tool :token) token)))
+                   (publish-tool-request
+                    (token request)
+                    (when (and (current-tool-p token)
+                               (not settled)
+                               (not (cancelled)))
+                      (setq active-tool
+                            (list :token token :request request))
+                      (publish-request request)))
                    (finish-tool
-                    (tool-call result)
-                    (unless (or settled (cancelled))
+                    (token tool-call result)
+                    (when (and (not settled)
+                               (not (cancelled))
+                               (current-tool-p token))
                       (setq active-tool nil)
                       (let ((message
                              (list :role 'tool
@@ -271,11 +285,12 @@ tool I/O, and turn settlement are callback-driven."
                                        tool-lifecycle
                                        (plist-get entry :tool-call))
                                     (plist-get entry :tool-call)))
+                                 (tool-token (list :tool-call tool-call))
                                  (tool-call-message
                                   (list :role 'tool-call
                                         :content tool-call
                                         :metadata nil)))
-                            (setq active-tool t)
+                            (setq active-tool (list :token tool-token))
                             (setq turn-messages
                                   (append turn-messages
                                           (list tool-call-message)))
@@ -290,8 +305,8 @@ tool I/O, and turn settlement are callback-driven."
                                         tool-call
                                         :on-request-start
                                         (lambda (request)
-                                          (setq active-tool request)
-                                          (publish-request request))
+                                          (publish-tool-request
+                                           tool-token request))
                                         :on-event
                                         (lambda (type payload)
                                           (e-loop--emit
@@ -300,7 +315,8 @@ tool I/O, and turn settlement are callback-driven."
                                            :payload payload))
                                         :on-done
                                         (lambda (result)
-                                          (finish-tool tool-call result))
+                                          (finish-tool
+                                           tool-token tool-call result))
                                         :on-error #'fail)
                                      (e-tools-start
                                       tools
@@ -312,8 +328,8 @@ tool I/O, and turn settlement are callback-driven."
                                             (plist-get options :deadline))
                                       :on-request-start
                                       (lambda (request)
-                                        (setq active-tool request)
-                                        (publish-request request))
+                                        (publish-tool-request
+                                         tool-token request))
                                       :on-event
                                       (lambda (type payload)
                                         (e-loop--emit
@@ -322,10 +338,16 @@ tool I/O, and turn settlement are callback-driven."
                                          :payload payload))
                                       :on-done
                                       (lambda (result)
-                                        (finish-tool tool-call result))
+                                        (finish-tool
+                                         tool-token tool-call result))
                                       :on-error #'fail))))
-                              (when request
-                                (setq active-tool request))))
+                              (when (and request
+                                         (current-tool-p tool-token)
+                                         (not settled)
+                                         (not (cancelled)))
+                                (setq active-tool
+                                      (list :token tool-token
+                                            :request request)))))
                         (error
                          (fail err)))))
                   (handle-backend-item

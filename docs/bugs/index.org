@@ -9,6 +9,7 @@ State values for coding agents:
 | State  | Path | Title |
 |--------+------+-------|
 | New    | mid-turn-auto-compaction-no-boundary/ | Mid-turn Auto Compaction No Boundary |
+| Closed | e-loop-stale-tool-request-hangs-turn/ | e-loop stale tool request hangs turn |
 | Closed | run-elisp-large-result-hangs-emacs/ | run_elisp large result hangs Emacs |
 | Closed | reasoning-progress-codex-delta/ | Reasoning progress Codex delta |
 | Closed | e-debug-session-root-home/ | e-debug session root uses home directory |

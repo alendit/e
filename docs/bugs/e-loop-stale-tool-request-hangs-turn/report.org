@@ -1,0 +1,15 @@
+#+title: e-loop stale tool request hangs turn report
+#+startup: overview
+
+* Report
+
+The user reported a visible =Debug Agent= session that stayed active after the
+prompt =find and open the session about org file annotatoin=.  The UI showed
+two completed tool calls, =read= and =glob=, and no final assistant response or
+turn settlement.
+
+* Expected
+
+After tool calls complete and the provider request reports done, the loop should
+either start the follow-up provider request with the tool results or settle the
+turn with a visible error.  It should not remain active silently.

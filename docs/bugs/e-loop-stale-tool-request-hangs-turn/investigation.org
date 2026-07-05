@@ -1,0 +1,49 @@
+#+title: e-loop stale tool request hangs turn investigation
+#+startup: overview
+
+* Symptoms
+
+- Persisted session
+  =~/.emacs.d/.local/cache/e/sessions/sessions/20260705T184101-c561a240036c.jsonl=
+  contains turn =01KWSSB0QXAXZSE243D4J8C7AX=.
+- The turn has balanced tool events for =read= and =glob=.
+- The provider request emitted =provider-request-finished= with =status= =done=
+  after about ten seconds.
+- The turn never emitted =turn-finished=, =turn-failed=, or a follow-up
+  =provider-request-started= event.
+
+This ruled out the previous WebSocket-never-finished class.  The provider and
+tool lifecycles completed; the agent loop failed to continue or settle.
+
+* Cause
+
+=e-loop-start-turn= tracked a running tool with one mutable =active-tool= value.
+When a tool settled during its own start path, =finish-tool= set =active-tool=
+to nil.  Some tool paths, including work-backed and legacy =:start= tools, can
+still report or return their request object after the synchronous settlement
+callback has already run.  The loop then wrote that stale request object back
+into =active-tool=.
+
+Once =active-tool= was non-nil, =maybe-start-followup= refused to start the
+follow-up provider request even though no tool was still running.  The result
+was an active turn with all visible work complete and no terminal event.
+
+* Fix
+
+Track active tools with a per-tool token instead of a bare truthy flag.  Tool
+request and completion callbacks are accepted only while their token is still
+the current active tool.  Late request reports after synchronous completion, or
+stale callbacks from an older tool, are ignored rather than mutating the current
+turn state.
+
+* Verification
+
+- Added regression test
+  =e-loop-test-start-turn-requeries-after-tool-settles-during-start=, which
+  reproduces a tool that calls =on-done= during =:start= and returns a request
+  afterward.
+- =rtk eldev test -f test/e-loop-test.el= passed: 25 expected, 0 unexpected.
+- =rtk eldev test -f test/e-loop-test.el -f test/e-tools-test.el -f test/e-harness-test.el=
+  passed: 165 expected, 0 unexpected.
+- =rtk eldev compile= passed.
+- =git diff --check= passed.

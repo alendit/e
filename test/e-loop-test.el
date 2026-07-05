@@ -877,6 +877,86 @@
                            (nreverse events))
                    '(turn-started tool-started tool-finished turn-finished)))))
 
+(ert-deftest e-loop-test-start-turn-requeries-after-tool-settles-during-start ()
+  "A request reported after synchronous tool completion must not wedge follow-up."
+  (let* ((calls 0)
+         (backend (e-backend-create
+                   :name "immediate-tool-followup"
+                   :start
+                   (cl-function
+                    (lambda (&key messages options on-item on-done on-error
+                                   on-request-start)
+                      (ignore options on-error on-request-start)
+                      (setq calls (1+ calls))
+                      (if (= calls 1)
+                          (progn
+                            (should (equal (mapcar (lambda (message)
+                                                     (plist-get message :role))
+                                                   messages)
+                                           '(user)))
+                            (funcall on-item
+                                     '(:type tool-call
+                                       :id "call-1"
+                                       :name "immediate"
+                                       :arguments (:text "one")))
+                            (funcall on-item
+                                     '(:type tool-call
+                                       :id "call-2"
+                                       :name "immediate"
+                                       :arguments (:text "two")))
+                            (funcall on-item
+                                     '(:type done :reason tool-use)))
+                        (should (equal (mapcar (lambda (message)
+                                                 (plist-get message :role))
+                                               messages)
+                                       '(user tool-call tool
+                                              tool-call tool)))
+                        (funcall on-item
+                                 '(:type assistant-message
+                                   :content "final answer"))
+                        (funcall on-item '(:type done :reason stop)))
+                      (funcall on-done '(:status done))
+                      nil))))
+         (tools (e-tools-registry-create))
+         (events nil)
+         (messages nil)
+         (settled nil))
+    (e-tools-register tools
+                      :name "immediate"
+                      :description "Return while starting."
+                      :start
+                      (cl-function
+                       (lambda (&key arguments on-done on-error
+                                      on-request-start)
+                         (ignore on-error on-request-start)
+                         (funcall on-done (plist-get arguments :text))
+                         (e-tools-request-create
+                          :metadata '(:transport immediate)))))
+    (e-loop-start-turn
+     :session-id "session-1"
+     :turn-id "turn-1"
+     :messages '((:role user :content "hi"))
+     :backend backend
+     :tools tools
+     :options nil
+     :on-event (lambda (type payload)
+                 (push (list :type type :payload payload) events))
+     :append-message (lambda (message) (push message messages))
+     :on-done (lambda (result) (setq settled result))
+     :on-error (lambda (err) (setq settled (list :error err))))
+    (should (e-loop-test--wait-until (lambda () settled)))
+    (should (equal calls 2))
+    (should (equal (plist-get settled :status) 'done))
+    (should (equal (mapcar (lambda (message) (plist-get message :role))
+                           (nreverse messages))
+                   '(tool-call tool tool-call tool assistant)))
+    (should (equal (mapcar (lambda (event) (plist-get event :type))
+                           (nreverse events))
+                   '(turn-started
+                     tool-started tool-finished
+                     tool-started tool-finished
+                     turn-finished)))))
+
 (ert-deftest e-loop-test-start-turn-requeries-backend-after-pending-input ()
   "Async turn execution starts a follow-up request after pending user input."
   (let* ((calls 0)
