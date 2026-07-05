@@ -226,12 +226,18 @@ attachment."
 
 (defun e-chat-session--action (handler caller &optional parameters work)
   "Return chat-session action descriptor for HANDLER."
-  (e-action-create
-   :handler handler
-   :caller caller
-   :parameters parameters
-   :requires-session t
-   :work work))
+  (if work
+      (e-action-create
+       :parameters parameters
+       :requires-session t
+       :work work)
+    (e-action-cheap-create
+     :id (format "chat_session_%s" (or handler "action"))
+     :owner 'chat-session
+     :parameters parameters
+     :requires-session t
+     :runner (lambda (arguments context)
+               (funcall caller context arguments)))))
 
 (cl-defun e-chat-session--compact-action-request
     (context arguments &key on-done on-error &allow-other-keys)

@@ -54,11 +54,13 @@
      (t (user-error "Layer action requires :layer")))))
 
 (defun e-layer-selection--action (handler caller &optional parameters)
-  "Return layer-selection action descriptor for HANDLER."
-  (e-action-create
-   :handler handler
-   :caller caller
-   :parameters parameters))
+  "Return layer-selection cheap work action descriptor for HANDLER."
+  (e-action-cheap-create
+   :id (format "layer_selection_%s" handler)
+   :owner 'layer-selection
+   :parameters parameters
+   :runner (lambda (arguments context)
+             (funcall caller context arguments))))
 
 (defun e-layer-selection-capability-create ()
   "Create the generic layer-selection capability."

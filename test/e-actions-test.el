@@ -61,6 +61,57 @@
       (should (e-work-handle-p (plist-get dispatch :request)))
       (should (equal (plist-get dispatch :result) "done")))))
 
+(ert-deftest e-actions-test-rejects-raw-function-action-spec ()
+  "Action dispatch no longer wraps raw function actions as compatibility."
+  (let* ((harness (e-harness-create :backend (e-backend-fake-create :items nil)))
+         (called nil)
+         (capability
+          (e-capability-create
+           :id 'legacy-action
+           :name "Legacy Action"
+           :actions (list :run (lambda (_arguments)
+                                 (setq called t))))))
+    (e-harness-activate-capability harness capability)
+    (e-harness-create-session harness :id "session-1")
+    (should-error
+     (e-actions-dispatch
+      'legacy-action
+      :run
+      nil
+      (list :harness harness :session-id "session-1"))
+     :type 'e-actions-invalid-spec)
+    (should-not called)))
+
+(ert-deftest e-actions-test-immediate-work-failure-surfaces ()
+  "Immediate work-backed action failures are not returned as started work."
+  (let* ((harness (e-harness-create :backend (e-backend-fake-create :items nil)))
+         (capability
+          (e-capability-create
+           :id 'failing-action
+           :name "Failing Action"
+           :actions
+           (list :run
+                 (e-action-cheap-create
+                  :runner (lambda (_arguments _context)
+                            (user-error "failed immediately"))))))
+         failed-events)
+    (e-harness-activate-capability harness capability)
+    (e-harness-create-session harness :id "session-1")
+    (should-error
+     (e-actions-call
+      'failing-action
+      :run
+      nil
+      (list :harness harness :session-id "session-1" :turn-id "turn-1"))
+     :type 'user-error)
+    (setq failed-events
+          (cl-remove-if-not
+           (lambda (event)
+             (eq (plist-get event :event-type) 'action-failed))
+           (e-session-activity-events
+            (e-harness-sessions harness) "session-1")))
+    (should (equal (length failed-events) 1))))
+
 (ert-deftest e-actions-test-call-validates-required-arguments ()
   "Action dispatch reports missing descriptor-required arguments."
   (let ((harness (e-harness-create :backend (e-backend-fake-create :items nil))))
@@ -112,14 +163,18 @@
             :run
             (e-action-create
              :requires-session t
-             :start (cl-function
-                     (lambda (_context arguments &key on-done &allow-other-keys)
-                       (setq finish (lambda ()
-                                      (funcall on-done
-                                               (list :echo
-                                                     (plist-get arguments
-                                                                :value)))))
-                       'fake-action-request)))))))
+             :work (e-work-spec-create
+                    :id "async_action"
+                    :execution 'cooperative
+                    :interactive-policy 'async
+                    :runner
+                    (lambda (handle arguments _context)
+                      (setq finish (lambda ()
+                                     (e-work-finish
+                                      handle
+                                      (list :echo
+                                            (plist-get arguments :value)))))
+                      :deferred)))))))
     (e-harness-activate-capability harness capability)
     (e-harness-create-session harness :id "session-1")
     (let ((result

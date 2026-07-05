@@ -21,6 +21,7 @@
 (require 'e-dev-layer)
 (require 'e-harness)
 (require 'e-openai)
+(require 'e-work)
 
 (ert-deftest e-dev-test-clears-removed-sync-work-api-functions ()
   "Reload cleanup unbinds stale definitions for removed sync Work APIs."
@@ -78,14 +79,16 @@
     (should capability)
     (should (e-action-p mark))
     (should (e-action-p status))
-    (let ((result (funcall (e-action-caller mark)
-                           nil
-                           '(:reason "needs full reload"
-                             :files ["lisp/dev/e-dev.el"]
-                             :scope "full"))))
+    (let* ((handle (e-work-start
+                    (e-action-work mark)
+                    '(:reason "needs full reload"
+                      :files ["lisp/dev/e-dev.el"]
+                      :scope "full")))
+           (result (e-work-handle-result handle)))
       (should (eq (plist-get result :required) t))
       (should (= (plist-get result :count) 1)))
-    (let ((result (funcall (e-action-caller status) nil nil)))
+    (let* ((handle (e-work-start (e-action-work status) nil))
+           (result (e-work-handle-result handle)))
       (should (eq (plist-get result :required) t))
       (should (= (plist-get result :count) 1)))))
 

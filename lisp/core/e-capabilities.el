@@ -19,6 +19,7 @@
 (require 'e-hooks)
 (require 'e-resources)
 (require 'e-store)
+(require 'e-work)
 
 (cl-defstruct (e-capability
                (:constructor e-capability--create
@@ -43,18 +44,48 @@
   prompts)
 
 (cl-defstruct (e-action
-               (:constructor e-action-create
-                             (&key handler caller description parameters
-                                   requires-session start tool-metadata work)))
-  handler
-  caller
+               (:constructor e-action--create
+                             (&key description parameters requires-session
+                                   tool-metadata work)))
   description
   parameters
   requires-session
-  start
-  ;; Kept for live reload compatibility with earlier action descriptors.
   tool-metadata
   work)
+
+(cl-defun e-action-create
+    (&key description parameters requires-session tool-metadata work)
+  "Create a work-backed capability action descriptor.
+Actions must execute through `e-work-start'.  Cheap immediate actions should use
+`e-action-cheap-create', which still creates a `:cheap' work spec."
+  (unless (e-work-spec-p work)
+    (signal 'wrong-type-argument (list 'e-work-spec-p work)))
+  (e-action--create
+   :description description
+   :parameters (or parameters (e-work-spec-parameters work))
+   :requires-session requires-session
+   :tool-metadata tool-metadata
+   :work work))
+
+(cl-defun e-action-cheap-create
+    (&key id description parameters requires-session tool-metadata owner runner)
+  "Create a cheap work-backed action descriptor.
+RUNNER is called as (RUNNER ARGUMENTS CONTEXT)."
+  (unless (functionp runner)
+    (signal 'wrong-type-argument (list 'functionp runner)))
+  (e-action-create
+   :description description
+   :parameters parameters
+   :requires-session requires-session
+   :tool-metadata tool-metadata
+   :work (e-work-spec-create
+          :id id
+          :description description
+          :parameters parameters
+          :execution 'cheap
+          :interactive-policy 'cheap
+          :owner (or owner 'action)
+          :runner runner)))
 
 (defun e-capability-id (capability)
   "Return CAPABILITY id."
@@ -388,17 +419,8 @@ providers."
               :context-purpose context-purpose)
              :messages))
 
-(defun e-capabilities-action (capability action)
-  "Return CAPABILITY function for ACTION.
-When the action entry is an `e-action' descriptor, return its handler to
-preserve the historical direct lookup contract."
-  (let ((entry (plist-get (e-capability-actions capability) action)))
-    (if (e-action-p entry)
-        (e-action-handler entry)
-      entry)))
-
 (defun e-capabilities-action-spec (capability action)
-  "Return CAPABILITY action descriptor or raw function for ACTION."
+  "Return CAPABILITY action descriptor for ACTION."
   (plist-get (e-capability-actions capability) action))
 
 (provide 'e-capabilities)

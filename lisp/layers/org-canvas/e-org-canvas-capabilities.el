@@ -540,9 +540,9 @@ and returns the number of paragraphs whose text changed."
 
 (defun e-org-canvas--action (description handler &optional parameters)
   "Return an Org Canvas action descriptor for HANDLER."
-  (e-action-create
-   :handler (lambda (arguments) (funcall handler nil arguments))
-   :caller (lambda (context arguments)
+  (e-action-cheap-create
+   :owner 'org-canvas
+   :runner (lambda (arguments context)
              (funcall handler
                       (e-org-canvas--require-tool-session
                        (plist-get context :harness)

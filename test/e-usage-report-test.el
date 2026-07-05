@@ -42,14 +42,14 @@
    :name "Usage Sample"
    :tools (list #'e-usage-report-test--tool-provider)
    :actions
-   (list :run
-         (e-action-create
-          :caller (lambda (_context _arguments) 'ran)
-          :description "Sample counted action.")
-         :idle
-         (e-action-create
-          :caller (lambda (_context _arguments) 'idle)
-          :description "Sample zero-use action."))))
+	   (list :run
+	         (e-action-cheap-create
+	          :runner (lambda (_arguments _context) 'ran)
+	          :description "Sample counted action.")
+	         :idle
+	         (e-action-cheap-create
+	          :runner (lambda (_arguments _context) 'idle)
+	          :description "Sample zero-use action."))))
 
 (ert-deftest e-usage-report-test-splits-tools-and-actions ()
   "Usage reports aggregate tool and action starts in separate sections."

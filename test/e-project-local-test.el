@@ -22,6 +22,7 @@
 (require 'e-project-local)
 (require 'e-shells)
 (require 'e-store)
+(require 'e-work)
 (require 'e-tools)
 
 (defvar projectile-after-switch-project-hook)
@@ -895,12 +896,17 @@ list every time, or discovery after the first would find no layers."
             (e-harness-set-intrinsic-capabilities
              harness
              (list (e-project-local--dynamic-capability project)))
-            (let ((result
-                   (e-actions-call
-                    'project-local
-                    :prime
-                    (list :directory project)
-                    (list :harness harness))))
+            (let* ((dispatch
+                    (e-actions-dispatch
+                     'project-local
+                     :prime
+                     (list :directory project)
+                     (list :harness harness)))
+                   (result
+                    (e-work-with-batch-await
+                      (e-work-await-batch
+                       (plist-get dispatch :request)
+                       :timeout 1))))
               (should e-project-local-test--prime-action-loaded)
               (should (equal (plist-get result :status) "primed"))
               (should (eq (plist-get result :layer-id) 'project-local))

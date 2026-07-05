@@ -303,31 +303,31 @@ domain-side failure never rolls back the already-persisted verdict."
 (defun e-annotation-tools--actions ()
   "Return annotation action plist."
   (list
-   :list
-   (e-action-create
-    :handler #'e-annotation-tools-list
-    :caller (lambda (_context arguments)
-              (e-annotation-tools-list
-               :file (plist-get arguments :file)
-               :org-id (or (plist-get arguments :org_id)
-                           (plist-get arguments :org-id))))
+	   :list
+	   (e-action-cheap-create
+	    :owner 'annotations
+	    :runner (lambda (arguments _context)
+	              (e-annotation-tools-list
+	               :file (plist-get arguments :file)
+	               :org-id (or (plist-get arguments :org_id)
+	                           (plist-get arguments :org-id))))
     :description "List Simply Annotate threads on a file. Optionally filter by an org-id stored in a thread's payload."
     :parameters '(:type "object"
                   :properties (:file (:type "string")
                                :org_id (:type "string"))
                   :required ["file"]))
-   :add
-   (e-action-create
-    :handler #'e-annotation-tools-add
-    :caller (lambda (_context arguments)
-              (e-annotation-tools-add
-               :file (plist-get arguments :file)
-               :start (plist-get arguments :start)
-               :end (plist-get arguments :end)
-               :text (plist-get arguments :text)
-               :author (plist-get arguments :author)
-               :payload (or (plist-get arguments :payload)
-                            (plist-get arguments :metadata))))
+	   :add
+	   (e-action-cheap-create
+	    :owner 'annotations
+	    :runner (lambda (arguments _context)
+	              (e-annotation-tools-add
+	               :file (plist-get arguments :file)
+	               :start (plist-get arguments :start)
+	               :end (plist-get arguments :end)
+	               :text (plist-get arguments :text)
+	               :author (plist-get arguments :author)
+	               :payload (or (plist-get arguments :payload)
+	                            (plist-get arguments :metadata))))
     :description "Post a non-destructive proposal as a Simply Annotate thread anchored to a file region."
     :parameters '(:type "object"
                   :properties (:file (:type "string")
@@ -337,17 +337,17 @@ domain-side failure never rolls back the already-persisted verdict."
                                :author (:type "string")
                                :payload (:type "object"))
                   :required ["file" "start" "end" "text"]))
-   :resolve
-   (e-action-create
-    :handler #'e-annotation-tools-resolve
-    :caller (lambda (_context arguments)
-              (e-annotation-tools-resolve
-               :file (plist-get arguments :file)
-               :thread-id (or (plist-get arguments :thread_id)
-                              (plist-get arguments :thread-id))
-               :verdict (plist-get arguments :verdict)
-               :comment (plist-get arguments :comment)
-               :author (plist-get arguments :author)))
+	   :resolve
+	   (e-action-cheap-create
+	    :owner 'annotations
+	    :runner (lambda (arguments _context)
+	              (e-annotation-tools-resolve
+	               :file (plist-get arguments :file)
+	               :thread-id (or (plist-get arguments :thread_id)
+	                              (plist-get arguments :thread-id))
+	               :verdict (plist-get arguments :verdict)
+	               :comment (plist-get arguments :comment)
+	               :author (plist-get arguments :author)))
     :description "Set a verdict on a Simply Annotate thread and return the thread payload. Resolving does not apply domain mutations itself."
     :parameters '(:type "object"
                   :properties (:file (:type "string")

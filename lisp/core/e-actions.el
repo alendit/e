@@ -32,6 +32,8 @@
   "e capability action is not available" 'e-actions-error)
 (define-error 'e-actions-invalid-arguments
   "e action arguments are invalid" 'e-actions-error)
+(define-error 'e-actions-invalid-spec
+  "e action descriptor is invalid" 'e-actions-error)
 
 (defun e-actions--plist-p (value)
   "Return non-nil when VALUE is a keyword plist."
@@ -169,25 +171,6 @@
                                       name
                                     (symbol-name name)))))))))))
 
-(defun e-actions--default-action (handler)
-  "Return legacy action descriptor for HANDLER."
-  (e-action-create
-   :handler handler
-   :caller (lambda (_action-context arguments)
-             (funcall handler arguments))))
-
-(defun e-actions--action-start (action)
-  "Return ACTION's async start function, tolerating older live records."
-  (and (e-action-p action)
-       (>= (length action) 8)
-       (e-action-start action)))
-
-(defun e-actions--action-work (action)
-  "Return ACTION's work spec, tolerating older live records."
-  (and (e-action-p action)
-       (>= (length action) 9)
-       (e-action-work action)))
-
 (defun e-actions--preview (value)
   "Return a compact printable preview for VALUE."
   (let* ((text (prin1-to-string value))
@@ -260,7 +243,8 @@ OPTIONS may include `:harness', `:session-id', `:turn-id', or `:context'."
          (call-id (e-session-generate-ulid))
          (started-at (float-time))
          (capability-object
-          (e-actions--find-capability harness session-id turn-id capability-id)))
+          (e-actions--find-capability harness session-id turn-id capability-id))
+         failure-emitted)
     (e-actions--emit-activity
      harness session-id turn-id 'action-started
      (e-actions--activity-payload
@@ -271,15 +255,19 @@ OPTIONS may include `:harness', `:session-id', `:turn-id', or `:context'."
           (unless capability-object
             (signal 'e-actions-unknown-capability
                     (list (format "Capability %S is not active" capability-id))))
-          (let* ((entry (e-capabilities-action-spec capability-object action-key))
-                 (action-spec
-                  (cond
-                   ((e-action-p entry) entry)
-                   ((functionp entry) (e-actions--default-action entry))
-                   (t nil))))
+          (let ((action-spec
+                 (e-capabilities-action-spec capability-object action-key)))
             (unless action-spec
               (signal 'e-actions-unknown-action
                       (list (format "Capability %S has no action %S"
+                                    capability-id action-key))))
+            (unless (e-action-p action-spec)
+              (signal 'e-actions-invalid-spec
+                      (list (format "Capability %S action %S is not an e-action descriptor"
+                                    capability-id action-key))))
+            (unless (e-work-spec-p (e-action-work action-spec))
+              (signal 'e-actions-invalid-spec
+                      (list (format "Capability %S action %S does not declare work"
                                     capability-id action-key))))
             (when (and (e-action-requires-session action-spec)
                        (not (stringp session-id)))
@@ -299,8 +287,7 @@ OPTIONS may include `:harness', `:session-id', `:turn-id', or `:context'."
                     (list :status 'started
                           :action-call-id call-id
                           :capability capability-id
-                          :action action-key))
-                   result)
+                          :action action-key)))
               (e-actions--validate-arguments action-spec arguments)
               (cl-labels
                   ((make-finish
@@ -320,6 +307,7 @@ OPTIONS may include `:harness', `:session-id', `:turn-id', or `:context'."
                     (lambda (err)
                       (unless (car settled)
                         (setcar settled t)
+                        (setq failure-emitted t)
                         (e-actions--emit-activity
                          harness session-id turn-id 'action-failed
                          (apply #'e-actions--activity-payload
@@ -329,67 +317,37 @@ OPTIONS may include `:harness', `:session-id', `:turn-id', or `:context'."
                                  (list :elapsed-seconds
                                        (- (float-time) started-at))
                                  (e-actions--error-payload-fields err))))))))
-                (cond
-                 ((e-work-spec-p (e-actions--action-work action-spec))
-                  (let* ((settled (cons nil nil))
-                         (work (e-actions--action-work action-spec))
-                         (request
-                          (e-work-start work arguments
-                                        :context action-context
-                                        :on-done (make-finish settled)
-                                        :on-error (make-fail settled)))
-                         (dispatch-result
-                          (if (eq (plist-get (e-work-status request) :state)
-                                  'finished)
-                              (e-work-handle-result request)
-                            started-result)))
-                    (list :capability capability-object
-                          :capability-id capability-id
-                          :action action-key
-                          :spec action-spec
-                          :request request
-                          :result dispatch-result)))
-                 ((functionp (e-actions--action-start action-spec))
-                  (let* ((settled (cons nil nil))
-                         (start (e-actions--action-start action-spec))
-                         (request
-                          (funcall start action-context arguments
-                                   :on-done (make-finish settled)
-                                   :on-error (make-fail settled))))
-                    (list :capability capability-object
-                          :capability-id capability-id
-                          :action action-key
-                          :spec action-spec
-                          :request request
-                          :result started-result)))
-                 (t
-                  (setq result
-                        (funcall (or (e-action-caller action-spec)
-                                     (lambda (_action-context args)
-                                       (funcall (e-action-handler action-spec)
-                                                args)))
-                                 action-context
-                                 arguments))
-                  (e-actions--emit-activity
-                   harness session-id turn-id 'action-finished
-                   (e-actions--activity-payload
-                    call-id capability-id action-key arguments context
-                    :status 'ok
-                    :elapsed-seconds (- (float-time) started-at)
-                    :result (e-actions--preview result)))
+                (let* ((settled (cons nil nil))
+                       (work (e-action-work action-spec))
+                       (request
+                        (e-work-start work arguments
+                                      :context action-context
+                                      :on-done (make-finish settled)
+                                      :on-error (make-fail settled)))
+                       (dispatch-result
+                        (pcase (plist-get (e-work-status request) :state)
+                          ('finished (e-work-handle-result request))
+                          ('failed
+                           (let ((err (e-work-handle-error request)))
+                             (signal (car err) (cdr err))))
+                          ('cancelled
+                           (signal 'e-work-cancelled (list request)))
+                          (_ started-result))))
                   (list :capability capability-object
                         :capability-id capability-id
                         :action action-key
                         :spec action-spec
-                        :result result)))))))
+                        :request request
+                        :result dispatch-result))))))
       (error
-       (e-actions--emit-activity
-        harness session-id turn-id 'action-failed
-        (apply #'e-actions--activity-payload
-               call-id capability-id action-key arguments context
-               (append
-                (list :elapsed-seconds (- (float-time) started-at))
-                (e-actions--error-payload-fields err))))
+       (unless failure-emitted
+         (e-actions--emit-activity
+          harness session-id turn-id 'action-failed
+          (apply #'e-actions--activity-payload
+                 call-id capability-id action-key arguments context
+                 (append
+                  (list :elapsed-seconds (- (float-time) started-at))
+                  (e-actions--error-payload-fields err)))))
        (signal (car err) (cdr err))))))
 
 (defun e-actions-call (capability action &optional arguments options)

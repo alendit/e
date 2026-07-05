@@ -804,6 +804,16 @@ This function is rejected from interactive hot paths."
         :on-error #'fail))
       handle)))
 
+(defun e-work--agent-task-instance-id (value)
+  "Normalize agent-task harness instance id VALUE from JSON-like arguments."
+  (cond
+   ((null value) nil)
+   ((keywordp value) value)
+   ((stringp value)
+    (intern (concat ":" (string-remove-prefix ":" value))))
+   (t (signal 'wrong-type-argument
+              (list 'stringp :harness-instance-id)))))
+
 (defun e-work--start-agent-task (handle arguments context)
   "Start HANDLE on the agent task queue carrier."
   (let* ((spec (e-work-handle-spec handle))
@@ -811,7 +821,8 @@ This function is rejected from interactive hot paths."
          (prompt (e-work--call (e-work-spec-prompt spec) arguments context))
          (summary (e-work--call (e-work-spec-summary spec) arguments context))
          (metadata (plist-get arguments :metadata))
-         (instance-id (plist-get arguments :harness-instance-id)))
+         (instance-id (e-work--agent-task-instance-id
+                       (plist-get arguments :harness-instance-id))))
     (unless (fboundp 'e-task-queue-enqueue)
       (signal 'e-work-invalid-spec
               (list "Agent-task work requires e-task-queue-enqueue")))

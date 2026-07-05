@@ -19,6 +19,7 @@
 (require 'e-operations)
 (require 'e-harness)
 (require 'e-resource-patterns)
+(require 'e-resource-query)
 (require 'e-resources)
 
 (define-error 'e-action-resources-invalid-uri
@@ -88,13 +89,14 @@
 
 (defun e-action-resources--action-description (spec)
   "Return human-facing description for action SPEC."
-  (cond
-   ((e-action-p spec)
-    (or (e-action-description spec) "No description provided."))
-   ((functionp spec)
-    "Legacy function action. No descriptor provided.")
-   (t
-    "Unknown action entry.")))
+	  (cond
+	   ((e-action-p spec)
+	    (let ((description (e-action-description spec)))
+	      (if (stringp description)
+	          description
+	        "No description provided.")))
+	   (t
+	    "Invalid action descriptor.")))
 
 (defun e-action-resources--action-requires-session-p (spec)
   "Return non-nil when SPEC requires a session."
@@ -107,12 +109,12 @@
 (defun e-action-resources--format-action-summary
     (capability action-key spec)
   "Return one-line summary for CAPABILITY ACTION-KEY SPEC."
-  (format "- %s :: %s%s"
-          (e-action-resources--action-uri capability action-key)
-          (e-action-resources--action-description spec)
-          (if (e-action-p spec)
-              ""
-            " [legacy raw function]")))
+	  (format "- %s :: %s%s"
+	          (e-action-resources--action-uri capability action-key)
+	          (e-action-resources--action-description spec)
+	          (if (e-action-p spec)
+	              ""
+	            " [invalid]")))
 
 (defun e-action-resources--format-action-contract
     (capability action-key spec)
@@ -275,8 +277,31 @@
       (equal (plist-get record :name) scope)
       (string-prefix-p (concat scope "/") (plist-get record :name))))
 
+(defun e-action-resources--query-field-functions ()
+  "Return e-action:// resource query field functions."
+  `(("name" . ,(lambda (record) (plist-get record :name)))
+    ("uri" . ,(lambda (record) (plist-get record :uri)))))
+
+(defun e-action-resources--query-records (records &rest arguments)
+  "Apply e-action:// query controls to RECORDS using ARGUMENTS."
+  (apply #'e-resource-query-apply
+         records
+         "e-action"
+         '("default" "name" "uri")
+         nil
+         :field-functions (e-action-resources--query-field-functions)
+         arguments))
+
+(defun e-action-resources--resource-record (record)
+  "Return public resource result for action RECORD."
+  (list :uri (plist-get record :uri)
+        :name (plist-get record :name)
+        :kind (plist-get record :kind)))
+
 (defun e-action-resources--glob
-    (harness session-id turn-id uri pattern limit case-sensitive)
+    (harness session-id turn-id uri pattern limit case-sensitive
+             &optional sort-by sort-order created-after created-before
+             updated-after updated-before)
   "Glob action description resources for HARNESS SESSION-ID TURN-ID."
   (e-action-resources--require-context harness)
   (let* ((scope (e-action-resources--scope-prefix (plist-get uri :address)))
@@ -292,15 +317,18 @@
                            actual-case-sensitive)))
                    (e-action-resources--all-resource-records
                     harness session-id turn-id)))
-         (selected (seq-take records actual-limit)))
+         (queried (e-action-resources--query-records
+                   records
+                   :sort-by sort-by
+                   :sort-order sort-order
+                   :created-after created-after
+                   :created-before created-before
+                   :updated-after updated-after
+                   :updated-before updated-before))
+         (selected (seq-take queried actual-limit)))
     (list :resources
-          (vconcat
-           (mapcar (lambda (record)
-                     (list :uri (plist-get record :uri)
-                           :name (plist-get record :name)
-                           :kind (plist-get record :kind)))
-                   selected))
-          :truncated (> (length records) actual-limit))))
+          (vconcat (mapcar #'e-action-resources--resource-record selected))
+          :truncated (> (length queried) actual-limit))))
 
 (defun e-action-resources--search-record (record query options)
   "Return matches for QUERY in RECORD using OPTIONS."
@@ -336,6 +364,14 @@
                    (e-action-resources--all-resource-records
                     harness session-id turn-id)))
          matches)
+    (setq records
+          (e-resource-query-apply-search
+           records
+           "e-action"
+           '("default" "name" "uri")
+           nil
+           options
+           (e-action-resources--query-field-functions)))
     (dolist (record records)
       (setq matches
             (append matches
@@ -364,10 +400,12 @@
              :description "List generated active action description resources."
              :uri-patterns '("e-action://"
                              "e-action://<capability>")
-             :handler (lambda (uri pattern limit case-sensitive)
+             :handler (lambda (uri pattern limit case-sensitive sort-by sort-order
+                               created-after created-before updated-after updated-before)
                         (e-action-resources--glob
                          harness session-id turn-id
-                         uri pattern limit case-sensitive)))
+                         uri pattern limit case-sensitive sort-by sort-order
+                         created-after created-before updated-after updated-before)))
             (e-resource-method-create
              :scheme "e-action"
              :operation e-operation-search

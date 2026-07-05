@@ -216,8 +216,12 @@ Actions arrive as JSON, so an id or handler name reaches here as a string."
     (list :id id :removed t)))
 
 (defun e-cron-actions--action (handler parameters)
-  "Return a cron action descriptor for HANDLER with PARAMETERS."
-  (e-action-create :handler handler :parameters parameters))
+  "Return a cron cheap work action descriptor for HANDLER with PARAMETERS."
+  (e-action-cheap-create
+   :owner 'cron
+   :parameters parameters
+   :runner (lambda (arguments _context)
+             (funcall handler arguments))))
 
 (defconst e-cron-actions--register-parameters
   '(:type "object"

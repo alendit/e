@@ -301,27 +301,32 @@
                    '("first instructions" "provider one" "provider two")))))
 
 (ert-deftest e-capabilities-test-action ()
-  "Capability actions are looked up by keyword."
-  (let* ((action #'ignore)
+  "Capability action descriptors are looked up by keyword."
+  (let* ((action (e-action-cheap-create
+                  :runner (lambda (_arguments _context) 'ok)))
          (capability
           (e-capability-create
            :id 'actions
            :actions (list :submit action))))
-    (should (eq (e-capabilities-action capability :submit) action))
-    (should-not (e-capabilities-action capability :missing))))
+    (should (eq (e-capabilities-action-spec capability :submit) action))
+    (should-not (e-capabilities-action-spec capability :missing))))
 
-(ert-deftest e-capabilities-test-action-descriptor-preserves-function-lookup ()
-  "Action descriptors keep direct function lookup backward compatible."
-  (let* ((handler #'ignore)
-         (descriptor (e-action-create
-                      :handler handler
+(ert-deftest e-capabilities-test-legacy-action-accessor-is-removed ()
+  "The old direct function action accessor is not part of the surface."
+  (should-not (fboundp 'e-capabilities-action)))
+
+(ert-deftest e-capabilities-test-action-descriptor-requires-work ()
+  "Action descriptors require work specs."
+  (let* ((descriptor (e-action-cheap-create
                       :description "Submit."
-                      :parameters '(:type "object")))
+                      :parameters '(:type "object")
+                      :runner (lambda (_arguments _context) 'ok)))
          (capability
           (e-capability-create
            :id 'actions
            :actions (list :submit descriptor))))
-    (should (eq (e-capabilities-action capability :submit) handler))
+    (should-error (e-action-create :description "No work."))
+    (should-error (e-action-create :handler #'ignore))
     (should (eq (e-capabilities-action-spec capability :submit) descriptor))))
 
 (provide 'e-capabilities-test)

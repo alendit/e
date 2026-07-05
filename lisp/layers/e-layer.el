@@ -138,7 +138,6 @@
 (defun e-layer--session-compaction-action ()
   "Return the session compaction action descriptor."
   (e-action-create
-   :caller #'e-layer--compact-session-action
    :work (e-layer--compact-session-action-work)
    :description "Compact the current session context during this agent turn."
    :parameters '(:type "object"

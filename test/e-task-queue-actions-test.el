@@ -47,6 +47,12 @@
   (e-task-queue-create
    :runner (lambda (_task _harness _on-settle) (list :cancel #'ignore))))
 
+(defun e-task-queue-actions-test--call (capability action arguments)
+  "Start CAPABILITY ACTION work with ARGUMENTS and return its immediate result."
+  (let* ((spec (e-capabilities-action-spec capability action))
+         (handle (e-work-start (e-action-work spec) arguments)))
+    (e-work-handle-result handle)))
+
 (ert-deftest e-task-queue-actions-test-capability-actions-and-resource ()
   "The capability exposes the queue actions and a readable reference resource."
   (let* ((capability (e-task-queue-capability-create
@@ -76,22 +82,27 @@
   (e-task-queue-actions-test--with-instances
     (let* ((queue (e-task-queue-actions-test--queue))
            (capability (e-task-queue-capability-create :queue queue))
-           (enqueue (e-capabilities-action capability :enqueue))
-           (list-tasks (e-capabilities-action capability :list-tasks))
-           (task-status (e-capabilities-action capability :task-status))
-           (read-task (e-capabilities-action capability :read-task))
-           (cancel-task (e-capabilities-action capability :cancel-task))
-           (record (funcall enqueue (list :prompt "research X"
-                                          :metadata '(:source "grimoire:inbox"))))
+           (record (e-task-queue-actions-test--call
+                    capability :enqueue
+                    (list :prompt "research X"
+                          :metadata '(:source "grimoire:inbox"))))
            (task-id (plist-get record :task-id)))
       (should (stringp task-id))
       (should (equal (plist-get record :metadata) '(:source "grimoire:inbox")))
-      (should (= 1 (length (funcall list-tasks nil))))
-      (should (equal (plist-get (funcall task-status (list :task-id task-id))
+      (should (= 1 (length (e-task-queue-actions-test--call
+                            capability :list-tasks nil))))
+      (should (equal (plist-get (e-task-queue-actions-test--call
+                                 capability :task-status
+                                 (list :task-id task-id))
                                 :task-id)
                      task-id))
-      (should (plist-member (funcall read-task (list :task-id task-id)) :outputs))
-      (should (eq (plist-get (funcall cancel-task (list :task-id task-id))
+      (should (plist-member (e-task-queue-actions-test--call
+                             capability :read-task
+                             (list :task-id task-id))
+                            :outputs))
+      (should (eq (plist-get (e-task-queue-actions-test--call
+                              capability :cancel-task
+                              (list :task-id task-id))
                              :status)
                   'cancelled)))))
 
@@ -104,10 +115,11 @@
                              (setq settled-harness harness)
                              (list :cancel #'ignore))))
            (capability (e-task-queue-capability-create :queue queue))
-           (enqueue (e-capabilities-action capability :enqueue))
            (expected (e-harness-instance-get-or-create :chat-test))
-           (record (funcall enqueue (list :prompt "go"
-                                          :harness-instance-id "chat-test"))))
+           (record (e-task-queue-actions-test--call
+                    capability :enqueue
+                    (list :prompt "go"
+                          :harness-instance-id "chat-test"))))
       (should (eq (plist-get record :status) 'running))
       (should (eq settled-harness expected)))))
 
@@ -122,30 +134,32 @@ pausing a running task lands it `paused' rather than leaving it running."
                                    (lambda () (funcall on-settle
                                                        :status 'cancelled))))))
            (capability (e-task-queue-capability-create :queue queue))
-           (enqueue (e-capabilities-action capability :enqueue))
-           (pause (e-capabilities-action capability :pause-task))
-           (resume (e-capabilities-action capability :resume-task))
-           (record (funcall enqueue (list :prompt "work")))
+           (record (e-task-queue-actions-test--call
+                    capability :enqueue (list :prompt "work")))
            (task-id (plist-get record :task-id)))
-      (should (eq (plist-get (funcall pause (list :task-id task-id)) :status)
+      (should (eq (plist-get (e-task-queue-actions-test--call
+                              capability :pause-task
+                              (list :task-id task-id))
+                             :status)
                   'paused))
-      (should (eq (plist-get (funcall resume (list :task-id task-id)) :status)
+      (should (eq (plist-get (e-task-queue-actions-test--call
+                              capability :resume-task
+                              (list :task-id task-id))
+                             :status)
                   'running)))))
 
 (ert-deftest e-task-queue-actions-test-pause-all-gates-queue ()
   "The pause-all action gates the queue so enqueued work stays queued."
   (e-task-queue-actions-test--with-instances
     (let* ((queue (e-task-queue-actions-test--queue))
-           (capability (e-task-queue-capability-create :queue queue))
-           (enqueue (e-capabilities-action capability :enqueue))
-           (pause-all (e-capabilities-action capability :pause-all))
-           (resume-all (e-capabilities-action capability :resume-all)))
-      (funcall pause-all nil)
-      (let* ((record (funcall enqueue (list :prompt "held")))
+           (capability (e-task-queue-capability-create :queue queue)))
+      (e-task-queue-actions-test--call capability :pause-all nil)
+      (let* ((record (e-task-queue-actions-test--call
+                      capability :enqueue (list :prompt "held")))
              (task-id (plist-get record :task-id)))
         (should (eq (plist-get (e-task-queue-get queue task-id) :status)
                     'queued))
-        (funcall resume-all nil)
+        (e-task-queue-actions-test--call capability :resume-all nil)
         (should (eq (plist-get (e-task-queue-get queue task-id) :status)
                     'running))))))
 

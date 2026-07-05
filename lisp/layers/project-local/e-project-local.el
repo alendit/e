@@ -780,15 +780,49 @@ revalidates via `e-project-local--discovered-capabilities'."
                       (t "project-local extensions were not loaded")))
        inspection))))
 
-(defun e-project-local--action-descriptor (caller description)
-  "Return project-local action descriptor for CALLER with DESCRIPTION."
-  (e-action-create
-   :caller caller
-   :handler (lambda (_arguments) nil)
+(defconst e-project-local--action-parameters
+  '(:type "object"
+    :properties (:directory (:type "string"))
+    :required [])
+  "Common project-local action parameters.")
+
+(defun e-project-local--cheap-action-descriptor (runner description)
+  "Return cheap project-local action descriptor for RUNNER."
+  (e-action-cheap-create
+   :owner 'project-local
    :description description
-   :parameters '(:type "object"
-                 :properties (:directory (:type "string"))
-                 :required [])))
+   :parameters e-project-local--action-parameters
+   :runner (lambda (arguments context)
+             (funcall runner context arguments))))
+
+(defun e-project-local--prime-action-runner (fallback handle arguments context)
+  "Schedule project-local prime work for FALLBACK on HANDLE."
+  (run-at-time
+   0 nil
+   (lambda ()
+     (condition-case err
+         (e-work-finish
+          handle
+          (e-project-local--action-prime fallback context arguments))
+       (error
+        (e-work-fail handle err)))))
+  :deferred)
+
+(defun e-project-local--prime-action-descriptor (fallback description)
+  "Return async project-local prime action descriptor for FALLBACK."
+  (e-action-create
+   :description description
+   :parameters e-project-local--action-parameters
+   :work (e-work-spec-create
+          :id "project_local_prime"
+          :description description
+          :parameters e-project-local--action-parameters
+          :execution 'cooperative
+          :interactive-policy 'async
+          :owner 'project-local
+          :runner (lambda (handle arguments context)
+                    (e-project-local--prime-action-runner
+                     fallback handle arguments context)))))
 
 (defun e-project-local--context-capabilities (fallback context)
   "Return project-local capabilities for CONTEXT or FALLBACK."
@@ -851,20 +885,18 @@ revalidates via `e-project-local--discovered-capabilities'."
      :instructions e-project-local-instructions
      :actions
      (list :inspect
-           (e-project-local--action-descriptor
+           (e-project-local--cheap-action-descriptor
             (lambda (action-context arguments)
               (e-project-local--action-inspect
                fallback action-context arguments))
             "Inspect project-local extension files without loading them.")
            :prime
-           (e-project-local--action-descriptor
-            (lambda (action-context arguments)
-              (e-project-local--action-prime fallback action-context arguments))
+           (e-project-local--prime-action-descriptor
+            fallback
             "Load trusted allowlisted project-local extensions explicitly.")
            :refresh
-           (e-project-local--action-descriptor
-            (lambda (action-context arguments)
-              (e-project-local--action-prime fallback action-context arguments))
+           (e-project-local--prime-action-descriptor
+            fallback
             "Reload trusted allowlisted project-local extensions explicitly."))
      :tools
      (list (lambda (registry &rest context)

@@ -320,9 +320,9 @@ When ADD-TO-WORKSPACE is non-nil, add BUFFER to its target workspace first."
 
 (defun e-workspace-awareness--action (description caller &optional parameters)
   "Return a workspace-awareness action descriptor."
-  (e-action-create
-   :handler (lambda (arguments) (funcall caller nil arguments))
-   :caller (lambda (context arguments)
+  (e-action-cheap-create
+   :owner 'workspace-awareness
+   :runner (lambda (arguments context)
              (funcall caller context arguments))
    :description description
    :parameters (or parameters '(:type "object" :properties nil))))

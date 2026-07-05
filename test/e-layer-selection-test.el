@@ -32,9 +32,9 @@
   (let ((capability (e-layer-selection-capability-create))
         (layer (e-core-layer-create)))
     (should (eq (e-capability-id capability) 'layer-selection))
-    (should (functionp (e-capabilities-action capability :enable)))
-    (should (functionp (e-capabilities-action capability :disable)))
-    (should (functionp (e-capabilities-action capability :toggle)))
+    (should (e-action-p (e-capabilities-action-spec capability :enable)))
+    (should (e-action-p (e-capabilities-action-spec capability :disable)))
+    (should (e-action-p (e-capabilities-action-spec capability :toggle)))
     (should (eq (e-layer-id layer) 'e))
     (should (equal (mapcar #'e-capability-id (e-layer-capabilities layer))
                    '(action-descriptions

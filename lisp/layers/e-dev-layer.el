@@ -37,13 +37,14 @@
 (defun e-dev-layer--reload-actions ()
   "Return e-dev reload notification actions."
   (list
-   :mark-reload-required
-   (e-action-create
-    :caller
-    (lambda (_context arguments)
-      (e-dev-mark-reload-required
-       (e-dev-layer--argument-string arguments :reason "e source changed")
-       (e-dev-layer--argument-files arguments)
+	   :mark-reload-required
+	   (e-action-cheap-create
+	    :owner 'e-dev
+	    :runner
+	    (lambda (arguments _context)
+	      (e-dev-mark-reload-required
+	       (e-dev-layer--argument-string arguments :reason "e source changed")
+	       (e-dev-layer--argument-files arguments)
        (intern (e-dev-layer--argument-string arguments :scope "full"))))
     :description
     "Mark the running Emacs as needing an explicit full reload when the user is idle."
@@ -52,13 +53,14 @@
       :properties (:reason (:type "string")
                    :files (:type "array" :items (:type "string"))
                    :scope (:type "string"))
-      :required []))
-   :reload-required-status
-   (e-action-create
-    :caller (lambda (_context _arguments)
-              (e-dev-reload-required-status))
-    :description "Return pending explicit e reload status without reloading."
-    :parameters '(:type "object" :properties nil :required []))))
+	      :required []))
+	   :reload-required-status
+	   (e-action-cheap-create
+	    :owner 'e-dev
+	    :runner (lambda (_arguments _context)
+	              (e-dev-reload-required-status))
+	    :description "Return pending explicit e reload status without reloading."
+	    :parameters '(:type "object" :properties nil :required []))))
 
 (defun e-dev-layer--reload-capability-create ()
   "Create the e-dev reload notification capability."

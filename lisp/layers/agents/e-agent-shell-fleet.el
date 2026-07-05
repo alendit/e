@@ -163,9 +163,13 @@
     (e-agent-shell-interrupt buffer :force (plist-get arguments :force))
     (e-agent-shell-work-mark-interrupted registry work-id)))
 
-(defun e-agent-shell-fleet--action (handler)
-  "Return Agent Shell action descriptor for HANDLER."
-  (e-action-create :handler handler))
+(defun e-agent-shell-fleet--action (id handler)
+  "Return Agent Shell cheap work action descriptor for ID and HANDLER."
+  (e-action-cheap-create
+   :id (format "agent_shell_fleet_%s" id)
+   :owner 'agent-shell-fleet
+   :runner (lambda (arguments _context)
+             (funcall handler arguments))))
 
 (cl-defun e-capability-with-agent-shell-create
     (&key (id 'agent-shell-fleet) (name "Agent Shell Fleet") registry)
@@ -178,34 +182,41 @@ REGISTRY defaults to `e-agent-shell-fleet-default-registry'."
      :instruction-priority 260
      :instructions e-agent-shell-fleet-instructions
      :actions
-     (list :handoff-work
-           (e-agent-shell-fleet--action
-            (lambda (arguments)
-              (e-agent-shell-fleet--handoff-work registry arguments)))
-           :adopt-work
-           (e-agent-shell-fleet--action
-            (lambda (arguments)
-              (e-agent-shell-fleet--adopt-work registry arguments)))
-           :list-work
-           (e-agent-shell-fleet--action
-            (lambda (arguments)
-              (e-agent-shell-fleet--list-work registry arguments)))
-           :work-status
-           (e-agent-shell-fleet--action
-            (lambda (arguments)
-              (e-agent-shell-fleet--work-status registry arguments)))
-           :read-work
-           (e-agent-shell-fleet--action
-            (lambda (arguments)
-              (e-agent-shell-fleet--read-work registry arguments)))
-           :send-followup
-           (e-agent-shell-fleet--action
-            (lambda (arguments)
-              (e-agent-shell-fleet--send-followup registry arguments)))
-           :interrupt-work
-           (e-agent-shell-fleet--action
-            (lambda (arguments)
-              (e-agent-shell-fleet--interrupt-work registry arguments))))
+	     (list :handoff-work
+	           (e-agent-shell-fleet--action
+	            "handoff_work"
+	            (lambda (arguments)
+	              (e-agent-shell-fleet--handoff-work registry arguments)))
+	           :adopt-work
+	           (e-agent-shell-fleet--action
+	            "adopt_work"
+	            (lambda (arguments)
+	              (e-agent-shell-fleet--adopt-work registry arguments)))
+	           :list-work
+	           (e-agent-shell-fleet--action
+	            "list_work"
+	            (lambda (arguments)
+	              (e-agent-shell-fleet--list-work registry arguments)))
+	           :work-status
+	           (e-agent-shell-fleet--action
+	            "work_status"
+	            (lambda (arguments)
+	              (e-agent-shell-fleet--work-status registry arguments)))
+	           :read-work
+	           (e-agent-shell-fleet--action
+	            "read_work"
+	            (lambda (arguments)
+	              (e-agent-shell-fleet--read-work registry arguments)))
+	           :send-followup
+	           (e-agent-shell-fleet--action
+	            "send_followup"
+	            (lambda (arguments)
+	              (e-agent-shell-fleet--send-followup registry arguments)))
+	           :interrupt-work
+	           (e-agent-shell-fleet--action
+	            "interrupt_work"
+	            (lambda (arguments)
+	              (e-agent-shell-fleet--interrupt-work registry arguments))))
      :skills
      (list
       (e-skill-spec-create

@@ -16,6 +16,13 @@
 (require 'e-agent-shell-fleet)
 (require 'e-capabilities)
 (require 'e-store)
+(require 'e-work)
+
+(defun e-agent-shell-fleet-test--call (capability action arguments)
+  "Start CAPABILITY ACTION work with ARGUMENTS and return its result."
+  (let* ((spec (e-capabilities-action-spec capability action))
+         (handle (e-work-start (e-action-work spec) arguments)))
+    (e-work-handle-result handle)))
 
 (ert-deftest e-agent-shell-fleet-test-capability-actions-and-resource ()
   "Fleet capability exposes shell actions and a readable reference resource."
@@ -24,7 +31,7 @@
     (should (eq (e-capability-id capability) 'agent-shell-fleet))
     (dolist (action '(:handoff-work :adopt-work :list-work :work-status
                       :read-work :send-followup :interrupt-work))
-      (should (functionp (e-capabilities-action capability action))))
+      (should (e-action-p (e-capabilities-action-spec capability action))))
     (e-capabilities-register-resources capability store)
     (should (equal (mapcar #'e-store-entry-uri (e-store-list store))
                    '("e://agent-shell-fleet/skills/agent-shell-work")))
@@ -65,38 +72,40 @@
                        (setq interrupted (list candidate force))
                        t)))
             (let* ((handoff
-                    (funcall (e-capabilities-action capability :handoff-work)
-                             (list :prompt "Do feature 34"
-                                   :project-root "/tmp/project"
-                                   :agent-id "codex")))
+                    (e-agent-shell-fleet-test--call
+                     capability :handoff-work
+                     (list :prompt "Do feature 34"
+                           :project-root "/tmp/project"
+                           :agent-id "codex")))
                    (work-id (plist-get handoff :work-id)))
               (should (string-prefix-p "asw_" work-id))
               (should (eq (plist-get handoff :status) 'busy))
               (should (equal (plist-get handoff :shell-buffer)
                              " *agent-shell-fleet*"))
               (should (equal sent (list (list buffer "Do feature 34"))))
-              (should (= (length (funcall
-                                  (e-capabilities-action capability :list-work)
-                                  nil))
+              (should (= (length (e-agent-shell-fleet-test--call
+                                  capability :list-work nil))
                          1))
               (should (equal (plist-get
-                              (funcall
-                               (e-capabilities-action capability :work-status)
+                              (e-agent-shell-fleet-test--call
+                               capability :work-status
                                (list :work-id work-id))
                               :work-id)
                              work-id))
               (should (string-match-p
                        "final response"
                        (plist-get
-                        (funcall (e-capabilities-action capability :read-work)
-                                 (list :work-id work-id :limit 100))
+                        (e-agent-shell-fleet-test--call
+                         capability :read-work
+                         (list :work-id work-id :limit 100))
                         :excerpt)))
-              (funcall (e-capabilities-action capability :send-followup)
-                       (list :work-id work-id :prompt "continue"))
+              (e-agent-shell-fleet-test--call
+               capability :send-followup
+               (list :work-id work-id :prompt "continue"))
               (should (equal (car sent) (list buffer "continue")))
               (should (eq (plist-get
-                           (funcall
-                            (e-capabilities-action capability :interrupt-work)
+                           (e-agent-shell-fleet-test--call
+                            capability :interrupt-work
                             (list :work-id work-id :force t))
                            :status)
                           'interrupted))
@@ -125,8 +134,9 @@
                    (lambda (_candidate _callback) :subscription))
                   ((symbol-function 'e-agent-shell-status)
                    (lambda (_candidate) 'blocked)))
-          (let ((record (funcall (e-capabilities-action capability :adopt-work)
-                                 (list :buffer " *agent-shell-manual*"))))
+          (let ((record (e-agent-shell-fleet-test--call
+                         capability :adopt-work
+                         (list :buffer " *agent-shell-manual*"))))
             (should (eq (plist-get record :origin) 'adopted))
             (should (eq (plist-get record :status) 'blocked))
             (should (equal (plist-get record :agent-session-id)
@@ -154,15 +164,14 @@
                      (should (eq candidate buffer))
                      status)))
           (should (eq (plist-get
-                       (car (funcall
-                             (e-capabilities-action capability :list-work)
-                             nil))
+                       (car (e-agent-shell-fleet-test--call
+                             capability :list-work nil))
                        :status)
                       'blocked))
           (setq status 'finished)
           (should (eq (plist-get
-                       (funcall
-                        (e-capabilities-action capability :work-status)
+                       (e-agent-shell-fleet-test--call
+                        capability :work-status
                         (list :work-id work-id))
                        :status)
                       'finished)))
@@ -190,15 +199,14 @@
                        (should (eq candidate buffer))
                        'ready)))
             (should (eq (plist-get
-                         (funcall
-                          (e-capabilities-action capability :work-status)
+                         (e-agent-shell-fleet-test--call
+                          capability :work-status
                           (list :work-id work-id))
                          :status)
                         'finished))
             (should (eq (plist-get
-                         (car (funcall
-                               (e-capabilities-action capability :list-work)
-                               nil))
+                         (car (e-agent-shell-fleet-test--call
+                               capability :list-work nil))
                          :status)
                         'finished))))
       (when (buffer-live-p buffer)

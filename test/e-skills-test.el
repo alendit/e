@@ -219,7 +219,7 @@
     (should (= (e-capability-instruction-priority capability) 220))
     (should (equal (e-capability-config-options capability) '(:declared)))
     (should (equal (e-capability-config capability) '(:configured t)))
-    (should (eq (e-capabilities-action capability :inspect) action))))
+    (should (eq (e-capabilities-action-spec capability :inspect) action))))
 
 (ert-deftest e-skills-test-builder-does-not-add-empty-preamble ()
   "A capability without skills keeps caller instructions unchanged."

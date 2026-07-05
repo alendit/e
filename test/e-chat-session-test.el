@@ -301,7 +301,7 @@
     (dolist (action '(:submit :steer :queue :abort :reset :compact :rename
                       :set-model :set-effort
                       :attach-context :detach-context :context))
-      (should (functionp (e-capabilities-action capability action))))
+      (should (e-action-p (e-capabilities-action-spec capability action))))
     (should (e-work-spec-p
              (e-action-work
               (e-capabilities-action-spec capability :compact))))))

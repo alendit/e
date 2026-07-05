@@ -17,6 +17,7 @@
 (require 'seq)
 (require 'subr-x)
 (require 'e-capabilities)
+(require 'e-work)
 
 (defgroup e-elisp-job nil
   "Async Emacs Lisp worker jobs for e."
@@ -297,181 +298,6 @@ When nil, prefer the current Emacs executable and fall back to `emacs' on
    (cl-mapcan (lambda (path) (list "-L" path)) worker-load-path)
    (list "--eval" code)))
 
-(defun e-elisp-job--job-put (job key value)
-  "Set JOB KEY to VALUE and store the updated job."
-  (setq job (plist-put job key value))
-  (puthash (plist-get job :job_id) job e-elisp-job--jobs)
-  job)
-
-(defun e-elisp-job--job (job-id)
-  "Return job JOB-ID or signal."
-  (or (gethash job-id e-elisp-job--jobs)
-      (signal 'e-elisp-job-invalid
-              (list (format "Unknown Elisp job: %s" job-id)))))
-
-(defun e-elisp-job--snapshot (job &optional include-content)
-  "Return public snapshot for JOB.
-When INCLUDE-CONTENT is non-nil, include the current bounded content preview."
-  (let* ((collector (plist-get job :collector))
-         (metadata (e-elisp-job--metadata
-                    collector
-                    (plist-get job :exit_code))))
-    (append
-     (list :job_id (plist-get job :job_id)
-           :operation (plist-get job :operation)
-           :status (plist-get job :status)
-           :started_at (plist-get job :started_at)
-           :finished_at (plist-get job :finished_at)
-           :metadata metadata)
-     (when include-content
-       (list :content
-             (e-elisp-job--content collector (plist-get job :message)))))))
-
-(defun e-elisp-job-run-batch (arguments &optional action-context)
-  "Start an async Emacs batch job from ARGUMENTS.
-ARGUMENTS is a plist with :code and optional :directory, :load_path, and
-:timeout.  ACTION-CONTEXT is the context passed by `e-actions-call'."
-  (let* ((code (e-elisp-job--argument-string arguments :code))
-         (timeout (e-elisp-job--optional-positive-number arguments :timeout))
-         (directory (e-elisp-job--directory arguments))
-         (worker-load-path (e-elisp-job--load-path arguments directory))
-         (job-id (e-elisp-job--next-id))
-         (collector (e-elisp-job--collector-create action-context job-id))
-         (job (list :job_id job-id
-                    :operation "run-batch"
-                    :status 'running
-                    :started_at (float-time)
-                    :finished_at nil
-                    :exit_code nil
-                    :message nil
-                    :collector collector))
-         (default-directory directory)
-         process
-         timeout-timer
-         progress-timer
-         settled)
-    (cl-labels
-        ((store
-          (key value)
-          (setq job (e-elisp-job--job-put job key value)))
-         (cleanup
-          ()
-          (when (timerp timeout-timer)
-            (cancel-timer timeout-timer))
-          (when (timerp progress-timer)
-            (cancel-timer progress-timer)))
-         (mark
-          (status exit-code message)
-          (unless settled
-            (setq settled t)
-            (cleanup)
-            (store :status status)
-            (store :exit_code exit-code)
-            (store :message message)
-            (store :finished_at (float-time))))
-         (cancel
-          ()
-          (unless settled
-            (setq settled t)
-            (cleanup)
-            (when (and process (process-live-p process))
-              (kill-process process))
-            (store :status 'cancelled)
-            (store :message "Elisp job cancelled")
-            (store :finished_at (float-time)))
-          t))
-      (setq process
-            (make-process
-             :name "e-elisp-job"
-             :command (e-elisp-job--command code worker-load-path)
-             :connection-type 'pipe
-             :coding 'utf-8-unix
-             :noquery t
-             :filter
-             (lambda (_proc chunk)
-               (e-elisp-job--collector-append collector chunk)
-               ;; Keep a lightweight timer edge so status polling can observe
-               ;; recent output without forcing a tool-progress surface.
-               (unless (timerp progress-timer)
-                 (setq progress-timer
-                       (run-at-time e-elisp-job-progress-interval nil
-                                    (lambda ()
-                                      (setq progress-timer nil))))))
-             :sentinel
-             (lambda (proc _event)
-               (when (and (not settled)
-                          (memq (process-status proc) '(exit signal)))
-                 (let ((exit-code (process-exit-status proc)))
-                   (if (zerop exit-code)
-                       (mark 'ok exit-code nil)
-                     (mark 'error
-                           exit-code
-                           (format "Emacs batch process exited with code %d"
-                                   exit-code))))))))
-      (set-process-query-on-exit-flag process nil)
-      (setq job (plist-put job :process process))
-      (setq job (plist-put job :cancel #'cancel))
-      (puthash job-id job e-elisp-job--jobs)
-      (when timeout
-        (setq timeout-timer
-              (run-at-time
-               timeout nil
-               (lambda ()
-                 (unless settled
-                   (when (process-live-p process)
-                     (kill-process process))
-                   (mark
-                    'error
-                    nil
-                    (format "Emacs batch process timed out after %s seconds"
-                            timeout)))))))
-      (e-elisp-job--snapshot job))))
-
-(defun e-elisp-job-status (job-id)
-  "Return status for Elisp JOB-ID."
-  (e-elisp-job--snapshot (e-elisp-job--job job-id) t))
-
-(defun e-elisp-job-result (job-id)
-  "Return result for Elisp JOB-ID."
-  (e-elisp-job--snapshot (e-elisp-job--job job-id) t))
-
-(defun e-elisp-job-cancel (job-id)
-  "Cancel Elisp JOB-ID and return its status."
-  (let* ((job (e-elisp-job--job job-id))
-         (cancel (plist-get job :cancel)))
-    (when (and (eq (plist-get job :status) 'running)
-               (functionp cancel))
-      (funcall cancel))
-    (e-elisp-job--snapshot (e-elisp-job--job job-id) t)))
-
-(defun e-elisp-job--job-id-argument (arguments)
-  "Return job id from ARGUMENTS."
-  (e-elisp-job--argument-string arguments :job_id))
-
-(defun e-elisp-job--run-batch-action (action-context arguments)
-  "Run Elisp batch action for ACTION-CONTEXT with ARGUMENTS."
-  (e-elisp-job-run-batch arguments action-context))
-
-(defun e-elisp-job--status-action (_action-context arguments)
-  "Return status action result for ARGUMENTS."
-  (e-elisp-job-status (e-elisp-job--job-id-argument arguments)))
-
-(defun e-elisp-job--result-action (_action-context arguments)
-  "Return result action result for ARGUMENTS."
-  (e-elisp-job-result (e-elisp-job--job-id-argument arguments)))
-
-(defun e-elisp-job--cancel-action (_action-context arguments)
-  "Cancel action result for ARGUMENTS."
-  (e-elisp-job-cancel (e-elisp-job--job-id-argument arguments)))
-
-(defun e-elisp-job--action (caller description parameters)
-  "Return action descriptor for CALLER with DESCRIPTION and PARAMETERS."
-  (e-action-create
-   :caller caller
-   :handler (lambda (_arguments) nil)
-   :description description
-   :parameters parameters))
-
 (defconst e-elisp-job--run-batch-parameters
   '(:type "object"
     :properties
@@ -499,6 +325,186 @@ ARGUMENTS is a plist with :code and optional :directory, :load_path, and
       :description "Elisp job id returned by :run-batch."))
     :required ["job_id"])
   "Action parameters for job lookup operations.")
+
+(defun e-elisp-job--job-put (job key value)
+  "Set JOB KEY to VALUE and store the updated job."
+  (setq job (plist-put job key value))
+  (puthash (plist-get job :job_id) job e-elisp-job--jobs)
+  job)
+
+(defun e-elisp-job--job (job-id)
+  "Return job JOB-ID or signal."
+  (or (gethash job-id e-elisp-job--jobs)
+      (signal 'e-elisp-job-invalid
+              (list (format "Unknown Elisp job: %s" job-id)))))
+
+(defun e-elisp-job--work-result (job)
+  "Return terminal work result for JOB, when available."
+  (when-let ((handle (plist-get job :handle)))
+    (e-work-handle-result handle)))
+
+(defun e-elisp-job--work-error (job)
+  "Return terminal work error for JOB, when available."
+  (when-let ((handle (plist-get job :handle)))
+    (e-work-handle-error handle)))
+
+(defun e-elisp-job--work-state (job)
+  "Return `e-work' state for JOB."
+  (if-let ((handle (plist-get job :handle)))
+      (plist-get (e-work-status handle) :state)
+    'created))
+
+(defun e-elisp-job--terminal-p (job)
+  "Return non-nil when JOB's work has settled."
+  (memq (e-elisp-job--work-state job) '(finished failed cancelled)))
+
+(defun e-elisp-job--status-symbol (job)
+  "Return public status symbol for JOB."
+  (pcase (e-elisp-job--work-state job)
+    ('finished (or (plist-get (e-elisp-job--work-result job) :status) 'ok))
+    ('cancelled 'cancelled)
+    ('failed 'error)
+    (_ 'running)))
+
+(defun e-elisp-job--message (job)
+  "Return public terminal message for JOB."
+  (or (plist-get (e-elisp-job--work-result job) :suffix)
+      (when-let ((err (e-elisp-job--work-error job)))
+        (error-message-string err))))
+
+(defun e-elisp-job--exit-code (job)
+  "Return process exit code for JOB, when known."
+  (plist-get (e-elisp-job--work-result job) :exit-code))
+
+(defun e-elisp-job--ensure-finished-at (job)
+  "Record JOB finished time lazily once its work is terminal."
+  (when (and (e-elisp-job--terminal-p job)
+             (not (plist-get job :finished_at)))
+    (setq job (e-elisp-job--job-put job :finished_at (float-time))))
+  job)
+
+(defun e-elisp-job--snapshot (job &optional include-content)
+  "Return public snapshot for JOB.
+When INCLUDE-CONTENT is non-nil, include the current bounded content preview."
+  (setq job (e-elisp-job--ensure-finished-at job))
+  (let* ((collector (plist-get job :collector))
+         (metadata (e-elisp-job--metadata
+                    collector
+                    (e-elisp-job--exit-code job))))
+    (append
+     (list :job_id (plist-get job :job_id)
+           :operation (plist-get job :operation)
+           :status (e-elisp-job--status-symbol job)
+           :started_at (plist-get job :started_at)
+           :finished_at (plist-get job :finished_at)
+           :metadata metadata)
+     (when include-content
+       (list :content
+             (e-elisp-job--content collector
+                                   (e-elisp-job--message job)))))))
+
+(defun e-elisp-job-run-batch (arguments &optional action-context)
+  "Start an async Emacs batch job from ARGUMENTS.
+ARGUMENTS is a plist with :code and optional :directory, :load_path, and
+:timeout.  ACTION-CONTEXT is the context passed by `e-actions-call'."
+  (let* ((code (e-elisp-job--argument-string arguments :code))
+         (timeout (e-elisp-job--optional-positive-number arguments :timeout))
+         (directory (e-elisp-job--directory arguments))
+         (worker-load-path (e-elisp-job--load-path arguments directory))
+         (job-id (e-elisp-job--next-id))
+         (collector (e-elisp-job--collector-create action-context job-id))
+         (job (list :job_id job-id
+                    :operation "run-batch"
+                    :started_at (float-time)
+                    :finished_at nil
+                    :collector collector))
+         handle)
+    (puthash job-id job e-elisp-job--jobs)
+    (setq handle
+          (e-work-start
+           (e-work-spec-create
+            :id "elisp_job_run_batch"
+            :description "Run Emacs Lisp in a separate batch Emacs process."
+            :parameters e-elisp-job--run-batch-parameters
+            :execution 'process
+            :interactive-policy 'async
+            :owner 'elisp-job
+            :command
+            (lambda (_arguments _context)
+              (let ((command (e-elisp-job--command code worker-load-path)))
+                (list :program (car command)
+                      :args (cdr command)
+                      :directory directory
+                      :name "e-elisp-job"
+                      :connection-type 'pipe
+                      :coding 'utf-8-unix
+                      :capture-output nil
+                      :finish-on-nonzero t
+                      :finish-on-timeout t
+                      :timeout timeout
+                      :timeout-message
+                      (when timeout
+                        (format "Emacs batch process timed out after %s seconds"
+                                timeout))
+                      :on-output
+                      (lambda (_handle _process chunk _state)
+                        (e-elisp-job--collector-append collector chunk))
+                      :progress-interval e-elisp-job-progress-interval
+                      :progress
+                      (lambda (_handle _process _state)
+                        (e-elisp-job--snapshot
+                         (e-elisp-job--job job-id)
+                         t))))))
+           arguments
+           :context action-context))
+    (setq job (e-elisp-job--job-put job :handle handle))
+    (e-elisp-job--snapshot job)))
+
+(defun e-elisp-job-status (job-id)
+  "Return status for Elisp JOB-ID."
+  (e-elisp-job--snapshot (e-elisp-job--job job-id) t))
+
+(defun e-elisp-job-result (job-id)
+  "Return result for Elisp JOB-ID."
+  (e-elisp-job--snapshot (e-elisp-job--job job-id) t))
+
+(defun e-elisp-job-cancel (job-id)
+  "Cancel Elisp JOB-ID and return its status."
+  (let* ((job (e-elisp-job--job job-id))
+         (handle (plist-get job :handle)))
+    (when handle
+      (e-work-cancel handle)
+      (setq job (e-elisp-job--job-put job :finished_at (float-time))))
+    (e-elisp-job--snapshot (e-elisp-job--job job-id) t)))
+
+(defun e-elisp-job--job-id-argument (arguments)
+  "Return job id from ARGUMENTS."
+  (e-elisp-job--argument-string arguments :job_id))
+
+(defun e-elisp-job--run-batch-action (action-context arguments)
+  "Run Elisp batch action for ACTION-CONTEXT with ARGUMENTS."
+  (e-elisp-job-run-batch arguments action-context))
+
+(defun e-elisp-job--status-action (_action-context arguments)
+  "Return status action result for ARGUMENTS."
+  (e-elisp-job-status (e-elisp-job--job-id-argument arguments)))
+
+(defun e-elisp-job--result-action (_action-context arguments)
+  "Return result action result for ARGUMENTS."
+  (e-elisp-job-result (e-elisp-job--job-id-argument arguments)))
+
+(defun e-elisp-job--cancel-action (_action-context arguments)
+  "Cancel action result for ARGUMENTS."
+  (e-elisp-job-cancel (e-elisp-job--job-id-argument arguments)))
+
+(defun e-elisp-job--action (caller description parameters)
+  "Return action descriptor for CALLER with DESCRIPTION and PARAMETERS."
+  (e-action-cheap-create
+   :owner 'elisp-job
+   :runner (lambda (arguments context)
+             (funcall caller context arguments))
+   :description description
+   :parameters parameters))
 
 (defun e-elisp-job-capability-create ()
   "Create the Elisp job action capability."

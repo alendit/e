@@ -135,8 +135,12 @@ expects and pass an existing keyword or nil through unchanged."
   (e-task-queue-list queue))
 
 (defun e-task-queue-actions--action (handler parameters)
-  "Return a task queue action descriptor for HANDLER with PARAMETERS."
-  (e-action-create :handler handler :parameters parameters))
+  "Return a task queue cheap work action descriptor for HANDLER."
+  (e-action-cheap-create
+   :owner 'task-queue
+   :parameters parameters
+   :runner (lambda (arguments _context)
+             (funcall handler arguments))))
 
 (defun e-task-queue-actions--enqueue-work (queue)
   "Return work spec that enqueues background agent work on QUEUE."
@@ -189,12 +193,10 @@ QUEUE defaults to `e-task-queue-actions-default-queue'."
      :instruction-priority 255
      :instructions e-task-queue-actions-instructions
      :actions
-     (list :enqueue
-           (e-action-create
-            :handler (lambda (arguments)
-                       (e-task-queue-actions--enqueue queue arguments))
-            :parameters e-task-queue-actions--enqueue-parameters
-            :work (e-task-queue-actions--enqueue-work queue))
+	   (list :enqueue
+	         (e-action-create
+	          :parameters e-task-queue-actions--enqueue-parameters
+	          :work (e-task-queue-actions--enqueue-work queue))
            :list-tasks
            (e-task-queue-actions--action
             (lambda (arguments)

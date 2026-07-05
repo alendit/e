@@ -513,8 +513,11 @@
      :content e-goal-process-reference)))
 
 (defun e-goal--action (handler)
-  "Return goal action descriptor for HANDLER."
-  (e-action-create :handler handler))
+  "Return goal cheap work action descriptor for HANDLER."
+  (e-action-cheap-create
+   :owner 'goal
+   :runner (lambda (arguments _context)
+             (funcall handler arguments))))
 
 (cl-defun e-goal-capability-create
     (&key (id 'goal) (name "Goal") registry)
