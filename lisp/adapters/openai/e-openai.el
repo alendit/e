@@ -1763,8 +1763,8 @@ default when turn options do not include `:model'.  The provider profile's
   "Create a harness configured for an OpenAI-like provider.
 PROVIDER selects `e-openai-default-provider' when nil.  AUTH-FILE, BASE-URL,
 and REQUEST-FUNCTION configure the backend adapter.  MODEL is written into
-backend-neutral turn options by the default context strategy path used by
-`e-harness-prompt'.  SESSIONS supplies an existing session store."
+backend-neutral turn options by the default context strategy used by harness
+turn paths.  SESSIONS supplies an existing session store."
   (let* ((provider (or provider e-openai-default-provider))
          (profile (e-openai-provider-profile provider))
          (model (e-openai--provider-model profile model)))
@@ -1795,8 +1795,8 @@ backend.  REQUEST-FUNCTION is injectable for tests."
     (&key auth-file base-url request-function model)
   "Create a harness configured for ChatGPT-backed Codex.
 AUTH-FILE, BASE-URL, and REQUEST-FUNCTION configure the backend adapter.  MODEL
-is written into backend-neutral turn options by the default context strategy
-path used by `e-harness-prompt'."
+is written into backend-neutral turn options by the default harness context
+strategy."
   (e-openai-create-harness
    :provider 'codex
    :auth-file auth-file

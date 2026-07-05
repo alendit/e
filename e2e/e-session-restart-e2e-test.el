@@ -70,7 +70,7 @@
                                      (plist-get session :id))
                                    (e-harness-session-list harness))
                            (list session-id)))
-            (e-harness-prompt
+            (e-harness-prompt-batch
              harness session-id "does chat still work after restart?")
             (let ((metadata (plist-get (e-session-get store session-id)
                                        :metadata))

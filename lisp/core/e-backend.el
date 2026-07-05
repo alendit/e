@@ -40,16 +40,14 @@
                           (e-backend-request-cancel request))))
     (funcall cancel)))
 
-(cl-defun e-backend-stream
+(cl-defun e-backend-stream-batch
     (backend &key messages options on-item on-request-start)
-  "Compatibility wrapper that synchronously streams a backend turn through BACKEND.
+  "Synchronously stream a backend turn through BACKEND from batch/test code.
 MESSAGES and OPTIONS are backend-neutral plists/lists.  ON-ITEM receives
 backend-neutral stream items.  ON-REQUEST-START receives an optional
-`e-backend-request' handle when the adapter can expose request state.
-Prefer `e-backend-start' for interactive code and `e-backend-stream-batch' for
-explicit batch/test callers."
+`e-backend-request' handle when the adapter can expose request state."
   (when (e-request-hot-path-active-p)
-    (e-request-hot-path-blocking-error 'e-backend-stream))
+    (e-request-hot-path-blocking-error 'e-backend-stream-batch))
   (cond
    ((functionp (e-backend--stream backend))
     (let ((e-backend--request-start-callback on-request-start))
@@ -81,10 +79,6 @@ explicit batch/test callers."
    (t
     (signal 'wrong-type-argument
             (list 'functionp (e-backend--stream backend))))))
-
-(defun e-backend-stream-batch (backend &rest args)
-  "Synchronously stream BACKEND with ARGS from explicit batch/test code."
-  (apply #'e-backend-stream backend args))
 
 (cl-defun e-backend-start
     (backend &key messages options on-item on-done on-error on-request-start)

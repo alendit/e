@@ -158,7 +158,7 @@
     (e-harness-create-session harness :id "session-1")
     (e-chat-session-submit harness "session-1" "hello" :delay 1.0)
     (e-chat-session-abort harness "session-1")
-    (should (equal (plist-get (e-harness-wait harness "session-1" 0.1)
+    (should (equal (plist-get (e-harness-wait-batch harness "session-1" 0.1)
                               :status)
                    'cancelled))
     (e-session-append-message

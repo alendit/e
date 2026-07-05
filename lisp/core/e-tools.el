@@ -55,15 +55,6 @@
 (defconst e-tools-nested-tool-default-budget 20
   "Default maximum number of nested tool calls per parent tool execution.")
 
-(defvar e-tools--batch-execute-allowed nil
-  "Non-nil while explicit batch/test code may block on tool execution.")
-
-(defmacro e-tools-with-batch-execute (&rest body)
-  "Run BODY in an explicit batch/test scope that may wait for tool results."
-  (declare (indent 0) (debug t))
-  `(let ((e-tools--batch-execute-allowed t))
-     ,@body))
-
 (defun e-tools-current-context ()
   "Return the current tool start context, or nil."
   e-tools--current-context)
@@ -667,18 +658,11 @@ resource metadata."
      (list :error 'e-tools-blocking-execute-rejected
            :blocking-class class))))
 
-(defun e-tools--ensure-batch-execute-allowed ()
-  "Signal unless the caller has explicitly opted into batch tool waits."
-  (unless e-tools--batch-execute-allowed
-    (signal 'e-tools-batch-execute-not-allowed
-            (list "Use e-tools-execute-batch from batch/test code or e-tools-start from interactive code")))
-  (when (e-request-hot-path-active-p)
-    (signal 'e-tools-batch-execute-not-allowed
-            (list "Batch tool execution is not allowed in interactive hot paths"))))
-
 (defun e-tools--execute-batch-with-context (registry call context)
   "Execute CALL against REGISTRY with CONTEXT in an explicit batch/test scope."
-  (e-tools--ensure-batch-execute-allowed)
+  (when (e-request-hot-path-active-p)
+    (signal 'e-tools-batch-execute-not-allowed
+            (list "Batch tool execution is not allowed in interactive hot paths")))
   (let* ((name (plist-get call :name))
          (tool (and name
                     (gethash name (e-tools-registry-tools registry)))))
@@ -705,19 +689,7 @@ resource metadata."
 
 (defun e-tools-execute-batch (registry call)
   "Execute CALL against REGISTRY from explicit batch/test code."
-  (e-tools-with-batch-execute
-    (e-tools--execute-batch-with-context registry call nil)))
-
-(defun e-tools-execute (registry call)
-  "Compatibility wrapper for old synchronous tool execution.
-Call `e-tools-execute-batch' from batch/test code or `e-tools-start' from
-interactive code.  This wrapper only works inside `e-tools-with-batch-execute'."
   (e-tools--execute-batch-with-context registry call nil))
-
-(defun e-tools--execute-with-context (registry call context)
-  "Compatibility wrapper for old context-aware synchronous tool execution.
-Use `e-tools--execute-batch-with-context' only from explicit batch/test code."
-  (e-tools--execute-batch-with-context registry call context))
 
 (defun e-tools--execute-nested-cheap-with-context (registry call context)
   "Execute cheap nested CALL against REGISTRY with CONTEXT without batch waits."

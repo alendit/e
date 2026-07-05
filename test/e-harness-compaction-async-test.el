@@ -184,7 +184,7 @@
                                :operation)
                     'compaction))
         (should (= calls 1)))
-      (should (equal (plist-get (e-harness-wait harness "session-1" 1.0)
+      (should (equal (plist-get (e-harness-wait-batch harness "session-1" 1.0)
                                 :status)
                      'done))
       (should (= calls 2))

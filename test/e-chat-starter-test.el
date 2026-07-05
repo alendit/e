@@ -456,7 +456,7 @@ its final value only when the turn settled."
                   :origin)
                  :global-session-starter))
         (should (equal
-                 (plist-get (e-harness-wait harness session-id 1.0) :status)
+                 (plist-get (e-harness-wait-batch harness session-id 1.0) :status)
                  'done))
         (should (equal (e-chat-starter-state-latest-answer state)
                        "starter answer"))

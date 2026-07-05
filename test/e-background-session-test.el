@@ -54,7 +54,7 @@
       (let ((turn-id (e-background-session-fire trigger)))
         (should turn-id)
         (should (e-background-trigger-session-id trigger))
-        (e-harness-wait harness (e-background-trigger-session-id trigger) 2.0)
+        (e-harness-wait-batch harness (e-background-trigger-session-id trigger) 2.0)
         (should (equal (mapcar (lambda (m) (plist-get m :role))
                                (e-harness-messages
                                 harness (e-background-trigger-session-id trigger)))
@@ -67,10 +67,10 @@
         (list :id 'test-reuse :harness harness :prompt "again")
       (e-background-session-fire trigger)
       (let ((session-id (e-background-trigger-session-id trigger)))
-        (e-harness-wait harness session-id 2.0)
+        (e-harness-wait-batch harness session-id 2.0)
         (e-background-session-fire trigger)
         (should (equal session-id (e-background-trigger-session-id trigger)))
-        (e-harness-wait harness session-id 2.0)
+        (e-harness-wait-batch harness session-id 2.0)
         (should (= 4 (length (e-harness-messages harness session-id))))))))
 
 (ert-deftest e-background-session-test-busy-skip ()
@@ -94,7 +94,7 @@
       (should-not (e-background-trigger-session-id trigger))
       (setq allow t)
       (should (e-background-session-fire trigger))
-      (e-harness-wait harness (e-background-trigger-session-id trigger) 2.0))))
+      (e-harness-wait-batch harness (e-background-trigger-session-id trigger) 2.0))))
 
 (ert-deftest e-background-session-test-empty-prompt-skips ()
   "A prompt function returning nothing skips the fire without a session."
@@ -117,7 +117,7 @@
         (e-background-session--request-fire trigger)
         (e-background-session--request-fire trigger)
         (e-background-session-test--wait (lambda () (> fires 0)) 2.0)
-        (e-harness-wait harness (e-background-trigger-session-id trigger) 2.0)
+        (e-harness-wait-batch harness (e-background-trigger-session-id trigger) 2.0)
         (should (= 1 fires))))))
 
 (ert-deftest e-background-session-test-start-arms-watches ()
@@ -159,7 +159,7 @@ with a synthesized event rather than depending on real OS delivery."
             (e-background-session--on-fs-event
              trigger watched (list 1 'changed watched))
             (should (e-background-session-test--wait (lambda () (> fires 0)) 2.0))
-            (e-harness-wait harness (e-background-trigger-session-id trigger) 2.0)
+            (e-harness-wait-batch harness (e-background-trigger-session-id trigger) 2.0)
             (should (= 1 fires))))
       (delete-directory dir t))))
 
@@ -182,7 +182,7 @@ arriving after the trigger is disabled is our own teardown and must be ignored."
             (e-background-session--on-fs-event
              trigger watched (list 1 'stopped watched))
             (should (e-background-session-test--wait (lambda () (> fires 0)) 2.0))
-            (e-harness-wait harness (e-background-trigger-session-id trigger) 2.0)
+            (e-harness-wait-batch harness (e-background-trigger-session-id trigger) 2.0)
             (should (= 1 fires))
             ;; A stopped event after disabling is teardown -> no further fire.
             (setf (e-background-trigger-enabled trigger) nil)

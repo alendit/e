@@ -56,25 +56,6 @@
 	                     :content "hi"
 	                     :metadata nil)))))
 
-(ert-deftest e-tools-test-generic-execute-requires-batch-scope ()
-  "The old generic synchronous execute name is guarded from accidental use."
-  (let ((registry (e-tools-registry-create))
-        (call '(:id "call-1" :name "echo" :arguments (:text "hi"))))
-    (e-tools-register registry
-                      :name "echo"
-                      :description "Return the input text."
-                      :handler (lambda (arguments)
-                                 (plist-get arguments :text)))
-    (should-error (e-tools-execute registry call)
-                  :type 'e-tools-batch-execute-not-allowed)
-    (should (equal (e-tools-with-batch-execute
-                     (e-tools-execute registry call))
-                   '(:tool-call-id "call-1"
-                     :name "echo"
-                     :status ok
-                     :content "hi"
-                     :metadata nil)))))
-
 (ert-deftest e-tools-test-start-prefers-work-spec ()
   "Work-backed tools expose a work handle through the existing request shape."
   (let ((registry (e-tools-registry-create))
@@ -394,12 +375,11 @@
                                (setq started t)
                                (e-tools-request-create)))
     (should-error
-     (e-tools-with-batch-execute
-       (e-request-with-hot-path 'tool-context-execute
-         (e-tools--execute-batch-with-context
-          registry
-          '(:id "call-1" :name "async-process" :arguments nil)
-          nil)))
+     (e-request-with-hot-path 'tool-context-execute
+       (e-tools--execute-batch-with-context
+        registry
+        '(:id "call-1" :name "async-process" :arguments nil)
+        nil))
      :type 'e-tools-batch-execute-not-allowed)
     (should-not started)))
 

@@ -152,7 +152,7 @@
          (events nil))
     (e-harness-subscribe harness (lambda (event) (push event events)))
     (e-harness-create-session harness :id "session-1")
-    (e-harness-prompt harness "session-1" "question")
+    (e-harness-prompt-batch harness "session-1" "question")
     (let ((messages (e-harness-messages harness "session-1")))
       (should (string-match-p "\\`[0-9A-HJKMNP-TV-Z]\\{26\\}\\'"
                               (plist-get (car messages) :turn-id)))
@@ -188,7 +188,7 @@
          (harness (e-harness-create :backend backend)))
     (e-harness-activate-capability harness capability)
     (e-harness-create-session harness :id "session-1")
-    (e-harness-prompt harness "session-1" "question")
+    (e-harness-prompt-batch harness "session-1" "question")
     (should (equal (plist-get seen :value)
                    `(:status done :reason stop :assistant-content
                      ,assistant-text)))
@@ -271,7 +271,7 @@
       (should (equal (plist-get (e-harness-state harness "session-1")
                                 :active-turn)
                      turn-id))
-      (should (equal (plist-get (e-harness-wait harness "session-1" 1.0)
+      (should (equal (plist-get (e-harness-wait-batch harness "session-1" 1.0)
                                 :status)
                      'done))
       (should (equal (plist-get (e-harness-state harness "session-1")
@@ -287,9 +287,9 @@
     (e-harness-create-session harness :id "session-1")
     (let ((err (should-error
                 (e-request-with-hot-path 'chat-submit
-                  (e-harness-prompt harness "session-1" "question"))
+                  (e-harness-prompt-batch harness "session-1" "question"))
                 :type 'e-request-blocking-call-in-hot-path)))
-      (should (equal (cdr err) '(e-harness-prompt chat-submit))))
+      (should (equal (cdr err) '(e-harness-prompt-batch chat-submit))))
     (should-not (e-harness-messages harness "session-1"))
     (should-not (plist-get (e-harness-state harness "session-1")
                            :active-turn))))
@@ -307,9 +307,9 @@
           (e-harness-prompt-async harness "session-1" "question")
           (let ((err (should-error
                       (e-request-with-hot-path 'turn-wait
-                        (e-harness-wait harness "session-1" 0.1))
+                        (e-harness-wait-batch harness "session-1" 0.1))
                       :type 'e-request-blocking-call-in-hot-path)))
-            (should (equal (cdr err) '(e-harness-wait turn-wait))))
+            (should (equal (cdr err) '(e-harness-wait-batch turn-wait))))
           (should (plist-get (e-harness-state harness "session-1")
                              :active-turn)))
       (ignore-errors
@@ -351,7 +351,7 @@
     (e-harness-create-session harness :id "session-1")
     (e-harness-prompt-async harness "session-1" "question" :delay 1.0)
     (e-harness-abort harness "session-1")
-    (should (equal (plist-get (e-harness-wait harness "session-1" 0.1)
+    (should (equal (plist-get (e-harness-wait-batch harness "session-1" 0.1)
                               :status)
                    'cancelled))
     (should (equal called nil))))
@@ -381,7 +381,7 @@
     (e-harness-prompt-async harness "session-1" "question")
     (run-at-time 0.01 nil (lambda ()
                             (e-harness-abort harness "session-1")))
-    (should (equal (plist-get (e-harness-wait harness "session-1" 1.0)
+    (should (equal (plist-get (e-harness-wait-batch harness "session-1" 1.0)
                               :status)
                    'cancelled))
     (should cancelled)
@@ -413,7 +413,7 @@
     (e-harness-create-session harness :id "session-1")
     (e-harness-prompt-async harness "session-1" "question")
     (should (e-harness-abort harness "session-1"))
-    (should (equal (plist-get (e-harness-wait harness "session-1" 0.1)
+    (should (equal (plist-get (e-harness-wait-batch harness "session-1" 0.1)
                               :status)
                    'cancelled))
     (should cancel-called)
@@ -434,7 +434,7 @@
     (e-harness-subscribe harness (lambda (event) (push event events)))
     (e-harness-create-session harness :id "session-1")
     (e-harness-prompt-async harness "session-1" "question")
-    (let ((settled (e-harness-wait harness "session-1" 1.0)))
+    (let ((settled (e-harness-wait-batch harness "session-1" 1.0)))
       (should (equal (plist-get settled :status) 'error))
       (should (string-match-p "provider failed" (plist-get settled :error))))
     (should (member 'turn-failed
@@ -452,7 +452,7 @@
     (e-harness-subscribe harness (lambda (event) (push event events)))
     (e-harness-create-session harness :id "session-1")
     (e-harness-prompt-async harness "session-1" "question")
-    (let ((settled (e-harness-wait harness "session-1" 1.0)))
+    (let ((settled (e-harness-wait-batch harness "session-1" 1.0)))
       (should (equal (plist-get settled :status) 'error))
       (should (equal (plist-get settled :error) "provider failed"))
       (should (equal (plist-get settled :error-details)
@@ -599,7 +599,7 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
     (e-harness-subscribe harness (lambda (event) (push event events)))
     (e-harness-create-session harness :id "session-1")
     (e-harness-prompt-async harness "session-1" "question")
-    (let ((settled (e-harness-wait harness "session-1" 5.0)))
+    (let ((settled (e-harness-wait-batch harness "session-1" 5.0)))
       (should (equal (plist-get settled :status) 'done)))
     ;; Two failures + one success.
     (should (= (car counter) 3))
@@ -621,7 +621,7 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
     (e-harness-subscribe harness (lambda (event) (push event events)))
     (e-harness-create-session harness :id "session-1")
     (e-harness-prompt-async harness "session-1" "question")
-    (let ((settled (e-harness-wait harness "session-1" 5.0)))
+    (let ((settled (e-harness-wait-batch harness "session-1" 5.0)))
       (should (equal (plist-get settled :status) 'error))
       (should (string-match-p "429" (plist-get settled :error))))
     (should (member 'turn-failed
@@ -639,7 +639,7 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
     (e-harness-subscribe harness (lambda (event) (push event events)))
     (e-harness-create-session harness :id "session-1")
     (e-harness-prompt-async harness "session-1" "question")
-    (let ((settled (e-harness-wait harness "session-1" 1.0)))
+    (let ((settled (e-harness-wait-batch harness "session-1" 1.0)))
       (should (equal (plist-get settled :status) 'error)))
     (let ((types (mapcar (lambda (e) (plist-get e :type)) events)))
       (should (member 'turn-failed types))
@@ -671,7 +671,7 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
      (e-harness-prompt-async harness "session-1" "second")
      :type 'e-harness-active-turn-exists)
     (funcall finish)
-    (should (equal (plist-get (e-harness-wait harness "session-1" 1.0)
+    (should (equal (plist-get (e-harness-wait-batch harness "session-1" 1.0)
                               :status)
                    'done))
     (should (equal (mapcar (lambda (message) (plist-get message :role))
@@ -920,7 +920,7 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
                                 :active-turn)
                      turn-id))
       (funcall (pop finishers))
-      (let ((entry (e-harness-wait harness "session-1" 0.1)))
+      (let ((entry (e-harness-wait-batch harness "session-1" 0.1)))
         (should (eq (plist-get entry :status) 'done)))
       (should (equal (mapcar (lambda (message)
                                (plist-get message :content))
@@ -997,7 +997,7 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
                      (:type done :reason stop))))
          (harness (e-harness-create :backend backend)))
     (e-harness-create-session harness :id "session-1")
-    (e-harness-prompt harness "session-1" "question")
+    (e-harness-prompt-batch harness "session-1" "question")
     (let* ((events (e-harness-session-activity-events harness "session-1"))
            (usage-event
             (seq-find (lambda (event)
@@ -1047,7 +1047,7 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
                     :name "Context Anchor Layer"
                     :capabilities (list capability)))))
       (e-harness-create-session harness :id "session-1")
-      (e-harness-prompt harness "session-1" "question")
+      (e-harness-prompt-batch harness "session-1" "question")
       (let* ((messages (e-harness-messages harness "session-1"))
              (assistant (cl-find 'assistant messages
                                  :key (lambda (message)
@@ -1094,7 +1094,7 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
                                         :provider-continuation t
                                         :provider-anchor-provider-id openai))))
       (e-harness-create-session harness :id "session-1")
-      (e-harness-prompt harness "session-1" "question")
+      (e-harness-prompt-batch harness "session-1" "question")
       (let ((anchors (e-session-provider-anchors
                       (e-harness-sessions harness)
                       "session-1")))
@@ -1115,7 +1115,7 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
                    :backend backend
                    :default-options '(:model "gpt-test"))))
     (e-harness-create-session harness :id "session-1")
-    (e-harness-prompt harness "session-1" "question")
+    (e-harness-prompt-batch harness "session-1" "question")
     (should-not
      (e-session-provider-anchors (e-harness-sessions harness)
                                  "session-1"))))
@@ -1143,7 +1143,7 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
               nil))))
          (harness (e-harness-create :backend backend)))
     (e-harness-create-session harness :id "session-1")
-    (e-harness-prompt harness "session-1" "question")
+    (e-harness-prompt-batch harness "session-1" "question")
     (let* ((activity (e-harness-session-activity-events harness "session-1"))
            (types (mapcar (lambda (event)
                             (plist-get event :event-type))
@@ -1209,7 +1209,7 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
     (e-harness-subscribe harness (lambda (event) (push event events)))
     (e-harness-create-session harness :id "session-1")
     (e-harness-prompt-async harness "session-1" "question")
-    (let ((settled (e-harness-wait harness "session-1" 1.0)))
+    (let ((settled (e-harness-wait-batch harness "session-1" 1.0)))
       (should (equal (plist-get settled :status) 'done))
       (should (= attempts 2)))
     (let ((types (mapcar (lambda (event) (plist-get event :type)) events)))
@@ -1249,7 +1249,7 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
     (funcall (plist-get callbacks :on-item)
              '(:type done :reason stop))
     (funcall (plist-get callbacks :on-done) '(:status done))
-    (should (equal (plist-get (e-harness-wait harness "session-1" 0.1)
+    (should (equal (plist-get (e-harness-wait-batch harness "session-1" 0.1)
                               :status)
                    'cancelled))
     (should cancelled)
@@ -1306,7 +1306,7 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
       (should tool-callbacks)
       (e-harness-abort harness "session-1")
       (funcall (plist-get tool-callbacks :on-done) "late result")
-      (should (equal (plist-get (e-harness-wait harness "session-1" 0.1)
+      (should (equal (plist-get (e-harness-wait-batch harness "session-1" 0.1)
                                 :status)
                      'cancelled))
       (should tool-cancelled)
@@ -1332,8 +1332,8 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
                             (:type done :reason stop))))
          (harness (e-harness-create :backend backend)))
     (e-harness-create-session harness :id "session-1")
-    (e-harness-prompt harness "session-1" "first")
-    (e-harness-follow-up harness "session-1" "second")
+    (e-harness-prompt-batch harness "session-1" "first")
+    (e-harness-follow-up-batch harness "session-1" "second")
     (should (equal (mapcar (lambda (message) (plist-get message :role))
                            (e-harness-messages harness "session-1"))
                    '(user assistant user assistant)))))
@@ -1345,7 +1345,7 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
                             :items '((:type assistant-message :content "answer")
                                      (:type done :reason stop))))))
     (e-harness-create-session harness :id "session-1")
-    (e-harness-prompt harness "session-1" "question")
+    (e-harness-prompt-batch harness "session-1" "question")
     (e-harness-reset harness "session-1")
     (should (equal (e-harness-messages harness "session-1") nil))))
 
@@ -1397,7 +1397,7 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
                    :backend backend
                    :context-strategy context-strategy)))
     (e-harness-create-session harness :id "session-1")
-    (e-harness-prompt harness "session-1" "raw prompt")
+    (e-harness-prompt-batch harness "session-1" "raw prompt")
     (should (equal captured-messages
                    '((:role user :content "from context"))))))
 
@@ -1475,7 +1475,7 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
                  (push (nth 3 args) purposes)
                  (apply original-context args))))
       (e-harness-prompt-async harness "session-1" "hello")
-      (should (equal (plist-get (e-harness-wait harness "session-1" 1.0)
+      (should (equal (plist-get (e-harness-wait-batch harness "session-1" 1.0)
                                 :status)
                      'done)))
     (should (member 'turn purposes))
@@ -2198,7 +2198,7 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
            :backend backend
            :intrinsic-capabilities (list tools-capability hooks-capability)))
     (e-harness-create-session harness :id "session-1")
-    (e-harness-prompt harness "session-1" "use tool")
+    (e-harness-prompt-batch harness "session-1" "use tool")
     (let* ((messages (e-harness-messages harness "session-1"))
            (tool-call (cl-find 'tool-call messages
                                :key (lambda (message)
@@ -2459,7 +2459,7 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
            :intrinsic-capabilities (list tools-capability))))
     (e-harness-create-session harness :id "session-1")
     (e-harness-subscribe harness (lambda (event) (push event events)))
-    (e-harness-prompt harness "session-1" "chain tools")
+    (e-harness-prompt-batch harness "session-1" "chain tools")
     (should (equal calls 2))
     (let* ((messages (e-harness-messages harness "session-1"))
            (roles (mapcar (lambda (message)
@@ -2549,7 +2549,7 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
            :backend backend
            :intrinsic-capabilities (list tools-capability))))
     (e-harness-create-session harness :id "session-1")
-    (e-harness-prompt harness "session-1" "catch nested error")
+    (e-harness-prompt-batch harness "session-1" "catch nested error")
     (should (equal calls 2))
     (let* ((tool-message (cl-find 'tool second-request-messages
                                   :key (lambda (message)
@@ -2606,7 +2606,7 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
         (progn
           (e-harness-create-session harness :id "session-1")
           (e-dev-profile-start)
-          (e-harness-prompt harness "session-1" "use tool")
+          (e-harness-prompt-batch harness "session-1" "use tool")
           (e-dev-profile-stop)
           (let* ((report (e-dev-profile-report-data e-dev-profile--latest-file))
                  (aggregates (plist-get report :aggregates)))
@@ -2963,7 +2963,7 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
          (harness (e-harness-create :backend backend)))
     (e-harness-set-intrinsic-capabilities harness (e-layer-capabilities layer))
     (e-harness-create-session harness :id "session-1")
-    (e-harness-prompt harness "session-1" "question")
+    (e-harness-prompt-batch harness "session-1" "question")
     (let ((preamble (seq-find
                      (lambda (message)
                        (string-match-p
@@ -3154,7 +3154,7 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
          (harness (e-harness-create :backend backend)))
     (e-harness-set-intrinsic-capabilities harness (e-layer-capabilities layer))
     (e-harness-create-session harness :id "session-1")
-    (e-harness-prompt harness "session-1" "raw prompt")
+    (e-harness-prompt-batch harness "session-1" "raw prompt")
     (let* ((tool (seq-find (lambda (definition)
                              (equal (plist-get definition :name) "noop"))
                            (plist-get captured-options :tools)))
@@ -3203,7 +3203,7 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
     (e-harness-create-session harness :id "session-1")
     (e-harness-set-session-model harness "session-1" "session-model")
     (e-harness-set-session-reasoning-effort harness "session-1" "high")
-    (e-harness-prompt harness "session-1" "raw prompt")
+    (e-harness-prompt-batch harness "session-1" "raw prompt")
     (should (equal (plist-get captured-options :model) "session-model"))
     (should (equal (plist-get captured-options :reasoning-effort) "high"))
     (should (plist-get captured-options :tools))))
@@ -3274,7 +3274,7 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
          (store (e-session-store-create))
          (harness (e-harness-create :backend backend :sessions store)))
     (e-harness-create-session harness :id "session-1")
-    (e-harness-prompt harness "session-1" "hello")
+    (e-harness-prompt-batch harness "session-1" "hello")
     (let ((messages (e-session-messages store "session-1"))
           (events (e-session-activity-events store "session-1")))
       (should (equal (length (delete-dups
@@ -3353,7 +3353,7 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
               store "session-1" '(:role user :content "new question"))))
         (e-session-append-message store "session-1"
                                   '(:role assistant :content "new answer"))
-        (let ((record (e-harness-compact-session
+        (let ((record (e-harness-compact-session-batch
                        harness "session-1" :keep-recent-tokens 1)))
           (should (equal (plist-get record :summary)
                          "Old exchange summary."))
@@ -3390,9 +3390,9 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
                               '(:role user :content "new question"))
     (puthash "session-1" active-entry (e-harness-active-turns harness))
     (should-error
-     (e-harness-compact-session harness "session-1" :keep-recent-tokens 1)
+     (e-harness-compact-session-batch harness "session-1" :keep-recent-tokens 1)
      :type 'e-harness-active-turn-exists)
-    (let ((record (e-harness-compact-session
+    (let ((record (e-harness-compact-session-batch
                    harness "session-1"
                    :keep-recent-tokens 1
                    :allow-active-turn t
@@ -3429,10 +3429,10 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
       (e-session-append-message store "session-1" '(:role assistant :content "old answer"))
       (e-session-append-message store "session-1" '(:role user :content "middle"))
       (e-session-append-message store "session-1" '(:role assistant :content "middle answer"))
-      (e-harness-compact-session harness "session-1" :keep-recent-tokens 1)
+      (e-harness-compact-session-batch harness "session-1" :keep-recent-tokens 1)
       (e-session-append-message store "session-1" '(:role user :content "latest"))
       (e-session-append-message store "session-1" '(:role assistant :content "latest answer"))
-      (e-harness-compact-session harness "session-1" :keep-recent-tokens 1)
+      (e-harness-compact-session-batch harness "session-1" :keep-recent-tokens 1)
       (let ((second-prompt (plist-get (cadr (car calls)) :content)))
         (should (string-match-p "Previous summary:\nFirst summary\\." second-prompt))
         (should (string-match-p "middle answer" second-prompt))
@@ -3475,7 +3475,7 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
        store "session-1" "turn-1" 'token-usage
        '(:input-tokens 95 :total-tokens 96))
       (e-harness-prompt-async harness "session-1" "fresh prompt")
-      (should (equal (plist-get (e-harness-wait harness "session-1" 1.0)
+      (should (equal (plist-get (e-harness-wait-batch harness "session-1" 1.0)
                                 :status)
                      'done))
       (let ((record (car (e-session-compactions store "session-1"))))
@@ -3516,7 +3516,7 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
        store "session-1" "turn-1" 'token-usage
        '(:input-tokens 999999 :total-tokens 1000000))
       (e-harness-prompt-async harness "session-1" "fresh prompt")
-      (should (equal (plist-get (e-harness-wait harness "session-1" 1.0)
+      (should (equal (plist-get (e-harness-wait-batch harness "session-1" 1.0)
                                 :status)
                      'done))
       (should (= calls 1))
@@ -3555,7 +3555,7 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
        store "session-1" "turn-1" 'token-usage
        '(:input-tokens 95 :total-tokens 96))
       (e-harness-prompt-async harness "session-1" "fresh prompt")
-      (should (equal (plist-get (e-harness-wait harness "session-1" 1.0)
+      (should (equal (plist-get (e-harness-wait-batch harness "session-1" 1.0)
                                 :status)
                      'done))
       (should (= calls 1))
@@ -3592,7 +3592,7 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
                  (setq context-calls (1+ context-calls))
                  (apply original-context args))))
       (e-harness-prompt-async harness "session-1" "fresh prompt")
-      (should (equal (plist-get (e-harness-wait harness "session-1" 1.0)
+      (should (equal (plist-get (e-harness-wait-batch harness "session-1" 1.0)
                                 :status)
                      'done)))
     (should (= context-calls 1))))
@@ -3623,7 +3623,7 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
        store "session-1" "turn-1" 'token-usage
        '(:input-tokens 95 :total-tokens 96))
       (e-harness-prompt-async harness "session-1" "fresh prompt")
-      (should (equal (plist-get (e-harness-wait harness "session-1" 1.0)
+      (should (equal (plist-get (e-harness-wait-batch harness "session-1" 1.0)
                                 :status)
                      'done))
       (should (= calls 1))
@@ -3649,7 +3649,7 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
     (e-session-append-message store "session-1" '(:role assistant :content "old answer"))
     (e-session-append-message store "session-1" '(:role user :content "new"))
     (should-error
-     (e-harness-compact-session harness "session-1" :keep-recent-tokens 1)
+     (e-harness-compact-session-batch harness "session-1" :keep-recent-tokens 1)
      :type 'user-error)
     (should-not (e-session-compactions store "session-1"))))
 
@@ -3705,7 +3705,7 @@ an empty summary\"."
     (e-session-append-message store "session-1" '(:role user :content "new"))
     ;; The harness really does have a tool registered.
     (should (e-tools-definitions (e-harness-tools harness "session-1")))
-    (let ((record (e-harness-compact-session
+    (let ((record (e-harness-compact-session-batch
                    harness "session-1" :keep-recent-tokens 1)))
       ;; Compaction succeeds because tools were stripped from the request.
       (should (null seen-tools))
@@ -3733,7 +3733,7 @@ an empty summary\"."
                               '(:role assistant :content "old answer"))
     (e-session-append-message store "session-1" '(:role user :content "new"))
     (should-error
-     (e-harness-compact-session harness "session-1" :keep-recent-tokens 1)
+     (e-harness-compact-session-batch harness "session-1" :keep-recent-tokens 1)
      :type 'e-compaction-error)
     (let* ((events (e-session-activity-events store "session-1"))
            (failed (seq-find

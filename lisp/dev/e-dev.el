@@ -43,7 +43,14 @@
     e-skill-spec-content
     e-skills-register
     e-emacs-tools-register-buffer-read
-    e-emacs-tools-register-buffer-edit)
+    e-emacs-tools-register-buffer-edit
+    e-backend-stream
+    e-loop-run-turn
+    e-harness-compact-session
+    e-harness-follow-up
+    e-harness-prompt
+    e-harness-wait
+    e-tools-execute)
   "Functions removed from the public surface that reload should unbind.")
 
 (defconst e-dev--obsolete-variables

@@ -89,7 +89,7 @@
                    :intrinsic-capabilities
                    (list first-capability second-capability))))
     (e-harness-create-session harness :id "session-1")
-    (e-harness-prompt harness "session-1" "hello")
+    (e-harness-prompt-batch harness "session-1" "hello")
     (should (equal (mapcar (lambda (definition)
                              (plist-get definition :name))
                            (e-tools-definitions (e-harness-tools harness)))

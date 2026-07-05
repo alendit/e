@@ -626,7 +626,7 @@
             (lambda (&key url headers body)
               (setq captured (list :url url :headers headers :body body))
               "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")))))
-    (e-backend-stream backend
+    (e-backend-stream-batch backend
                       :messages '((:role user :content "hello"))
                       :options '(:model "gateway-model")
                       :on-item #'ignore)
@@ -660,7 +660,7 @@
               "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")))))
     (unwind-protect
         (progn
-          (e-backend-stream backend
+          (e-backend-stream-batch backend
                             :messages '((:role user :content "hello"))
                             :options '(:model "gpt-test"
                                        :prompt-cache-key "cache-key"
@@ -692,7 +692,7 @@
               (ignore url headers)
               (setq captured (json-read-from-string body))
               "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")))))
-    (e-backend-stream backend
+    (e-backend-stream-batch backend
                       :messages '((:role user :content "hello"))
                       :options '(:model "gateway-model"
                                  :prompt-cache-key "cache-key"
@@ -731,7 +731,7 @@
               (setq captured url)
               "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")))))
     (setq e-openai-default-provider 'gateway-two)
-    (e-backend-stream backend
+    (e-backend-stream-batch backend
                       :messages '((:role user :content "hello"))
                       :options '(:model "gateway-model")
                       :on-item #'ignore)
@@ -908,7 +908,7 @@
               "data: {\"type\":\"response.output_text.done\",\"text\":\"gateway answer\"}\n\n\
 data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")))))
     (e-harness-create-session harness :id "session-1")
-    (e-harness-prompt harness "session-1" "question")
+    (e-harness-prompt-batch harness "session-1" "question")
     (should (equal (mapcar (lambda (message) (plist-get message :role))
                            (e-harness-messages harness "session-1"))
                    '(user assistant)))
@@ -1303,7 +1303,7 @@ data: [DONE]\n\n")
               "data: {\"choices\":[{\"delta\":{\"content\":\"gateway answer\",\"role\":\"assistant\"},\"index\":0}]}\n\n\
 data: {\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"delta\":{}}]}\n\n")))))
     (e-harness-create-session harness :id "session-1")
-    (e-harness-prompt harness "session-1" "question")
+    (e-harness-prompt-batch harness "session-1" "question")
     (should (equal (plist-get captured :url)
                    "https://gateway.example.test/v1/chat/completions"))
     (should (equal (mapcar (lambda (message) (plist-get message :role))
@@ -1534,7 +1534,7 @@ data: {\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"delta\":{}}]}\n\n"
 data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")))))
     (unwind-protect
         (progn
-          (e-backend-stream backend
+          (e-backend-stream-batch backend
                             :messages '((:role user :content "hello"))
                             :options '(:model "gpt-test")
                             :on-item (lambda (item) (push item seen)))
@@ -2045,7 +2045,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
     (unwind-protect
         (progn
           (e-harness-create-session harness :id "session-1")
-          (e-harness-prompt harness "session-1" "question")
+          (e-harness-prompt-batch harness "session-1" "question")
           (should (equal (mapcar (lambda (message) (plist-get message :role))
                                  (e-harness-messages harness "session-1"))
                          '(user assistant)))

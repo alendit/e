@@ -38,7 +38,7 @@
                             (:type done :reason stop))))
          (events nil)
          (messages nil)
-         (result (e-loop-run-turn
+         (result (e-loop-run-turn-batch
                   :session-id "session-1"
                   :turn-id "turn-1"
                   :messages '((:role user :content "hi"))
@@ -63,7 +63,7 @@
                            (:type done :reason stop)))))
     (let ((err (should-error
                 (e-request-with-hot-path 'loop-run-turn
-                  (e-loop-run-turn
+                  (e-loop-run-turn-batch
                    :session-id "session-1"
                    :turn-id "turn-1"
                    :messages '((:role user :content "hi"))
@@ -74,7 +74,7 @@
                    :append-message (lambda (message)
                                      (push message messages))))
                 :type 'e-request-blocking-call-in-hot-path)))
-      (should (equal (cdr err) '(e-loop-run-turn loop-run-turn))))
+      (should (equal (cdr err) '(e-loop-run-turn-batch loop-run-turn))))
     (should-not messages)))
 
 (ert-deftest e-loop-test-persists-delta-only-assistant-message ()
@@ -84,7 +84,7 @@
                             (:type assistant-delta :content "lo")
                             (:type done :reason stop))))
          (messages nil))
-    (e-loop-run-turn
+    (e-loop-run-turn-batch
      :session-id "session-1"
      :turn-id "turn-1"
      :messages '((:role user :content "hi"))
@@ -105,7 +105,7 @@
          (events nil)
          (messages nil))
     (should-error
-     (e-loop-run-turn
+     (e-loop-run-turn-batch
       :session-id "session-1"
       :turn-id "turn-1"
       :messages '((:role user :content "hi"))
@@ -130,7 +130,7 @@
          (events nil))
     (let ((err
            (should-error
-            (e-loop-run-turn
+            (e-loop-run-turn-batch
              :session-id "session-1"
              :turn-id "turn-1"
              :messages '((:role user :content "hi"))
@@ -169,7 +169,7 @@
               (funcall on-done '(:status done))
               nil))))
          (events nil))
-    (e-loop-run-turn
+    (e-loop-run-turn-batch
      :session-id "session-1"
      :turn-id "turn-1"
      :messages '((:role user :content "hi"))
@@ -279,7 +279,7 @@
                       :name "echo"
                       :description "Echo text."
                       :handler (lambda (arguments) (plist-get arguments :text)))
-    (e-loop-run-turn
+    (e-loop-run-turn-batch
      :session-id "session-1"
      :turn-id "turn-1"
      :messages '((:role user :content "hi"))
@@ -320,7 +320,7 @@
                                        '(:type done :reason stop))))))
          (events nil)
          (messages nil))
-    (e-loop-run-turn
+    (e-loop-run-turn-batch
      :session-id "session-1"
      :turn-id "turn-1"
      :messages '((:role user :content "hi"))
@@ -370,7 +370,7 @@
                       :name "echo"
                       :description "Echo text."
                       :handler (lambda (arguments) (plist-get arguments :text)))
-    (e-loop-run-turn
+    (e-loop-run-turn-batch
      :session-id "session-1"
      :turn-id "turn-1"
      :messages '((:role user :content "hi"))
@@ -428,7 +428,7 @@
         'ok
         "compacted"
         '(:refresh-context t))))
-    (e-loop-run-turn
+    (e-loop-run-turn-batch
      :session-id "session-1"
      :turn-id "turn-1"
      :messages '((:role user :content "old prompt"))
@@ -480,7 +480,7 @@
                                               (plist-get tool-call :arguments)
                                               :text)))
                      nil)))))
-    (e-loop-run-turn
+    (e-loop-run-turn-batch
      :session-id "session-1"
      :turn-id "turn-1"
      :messages '((:role user :content "hi"))
@@ -539,7 +539,7 @@
                                     :status 'ok
                                     :content "post-processed"))
                      nil)))))
-    (e-loop-run-turn
+    (e-loop-run-turn-batch
      :session-id "session-1"
      :turn-id "turn-1"
      :messages '((:role user :content "hi"))
@@ -602,7 +602,7 @@
                                                   ((:uri "file://a"
                                                     :operation read)))))))
                      nil)))))
-    (e-loop-run-turn
+    (e-loop-run-turn-batch
      :session-id "session-1"
      :turn-id "turn-1"
      :messages '((:role user :content "hi"))
@@ -658,7 +658,7 @@
                       :name "echo"
                       :description "Echo text."
                       :handler (lambda (arguments) (plist-get arguments :text)))
-    (e-loop-run-turn
+    (e-loop-run-turn-batch
      :session-id "session-1"
      :turn-id "turn-1"
      :messages '((:role user :content "hi"))
@@ -714,7 +714,7 @@
                       :name "echo"
                       :description "Echo text."
                       :handler (lambda (arguments) (plist-get arguments :text)))
-    (e-loop-run-turn
+    (e-loop-run-turn-batch
      :session-id "session-1"
      :turn-id "turn-1"
      :messages '((:role user :content "hi"))

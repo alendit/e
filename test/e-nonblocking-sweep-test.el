@@ -55,13 +55,11 @@
     "e-harness-follow-up"
     "e-harness-prompt"
     "e-harness-wait")
-  "Generic blocking compatibility APIs that production code must not call.")
+  "Removed generic blocking API names that production code must not call.")
 
 (defconst e-nonblocking-sweep-test--expected-legacy-sync-calls
-  '(("lisp/core/e-harness.el" "e-harness-follow-up" 1)
-    ("lisp/core/e-harness.el" "e-harness-prompt" 2)
-    ("lisp/core/e-harness.el" "e-harness-wait" 1))
-  "Audited generic sync calls kept inside compatibility wrappers only.")
+  nil
+  "Removed generic sync names must not appear in lisp sources.")
 
 (defconst e-nonblocking-sweep-test--expected-start-function-slots
   '(("lisp/adapters/anthropic/e-anthropic.el" ":start-function" 1)
@@ -165,7 +163,7 @@
                  e-nonblocking-sweep-test--expected-counts)))
 
 (ert-deftest e-nonblocking-sweep-test-no-production-legacy-sync-calls ()
-  "Generic blocking compatibility APIs stay confined to audited wrappers."
+  "Removed generic blocking API names stay out of lisp sources."
   (should (equal (e-nonblocking-sweep-test--scan-legacy-sync-calls)
                  e-nonblocking-sweep-test--expected-legacy-sync-calls)))
 

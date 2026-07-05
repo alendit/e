@@ -364,9 +364,10 @@ strategy is `transcript-stack`, which builds messages from compacted session
 state and prepends capability-provided context/instructions by priority.
 
 `lisp/core/e-compaction.el` prepares compaction boundaries and summary prompts.
-`e-harness-compact-session` runs a model-backed compaction, appends a compaction
-record, and emits session events. `e-chat-session` exposes compaction as a
-capability action and `e-chat` hosts it as a shell command.
+`e-harness-compact-session-start` runs interactive model-backed compaction
+through a Work-backed lifecycle; `e-harness-compact-session-batch` is reserved
+for tests and batch code. `e-chat-session` exposes compaction as a capability
+action and `e-chat` hosts it as a shell command.
 
 Context providers are read-only. They may inspect session state, active
 attachments, visible buffers, AGENTS/skill files, or resources, but they should

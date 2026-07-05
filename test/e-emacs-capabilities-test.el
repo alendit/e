@@ -125,11 +125,14 @@
     (should (string-match-p "e-tools-call! \"search\"" instructions))
     (should (string-match-p "e-tools-call! \"read\"" instructions))
     (should (string-match-p "e-actions-call 'chat-session :rename" instructions))
-    (should (string-match-p "currently active tools and actions" instructions))
+    (should (string-match-p "Use nested tool calls only for cheap composition"
+                            instructions))
+    (should (string-match-p "Long or async-backed tools must run as top-level tools"
+                            instructions))
     (should (string-match-p "Do not use run_elisp to load" instructions))
     (should (string-match-p "Inspect external Elisp with resource/file tools"
                             instructions))
-    (should (string-match-p "several tool calls" instructions))
+    (should (string-match-p "several cheap tool calls" instructions))
     (should (string-match-p "single direct tool/action call" instructions))
     (should (string-match-p "visible as activity" instructions))))
 

@@ -20,6 +20,26 @@
 (require 'e-harness)
 (require 'e-openai)
 
+(ert-deftest e-dev-test-clears-removed-sync-work-api-functions ()
+  "Reload cleanup unbinds stale definitions for removed sync Work APIs."
+  (let ((symbols '(e-backend-stream
+                   e-loop-run-turn
+                   e-harness-compact-session
+                   e-harness-follow-up
+                   e-harness-prompt
+                   e-harness-wait
+                   e-tools-execute)))
+    (dolist (symbol symbols)
+      (fset symbol (lambda (&rest _args) :stale)))
+    (unwind-protect
+        (progn
+          (e-dev--clear-obsolete-functions)
+          (dolist (symbol symbols)
+            (should-not (fboundp symbol))))
+      (dolist (symbol symbols)
+        (when (fboundp symbol)
+          (fmakunbound symbol))))))
+
 (ert-deftest e-dev-test-reload-restores-mvp-entrypoints ()
   "Reload loads the MVP modules and restores their entry points."
   (fmakunbound 'e-chat)

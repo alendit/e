@@ -473,18 +473,17 @@ tool I/O, and turn settlement are callback-driven."
       (start-request)
       active-request)))
 
-(cl-defun e-loop-run-turn
+(cl-defun e-loop-run-turn-batch
     (&key session-id turn-id messages backend tools tool-lifecycle options on-event
           append-message refresh-messages on-request-start)
-  "Compatibility wrapper that synchronously runs one agent turn.
+  "Synchronously run one agent turn from batch/test code.
 SESSION-ID and TURN-ID identify the turn.
 MESSAGES, BACKEND, TOOLS, TOOL-LIFECYCLE, OPTIONS, ON-EVENT, APPEND-MESSAGE,
 and REFRESH-MESSAGES define the turn context and output callbacks.
 ON-REQUEST-START receives the backend request handle when an adapter exposes
-one.  Prefer `e-loop-start-turn' for interactive code and
-`e-loop-run-turn-batch' for explicit batch/test callers."
+one."
   (when (e-request-hot-path-active-p)
-    (e-request-hot-path-blocking-error 'e-loop-run-turn))
+    (e-request-hot-path-blocking-error 'e-loop-run-turn-batch))
   (let ((done nil)
         (result nil)
         (failure nil))
@@ -511,10 +510,6 @@ one.  Prefer `e-loop-start-turn' for interactive code and
     (when failure
       (signal (car failure) (cdr failure)))
     result))
-
-(defun e-loop-run-turn-batch (&rest args)
-  "Synchronously run an agent turn with ARGS from explicit batch/test code."
-  (apply #'e-loop-run-turn args))
 
 (provide 'e-loop)
 

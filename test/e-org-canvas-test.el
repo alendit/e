@@ -1579,7 +1579,7 @@ relied on `e-chat--running-status-rendered-hook' to follow the bottom."
             (e-org-canvas-input-cancel))
           (funcall (plist-get tool-callbacks :on-done) "late result")
           (should (equal (plist-get
-                          (e-harness-wait harness "session-1" 0.1)
+                          (e-harness-wait-batch harness "session-1" 0.1)
                           :status)
                          'cancelled))
           (should tool-cancelled))

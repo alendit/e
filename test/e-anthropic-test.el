@@ -673,7 +673,7 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
             (lambda (&key url headers body)
               (setq captured (list :url url :headers headers :body body))
               e-anthropic-test--text-stream)))))
-    (e-backend-stream backend
+    (e-backend-stream-batch backend
                       :messages '((:role user :content "hello"))
                       :options '(:model "claude-test" :max-tokens 1024)
                       :on-item (lambda (item) (push item seen)))
@@ -706,7 +706,7 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
               (ignore url headers body)
               e-anthropic-test--text-stream)))))
     (e-harness-create-session harness :id "session-1")
-    (e-harness-prompt harness "session-1" "question")
+    (e-harness-prompt-batch harness "session-1" "question")
     (should (equal (mapcar (lambda (message) (plist-get message :role))
                            (e-harness-messages harness "session-1"))
                    '(user assistant)))

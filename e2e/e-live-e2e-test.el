@@ -229,7 +229,7 @@ SPEC is (HARNESS SESSION-ID &key LAYERS PERSISTENT)."
   "A first live prompt returns a concrete assistant message."
   (e-live-e2e--with-harness (harness session-id)
     (let* ((nonce (e-live-e2e--nonce))
-           (result (e-harness-prompt
+           (result (e-harness-prompt-batch
                     harness session-id
                     (format "Reply with exactly this token and no extra words: %s"
                             nonce))))
@@ -241,11 +241,11 @@ SPEC is (HARNESS SESSION-ID &key LAYERS PERSISTENT)."
   "A follow-up live prompt can use earlier transcript context."
   (e-live-e2e--with-harness (harness session-id)
     (let ((nonce (e-live-e2e--nonce)))
-      (e-harness-prompt
+      (e-harness-prompt-batch
        harness session-id
        (format "Remember this validation token for the next message: %s. Reply OK."
                nonce))
-      (let ((result (e-harness-prompt
+      (let ((result (e-harness-prompt-batch
                      harness session-id
                      "Reply with only the validation token I asked you to remember.")))
         (should (e-live-e2e--contains-p
@@ -256,7 +256,7 @@ SPEC is (HARNESS SESSION-ID &key LAYERS PERSISTENT)."
   "The model can call a registered e tool and use its result."
   (e-live-e2e--with-harness (harness session-id :layers (list (e-live-e2e--tool-layer)))
     (let* ((nonce (e-live-e2e--nonce))
-           (result (e-harness-prompt
+           (result (e-harness-prompt-batch
                     harness session-id
                     (format
                      "Call e2e_echo exactly once with text %S. Then reply with only that returned text."
@@ -278,7 +278,7 @@ SPEC is (HARNESS SESSION-ID &key LAYERS PERSISTENT)."
   "Live provider start and finish events are emitted and persisted."
   (e-live-e2e--with-harness (harness session-id)
     (let ((nonce (e-live-e2e--nonce)))
-      (e-harness-prompt
+      (e-harness-prompt-batch
        harness session-id
        (format "Reply with exactly this lifecycle token: %s" nonce))
       (let ((started (e-live-e2e--activity-of-type
@@ -293,7 +293,7 @@ SPEC is (HARNESS SESSION-ID &key LAYERS PERSISTENT)."
 (ert-deftest e-live-e2e-test-token-usage-is-recorded-when-reported ()
   "Live provider token usage reaches durable activity when reported."
   (e-live-e2e--with-harness (harness session-id)
-    (e-harness-prompt
+    (e-harness-prompt-batch
      harness session-id
      "Reply with exactly: TOKEN-USAGE-CHECK")
     (let ((usage-events (e-live-e2e--activity-of-type
@@ -308,7 +308,7 @@ SPEC is (HARNESS SESSION-ID &key LAYERS PERSISTENT)."
   (e-live-e2e--with-harness (harness session-id :persistent t)
     (let* ((store-dir (e-session-store-directory (e-harness-sessions harness)))
            (nonce (e-live-e2e--nonce)))
-      (e-harness-prompt
+      (e-harness-prompt-batch
        harness session-id
        (format "Reply with exactly this persistence token: %s" nonce))
       (let* ((reloaded-store (e-session-persistent-store-create store-dir))
@@ -325,13 +325,13 @@ SPEC is (HARNESS SESSION-ID &key LAYERS PERSISTENT)."
   "Manual compaction uses the live backend and records a durable compaction."
   (e-live-e2e--with-harness (harness session-id)
     (let ((nonce (e-live-e2e--nonce)))
-      (e-harness-prompt
+      (e-harness-prompt-batch
        harness session-id
        (format "Remember this compaction token: %s. Reply OK." nonce))
-      (e-harness-prompt
+      (e-harness-prompt-batch
        harness session-id
        "Reply with one short sentence confirming you still have the token.")
-      (let ((record (e-harness-compact-session
+      (let ((record (e-harness-compact-session-batch
                      harness session-id
                      :reason 'manual
                      :keep-recent-tokens 1)))
@@ -344,7 +344,7 @@ SPEC is (HARNESS SESSION-ID &key LAYERS PERSISTENT)."
 (ert-deftest e-live-e2e-test-provider-anchor-candidate-recorded-when-supported ()
   "Continuation-capable providers record provider anchor candidates."
   (e-live-e2e--with-harness (harness session-id)
-    (e-harness-prompt
+    (e-harness-prompt-batch
      harness session-id
      "Reply with exactly: ANCHOR-CHECK")
     ;; Continuation support is backend-specific; assert anchors when the
@@ -388,7 +388,7 @@ SPEC is (HARNESS SESSION-ID &key LAYERS PERSISTENT)."
      (e-harness-sessions harness) session-id
      '(:model "e-live-e2e-nonexistent-model"))
     (should-error
-     (e-harness-prompt
+     (e-harness-prompt-batch
       harness session-id
       "This request should fail because the model is invalid."))
     (should (e-live-e2e--activity-of-type

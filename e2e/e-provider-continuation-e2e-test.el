@@ -105,8 +105,8 @@
           :handler (lambda (arguments)
                      (format "fresh %s"
                              (plist-get arguments :target))))))))
-    (e-harness-prompt harness "session-1" "seed")
-    (e-harness-prompt harness "session-1" "inspect now")
+    (e-harness-prompt-batch harness "session-1" "seed")
+    (e-harness-prompt-batch harness "session-1" "inspect now")
     (let* ((ordered (nreverse requests))
            (anchored-tool-request (nth 1 ordered))
            (followup-request (nth 2 ordered)))

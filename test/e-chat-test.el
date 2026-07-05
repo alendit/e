@@ -424,7 +424,7 @@
           (goto-char (point-max))
           (insert "first line\nsecond line")
           (e-chat-submit)
-          (e-harness-wait e-chat-harness e-chat-session-id 1.0)
+          (e-harness-wait-batch e-chat-harness e-chat-session-id 1.0)
           (let ((content (buffer-string)))
             (should (string-match-p (concat (regexp-quote e-chat--user-glyph)
                                             " first line\nsecond line")
@@ -466,7 +466,7 @@
                 (e-chat-open :harness harness :session-id "chat-one"))
           (setq second-buffer
                 (e-chat-open :harness harness :session-id "chat-two"))
-          (e-harness-prompt harness "chat-one" "question one")
+          (e-harness-prompt-batch harness "chat-one" "question one")
           (with-current-buffer first-buffer
             (should (string-match-p "question one" (buffer-string)))
             (should (string-match-p "answer one" (buffer-string))))
@@ -591,7 +591,7 @@
           (should-not (string-match-p "late answer" (buffer-string)))
           (should (string-match-p "queued" (format "%s" header-line-format)))
           (funcall finish)
-          (e-harness-wait e-chat-harness e-chat-session-id 1.0)
+          (e-harness-wait-batch e-chat-harness e-chat-session-id 1.0)
           (should (string-match-p "late answer" (buffer-string)))
           (should (string-match-p "done" (format "%s" header-line-format))))
       (when (buffer-live-p buffer)
@@ -2516,7 +2516,7 @@ See [[https://example.test][docs]] and [[file:notes.org]].")
     (unwind-protect
         (with-current-buffer buffer
           (e-chat-submit "hello")
-          (e-harness-wait e-chat-harness e-chat-session-id 1.0)
+          (e-harness-wait-batch e-chat-harness e-chat-session-id 1.0)
           (should (string-match-p "Backend returned no assistant output"
                                   (buffer-string)))
           (should-not (string-match-p "✅ Done" (buffer-string)))
@@ -2578,7 +2578,7 @@ See [[https://example.test][docs]] and [[file:notes.org]].")
           (e-chat-abort)
           (funcall (plist-get tool-callbacks :on-done) "late result")
           (should (equal (plist-get
-                          (e-harness-wait harness e-chat-session-id 0.1)
+                          (e-harness-wait-batch harness e-chat-session-id 0.1)
                           :status)
                          'cancelled))
           (should tool-cancelled)
@@ -5695,7 +5695,7 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
             (should-not (string-match-p "stale prompt" (buffer-string)))
             (should (string-match-p "saved prompt" (buffer-string)))
             (e-chat-submit "hello")
-            (e-harness-wait e-chat-harness e-chat-session-id 1.0)
+            (e-harness-wait-batch e-chat-harness e-chat-session-id 1.0)
             (should (string-match-p
                      (concat (regexp-quote e-chat--assistant-glyph)
                              " fresh answer")
@@ -9038,7 +9038,7 @@ The context-window denominator comes from the live provider lookup
     (unwind-protect
         (with-current-buffer buffer
           (e-chat-submit "question")
-          (e-harness-wait e-chat-harness e-chat-session-id 1.0)
+          (e-harness-wait-batch e-chat-harness e-chat-session-id 1.0)
           (e-chat-reset)
           (should (string-match-p
                    (concat (regexp-quote e-chat--system-glyph)
@@ -9161,7 +9161,7 @@ The context-window denominator comes from the live provider lookup
             (e-session-append-message store e-chat-session-id
                                       '(:role assistant :content "old answer"))
             (e-chat-submit "continue")
-            (e-harness-wait e-chat-harness e-chat-session-id 1.0)
+            (e-harness-wait-batch e-chat-harness e-chat-session-id 1.0)
             (should (string-match-p "Agent compacting context mid-turn"
                                     (buffer-string)))
             (should (string-match-p "Context compacted into"

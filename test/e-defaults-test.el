@@ -239,7 +239,7 @@
                      "Unconfigured default chat backend"))
       (should-not (e-harness-default-options harness))
       (should-error
-       (e-backend-stream
+       (e-backend-stream-batch
         (e-harness-backend harness)
         :messages nil
         :options nil
@@ -500,7 +500,7 @@
                      "Unconfigured default chat backend"))
       (should (eq (e-harness-sessions harness) sessions))
       (should-error
-       (e-backend-stream
+       (e-backend-stream-batch
         (e-harness-backend harness)
         :messages nil
         :options nil

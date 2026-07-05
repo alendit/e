@@ -23,7 +23,7 @@
                   :items '((:type assistant-delta :content "hi")
                            (:type done :reason stop))))
         (seen nil))
-    (e-backend-stream backend
+    (e-backend-stream-batch backend
                       :messages '((:role user :content "hello"))
                       :options '(:model "fake")
                       :on-item (lambda (item) (push item seen)))
@@ -35,7 +35,7 @@
   "Backends need a stream function."
   (let ((backend (e-backend-create :name "bad" :stream nil)))
     (should-error
-     (e-backend-stream backend
+     (e-backend-stream-batch backend
                        :messages nil
                        :options nil
                        :on-item #'ignore)
@@ -48,7 +48,7 @@
     (let ((backend (e-backend-fake-create
                     :items '((:type done :reason stop))
                     :cancel-function (lambda () (setq cancelled t)))))
-      (e-backend-stream backend
+      (e-backend-stream-batch backend
                         :messages nil
                         :options nil
                         :on-item #'ignore
@@ -101,7 +101,7 @@
                         (funcall on-done '(:status done))))
                      nil))))
         (seen nil))
-    (e-backend-stream backend
+    (e-backend-stream-batch backend
                       :messages nil
                       :options nil
                       :on-item (lambda (item) (push item seen)))
@@ -121,12 +121,12 @@
                        (funcall on-done '(:status done)))))))
       (let ((err (should-error
                   (e-request-with-hot-path 'backend-stream
-                    (e-backend-stream backend
+                    (e-backend-stream-batch backend
                                       :messages nil
                                       :options nil
                                       :on-item #'ignore))
                   :type 'e-request-blocking-call-in-hot-path)))
-        (should (equal (cdr err) '(e-backend-stream backend-stream))))
+        (should (equal (cdr err) '(e-backend-stream-batch backend-stream))))
       (should-not started))))
 
 (provide 'e-backend-test)
