@@ -18,6 +18,7 @@
 (require 'e-harness)
 (require 'e-layer-selection)
 (require 'e-layers)
+(require 'e-request)
 (require 'e-runtime-context)
 (require 'e-work)
 
@@ -112,15 +113,16 @@
                      (e-work-finish handle result))
           :on-error (lambda (err)
                       (e-work-fail handle err)))))
-    (setf (e-work-handle-cancel-function handle)
-          (lambda (_handle)
-            (when (e-backend-request-p request)
-              (e-backend-cancel-request request))
-            t))
-    (setf (e-work-handle-metadata handle)
-          (append (e-work-handle-metadata handle)
-                  (list :operation 'session-compaction
-                        :request request)))
+    (unless (e-request-terminal-p (e-work-handle-lifecycle handle))
+      (setf (e-work-handle-cancel-function handle)
+            (lambda (_handle)
+              (when (e-backend-request-p request)
+                (e-backend-cancel-request request))
+              t))
+      (setf (e-work-handle-metadata handle)
+            (append (e-work-handle-metadata handle)
+                    (list :operation 'session-compaction
+                          :request request))))
     :deferred))
 
 (defun e-layer--compact-session-action-work ()

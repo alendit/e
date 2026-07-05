@@ -193,6 +193,70 @@
         (should (eq (plist-get (plist-get record :metadata) :reason)
                     'auto))))))
 
+(ert-deftest e-harness-compaction-async-test-sync-auto-compaction-keeps-provider-request ()
+  "Synchronous auto-compaction must not overwrite the following provider request."
+  (let ((calls 0)
+        compaction-cancelled
+        provider-cancelled)
+    (let* ((backend
+            (e-backend-create
+             :name 'sync-auto-summary
+             :start
+             (cl-function
+              (lambda (&key messages options on-item on-done on-request-start
+                            &allow-other-keys)
+                (ignore messages options)
+                (setq calls (1+ calls))
+                (if (= calls 1)
+                    (progn
+                      (funcall on-item
+                               '(:type assistant-message
+                                 :content "Auto summary."))
+                      (funcall on-done '(:status done))
+                      (e-backend-request-create
+                       :cancel (lambda ()
+                                 (setq compaction-cancelled t)
+                                 t)
+                       :metadata '(:provider sync-auto
+                                   :operation compaction)))
+                  (let ((request
+                         (e-backend-request-create
+                          :cancel (lambda ()
+                                    (setq provider-cancelled t)
+                                    t)
+                          :metadata '(:provider sync-auto
+                                      :operation provider))))
+                    (funcall on-request-start request)
+                    request))))))
+           (harness (e-harness-create
+                     :backend backend
+                     :default-options '(:model "auto-model")))
+           (store (e-harness-sessions harness))
+           (e-context-budget-model-token-limits '(("auto-model" . 100)))
+           (e-harness-auto-compaction-reserve-tokens 10))
+      (e-harness-create-session harness :id "session-1")
+      (e-session-append-message store "session-1"
+                                '(:role user :content "old question"))
+      (e-session-append-message store "session-1"
+                                '(:role assistant :content "old answer"))
+      (e-session-append-message store "session-1"
+                                '(:id "kept" :role user :content "new topic"))
+      (e-session-append-activity-event
+       store "session-1" "turn-1" 'token-usage
+       '(:input-tokens 95 :total-tokens 96))
+      (e-harness-prompt-async harness "session-1" "fresh prompt")
+      (should (e-harness-compaction-async-test--wait-until
+               (lambda () (= calls 2))))
+      (let* ((entry (gethash "session-1" (e-harness-active-turns harness)))
+             (request (plist-get entry :request)))
+        (should (e-backend-request-p request))
+        (should (eq (plist-get (e-backend-request-metadata request)
+                               :operation)
+                    'provider)))
+      (should (e-harness-abort harness "session-1"))
+      (should provider-cancelled)
+      (should-not compaction-cancelled))))
+
 (provide 'e-harness-compaction-async-test)
 
 ;;; e-harness-compaction-async-test.el ends here

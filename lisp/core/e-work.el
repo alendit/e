@@ -634,31 +634,39 @@ This function is rejected from interactive hot paths."
             (run-at-time
              timeout nil
              (lambda ()
-               (e-work-fail
-                handle
-                (list 'e-work-url-failed
-                      (format "URL request timed out after %s seconds"
-                              timeout))))))
+               (unless (e-request-terminal-p
+                        (e-work-handle-lifecycle handle))
+                 (e-work--cancel-underlying handle)
+                 (e-work-fail
+                  handle
+                  (list 'e-work-url-failed
+                        (format "URL request timed out after %s seconds"
+                                timeout)))))))
       (setq response-buffer
             (url-retrieve
              url
              (lambda (status)
-               (setq response-buffer (current-buffer))
-               (if-let ((err (plist-get status :error)))
-                   (e-work-fail handle (if (consp err)
-                                           err
-                                         (list 'e-work-url-failed err)))
-                 (condition-case condition
-                     (e-work-finish
-                      handle
-                      (e-work--shape-result
-                       spec
-                       (list :url url
-                             :status status
-                             :buffer (current-buffer))
-                       arguments context))
-                   (error
-                    (e-work-fail handle condition)))))
+               (let ((buffer (current-buffer)))
+                 (if (e-request-terminal-p
+                      (e-work-handle-lifecycle handle))
+                     (when (buffer-live-p buffer)
+                       (kill-buffer buffer))
+                   (setq response-buffer buffer)
+                   (if-let ((err (plist-get status :error)))
+                       (e-work-fail handle (if (consp err)
+                                               err
+                                             (list 'e-work-url-failed err)))
+                     (condition-case condition
+                         (e-work-finish
+                          handle
+                          (e-work--shape-result
+                           spec
+                           (list :url url
+                                 :status status
+                                 :buffer buffer)
+                           arguments context))
+                       (error
+                        (e-work-fail handle condition)))))))
              nil
              t
              nil))
@@ -732,7 +740,9 @@ This function is rejected from interactive hot paths."
            (e-request-terminal-p (e-work-handle-lifecycle handle)))
          (remember-request
           (request)
-          (when (and request (not (eq request backend-request)))
+          (when (and request
+                     (not (terminal-p))
+                     (not (eq request backend-request)))
             (setq backend-request request)
             (setf (e-work-handle-metadata handle)
                   (append (e-work-handle-metadata handle)

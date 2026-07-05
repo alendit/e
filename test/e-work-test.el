@@ -177,6 +177,33 @@
                     t))
         (should-not (buffer-live-p buffer))))))
 
+(ert-deftest e-work-test-url-carrier-cleans-late-callback-after-timeout ()
+  "A URL callback arriving after timeout is ignored and its buffer is killed."
+  (let (callback error)
+    (cl-letf (((symbol-function 'url-retrieve)
+               (lambda (_url cb &rest _args)
+                 (setq callback cb)
+                 nil)))
+      (let* ((spec (e-work-spec-create
+                    :id "url-timeout"
+                    :execution 'url
+                    :interactive-policy 'async
+                    :url (lambda (_arguments _context)
+                           "https://example.invalid/")
+                    :timeout 0.01))
+             (handle (e-work-start spec nil
+                                   :on-error (lambda (err)
+                                               (setq error err)))))
+        (should-error
+         (e-work-with-batch-await
+           (e-work-await-batch handle :timeout 1))
+         :type 'e-work-url-failed)
+        (should error)
+        (let ((late-buffer (generate-new-buffer " *e-work-url-late*")))
+          (with-current-buffer late-buffer
+            (funcall callback nil))
+          (should-not (buffer-live-p late-buffer)))))))
+
 (ert-deftest e-work-test-render-carrier-runs-through-timer ()
   "The render carrier schedules and settles through a work handle."
   (let ((ran nil))
@@ -309,6 +336,35 @@
              nil)))
       (e-work-cancel handle)
       (should cancelled))))
+
+(ert-deftest e-work-test-backend-carrier-ignores-request-after-terminal ()
+  "A backend request returned after synchronous completion is not remembered."
+  (let (done request-seen)
+    (let* ((backend
+            (e-backend-create
+             :name 'sync-terminal-backend
+             :start
+             (cl-function
+              (lambda (&key on-done &allow-other-keys)
+                (funcall on-done '(:status done))
+                (e-backend-request-create
+                 :metadata '(:provider stale-after-done))))))
+           (spec
+            (e-work-spec-create
+             :id "backend-terminal"
+             :execution 'backend
+             :interactive-policy 'async
+             :backend (lambda (_arguments _context) backend)
+             :request-handler
+             (lambda (_handle request _arguments _context)
+               (setq request-seen request)))))
+      (let ((handle (e-work-start spec nil
+                                  :on-done (lambda (value)
+                                             (setq done value)))))
+        (should (equal done '(:status done)))
+        (should-not request-seen)
+        (should-not (plist-get (e-work-handle-metadata handle)
+                               :backend-request))))))
 
 (ert-deftest e-work-test-backend-deadline-fails-and-cancels-request ()
   "A stalled backend work item fails visibly at its absolute deadline."

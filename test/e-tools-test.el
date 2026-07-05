@@ -205,6 +205,36 @@
                      :content "done"
                      :metadata nil)))))
 
+(ert-deftest e-tools-test-start-ignores-request-after-synchronous-settlement ()
+  "A request returned after `on-done' must not be published as active work."
+  (let ((registry (e-tools-registry-create))
+        request
+        returned
+        result)
+    (e-tools-register registry
+                      :name "immediate"
+                      :description "Finish before returning a request."
+                      :start
+                      (cl-function
+                       (lambda (&key on-done &allow-other-keys)
+                         (funcall on-done "done")
+                         (e-tools-request-create
+                          :metadata '(:source stale-after-done)))))
+    (setq returned
+          (e-tools-start
+           registry
+           '(:id "call-1" :name "immediate" :arguments nil)
+           :on-request-start (lambda (value) (setq request value))
+           :on-done (lambda (value) (setq result value))))
+    (should (e-tools-request-p returned))
+    (should-not request)
+    (should (equal result
+                   '(:tool-call-id "call-1"
+                     :name "immediate"
+                     :status ok
+                     :content "done"
+                     :metadata nil)))))
+
 (ert-deftest e-tools-test-start-passes-through-structured-tool-results ()
   "Async tools can return an already-structured result with metadata."
   (let ((registry (e-tools-registry-create))

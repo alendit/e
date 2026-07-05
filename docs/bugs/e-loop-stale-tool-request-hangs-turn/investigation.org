@@ -47,3 +47,31 @@ turn state.
   passed: 165 expected, 0 unexpected.
 - =rtk eldev compile= passed.
 - =git diff --check= passed.
+
+* Follow-up sweep
+
+The same lifecycle shape was checked across the Work API surface:
+
+- =e-tools-start= could publish =on-request-start= after a tool had already
+  called =on-done=.  It now publishes request handles only while the tool call is
+  nonterminal.
+- The =:backend= Work carrier could remember a backend request after the Work
+  handle had already finished.  It now ignores request reports after terminal
+  settlement.
+- The =:url= Work carrier failed its handle on carrier timeout but did not
+  cancel the underlying request path, and a late callback could adopt a response
+  buffer after cleanup.  Carrier timeout now cancels the underlying request and
+  late callbacks kill their current buffer without mutating terminal state.
+- Auto-compaction could synchronously finish and start the real provider request,
+  then overwrite the active turn request with the already-settled compaction
+  request after returning.  It now records the compaction request only if
+  compaction has not synchronously settled.
+- Work-backed compaction action runners no longer install cancellation metadata
+  after their Work handle is already terminal.
+
+Additional regression coverage:
+
+- =e-tools-test-start-ignores-request-after-synchronous-settlement=.
+- =e-work-test-backend-carrier-ignores-request-after-terminal=.
+- =e-work-test-url-carrier-cleans-late-callback-after-timeout=.
+- =e-harness-compaction-async-test-sync-auto-compaction-keeps-provider-request=.

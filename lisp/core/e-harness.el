@@ -2432,30 +2432,36 @@ cancellation.  SESSION-ID identifies the session."
 	            (start-auto-compaction
 	             (context)
 	             (condition-case err
-	                 (let ((request
-	                        (e-harness-compact-session-start
-	                         harness session-id
-	                         :reason 'auto
-	                         :allow-active-turn t
-	                         :allow-split-turn nil
-	                         :exclude-entry-ids
-	                         (list (plist-get entry :prompt-message-id))
-	                         :turn-id turn-id
-	                         :on-done
-	                         (lambda (_record)
-	                           (when (and (active-entry-p)
-	                                      (not (plist-get entry :cancelled)))
-	                             (start-provider
-	                              (e-harness-turn-context
-	                               harness session-id turn-id))))
-	                         :on-error
-	                         (lambda (err)
-	                           (when (and (active-entry-p)
-	                                      (not (plist-get entry :cancelled)))
-	                             (if (eq (car err) 'e-compaction-error)
-	                                 (start-provider context)
-	                               (finish-error err)))))))
+	                 (let (compaction-settled
+	                       request)
+	                   (setq
+	                    request
+	                    (e-harness-compact-session-start
+	                     harness session-id
+	                     :reason 'auto
+	                     :allow-active-turn t
+	                     :allow-split-turn nil
+	                     :exclude-entry-ids
+	                     (list (plist-get entry :prompt-message-id))
+	                     :turn-id turn-id
+	                     :on-done
+	                     (lambda (_record)
+	                       (setq compaction-settled t)
+	                       (when (and (active-entry-p)
+	                                  (not (plist-get entry :cancelled)))
+	                         (start-provider
+	                          (e-harness-turn-context
+	                           harness session-id turn-id))))
+	                     :on-error
+	                     (lambda (err)
+	                       (setq compaction-settled t)
+	                       (when (and (active-entry-p)
+	                                  (not (plist-get entry :cancelled)))
+	                         (if (eq (car err) 'e-compaction-error)
+	                             (start-provider context)
+	                           (finish-error err))))))
 	                   (when (and (active-entry-p)
+	                              (not compaction-settled)
 	                              (not (plist-get entry :cancelled)))
 	                     (plist-put entry :request request)))
 	               (e-compaction-error

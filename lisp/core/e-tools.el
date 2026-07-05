@@ -895,9 +895,9 @@ dynamically visible to tool start functions through
                               (list :error (car err))))))))
              (publish-request
               (request)
-              (when request
+              (when (and request (not settled))
                 (setq active-request request))
-              (when (and request on-request-start)
+              (when (and request (not settled) on-request-start)
                 (funcall on-request-start request)))
              (arm-deadline
               ()
