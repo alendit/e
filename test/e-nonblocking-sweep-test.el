@@ -25,7 +25,7 @@
     ("lisp/adapters/anthropic/e-anthropic.el" "url-retrieve-synchronously" 1)
     ("lisp/adapters/openai/e-openai.el" "accept-process-output" 2)
     ("lisp/core/e-backend.el" "accept-process-output" 1)
-    ("lisp/core/e-harness.el" "accept-process-output" 3)
+    ("lisp/core/e-harness.el" "accept-process-output" 2)
     ("lisp/core/e-loop.el" "accept-process-output" 1)
     ("lisp/core/e-mcp.el" "accept-process-output" 1)
     ("lisp/core/e-mcp.el" "url-retrieve-synchronously" 2)

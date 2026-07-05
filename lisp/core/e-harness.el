@@ -1319,35 +1319,27 @@ compaction) where exposing tools risks a tool-call instead of a reply."
   (let* ((hooks (e-harness-hooks harness))
          (parent-tool-call (plist-get parent-context :tool-call))
          (depth (1+ (or (plist-get parent-context :depth) 0)))
-	         (context (e-harness--tool-hook-context
-	                   harness session-id turn-id tools parent-context depth))
-	         (prepared
-	          (e-hooks-run-reduce hooks :pre-tool-call tool-call context))
-	         (tool (gethash (plist-get prepared :name)
-	                        (e-tools-registry-tools tools)))
-	         result
-	         failure)
+         (context (e-harness--tool-hook-context
+                   harness session-id turn-id tools parent-context depth))
+         (prepared
+          (e-hooks-run-reduce hooks :pre-tool-call tool-call context))
+         (tool (gethash (plist-get prepared :name)
+                        (e-tools-registry-tools tools)))
+         result)
     (e-harness--emit-turn-event
      harness
      session-id
      turn-id
-	     'tool-started
-	     (e-harness--nested-tool-payload
-	      prepared parent-tool-call depth))
-	    (if (and tool
-	             (e-tools-long-blocking-class-p
-	              (e-harness--tool-blocking-class tool)))
-	        (setq result (e-harness--nested-long-tool-result prepared tool))
-	      (e-tools-start
-	       tools
-	       prepared
-	       :context context
-	       :on-done (lambda (value) (setq result value))
-	       :on-error (lambda (err) (setq failure err)))
-	      (while (not (or result failure))
-	        (accept-process-output nil 0.01))
-	      (when failure
-	        (signal (car failure) (cdr failure))))
+     'tool-started
+     (e-harness--nested-tool-payload
+      prepared parent-tool-call depth))
+    (setq result
+          (if (and tool
+                   (e-tools-long-blocking-class-p
+                    (e-harness--tool-blocking-class tool)))
+              (e-harness--nested-long-tool-result prepared tool)
+            (e-tools--execute-nested-cheap-with-context
+             tools prepared context)))
     (setq result
           (e-hooks-run-reduce hooks :post-tool-call result context))
     (e-harness--emit-turn-event
