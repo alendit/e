@@ -421,6 +421,37 @@
                      :content "Quit"
                      :metadata (:error quit))))))
 
+(ert-deftest e-tools-test-start-deadline-settles-stalled-legacy-tool ()
+  "Legacy async :start tools inherit context deadlines and fail visibly."
+  (let ((registry (e-tools-registry-create))
+        cancelled
+        result)
+    (e-tools-register
+     registry
+     :name "stall"
+     :description "Never calls back."
+     :start (cl-function
+             (lambda (&key on-request-start &allow-other-keys)
+               (funcall
+                on-request-start
+                (e-tools-request-create
+                 :cancel (lambda ()
+                           (setq cancelled t)
+                           t)))
+               nil)))
+    (e-tools-start
+     registry
+     '(:id "call-1" :name "stall" :arguments nil)
+     :context (list :deadline (+ (float-time) 0.02))
+     :on-done (lambda (value)
+                (setq result value)))
+    (should (e-tools-test--wait-until (lambda () result) 1))
+    (should cancelled)
+    (should (equal (plist-get result :status) 'error))
+    (should (eq (plist-get (plist-get result :metadata) :error)
+                'e-work-deadline-exceeded))
+    (should (string-match-p "deadline" (plist-get result :content)))))
+
 (ert-deftest e-tools-test-current-registry-requires-tool-context ()
   "Nested tool APIs fail clearly outside an active tool context."
   (should-error (e-tools-current-registry)

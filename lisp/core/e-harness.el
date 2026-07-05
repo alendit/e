@@ -715,6 +715,18 @@ preview to avoid duplicating large outputs in session JSONL files."
   :type 'integer
   :group 'e)
 
+(defcustom e-harness-provider-request-deadline-seconds 600.0
+  "Hard wall-clock deadline for one provider request attempt.
+
+This is separate from adapter-local idle or HTTP timeouts.  It is a lifecycle
+backstop: if a provider request starts but never reports done or error, the
+Work layer cancels the underlying request and the turn settles as a visible
+failure.  Set to nil to disable the harness default; explicit `:deadline'
+turn options still apply."
+  :type '(choice (const :tag "No default deadline" nil)
+                 number)
+  :group 'e)
+
 (defcustom e-harness-retry-max-elapsed-seconds 1800.0
   "Total wall-clock budget for retrying a transient backend turn.
 Retries of a turn that keeps failing with a retryable error (rate limiting,
@@ -1230,6 +1242,18 @@ built without those tools."
       (cl-remf options :prompt-cache-retention))
     options))
 
+(defun e-harness--apply-deadline-default (options)
+  "Attach a provider request deadline to OPTIONS when none is explicit."
+  (let ((options (copy-sequence options)))
+    (when (and e-harness-provider-request-deadline-seconds
+               (not (plist-member options :deadline)))
+      (setq options
+            (plist-put options
+                       :deadline
+                       (+ (float-time)
+                          e-harness-provider-request-deadline-seconds))))
+    options))
+
 (defun e-harness-turn-options (harness session-id)
   "Return backend-neutral turn options for HARNESS and SESSION-ID.
 Tool definitions are attached before deriving the prompt cache key so the key
@@ -1242,7 +1266,8 @@ reflects the active tool set."
          (with-tools (if tool-definitions
                          (plist-put merged :tools tool-definitions)
                        merged)))
-    (e-harness--apply-prompt-cache-defaults harness session-id with-tools)))
+    (e-harness--apply-deadline-default
+     (e-harness--apply-prompt-cache-defaults harness session-id with-tools))))
 
 (defun e-harness--turn-options (harness session-id)
   "Return backend-neutral turn options for HARNESS and SESSION-ID."
@@ -1337,22 +1362,25 @@ compaction) where exposing tools risks a tool-call instead of a reply."
 (defun e-harness--tool-hook-context
     (harness session-id turn-id tools &optional parent-context depth)
   "Return the narrow hook context for a tool lifecycle in HARNESS."
-  (let ((context
-         (list :harness harness
-               :session-id session-id
-               :turn-id turn-id
-               :tools tools
-               :capabilities (e-harness-active-capabilities harness)
-               :tool-executor
-               (lambda (tool-call options current-context)
-                 (e-harness--execute-nested-tool
-                  harness
-                  session-id
-                  turn-id
-                  tools
-                  tool-call
-                  options
-                  current-context)))))
+  (let* ((turn-options (ignore-errors
+                         (e-harness-turn-options harness session-id)))
+         (context
+          (list :harness harness
+                :session-id session-id
+                :turn-id turn-id
+                :deadline (plist-get turn-options :deadline)
+                :tools tools
+                :capabilities (e-harness-active-capabilities harness)
+                :tool-executor
+                (lambda (tool-call options current-context)
+                  (e-harness--execute-nested-tool
+                   harness
+                   session-id
+                   turn-id
+                   tools
+                   tool-call
+                   options
+                   current-context)))))
     (when parent-context
       (setq context
             (append
@@ -1909,6 +1937,8 @@ For `e-compaction-error' return only the bare reason string; the
       ('e-loop-backend-error
        (nth 2 err))
       ('e-compaction-error
+       (caddr err))
+      ('e-work-deadline-exceeded
        (caddr err)))))
 
 (defun e-harness--emit-turn-failed

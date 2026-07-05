@@ -838,31 +838,85 @@ dynamically visible to tool start functions through
                              (plist-get tool :parameters))))
       (let ((work (plist-get tool :work))
             (start (plist-get tool :start))
-            (handler (plist-get tool :handler)))
+            (handler (plist-get tool :handler))
+            settled
+            active-request
+            deadline-timer)
         (cl-labels
-            ((finish-ok
+            ((cancel-deadline
+              ()
+              (when (timerp deadline-timer)
+                (cancel-timer deadline-timer))
+              (setq deadline-timer nil))
+             (effective-deadline
+              ()
+              (let ((deadline (plist-get tool-context :deadline)))
+                (unless (or (null deadline)
+                            (and (numberp deadline) (not (< deadline 0))))
+                  (signal 'e-work-invalid-spec
+                          (list "Tool deadline must be an absolute float-time timestamp"
+                                deadline)))
+                deadline))
+             (deadline-condition
+              (deadline &optional cancel-error)
+              (let ((details (list :deadline deadline
+                                   :now (float-time)
+                                   :tool name
+                                   :tool-call-id (plist-get call :id))))
+                (when cancel-error
+                  (plist-put details :cancel-error cancel-error))
+                (list 'e-work-deadline-exceeded
+                      (format "Tool %s exceeded its deadline" name)
+                      details)))
+             (finish-ok
               (content)
-              (when on-done
-                (funcall on-done
-                         (e-tools--ok-result-from-content
-                          call name content))))
-             (finish-error
-              (err)
-              (if (and (get (car err) 'e-tools-infrastructure-error)
-                       on-error)
-                  (when on-error
-                    (funcall on-error err))
+              (unless settled
+                (setq settled t)
+                (cancel-deadline)
                 (when on-done
                   (funcall on-done
-                           (e-tools--result
-                            call
-                            'error
-                            (e-tools--condition-message err)
-                            (list :error (car err)))))))
+                           (e-tools--ok-result-from-content
+                            call name content)))))
+             (finish-error
+              (err)
+              (unless settled
+                (setq settled t)
+                (cancel-deadline)
+                (if (and (get (car err) 'e-tools-infrastructure-error)
+                         on-error)
+                    (when on-error
+                      (funcall on-error err))
+                  (when on-done
+                    (funcall on-done
+                             (e-tools--result
+                              call
+                              'error
+                              (e-tools--condition-message err)
+                              (list :error (car err))))))))
              (publish-request
               (request)
+              (when request
+                (setq active-request request))
               (when (and request on-request-start)
-                (funcall on-request-start request))))
+                (funcall on-request-start request)))
+             (arm-deadline
+              ()
+              (when-let ((deadline (effective-deadline)))
+                (unless (or settled (timerp deadline-timer))
+                  (setq deadline-timer
+                        (run-at-time
+                         (max 0 (- deadline (float-time))) nil
+                         (lambda ()
+                           (unless settled
+                             (let (cancel-error)
+                               (when active-request
+                                 (condition-case err
+                                     (e-tools-cancel-request active-request)
+                                   (error
+                                    (setq cancel-error err))))
+                               (finish-error
+                                (deadline-condition
+                                 deadline cancel-error)))))))))))
           (condition-case err
               (e-request-profile-span
                'tool.start
@@ -871,6 +925,7 @@ dynamically visible to tool start functions through
                                          'cheap))
                (lambda ()
                  (let ((e-tools--current-context tool-context))
+                   (arm-deadline)
                    (when (e-tools--reject-long-sync-handler-p tool tool-context)
                      (signal 'e-tools-blocking-handler-rejected
                              (list (format "Tool %s is %s-class and must provide :start in interactive execution"

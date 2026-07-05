@@ -310,6 +310,68 @@
       (e-work-cancel handle)
       (should cancelled))))
 
+(ert-deftest e-work-test-backend-deadline-fails-and-cancels-request ()
+  "A stalled backend work item fails visibly at its absolute deadline."
+  (let (cancelled error)
+    (let* ((backend
+            (e-backend-create
+             :name 'stalled-work-backend
+             :start
+             (cl-function
+              (lambda (&key on-request-start &allow-other-keys)
+                (let ((request
+                       (e-backend-request-create
+                        :cancel (lambda ()
+                                  (setq cancelled t)
+                                  t)
+                        :metadata '(:provider fake :transport timer))))
+                  (funcall on-request-start request)
+                  request)))))
+           (spec
+            (e-work-spec-create
+             :id "backend-deadline"
+             :execution 'backend
+             :interactive-policy 'async
+             :backend (lambda (_arguments _context) backend)
+             :deadline (lambda (_arguments _context)
+                         (+ (float-time) 0.02)))))
+      (let ((handle (e-work-start
+                     spec
+                     nil
+                     :on-error (lambda (err)
+                                 (setq error err)))))
+        (should-error
+         (e-work-with-batch-await
+           (e-work-await-batch handle :timeout 1))
+         :type 'e-work-deadline-exceeded)
+        (should cancelled)
+        (should (eq (car error) 'e-work-deadline-exceeded))
+        (should (numberp (plist-get (caddr error) :deadline)))
+        (should (eq (plist-get (e-work-status handle) :state) 'failed))))))
+
+(ert-deftest e-work-test-cancel-settles-when-carrier-cancel-errors ()
+  "Underlying cancel errors are exposed without blocking cancellation state."
+  (let* ((spec
+          (e-work-spec-create
+           :id "cancel-error"
+           :execution 'cooperative
+           :interactive-policy 'async
+           :runner (lambda (handle _arguments _context)
+                     (setf (e-work-handle-cancel-function handle)
+                           (lambda (_handle)
+                             (error "cancel exploded")))
+                     :deferred)))
+         (handle (e-work-start spec nil)))
+    (e-work-cancel handle)
+    (let* ((status (e-work-status handle))
+           (error-payload (plist-get status :error))
+           (cancel-error (plist-get error-payload :cancel-error)))
+      (should (eq (plist-get status :state) 'cancelled))
+      (should (eq (plist-get error-payload :status) 'cancelled))
+      (should (eq (car cancel-error) 'error))
+      (should (string-match-p "cancel exploded"
+                              (error-message-string cancel-error))))))
+
 (ert-deftest e-work-test-agent-task-carrier-returns-task-record ()
   "The agent-task carrier enqueues and finishes with a task record."
   (let* ((queue (e-task-queue-create :max-parallel 0 :directory nil))

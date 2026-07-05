@@ -79,6 +79,7 @@ published, used to calculate `:elapsed-seconds' for finished events."
                         :url-path (plist-get metadata :url-path)
                         :timeout-seconds (plist-get metadata
                                                      :timeout-seconds)
+                        :deadline (plist-get metadata :deadline)
                         :status status)))
     (when-let ((diagnostics
                 (e-loop--sanitize-diagnostics
@@ -110,6 +111,7 @@ published, used to calculate `:elapsed-seconds' for finished events."
                                  (e-work-handle-id handle))
                    :work-handle handle
                    :work-transport (plist-get metadata :transport)
+                   :deadline (plist-get metadata :deadline)
                    :backend-request
                    (plist-get metadata :backend-request))))))
 
@@ -303,6 +305,11 @@ tool I/O, and turn settlement are callback-driven."
                                      (e-tools-start
                                       tools
                                       tool-call
+                                      :context
+                                      (list :session-id session-id
+                                            :turn-id turn-id
+                                            :deadline
+                                            (plist-get options :deadline))
                                       :on-request-start
                                       (lambda (request)
                                         (setq active-tool request)
@@ -418,7 +425,9 @@ tool I/O, and turn settlement are callback-driven."
                                     (handle-backend-item item)))
                                  nil
                                  :context (list :session-id session-id
-                                                :turn-id turn-id)
+                                                :turn-id turn-id
+                                                :deadline
+                                                (plist-get options :deadline))
                                  :on-done
                                  (lambda (_backend-result)
                                    (unless (or settled (cancelled))

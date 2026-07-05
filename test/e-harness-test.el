@@ -1170,6 +1170,56 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
       (should (numberp (plist-get (plist-get finished :payload)
                                   :elapsed-seconds))))))
 
+(ert-deftest e-harness-test-provider-deadline-default-settles-stalled-turn ()
+  "A provider request with no callbacks fails visibly through the Work deadline."
+  (let* ((e-harness-provider-request-deadline-seconds 0.02)
+         (cancelled nil)
+         (backend
+          (e-backend-create
+           :name "stalled-harness-provider"
+           :start
+           (cl-function
+            (lambda (&key on-request-start &allow-other-keys)
+              (let ((request
+                     (e-backend-request-create
+                      :cancel (lambda ()
+                                (setq cancelled t)
+                                t)
+                      :metadata '(:provider fake :transport timer))))
+                (funcall on-request-start request)
+                request)))))
+         (harness (e-harness-create :backend backend))
+         (events nil))
+    (e-harness-subscribe harness (lambda (event) (push event events)))
+    (e-harness-create-session harness :id "session-1")
+    (e-harness-prompt-async harness "session-1" "question")
+    (let ((settled (e-harness-wait-batch harness "session-1" 1.0)))
+      (should (equal (plist-get settled :status) 'error))
+      (should (string-match-p "deadline" (plist-get settled :error)))
+      (should (eq (plist-get (plist-get settled :error-details) :execution)
+                  'backend)))
+    (should cancelled)
+    (let* ((types (mapcar (lambda (event) (plist-get event :type))
+                          events))
+           (failed (seq-find
+                    (lambda (event)
+                      (eq (plist-get event :type) 'turn-failed))
+                    events))
+           (provider-finished
+            (seq-find
+             (lambda (event)
+               (eq (plist-get event :type) 'provider-request-finished))
+             events)))
+      (should (member 'provider-request-started types))
+      (should (member 'provider-request-finished types))
+      (should (member 'turn-failed types))
+      (should (eq (plist-get (plist-get provider-finished :payload) :status)
+                  'error))
+      (should (eq (plist-get (plist-get (plist-get failed :payload)
+                                        :details)
+                             :execution)
+                  'backend)))))
+
 (ert-deftest e-harness-test-provider-timeout-retries-then-succeeds ()
   "Provider timeout errors retry with backoff instead of failing immediately."
   (let* ((e-harness-retry-initial-backoff-seconds 0.02)

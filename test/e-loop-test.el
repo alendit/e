@@ -1206,6 +1206,61 @@
                            (nreverse messages))
                    '(tool-call tool tool-call tool assistant)))))
 
+(ert-deftest e-loop-test-backend-deadline-settles-stalled-provider-request ()
+  "A provider request that never calls back settles through the Work deadline."
+  (let* ((cancelled nil)
+         (deadline (+ (float-time) 0.02))
+         (backend
+          (e-backend-create
+           :name "stalled-provider"
+           :start
+           (cl-function
+            (lambda (&key on-request-start &allow-other-keys)
+              (let ((request
+                     (e-backend-request-create
+                      :cancel (lambda ()
+                                (setq cancelled t)
+                                t)
+                      :metadata '(:provider fake :transport timer))))
+                (funcall on-request-start request)
+                request)))))
+         (events nil)
+         (settled nil))
+    (e-loop-start-turn
+     :session-id "session-1"
+     :turn-id "turn-1"
+     :messages '((:role user :content "hi"))
+     :backend backend
+     :tools (e-tools-registry-create)
+     :options (list :deadline deadline)
+     :on-event (lambda (type payload)
+                 (push (list :type type :payload payload) events))
+     :append-message (lambda (&rest _args))
+     :on-done (lambda (result)
+                (setq settled result))
+     :on-error (lambda (err)
+                 (setq settled (list :error err))))
+    (should (e-loop-test--wait-until (lambda () settled) 1))
+    (should cancelled)
+    (should (eq (car (plist-get settled :error))
+                'e-work-deadline-exceeded))
+    (let* ((ordered-events (nreverse events))
+           (types (mapcar (lambda (event) (plist-get event :type))
+                          ordered-events))
+           (started (cl-find 'provider-request-started ordered-events
+                             :key (lambda (event)
+                                    (plist-get event :type))))
+           (finished (cl-find 'provider-request-finished ordered-events
+                              :key (lambda (event)
+                                     (plist-get event :type)))))
+      (should (equal types
+                     '(turn-started
+                       provider-request-started
+                       provider-request-finished)))
+      (should (numberp (plist-get (plist-get started :payload) :deadline)))
+      (should (eq (plist-get (plist-get finished :payload) :status)
+                  'error)))))
+
 (provide 'e-loop-test)
 
 ;;; e-loop-test.el ends here

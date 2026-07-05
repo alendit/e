@@ -28,6 +28,7 @@
 (define-error 'e-work-await-in-hot-path "e work batch await rejected in interactive hot path" 'e-work-error)
 (define-error 'e-work-await-timeout "e work batch await timed out" 'e-work-error)
 (define-error 'e-work-cancelled "e work was cancelled" 'e-work-error)
+(define-error 'e-work-deadline-exceeded "e work deadline exceeded" 'e-work-error)
 (define-error 'e-work-process-failed "e work process failed" 'e-work-error)
 (define-error 'e-work-url-failed "e work URL request failed" 'e-work-error)
 
@@ -74,6 +75,7 @@
   request-handler
   item-handler
   timeout
+  deadline
   task-queue
   prompt
   summary)
@@ -122,14 +124,14 @@
            &key id description parameters execution interactive-policy owner
            metadata concurrency coalesce-key result-shaper setup runner command
            url backend messages options request-handler item-handler timeout
-           task-queue prompt summary
+           deadline task-queue prompt summary
            &allow-other-keys)
   "Create a validated work spec.
 Every spec must declare explicit :execution and :interactive-policy values."
   (ignore id description parameters execution interactive-policy owner
           metadata concurrency coalesce-key result-shaper setup runner command
           url backend messages options request-handler item-handler timeout
-          task-queue prompt summary)
+          deadline task-queue prompt summary)
   (e-work--validate-spec (apply #'e-work-spec--create args)))
 
 (put 'e-work-spec-create 'compiler-macro nil)
@@ -167,6 +169,85 @@ Every spec must declare explicit :execution and :interactive-policy values."
                   (funcall cleanup current-handle)
 	                  (funcall previous current-handle))
 	              cleanup)))))
+
+(defun e-work--remember-cancel-error (handle err)
+  "Record underlying cancellation ERR on HANDLE metadata."
+  (setf (e-work-handle-metadata handle)
+        (append (e-work-handle-metadata handle)
+                (list :cancel-error err)))
+  err)
+
+(defun e-work--cancel-underlying (handle)
+  "Cancel HANDLE's underlying carrier and return any cancellation error."
+  (when-let ((cancel (e-work-handle-cancel-function handle)))
+    (condition-case err
+        (progn
+          (funcall cancel handle)
+          nil)
+      (error
+       (e-work--remember-cancel-error handle err)))))
+
+(defun e-work--valid-deadline-p (deadline)
+  "Return non-nil when DEADLINE is a valid absolute timestamp."
+  (or (null deadline)
+      (and (numberp deadline)
+           (not (< deadline 0)))))
+
+(defun e-work--effective-deadline (spec arguments context)
+  "Return SPEC's effective absolute deadline for ARGUMENTS and CONTEXT."
+  (let ((deadlines
+         (delq nil
+               (list
+                (e-work--call (e-work-spec-deadline spec) arguments context)
+                (plist-get context :deadline)))))
+    (dolist (deadline deadlines)
+      (unless (e-work--valid-deadline-p deadline)
+        (signal 'e-work-invalid-spec
+                (list "Work deadline must be an absolute float-time timestamp"
+                      deadline))))
+    (when deadlines
+      (apply #'min deadlines))))
+
+(defun e-work--deadline-condition (handle deadline)
+  "Return a visible timeout condition for HANDLE and DEADLINE."
+  (let* ((spec (e-work-handle-spec handle))
+         (now (float-time))
+         (details (list :deadline deadline
+                        :now now
+                        :overdue-seconds (max 0.0 (- now deadline))
+                        :work-id (e-work-handle-id handle)
+                        :spec-id (e-work-spec-id spec)
+                        :execution (e-work-spec-execution spec))))
+    (when-let ((cancel-error (plist-get (e-work-handle-metadata handle)
+                                        :cancel-error)))
+      (plist-put details :cancel-error cancel-error))
+    (list 'e-work-deadline-exceeded
+          (format "Work %s exceeded its deadline" (e-work-handle-id handle))
+          details)))
+
+(defun e-work--install-deadline (handle arguments context)
+  "Install HANDLE's effective deadline timer for ARGUMENTS and CONTEXT."
+  (when-let ((deadline
+              (e-work--effective-deadline
+               (e-work-handle-spec handle) arguments context)))
+    (let ((timer nil))
+      (setf (e-work-handle-metadata handle)
+            (append (e-work-handle-metadata handle)
+                    (list :deadline deadline)))
+      (setq timer
+            (run-at-time
+             (max 0 (- deadline (float-time))) nil
+             (lambda ()
+               (unless (e-request-terminal-p (e-work-handle-lifecycle handle))
+                 (e-work--cancel-underlying handle)
+                 (e-work-fail
+                  handle
+                  (e-work--deadline-condition handle deadline))))))
+      (e-work--add-cleanup
+       handle
+       (lambda (_handle)
+         (when (timerp timer)
+           (cancel-timer timer)))))))
 
 (defun e-work-add-cleanup (handle cleanup)
   "Add CLEANUP to HANDLE's terminal cleanup chain."
@@ -211,12 +292,14 @@ Every spec must declare explicit :execution and :interactive-policy values."
   (unless (e-work-handle-p handle)
     (signal 'wrong-type-argument (list 'e-work-handle-p handle)))
   (unless (e-request-terminal-p (e-work-handle-lifecycle handle))
-    (when-let ((cancel (e-work-handle-cancel-function handle)))
-      (funcall cancel handle))
-    (when (e-request-cancel (e-work-handle-lifecycle handle)
-                            '(:status cancelled))
-      (setf (e-work-handle-error handle) '(:status cancelled))
-      (e-work--terminal-event handle 'cancelled '(:status cancelled))))
+    (let* ((cancel-error (e-work--cancel-underlying handle))
+           (payload (if cancel-error
+                        (list :status 'cancelled
+                              :cancel-error cancel-error)
+                      '(:status cancelled))))
+      (when (e-request-cancel (e-work-handle-lifecycle handle) payload)
+        (setf (e-work-handle-error handle) payload)
+        (e-work--terminal-event handle 'cancelled payload))))
   handle)
 
 (defun e-work-status (handle)
@@ -665,10 +748,15 @@ This function is rejected from interactive hot paths."
          (cancel-backend ()
           (when (and backend-request
                      (e-backend-request-p backend-request))
-            (ignore-errors (e-backend-cancel-request backend-request))))
+            (e-backend-cancel-request backend-request)))
+         (cancel-backend-best-effort ()
+          (condition-case err
+              (cancel-backend)
+            (error
+             (e-work--remember-cancel-error handle err))))
          (fail (err)
           (unless (terminal-p)
-            (cancel-backend)
+            (cancel-backend-best-effort)
             (e-work-fail handle err))))
       (setf (e-work-handle-cancel-function handle)
             (lambda (_handle)
@@ -758,6 +846,7 @@ function returns, but still records the same lifecycle."
                            (list :execution (e-work-spec-execution spec)
                                  :interactive-policy
                                  (e-work-spec-interactive-policy spec)))
+          (e-work--install-deadline handle arguments context)
           (e-work--setup handle arguments context)
           (pcase (e-work-spec-execution spec)
             ('cheap (e-work--start-cheap handle arguments context))
