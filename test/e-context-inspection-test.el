@@ -40,7 +40,7 @@
   (let ((layer (e-dev-layer-create)))
     (should (eq (e-layer-id layer) 'e-dev))
     (should (equal (mapcar #'e-capability-id (e-layer-capabilities layer))
-                   '(context-inspection)))))
+                   '(context-inspection e-dev)))))
 
 (ert-deftest e-context-inspection-test-export-default-pre-prompt-context ()
   "export-context writes pre-prompt context to a resource and returns metadata."
@@ -80,9 +80,10 @@
                        "tmp://default_context.md")))
         (should (equal (plist-get metadata :uri) "tmp://default_context.md"))
         (should (eq (plist-get metadata :mode) 'pre-prompt))
-        (should (equal (plist-get metadata :message-count) 3))
+        (should (equal (plist-get metadata :message-count) 4))
         (should (eq seen-purpose 'preview))
         (should (string-match-p "capability instructions" content))
+        (should (string-match-p "mark-reload-required" content))
         (should (string-match-p "provider context" content))
         (should-not (string-match-p "existing prompt" content))))))
 
@@ -124,9 +125,10 @@
                        (e-harness-resources harness "session-1" "turn-1")
                        "tmp://context.md")))
         (should (eq (plist-get metadata :mode) 'full))
-        (should (equal (plist-get metadata :message-count) 3))
+        (should (equal (plist-get metadata :message-count) 4))
         (should (eq seen-purpose 'preview))
         (should (string-match-p "system guidance" content))
+        (should (string-match-p "mark-reload-required" content))
         (should (string-match-p "existing prompt" content))
         (should-not (string-match-p "Export metadata" content))))))
 

@@ -66,6 +66,9 @@
     e-output-style-registry)
   "Uncustomized options whose changed defaults should apply after reload.")
 
+(defvar e-dev--reload-required-entries nil
+  "Pending explicit reload requests for the running Emacs.")
+
 (defun e-dev--clear-obsolete-functions ()
   "Remove stale obsolete function bindings after a live reload."
   (dolist (symbol e-dev--obsolete-functions)
@@ -84,6 +87,69 @@
     (when (and (boundp symbol)
                (not (get symbol 'customized-value)))
       (custom-reevaluate-setting symbol))))
+
+(defun e-dev--normalize-file-list (files)
+  "Return FILES as a list of strings."
+  (cond
+   ((null files) nil)
+   ((stringp files) (list files))
+   ((vectorp files) (e-dev--normalize-file-list (append files nil)))
+   ((listp files)
+    (delq nil
+          (mapcar (lambda (file)
+                    (cond
+                     ((stringp file) file)
+                     ((symbolp file) (symbol-name file))
+                     (t nil)))
+                  files)))
+   (t nil)))
+
+(defun e-dev--reload-required-entry (reason files scope)
+  "Create a pending reload entry from REASON FILES and SCOPE."
+  (list :id (format "reload-required-%d" (round (* (float-time) 1000)))
+        :reason (or reason "e source changed")
+        :files (e-dev--normalize-file-list files)
+        :scope (or scope 'full)
+        :created-at (float-time)))
+
+;;;###autoload
+(defun e-dev-mark-reload-required (&optional reason files scope)
+  "Record that the running Emacs needs an explicit reload when idle.
+This is intentionally only a notification path: it does not load source,
+compile files, run startup hooks, or interrupt active work."
+  (interactive
+   (list (read-string "Reload reason: " nil nil "e source changed")
+         nil
+         'full))
+  (let ((entry (e-dev--reload-required-entry reason files scope)))
+    (push entry e-dev--reload-required-entries)
+    (message "e reload required: %s; run M-x e-dev-reload when idle"
+             (plist-get entry :reason))
+    (e-dev-reload-required-status)))
+
+;;;###autoload
+(defun e-dev-reload-required-status ()
+  "Return pending explicit reload status for the running Emacs."
+  (interactive)
+  (let ((status (list :required (not (null e-dev--reload-required-entries))
+                      :count (length e-dev--reload-required-entries)
+                      :entries (nreverse
+                                (copy-sequence
+                                 e-dev--reload-required-entries)))))
+    (when (called-interactively-p 'interactive)
+      (if (plist-get status :required)
+          (message "e reload required (%d pending)"
+                   (plist-get status :count))
+        (message "No e reload is pending")))
+    status))
+
+(defun e-dev-clear-reload-required ()
+  "Clear pending explicit reload requests."
+  (interactive)
+  (setq e-dev--reload-required-entries nil)
+  (when (called-interactively-p 'interactive)
+    (message "Cleared pending e reload requests"))
+  (e-dev-reload-required-status))
 
 ;;;###autoload
 (defun e-dev-reload (&optional directory)
@@ -176,6 +242,7 @@
     (load (expand-file-name "e.el" root) nil 'nomessage)
     (when (fboundp 'e-startup-run)
       (e-startup-run))
+    (e-dev-clear-reload-required)
     (message "Reloaded e from %s"
              (abbreviate-file-name root))
     root))

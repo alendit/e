@@ -136,6 +136,16 @@
 ;;;###autoload
 (autoload 'e-dev-reload "e-dev" "Reload e package files during development." t)
 ;;;###autoload
+(autoload 'e-dev-mark-reload-required
+  "e-dev"
+  "Record that the running Emacs needs an explicit reload when idle."
+  t)
+;;;###autoload
+(autoload 'e-dev-reload-required-status
+  "e-dev"
+  "Return pending explicit reload status for the running Emacs."
+  t)
+;;;###autoload
 (autoload 'e-project-local-byte-compile-project
   "e-project-local"
   "Byte-compile allowlisted project-local Elisp under DIRECTORY."

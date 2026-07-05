@@ -49,7 +49,9 @@
     e-layers-toggle
     e-layers-enable
     e-layers-disable
-    e-dev-reload)
+    e-dev-reload
+    e-dev-mark-reload-required
+    e-dev-reload-required-status)
   "Interactive commands expected to exist from package autoloads.")
 
 (defconst e-test--autoload-functions
@@ -288,7 +290,9 @@
   (should (commandp 'e-layers-toggle))
   (should (commandp 'e-layers-enable))
   (should (commandp 'e-layers-disable))
-  (should (commandp 'e-dev-reload)))
+  (should (commandp 'e-dev-reload))
+  (should (commandp 'e-dev-mark-reload-required))
+  (should (commandp 'e-dev-reload-required-status)))
 
 (ert-deftest e-test-startup-loads-shell-providers ()
   "Startup loads shell command providers instead of hand-autoloading commands."

@@ -14,14 +14,13 @@
 
 ## Interactive Development
 
-- Strive to develop interactively against the running Emacs whenever the change affects runtime behavior, chat presentation, tools, backend requests, reload behavior, or buffer state. Batch tests are necessary but not sufficient for live agent workflows.
-- Reloading changed Emacs Lisp into the user's running Emacs is the agent's responsibility, not a user follow-up. After any change to `lisp/*.el`, `e.el`, or behavior that is already loaded in the user's Emacs, proactively run `e-dev-reload` through `emacsclient --eval` before claiming the work is ready.
-- Use this reload shape from the repo root unless a task needs a narrower expression: `emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"`. Prefer direct `emacsclient` invocation; do not wrap it in `zsh -lc` unless shell features are actually required.
-- If `emacsclient --eval` fails because no server/frame is available, report that exact failure in the final note instead of implying the live Emacs was refreshed. Do not tell the user to reload manually unless live reload was genuinely unavailable.
-- After reloading, use `emacsclient --eval` to inspect live state when debugging: active chat buffer contents, buffer-local harness/session values, active tool definitions, raw response buffers, diagnostics, and session messages. Prefer direct inspection of the running Emacs over guessing from source alone.
-- Final notes for behavior changes should say whether the running Emacs was reloaded and, when relevant, what live scenario was inspected. Batch test results alone do not prove the user's current Emacs session picked up the change.
-- For model/tool/backend changes, verify at least one live scenario in the running Emacs when feasible. Use temporary buffers for destructive tool checks, and avoid mutating user buffers unless the task explicitly calls for it.
-- Keep live reload and inspection commands narrow and explicit. Do not rely on Doom-specific APIs for package behavior; use Doom only as the user's current Emacs distribution context.
+- External agents such as Codex must validate Emacs Lisp changes outside the user's running Emacs by default. Use Eldev, batch Emacs, focused ERT, compile checks, and source inspection for proof. Do not make full `e-dev-reload` the default completion step.
+- Use `emacsclient --eval` only for light, bounded exploration of live state: small scalar probes, symbol existence, current buffer/session identifiers, or tightly scoped diagnostics. Avoid broad registry dumps, large buffer reads, recursive scans, blocking loads, byte-compilation, or full reloads through `emacsclient`.
+- If the user explicitly wants the running Emacs updated, or if a live-only bug cannot be diagnosed otherwise, ask before running full `e-dev-reload` and explain that it may block the UI. Prefer the direct shape `emacsclient --eval "(progn (require 'e-dev) (e-dev-reload \"/Users/dimitrivorona/projects/elisp/e\"))"` when it is explicitly requested.
+- Final notes for Lisp behavior changes should state that repository-side validation passed and whether the running Emacs was left unchanged. When a full reload would be needed to use the new behavior immediately, say so as an option rather than performing it automatically.
+- Internal `e` agents modifying `e` should use lightweight dev actions where possible. If a full reload is required, mark it with the `e-dev` action `mark-reload-required` so the user can run `M-x e-dev-reload` when idle; do not interrupt active turns with a full reload.
+- Compilation is useful but optional. Run byte/native compilation as an explicit batch validation or background job, not as part of the ordinary live-update path.
+- Do not rely on Doom-specific APIs for package behavior; use Doom only as the user's current Emacs distribution context.
 
 
 ## How To
@@ -36,7 +35,7 @@
 
 ## Post-Change Checklist
 
-- After finishing a coherent semantic slice, run the relevant verification, reload live Emacs when required, update the applicable docs/bug/feature ledger, and commit that slice before starting unrelated work unless the user explicitly asks not to commit.
+- After finishing a coherent semantic slice, run the relevant repository-side verification, note whether a manual live reload is needed, update the applicable docs/bug/feature ledger, and commit that slice before starting unrelated work unless the user explicitly asks not to commit.
 - Keep commits semantic and scoped: stage only files that belong to the slice, leave unrelated dirty or untracked files alone, and split independent behavior, documentation, or guidance changes into separate commits.
 
 ## Architecture Guidance

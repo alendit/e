@@ -1,0 +1,33 @@
+#+title: Low-Interruption Dev Reload Guidance
+#+startup: overview
+
+* Change
+
+External agents now validate =e= changes outside the user's running Emacs by
+default.  Full =e-dev-reload= is no longer the default completion step; it is an
+explicit user option for when the running Emacs should pick up a change
+immediately.
+
+The =e-dev= layer now exposes lightweight reload notification actions.  Internal
+=e= agents can mark that a full reload is required and inspect the pending
+status without loading source, compiling, running startup hooks, or interrupting
+active work.
+
+* Why tiny
+
+This is a narrow developer-workflow adjustment.  It adds a small in-memory
+pending-reload marker and two dev-layer actions, but does not implement the
+future reload coordinator or scheduled reload machinery.
+
+* Validation
+
+#+begin_src sh
+rtk eldev test -f test/e-context-inspection-test.el -f test/e-dev-test.el -f test/e-test.el
+rtk eldev test -f test/e-actions-test.el -f test/e-layers-test.el -f test/e-defaults-test.el
+rtk eldev compile
+git diff --check -- AGENTS.md e.el lisp/dev/e-dev.el lisp/layers/e-dev-layer.el test/e-context-inspection-test.el test/e-dev-test.el test/e-test.el
+#+end_src
+
+Full =rtk eldev test= was also run.  It passed this slice's tests and exposed
+one unrelated existing dirty-work failure in =test/e-harness-base-test.el= caused
+by the uncommitted session-resource changes in =lisp/layers/harness/=.

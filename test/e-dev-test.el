@@ -11,12 +11,14 @@
 
 ;;; Code:
 
+(require 'cl-lib)
 (require 'ert)
 (require 'e)
 (require 'e-backend)
 (require 'e-default-harnesses)
 (require 'e-debug)
 (require 'e-dev)
+(require 'e-dev-layer)
 (require 'e-harness)
 (require 'e-openai)
 
@@ -39,6 +41,53 @@
       (dolist (symbol symbols)
         (when (fboundp symbol)
           (fmakunbound symbol))))))
+
+(ert-deftest e-dev-test-mark-reload-required-records-status-and-clear ()
+  "Reload-required notification records pending full reload intent."
+  (let ((e-dev--reload-required-entries nil))
+    (let ((status (e-dev-mark-reload-required
+                   "core shape changed"
+                   ["lisp/core/e-harness.el"]
+                   'full)))
+      (should (eq (plist-get status :required) t))
+      (should (= (plist-get status :count) 1))
+      (let ((entry (car (plist-get status :entries))))
+        (should (string-match-p "reload-required-"
+                                (plist-get entry :id)))
+        (should (equal (plist-get entry :reason)
+                       "core shape changed"))
+        (should (equal (plist-get entry :files)
+                       '("lisp/core/e-harness.el")))
+        (should (eq (plist-get entry :scope) 'full))))
+    (let ((status (e-dev-clear-reload-required)))
+      (should-not (plist-get status :required))
+      (should (= (plist-get status :count) 0)))))
+
+(ert-deftest e-dev-test-dev-layer-exposes-reload-required-actions ()
+  "The e-dev layer exposes lightweight reload notification actions."
+  (let* ((e-dev--reload-required-entries nil)
+         (layer (e-dev-layer-create))
+         (capability
+          (cl-find-if
+           (lambda (capability)
+             (eq (e-capability-id capability) 'e-dev))
+           (e-layer-capabilities layer)))
+         (actions (and capability (e-capability-actions capability)))
+         (mark (plist-get actions :mark-reload-required))
+         (status (plist-get actions :reload-required-status)))
+    (should capability)
+    (should (e-action-p mark))
+    (should (e-action-p status))
+    (let ((result (funcall (e-action-caller mark)
+                           nil
+                           '(:reason "needs full reload"
+                             :files ["lisp/dev/e-dev.el"]
+                             :scope "full"))))
+      (should (eq (plist-get result :required) t))
+      (should (= (plist-get result :count) 1)))
+    (let ((result (funcall (e-action-caller status) nil nil)))
+      (should (eq (plist-get result :required) t))
+      (should (= (plist-get result :count) 1)))))
 
 (ert-deftest e-dev-test-reload-restores-mvp-entrypoints ()
   "Reload loads the MVP modules and restores their entry points."
