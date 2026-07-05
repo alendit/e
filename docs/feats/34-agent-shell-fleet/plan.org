@@ -245,13 +245,13 @@ Transcript excerpts are for result inspection, not lifecycle truth.
 Expose these actions first:
 
 #+begin_src elisp
-(e-capabilities-action capability :handoff-work)
-(e-capabilities-action capability :adopt-work)
-(e-capabilities-action capability :list-work)
-(e-capabilities-action capability :work-status)
-(e-capabilities-action capability :read-work)
-(e-capabilities-action capability :send-followup)
-(e-capabilities-action capability :interrupt-work)
+(e-actions-call 'agent-shell-fleet :handoff-work ARGUMENTS)
+(e-actions-call 'agent-shell-fleet :adopt-work ARGUMENTS)
+(e-actions-call 'agent-shell-fleet :list-work ARGUMENTS)
+(e-actions-call 'agent-shell-fleet :work-status ARGUMENTS)
+(e-actions-call 'agent-shell-fleet :read-work ARGUMENTS)
+(e-actions-call 'agent-shell-fleet :send-followup ARGUMENTS)
+(e-actions-call 'agent-shell-fleet :interrupt-work ARGUMENTS)
 #+end_src
 
 Action inputs should be plain plists and outputs should be plain plists or

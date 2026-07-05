@@ -10,14 +10,16 @@ Elisp, aligned with the existing =e-tools-call= tool-chaining shape.
 
 Done.
 
+2026-07-05 update: the follow-up nonblocking work migration removed the legacy
+direct function action surface.  Capability actions are now =e-action=
+descriptors backed by =e-work= specs, and execution goes through
+=e-actions-call= / =e-actions-dispatch=.
+
 * Problem
 
 Capability actions are first-class runtime behavior, but callers historically
-had only the low-level form:
-
-#+begin_src elisp
-(funcall (e-capabilities-action capability :compact) ...)
-#+end_src
+had only a low-level direct-function accessor.  That historical shape has now
+been removed from the public runtime surface.
 
 That forces generic callers to find the active capability, know the action's
 calling convention, inject harness/session state manually, and discover errors
@@ -26,14 +28,14 @@ late.  It also made action guidance diverge from the existing
 
 * Design
 
-Add action descriptors while preserving direct function lookup:
+Add action descriptors:
 
-- =e-action-create= describes an action handler, optional dispatcher caller,
-  compact JSON-style parameter schema, and session requirement.
-- =e-capabilities-action= still returns the direct function for old shell code
-  and tests.
-- =e-capabilities-action-spec= returns the descriptor when a caller needs the
-  richer contract.
+- =e-action-create= describes a work-backed action, compact JSON-style
+  parameter schema, and session requirement.
+- =e-action-cheap-create= is the convenience path for bounded immediate actions;
+  it still creates a =:cheap= =e-work= spec.
+- =e-capabilities-action-spec= returns the descriptor for callers that need to
+  inspect metadata.  It is not an execution API.
 
 Add =e-actions-call=:
 
@@ -51,8 +53,7 @@ unless explicit =:harness= and =:session-id= options are supplied.
 - Convert built-in action surfaces to descriptors where they are part of
   standard layers: =chat-session=, =layer-selection=, =agent-shell-fleet=, and
   =goal=.
-- Keep generated/dynamic project-local capabilities compatible with old plain
-  function actions.
+- Convert generated/dynamic project-local capabilities to descriptor actions.
 - Update =run_elisp= guidance to show both =e-tools-call= and =e-actions-call=.
 - Document the runtime vocabulary and new action call shape.
 
@@ -61,7 +62,7 @@ unless explicit =:harness= and =:session-id= options are supplied.
 - Do not make every shell action a dedicated first-level model tool.
 - Do not add a generic model-facing action tool; agents already have
   =run_elisp=, and =e-actions-call= is the Elisp affordance for that tool.
-- Do not remove existing direct action functions.
+- Do not make capability actions model-facing tools.
 - Do not change action ownership; capabilities still own semantic actions and
   the harness still owns lifecycle/state.
 
@@ -73,7 +74,8 @@ unless explicit =:harness= and =:session-id= options are supplied.
   errors.
 - =chat-session :compact= remains callable through =e-actions-call= from
   context-bound Elisp.
-- Existing direct =e-capabilities-action= callers continue to receive functions.
+- Legacy direct function action callers are gone; all execution routes through
+  work-backed descriptors.
 - Runtime docs and =run_elisp= guidance show the aligned tool/action APIs.
 
 * Verification

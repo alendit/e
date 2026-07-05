@@ -89,9 +89,10 @@ Add helpers with these contracts:
 - `e-capabilities-context-messages`: accepts a capability list plus `:harness`, `:session-id`, and `:turn-id`, then returns instruction messages followed by provider-built messages.
 - `e-actions-call`: accepts a capability id, action keyword, optional arguments,
   and optional explicit harness/session options, then resolves the active
-  action through the current runtime context. `e-capabilities-action` remains
-  the compatibility helper for callers that already have a capability object
-  and need the direct function.
+  action through the current runtime context. Capability actions are
+  work-backed descriptors; callers that already have a capability object may
+  inspect descriptors with `e-capabilities-action-spec`, but execution should
+  still go through `e-actions-call` or `e-actions-dispatch`.
 
 Do not add permission/audit fields in this pass.
 
