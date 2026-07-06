@@ -1,0 +1,19 @@
+#+title: Session search aborts on a dangling index entry
+#+startup: overview
+
+* Report
+
+Searching persisted sessions through =search session://e/sessions/ "..."= failed
+for the entire store with:
+
+#+begin_quote
+session:// session does not exist: "Unknown session id: 20260630T073843-93d0d985766f"
+#+end_quote
+
+The same query shape worked fine through =glob= (it listed every session,
+including the offending id). Only =search= errored, and it errored regardless of
+the query or the narrowing glob.
+
+The expected behavior is that a single unreadable or missing session cannot take
+down search across the whole store. Search should skip a session it cannot read
+and continue matching the rest.

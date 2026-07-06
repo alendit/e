@@ -158,6 +158,36 @@
         (should (equal (plist-get match :uri)
                        "session://e/sessions/session-1/activity"))))))
 
+(ert-deftest e-session-resources-test-search-skips-dangling-index-entries ()
+  "Search ignores index entries whose transcript file is gone.
+A session listed in the index but missing its backing JSONL yields no
+searchable content; it must be skipped rather than aborting the whole search."
+  (e-session-resources-test--with-empty-config
+    (let* ((harness (e-session-resources-test--harness))
+           (resources (e-session-resources-test--resources harness))
+           (store (e-harness-sessions harness)))
+      (e-harness-create-session harness :id "live-session")
+      (e-session-append-message
+       store "live-session" '(:role user :content "needle body"))
+      ;; Inject a dangling index stub: listed by `e-session-list' but its
+      ;; transcript file does not exist, so loading it signals
+      ;; `e-session-missing'.
+      (e-session--put-index-entry
+       store
+       (list :id "dangling-session"
+             :file "/nonexistent/dangling-session.jsonl"
+             :last-message-at "2999-01-01T00:00:00Z"))
+      (should (cl-find "dangling-session" (e-session-list store)
+                       :key (lambda (entry) (plist-get entry :id))
+                       :test #'equal))
+      (let* ((search (e-resources-search
+                      resources "session://e/sessions/" "needle body"
+                      '(:limit 5)))
+             (matches (append (plist-get search :matches) nil)))
+        (should (= (length matches) 1))
+        (should (equal (plist-get (car matches) :uri)
+                       "session://e/sessions/live-session/messages"))))))
+
 (ert-deftest e-session-resources-test-errors-and-read-only-contract ()
   "session:// reports invalid reads and remains read-only."
   (e-session-resources-test--with-empty-config

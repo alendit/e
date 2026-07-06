@@ -656,20 +656,26 @@ sessions.  Otherwise session roots search messages by default."
     (dolist (session (e-session-resources--engine-list-sessions engine))
       (let ((id (e-session-resources--session-id session)))
         (when (or (null session-id) (string= id session-id))
-          (let ((projections
-                 (cond
-                  (projection (list projection))
-                  (all-projections
-                   (e-session-resources--engine-projections engine id))
-                  (t '("messages")))))
-            (dolist (candidate projections)
-              (when (member candidate
-                            (e-session-resources--engine-projections
-                             engine id))
-                (push (list :engine engine
-                            :session session
-                            :projection candidate)
-                      targets)))))))
+          ;; A session listed in the index may have no readable transcript,
+          ;; e.g. a dangling index entry whose JSONL file was deleted. Such a
+          ;; session yields no searchable content, so skip it instead of
+          ;; aborting the whole search.
+          (let ((available
+                 (condition-case nil
+                     (e-session-resources--engine-projections engine id)
+                   (e-session-resources-unknown-session nil))))
+            (when available
+              (let ((projections
+                     (cond
+                      (projection (list projection))
+                      (all-projections available)
+                      (t '("messages")))))
+                (dolist (candidate projections)
+                  (when (member candidate available)
+                    (push (list :engine engine
+                                :session session
+                                :projection candidate)
+                          targets)))))))))
     (nreverse targets)))
 
 (defun e-session-resources--search-targets (harness uri all-projections)

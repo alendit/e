@@ -1,0 +1,65 @@
+#+title: Investigation — Session search aborts on a dangling index entry
+#+startup: overview
+
+* Root cause
+
+The session store keeps a lazy index: =index.json= lists every session, and each
+transcript is a JSONL file loaded on demand. On this machine the index still
+listed =20260630T073843-93d0d985766f= but its
+=sessions/20260630T073843-93d0d985766f.jsonl= file was gone — one dangling entry
+out of 174.
+
+- =glob= builds results only from index metadata via
+  =e-session-resources--session-entry=, so it never forces a transcript load and
+  tolerated the dangling entry.
+- =search= builds candidate targets in
+  =e-session-resources--search-targets-for-engine=. For every listed session it
+  called =e-session-resources--engine-projections=, which for the built-in =e=
+  engine calls =e-session-resources--e-session= → =e-session-get= →
+  =e-session-load-session=. The missing file makes =e-session-load-session=
+  signal =e-session-missing=, which =e-session-resources--e-session= rethrows as
+  =e-session-resources-unknown-session=. That error propagated out of the whole
+  search batch, so one dead session id broke search for all 174.
+
+The =e-session-missing= mapping was already there for the single-session read
+path (reading one dead session should error). The bug was that the multi-session
+search enumeration used the same strict projection lookup and had no
+skip-and-continue path.
+
+* Fix
+
+=e-session-resources--search-targets-for-engine= now resolves each session's
+projections inside a =condition-case= that catches
+=e-session-resources-unknown-session=. A session that cannot be loaded yields no
+projections and contributes no search targets, so search skips it and keeps
+going. The strict read/glob single-session contracts are unchanged: reading a
+missing session still signals =e-session-resources-unknown-session=.
+
+Files:
+- =lisp/layers/harness/e-session-resources.el= — skip unreadable sessions during
+  search target enumeration.
+- =test/e-session-resources-test.el= — new test
+  =e-session-resources-test-search-skips-dangling-index-entries= injects a
+  dangling index stub (listed by =e-session-list=, backing file absent) and
+  asserts search still returns the live session's match.
+
+* Validation
+
+- =eldev test -f e-session-resources-test.el= — 7/7 pass, including the new
+  dangling-entry test.
+- =eldev test -f e-session-test.el= — 64/64 pass (store/index behavior
+  unaffected).
+- =eldev compile lisp/layers/harness/e-session-resources.el= — clean.
+
+Repository-side validation passed. The running Emacs was left unchanged; a
+manual =M-x e-dev-reload= (or =mark-reload-required=) is needed to pick up the
+fix live.
+
+* Notes
+
+The dangling index entry itself is separate residue: an index row whose
+transcript was deleted without pruning the index. This fix makes search robust
+to that state rather than pruning the index. If desired, a follow-up could drop
+index rows whose files are unreadable during index load
+(=e-session--load-index=), but that is a distinct state-ownership decision and is
+not required to fix the search abort.
