@@ -64,7 +64,8 @@
     e-default-layer-specs
     e-debug-display-strategy
     e-default-chat-layer-ids
-    e-output-style-registry)
+    e-output-style-registry
+    e-harness-provider-request-deadline-seconds)
   "Uncustomized options whose changed defaults should apply after reload.")
 
 (defvar e-dev--reload-required-entries nil
