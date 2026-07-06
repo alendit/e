@@ -1,0 +1,405 @@
+#+title: Research: Learning from Sessions — Prior Art on Process Extraction and Memory
+#+author: e research
+#+date: 2026-07-06
+#+startup: overview
+
+* Scope
+
+This note surveys prior art for letting =e= learn from past interactions: turning what happened in earlier sessions into durable, reusable guidance the agent applies automatically next time.
+Vendors call this "memory," some call it "dreaming" or =/dream=; the openclaw crowd calls the codify-recurring-work move the same thing.
+
+The note has two jobs:
+
+1. Map the design space of session learning, from raw fact memory to explicit process extraction, and place the leading approaches on it.
+2. Argue for the cornerstone approach: Garry Tan's "if I have to ask you for something twice, you failed" — codify recurring work into a skill, then put it on cron.
+   This maps cleanly onto surfaces =e= already has.
+
+A third dimension is specific to =e=: we can read sessions from *other* harnesses (Codex, and any adapter-backed engine) through the =session://= resource scheme, so learning is not confined to =e='s own history.
+
+This is background research, not a committed plan.
+When it turns into work, create =docs/feats/<n>-session-learning/= and leave this note as source.
+
+* Executive summary
+
+- Session learning splits into two layers that are often conflated: *fact/state memory* (remember what is true) and *process/skill extraction* (remember how to do a recurring job).
+  They have different storage lifetimes, different retrieval mechanisms, and different failure modes.
+- The strongest published pattern for a coding agent is not vector-retrieved episodic memory.
+  It is *manual demonstration on a few items, then codify the output into a versioned skill, then schedule it*.
+  That is Garry Tan's "Thin Harness, Fat Skills," reduced to a loop: Concept -> Prototype -> Evaluate -> Codify -> Cron -> Monitor.
+- =e= already owns every surface that loop needs: skills as construction-time specs backed by =e://= resources (=e-skills=), a task queue, a cron engine with deterministic guards (=e-cron=), background sessions, and read-only =session://= access to persisted history including foreign engines.
+- The realistic first slice is an *extraction pass*, not an autonomous memory system: a scheduled or on-demand agent action that reads recent sessions (own and foreign), proposes a skill or an AGENTS.md guidance edit, and leaves it for human review before it becomes durable.
+  Retrieval-heavy episodic memory is a later, optional layer.
+- We already built this loop once, outside =e=: *Goodnite* mines Claude Code and Cursor traces nightly (=goodnite dream=), clusters recurring episodes, proposes skills, and hands a human a review list.
+  It validates the cornerstone and supplies concrete mechanisms to reuse — recurrence by clustering, failure as an eligibility filter, mine/amend/drop routing, held-out replay validation, script-vs-skill split, and a content-keyed suggestion ledger.
+  The =e= version's advantage is doing this in-harness over the normalized, cross-engine =session://= layer instead of as a separate Python pipeline.
+
+* The two layers of session learning
+
+Keep these separate; most confusion comes from treating one system as if it solved both.
+
+** Layer 1: fact and state memory
+
+"Remember that the deploy channel is =#eng-deploys=."
+"The user prefers org over markdown."
+These are durable facts and preferences.
+They are cheap to store, need scoping (global vs project vs session), and their main risk is staleness and unbounded growth.
+
+Representative systems:
+
+- *ChatGPT / Claude memory* :: a running store of user facts, injected into context.
+                               Flat, model-curated, opaque about why an entry exists.
+- *MemGPT / Letta* :: an OS-metaphor memory hierarchy — a small in-context "core memory" plus paged "archival memory" the agent reads and writes with tools.
+                      The contribution is treating context as a managed resource with explicit eviction, not the fact format itself.
+- *Cursor rules / Claude =CLAUDE.md= / =AGENTS.md=* :: human- or agent-maintained instruction files loaded every turn.
+                                                       This is fact/policy memory as a plain file under version control.
+                                                       =e= already consumes =AGENTS.md= through =e-agents-std-context=.
+
+Retrieval for this layer is either "inject everything small enough" (rules files) or "retrieve top-k by similarity" (vector stores).
+For a coding agent the rules-file style wins on transparency and reviewability; vector recall wins only when the fact set is too large to inject.
+
+** Layer 2: process and skill extraction
+
+"When a FIT run fails, pull the crash log, symbolicate it, and post the cluster."
+This is not a fact.
+It is a *procedure* — the reusable shape of a recurring job.
+This is the layer that actually removes repeated instruction, and it is where the highest-leverage prior art lives.
+
+Representative systems:
+
+- *Voyager (Minecraft, 2023)* :: an agent that writes each solved task as a reusable code skill into a growing *skill library*, indexed and retrieved by task.
+                                 The durable artifact is executable procedure, not a fact.
+                                 The lesson: the unit of learning is a named, callable skill, and the library compounds.
+- *Generative Agents (Park, 2023)* :: a *memory stream* of observations, with periodic *reflection* that synthesizes higher-level insights from raw events and writes them back.
+                                      Retrieval scores by recency, importance, and relevance.
+                                      The lesson: learning needs a *reflection step* that runs over accumulated history and produces something more abstract than the raw log.
+- *Reflexion (Shinn, 2023)* :: after a failed attempt, the agent writes a verbal self-critique and carries it into the next attempt.
+                               The lesson: failures are a primary learning signal, and the extracted lesson can be plain text fed forward, not a weight update.
+- *Skills as method calls (Claude Code / Agent Skills)* :: a =SKILL.md= with frontmatter (name, description, when-to-use) plus a body of procedure, loaded progressively — the description is cheap and always visible, the body loads on demand.
+  This is exactly =e='s skill model (=e-skills=, =e-capability-with-skills-create=): compact model-facing metadata pointing at a read-only =e://= body.
+
+* The cornerstone: Thin Harness, Fat Skills
+
+Garry Tan's "Thin Harness, Fat Skills" (draft for a YC Spring 2026 talk, widely circulated on X) is the operational recipe this note treats as the center of gravity.
+The thesis: keep the harness — the program that runs the LLM — thin, and put the accumulated competence in a large library of skills, each a self-contained procedure the agent calls like a method.
+
+The memorable test is a management standard, not an algorithm:
+
+#+begin_quote
+If I have to ask you for something twice, you failed.
+#+end_quote
+
+The associated workflow, phrased in Manneken's =AGENTS.md= as "One-Off Work — Turn It Into a Skill," is a loop:
+
+#+begin_example
+Concept -> Prototype -> Evaluate -> Codify -> Cron -> Monitor
+#+end_example
+
+- *Concept* :: notice work that looks recurring.
+- *Prototype* :: do it manually on 3-10 real items, by hand, in the open.
+- *Evaluate* :: show the output; confirm it is right and worth repeating.
+- *Codify* :: write it into a =SKILL.md= (procedure + when-to-use), owned by exactly one skill (a MECE ownership rule — mutually exclusive, collectively exhaustive — so two skills never claim the same job).
+- *Cron* :: if it should run without being asked, schedule it.
+- *Monitor* :: watch the scheduled runs and correct the skill when it drifts.
+
+Why this is the right cornerstone for =e=, rather than vector-retrieved episodic memory:
+
+1. *The artifact is reviewable and version-controlled.* A skill is text a human reads, edits, and diffs.
+   An embedding index is not.
+   For a coding agent whose mistakes are expensive, transparency beats recall.
+2. *The demonstration grounds the extraction.* "Do it manually on 3-10 items" is a built-in evaluation gate.
+   The agent does not codify a guess; it codifies something that already worked on real inputs.
+3. *It matches =e='s existing surfaces one-to-one* (next section).
+   Nothing in the loop needs a new storage subsystem.
+4. *It bounds growth by ownership.* MECE skill ownership prevents the duplicate-fact sprawl that plagues flat memory stores.
+
+The failure signal matters too: the trigger for extraction is "the human asked twice," or equivalently "the agent got corrected the same way twice."
+That is a concrete, detectable event in session history — which is exactly what the session-analysis layer should look for.
+
+* Mapping to what e already has
+
+The Thin-Harness loop needs no new primitives in =e=.
+It needs an extraction pass wired across existing surfaces.
+
+| Loop step | Existing e surface |
+|-----------+--------------------|
+| Read past work | =session://= resources (=e-session-resources=), messages / activity / compactions projections; own facts also in =AGENTS.md= via =e-agents-std-context= |
+| Prototype / demonstrate | ordinary chat turns and the task queue (=e-task-queue=) running the job on real items |
+| Codify | =e-skills=: =e-skill-spec-create= + =e-capability-with-skills-create=, or a filesystem =SKILL.md= discovered by =e-skills= directory discovery; guidance edits land in =AGENTS.md= |
+| Cron | =e-cron= schedules with deterministic =guard= predicates, firing =:enqueue= (task-queue prompt) or =:wake= (background session) |
+| Monitor | scheduled-cron overview command; session history of the scheduled runs, read back through =session://= |
+
+The one missing piece is the *extraction pass itself*: the agent action that reads recent sessions, detects a recurring shape or a repeated correction, and proposes a skill or an =AGENTS.md= edit.
+Everything downstream already exists.
+
+Notably, =e='s skill model is already the "skill as method call, progressively disclosed" pattern from the Claude Code leak that Tan's essay cites: compact description in context, full body behind an =e://= read.
+So "codify into a skill" is a native operation, not an adaptation.
+
+* The e-specific dimension: learning from other harnesses
+
+=e= exposes persisted sessions through the read-only =session://= scheme (=e-session-resources=).
+The built-in =e= engine is always registered from the active harness store, and =e-session-resource-engines= lets us register *additional opt-in engines* via an adapter — a plist of =:list-sessions=, =:render-summary=, =:render-messages=, and optional =:render-activity=, =:render-events=, =:render-compactions=, =:render-provider-anchors=, =:projections=.
+
+This means session learning in =e= is not limited to =e='s own history.
+Codex already writes rich rollout logs on this machine:
+
+- =~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl= — full JSONL transcripts with a =session_meta= header (id, cwd, originator, model provider, base instructions) followed by message and event lines.
+- =~/.codex/memories/= — Codex's own memory store (=raw_memories.md=, =rollout_summaries/=), i.e. Codex's answer to this same problem, which we can both read and learn *from as prior art in situ*.
+- =~/.codex/skills/= — skills already installed for Codex, many of which are surfaced to =e= today through =e-agents-std-context= discovery.
+
+The design implication: a *Codex session engine adapter* would let the same extraction pass read Codex rollouts under =session://codex/sessions/…= and mine them for recurring procedures and repeated corrections.
+The cwd in each =session_meta= scopes a rollout to a project, which gives the extraction pass a natural way to attribute a learned skill to the right project-local capability.
+
+Cross-harness learning also raises questions this note flags but does not settle:
+
+- *Format normalization.* Each engine's transcript shape differs.
+  The adapter contract (render-messages / render-activity) is the right seam to normalize at, so the extraction agent sees a uniform projection regardless of source.
+- *Provenance and trust.* A skill extracted from a Codex session should record where it came from, so a human reviewer can judge it.
+  Prior art here is thin; most memory systems drop provenance.
+- *Deduplication across engines.* The same recurring job may appear in both =e= and Codex history.
+  MECE skill ownership is the dedup mechanism, but it now has to hold across engines, not just within =e=.
+
+* Comparison: Goodnite (our prior work)
+
+=git.soma.salesforce.com/dvorona/goodnite= is our own working implementation
+of this note's cornerstone.  It predates the note and validates most of it,
+while going well beyond it on the parts the note left as open questions.  It is
+the single most relevant piece of prior art here, because it is ours and it
+ships.
+
+** What Goodnite is
+
+An *offline pipeline* that mines conversation traces already written to disk by
+Claude Code (=~/.claude/projects/**/*.jsonl=) and Cursor
+(=state.vscdb= SQLite), proposes new skills, refines or retires stale ones, and
+hands the human a morning review list.  The cron entry point is literally
+=goodnite dream=; the review skill is =review-dream-output=.  The stage chain:
+
+#+begin_example
+capture -> normalize -> segment -> embed -> cluster -> route{mine|amend|drop} -> diagnose -> daily note -> human review -> skills repo
+#+end_example
+
+Nothing reaches the skills repo without an explicit user decision.
+
+** Where Goodnite confirms this note
+
+- *Process extraction is the whole game.* Goodnite is Layer 2 only.  It has no
+  fact/preference memory at all.  That is a deliberate scope choice and it
+  matches the note's claim that skill extraction is the high-leverage layer.
+- *It is the Thin-Harness loop, implemented.* =dream= is the reflection pass,
+  =candidates/= are proposals, =review-dream-output= is the human gate,
+  =promote= is codify, cron is the schedule, and =diagnose= +
+  =skill-report= are monitor.  Concept -> Prototype -> Evaluate -> Codify ->
+  Cron -> Monitor is the actual control flow, not an analogy.
+- *Human-in-the-loop codify, always.* Every side-effecting command is
+  user-gated and supports =--dry-run=.  Candidates ship with
+  =status: candidate= and =disable-model-invocation: true= so a draft can never
+  auto-fire.  This is exactly the Prototype -> Evaluate gate the note insisted
+  on.
+- *Learning from other harnesses is real and central.* Goodnite mines Claude
+  *and* Cursor through one source-agnostic pipeline: source-prefixed session
+  ids (=claude:<sid>=, =cursor:<composerId>=), a =Source= protocol, and a
+  normalized =Turn= / =Episode= stream downstream.  This is the concrete answer
+  to the note's "format normalization at the adapter seam" open question — the
+  seam is a per-source adapter that emits =Turn=, and Cursor's native tool
+  names are mapped onto Claude's so downstream heuristics keep working.
+- *Skill as method call, progressively disclosed.* Candidates are =SKILL.md=
+  with frontmatter (name, description, when-to-use) plus body — the same shape
+  as =e-skills=.
+
+** Where Goodnite goes beyond this note (ideas to take)
+
+1. *It solves "asked twice" better than the note proposed.* The note wanted a
+   literal repeated-request detector.  Goodnite does something stronger: it
+   *clusters* episodes by embedding similarity (HDBSCAN) and scores each
+   cluster with a =recency_score= — an exponentially-decayed count of member
+   timestamps, half-life 30 days.  Recurrence is "this shape keeps happening,"
+   measured by clustering plus decayed frequency, not by matching request text.
+   A weekly-recurring cluster outranks a stale-but-larger one.  This is the
+   Generative-Agents recency/importance/relevance idea reduced to something
+   computable, and it is a better operationalization than literal repeat
+   detection.
+2. *Failure is a first-class signal, cheaply.* =segment.py= classifies an
+   episode as =failure= when a short user correction phrase ("no", "wrong",
+   "revert", "stop", ...) follows, and clusters carry a =success_rate=.  Only
+   sufficiently-successful clusters are eligible to mine.  This is Reflexion's
+   failure signal, used as an *eligibility filter* rather than a fed-forward
+   lesson.
+3. *A three-way route against the existing library, not just "propose."* Cosine
+   similarity to every published skill decides: =< 0.82= mine a new skill,
+   =[0.82, 0.95)= propose an amendment, =>= 0.95= drop as already covered.  This
+   is the concrete dedup/MECE mechanism the note only gestured at, and it
+   answers the cross-engine dedup question directly: dedup is by similarity to
+   the published skill set, regardless of which harness the cluster came from.
+4. *A real Evaluate step: held-out replay + judge.* =validate.py= replays
+   held-out episodes (not the ones used to mine) twice — baseline and
+   =claude -p --append-system-prompt "<skill body>"= — and a judge call ranks
+   the pair.  =wins >= 3 AND losses <= 1= recommends promotion.  This is a
+   quantitative version of "demonstrate on 3-10 items," and it is deliberately
+   kept *off* the cron path because it spends tokens.
+5. *Some recurring work should become a script, not a skill.* =scriptable.py=
+   detects clusters whose episodes share a deterministic tool-call *prefix*
+   (arguments stripped, shape compared) and routes them to =draft-script= /
+   =validate-script=.  The note never considered that the right codification
+   target is sometimes a deterministic bash/Python script rather than a
+   judgment-shaped skill.  This is a genuine insight worth importing.
+6. *Library hygiene: split and retire.* =diagnose.py= emits split signals (a
+   skill that attracts two distant clusters is too broad) and staleness signals
+   (a skill unmatched for 60 days).  The note addressed authoring but not the
+   maintenance of a growing library.
+7. *A suggestion ledger prevents re-nagging.* Rejections are keyed by an
+   =evidence_hash= over cluster membership, so a re-run that produces the same
+   evidence and finds a =reject= entry stays silent.  This is a better answer
+   to the note's "seen-session set" state question than a naive last-run
+   marker: the durable state is per-*decision*, keyed by content, and survives
+   the fact that cluster ids are not stable across runs.
+8. *Divination: look outward, not just inward.* Goodnite also scores *external*
+   third-party skill repos against your own trace evidence and buckets them
+   adopt / maybe / duplicate / skip.  This is entirely absent from the note and
+   is a novel direction: learn what to *adopt*, not only what to *author*.
+
+** Where this note still adds beyond Goodnite (the e angle)
+
+- *Goodnite is a separate offline process; =e= can do this in-harness.*
+  Goodnite reads trace files from a standalone Python pipeline and writes
+  =SKILL.md= into a skills repo.  =e= already has =session://= (normalized,
+  cross-engine), =e-cron=, =e-task-queue=, and live =e://= skills.  The
+  equivalent extraction pass can be an =e= capability action that codifies a
+  *live* skill without a filesystem round-trip, though filesystem =SKILL.md=
+  discovery also exists.
+- *=session://= already is Goodnite's source layer.* The work Goodnite spends
+  on capture/normalize/checkpointing per source, =e= gets from the
+  =session://= adapter contract (=render-messages=, =render-activity=, ...).
+  Registering a Codex engine is the =e= analogue of Goodnite adding a source.
+- *Correct the note's embedding claim.* The note said "do not build episodic
+  vector memory speculatively," and that is right for *online retrieval*.  But
+  Goodnite shows embeddings are valuable for *offline recurrence detection*
+  (clustering to find repeated shapes), which is a different use than a
+  similarity-recall memory store.  =e= should treat offline clustering as a
+  legitimate, bounded use of embeddings — run in a batch/elisp-job, never on
+  the UI thread — while still declining online vector recall.
+
+** Tensions and cautions
+
+- *Heavyweight for =e='s async, in-Emacs design.* Goodnite's embed + HDBSCAN +
+  one =claude -p= per cluster is fine for a nightly Python cron.  In =e= the
+  clustering and any model fan-out must run off the UI thread (batch job or
+  task queue), consistent with =e='s non-blocking discipline.
+- *The correction-phrase heuristic is crude.* Short English phrases are a noisy
+  failure signal; it will miss polite corrections and misfire on narrative
+  "no".  Usable as a filter, not as ground truth.
+- *Cluster ids are not stable across runs.* Anything durable must key on a
+  content hash of membership.  =e= would inherit this the moment it clusters.
+- *No fact/preference layer.* Goodnite deliberately does not learn "the user
+  prefers org over markdown."  That is consistent with the note's two-layer
+  split, but it means Layer 1 is still unowned — =AGENTS.md= edits remain the
+  place for it.
+
+* Connection to the agent bug-report / feedback sink (feat 52)
+
+The failure-signal thread in this note — Reflexion's "failures are the primary
+learning signal" and Goodnite's =failure=-classified episodes — overlaps
+directly with planned dev work =52-agent-bug-report-tool=. They are two halves
+of the same loop and should be designed together.
+
+=52= gives the agent a first-class =bug_report= tool/action to record, at the
+moment of friction, that something did not work: a broken tool call, a wrong
+result, a confusing API, a missing capability. Reports land in an append-only,
+reviewable store with auto-attached context (capability/tool/action name,
+arguments preview, error class, session id, turn id, project root).
+
+Why they belong together:
+
+- *=52= is an explicit failure signal; session mining is an implicit one.* The
+  bug-report tool captures friction the agent *notices* and chooses to file.
+  The extraction pass infers friction the agent *did not* file, from repeated
+  corrections and low cluster =success_rate=. The two cover different blind
+  spots: a filed report is high-precision but depends on the agent recognizing
+  the problem; a mined signal catches the silent, recurring failures nobody
+  flagged.
+- *A filed report is a strong seed for extraction.* A =bug_report= already
+  carries structured context and a session/turn pointer. That is a much cleaner
+  starting point for "what recurring problem should become a skill or an
+  =AGENTS.md= fix" than a raw transcript scan. The extraction pass should treat
+  the bug-report store as a *first-class input*, alongside =session://=
+  history — high-signal, pre-attributed evidence.
+- *Same append-only, human-gated store shape.* =52='s report store and this
+  note's proposal staging are the same kind of artifact: cheap to write,
+  accumulates, decoupled from the current turn, mined later by a human or a
+  scheduled pass. They should share the storage lifetime discipline
+  (append-only, content-keyed, reviewable) rather than inventing two stores.
+- *Two outputs of one loop.* =52= is the *capture* end (record friction);
+  session learning is the *codify* end (turn accumulated friction and
+  recurrence into a durable skill or guidance edit). Feat 52's own plan says it
+  wants "the agent's lived experience of the runtime to feed back into
+  improving the runtime" — that feedback only closes when something reads the
+  reports and acts. This note's extraction pass is that reader.
+
+Design implication: when =52= lands, the extraction action should read the
+bug-report store as an evidence source, and a mined skill or fix proposal
+should be able to cite the bug reports that motivated it. Conversely, the
+bug-report store is where the extraction pass can record "this recurring
+failure has no owning skill yet" so it is not rediscovered every run — the
+same anti-re-nag role Goodnite's suggestion ledger plays.
+
+* Design space summary and recommendation
+
+Placed on the two-layer map:
+
+- *Fact memory* :: keep using =AGENTS.md=-style rules files, human- and agent-editable, version-controlled, injected each turn.
+                   Add vector recall only if the fact set outgrows the context budget.
+                   Do not build episodic vector memory speculatively.
+- *Process extraction* :: this is the high-leverage layer and the cornerstone.
+                          Implement the Thin-Harness loop over =e='s existing skill, cron, task-queue, and =session://= surfaces.
+
+Recommended first slice, ordered by leverage and reversibility:
+
+1. *An extraction action* (owned by a "session-learning" capability, called from =run_elisp= via =e-actions-call=) that reads recent =session://= history — starting with the =e= engine — and produces a *proposal*: a candidate =SKILL.md= or a candidate =AGENTS.md= guidance edit, with cited evidence (the sessions and the repeated ask/correction that triggered it).
+   The proposal is written for human review, never applied silently.
+   This is the reflection step from Generative Agents, scoped to procedures.
+2. *A "asked twice" detector* as the extraction trigger: scan history for a repeated user request or a repeated correction of the same mistake.
+   This turns Tan's management test into a concrete signal and keeps the pass from proposing noise.
+3. *A Codex session engine adapter* registered in =e-session-resource-engines=, so the same extraction action reads Codex rollouts under =session://codex/…= with a normalized projection and source provenance.
+4. *A cron schedule* (=e-cron=) that runs the extraction pass on a recurrence with a cheap deterministic guard ("any sessions since last run?"), enqueuing the pass on the task queue so a wakeup with nothing to learn is a no-op.
+
+Adopt from Goodnite, in priority order: cluster-by-embedding recurrence with a
+decayed =recency_score= instead of literal repeat detection (step 2); the
+three-way mine/amend/drop route against the existing skill set as the dedup
+mechanism; a content-keyed suggestion ledger so rejected proposals do not
+re-surface; and the script-vs-skill distinction (=scriptable=) so deterministic
+tool-call prefixes become scripts rather than judgment skills. Treat the feat
+52 bug-report store as a first-class evidence input once it lands.
+
+Deliberately deferred: autonomous silent memory writes, online vector recall
+(offline clustering in a batch job is fine), and self-modifying skills without
+review.
+Keep the human in the codify step until the extraction quality is proven, exactly as the Prototype -> Evaluate gate in the source loop demands.
+
+* Open questions
+
+- What is the smallest reliable "asked twice" signal?
+  Literal repeated requests are rare; semantically-equivalent repeats need a cheap comparison that does not require a full model pass per session.
+- Where do proposed skills live before acceptance?
+  A staging directory the extraction pass writes and a human promotes, versus a proposal annotation on the session that triggered it (=e= already has an annotations capability).
+- How does an accepted skill get attributed to a project-local capability versus a global one, given the source session's cwd?
+- What is the storage lifetime of the extraction pass's own state (last-run marker, seen-session set)?
+  Per the state-lifetime guidance it should be the smallest durable marker, not a mirror of session content.
+- Should Reflexion-style failure lessons be their own artifact (a "gotchas" section per skill) or folded into the skill body?
+  Keeping them inline keeps ownership MECE.
+
+* Sources
+
+- Garry Tan, "Thin Harness, Fat Skills" (draft-v4, YC Spring 2026 talk); follow-up "Resolvers: The Routing Table for Intelligence."
+  The ask-twice test and the skill-as-method-call pattern come from here, quoted widely on X and echoed in the =8-habit-ai-dev= repo discussion.
+- Manneken =AGENTS.md=, "One-Off Work — Turn It Into a Skill": the Concept -> Prototype -> Evaluate -> Codify -> Cron -> Monitor loop and the MECE skill-owner rule.
+- Wang et al., "Voyager: An Open-Ended Embodied Agent with Large Language Models" (2023): growing skill library of reusable code.
+- Park et al., "Generative Agents: Interactive Simulacra of Human Behavior" (2023): memory stream, reflection, recency/importance/relevance retrieval.
+- Shinn et al., "Reflexion: Language Agents with Verbal Reinforcement Learning" (2023): failure-driven verbal self-critique carried forward.
+- Packer et al., "MemGPT" / Letta: OS-style tiered memory with explicit paging.
+- Goodnite (=git.soma.salesforce.com/dvorona/goodnite=), our own offline
+  trace-mining pipeline. Inspected: =README.md=, =docs/architecture.md=,
+  =CLAUDE.md=, =progress.md=, and =src/goodnite/= (=segment.py= correction /
+  outcome classification, =cluster.py= recency scoring, =mine.py= route
+  thresholds, =validate.py= held-out replay, =scriptable.py=, =diagnose.py=,
+  =ledger.py= evidence-hash, =sources/= multi-source ingest, =divination.py=).
+- =e= source inspected: =lisp/core/e-skills.el=, =lisp/layers/harness/e-session-resources.el= (=session://= scheme and opt-in engine adapters), =lisp/layers/agents/e-agents-std-context.el= (=AGENTS.md= and skill discovery), =lisp/core/e-cron.el= / =lisp/layers/agents/e-cron-actions.el= (schedules, guards, enqueue/wake), =lisp/core/e-task-queue.el=, =lisp/shells/e-background-session.el=.
+- Codex on-disk state inspected: =~/.codex/sessions/2026/…/rollout-*.jsonl= (JSONL transcripts with =session_meta=), =~/.codex/memories/= (=raw_memories.md=, =rollout_summaries/=), =~/.codex/skills/=.
