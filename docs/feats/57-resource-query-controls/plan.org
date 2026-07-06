@@ -1,0 +1,398 @@
+#+title: Resource Query Controls
+#+startup: overview
+
+* Status
+
+Planned
+
+* Goal
+
+Extend resource =glob= and =search= so agents can ask common ordered and filtered discovery questions directly.
+
+The motivating question is simple: "What are the latest 10 sessions?"
+
+Agents should not need to fetch a broad list, parse timestamps from metadata, sort client-side, and then trim results.
+The resource facade should expose small, stable query controls for top-k listing, date filters, and sort order.
+
+* Problem
+
+The current resource operations expose only basic discovery controls.
+
+=glob= supports:
+
+- URI root;
+- optional glob pattern;
+- limit;
+- case sensitivity.
+
+=search= supports:
+
+- URI root;
+- text query;
+- optional glob pattern;
+- case sensitivity;
+- whole-word matching;
+- multiline matching;
+- limit.
+
+This works for direct name matching and bounded text search, but it does not model the way agents usually ask about durable records.
+Agents ask questions such as:
+
+- What are the latest 10 sessions?
+- What sessions changed today?
+- Search recent sessions for a phrase.
+- Search sessions from this project from the last week.
+- Show the oldest matching records when investigating history.
+
+Without first-class query controls, agents must over-fetch, inspect metadata, sort locally, and then discard most results.
+That is slower, less reliable, and encourages broad scans.
+
+=session://= currently happens to list =e= sessions newest-first because it delegates to =e-session-list=.
+That default helps, but it is implicit and not expressive enough.
+There is no date range filter, no explicit sort field, and no way to say "search only the latest 10 sessions" while preserving the existing meaning of search result =limit=.
+
+* User stories
+
+- As an agent, I can list the latest 10 =e= sessions with one =glob= call.
+- As an agent, I can list sessions updated after an ISO timestamp.
+- As an agent, I can list sessions sorted by =created-at= ascending when I need oldest-first history.
+- As an agent, I can search only the latest 10 sessions for a phrase.
+- As an agent, I can combine a title glob, a date filter, and a top-k limit.
+- As an agent, I get clear errors when a resource scheme does not support a requested sort or filter.
+
+* Proposed facade controls
+
+Keep the controls small and explicit.
+Add optional parameters to the shared =glob= and =search= operation schemas.
+
+For =glob=:
+
+- =:sort-by= :: optional string naming a supported metadata field or =default=.
+- =:sort-order= :: optional string, =desc= or =asc=.
+- =:created-after= :: optional ISO 8601 timestamp filter.
+- =:created-before= :: optional ISO 8601 timestamp filter.
+- =:updated-after= :: optional ISO 8601 timestamp filter.
+- =:updated-before= :: optional ISO 8601 timestamp filter.
+
+For =search=:
+
+- keep existing =:limit= as the maximum number of text matches returned;
+- add the same date filters for resource candidates when the scheme can map them;
+- add =:resource-sort-by= for ordering resources before search;
+- add =:resource-sort-order= for candidate resource order;
+- add =:resource-limit= for limiting candidate resources before reading or rendering their text.
+
+This separates two different top-k meanings:
+
+- =limit= on =search= means top-k text matches returned.
+- =resource-limit= on =search= means top-k resources searched.
+
+Do not add relevance ranking in this slice.
+A future relevance sort can be added as a documented sort value once there is a real scoring implementation.
+
+* Sort fields
+
+The shared facade should allow methods to advertise and validate supported sort fields.
+
+Recommended common fields:
+
+- =default=;
+- =name=;
+- =uri=;
+- =created-at=;
+- =updated-at=;
+- =last-message-at=.
+
+=session://= should support:
+
+- =default= as current newest-first session order;
+- =last-message-at=;
+- =updated-at=;
+- =created-at=;
+- =title=;
+- =id=.
+
+For =session://e/sessions/=, =sort-by= =last-message-at= with =sort-order= =desc= and =limit= =10= should answer "latest 10 sessions" directly.
+
+* Date filters
+
+Use ISO 8601 timestamp strings in UTC or with an explicit offset.
+Examples:
+
+- =2026-07-05T00:00:00Z=
+- =2026-07-05T12:30:00-04:00=
+
+Each method should parse dates once and compare normalized Emacs time values.
+Invalid timestamps should signal a clear argument error.
+
+Date filters are inclusive.
+Document the inclusivity in the generated tool description.
+
+For =session://=:
+
+- =created-after= and =created-before= compare session =:created-at=.
+- =updated-after= and =updated-before= compare =:last-message-at= first, then =:updated-at=, then =:created-at=.
+- Do not add a separate =last-message-after= filter in this slice.
+
+* Resource method support contract
+
+Do not make the new controls session-only.
+Every existing resource scheme that supports =glob= or =search= should support the query controls it can implement from its own metadata.
+The shared operation contract should permit optional parameters, and each resource method should validate the controls it actually supports.
+
+Required behavior:
+
+- if no advanced control is supplied, preserve existing behavior exactly;
+- if a sort field is supported by the scheme, apply it before truncation;
+- if a date filter is supported by the scheme, apply it before truncation and before search rendering;
+- if an unsupported sort field is supplied, signal a clear unsupported query control error;
+- if a date filter is supplied for a scheme without matching date metadata, signal a clear unsupported query control error;
+- unsupported query controls must fail clearly rather than be silently ignored;
+- if a supported filter excludes every result, return an empty result, not an error.
+
+Add a small helper module if useful, such as =e-resource-query.el=, for:
+
+- parsing ISO timestamps;
+- comparing nullable timestamp metadata;
+- applying date filters;
+- applying stable sort fields;
+- normalizing sort order;
+- formatting clear errors.
+
+* Existing resource behavior
+
+Cover every current glob or search resource method in this feature.
+The exact supported fields should be documented by each method description.
+
+=file://= should support:
+
+- =default= as the current traversal order;
+- =name=;
+- =uri=;
+- =updated-at= from file modification time;
+- =created-at= only when the platform exposes a reliable creation or birth time;
+- date filters over =updated-at=, and over =created-at= only when supported.
+
+=buffer://= should support:
+
+- =default= as the current buffer list order;
+- =name=;
+- =uri=;
+- =updated-at= when a buffer has a reliable modification or visited-file timestamp;
+- date filters only for timestamp fields the buffer method can compute reliably.
+
+=e://= should support:
+
+- =default= as current resource registration order;
+- =name= when a resource name is available;
+- =uri=;
+- date filters only if contributed resource metadata exposes timestamps.
+
+=e-action://= should support:
+
+- =default= as current capability and action order;
+- =name=;
+- =uri=;
+- date filters should fail clearly unless action description metadata later gains timestamps.
+
+=tmp://= should support:
+
+- =default= as current temporary resource order;
+- =name=;
+- =uri=;
+- =updated-at= from backing file modification time;
+- =created-at= only when reliable creation time is available;
+- date filters over supported timestamp fields.
+
+=raw-result://= currently exposes =read= only.
+It does not need query controls until it exposes =glob= or =search=.
+
+* Session resource behavior
+
+=session://= should be the first high-value implementation because session discovery is the motivating use case, but it is not the only implementation in this feature.
+
+Glob examples:
+
+#+begin_src elisp
+(e-resources-glob resources "session://e/sessions/" nil 10 t
+                  "last-message-at" "desc")
+#+end_src
+
+Model-facing tool arguments should look like this after schema extension:
+
+#+begin_src json
+{
+  "uri": "session://e/sessions/",
+  "limit": 10,
+  "sort-by": "last-message-at",
+  "sort-order": "desc"
+}
+#+end_src
+
+Search example:
+
+#+begin_src json
+{
+  "uri": "session://e/sessions/",
+  "query": "provider anchor",
+  "resource-limit": 10,
+  "resource-sort-by": "last-message-at",
+  "resource-sort-order": "desc",
+  "limit": 20
+}
+#+end_src
+
+That should search the latest 10 sessions and return up to 20 text matches.
+
+* Tool descriptions
+
+Update generated descriptions for =glob= and =search= to make the common workflows obvious.
+
+The =glob= description should include an example for latest sessions when =session://= is active:
+
+#+begin_example
+To list the latest 10 sessions, glob session://e/sessions/ with limit 10, sort-by last-message-at, and sort-order desc.
+#+end_example
+
+The =search= description should explain the difference between result =limit= and =resource-limit=.
+
+Scheme descriptions should name supported sort fields and date filters.
+Do not imply that every scheme supports every field.
+
+* Compatibility
+
+This must be backward compatible.
+Existing callers that do not pass the new controls should see the same result shape and order as before.
+
+The public Elisp wrappers may need arity changes.
+Preserve source compatibility by adding explicit optional arguments after the existing =glob= arguments.
+Do not add an opaque =glob= options plist in this slice.
+
+Candidate shape:
+
+#+begin_src elisp
+(e-resources-glob registry uri &optional pattern limit case-sensitive sort-by sort-order created-after created-before updated-after updated-before)
+(e-resources-search registry uri query &optional options)
+#+end_src
+
+=search= already has an options plist, so add resource candidate controls as explicit option keys there.
+=glob= should forward the explicit arguments through the operation contract.
+
+* Implementation slices
+
+** Slice 1: Plan
+
+Files:
+
+- =docs/feats/57-resource-query-controls/plan.org=
+- =docs/feats/index.org=
+
+Work:
+
+1. Record the desired query controls.
+2. Keep status =Planned= until reviewed.
+
+** Slice 2: Operation schema and helper contract
+
+Likely files:
+
+- =lisp/core/e-operations.el=
+- =lisp/core/e-resources.el=
+- optional =lisp/core/e-resource-query.el=
+- =test/e-resources-test.el=
+- =test/e-resource-query-test.el= if a helper module is added.
+
+Work:
+
+1. Extend =glob= and =search= tool schemas with query-control parameters.
+2. Preserve existing =e-resources-glob= and =e-resources-search= compatibility.
+3. Add helper validation for sort order, sort fields, resource limits, and ISO timestamps.
+4. Add tests that unsupported controls fail clearly when a method opts out.
+
+** Slice 3: Existing resource implementations
+
+Likely files:
+
+- =lisp/layers/base/e-base-tools.el=
+- =lisp/layers/emacs/e-emacs-tools.el=
+- =lisp/core/e-store.el=
+- =lisp/layers/e-action-resources.el=
+- =lisp/layers/harness/e-session-tmp-resources.el=
+- =test/e-resources-test.el=
+- focused tests for each affected resource method.
+
+Work:
+
+1. Add supported sorting and filtering to =file://=, =buffer://=, =e://=, =e-action://=, and =tmp://=.
+2. Keep each scheme's default order identical when no advanced controls are passed.
+3. Fail clearly for unsupported timestamp filters rather than silently ignoring them.
+4. Add tests for supported sort fields, supported date filters, unsupported controls, and unchanged default behavior.
+
+** Slice 4: =session://= implementation
+
+Likely files:
+
+- =lisp/layers/harness/e-session-resources.el=
+- =test/e-session-resources-test.el=
+
+Work:
+
+1. Apply date filters to session index entries before truncation.
+2. Apply explicit sort fields before truncation.
+3. Keep default order equal to current =e-session-list= behavior.
+4. Add =resource-limit= and resource candidate sorting for =search=.
+5. Add tests for latest 10 sessions, oldest sessions, created date filters, updated date filters, and search over latest k sessions.
+
+** Slice 5: Descriptions and docs
+
+Likely files:
+
+- =lisp/layers/harness/e-session-resources.el=
+- =docs/architecture.md= if public resource semantics are described there.
+- tests that inspect generated tool descriptions.
+
+Work:
+
+1. Document supported =session://= sort fields and date filters in method descriptions.
+2. Add a generated-description test for the "latest 10 sessions" workflow.
+3. Update any public docs that list resource operation semantics.
+
+* Verification
+
+Run focused resource tests:
+
+#+begin_src sh
+rtk eldev test test/e-resources-test.el test/e-session-resources-test.el
+#+end_src
+
+Run focused tests for existing resource implementations once they are added or updated:
+
+#+begin_src sh
+rtk eldev test test/e-base-tools-test.el test/e-emacs-tools-test.el test/e-store-test.el test/e-action-resources-test.el test/e-session-tmp-resources-test.el
+#+end_src
+
+Run session tests because timestamp metadata and session ordering are central:
+
+#+begin_src sh
+rtk eldev test test/e-session-test.el
+#+end_src
+
+Run affected harness tests because model-facing tool schemas are generated from active resource methods:
+
+#+begin_src sh
+rtk eldev test test/e-harness-test.el
+#+end_src
+
+For live verification after implementation and reload:
+
+1. In a live chat session, glob =session://e/sessions/= with =limit= =10=, =sort-by= =last-message-at=, and =sort-order= =desc=.
+2. Confirm the result is the latest 10 sessions by metadata.
+3. Search =session://e/sessions/= with a phrase, =resource-limit= =10=, and =resource-sort-by= =last-message-at=.
+4. Confirm only the selected recent sessions are searched.
+
+* Resolved decisions
+
+- Session =updated-after= and =updated-before= use =last-message-at= first, with =updated-at= and =created-at= as fallbacks.
+- Date filters are inclusive.
+- Unsupported query controls fail clearly.
+- =glob= uses explicit optional public Elisp arguments rather than an options plist.
