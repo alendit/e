@@ -1858,6 +1858,50 @@ ON-ERROR receives a condition list, and ON-PROGRESS receives byte progress."
     (e-session--write-index store)
     session))
 
+(defun e-session--fork-message-seed (message)
+  "Return MESSAGE stripped of source-session identity for fork replay.
+The fork rebuilds a fresh linear parent chain, so durable identity fields
+(`:id', `:parent-id') and the source turn grouping (`:turn-id') are dropped;
+the re-append path mints new ones anchored on the fork's own head."
+  (let ((seed (copy-sequence message)))
+    (dolist (key '(:id :parent-id :turn-id))
+      (setq seed (e-session--plist-remove seed key)))
+    seed))
+
+(cl-defun e-session-fork (store session-id &key at metadata name)
+  "Fork SESSION-ID in STORE into a new independent session and return it.
+
+The fork is seeded with a snapshot of the source's current-path messages up to
+AT (a head entry id; defaults to the source's current head), re-appended in
+order so the fork is a clean linear continuation.  Context-bearing durable
+metadata (canvas attachment, project root, capability state) and the source's
+turn options (model/effort) are copied so the fork resumes with the same
+working context.  Provider anchors and compaction structure are intentionally
+not copied: the fork starts without provider cache and re-compacts on its own.
+
+The source session is left untouched; new turns append only to the fork.
+METADATA overrides merge onto the copied metadata; NAME, when given, sets the
+fork's session name (otherwise it inherits the source name)."
+  (let* ((source (e-session-get store session-id))
+         (head-id (or at (plist-get source :current-head-id)))
+         (path (e-session-current-path store session-id head-id))
+         (messages (seq-filter (lambda (entry)
+                                 (eq (plist-get entry :type) 'message))
+                               path))
+         (base-metadata (copy-sequence (plist-get source :metadata)))
+         (merged-metadata (e-session--merge-metadata base-metadata metadata))
+         (merged-metadata (if name
+                              (plist-put merged-metadata :name name)
+                            merged-metadata))
+         (turn-options (plist-get source :turn-options))
+         (fork (e-session-create store :metadata merged-metadata)))
+    (dolist (message messages)
+      (e-session-append-message store (plist-get fork :id)
+                                (e-session--fork-message-seed message)))
+    (when turn-options
+      (e-session-set-turn-options store (plist-get fork :id) turn-options))
+    (e-session-get store (plist-get fork :id))))
+
 (defun e-session-get (store session-id)
   "Return SESSION-ID from STORE."
   (let ((session (e-session--peek-session store session-id)))

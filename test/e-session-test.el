@@ -1593,6 +1593,67 @@
             (should (< newer-position older-position))))
       (delete-directory directory t))))
 
+(ert-deftest e-session-test-fork-snapshots-messages-and-leaves-source-untouched ()
+  "Forking seeds the fork with the source's messages and diverges independently."
+  (let ((store (e-session-store-create)))
+    (e-session-create store :id "src" :metadata '(:name "Src"))
+    (e-session-append-message store "src" '(:role user :content "one"))
+    (e-session-append-message store "src" '(:role assistant :content "two"))
+    (let* ((fork (e-session-fork store "src"))
+           (fork-id (plist-get fork :id)))
+      (should (not (equal fork-id "src")))
+      (should (equal (mapcar (lambda (m) (plist-get m :content))
+                             (e-session-messages store fork-id))
+                     '("one" "two")))
+      ;; New turns append only to the fork; the source is untouched.
+      (e-session-append-message store fork-id '(:role user :content "three"))
+      (should (= (length (e-session-messages store "src")) 2))
+      (should (= (length (e-session-messages store fork-id)) 3)))))
+
+(ert-deftest e-session-test-fork-mints-fresh-identity-and-linear-chain ()
+  "Fork messages get fresh ids and a clean linear parent chain."
+  (let ((store (e-session-store-create)))
+    (e-session-create store :id "src")
+    (e-session-append-message store "src" '(:id "m1" :role user :content "a"))
+    (e-session-append-message store "src" '(:id "m2" :role assistant :content "b"))
+    (let* ((fork (e-session-fork store "src"))
+           (fork-id (plist-get fork :id))
+           (messages (e-session-messages store fork-id))
+           (ids (mapcar (lambda (m) (plist-get m :id)) messages))
+           (parents (mapcar (lambda (m) (plist-get m :parent-id)) messages)))
+      ;; Fresh identity: source ids do not leak into the fork.
+      (should-not (seq-intersection ids '("m1" "m2")))
+      (should (cl-every #'stringp ids))
+      ;; Linear chain: the second message's parent is the first's id.
+      (should (equal (nth 1 parents) (nth 0 ids))))))
+
+(ert-deftest e-session-test-fork-copies-context-metadata-and-turn-options ()
+  "Fork inherits context metadata and turn options, with name override."
+  (let ((store (e-session-store-create)))
+    (e-session-create store :id "src"
+                      :metadata '(:name "Src" :project-root "/tmp/proj/"))
+    (e-session-set-turn-options store "src" '(:model "m-1"))
+    (let* ((fork (e-session-fork store "src" :name "Forked"))
+           (fork-id (plist-get fork :id))
+           (metadata (plist-get fork :metadata)))
+      (should (equal (plist-get metadata :project-root) "/tmp/proj/"))
+      (should (equal (plist-get metadata :name) "Forked"))
+      (should (equal (plist-get (e-session-turn-options store fork-id) :model)
+                     "m-1")))))
+
+(ert-deftest e-session-test-fork-at-head-truncates-snapshot ()
+  "Forking at an explicit head only snapshots messages up to that entry."
+  (let ((store (e-session-store-create)))
+    (e-session-create store :id "src")
+    (let ((first (e-session-append-message
+                  store "src" '(:role user :content "keep"))))
+      (e-session-append-message store "src" '(:role assistant :content "drop"))
+      (let* ((fork (e-session-fork store "src" :at (plist-get first :id)))
+             (fork-id (plist-get fork :id)))
+        (should (equal (mapcar (lambda (m) (plist-get m :content))
+                               (e-session-messages store fork-id))
+                       '("keep")))))))
+
 (provide 'e-session-test)
 
 ;;; e-session-test.el ends here

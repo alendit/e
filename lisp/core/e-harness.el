@@ -582,6 +582,18 @@ harness default project root."
                     :metadata (e-harness--normalize-session-metadata
                                metadata)))
 
+(cl-defun e-harness-fork-session (harness session-id &key at metadata name)
+  "Fork SESSION-ID in HARNESS into a new independent session and return it.
+Seeds a fresh session with a snapshot of the source's messages up to AT (a head
+entry id; defaults to the current head), copying context metadata and turn
+options so the fork resumes with the same working context.  The source session
+is left untouched.  See `e-session-fork'."
+  (e-session-fork (e-harness-sessions harness)
+                  session-id
+                  :at at
+                  :metadata (e-harness--normalize-session-metadata metadata)
+                  :name name))
+
 (defun e-harness-project-root (harness &optional session-id _turn-id)
   "Return the explicit project root for HARNESS SESSION-ID, or nil.
 Session metadata wins over the harness default project root.  Consumers that
