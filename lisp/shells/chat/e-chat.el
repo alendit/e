@@ -34,6 +34,7 @@
 (require 'e-shells)
 (require 'e-startup)
 (require 'e-work)
+(require 'e-ui-work)
 (require 'e-workspaces)
 
 (declare-function markdown-mode "markdown-mode")
@@ -118,8 +119,8 @@ use the asynchronous transcript loader."
   :type 'integer
   :group 'e-chat)
 
-(defcustom e-chat-render-job-diagnostics nil
-  "When non-nil, show pending render-job counts in the chat header line."
+(defcustom e-chat-ui-work-diagnostics nil
+  "When non-nil, show pending UI work counts in the chat header line."
   :type 'boolean
   :group 'e-chat)
 
@@ -522,8 +523,8 @@ intentionally not persisted in session metadata.")
 (defvar e-chat--window-selection-hook-installed-p nil
   "Non-nil when e-chat installed its window-selection hook.")
 
-(defvar-local e-chat--tail-active-turn-timer nil
-  "Deferred timer used to tail active output after window focus settles.")
+(defvar-local e-chat--tail-active-turn-handle nil
+  "Deferred UI work used to tail active output after window focus settles.")
 
 (defvar-local e-chat--tail-active-turn-generation 0
   "Generation token for stale active-turn tail callbacks.")
@@ -580,25 +581,32 @@ intentionally not persisted in session metadata.")
   "Schedule a post-focus active-turn tail check for BUFFER."
   (when (buffer-live-p buffer)
     (with-current-buffer buffer
-      (when (timerp e-chat--tail-active-turn-timer)
-        (e-chat--cancel-render-job-timer e-chat--tail-active-turn-timer)
-        (setq e-chat--tail-active-turn-timer nil))
+      (when (e-work-handle-p e-chat--tail-active-turn-handle)
+        (e-ui-work-cancel e-chat--tail-active-turn-handle)
+        (setq e-chat--tail-active-turn-handle nil))
       (setq e-chat--tail-active-turn-generation
             (1+ e-chat--tail-active-turn-generation))
       (let ((generation e-chat--tail-active-turn-generation))
-        (setq e-chat--tail-active-turn-timer
-              (e-chat--schedule-render-job
-               0
-               (lambda ()
-                 (setq e-chat--tail-active-turn-timer nil)
-                 (when (= generation e-chat--tail-active-turn-generation)
-                   (e-chat--tail-active-turn-buffer-if-selected buffer)))
-               :owner 'active-turn-tail
-               :key 'selected-window
-               :generation generation
-               :session-id e-chat-session-id
-               :block-id 'active-turn-tail
-               :coalesce t))))))
+        (setq e-chat--tail-active-turn-handle
+              (e-ui-work-schedule
+               (e-ui-work-spec-create
+                :id "chat_active_turn_tail"
+                :description "Tail active chat output after focus settles."
+                :owner 'active-turn-tail
+                :target-buffer buffer
+                :key 'selected-window
+                :generation generation
+                :delay 0
+                :coalesce t
+                :focus-policy 'explicit
+                :reentrancy-policy 'defer
+                :apply
+                (lambda (_job _handle)
+                  (setq e-chat--tail-active-turn-handle nil)
+                  (when (= generation e-chat--tail-active-turn-generation)
+                    (e-chat--tail-active-turn-buffer-if-selected buffer))))
+               :on-event (lambda (&rest _)
+                           (e-chat--refresh-ui-work-diagnostics))))))))
 
 (defun e-chat--tail-selected-active-turn (&rest _)
   "Show the latest active-turn output when selecting a running chat window."
@@ -729,8 +737,8 @@ intentionally not persisted in session metadata.")
 (defvar-local e-chat--session-load-generation 0
   "Generation token for async transcript load callbacks.")
 
-(defvar-local e-chat--loaded-session-backfill-timer nil
-  "Timer rendering older messages for an already loaded session.")
+(defvar-local e-chat--loaded-session-backfill-handle nil
+  "UI work handle rendering older messages for an already loaded session.")
 
 (defvar-local e-chat--loaded-session-backfill-generation 0
   "Generation token for stale loaded-session backfill callbacks.")
@@ -762,8 +770,8 @@ intentionally not persisted in session metadata.")
 (defvar-local e-chat--pending-activity-redraw-turn-id nil
   "Turn id with a scheduled running activity redraw.")
 
-(defvar-local e-chat--pending-activity-redraw-timer nil
-  "Timer scheduled to redraw running activity.")
+(defvar-local e-chat--pending-activity-redraw-handle nil
+  "UI work handle scheduled to redraw running activity.")
 
 (defvar-local e-chat--pending-activity-redraw-kind nil
   "Kind of pending activity redraw, either `activity' or `progress'.")
@@ -780,179 +788,8 @@ intentionally not persisted in session metadata.")
 (defvar e-chat--recenter-inhibited nil
   "Non-nil when chat display restoration must not call `recenter'.")
 
-(defvar-local e-chat--pending-render-job-timers nil
-  "Timers scheduled for deferred chat render jobs.")
-
-(defvar-local e-chat--pending-render-jobs nil
-  "Deferred chat render job records owned by this buffer.")
-
-(defvar-local e-chat--render-job-counter 0
-  "Monotonic id counter for buffer-local chat render jobs.")
-
-(defvar-local e-chat--pending-markdown-presentation-timers nil
-  "Timers scheduled to apply deferred assistant Markdown presentation.")
-
 (defvar-local e-chat--markdown-presentation-generation 0
   "Generation token for deferred assistant Markdown presentation callbacks.")
-
-(cl-defstruct (e-chat-render-job
-               (:constructor e-chat-render-job-create))
-  "Buffer-local deferred chat render job."
-  id
-  owner
-  key
-  generation
-  session-id
-  block-id
-  buffer
-  timer
-  work-handle)
-
-(defun e-chat--render-job-matches-p (job owner key)
-  "Return non-nil when JOB matches OWNER and KEY."
-  (and (eq (e-chat-render-job-owner job) owner)
-       (equal (e-chat-render-job-key job) key)))
-
-(defun e-chat--render-job-for-timer (timer)
-  "Return pending render job for TIMER, or nil."
-  (cl-find timer e-chat--pending-render-jobs
-           :key #'e-chat-render-job-timer))
-
-(defun e-chat--drop-render-job (job)
-  "Remove JOB from this buffer's pending render-job registries."
-  (setq e-chat--pending-render-jobs
-        (delq job e-chat--pending-render-jobs))
-  (setq e-chat--pending-render-job-timers
-        (delq (e-chat-render-job-timer job)
-              e-chat--pending-render-job-timers))
-  (e-chat--refresh-render-job-diagnostics))
-
-(defun e-chat--render-job-work-handle (job)
-  "Return JOB's work handle, tolerating older live render-job records."
-  (and (e-chat-render-job-p job)
-       (>= (length job) 10)
-       (e-chat-render-job-work-handle job)))
-
-(defun e-chat--cancel-render-job (job)
-  "Cancel pending render JOB."
-  (when job
-    (if-let ((handle (e-chat--render-job-work-handle job)))
-        (e-work-cancel handle)
-      (when (timerp (e-chat-render-job-timer job))
-        (cancel-timer (e-chat-render-job-timer job))))
-    (e-chat--drop-render-job job)))
-
-(defun e-chat--cancel-render-jobs (owner key)
-  "Cancel pending render jobs matching OWNER and KEY."
-  (dolist (job (copy-sequence e-chat--pending-render-jobs))
-    (when (e-chat--render-job-matches-p job owner key)
-      (e-chat--cancel-render-job job))))
-
-(defun e-chat--cancel-render-job-timer (timer)
-  "Cancel deferred render-job TIMER if it is still live."
-  (if-let ((job (e-chat--render-job-for-timer timer)))
-      (e-chat--cancel-render-job job)
-    (when (timerp timer)
-      (cancel-timer timer))
-    (setq e-chat--pending-render-job-timers
-          (delq timer e-chat--pending-render-job-timers))))
-
-(cl-defun e-chat--schedule-render-job
-    (delay thunk &key owner key generation session-id block-id coalesce)
-  "Schedule deferred chat render THUNK after DELAY seconds.
-The returned timer is tracked in the buffer-local render-job registry until it
-runs or is cancelled.
-
-When COALESCE is non-nil, cancel any older pending job with the same OWNER and
-KEY before scheduling the new one."
-  (when coalesce
-    (e-chat--cancel-render-jobs owner key))
-  (let* ((buffer (current-buffer))
-         (session-id (or session-id
-                         (and (boundp 'e-chat-session-id)
-                              e-chat-session-id)))
-         (id (cl-incf e-chat--render-job-counter))
-         job
-         handle
-         timer)
-    (setq handle
-          (e-work-start
-           (e-work-spec-create
-            :id "chat_render"
-            :description "Deferred chat render job."
-            :execution 'render
-            :interactive-policy 'async
-            :owner 'chat
-            :runner (lambda (_arguments _context)
-                      (when (buffer-live-p buffer)
-                        (with-current-buffer buffer
-                          (when (memq job e-chat--pending-render-jobs)
-                            (e-chat--drop-render-job job)
-                            (funcall thunk))))))
-           (list :delay delay)
-           :context (list :owner owner
-                          :key key
-                          :session-id session-id
-                          :block-id block-id)))
-    (setq timer (plist-get (e-work-handle-metadata handle) :timer))
-    (setq job
-          (e-chat-render-job-create
-           :id id
-           :owner owner
-           :key key
-           :generation generation
-           :session-id session-id
-           :block-id block-id
-           :buffer buffer
-           :timer timer
-           :work-handle handle))
-    (push job e-chat--pending-render-jobs)
-    (push timer e-chat--pending-render-job-timers)
-    (e-chat--refresh-render-job-diagnostics)
-    timer))
-
-(cl-defun e-chat--schedule-render-work-items
-    (delay items render-item
-           &key budget owner key generation session-id block-id coalesce
-           on-schedule on-finish)
-  "Schedule cooperative rendering for ITEMS.
-RENDER-ITEM is called for each item, up to BUDGET items per scheduler tick.
-Each tick is represented as an ordinary render job with OWNER, KEY, GENERATION,
-SESSION-ID, and BLOCK-ID metadata.  ON-SCHEDULE, when non-nil, receives each
-new timer.  ON-FINISH, when non-nil, runs after the final item."
-  (let ((remaining (copy-sequence items))
-        (budget (if (and (integerp budget) (> budget 0))
-                    budget
-                  (max 1 (or e-chat-render-work-item-budget 1))))
-        run)
-    (cl-labels
-        ((schedule-next ()
-           (let ((timer
-                  (e-chat--schedule-render-job
-                   delay
-                   run
-                   :owner owner
-                   :key key
-                   :generation generation
-                   :session-id session-id
-                   :block-id block-id
-                   :coalesce coalesce)))
-             (setq coalesce nil)
-             (when on-schedule
-               (funcall on-schedule timer))
-             timer)))
-      (setq run
-            (lambda ()
-              (let ((count 0))
-                (while (and remaining (< count budget))
-                  (funcall render-item (pop remaining))
-                  (setq count (1+ count))))
-              (if remaining
-                  (schedule-next)
-                (when on-finish
-                  (funcall on-finish)))))
-      (when remaining
-        (schedule-next)))))
 
 (defvar-local e-chat--mode-line-status nil
   "Current compact e chat status text shown in the mode line.")
@@ -971,16 +808,16 @@ mode-line refreshes for the current chat buffer.")
 (defvar-local e-chat--rendered-session-title nil
   "Session title currently rendered in the chat title block.")
 
-(defvar-local e-chat--progress-timer nil
-  "Timer advancing the active assistant progress indicator.")
+(defvar-local e-chat--progress-interval-handle nil
+  "UI work interval advancing the active assistant progress indicator.")
 
 (defvar-local e-chat--progress-next-tick-time nil
-  "Expected `float-time' of the next assistant progress timer tick.")
+  "Expected `float-time' of the next assistant progress interval tick.")
 
 (defvar-local e-chat--running-status-rendered-hook nil
   "Abnormal hook run after each running-status redraw.
 Each function is called with the active turn id.  Buffer-local so
-embedders (e.g. Org Canvas) can keep output visible on timer-driven
+embedders (e.g. Org Canvas) can keep output visible on interval-driven
 progress redraws that never pass through harness event dispatch.")
 
 (defconst e-chat--user-glyph ">"
@@ -1506,8 +1343,9 @@ PROMPT forces completion even when only one/default instance exists."
   "Cancel any pending loaded-session transcript backfill."
   (setq e-chat--loaded-session-backfill-generation
         (1+ e-chat--loaded-session-backfill-generation))
-  (e-chat--cancel-render-job-timer e-chat--loaded-session-backfill-timer)
-  (setq e-chat--loaded-session-backfill-timer nil)
+  (when (e-work-handle-p e-chat--loaded-session-backfill-handle)
+    (e-ui-work-cancel e-chat--loaded-session-backfill-handle))
+  (setq e-chat--loaded-session-backfill-handle nil)
   (setq e-chat--loaded-session-rendered-message-count nil))
 
 (defun e-chat--render-session-loading (session)
@@ -1574,27 +1412,32 @@ PROMPT forces completion even when only one/default instance exists."
   (when (< rendered-count total-count)
     (let ((generation (1+ e-chat--loaded-session-backfill-generation)))
       (setq e-chat--loaded-session-backfill-generation generation)
-      (setq e-chat--loaded-session-backfill-timer
-            (e-chat--schedule-render-work-items
-             e-chat-loaded-session-backfill-delay
+      (setq e-chat--loaded-session-backfill-handle
+            (e-ui-work-schedule-chunks
+             (current-buffer)
              (e-chat--loaded-session-backfill-counts
               rendered-count
               total-count)
              (lambda (next-count)
                (e-chat--loaded-session-backfill generation next-count))
-             :budget e-chat-render-work-item-budget
+             :id "chat_loaded_session_backfill"
+             :description "Render older loaded chat transcript messages."
              :owner 'loaded-session-backfill
              :key e-chat-session-id
              :generation generation
-             :session-id e-chat-session-id
-             :block-id 'loaded-session-backfill
+             :delay e-chat-loaded-session-backfill-delay
+             :budget e-chat-render-work-item-budget
              :coalesce t
+             :focus-policy 'preserve
+             :reentrancy-policy 'defer
              :on-schedule
-             (lambda (timer)
-               (setq e-chat--loaded-session-backfill-timer timer))
+             (lambda (handle)
+               (setq e-chat--loaded-session-backfill-handle handle)
+               (e-chat--refresh-ui-work-diagnostics))
              :on-finish
              (lambda ()
-               (setq e-chat--loaded-session-backfill-timer nil)))))))
+               (setq e-chat--loaded-session-backfill-handle nil)
+               (e-chat--refresh-ui-work-diagnostics)))))))
 
 (defun e-chat--loaded-session-backfill (generation next-count)
   "Render loaded-session transcript through NEXT-COUNT for GENERATION."
@@ -4091,7 +3934,7 @@ and how long the oldest running tool has been active."
   (let* ((running-text (e-chat--round-running-tools-text round))
          ;; While tools are running, replace the frozen \"Thought for ...\"
          ;; left cell with a live spinner naming the running tool and its
-         ;; elapsed time.  The shared progress timer already reticks this row.
+         ;; elapsed time.  The shared progress interval already reticks this row.
          (thought (or running-text (e-chat--round-thought-text round)))
          (tool-count (e-chat--round-tool-count round))
          (tool-text (and (> tool-count 0)
@@ -4996,7 +4839,7 @@ the composer."
     (when (and turn-id
                (not (plist-get data :final-rendered))
                (e-chat--active-activity-p record))
-      (e-chat--ensure-progress-timer turn-id))
+      (e-chat--ensure-progress-interval turn-id))
     (unless (e-chat--replace-running-status turn-id record data)
       (e-chat--delete-running-status record)
       (e-chat--delete-composer)
@@ -5031,33 +4874,47 @@ When TURN-ID is non-nil, cancel only a redraw for that turn."
   (when (and e-chat--pending-activity-redraw-turn-id
              (or (not turn-id)
                  (equal turn-id e-chat--pending-activity-redraw-turn-id)))
-    (e-chat--cancel-render-job-timer e-chat--pending-activity-redraw-timer)
+    (when (e-work-handle-p e-chat--pending-activity-redraw-handle)
+      (e-ui-work-cancel e-chat--pending-activity-redraw-handle))
     (cl-incf e-chat--activity-redraw-generation)
     (setq e-chat--pending-activity-redraw-turn-id nil)
-    (setq e-chat--pending-activity-redraw-timer nil)
+    (setq e-chat--pending-activity-redraw-handle nil)
     (setq e-chat--pending-activity-redraw-kind nil)
     (setq e-chat--pending-activity-redraw-generation nil)))
 
-(defun e-chat--ensure-pending-activity-redraw-timer ()
-  "Ensure the pending activity redraw has a timer when it can run safely."
+(defun e-chat--ensure-pending-activity-redraw-work ()
+  "Ensure the pending activity redraw has scheduled UI work."
   (when (and e-chat--pending-activity-redraw-turn-id
              e-chat--pending-activity-redraw-generation
              (not e-chat--activity-redraw-running)
-             (not (timerp e-chat--pending-activity-redraw-timer)))
+             (not (e-work-handle-p e-chat--pending-activity-redraw-handle)))
     (let ((turn-id e-chat--pending-activity-redraw-turn-id)
           (generation e-chat--pending-activity-redraw-generation))
-      (setq e-chat--pending-activity-redraw-timer
-            (e-chat--schedule-render-job
-             e-chat-activity-redraw-delay
-             (lambda ()
-               (e-chat--run-pending-activity-redraw
-                generation))
-             :owner 'activity-redraw
-             :key turn-id
-             :generation generation
-             :session-id e-chat-session-id
-             :block-id turn-id
-             :coalesce t)))))
+      (setq e-chat--pending-activity-redraw-handle
+            (e-ui-work-schedule
+             (e-ui-work-spec-create
+              :id "chat_activity_redraw"
+              :description "Redraw active chat turn activity."
+              :owner 'activity-redraw
+              :target-buffer (current-buffer)
+              :key turn-id
+              :generation generation
+              :delay e-chat-activity-redraw-delay
+              :coalesce t
+              :focus-policy 'tail-if-selected
+              :reentrancy-policy 'defer
+              :metadata
+              (list :tail-position
+                    (lambda ()
+                      (and (markerp e-chat--composer-start-marker)
+                           (marker-position
+                            e-chat--composer-start-marker))))
+              :apply
+              (lambda (_job _handle)
+                (setq e-chat--pending-activity-redraw-handle nil)
+                (e-chat--run-pending-activity-redraw generation)))
+             :on-event (lambda (&rest _)
+                         (e-chat--refresh-ui-work-diagnostics)))))))
 
 (defun e-chat--run-pending-activity-redraw (&optional expected-generation)
   "Run and clear the pending activity redraw for this chat buffer."
@@ -5066,12 +4923,11 @@ When TURN-ID is non-nil, cancel only a redraw for that turn."
                    e-chat--pending-activity-redraw-generation))
     (if e-chat--activity-redraw-running
         (when expected-generation
-          ;; The render job that called us has already fired and was removed
-          ;; from the job registry.  Leave the work pending for the outer
-          ;; redraw to schedule after it exits.
-          (setq e-chat--pending-activity-redraw-timer nil))
+          ;; Leave the work pending for the outer redraw to schedule after it
+          ;; exits.
+          (setq e-chat--pending-activity-redraw-handle nil))
       (let ((turn-id e-chat--pending-activity-redraw-turn-id)
-            (timer e-chat--pending-activity-redraw-timer)
+            (handle e-chat--pending-activity-redraw-handle)
             (kind e-chat--pending-activity-redraw-kind)
             (point-marker (copy-marker (point) nil))
             (window (e-chat--visible-window))
@@ -5094,9 +4950,10 @@ When TURN-ID is non-nil, cancel only a redraw for that turn."
                (lambda ()
                  (unwind-protect
                      (progn
-                       (e-chat--cancel-render-job-timer timer)
+                       (when (e-work-handle-p handle)
+                         (e-ui-work-cancel handle))
                        (setq e-chat--pending-activity-redraw-turn-id nil)
-                       (setq e-chat--pending-activity-redraw-timer nil)
+                       (setq e-chat--pending-activity-redraw-handle nil)
                        (setq e-chat--pending-activity-redraw-kind nil)
                        (setq e-chat--pending-activity-redraw-generation nil)
                        (when turn-id
@@ -5115,7 +4972,7 @@ When TURN-ID is non-nil, cancel only a redraw for that turn."
                        (set-window-point window (min window-point (point-max)))))
                    (e-chat--restore-running-status-display-state display-state)))))
           (setq e-chat--activity-redraw-running nil)
-          (e-chat--ensure-pending-activity-redraw-timer))))))
+          (e-chat--ensure-pending-activity-redraw-work))))))
 
 (defun e-chat--activity-redraw-kind (existing requested)
   "Return coalesced redraw kind from EXISTING and REQUESTED kinds."
@@ -5137,7 +4994,7 @@ When TURN-ID is non-nil, cancel only a redraw for that turn."
     (unless e-chat--pending-activity-redraw-generation
       (setq e-chat--pending-activity-redraw-generation
             (cl-incf e-chat--activity-redraw-generation)))
-    (e-chat--ensure-pending-activity-redraw-timer)))
+    (e-chat--ensure-pending-activity-redraw-work)))
 
 (defun e-chat--progress-dots ()
   "Return the current active assistant progress glyph string."
@@ -5162,40 +5019,51 @@ When TURN-ID is non-nil, cancel only a redraw for that turn."
        (entry t)
        (t t)))))
 
-(defun e-chat--cancel-progress-timer ()
-  "Cancel the active assistant progress timer."
-  (when (timerp e-chat--progress-timer)
-    (cancel-timer e-chat--progress-timer))
-  (setq e-chat--progress-timer nil))
+(defun e-chat--cancel-progress-interval ()
+  "Cancel the active assistant progress UI work interval."
+  (when (e-work-handle-p e-chat--progress-interval-handle)
+    (e-ui-work-cancel e-chat--progress-interval-handle))
+  (setq e-chat--progress-interval-handle nil))
 
-(defun e-chat--progress-timer-active-p (turn-id)
-  "Return non-nil when TURN-ID has a live progress timer."
+(defun e-chat--progress-interval-active-p (turn-id)
+  "Return non-nil when TURN-ID has a live progress UI work interval."
   (and (equal e-chat--progress-turn-id turn-id)
-       (timerp e-chat--progress-timer)))
+       (e-work-handle-p e-chat--progress-interval-handle)
+       (not (e-request-terminal-p
+             (e-work-handle-lifecycle e-chat--progress-interval-handle)))))
 
-(defun e-chat--ensure-progress-timer (turn-id)
-  "Ensure TURN-ID has a live progress timer without rendering immediately."
-  (unless (e-chat--progress-timer-active-p turn-id)
+(defun e-chat--ensure-progress-interval (turn-id)
+  "Ensure TURN-ID has a live progress interval without rendering immediately."
+  (unless (e-chat--progress-interval-active-p turn-id)
     (let ((same-turn (equal e-chat--progress-turn-id turn-id)))
-      (e-chat--cancel-progress-timer)
+      (e-chat--cancel-progress-interval)
       (setq e-chat--progress-turn-id turn-id)
       (unless same-turn
         (setq e-chat--progress-frame 0))
       (setq e-chat--progress-next-tick-time
             (+ (float-time) e-chat-progress-interval))
-      (let ((buffer (current-buffer))
-            timer)
-        (setq timer
-              (run-at-time e-chat-progress-interval
-                           e-chat-progress-interval
-                           (lambda ()
-                             (if (not (buffer-live-p buffer))
-                                 (cancel-timer timer)
-                               (with-current-buffer buffer
-                                 (if (eq e-chat--progress-timer timer)
-                                     (e-chat--advance-progress-indicator)
-                                   (cancel-timer timer)))))))
-        (setq e-chat--progress-timer timer)))))
+      (setq e-chat--progress-interval-handle
+            (e-ui-work-schedule-interval
+             (e-ui-work-spec-create
+              :id "chat_progress_indicator"
+              :description "Advance active chat progress indicator."
+              :owner 'progress-indicator
+              :target-buffer (current-buffer)
+              :key turn-id
+              :generation e-chat--progress-frame
+              :focus-policy 'preserve
+              :reentrancy-policy 'defer
+              :apply
+              (lambda (_job handle)
+                (if (not (eq e-chat--progress-interval-handle handle))
+                    '(:status stopped)
+                  (e-chat--advance-progress-indicator)
+                  (if (eq e-chat--progress-interval-handle handle)
+                      :continue
+                    '(:status stopped)))))
+             e-chat-progress-interval
+             :on-event (lambda (&rest _)
+                         (e-chat--refresh-ui-work-diagnostics)))))))
 
 (defun e-chat--delete-progress-indicator ()
   "Delete the active assistant progress indicator."
@@ -5236,7 +5104,7 @@ When TURN-ID is non-nil, cancel only a redraw for that turn."
 (defun e-chat--start-progress-indicator (turn-id)
   "Start the active assistant progress indicator for TURN-ID."
   (setq e-chat--progress-frame 0)
-  (e-chat--ensure-progress-timer turn-id)
+  (e-chat--ensure-progress-interval turn-id)
   (e-chat--render-progress-indicator turn-id))
 
 (defun e-chat--stop-progress-indicator (&optional turn-id)
@@ -5245,7 +5113,7 @@ When TURN-ID is non-nil, only stop a matching active indicator."
   (when (and e-chat--progress-turn-id
              (or (not turn-id)
                  (equal turn-id e-chat--progress-turn-id)))
-    (e-chat--cancel-progress-timer)
+    (e-chat--cancel-progress-interval)
     (let ((old-turn-id e-chat--progress-turn-id))
       (setq e-chat--progress-turn-id nil)
       (setq e-chat--progress-frame 0)
@@ -5916,9 +5784,7 @@ bound the original assistant content and are used for first-chunk clearing."
 
 (defun e-chat--cancel-pending-markdown-presentation ()
   "Cancel all pending deferred assistant Markdown presentation jobs."
-  (dolist (timer e-chat--pending-markdown-presentation-timers)
-    (e-chat--cancel-render-job-timer timer))
-  (setq e-chat--pending-markdown-presentation-timers nil)
+  (e-ui-work-cancel-matching (current-buffer) 'markdown-presentation)
   (cl-incf e-chat--markdown-presentation-generation))
 
 (defun e-chat--defer-assistant-markdown-p (content)
@@ -5976,32 +5842,35 @@ generation.  Return non-nil when another chunk remains."
 (defun e-chat--schedule-deferred-assistant-markdown-chunk
     (start-marker end-marker position-marker generation block-id)
   "Schedule one deferred Markdown chunk for assistant CONTENT markers."
-  (let (timer)
-    (setq timer
-          (e-chat--schedule-render-job
-           0
-           (lambda ()
-             (setq e-chat--pending-markdown-presentation-timers
-                   (delq timer
-                         e-chat--pending-markdown-presentation-timers))
-             (when (e-chat--run-deferred-assistant-markdown-chunk
-                    start-marker
-                    end-marker
-                    position-marker
-                    generation)
-               (e-chat--schedule-deferred-assistant-markdown-chunk
-                start-marker
-                end-marker
-                position-marker
-                generation
-                block-id)))
-           :owner 'markdown-presentation
-           :key generation
-           :generation generation
-           :session-id e-chat-session-id
-           :block-id block-id))
-    (push timer e-chat--pending-markdown-presentation-timers)
-    timer))
+  (e-ui-work-schedule
+   (e-ui-work-spec-create
+    :id "chat_markdown_presentation"
+    :description "Apply deferred assistant Markdown presentation."
+    :owner 'markdown-presentation
+    :target-buffer (current-buffer)
+    :key generation
+    :generation generation
+    :delay 0
+    :focus-policy 'preserve
+    :reentrancy-policy 'defer
+    :stale-p (lambda (_job)
+               (not (equal generation
+                           e-chat--markdown-presentation-generation)))
+    :apply
+    (lambda (_job _handle)
+      (when (e-chat--run-deferred-assistant-markdown-chunk
+             start-marker
+             end-marker
+             position-marker
+             generation)
+        (e-chat--schedule-deferred-assistant-markdown-chunk
+         start-marker
+         end-marker
+         position-marker
+         generation
+         block-id))))
+   :on-event (lambda (&rest _)
+               (e-chat--refresh-ui-work-diagnostics))))
 
 (defun e-chat--schedule-assistant-markdown
     (content-start content-end &optional block-id)
@@ -6642,7 +6511,7 @@ loaded-session backfill generation while rebuilding the transcript."
     (when (overlayp e-chat--tool-list-overlay)
       (delete-overlay e-chat--tool-list-overlay))
     (setq e-chat--tool-list-overlay nil)
-    (e-chat--cancel-progress-timer)
+    (e-chat--cancel-progress-interval)
     (e-chat--cancel-pending-activity-redraw)
     (setq e-chat--progress-turn-id nil)
     (setq e-chat--progress-frame 0)
@@ -6749,30 +6618,30 @@ an approximate full-context estimate."
   (setq-local e-chat--mode-line-context-estimate-cache (cons nil nil))
   (setq-local e-chat--mode-line-context-status-cache (cons nil nil)))
 
-(defun e-chat--render-job-owner-counts ()
-  "Return pending render-job counts grouped by owner for this buffer."
+(defun e-chat--ui-work-owner-counts ()
+  "Return pending UI work counts grouped by owner for this buffer."
   (let ((counts (make-hash-table :test 'eq)))
-    (dolist (job e-chat--pending-render-jobs)
-      (let ((owner (or (e-chat-render-job-owner job) 'unknown)))
+    (dolist (job (e-ui-work-pending (current-buffer)))
+      (let ((owner (or (plist-get job :owner) 'unknown)))
         (puthash owner (1+ (gethash owner counts 0)) counts)))
     counts))
 
-(defun e-chat--render-job-diagnostics-text ()
-  "Return compact pending render-job diagnostic text for the header line."
-  (when (and e-chat-render-job-diagnostics
-             e-chat--pending-render-jobs)
-    (let* ((counts (e-chat--render-job-owner-counts))
+(defun e-chat--ui-work-diagnostics-text ()
+  "Return compact pending UI work diagnostic text for the header line."
+  (when-let ((pending (and e-chat-ui-work-diagnostics
+                           (e-ui-work-pending (current-buffer)))))
+    (let* ((counts (e-chat--ui-work-owner-counts))
            (owners nil))
       (maphash (lambda (owner count)
                  (push (format "%s:%d" owner count) owners))
                counts)
-      (format " - render %d [%s]"
-              (length e-chat--pending-render-jobs)
+      (format " - ui %d [%s]"
+              (length pending)
               (string-join (sort owners #'string<) ", ")))))
 
 (defun e-chat--header-line-text (status)
-  "Return chat header-line text for STATUS and current render diagnostics."
-  (let ((diagnostics (or (e-chat--render-job-diagnostics-text) "")))
+  "Return chat header-line text for STATUS and current UI work diagnostics."
+  (let ((diagnostics (or (e-chat--ui-work-diagnostics-text) "")))
     (if (and e-chat-harness e-chat-session-id)
         (let* ((title (ignore-errors
                         (e-harness-session-title
@@ -6792,9 +6661,9 @@ an approximate full-context estimate."
                   diagnostics))
       (format "E Chat: %s%s" status diagnostics))))
 
-(defun e-chat--refresh-render-job-diagnostics ()
-  "Refresh foreground render-job diagnostics when they are enabled."
-  (when (and e-chat-render-job-diagnostics
+(defun e-chat--refresh-ui-work-diagnostics ()
+  "Refresh foreground UI work diagnostics when they are enabled."
+  (when (and e-chat-ui-work-diagnostics
              header-line-format)
     (setq header-line-format
           (e-chat--header-line-text e-chat--status))

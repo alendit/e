@@ -167,8 +167,8 @@ Every spec must declare explicit :execution and :interactive-policy values."
             (if previous
                 (lambda (current-handle)
                   (funcall cleanup current-handle)
-	                  (funcall previous current-handle))
-	              cleanup)))))
+                  (funcall previous current-handle))
+              cleanup)))))
 
 (defun e-work--remember-cancel-error (handle err)
   "Record underlying cancellation ERR on HANDLE metadata."
@@ -688,21 +688,23 @@ This function is rejected from interactive hot paths."
     (setq timer
           (run-at-time
            delay nil
-           (lambda ()
-             (condition-case err
-                 (e-work-finish
-                  handle
-                  (e-work--shape-result
-                   spec
-                   (funcall runner arguments context)
-                   arguments context))
-               (error
-                (e-work-fail handle err))))))
-	    (setf (e-work-handle-metadata handle)
-	          (append (e-work-handle-metadata handle)
-	                  (list :transport (e-work-spec-execution spec)
-	                        :timer timer)))
-	    handle))
+             (lambda ()
+               (condition-case err
+                   (let ((raw (funcall runner arguments context)))
+                     (unless (eq raw :deferred)
+                       (e-work-finish
+                        handle
+                        (e-work--shape-result
+                         spec
+                         raw
+                         arguments context))))
+                 (error
+                  (e-work-fail handle err))))))
+    (setf (e-work-handle-metadata handle)
+          (append (e-work-handle-metadata handle)
+                  (list :transport (e-work-spec-execution spec)
+                        :timer timer)))
+    handle))
 
 (defun e-work--start-cooperative (handle arguments context)
   "Start HANDLE on the cooperative self-settling carrier."

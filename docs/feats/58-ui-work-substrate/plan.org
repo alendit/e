@@ -1,0 +1,49 @@
+#+title: UI Work Substrate
+#+startup: overview
+
+* Status
+
+Done.
+
+* Summary
+
+Introduce =e-ui-work= as the paved path for async presentation mutation.  It is
+a thin presentation adapter over =e-work= render work, not a second lifecycle
+system.
+
+Presentation shells now describe UI effects with target buffer, owner, key,
+generation, focus policy, reentrancy policy, and apply function.  =e-ui-work=
+owns scheduling, cancellation, coalescing, stale callback handling, intervals,
+diagnostics, errors, and batch draining.
+
+* Implemented Scope
+
+- Added =lisp/core/e-ui-work.el= and loaded it from =e.el=.
+- Migrated chat activity redraw, active-turn tailing, loaded-session backfill,
+  deferred assistant Markdown, progress intervals, and render diagnostics.
+- Migrated Org Canvas input/result event rendering through scheduled UI work.
+- Removed chat-local render job structs, timer registries, and compatibility
+  scheduler APIs.
+- Added a static contract test that forbids presentation shells from calling
+  raw =e-work= render work directly.
+- Added deterministic unit and e2e coverage for lifecycle, coalescing,
+  cancellation, stale callback handling, reentrant defer, intervals, chunked
+  rendering, deadline cleanup, and settled-turn pending-work leaks.
+- Added a performance scenario for the chat UI-work lifecycle.
+
+* Compatibility
+
+The old chat render scheduler APIs were intentionally removed instead of
+wrapped.  Batch/test drains are explicit through =e-ui-work-with-batch-drain=
+and =e-ui-work-drain-batch=.
+
+Command-owned initial synchronous rendering remains allowed.  Async callbacks,
+timers, process sentinels, provider events, and work completion callbacks
+should schedule presentation mutation through =e-ui-work=.
+
+* Validation
+
+Repository-side validation covers the core API, migrated chat paths, migrated
+Org Canvas paths, deterministic e2e, and compile checks.  The running Emacs is
+not reloaded by default; use a manual reload only when the new behavior needs
+to be exercised in the live instance immediately.

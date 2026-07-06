@@ -84,6 +84,7 @@
 
 (let ((load-prefer-newer t))
   (require 'e-core)
+  (require 'e-ui-work)
   (require 'e-context-budget)
   (require 'e-agent-shell-fleet)
   (require 'e-task-queue-actions)

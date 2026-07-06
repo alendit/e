@@ -24,11 +24,11 @@
 (require 'e-session)
 (require 'e-tools)
 (require 'e-work)
+(require 'e-ui-work)
 (require 'e-dev-profile)
 
 (declare-function e-chat-open "e-chat")
 (declare-function e-chat--render-event "e-chat")
-(declare-function e-chat--run-pending-activity-redraw "e-chat")
 
 (defgroup e-dev-perf nil
   "Performance regression tests for e."
@@ -850,6 +850,15 @@ artifacts under `e-dev-perf-run-directory'."
     (when (buffer-live-p buffer)
       (kill-buffer buffer))))
 
+(defun e-dev-perf--drain-ui-work (buffer &rest args)
+  "Drain finite UI work in BUFFER with ARGS for performance scenarios."
+  (e-ui-work-with-batch-drain
+    (apply #'e-ui-work-drain-batch :buffer buffer args)))
+
+(defun e-dev-perf--chat-pending-ui-work-count (buffer &rest args)
+  "Return count of pending UI work in BUFFER narrowed by ARGS."
+  (length (apply #'e-ui-work-pending buffer args)))
+
 (defun e-dev-perf--scenario-chat-activity-run (state)
   "Run chat activity burst scenario."
   (let ((buffer (plist-get state :buffer))
@@ -872,9 +881,71 @@ artifacts under `e-dev-perf-run-directory'."
                   :created-at (float-time)
                   :payload (list :id (format "tool-%d" index)
                                  :name "fake"))))
-         (e-chat--run-pending-activity-redraw))
+         (e-dev-perf--drain-ui-work buffer))
        '(chat.render-event chat.activity-redraw chat.composer-restore
          chat.composer-insert)))))
+
+(defun e-dev-perf--scenario-chat-ui-work-run (state)
+  "Run chat UI-work lifecycle scenario."
+  (let* ((buffer (plist-get state :buffer))
+         (session-id (plist-get state :session-id))
+         (counter (1+ (or (plist-get state :ui-work-counter) 0)))
+         (turn-id (format "ui-work-turn-%d" counter))
+         (markdown (string-join
+                    (cl-loop for index below 40
+                             collect (format "- **item %02d** [ref](https://example.test/%02d)"
+                                             index
+                                             index))
+                    "\n")))
+    (setf (plist-get state :ui-work-counter) counter)
+    (with-current-buffer buffer
+      (let ((e-chat-deferred-markdown-threshold-bytes 8)
+            (e-chat-deferred-markdown-chunk-lines 1))
+        (let ((metrics
+               (e-dev-perf--profile-spans
+                (lambda ()
+                  (e-chat--render-event
+                   (list :type 'turn-started
+                         :session-id session-id
+                         :turn-id turn-id
+                         :created-at (float-time)
+                         :payload nil))
+                  (dotimes (index 12)
+                    (e-chat--render-event
+                     (list :type 'reasoning-delta
+                           :session-id session-id
+                           :turn-id turn-id
+                           :created-at (float-time)
+                           :payload (list :type 'reasoning-delta
+                                          :content (format "thought %d" index)))))
+                  (e-dev-perf--drain-ui-work buffer)
+                  (e-chat--render-event
+                   (list :type 'message-added
+                         :session-id session-id
+                         :turn-id turn-id
+                         :created-at (float-time)
+                         :payload (list :message
+                                        (list :role 'assistant
+                                              :turn-id turn-id
+                                              :content markdown))))
+                  (e-dev-perf--drain-ui-work buffer)
+                  (e-chat--render-event
+                   (list :type 'turn-finished
+                         :session-id session-id
+                         :turn-id turn-id
+                         :created-at (float-time)
+                         :payload nil))
+                  (e-dev-perf--drain-ui-work buffer))
+                '(chat.render-event chat.activity-redraw chat.composer-restore
+                  chat.composer-insert))))
+          (let ((pending (e-dev-perf--chat-pending-ui-work-count buffer)))
+            (unless (zerop pending)
+              (signal 'e-work-error
+                      (list (format "UI work left pending after settled turn: %d"
+                                    pending))))
+            (append metrics
+                    (list :ui-work.pending.after-settle pending
+                          :ui-work.markdown.bytes (string-bytes markdown)))))))))
 
 (defun e-dev-perf--scenario-final-render-run (state)
   "Run final assistant render scenario."
@@ -1060,6 +1131,17 @@ artifacts under `e-dev-perf-run-directory'."
       :samples 5
       :warmups 1
       :tags '(chat)))
+    (e-dev-perf-register-scenario
+     (e-dev-perf-scenario-create
+      :id "chat.ui-work-lifecycle"
+      :title "Chat UI work lifecycle"
+      :owner 'e-chat
+      :setup (lambda (_scenario) (e-dev-perf--chat-buffer-state))
+      :run #'e-dev-perf--scenario-chat-ui-work-run
+      :teardown #'e-dev-perf--chat-teardown
+      :samples 5
+      :warmups 1
+      :tags '(chat ui-work render)))
     (e-dev-perf-register-scenario
      (e-dev-perf-scenario-create
       :id "tool.lifecycle-dispatch"

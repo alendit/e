@@ -26,6 +26,7 @@
 (require 'e-session)
 (require 'e-shells)
 (require 'e-startup)
+(require 'e-ui-work)
 (require 'e-workspaces)
 (require 'org)
 (require 'org-element)
@@ -153,9 +154,12 @@ Org Canvas status refreshes for the current buffer.")
 
 (defvar-local e-org-canvas-input--last-follow-bottom nil
   "Buffer end last scrolled to by the follow-bottom redraw hook.
-The progress timer redraws the spinner in place every
+The progress interval redraws the spinner in place every
 `e-chat-progress-interval' without moving the buffer end; comparing against
 this lets the redraw hook skip the scroll unless the end actually advanced.")
+
+(defvar-local e-org-canvas-input--ui-render-sequence 0
+  "Monotonic sequence for scheduled Org Canvas input UI work.")
 
 (defconst e-org-canvas--mode-name "Org Canvas"
   "Visible major-mode slot label used while `e-org-canvas-mode' is active.")
@@ -910,6 +914,7 @@ HARNESS and SESSION-ID are kept for call-site compatibility."
 
 (defun e-org-canvas--input-cleanup ()
   "Release resources owned by the current Org Canvas input pane."
+  (e-ui-work-cancel-matching (current-buffer) 'org-canvas-input-render)
   (when e-org-canvas-input--close-timer
     (cancel-timer e-org-canvas-input--close-timer)
     (setq-local e-org-canvas-input--close-timer nil))
@@ -1020,7 +1025,7 @@ Anchor the scroll from the top of the last screenful rather than with a
 negative `recenter'.  `recenter' with a negative arg walks the display engine
 backward from the bottom line, resolving invisibility at every step; on a long
 pane with many text-property intervals that backward scan is O(buffer) and,
-run from the 0.6s progress timer, pegs a core.  Anchoring the window start one
+run from the progress interval, pegs a core.  Anchoring the window start one
 screenful above the bottom with `set-window-start' moves the display engine
 forward only, so the cost is bounded by one screenful."
   (when (buffer-live-p buffer)
@@ -1050,7 +1055,7 @@ forward only, so the cost is bounded by one screenful."
 
 (defun e-org-canvas--input-follow-bottom-on-redraw (&optional _turn-id)
   "Keep this input pane pinned to the bottom after a running-status redraw.
-Registered on `e-chat--running-status-rendered-hook' so timer-driven
+Registered on `e-chat--running-status-rendered-hook' so interval-driven
 progress redraws follow output instead of staying pinned at the top.
 
 The spinner redraw fires every `e-chat-progress-interval' (0.6s) but only
@@ -1069,7 +1074,7 @@ in-flight turn does not re-scroll -- and re-scan the pane -- on every frame."
 (defun e-org-canvas--input-clear-progress (turn-id)
   "Clear active progress presentation for TURN-ID in the current input pane."
   (e-chat--cancel-pending-activity-redraw turn-id)
-  (e-chat--cancel-progress-timer)
+  (e-chat--cancel-progress-interval)
   (setq-local e-chat--progress-turn-id nil)
   (setq-local e-chat--progress-frame 0)
   (setq-local e-chat--progress-next-tick-time nil)
@@ -1135,6 +1140,34 @@ in-flight turn does not re-scroll -- and re-scan the pane -- on every frame."
        (e-chat--run-pending-activity-redraw)
        (e-org-canvas--input-follow-bottom buffer)))))
 
+(defun e-org-canvas--input-schedule-render-event (buffer event)
+  "Schedule harness EVENT rendering into Org Canvas input BUFFER."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (let* ((turn-id (plist-get event :turn-id))
+             (sequence (cl-incf e-org-canvas-input--ui-render-sequence)))
+        (e-ui-work-schedule
+         (e-ui-work-spec-create
+          :id "org_canvas_input_render_event"
+          :description "Render an Org Canvas input result event."
+          :owner 'org-canvas-input-render
+          :target-buffer buffer
+          :key (list turn-id sequence)
+          :generation sequence
+          :focus-policy 'tail-if-selected
+          :reentrancy-policy 'defer
+          :coalesce nil
+          :stale-p
+          (lambda (_job)
+            (or (not (buffer-live-p buffer))
+                (with-current-buffer buffer
+                  (not (equal e-org-canvas-input--active-turn-id
+                              turn-id)))))
+          :apply
+          (lambda (_job _handle)
+            (when (equal e-org-canvas-input--active-turn-id turn-id)
+              (e-org-canvas--input-render-event buffer event)))))))))
+
 (defun e-org-canvas--input-handle-event (buffer event)
   "Render BUFFER updates for its active Org Canvas turn."
   (when (buffer-live-p buffer)
@@ -1147,7 +1180,7 @@ in-flight turn does not re-scroll -- and re-scan the pane -- on every frame."
                          (equal e-org-canvas-input--active-turn-id turn-id)))
             (unless e-org-canvas-input--active-turn-id
               (setq-local e-org-canvas-input--active-turn-id turn-id))
-            (e-org-canvas--input-render-event buffer event)))))))
+            (e-org-canvas--input-schedule-render-event buffer event)))))))
 
 (defun e-org-canvas--input-subscribe (buffer harness session-id)
   "Subscribe BUFFER to HARNESS events for SESSION-ID."
@@ -1272,6 +1305,7 @@ in-flight turn does not re-scroll -- and re-scan the pane -- on every frame."
         (setq-local e-org-canvas-input--deferred-events nil)
         (setq-local e-org-canvas-input--final-message-rendered-p nil)
         (setq-local e-org-canvas-input--done-rendered-p nil)
+        (setq-local e-org-canvas-input--ui-render-sequence 0)
         (setq-local e-org-canvas-input--source-selection-buffer
                     (and (buffer-live-p target-buffer)
                          (with-current-buffer target-buffer

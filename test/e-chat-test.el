@@ -29,6 +29,7 @@
 (require 'e-request)
 (require 'e-store)
 (require 'e-work)
+(require 'e-ui-work)
 (require 'e-tools)
 
 (defvar evil-local-mode)
@@ -200,11 +201,28 @@
       (setq pos next))
     count))
 
-(defun e-chat-test--flush-pending-activity-redraw ()
-  "Run any pending chat activity redraw in the current buffer."
-  (when (and (boundp 'e-chat--pending-activity-redraw-turn-id)
-             e-chat--pending-activity-redraw-turn-id)
-    (e-chat--run-pending-activity-redraw)))
+(defun e-chat-test--pending-ui-work (&optional owner key)
+  "Return pending UI work for the current buffer, optionally narrowed."
+  (e-ui-work-pending (current-buffer)
+                     :owner owner
+                     :key (or key :any)))
+
+(defun e-chat-test--live-work-handle-p (handle)
+  "Return non-nil when HANDLE is a live nonterminal work handle."
+  (and (e-work-handle-p handle)
+       (not (e-request-terminal-p (e-work-handle-lifecycle handle)))))
+
+(defun e-chat-test--run-pending-ui-work (owner &optional key)
+  "Run one pending UI work job for OWNER and optional KEY in current buffer."
+  (let ((job (cl-find-if
+              (lambda (job)
+                (let ((spec (e-ui-work-job-spec job)))
+                  (and (eq (e-ui-work-spec-owner spec) owner)
+                       (or (null key)
+                           (equal (e-ui-work-spec-key spec) key)))))
+              e-ui-work--pending-jobs)))
+    (should job)
+    (e-ui-work--run-job-now job)))
 
 (defun e-chat-test--session-subscriber-count (harness session-id)
   "Return HARNESS subscriber count for SESSION-ID."
@@ -1143,7 +1161,8 @@
                             :session-id e-chat-session-id
                             :turn-id "turn-1"
                             :created-at 11))
-            (e-chat-test--flush-pending-activity-redraw)
+            (e-ui-work-with-batch-drain
+              (e-ui-work-drain-batch :buffer (current-buffer)))
             (goto-char (point-min))
             (set-window-point window (point))
             (set-window-start window (point))
@@ -2691,7 +2710,8 @@ See [[https://example.test][docs]] and [[file:notes.org]].")
             (search-forward "⠋")
             (should (get-text-property (1- (point)) 'read-only)))
           (e-chat--advance-progress-indicator)
-          (e-chat-test--flush-pending-activity-redraw)
+          (e-ui-work-with-batch-drain
+              (e-ui-work-drain-batch :buffer (current-buffer)))
           (should (string-match-p
                    (concat (regexp-quote e-chat--assistant-glyph)
                            " ⠙")
@@ -2804,7 +2824,8 @@ See [[https://example.test][docs]] and [[file:notes.org]].")
                             :turn-id "turn-1"
                             :created-at 0
                             :payload '(:status started)))
-            (e-chat-test--flush-pending-activity-redraw))
+            (e-ui-work-with-batch-drain
+              (e-ui-work-drain-batch :buffer (current-buffer))))
           (should (string-match-p "⠋ Thinking for 0min 8sec"
                                   (buffer-string)))
           (e-chat--render-event
@@ -2813,7 +2834,8 @@ See [[https://example.test][docs]] and [[file:notes.org]].")
                           :turn-id "turn-1"
                           :created-at 63
                           :payload '(:status done)))
-          (e-chat-test--flush-pending-activity-redraw)
+          (e-ui-work-with-batch-drain
+              (e-ui-work-drain-batch :buffer (current-buffer)))
           (let ((content (buffer-string)))
             (should (string-match-p "Thought for 1min 3sec" content))
             (should-not (string-match-p "Thinking\\.\\.\\." content))))
@@ -2839,7 +2861,8 @@ the orphaned region and appeared to vanish."
                             :session-id e-chat-session-id
                             :turn-id "turn-1" :created-at 0
                             :payload '(:status started)))
-            (e-chat-test--flush-pending-activity-redraw))
+            (e-ui-work-with-batch-drain
+              (e-ui-work-drain-batch :buffer (current-buffer))))
           ;; The active thinking transient is on screen.
           (should (string-match-p "Thinking for" (buffer-string)))
           ;; Turn fails.
@@ -2897,7 +2920,8 @@ the orphaned region and appeared to vanish."
                             :turn-id "turn-1"
                             :created-at 0
                             :payload '(:status started)))
-            (e-chat-test--flush-pending-activity-redraw))
+            (e-ui-work-with-batch-drain
+              (e-ui-work-drain-batch :buffer (current-buffer))))
           (let ((content (buffer-string)))
             (should (string-match-p
                      "⠋ Thinking for 0min 8sec" content))
@@ -2927,7 +2951,8 @@ the orphaned region and appeared to vanish."
           (cl-letf (((symbol-function 'e-chat--current-time-seconds)
                      (lambda (&optional _time) 15.0)))
             (e-chat--advance-progress-indicator)
-            (e-chat-test--flush-pending-activity-redraw))
+            (e-ui-work-with-batch-drain
+              (e-ui-work-drain-batch :buffer (current-buffer))))
           (let ((content (buffer-string)))
             (should (string-match-p
                      "⠙ Thinking for 0min 15sec" content))
@@ -2937,9 +2962,9 @@ the orphaned region and appeared to vanish."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest e-chat-test-active-activity-restores-missing-progress-timer ()
-  "Rendering active activity restarts a missing progress timer."
-  (let ((buffer (e-chat-test--buffer nil "chat-active-thinking-timer-restore")))
+(ert-deftest e-chat-test-active-activity-restores-missing-progress-interval ()
+  "Rendering active activity restarts a missing progress interval."
+  (let ((buffer (e-chat-test--buffer nil "chat-active-thinking-interval-restore")))
     (unwind-protect
         (with-current-buffer buffer
           (cl-letf (((symbol-function 'e-chat--current-time-seconds)
@@ -2956,7 +2981,7 @@ the orphaned region and appeared to vanish."
                             :turn-id "turn-1"
                             :created-at 0
                             :payload '(:status started))))
-          (e-chat--cancel-progress-timer)
+          (e-chat--cancel-progress-interval)
           (setq e-chat--progress-turn-id nil)
           (setq e-chat--progress-frame 0)
           (setq e-chat--progress-next-tick-time nil)
@@ -2966,11 +2991,13 @@ the orphaned region and appeared to vanish."
                        (lambda (&optional _time) 15.0)))
               (e-chat--render-turn-transient "turn-1" record))
             (should (equal e-chat--progress-turn-id "turn-1"))
-            (should (timerp e-chat--progress-timer))
+            (should (e-chat-test--live-work-handle-p
+                     e-chat--progress-interval-handle))
             (cl-letf (((symbol-function 'e-chat--current-time-seconds)
                        (lambda (&optional _time) 16.0)))
               (e-chat--advance-progress-indicator)
-              (e-chat-test--flush-pending-activity-redraw))
+              (e-ui-work-with-batch-drain
+              (e-ui-work-drain-batch :buffer (current-buffer))))
             (let ((content (buffer-string)))
               (should (string-match-p "⠙ Thinking for 0min 16sec" content))
               (should (= (e-chat-test--count-occurrences
@@ -2979,7 +3006,7 @@ the orphaned region and appeared to vanish."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest e-chat-test-progress-timer-stops-when-harness-turn-settled ()
+(ert-deftest e-chat-test-progress-interval-stops-when-harness-turn-settled ()
   "Progress ticks stop when the harness no longer has the progress turn active."
   (let ((buffer (e-chat-test--buffer nil "chat-stale-progress-turn")))
     (unwind-protect
@@ -3000,22 +3027,26 @@ the orphaned region and appeared to vanish."
                    (e-harness-active-turns e-chat-harness))
           (e-chat--advance-progress-indicator)
           (should-not e-chat--progress-turn-id)
-          (should-not (timerp e-chat--progress-timer))
+          (should-not (e-chat-test--live-work-handle-p
+                       e-chat--progress-interval-handle))
           (should-not (string-match-p "Thinking for" (buffer-string))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest e-chat-test-orphaned-progress-timer-cancels-itself ()
-  "A progress timer not owned by its buffer-local state cancels itself."
-  (let ((buffer (e-chat-test--buffer nil "chat-orphan-progress-timer"))
+(ert-deftest e-chat-test-orphaned-progress-interval-settles-itself ()
+  "A progress interval not owned by its buffer-local state settles itself."
+  (let ((buffer (e-chat-test--buffer nil "chat-orphan-progress-interval"))
+        handle
         timer)
     (unwind-protect
         (with-current-buffer buffer
           (e-chat--start-progress-indicator "turn-1")
-          (setq timer e-chat--progress-timer)
-          (setq e-chat--progress-timer nil)
+          (setq handle e-chat--progress-interval-handle)
+          (setq timer (plist-get (e-work-handle-metadata handle) :timer))
+          (setq e-chat--progress-interval-handle nil)
           (funcall (timer--function timer))
-          (should-not (memq timer timer-list)))
+          (should (e-request-terminal-p
+                   (e-work-handle-lifecycle handle))))
       (when (timerp timer)
         (cancel-timer timer))
       (when (buffer-live-p buffer)
@@ -3056,7 +3087,8 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
                           :turn-id "turn-1"
                           :created-at 12
                           :payload '(:id "call-1" :result "done")))
-          (e-chat-test--flush-pending-activity-redraw)
+          (e-ui-work-with-batch-drain
+              (e-ui-work-drain-batch :buffer (current-buffer)))
           (let ((content (buffer-string)))
             (should (string-match-p
                      "Thought for 0min 10sec +1 tool call" content))
@@ -3097,7 +3129,8 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
                             :turn-id "turn-1"
                             :created-at 20
                             :payload '(:id "call-1" :name "bash")))
-            (e-chat-test--flush-pending-activity-redraw)
+            (e-ui-work-with-batch-drain
+              (e-ui-work-drain-batch :buffer (current-buffer)))
             (let ((content (buffer-string)))
               ;; The running tool is named with its live elapsed time, and the
               ;; frozen "Thought for" text is gone from the row while it runs.
@@ -3111,7 +3144,8 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
                           :turn-id "turn-1"
                           :created-at 30
                           :payload '(:id "call-1" :result "ok")))
-          (e-chat-test--flush-pending-activity-redraw)
+          (e-ui-work-with-batch-drain
+              (e-ui-work-drain-batch :buffer (current-buffer)))
           (let ((content (buffer-string)))
             (should (string-match-p "Thought for 0min 10sec" content))
             (should-not (string-match-p "Running bash" content))
@@ -3123,7 +3157,7 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
         (kill-buffer buffer)))))
 
 (ert-deftest e-chat-test-activity-redraw-does-not-recenter ()
-  "Timer-driven activity redraws do not enter redisplay through `recenter'."
+  "Deferred activity redraws do not enter redisplay through `recenter'."
   (let ((buffer (e-chat-test--buffer nil "chat-activity-redraw-no-recenter"))
         (window nil)
         recenter-called)
@@ -3146,11 +3180,12 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
             (when-let ((bounds (e-chat--running-status-bounds)))
               (goto-char (cdr bounds))
               (set-window-point window (point))))
-          (cl-letf (((symbol-function 'recenter)
-                     (lambda (&rest _ignored)
-                       (setq recenter-called t))))
-            (with-current-buffer buffer
-              (e-chat-test--flush-pending-activity-redraw)))
+            (cl-letf (((symbol-function 'recenter)
+                       (lambda (&rest _ignored)
+                         (setq recenter-called t))))
+              (with-current-buffer buffer
+                (e-chat-test--run-pending-ui-work
+                 'activity-redraw "turn-1")))
           (should-not recenter-called))
       (when (window-live-p window)
         (delete-window window))
@@ -3182,10 +3217,14 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
                          (setq reentered t)
                          (e-chat--request-activity-redraw turn-id 'activity)
                          (e-chat--run-pending-activity-redraw)))))
-            (e-chat-test--flush-pending-activity-redraw))
+            (e-chat-test--run-pending-ui-work
+             'activity-redraw "turn-1"))
           (should (= render-count 1))
           (should (equal e-chat--pending-activity-redraw-turn-id "turn-1"))
-          (should (timerp e-chat--pending-activity-redraw-timer)))
+          (should (e-chat-test--live-work-handle-p
+                   e-chat--pending-activity-redraw-handle))
+          (should (e-chat-test--pending-ui-work
+                   'activity-redraw "turn-1")))
       (when (buffer-live-p buffer)
         (with-current-buffer buffer
           (e-chat--cancel-pending-activity-redraw))
@@ -3222,7 +3261,8 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
                             :created-at 11
                             :payload (list :id (nth 0 tool)
                                            :name (nth 1 tool)))))
-          (e-chat-test--flush-pending-activity-redraw)
+          (e-ui-work-with-batch-drain
+              (e-ui-work-drain-batch :buffer (current-buffer)))
           (let ((content (buffer-string)))
             (should (string-match-p "Running 2 tools (read, grep)" content))
             (should (string-match-p "2 tool calls" content))))
@@ -3266,7 +3306,8 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
                                      :bytes 128
                                      :lines 4
                                      :preview "installing\n")))
-          (e-chat-test--flush-pending-activity-redraw)
+          (e-ui-work-with-batch-drain
+              (e-ui-work-drain-batch :buffer (current-buffer)))
           (let ((content (buffer-string)))
             (should (string-match-p
                      "1 tool call (bash), 128 bytes output" content))))
@@ -3301,7 +3342,8 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
                           :turn-id "turn-1"
                           :created-at 20
                           :payload '(:status started)))
-          (e-chat-test--flush-pending-activity-redraw)
+          (e-ui-work-with-batch-drain
+              (e-ui-work-drain-batch :buffer (current-buffer)))
           (let ((content (buffer-string)))
             (should (string-match-p
                      (concat "Thought for 0min 10sec\n"
@@ -3349,7 +3391,8 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
                           :turn-id "turn-1"
                           :created-at 20
                           :payload '(:status started)))
-          (e-chat-test--flush-pending-activity-redraw)
+          (e-ui-work-with-batch-drain
+              (e-ui-work-drain-batch :buffer (current-buffer)))
           (goto-char (point-min))
           (search-forward e-chat--activity-separator)
           (should (eq (get-text-property (match-beginning 0) 'font-lock-face)
@@ -3381,7 +3424,8 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
                             :turn-id "turn-1"
                             :created-at 1
                             :payload '(:content "planning")))
-            (e-chat-test--flush-pending-activity-redraw))
+            (e-ui-work-with-batch-drain
+              (e-ui-work-drain-batch :buffer (current-buffer))))
           (let ((content (buffer-string)))
             (should (string-match-p
                      "⠋ Thinking for 0min 8sec\n\nplanning"
@@ -3890,12 +3934,14 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
           (with-current-buffer buffer
             (cl-letf (((symbol-function 'e-chat--current-time-seconds)
                        (lambda (&optional _time) 8.0)))
-              (e-chat-test--flush-pending-activity-redraw))
+              (e-ui-work-with-batch-drain
+                (e-ui-work-drain-batch :buffer (current-buffer))))
             (let ((content (buffer-string)))
               (should (string-match-p
                        "Thinking for 0min [0-9]+sec" content)))
             (should (equal e-chat--progress-turn-id "turn-1"))
-            (should (timerp e-chat--progress-timer))
+            (should (e-chat-test--live-work-handle-p
+                     e-chat--progress-interval-handle))
             (should (e-chat--composer-active-p))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
@@ -3920,18 +3966,20 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
           (setq buffer (e-chat-open :harness harness
                                     :session-id "chat-provider-stale-replay"))
           (with-current-buffer buffer
-            (e-chat-test--flush-pending-activity-redraw)
+            (e-ui-work-with-batch-drain
+              (e-ui-work-drain-batch :buffer (current-buffer)))
             (let ((content (buffer-string)))
               (should (string-match-p "inspect" content))
-              (should-not (string-match-p "Thinking for" content)))
+            (should-not (string-match-p "Thinking for" content)))
             (should-not e-chat--progress-turn-id)
-            (should-not (timerp e-chat--progress-timer))
+            (should-not (e-chat-test--live-work-handle-p
+                         e-chat--progress-interval-handle))
             (should (e-chat--composer-active-p))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
 (ert-deftest e-chat-test-late-progress-tick-shows-emacs-blocked-status ()
-  "A delayed progress timer tick only reports a local Emacs stall."
+  "A delayed progress interval tick only reports a local Emacs stall."
   (let ((buffer (e-chat-test--buffer nil "chat-progress-stall"))
         (e-chat-progress-interval 0.5))
     (unwind-protect
@@ -4030,7 +4078,8 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
                             :session-id e-chat-session-id
                             :turn-id "turn-1"
                             :payload '(:content "first chunk")))
-            (e-chat-test--flush-pending-activity-redraw)
+            (e-ui-work-with-batch-drain
+              (e-ui-work-drain-batch :buffer (current-buffer)))
             (goto-char (point-min))
             (search-forward "first chunk")
             (backward-word 1)
@@ -4044,7 +4093,8 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
                               :session-id e-chat-session-id
                               :turn-id "turn-1"
                               :payload '(:content "\nsecond chunk")))
-              (e-chat-test--flush-pending-activity-redraw)
+              (e-ui-work-with-batch-drain
+              (e-ui-work-drain-batch :buffer (current-buffer)))
               (should (= (point) before-point))
               (should (= (window-point window) before-window-point))
               (should (= (window-start window) before-window-start))
@@ -4079,7 +4129,8 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
                             :session-id e-chat-session-id
                             :turn-id "turn-1"
                             :payload '(:content "first chunk")))
-            (e-chat-test--flush-pending-activity-redraw)
+            (e-ui-work-with-batch-drain
+              (e-ui-work-drain-batch :buffer (current-buffer)))
             (e-chat--show-latest-output)
             (let ((old-tail (cdr (e-chat--running-status-bounds)))
                   (old-composer (marker-position e-chat--composer-start-marker)))
@@ -4092,7 +4143,8 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
                               :session-id e-chat-session-id
                               :turn-id "turn-1"
                               :payload '(:content "\nsecond chunk")))
-              (e-chat-test--flush-pending-activity-redraw)
+              (e-ui-work-with-batch-drain
+              (e-ui-work-drain-batch :buffer (current-buffer)))
               (let ((new-tail (cdr (e-chat--running-status-bounds)))
                     (new-composer (marker-position e-chat--composer-start-marker)))
                 (should new-tail)
@@ -4130,7 +4182,8 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
                             :session-id e-chat-session-id
                             :turn-id "turn-1"
                             :payload '(:content "first chunk\nsecond chunk")))
-            (e-chat-test--flush-pending-activity-redraw)
+            (e-ui-work-with-batch-drain
+              (e-ui-work-drain-batch :buffer (current-buffer)))
             (goto-char (point-min))
             (search-forward "first chunk")
             (let ((stale-point (point))
@@ -4143,18 +4196,16 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
                      '(e-chat--tail-selected-active-turn)))
                 (run-hooks 'window-configuration-change-hook))
               (with-current-buffer buffer
-                (should (timerp e-chat--tail-active-turn-timer))
-                (should (eq (car e-chat--pending-render-job-timers)
-                            e-chat--tail-active-turn-timer))
-                (let ((job (car e-chat--pending-render-jobs)))
-                  (should (eq (e-chat-render-job-owner job)
-                              'active-turn-tail))
-                  (should (equal (e-chat-render-job-key job)
+                (should (e-chat-test--live-work-handle-p
+                         e-chat--tail-active-turn-handle))
+                (let ((job (car (e-chat-test--pending-ui-work
+                                 'active-turn-tail
+                                 'selected-window))))
+                  (should job)
+                  (should (equal (plist-get job :key)
                                  'selected-window))
-                  (should (equal (e-chat-render-job-session-id job)
-                                 "chat-active-focus-tail-late"))
-                  (should (equal (e-chat-render-job-block-id job)
-                                 'active-turn-tail))))
+                  (should (equal (plist-get job :generation)
+                                 e-chat--tail-active-turn-generation))))
               (should (= (window-point window)
                          (marker-position e-chat--composer-start-marker)))
               ;; Doom workspace restoration can put the old point back after
@@ -4194,7 +4245,8 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
                           :session-id e-chat-session-id
                           :turn-id "turn-1"
                           :payload '(:content "first chunk")))
-          (e-chat-test--flush-pending-activity-redraw)
+          (e-ui-work-with-batch-drain
+              (e-ui-work-drain-batch :buffer (current-buffer)))
           (let ((bounds (e-chat--running-status-bounds))
                 (delete-region-fn (symbol-function 'delete-region))
                 (full-status-deletes 0))
@@ -4211,7 +4263,8 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
                               :session-id e-chat-session-id
                               :turn-id "turn-1"
                               :payload '(:content "\nsecond chunk")))
-              (e-chat-test--flush-pending-activity-redraw))
+              (e-ui-work-with-batch-drain
+              (e-ui-work-drain-batch :buffer (current-buffer))))
             (should (= full-status-deletes 0))
             (should (string-match-p "first chunk\nsecond chunk"
                                     (buffer-string)))))
@@ -4240,7 +4293,8 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
                e-chat-block-id "leaked-block"
                e-chat-turn-id "leaked-turn"))
             (e-chat--advance-progress-indicator)
-            (e-chat-test--flush-pending-activity-redraw)
+            (e-ui-work-with-batch-drain
+              (e-ui-work-drain-batch :buffer (current-buffer)))
             (goto-char e-chat--composer-start-marker)
             (search-forward "follow-up draft")
             (let ((position (match-beginning 0)))
@@ -4398,162 +4452,77 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
                                         :id "call-1"
                                         :name "read"
                                         :arguments (:uri "file://x"))))
-            (let ((timer e-chat--pending-activity-redraw-timer))
-              (should (timerp timer))
-              (should (eq (car e-chat--pending-render-job-timers) timer))
-              (let ((job (car e-chat--pending-render-jobs)))
-                (should (eq (e-chat-render-job-owner job)
-                            'activity-redraw))
-                (should (equal (e-chat-render-job-session-id job)
-                               e-chat-session-id))
-                (should (equal (e-chat-render-job-block-id job)
-                               "turn-1")))
+            (let ((handle e-chat--pending-activity-redraw-handle))
+              (should (e-chat-test--live-work-handle-p handle))
+              (let ((job (car (e-chat-test--pending-ui-work
+                               'activity-redraw "turn-1"))))
+                (should job)
+                (should (equal (plist-get job :key) "turn-1")))
               (should (= redraws 0))
               (e-chat--render-event
                (e-events-make :type 'reasoning-delta
                               :session-id e-chat-session-id
                               :turn-id "turn-1"
                               :payload '(:content "thinking")))
-              (should (eq e-chat--pending-activity-redraw-timer timer))
+              (should (eq e-chat--pending-activity-redraw-handle handle))
               (should (= redraws 0))
               (e-chat--run-pending-activity-redraw)
               (should (= redraws 1))
-              (should-not e-chat--pending-activity-redraw-timer)
-              (should-not e-chat--pending-render-job-timers))))
+              (should-not e-chat--pending-activity-redraw-handle)
+              (should-not (e-chat-test--pending-ui-work
+                           'activity-redraw "turn-1")))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest e-chat-test-render-job-scheduler-coalesces-owner-key ()
-  "The shared render scheduler cancels stale jobs by owner and key."
-  (let ((buffer (e-chat-test--buffer nil "chat-render-job-coalesce"))
-        (ran nil))
-    (unwind-protect
-        (with-current-buffer buffer
-          (let* ((first
-                  (e-chat--schedule-render-job
-                   60
-                   (lambda ()
-                     (push 'first ran))
-                   :owner 'test-owner
-                   :key "same"
-                   :generation 1
-                   :coalesce t))
-                 (first-job (car e-chat--pending-render-jobs))
-                 (second
-                  (e-chat--schedule-render-job
-                   60
-                   (lambda ()
-                     (push 'second ran))
-                   :owner 'test-owner
-                   :key "same"
-                   :generation 2
-                   :block-id "block-2"
-                   :coalesce t))
-                 (second-job (car e-chat--pending-render-jobs)))
-            (should (timerp first))
-            (should-not (memq first e-chat--pending-render-job-timers))
-            (should-not (memq first-job e-chat--pending-render-jobs))
-            (should (timerp second))
-            (should (memq second e-chat--pending-render-job-timers))
-            (should (= 1 (length e-chat--pending-render-jobs)))
-            (should (eq (e-chat-render-job-owner second-job) 'test-owner))
-            (should (equal (e-chat-render-job-key second-job) "same"))
-            (should (equal (e-chat-render-job-generation second-job) 2))
-            (should (equal (e-chat-render-job-session-id second-job)
-                           "chat-render-job-coalesce"))
-            (should (equal (e-chat-render-job-block-id second-job)
-                           "block-2"))
-            (should (e-work-handle-p
-                     (e-chat-render-job-work-handle second-job)))
-            (funcall (timer--function second))
-            (should (equal ran '(second)))
-            (should-not e-chat--pending-render-jobs)
-            (should-not e-chat--pending-render-job-timers)))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
-
-(ert-deftest e-chat-test-render-job-diagnostics-track-pending-jobs ()
-  "Opt-in render-job diagnostics show grouped pending work in the header."
-  (let ((buffer (e-chat-test--buffer nil "chat-render-job-diagnostics"))
-        (e-chat-render-job-diagnostics t))
+(ert-deftest e-chat-test-ui-work-diagnostics-track-pending-work ()
+  "Opt-in UI work diagnostics show grouped pending work in the header."
+  (let ((buffer (e-chat-test--buffer nil "chat-ui-work-diagnostics"))
+        (e-chat-ui-work-diagnostics t))
     (unwind-protect
         (with-current-buffer buffer
           (e-chat--set-status "idle")
-          (should-not (string-match-p "render" header-line-format))
-          (let ((first (e-chat--schedule-render-job
-                        60
-                        #'ignore
-                        :owner 'markdown-presentation
-                        :key "one"
-                        :generation 1))
-                (second (e-chat--schedule-render-job
-                         60
-                         #'ignore
-                         :owner 'activity-redraw
-                         :key "two"
-                         :generation 2)))
-            (should (string-match-p "render 2" header-line-format))
+          (should-not (string-match-p "ui" header-line-format))
+          (let ((first (e-ui-work-schedule
+                        (e-ui-work-spec-create
+                         :id "chat_test_markdown"
+                         :description "Test pending markdown UI work."
+                         :owner 'markdown-presentation
+                         :target-buffer (current-buffer)
+                         :key "one"
+                         :generation 1
+                         :delay 60
+                         :focus-policy 'preserve
+                         :reentrancy-policy 'defer
+                         :apply #'ignore)
+                        :on-event (lambda (&rest _)
+                                    (e-chat--refresh-ui-work-diagnostics))))
+                (second (e-ui-work-schedule
+                         (e-ui-work-spec-create
+                          :id "chat_test_activity"
+                          :description "Test pending activity UI work."
+                          :owner 'activity-redraw
+                          :target-buffer (current-buffer)
+                          :key "two"
+                          :generation 2
+                          :delay 60
+                          :focus-policy 'preserve
+                          :reentrancy-policy 'defer
+                          :apply #'ignore)
+                         :on-event (lambda (&rest _)
+                                     (e-chat--refresh-ui-work-diagnostics)))))
+            (e-chat--refresh-ui-work-diagnostics)
+            (should (string-match-p "ui 2" header-line-format))
             (should (string-match-p "activity-redraw:1" header-line-format))
             (should (string-match-p
                      "markdown-presentation:1" header-line-format))
-            (e-chat--cancel-render-job-timer first)
-            (should (string-match-p "render 1" header-line-format))
+            (e-ui-work-cancel first)
+            (e-chat--refresh-ui-work-diagnostics)
+            (should (string-match-p "ui 1" header-line-format))
             (should-not (string-match-p
                          "markdown-presentation:1" header-line-format))
-            (funcall (timer--function second))
-            (should-not (string-match-p "render" header-line-format))))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
-
-(ert-deftest e-chat-test-render-work-items-honor-budget ()
-  "Budgeted render work processes bounded items per scheduler tick."
-  (let ((buffer (e-chat-test--buffer nil "chat-render-work-budget"))
-        (rendered nil)
-        (scheduled nil)
-        (finished nil))
-    (unwind-protect
-        (with-current-buffer buffer
-          (let* ((first
-                  (e-chat--schedule-render-work-items
-                   60
-                   '(one two three)
-                   (lambda (item)
-                     (push item rendered))
-                   :budget 2
-                   :owner 'test-work
-                   :key "budget"
-                   :generation 4
-                   :block-id "work-block"
-                   :on-schedule
-                   (lambda (timer)
-                     (push timer scheduled))
-                   :on-finish
-                   (lambda ()
-                     (setq finished t))))
-                 (first-job (car e-chat--pending-render-jobs)))
-            (should (timerp first))
-            (should (eq (car scheduled) first))
-            (should (eq (e-chat-render-job-owner first-job) 'test-work))
-            (should (equal (e-chat-render-job-key first-job) "budget"))
-            (should (equal (e-chat-render-job-generation first-job) 4))
-            (should (equal (e-chat-render-job-session-id first-job)
-                           "chat-render-work-budget"))
-            (should (equal (e-chat-render-job-block-id first-job)
-                           "work-block"))
-            (funcall (timer--function first))
-            (should (equal (nreverse (copy-sequence rendered))
-                           '(one two)))
-            (should-not finished)
-            (should (= 1 (length e-chat--pending-render-jobs)))
-            (let ((second (car scheduled)))
-              (should (timerp second))
-              (should-not (eq second first))
-              (funcall (timer--function second)))
-            (should (equal (nreverse rendered)
-                           '(one two three)))
-            (should finished)
-            (should-not e-chat--pending-render-jobs)
-            (should-not e-chat--pending-render-job-timers)))
+            (e-ui-work-cancel second)
+            (e-chat--refresh-ui-work-diagnostics)
+            (should-not (string-match-p "ui" header-line-format))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -4666,11 +4635,13 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
                        (setq redraws (1+ redraws)))))
             (e-chat--advance-progress-indicator)
             (should (= redraws 0))
-            (should (timerp e-chat--pending-activity-redraw-timer))
-            (should (eq (car e-chat--pending-render-job-timers)
-                        e-chat--pending-activity-redraw-timer))
+            (should (e-chat-test--live-work-handle-p
+                     e-chat--pending-activity-redraw-handle))
+            (should (e-chat-test--pending-ui-work
+                     'activity-redraw "turn-1"))
             (e-chat--run-pending-activity-redraw)
-            (should-not e-chat--pending-render-job-timers)
+            (should-not (e-chat-test--pending-ui-work
+                         'activity-redraw "turn-1"))
             (should (= redraws 1))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
@@ -4701,7 +4672,8 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
                          (setq inserts (1+ inserts))
                          (apply insert-composer args))))
               (e-chat--advance-progress-indicator)
-              (e-chat-test--flush-pending-activity-redraw))
+              (e-ui-work-with-batch-drain
+              (e-ui-work-drain-batch :buffer (current-buffer))))
             (should (= deletes 0))
             (should (= inserts 0))
             (should (e-chat--composer-active-p))
@@ -4778,21 +4750,17 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
                         (get-text-property (1- (point)) 'face))))
             (should (memq 'e-chat-final-assistant-face faces))
             (should-not (memq 'e-chat-markdown-strong-face faces)))
-          (should e-chat--pending-markdown-presentation-timers)
-          (should e-chat--pending-render-job-timers)
-          (should (eq (car e-chat--pending-markdown-presentation-timers)
-                      (car e-chat--pending-render-job-timers)))
-          (let ((job (car e-chat--pending-render-jobs)))
-            (should (eq (e-chat-render-job-owner job)
-                        'markdown-presentation))
-            (should (equal (e-chat-render-job-session-id job)
-                           "chat-final-markdown-deferred"))
-            (should (equal (e-chat-render-job-block-id job)
-                           "block-1")))
+          (let ((pending (e-chat-test--pending-ui-work
+                          'markdown-presentation)))
+            (should (= (length pending) 1))
+            (should (equal (plist-get (car pending) :key)
+                           e-chat--markdown-presentation-generation))
+            (should (e-chat-test--live-work-handle-p
+                     (plist-get (car pending) :handle))))
           (should (e-chat-test--wait-until
                    (lambda ()
-                     (not e-chat--pending-markdown-presentation-timers))))
-          (should-not e-chat--pending-render-job-timers)
+                     (not (e-chat-test--pending-ui-work
+                           'markdown-presentation)))))
           (goto-char (point-min))
           (search-forward "bold")
           (let ((faces (ensure-list
@@ -4823,11 +4791,13 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
               (e-chat--insert-entry
                "Assistant"
                "Use **one**\nUse **two**\nUse **three**.")
-              (should e-chat--pending-markdown-presentation-timers)
+              (should (e-chat-test--pending-ui-work
+                       'markdown-presentation))
               (should
                (e-chat-test--wait-until
                 (lambda ()
-                  (not e-chat--pending-markdown-presentation-timers))))
+                  (not (e-chat-test--pending-ui-work
+                        'markdown-presentation)))))
               (should (> chunks 1))
               (goto-char (point-min))
               (search-forward "three")
@@ -4851,13 +4821,13 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
             (e-chat--insert-entry
              "Assistant"
              "Use **bold** and `code`.")
-            (should e-chat--pending-markdown-presentation-timers)
-            (should e-chat--pending-render-job-timers)
+            (should (e-chat-test--pending-ui-work
+                     'markdown-presentation))
             (e-chat--clear)
             (accept-process-output nil 0.05)
             (should (= calls 0))
-            (should-not e-chat--pending-markdown-presentation-timers)
-            (should-not e-chat--pending-render-job-timers)))
+            (should-not (e-chat-test--pending-ui-work
+                         'markdown-presentation))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -5226,7 +5196,8 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
                           :payload '(:type tool-call
                                       :id "call-1"
                                       :name "read")))
-          (e-chat-test--flush-pending-activity-redraw)
+          (e-ui-work-with-batch-drain
+              (e-ui-work-drain-batch :buffer (current-buffer)))
           (goto-char (point-min))
           (search-forward "1 tool call")
           (call-interactively #'e-chat-enter-response-navigation)
@@ -5311,7 +5282,8 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
                             :payload (list :type 'tool-call
                                            :id (nth 0 tool)
                                            :name (nth 1 tool)))))
-          (e-chat-test--flush-pending-activity-redraw)
+          (e-ui-work-with-batch-drain
+              (e-ui-work-drain-batch :buffer (current-buffer)))
           (goto-char (point-min))
           (search-forward "2 tool calls")
           (call-interactively #'e-chat-enter-response-navigation)
@@ -5320,7 +5292,8 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
           (call-interactively #'e-chat-tool-list-next)
           (should (= e-chat--tool-list-index 1))
           (e-chat--advance-progress-indicator)
-          (e-chat-test--flush-pending-activity-redraw)
+          (e-ui-work-with-batch-drain
+              (e-ui-work-drain-batch :buffer (current-buffer)))
           (should e-chat-tool-list-mode)
           (should (= e-chat--tool-list-index 1))
           (should (string-match-p "write"
@@ -8893,16 +8866,14 @@ The context-window denominator comes from the live provider lookup
             (e-session-append-message store "loaded-backfill" message))
           (setq buffer (e-chat-open-session harness "loaded-backfill"))
           (with-current-buffer buffer
-            (should (timerp e-chat--loaded-session-backfill-timer))
-            (should (memq e-chat--loaded-session-backfill-timer
-                          e-chat--pending-render-job-timers))
-            (let ((job (car e-chat--pending-render-jobs)))
-              (should (eq (e-chat-render-job-owner job)
-                          'loaded-session-backfill))
-              (should (equal (e-chat-render-job-session-id job)
-                             "loaded-backfill"))
-              (should (equal (e-chat-render-job-block-id job)
-                             'loaded-session-backfill)))
+            (should (e-chat-test--live-work-handle-p
+                     e-chat--loaded-session-backfill-handle))
+            (let ((pending (e-chat-test--pending-ui-work
+                            'loaded-session-backfill
+                            "loaded-backfill")))
+              (should (= (length pending) 1))
+              (should (eq (plist-get (car pending) :handle)
+                          e-chat--loaded-session-backfill-handle)))
             (goto-char (point-max))
             (insert "next")
             (should (equal (e-chat--composer-text) "next"))
@@ -8915,8 +8886,11 @@ The context-window denominator comes from the live provider lookup
             (lambda ()
               (with-current-buffer buffer
                 (let ((text (buffer-string)))
-                  (and (not (timerp e-chat--loaded-session-backfill-timer))
-                       (not e-chat--pending-render-job-timers)
+                  (and (not (e-chat-test--live-work-handle-p
+                             e-chat--loaded-session-backfill-handle))
+                       (not (e-chat-test--pending-ui-work
+                             'loaded-session-backfill
+                             "loaded-backfill"))
                        (string-match-p "first prompt" text)
                        (string-match-p "first response" text)
                        (string-match-p "middle prompt" text)

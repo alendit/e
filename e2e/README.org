@@ -20,6 +20,12 @@ Deterministic Work API e2e tests run without live credentials:
 E_E2E=1 rtk eldev test -f e2e/e-work-e2e-test.el
 #+end_src
 
+Deterministic UI Work e2e tests run without live credentials:
+
+#+begin_src sh
+E_E2E=1 rtk eldev test -f e2e/e-ui-work-e2e-test.el
+#+end_src
+
 The live suite exercises the same runtime path against a real provider API.  It
 is not part of the default unit-test run.
 

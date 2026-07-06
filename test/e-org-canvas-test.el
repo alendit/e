@@ -28,6 +28,7 @@
 (require 'e-session)
 (require 'e-shells)
 (require 'e-tools)
+(require 'e-ui-work)
 
 (require 'e-org-canvas nil t)
 (require 'e-org-canvas-capabilities nil t)
@@ -58,6 +59,11 @@
       (with-current-buffer buffer
         (when (derived-mode-p 'e-chat-mode)
           (kill-buffer buffer))))))
+
+(defun e-org-canvas-test--drain-ui-work (buffer)
+  "Drain pending UI work for BUFFER in batch-only test context."
+  (e-ui-work-with-batch-drain
+    (e-ui-work-drain-batch :buffer buffer)))
 
 (defun e-org-canvas-test--org-file (directory name)
   "Create an Org file NAME in DIRECTORY and return its path."
@@ -1180,6 +1186,7 @@
                   :turn-id "turn-1"
                   :created-at 0
                   :payload '(:reason done)))
+                (e-org-canvas-test--drain-ui-work input)
                 (should-not mark-active))
             (when (buffer-live-p input)
               (kill-buffer input))))))))
@@ -1285,14 +1292,14 @@
                          :type 'turn-started
                          :session-id "session-1"
                          :turn-id "turn-1"
-                         :created-at 0))
+                         :created-at (float-time)))
                        (e-harness--emit
                         harness
                         (e-events-make
                          :type 'provider-request-started
                          :session-id "session-1"
                          :turn-id "turn-1"
-                         :created-at 0
+                         :created-at (float-time)
                          :payload '(:status started)))
                        "turn-1"))
                     ((symbol-function 'e-workspace-pop-to-buffer)
@@ -1301,10 +1308,12 @@
               (goto-char (point-max))
               (insert "expand this")
               (e-org-canvas-input-submit)
+              (e-org-canvas-test--drain-ui-work buffer)
               (e-chat--run-pending-activity-redraw)
               (should (equal e-org-canvas-input--active-turn-id "turn-1"))
               (should-not (e-chat--composer-active-p))
-              (should (string-match-p "Thinking" (buffer-string))))))
+              (should (string-match-p "Thought for\\|Thinking"
+                                      (buffer-string))))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -1354,6 +1363,7 @@
               :created-at (1+ index)
               :payload (list :type 'reasoning-delta
                              :content (format "step-%d\n" index)))))
+          (e-org-canvas-test--drain-ui-work input)
           (with-current-buffer input
             (e-chat--run-pending-activity-redraw))
           (with-current-buffer input
@@ -1369,6 +1379,47 @@
       (dolist (buffer (list input target))
         (when (buffer-live-p buffer)
           (kill-buffer buffer))))))
+
+(ert-deftest e-org-canvas-test-input-events-schedule-ui-work ()
+  "Org Canvas input result events schedule UI work instead of rendering inline."
+  (let* ((harness (e-org-canvas-test--harness))
+         (target (get-buffer-create "org-canvas-ui-work-target"))
+         buffer)
+    (e-harness-create-session harness :id "session-1")
+    (unwind-protect
+        (progn
+          (setq buffer
+                (e-org-canvas--input-buffer
+                 :harness harness
+                 :session-id "session-1"
+                 :scope 'document
+                 :target-buffer target))
+          (e-org-canvas--input-handle-event
+           buffer
+           (e-events-make
+            :type 'message-added
+            :session-id "session-1"
+            :turn-id "turn-1"
+            :created-at 0
+            :payload '(:message (:role assistant
+                                  :content "Scheduled answer."))))
+          (with-current-buffer buffer
+            (should (equal e-org-canvas-input--active-turn-id "turn-1"))
+            (should-not (string-match-p "Scheduled answer." (buffer-string)))
+            (let ((pending (e-ui-work-pending
+                            buffer :owner 'org-canvas-input-render)))
+              (should (= (length pending) 1))
+              (should (equal (plist-get (car pending) :key)
+                             '("turn-1" 1)))))
+          (e-org-canvas-test--drain-ui-work buffer)
+          (with-current-buffer buffer
+            (should (string-match-p "Scheduled answer." (buffer-string)))
+            (should-not (e-ui-work-pending
+                         buffer :owner 'org-canvas-input-render))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (when (buffer-live-p target)
+        (kill-buffer target)))))
 
 (ert-deftest e-org-canvas-test-input-pane_shows_done_on_terminal_turn_without_final_message ()
   "Submitted input panes show a done line when a turn has no assistant output."
@@ -1397,6 +1448,7 @@
             :session-id "session-1"
             :turn-id "turn-1"
             :payload '(:reason done)))
+          (e-org-canvas-test--drain-ui-work buffer)
           (with-current-buffer buffer
             (should-not (string-match-p "Status:" (buffer-string)))
             (should-not (e-chat--composer-active-p))
@@ -1444,6 +1496,7 @@
             :turn-id "turn-1"
             :created-at 2
             :payload '(:reason done)))
+          (e-org-canvas-test--drain-ui-work buffer)
           (with-current-buffer buffer
             (should (string-match-p "Here is the result." (buffer-string)))
             (should-not (string-match-p "✓ Done" (buffer-string)))
@@ -1459,8 +1512,8 @@
       (when (buffer-live-p target)
         (kill-buffer target)))))
 
-(ert-deftest e-org-canvas-test-input-pane_follows_bottom_on_timer_redraw ()
-  "Timer-driven running-status redraws keep the input pane pinned to output.
+(ert-deftest e-org-canvas-test-input-pane_follows_bottom_on_interval_redraw ()
+  "Interval-driven running-status redraws keep the input pane pinned to output.
 Regression: progress redraws bypass harness event dispatch, so the pane
 relied on `e-chat--running-status-rendered-hook' to follow the bottom."
   (let* ((harness (e-org-canvas-test--harness))
