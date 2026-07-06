@@ -20,6 +20,7 @@
 (require 'e-hooks)
 (require 'e-operations)
 (require 'e-resource-patterns)
+(require 'e-resource-query)
 (require 'e-request)
 (require 'e-resources)
 (require 'e-tools)
@@ -283,22 +284,60 @@ OK-STATUSES defaults to only zero."
       (file-relative-name path scope)
     (file-name-nondirectory path)))
 
+(defun e-session-tmp--file-metadata (path &optional query-metadata)
+  "Return resource metadata for tmp PATH.
+When QUERY-METADATA is non-nil, include sortable timestamp metadata."
+  (let ((attributes (file-attributes path)))
+    (append (list :bytes (file-attribute-size attributes))
+            (when query-metadata
+              (list :updated-at
+                    (file-attribute-modification-time attributes))))))
+
+(defun e-session-tmp--file-result (relative absolute scope &optional query-metadata)
+  "Return tmp resource result for RELATIVE ABSOLUTE under SCOPE.
+When QUERY-METADATA is non-nil, include sortable timestamp metadata."
+  (list :uri (concat "tmp://" relative)
+        :name (e-session-tmp--result-name absolute scope)
+        :kind 'file
+        :metadata (e-session-tmp--file-metadata absolute query-metadata)))
+
+(defun e-session-tmp--query-field-functions ()
+  "Return tmp:// resource query field functions."
+  `(("name" . ,(lambda (resource) (plist-get resource :name)))
+    ("uri" . ,(lambda (resource) (plist-get resource :uri)))
+    ("updated-at" . ,(lambda (resource)
+                         (plist-get (plist-get resource :metadata) :updated-at)))))
+
+(defun e-session-tmp--apply-query
+    (resources sort-by sort-order created-after created-before
+               updated-after updated-before)
+  "Apply tmp:// query controls to RESOURCES."
+  (e-resource-query-apply
+   resources
+   "tmp"
+   '("default" "name" "uri" "updated-at")
+   '("updated-at")
+   :sort-by sort-by
+   :sort-order sort-order
+   :created-after created-after
+   :created-before created-before
+   :updated-after updated-after
+   :updated-before updated-before
+   :field-functions (e-session-tmp--query-field-functions)))
+
 (defun e-session-tmp--glob-single-result
-    (scope scope-relative pattern case-sensitive)
+    (scope scope-relative pattern case-sensitive &optional query-metadata)
   "Return a single tmp glob result for SCOPE, or nil if it does not match."
   (when (and (file-regular-p scope)
              (e-resource-pattern-glob-match-p
               pattern
               (file-name-nondirectory scope-relative)
               case-sensitive))
-    (let ((attributes (file-attributes scope)))
-      (list :uri (concat "tmp://" scope-relative)
-            :name (file-name-nondirectory scope)
-            :kind 'file
-            :metadata (list :bytes (file-attribute-size attributes))))))
+    (e-session-tmp--file-result scope-relative scope scope query-metadata)))
 
 (defun e-session-tmp--glob-resource
-    (harness session-id uri pattern limit case-sensitive)
+    (harness session-id uri pattern limit case-sensitive &optional sort-by sort-order
+             created-after created-before updated-after updated-before)
   "List tmp resources under parsed URI with PATTERN and LIMIT."
   (let* ((root (e-session-tmp-directory harness session-id))
          (scope (e-session-tmp--scope-path harness session-id uri))
@@ -307,18 +346,24 @@ OK-STATUSES defaults to only zero."
          (fd-pattern (e-resource-pattern-glob-fd-pattern actual-pattern))
          (fd-max-depth (e-resource-pattern-glob-max-depth actual-pattern))
          (actual-limit (e-session-tmp--discovery-limit limit))
+         (advanced (or sort-by sort-order created-after created-before
+                       updated-after updated-before))
          (actual-case-sensitive (if (null case-sensitive) t case-sensitive)))
     (e-resource-pattern-compile-glob actual-pattern)
     (if (file-regular-p scope)
-        (list :resources
-              (if-let ((single (e-session-tmp--glob-single-result
-                                scope
-                                scope-relative
-                                actual-pattern
-                                actual-case-sensitive)))
-                  (vector single)
-                [])
-              :truncated nil)
+        (let* ((resources (if-let ((single (e-session-tmp--glob-single-result
+                                            scope
+                                            scope-relative
+                                            actual-pattern
+                                            actual-case-sensitive
+                                            advanced)))
+                              (list single)
+                            nil))
+               (queried (e-session-tmp--apply-query
+                         resources sort-by sort-order created-after created-before
+                         updated-after updated-before)))
+          (list :resources (vconcat queried)
+                :truncated nil))
       (let* ((lines (e-session-tmp--process-lines
                      (e-session-tmp--find-executable "fd" '("fdfind"))
                      root
@@ -327,8 +372,9 @@ OK-STATUSES defaults to only zero."
                             "--color" "never"
                             "--base-directory" root
                             "--search-path" scope-relative
-                            "--type" "file"
-                            "--max-results" (number-to-string (1+ actual-limit)))
+                            "--type" "file")
+                      (unless advanced
+                        (list "--max-results" (number-to-string (1+ actual-limit))))
                       (when fd-max-depth
                         (list "--max-depth" (number-to-string fd-max-depth)))
                       (list (if actual-case-sensitive
@@ -346,20 +392,19 @@ OK-STATUSES defaults to only zero."
                     name
                     actual-case-sensitive)))
                lines))
-             (truncated (> (length filtered) actual-limit))
-             (selected (seq-take filtered actual-limit)))
-        (list :resources
-	      (vconcat
-	       (mapcar
-	        (lambda (relative)
-                  (let* ((relative (e-session-tmp--clean-relative-path relative))
-                         (absolute (expand-file-name relative root))
-                         (attributes (file-attributes absolute)))
-                    (list :uri (concat "tmp://" relative)
-                          :name (e-session-tmp--result-name absolute scope)
-                          :kind 'file
-                          :metadata (list :bytes (file-attribute-size attributes)))))
-	                selected))
+             (resources
+              (mapcar
+               (lambda (relative)
+                 (let* ((relative (e-session-tmp--clean-relative-path relative))
+                        (absolute (expand-file-name relative root)))
+                   (e-session-tmp--file-result relative absolute scope advanced)))
+               filtered))
+             (queried (e-session-tmp--apply-query
+                       resources sort-by sort-order created-after created-before
+                       updated-after updated-before))
+             (truncated (> (length queried) actual-limit))
+             (selected (seq-take queried actual-limit)))
+        (list :resources (vconcat selected)
 	      :truncated truncated)))))
 
 (defun e-session-tmp--glob-content
@@ -423,9 +468,77 @@ OK-STATUSES defaults to only zero."
                 :column (1+ start)
                 :text line-text))))))
 
+(defun e-session-tmp--search-advanced-p (options)
+  "Return non-nil when OPTIONS contains tmp resource candidate controls."
+  (seq-some (lambda (key) (plist-member options key))
+            '(:resource-sort-by :resource-sort-order :resource-limit
+              :created-after :created-before :updated-after :updated-before)))
+
+(defun e-session-tmp--search-one-advanced (resource query options root)
+  "Return search matches for RESOURCE using Emacs search."
+  (let* ((uri (plist-get resource :uri))
+         (relative (string-remove-prefix "tmp://" uri))
+         (path (expand-file-name relative root))
+         (case-fold-search (not (plist-get options :case-sensitive)))
+         (regexp (e-resource-pattern-search-emacs-regexp query options))
+         matches)
+    (when (file-regular-p path)
+      (with-temp-buffer
+        (insert-file-contents path)
+        (goto-char (point-min))
+        (catch 'done
+          (while (re-search-forward regexp nil t)
+            (let ((start (match-beginning 0))
+                  (end (match-end 0)))
+              (push (list :uri uri
+                          :line (line-number-at-pos start)
+                          :column (1+ (- start (line-beginning-position)))
+                          :text (buffer-substring-no-properties
+                                 (line-beginning-position)
+                                 (line-end-position)))
+                    matches)
+              (when (= start end)
+                (if (eobp)
+                    (throw 'done nil)
+                  (forward-char 1))))))))
+    (nreverse matches)))
+
+(defun e-session-tmp--search-resource-advanced
+    (harness session-id uri query options)
+  "Search tmp resources with resource-level controls in OPTIONS."
+  (let* ((root (e-session-tmp-directory harness session-id))
+         (resource-limit (e-resource-query-resource-limit
+                          (plist-get options :resource-limit)))
+         (resource-result (e-session-tmp--glob-resource
+                           harness
+                           session-id
+                           uri
+                           (plist-get options :glob)
+                           (or resource-limit most-positive-fixnum)
+                           t
+                           (plist-get options :resource-sort-by)
+                           (plist-get options :resource-sort-order)
+                           (plist-get options :created-after)
+                           (plist-get options :created-before)
+                           (plist-get options :updated-after)
+                           (plist-get options :updated-before)))
+         (resources (append (plist-get resource-result :resources) nil))
+         (actual-limit (e-session-tmp--discovery-limit
+                        (plist-get options :limit)))
+         matches)
+    (dolist (resource resources)
+      (setq matches
+            (append matches
+                    (e-session-tmp--search-one-advanced
+                     resource query options root))))
+    (list :matches (vconcat (seq-take matches actual-limit))
+          :truncated (> (length matches) actual-limit))))
+
 (defun e-session-tmp--search-resource (harness session-id uri query options)
   "Search tmp resources under parsed URI for QUERY with OPTIONS."
-  (let* ((root (e-session-tmp-directory harness session-id))
+  (if (e-session-tmp--search-advanced-p options)
+      (e-session-tmp--search-resource-advanced harness session-id uri query options)
+    (let* ((root (e-session-tmp-directory harness session-id))
          (scope (e-session-tmp--scope-path harness session-id uri))
          (scope-relative (e-session-tmp--scope-relative-name uri))
          (glob-pattern (plist-get options :glob))
@@ -459,7 +572,7 @@ OK-STATUSES defaults to only zero."
           (push match matches)))
       (setq matches (nreverse matches))
 	      (list :matches (vconcat (seq-take matches actual-limit))
-	            :truncated (> (length matches) actual-limit)))))
+	            :truncated (> (length matches) actual-limit))))))
 
 (defun e-session-tmp--search-content
     (lines root scope glob-pattern actual-limit)
@@ -481,7 +594,7 @@ OK-STATUSES defaults to only zero."
   "Return process command for tmp glob WORK-ARGUMENTS."
   (let ((uri (plist-get work-arguments :uri))
         (arguments (plist-get work-arguments :operation-arguments)))
-    (pcase-let ((`(,pattern ,limit ,case-sensitive) arguments))
+    (pcase-let ((`(,pattern ,limit ,case-sensitive . ,query-arguments) arguments))
       (let* ((root (e-session-tmp-directory harness session-id))
              (scope (e-session-tmp--scope-path harness session-id uri))
              (scope-relative (e-session-tmp--scope-relative-name uri))
@@ -489,6 +602,7 @@ OK-STATUSES defaults to only zero."
              (fd-pattern (e-resource-pattern-glob-fd-pattern actual-pattern))
              (fd-max-depth (e-resource-pattern-glob-max-depth actual-pattern))
              (actual-limit (e-session-tmp--discovery-limit limit))
+             (advanced (seq-some #'identity query-arguments))
              (actual-case-sensitive (if (null case-sensitive) t case-sensitive))
              (metadata (list :operation 'glob :scheme "tmp")))
         (e-resource-pattern-compile-glob actual-pattern)
@@ -499,29 +613,36 @@ OK-STATUSES defaults to only zero."
                                           scope
                                           scope-relative
                                           actual-pattern
-                                          actual-case-sensitive)))
+                                          actual-case-sensitive
+                                          advanced)))
                             (vector single)
                           [])
                         :truncated nil)
                   :metadata metadata)
-          (list :program (e-session-tmp--find-executable "fd" '("fdfind"))
-                :directory root
-                :args (append
-                       (list "--glob"
-                             "--color" "never"
-                             "--base-directory" root
-                             "--search-path" scope-relative
-                             "--type" "file"
-                             "--max-results" (number-to-string
-                                              (1+ actual-limit)))
+          (if advanced
+              (list :immediate
+                    (apply #'e-session-tmp--glob-resource
+                           harness session-id uri pattern limit case-sensitive
+                           query-arguments)
+                    :metadata metadata)
+            (list :program (e-session-tmp--find-executable "fd" '("fdfind"))
+                  :directory root
+                  :args (append
+                         (list "--glob"
+                               "--color" "never"
+                               "--base-directory" root
+                               "--search-path" scope-relative
+                               "--type" "file"
+                               "--max-results" (number-to-string
+                                                (1+ actual-limit)))
                        (when fd-max-depth
                          (list "--max-depth"
                                (number-to-string fd-max-depth)))
                        (list (if actual-case-sensitive
                                  "--case-sensitive"
                                "--ignore-case"))
-                       (list fd-pattern))
-                :metadata metadata))))))
+                         (list fd-pattern))
+                  :metadata metadata)))))))
 
 (defun e-session-tmp--glob-work-result
     (harness session-id raw work-arguments _context)
@@ -530,20 +651,24 @@ OK-STATUSES defaults to only zero."
       raw
     (let ((uri (plist-get work-arguments :uri))
           (arguments (plist-get work-arguments :operation-arguments)))
-      (pcase-let ((`(,pattern ,limit ,case-sensitive) arguments))
+      (pcase-let ((`(,pattern ,limit ,case-sensitive . ,query-arguments) arguments))
         (let* ((root (e-session-tmp-directory harness session-id))
                (scope (e-session-tmp--scope-path harness session-id uri))
                (actual-pattern (or pattern "*"))
                (actual-limit (e-session-tmp--discovery-limit limit))
                (actual-case-sensitive
                 (if (null case-sensitive) t case-sensitive)))
-          (e-session-tmp--glob-content
-           (plist-get raw :lines)
-           root
-           scope
-           actual-pattern
-           actual-case-sensitive
-           actual-limit))))))
+          (if query-arguments
+              (apply #'e-session-tmp--glob-resource
+                     harness session-id uri pattern limit case-sensitive
+                     query-arguments)
+            (e-session-tmp--glob-content
+             (plist-get raw :lines)
+             root
+             scope
+             actual-pattern
+             actual-case-sensitive
+             actual-limit)))))))
 
 (defun e-session-tmp--glob-work (harness session-id)
   "Return tmp glob work spec for HARNESS SESSION-ID."
@@ -582,11 +707,15 @@ OK-STATUSES defaults to only zero."
                     (list "-e" query-regexp scope-relative))))
         (when glob-pattern
           (e-resource-pattern-compile-glob glob-pattern))
-        (list :program (e-session-tmp--find-executable "rg")
-              :directory root
-              :args args
-              :ok-statuses '(0 1)
-              :metadata (list :operation 'search :scheme "tmp"))))))
+        (if (e-session-tmp--search-advanced-p options)
+            (list :immediate
+                  (e-session-tmp--search-resource harness session-id uri query options)
+                  :metadata (list :operation 'search :scheme "tmp"))
+          (list :program (e-session-tmp--find-executable "rg")
+                :directory root
+                :args args
+                :ok-statuses '(0 1)
+                :metadata (list :operation 'search :scheme "tmp")))))))
 
 (defun e-session-tmp--search-work-result
     (harness session-id raw work-arguments _context)
@@ -827,14 +956,21 @@ root and is suitable for streaming writes."
    :description "List ephemeral session-scoped temporary text resources."
    :uri-patterns '("tmp://<relative-path-or-directory>"
                    "tmp://")
-   :handler (lambda (uri pattern limit case-sensitive)
+   :handler (lambda (uri pattern limit case-sensitive sort-by sort-order
+                     created-after created-before updated-after updated-before)
               (e-session-tmp--glob-resource
                harness
                session-id
                uri
                pattern
                limit
-               case-sensitive))
+               case-sensitive
+               sort-by
+               sort-order
+               created-after
+               created-before
+               updated-after
+               updated-before))
    :work (e-session-tmp--glob-work harness session-id)))
   (e-resources-register
    registry

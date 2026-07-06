@@ -15,6 +15,7 @@
 (require 'cl-lib)
 (require 'e-operations)
 (require 'e-resource-patterns)
+(require 'e-resource-query)
 (require 'e-resources)
 (require 'seq)
 (require 'subr-x)
@@ -186,24 +187,54 @@ and optional range."
    ((and (numberp limit) (> limit 0)) (truncate limit))
    (t (signal 'wrong-type-argument (list 'positive-number-p limit)))))
 
-(defun e-store-glob (store uri pattern limit case-sensitive)
+(defun e-store--entry-resource (entry root-address)
+  "Return resource result for ENTRY under ROOT-ADDRESS."
+  (append
+   (list :uri (e-store-entry-uri entry)
+         :name (e-store--entry-name entry root-address)
+         :kind 'resource)
+   (when-let ((metadata (e-store-entry-metadata entry)))
+     (list :metadata (copy-sequence metadata)))))
+
+(defun e-store--query-field-functions ()
+  "Return e:// resource query field functions."
+  `(("name" . ,(lambda (resource) (plist-get resource :name)))
+    ("uri" . ,(lambda (resource) (plist-get resource :uri)))))
+
+(defun e-store--query-resources (resources &rest arguments)
+  "Apply e:// query controls to RESOURCES using ARGUMENTS."
+  (apply #'e-resource-query-apply
+         resources
+         "e"
+         '("default" "name" "uri")
+         nil
+         :field-functions (e-store--query-field-functions)
+         arguments))
+
+(defun e-store-glob
+    (store uri pattern limit case-sensitive &optional sort-by sort-order
+           created-after created-before updated-after updated-before)
   "List STORE resources under parsed URI with PATTERN and LIMIT."
   (let* ((root-address (e-store--root-address uri))
          (actual-limit (e-store--discovery-limit limit))
-         (entries (e-store--matching-entries
-                   store
-                   uri
-                   pattern
-                   case-sensitive))
+         (resources (mapcar
+                     (lambda (entry)
+                       (e-store--entry-resource entry root-address))
+                     (e-store--matching-entries
+                      store
+                      uri
+                      pattern
+                      case-sensitive)))
+         (entries (e-store--query-resources
+                   resources
+                   :sort-by sort-by
+                   :sort-order sort-order
+                   :created-after created-after
+                   :created-before created-before
+                   :updated-after updated-after
+                   :updated-before updated-before))
          (truncated (> (length entries) actual-limit)))
-    (list :resources
-          (vconcat
-           (mapcar
-            (lambda (entry)
-              (list :uri (e-store-entry-uri entry)
-                    :name (e-store--entry-name entry root-address)
-                    :kind 'resource))
-            (seq-take entries actual-limit)))
+    (list :resources (vconcat (seq-take entries actual-limit))
           :truncated truncated)))
 
 (defun e-store--current-line-text ()
@@ -238,14 +269,31 @@ and optional range."
 
 (defun e-store-search (store uri query options)
   "Search STORE resources under parsed URI for QUERY with OPTIONS."
-  (let* ((actual-limit (e-store--discovery-limit
+  (let* ((root-address (e-store--root-address uri))
+         (actual-limit (e-store--discovery-limit
                         (plist-get options :limit)))
          (entries (e-store--matching-entries
                    store
                    uri
                    (plist-get options :glob)
                    t))
+         (entry-by-uri (make-hash-table :test 'equal))
          matches)
+    (dolist (entry entries)
+      (puthash (e-store-entry-uri entry) entry entry-by-uri))
+    (setq entries
+          (delq nil
+                (mapcar (lambda (resource)
+                          (gethash (plist-get resource :uri) entry-by-uri))
+                        (e-resource-query-apply-search
+                         (mapcar (lambda (entry)
+                                   (e-store--entry-resource entry root-address))
+                                 entries)
+                         "e"
+                         '("default" "name" "uri")
+                         nil
+                         options
+                         (e-store--query-field-functions)))))
     (dolist (entry entries)
       (setq matches
             (append matches
@@ -278,8 +326,11 @@ and optional range."
    :uri-patterns '("e://<capability>"
                    "e://<capability>/<path>"
                    "e://")
-   :handler (lambda (uri pattern limit case-sensitive)
-              (e-store-glob store uri pattern limit case-sensitive))))
+   :handler (lambda (uri pattern limit case-sensitive sort-by sort-order
+                         created-after created-before updated-after updated-before)
+              (e-store-glob store uri pattern limit case-sensitive
+                            sort-by sort-order created-after created-before
+                            updated-after updated-before))))
 
 (defun e-store-search-resource-method (store)
   "Return a search e:// resource method backed by STORE."

@@ -136,14 +136,33 @@ nested tool arguments (notably Bedrock) are reparsed against the tool schema in
                               :case-sensitive (:type "boolean"
                                                :description "When non-nil or omitted, match the glob pattern case-sensitively.")
                               :limit (:type "number"
-                                      :description "Maximum number of resources to return."))
+                                      :description "Maximum number of resources to return.")
+                              :sort-by (:type "string"
+                                        :description "Optional resource metadata field to sort by, such as default, name, uri, created-at, updated-at, or a scheme-specific field.")
+                              :sort-order (:type "string"
+                                           :enum ["desc" "asc"]
+                                           :description "Optional sort order. Defaults to desc for explicit sort fields.")
+                              :created-after (:type "string"
+                                              :description "Inclusive ISO 8601 created-at lower bound, when the scheme supports it.")
+                              :created-before (:type "string"
+                                               :description "Inclusive ISO 8601 created-at upper bound, when the scheme supports it.")
+                              :updated-after (:type "string"
+                                              :description "Inclusive ISO 8601 updated-at lower bound, when the scheme supports it.")
+                              :updated-before (:type "string"
+                                               :description "Inclusive ISO 8601 updated-at upper bound, when the scheme supports it."))
                  :required ["uri"])
    :dispatch (lambda (call arguments)
                (funcall call
                         (e-operations--argument-string arguments :uri)
                         (plist-get arguments :pattern)
                         (plist-get arguments :limit)
-                        (plist-get arguments :case-sensitive)))))
+                        (plist-get arguments :case-sensitive)
+                        (plist-get arguments :sort-by)
+                        (plist-get arguments :sort-order)
+                        (plist-get arguments :created-after)
+                        (plist-get arguments :created-before)
+                        (plist-get arguments :updated-after)
+                        (plist-get arguments :updated-before)))))
 
 (defconst e-operation-search
   (e-operation-create
@@ -164,7 +183,22 @@ nested tool arguments (notably Bedrock) are reparsed against the tool schema in
                               :multiline (:type "boolean"
                                           :description "When non-nil, whitespace gaps may cross line boundaries.")
                               :limit (:type "number"
-                                      :description "Maximum number of matches to return."))
+                                      :description "Maximum number of text matches to return.")
+                              :resource-sort-by (:type "string"
+                                                 :description "Optional resource metadata field used to order resource candidates before search.")
+                              :resource-sort-order (:type "string"
+                                                    :enum ["desc" "asc"]
+                                                    :description "Optional resource candidate sort order.")
+                              :resource-limit (:type "number"
+                                               :description "Optional maximum number of resource candidates to search before returning text matches.")
+                              :created-after (:type "string"
+                                              :description "Inclusive ISO 8601 created-at lower bound for resource candidates, when the scheme supports it.")
+                              :created-before (:type "string"
+                                               :description "Inclusive ISO 8601 created-at upper bound for resource candidates, when the scheme supports it.")
+                              :updated-after (:type "string"
+                                              :description "Inclusive ISO 8601 updated-at lower bound for resource candidates, when the scheme supports it.")
+                              :updated-before (:type "string"
+                                               :description "Inclusive ISO 8601 updated-at upper bound for resource candidates, when the scheme supports it."))
                  :required ["uri" "query"])
    :dispatch (lambda (call arguments)
                (funcall call
@@ -173,7 +207,10 @@ nested tool arguments (notably Bedrock) are reparsed against the tool schema in
                         (e-operations--present-options
                          arguments
                          '(:glob :case-sensitive :whole-word
-                           :multiline :limit))))))
+                           :multiline :limit :resource-sort-by
+                           :resource-sort-order :resource-limit
+                           :created-after :created-before
+                           :updated-after :updated-before))))))
 
 (defconst e-operations-standard
   (list e-operation-read

@@ -13,6 +13,7 @@
 
 (require 'cl-lib)
 (require 'e-operations)
+(require 'seq)
 
 (define-error 'e-resources-invalid-uri "Resource URI is invalid")
 (define-error 'e-resources-unknown-scheme "Resource URI scheme is not registered")
@@ -111,6 +112,28 @@ registers one or more methods in REGISTRY."
                 (list (format "Unknown resource URI scheme: %s" scheme)))))
     method))
 
+(defun e-resources--function-max-args (function)
+  "Return FUNCTION's maximum arity, or t when unbounded or unknown."
+  (let ((arity (ignore-errors (func-arity function))))
+    (cond
+     ((consp arity) (cdr arity))
+     ((integerp arity) arity)
+     (t t))))
+
+(defun e-resources--compatible-arguments (method operation handler arguments)
+  "Return ARGUMENTS adjusted for source-compatible older METHOD handlers."
+  (if (not (eq (e-operation-id-of operation) 'glob))
+      arguments
+    (let ((extra (nthcdr 3 arguments))
+          (max-args (e-resources--function-max-args handler)))
+      (cond
+       ((or (eq max-args t) (>= max-args 10)) arguments)
+       ((seq-some #'identity extra)
+        (signal 'e-resources-unsupported-operation
+                (list (format "Resource scheme %s does not support advanced glob query controls"
+                              (e-resource-method-scheme method)))))
+       (t (seq-take arguments 3))))))
+
 (defun e-resources-call (registry operation uri &rest arguments)
   "Call OPERATION for URI in REGISTRY with ARGUMENTS."
   (let* ((parsed-uri (e-resources-parse-uri uri))
@@ -121,7 +144,9 @@ registers one or more methods in REGISTRY."
               (list (format "Resource scheme %s does not support %s"
                             (e-resource-method-scheme method)
                             (e-operation-id-of operation)))))
-    (apply handler parsed-uri arguments)))
+    (apply handler parsed-uri
+           (e-resources--compatible-arguments
+            method operation handler arguments))))
 
 (defun e-resources-read (registry uri &optional range)
   "Read URI from REGISTRY with optional RANGE."
@@ -135,10 +160,16 @@ registers one or more methods in REGISTRY."
   "Apply EDITS to URI through REGISTRY."
   (e-resources-call registry e-operation-edit uri edits))
 
-(defun e-resources-glob (registry uri &optional pattern limit case-sensitive)
+(defun e-resources-glob
+    (registry uri &optional pattern limit case-sensitive sort-by sort-order
+              created-after created-before updated-after updated-before)
   "List resources under URI through REGISTRY.
-PATTERN and LIMIT are optional.  CASE-SENSITIVE defaults to non-nil."
-  (e-resources-call registry e-operation-glob uri pattern limit case-sensitive))
+PATTERN and LIMIT are optional.  CASE-SENSITIVE defaults to non-nil.
+SORT-BY, SORT-ORDER, CREATED-AFTER, CREATED-BEFORE, UPDATED-AFTER, and
+UPDATED-BEFORE are optional scheme-supported query controls."
+  (e-resources-call registry e-operation-glob uri pattern limit case-sensitive
+                    sort-by sort-order created-after created-before
+                    updated-after updated-before))
 
 (defun e-resources-search (registry uri query &optional options)
   "Search URI through REGISTRY for QUERY with optional OPTIONS."

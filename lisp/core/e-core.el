@@ -18,6 +18,7 @@
 (require 'e-events)
 (require 'e-operations)
 (require 'e-resource-patterns)
+(require 'e-resource-query)
 (require 'e-resources)
 (require 'e-resource-coherence)
 (require 'e-request)

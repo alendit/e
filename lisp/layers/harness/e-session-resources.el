@@ -19,6 +19,7 @@
 (require 'e-harness)
 (require 'e-operations)
 (require 'e-resource-patterns)
+(require 'e-resource-query)
 (require 'e-resources)
 (require 'e-session)
 
@@ -462,8 +463,63 @@ session id as their second argument."
                       pattern value case-sensitive)))
               values)))
 
+(defun e-session-resources--entry-updated-at (entry)
+  "Return session ENTRY updated timestamp using documented fallbacks."
+  (let ((metadata (plist-get entry :metadata)))
+    (or (plist-get metadata :last-message-at)
+        (plist-get metadata :updated-at)
+        (plist-get metadata :created-at))))
+
+(defun e-session-resources--query-field-functions ()
+  "Return session:// resource query field functions."
+  `(("name" . ,(lambda (entry) (plist-get entry :name)))
+    ("uri" . ,(lambda (entry) (plist-get entry :uri)))
+    ("title" . ,(lambda (entry) (plist-get (plist-get entry :metadata) :title)))
+    ("id" . ,(lambda (entry) (plist-get (plist-get entry :metadata) :id)))
+    ("created-at" . ,(lambda (entry)
+                         (plist-get (plist-get entry :metadata) :created-at)))
+    ("updated-at" . ,#'e-session-resources--entry-updated-at)
+    ("last-message-at" . ,(lambda (entry)
+                              (plist-get (plist-get entry :metadata)
+                                         :last-message-at)))))
+
+(defun e-session-resources--apply-session-query
+    (entries sort-by sort-order created-after created-before
+             updated-after updated-before)
+  "Apply session query controls to session ENTRIES."
+  (e-resource-query-apply
+   entries
+   "session"
+   '("default" "last-message-at" "updated-at" "created-at" "title" "id" "name" "uri")
+   '("created-at" "updated-at")
+   :sort-by sort-by
+   :sort-order sort-order
+   :created-after created-after
+   :created-before created-before
+   :updated-after updated-after
+   :updated-before updated-before
+   :field-functions (e-session-resources--query-field-functions)))
+
+(defun e-session-resources--apply-simple-query
+    (entries sort-by sort-order created-after created-before
+             updated-after updated-before)
+  "Apply simple session:// query controls to non-session ENTRIES."
+  (e-resource-query-apply
+   entries
+   "session"
+   '("default" "name" "uri")
+   nil
+   :sort-by sort-by
+   :sort-order sort-order
+   :created-after created-after
+   :created-before created-before
+   :updated-after updated-after
+   :updated-before updated-before
+   :field-functions (e-session-resources--query-field-functions)))
+
 (defun e-session-resources--glob-engines
-    (harness pattern limit case-sensitive)
+    (harness pattern limit case-sensitive &optional sort-by sort-order
+             created-after created-before updated-after updated-before)
   "Glob enabled engines for HARNESS."
   (let* ((actual-limit (e-session-resources--limit limit))
          (actual-case-sensitive (if (null case-sensitive) t case-sensitive))
@@ -475,12 +531,16 @@ session id as their second argument."
                       (plist-get (plist-get entry :metadata) :display-name)))
                    (mapcar #'e-session-resources--engine-entry
                            (e-session-resources--engines harness))))
-         (selected (seq-take entries actual-limit)))
+         (queried (e-session-resources--apply-simple-query
+                   entries sort-by sort-order created-after created-before
+                   updated-after updated-before))
+         (selected (seq-take queried actual-limit)))
     (list :resources (vconcat selected)
-          :truncated (> (length entries) actual-limit))))
+          :truncated (> (length queried) actual-limit))))
 
 (defun e-session-resources--glob-sessions
-    (engine pattern limit case-sensitive)
+    (engine pattern limit case-sensitive &optional sort-by sort-order
+            created-after created-before updated-after updated-before)
   "Glob sessions for ENGINE."
   (let* ((actual-limit (e-session-resources--limit limit))
          (actual-case-sensitive (if (null case-sensitive) t case-sensitive))
@@ -496,12 +556,16 @@ session id as their second argument."
                               engine session))
                            (e-session-resources--engine-list-sessions
                             engine))))
-         (selected (seq-take entries actual-limit)))
+         (queried (e-session-resources--apply-session-query
+                   entries sort-by sort-order created-after created-before
+                   updated-after updated-before))
+         (selected (seq-take queried actual-limit)))
     (list :resources (vconcat selected)
-          :truncated (> (length entries) actual-limit))))
+          :truncated (> (length queried) actual-limit))))
 
 (defun e-session-resources--glob-projections
-    (engine session-id pattern limit case-sensitive)
+    (engine session-id pattern limit case-sensitive &optional sort-by sort-order
+            created-after created-before updated-after updated-before)
   "Glob projections for ENGINE SESSION-ID."
   (let* ((actual-limit (e-session-resources--limit limit))
          (actual-case-sensitive (if (null case-sensitive) t case-sensitive))
@@ -515,26 +579,33 @@ session id as their second argument."
                               engine session-id projection))
                            (e-session-resources--engine-projections
                             engine session-id))))
-         (selected (seq-take entries actual-limit)))
+         (queried (e-session-resources--apply-simple-query
+                   entries sort-by sort-order created-after created-before
+                   updated-after updated-before))
+         (selected (seq-take queried actual-limit)))
     (list :resources (vconcat selected)
-          :truncated (> (length entries) actual-limit))))
+          :truncated (> (length queried) actual-limit))))
 
 (defun e-session-resources--glob
-    (harness uri pattern limit case-sensitive)
+    (harness uri pattern limit case-sensitive &optional sort-by sort-order
+             created-after created-before updated-after updated-before)
   "Glob parsed session URI for HARNESS."
   (e-session-resources--require-harness harness)
   (pcase (e-session-resources--segments uri)
     ('()
      (e-session-resources--glob-engines
-      harness pattern limit case-sensitive))
+      harness pattern limit case-sensitive sort-by sort-order
+      created-after created-before updated-after updated-before))
     (`(,engine-id "sessions")
      (e-session-resources--glob-sessions
       (e-session-resources--find-engine harness engine-id)
-      pattern limit case-sensitive))
+      pattern limit case-sensitive sort-by sort-order
+      created-after created-before updated-after updated-before))
     (`(,engine-id "sessions" ,session-id)
      (e-session-resources--glob-projections
       (e-session-resources--find-engine harness engine-id)
-      session-id pattern limit case-sensitive))
+      session-id pattern limit case-sensitive sort-by sort-order
+      created-after created-before updated-after updated-before))
     (_
      (signal 'e-session-resources-invalid-uri
              (list (format "Invalid session glob root: %s"
@@ -629,15 +700,54 @@ projections."
              (list (format "Invalid session search root: %s"
                            (plist-get uri :uri)))))))
 
+(defun e-session-resources--search-target-resource (target index)
+  "Return resource candidate for session search TARGET at INDEX."
+  (let* ((engine (plist-get target :engine))
+         (session (plist-get target :session))
+         (session-id (e-session-resources--session-id session))
+         (projection (plist-get target :projection))
+         (engine-id (e-session-resource-engine-id engine))
+         (entry (e-session-resources--session-entry engine session)))
+    (append (copy-sequence entry)
+            (list :uri (e-session-resources--projection-uri
+                        engine-id session-id projection)
+                  :projection projection
+                  :index index))))
+
+(defun e-session-resources--query-search-targets (targets options)
+  "Apply resource candidate controls in OPTIONS to session search TARGETS."
+  (let ((target-by-index (make-hash-table :test 'eql))
+        resources
+        (index 0))
+    (dolist (target targets)
+      (puthash index target target-by-index)
+      (push (e-session-resources--search-target-resource target index) resources)
+      (setq index (1+ index)))
+    (setq resources (nreverse resources))
+    (delq nil
+          (mapcar (lambda (resource)
+                    (gethash (plist-get resource :index) target-by-index))
+                  (e-resource-query-apply-search
+                   resources
+                   "session"
+                   '("default" "last-message-at" "updated-at" "created-at"
+                     "title" "id" "name" "uri")
+                   '("created-at" "updated-at")
+                   options
+                   (e-session-resources--query-field-functions))))))
+
 (defun e-session-resources--search (harness uri query options)
   "Search parsed session URI for HARNESS."
   (e-session-resources--require-harness harness)
   (let* ((actual-limit (e-session-resources--limit (plist-get options :limit)))
          (collection-limit (1+ actual-limit))
          (glob-pattern (plist-get options :glob))
+         (targets (e-session-resources--query-search-targets
+                   (e-session-resources--search-targets
+                    harness uri (and glob-pattern t))
+                   options))
          matches)
-    (dolist (target (e-session-resources--search-targets
-                     harness uri (and glob-pattern t)))
+    (dolist (target targets)
       (let* ((engine (plist-get target :engine))
              (session (plist-get target :session))
              (session-id (e-session-resources--session-id session))
@@ -691,9 +801,11 @@ projections."
              :uri-patterns '("session://"
                              "session://<engine-id>/sessions/"
                              "session://<engine-id>/sessions/<session-id>/")
-             :handler (lambda (uri pattern limit case-sensitive)
+             :handler (lambda (uri pattern limit case-sensitive sort-by sort-order
+                               created-after created-before updated-after updated-before)
                         (e-session-resources--glob
-                         harness uri pattern limit case-sensitive)))
+                         harness uri pattern limit case-sensitive sort-by sort-order
+                         created-after created-before updated-after updated-before)))
             (e-resource-method-create
              :scheme "session"
              :operation e-operation-search

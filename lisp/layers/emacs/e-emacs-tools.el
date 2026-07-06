@@ -17,6 +17,7 @@
 (require 'subr-x)
 (require 'e-operations)
 (require 'e-resource-patterns)
+(require 'e-resource-query)
 (require 'e-resources)
 (require 'e-tools)
 
@@ -81,6 +82,47 @@ runs a separate process."
           :file-backed (and buffer-file-name t)
           :modified (buffer-modified-p buffer)
           :visible (e-emacs-tools--buffer-visible-p buffer))))
+
+(defun e-emacs-tools--buffer-updated-at (buffer)
+  "Return reliable BUFFER updated time, or nil."
+  (with-current-buffer buffer
+    (when (and buffer-file-name (file-exists-p buffer-file-name))
+      (file-attribute-modification-time (file-attributes buffer-file-name)))))
+
+(defun e-emacs-tools--buffer-resource (buffer)
+  "Return public resource result for BUFFER."
+  (let ((name (buffer-name buffer)))
+    (list :uri (concat "buffer://" name)
+          :name name
+          :kind 'buffer
+          :metadata (append (e-emacs-tools--buffer-metadata buffer)
+                            (when-let ((updated-at
+                                        (e-emacs-tools--buffer-updated-at buffer)))
+                              (list :updated-at updated-at))))))
+
+(defun e-emacs-tools--buffer-query-field-functions ()
+  "Return buffer:// resource query field functions."
+  `(("name" . ,(lambda (resource) (plist-get resource :name)))
+    ("uri" . ,(lambda (resource) (plist-get resource :uri)))
+    ("updated-at" . ,(lambda (resource)
+                         (plist-get (plist-get resource :metadata) :updated-at)))))
+
+(defun e-emacs-tools--buffer-apply-query
+    (resources sort-by sort-order created-after created-before
+               updated-after updated-before)
+  "Apply buffer:// query controls to RESOURCES."
+  (e-resource-query-apply
+   resources
+   "buffer"
+   '("default" "name" "uri" "updated-at")
+   '("updated-at")
+   :sort-by sort-by
+   :sort-order sort-order
+   :created-after created-after
+   :created-before created-before
+   :updated-after updated-after
+   :updated-before updated-before
+   :field-functions (e-emacs-tools--buffer-query-field-functions)))
 
 (defun e-emacs-tools-buffer-metadata-list (&optional visible-only)
   "Return metadata for live buffers.
@@ -281,24 +323,20 @@ When VISIBLE-ONLY is non-nil, include only buffers visible in windows."
           (push buffer buffers))))))
 
 (defun e-emacs-tools--buffer-glob-resource
-    (uri pattern limit case-sensitive)
+    (uri pattern limit case-sensitive &optional sort-by sort-order
+         created-after created-before updated-after updated-before)
   "List live buffer resources under parsed URI with PATTERN and LIMIT."
   (let* ((actual-limit (e-emacs-tools--discovery-limit limit))
-         (buffers (e-emacs-tools--buffer-resource-candidates
-                   uri
-                   pattern
-                   case-sensitive))
-         (truncated (> (length buffers) actual-limit)))
-    (list :resources
-          (vconcat
-           (mapcar
-            (lambda (buffer)
-              (let ((name (buffer-name buffer)))
-                (list :uri (concat "buffer://" name)
-                      :name name
-                      :kind 'buffer
-                      :metadata (e-emacs-tools--buffer-metadata buffer))))
-            (seq-take buffers actual-limit)))
+         (resources (mapcar #'e-emacs-tools--buffer-resource
+                            (e-emacs-tools--buffer-resource-candidates
+                             uri
+                             pattern
+                             case-sensitive)))
+         (queried (e-emacs-tools--buffer-apply-query
+                   resources sort-by sort-order created-after created-before
+                   updated-after updated-before))
+         (truncated (> (length queried) actual-limit)))
+    (list :resources (vconcat (seq-take queried actual-limit))
           :truncated truncated)))
 
 (defun e-emacs-tools--current-line-text ()
@@ -338,7 +376,21 @@ When VISIBLE-ONLY is non-nil, include only buffers visible in windows."
                    uri
                    (plist-get options :glob)
                    t))
+         (buffer-by-name (make-hash-table :test 'equal))
          matches)
+    (dolist (buffer buffers)
+      (puthash (buffer-name buffer) buffer buffer-by-name))
+    (setq buffers
+          (delq nil
+                (mapcar (lambda (resource)
+                          (gethash (plist-get resource :name) buffer-by-name))
+                        (e-resource-query-apply-search
+                         (mapcar #'e-emacs-tools--buffer-resource buffers)
+                         "buffer"
+                         '("default" "name" "uri" "updated-at")
+                         '("updated-at")
+                         options
+                         (e-emacs-tools--buffer-query-field-functions)))))
     (dolist (buffer buffers)
       (setq matches
             (append matches
@@ -418,7 +470,11 @@ When VISIBLE-ONLY is non-nil, include only buffers visible in windows."
    :operation e-operation-glob
    :description "Live Emacs buffers by name prefix and glob pattern."
    :uri-patterns '("buffer://<optional-buffer-name-prefix>")
-   :handler #'e-emacs-tools--buffer-glob-resource))
+   :handler (lambda (uri pattern limit case-sensitive sort-by sort-order
+                     created-after created-before updated-after updated-before)
+              (e-emacs-tools--buffer-glob-resource
+               uri pattern limit case-sensitive sort-by sort-order
+               created-after created-before updated-after updated-before))))
 
 (defun e-emacs-tools--buffer-search-method ()
   "Return a buffer search resource method."

@@ -67,3 +67,4 @@ Status values for coding agents:
 | 54 | Planned | 54-activity-log-view/ | e Activity Log View |
 | 55 | Done | 55-generic-work-api/ | Generic Work API |
 | 56 | Done | 56-session-resource/ | Session Resource |
+| 57 | Planned | 57-resource-query-controls/ | Resource Query Controls |
