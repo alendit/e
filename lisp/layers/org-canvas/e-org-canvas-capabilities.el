@@ -480,11 +480,25 @@ Returns TEXT trimmed as a single element when no interior break is found."
       (push (string-trim (substring text start)) result))
     (or (nreverse (delete "" result)) (list (string-trim text)))))
 
+(defun e-org-canvas--paragraph-indent-column (element)
+  "Return the continuation-line indent column for paragraph ELEMENT.
+Paragraphs inside a list item indent to the item body column so wrapped
+sentences align under the item text rather than under its bullet or the
+`::' of a description item.  Top-level paragraphs indent to their own start
+column."
+  (let ((item (org-element-lineage element '(item) t)))
+    (if item
+        (org-list-item-body-column (org-element-property :begin item))
+      (save-excursion
+        (goto-char (org-element-property :contents-begin element))
+        (current-column)))))
+
 (defun e-org-canvas--paragraph-regions (buffer)
-  "Return prose paragraph (BEGIN . END) regions in BUFFER, latest first.
+  "Return prose paragraph (BEGIN END . INDENT) regions in BUFFER, latest first.
 Only `paragraph' elements are collected, so source blocks, tables, example and
-verse blocks, and keywords are left untouched.  Regions are sorted descending so
-editing one does not shift the positions of those not yet processed."
+verse blocks, and keywords are left untouched.  INDENT is the continuation-line
+indent column.  Regions are sorted descending so editing one does not shift the
+positions of those not yet processed."
   (with-current-buffer buffer
     (let (regions)
       (org-element-map (org-element-parse-buffer) 'paragraph
@@ -492,16 +506,16 @@ editing one does not shift the positions of those not yet processed."
           (let ((begin (org-element-property :contents-begin element))
                 (end (org-element-property :contents-end element)))
             (when (and begin end)
-              (push (cons begin end) regions)))))
+              (push (list begin end (e-org-canvas--paragraph-indent-column element))
+                    regions)))))
       (sort regions (lambda (a b) (> (car a) (car b)))))))
 
-(defun e-org-canvas--reflow-region (begin end)
+(defun e-org-canvas--reflow-region (begin end indent)
   "Rewrite the paragraph text between BEGIN and END to one sentence per line.
 Joins the existing physical lines, re-splits into sentences, and indents
-continuation lines to the paragraph's body column so list items stay attached.
+continuation lines to INDENT columns so list items stay attached.
 Returns non-nil when the buffer text actually changed."
-  (let* ((indent (save-excursion (goto-char begin) (current-column)))
-         (prefix (make-string indent ?\s))
+  (let* ((prefix (make-string indent ?\s))
          (raw (buffer-substring-no-properties begin end))
          (trailing-newline (string-suffix-p "\n" raw))
          (body (string-trim-right raw "\n"))
@@ -526,7 +540,8 @@ and returns the number of paragraphs whose text changed."
       (org-save-outline-visibility t
         (save-excursion
           (dolist (region (e-org-canvas--paragraph-regions (current-buffer)))
-            (when (e-org-canvas--reflow-region (car region) (cdr region))
+            (when (e-org-canvas--reflow-region
+                   (nth 0 region) (nth 1 region) (nth 2 region))
               (setq changed (1+ changed))))))
       changed)))
 
