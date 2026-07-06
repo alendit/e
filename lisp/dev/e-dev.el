@@ -12,6 +12,7 @@
 ;;; Code:
 
 (require 'e)
+(require 'seq)
 
 (defgroup e-dev nil
   "Interactive development helpers for e."
@@ -68,6 +69,58 @@
 
 (defvar e-dev--reload-required-entries nil
   "Pending explicit reload requests for the running Emacs.")
+
+(defconst e-dev--bytecode-scan-directories
+  '("lisp" "test" "e2e")
+  "Checkout-local directories scanned for stale e bytecode.")
+
+(defun e-dev--bytecode-source-file (bytecode-file)
+  "Return the source file corresponding to BYTECODE-FILE."
+  (concat (file-name-sans-extension bytecode-file) ".el"))
+
+(defun e-dev--stale-bytecode-file-p (bytecode-file)
+  "Return non-nil when BYTECODE-FILE is older than its source file."
+  (let ((source (e-dev--bytecode-source-file bytecode-file)))
+    (and (file-exists-p source)
+         (file-newer-than-file-p source bytecode-file))))
+
+(defun e-dev--bytecode-candidates (root)
+  "Return checkout-local bytecode candidates under ROOT."
+  (let ((candidates nil)
+        (entrypoint (expand-file-name "e.elc" root)))
+    (when (file-exists-p entrypoint)
+      (push entrypoint candidates))
+    (dolist (directory e-dev--bytecode-scan-directories)
+      (let ((path (expand-file-name directory root)))
+        (when (file-directory-p path)
+          (setq candidates
+                (append (directory-files-recursively path "\\.elc\\'")
+                        candidates)))))
+    (sort candidates #'string<)))
+
+;;;###autoload
+(defun e-dev-stale-bytecode-files (&optional directory)
+  "Return stale byte-compiled e files under DIRECTORY.
+DIRECTORY defaults to `e-dev-source-directory'."
+  (let ((root (file-name-as-directory
+               (expand-file-name (or directory e-dev-source-directory)))))
+    (seq-filter #'e-dev--stale-bytecode-file-p
+                (e-dev--bytecode-candidates root))))
+
+;;;###autoload
+(defun e-dev-clean-stale-bytecode (&optional directory)
+  "Delete stale byte-compiled e files under DIRECTORY.
+DIRECTORY defaults to `e-dev-source-directory'.  Only `.elc' files whose
+corresponding `.el' source is newer are removed."
+  (interactive)
+  (let ((files (e-dev-stale-bytecode-files directory)))
+    (dolist (file files)
+      (delete-file file))
+    (when (called-interactively-p 'interactive)
+      (message "Deleted %d stale e bytecode file%s"
+               (length files)
+               (if (= (length files) 1) "" "s")))
+    files))
 
 (defun e-dev--clear-obsolete-functions ()
   "Remove stale obsolete function bindings after a live reload."
@@ -230,18 +283,20 @@ compile files, run startup hooks, or interrupt active work."
                   "lisp/dev/e-dev-profile.el"
                   "lisp/dev/e-dev-perf.el"
                   "lisp/dev/e-dev.el")))
-    (dolist (file files)
-      (load (expand-file-name file root) nil 'nomessage))
-    (e-dev--clear-obsolete-functions)
-    (e-dev--clear-obsolete-variables)
-    (e-dev--reevaluate-uncustomized-defaults)
-    (when (fboundp 'e-project-local-reset-loaded-files)
-      ;; Project-local factory files are loaded once per session and skipped
-      ;; on later opens; forget them so this reload picks up edits on next open.
-      (e-project-local-reset-loaded-files))
-    (load (expand-file-name "e.el" root) nil 'nomessage)
-    (when (fboundp 'e-startup-run)
-      (e-startup-run))
+    (e-dev-clean-stale-bytecode root)
+    (let ((load-prefer-newer t))
+      (dolist (file files)
+        (load (expand-file-name file root) nil 'nomessage))
+      (e-dev--clear-obsolete-functions)
+      (e-dev--clear-obsolete-variables)
+      (e-dev--reevaluate-uncustomized-defaults)
+      (when (fboundp 'e-project-local-reset-loaded-files)
+        ;; Project-local factory files are loaded once per session and skipped
+        ;; on later opens; forget them so this reload picks up edits on next open.
+        (e-project-local-reset-loaded-files))
+      (load (expand-file-name "e.el" root) nil 'nomessage)
+      (when (fboundp 'e-startup-run)
+        (e-startup-run)))
     (e-dev-clear-reload-required)
     (message "Reloaded e from %s"
              (abbreviate-file-name root))

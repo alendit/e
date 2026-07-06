@@ -1,0 +1,49 @@
+#+title: Stale Bytecode Loads Old Action API Investigation
+#+startup: overview
+
+* Evidence
+
+- Source grep of =lisp/= found no current =:caller= action descriptors.
+- Focused batch tests for action dispatch, default harness creation, and Org
+  Canvas layer registration passed against the source checkout.
+- A bounded live probe showed the running Emacs had current source definitions
+  for the inspected symbols, but =*Messages*= contained:
+
+#+begin_src text
+Source file ... newer than byte-compiled file; using older file
+cond: Keyword argument :handler not one of (:description :parameters :requires-session :tool-metadata :work)
+cond: Keyword argument :caller not one of (:description :parameters :requires-session :tool-metadata :work)
+#+end_src
+
+- The checkout contained ignored source-adjacent =.elc= files under =lisp/=,
+  =e2e/=, and the package entry point =e.elc=.
+
+* Conclusion
+
+The broken live behavior was caused by stale bytecode, not by a remaining
+source callsite.  Emacs defaults =load-prefer-newer= to nil, so a stale =.elc=
+can win over a newer =.el= and reintroduce removed APIs after source tests pass.
+
+This is structural for a live-edited Emacs runtime: stale bytecode is a
+cross-cutting compatibility hazard whenever core records or public descriptors
+change shape.
+
+* Fix
+
+- Mark =e.el= as =no-byte-compile= so the package entry point does not become a
+  stale bootstrapping artifact.
+- Add =e-dev-stale-bytecode-files= and =e-dev-clean-stale-bytecode=.
+- Make =e-dev-reload= delete stale checkout-local bytecode before reloading and
+  bind =load-prefer-newer= while loading.
+- Add a unit test for stale-bytecode cleanup.
+- Add an opt-in e2e checkout invariant:
+  =e-dev-bytecode-e2e-test-checkout-has-no-stale-bytecode=.
+
+* Validation
+
+Run:
+
+#+begin_src sh
+eldev test -f test/e-test.el e-test-dev-clean-stale-bytecode-removes-only-stale-elc
+E_E2E=1 eldev test -f e2e/e-dev-bytecode-e2e-test.el
+#+end_src

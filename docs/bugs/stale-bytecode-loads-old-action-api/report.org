@@ -1,0 +1,19 @@
+#+title: Stale Bytecode Loads Old Action API
+#+startup: overview
+
+* Report
+
+After the action/work API migration, interactive Emacs showed errors such as:
+
+#+begin_src text
+Keyword argument :caller not one of (:description :parameters :requires-session :tool-metadata :work)
+#+end_src
+
+and:
+
+#+begin_src text
+Keyword argument :handler not one of (:description :parameters :requires-session :tool-metadata :work)
+#+end_src
+
+The source checkout no longer contained those legacy action descriptors, but
+the running Emacs still failed when using =e= from the checkout.

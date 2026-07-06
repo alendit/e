@@ -9,6 +9,7 @@ State values for coding agents:
 | State  | Path | Title |
 |--------+------+-------|
 | New    | mid-turn-auto-compaction-no-boundary/ | Mid-turn Auto Compaction No Boundary |
+| Closed | stale-bytecode-loads-old-action-api/ | Stale bytecode loads old action API |
 | Closed | e-chat-activity-redraw-recenter-loop/ | e-chat activity redraw recenter loop |
 | Closed | e-loop-stale-tool-request-hangs-turn/ | e-loop stale tool request hangs turn |
 | Closed | run-elisp-large-result-hangs-emacs/ | run_elisp large result hangs Emacs |

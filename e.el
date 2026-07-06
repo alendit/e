@@ -1,4 +1,4 @@
-;;; e.el --- Emacs-hosted agent runtime scaffold -*- lexical-binding: t; -*-
+;;; e.el --- Emacs-hosted agent runtime scaffold -*- lexical-binding: t; no-byte-compile: t; -*-
 
 ;; Copyright (C) 2026 Dimitri Vorona
 
@@ -144,6 +144,11 @@
 (autoload 'e-dev-reload-required-status
   "e-dev"
   "Return pending explicit reload status for the running Emacs."
+  t)
+;;;###autoload
+(autoload 'e-dev-clean-stale-bytecode
+  "e-dev"
+  "Delete stale byte-compiled e files from a development checkout."
   t)
 ;;;###autoload
 (autoload 'e-project-local-byte-compile-project
