@@ -235,6 +235,21 @@ The mode line uses this presentation-owned table for context usage display."
   :type 'integer
   :group 'e-chat)
 
+(defcustom e-chat-visual-fill-column 80
+  "Column at which chat buffer text wraps, or nil to wrap at the window edge.
+When set to an integer, chat buffers enable `visual-line-mode' and
+`visual-fill-column-mode' so long lines wrap at this column instead of
+running the full width of a wide frame.  When nil, no wrapping column is
+imposed and text follows the default window-edge behaviour.
+
+The wrapping is visual only: it never inserts hard line breaks into the
+transcript or the composed prompt.  `visual-fill-column-mode' provides
+the measured wrap; when that package is unavailable, `visual-line-mode'
+is enabled as a word-wrap fallback."
+  :type '(choice (const :tag "Wrap at window edge" nil)
+                 (integer :tag "Wrap column"))
+  :group 'e-chat)
+
 (when (equal e-chat-progress-interval 0.35)
   (setq e-chat-progress-interval 0.6))
 
@@ -1129,10 +1144,25 @@ absent."
   (setq e-chat-mode-map (e-chat--make-mode-map e-chat-mode-map))
   (e-chat--configure-evil-composer-bindings))
 
+(defun e-chat--setup-line-wrapping ()
+  "Wrap chat text visually at `e-chat-visual-fill-column' when configured.
+Enables `visual-fill-column-mode' for a measured wrap column, falling back
+to plain `visual-line-mode' when the package is missing.  Does nothing when
+`e-chat-visual-fill-column' is nil, leaving default window-edge wrapping."
+  (when e-chat-visual-fill-column
+    (visual-line-mode 1)
+    (if (require 'visual-fill-column nil t)
+        (progn
+          (setq-local visual-fill-column-width e-chat-visual-fill-column)
+          (setq-local visual-fill-column-center-text nil)
+          (visual-fill-column-mode 1))
+      (message "e-chat: visual-fill-column unavailable; wrapping at window edge"))))
+
 (define-derived-mode e-chat-mode text-mode "e-chat"
   "Major mode for e chat buffers.
 In the composer, leading ! captures command output, @ inserts file context,
 and / expands available prompts."
+  (e-chat--setup-line-wrapping)
   (add-hook 'kill-buffer-hook #'e-chat--unsubscribe nil t)
   (add-hook 'kill-buffer-hook #'e-chat--stop-progress-indicator nil t)
   (add-hook 'kill-buffer-hook #'e-chat--cancel-pending-command-references nil t)
