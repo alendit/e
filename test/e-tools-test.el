@@ -741,6 +741,54 @@ values untouched."
                     schema)
                    '(:uri "file://x" :edits ((:oldText "a" :newText "b")))))))
 
+(ert-deftest e-tools-test-coerce-arguments-does-not-recurse-on-invalid-json ()
+  "A schema-typed string that is not valid JSON is left unchanged.
+
+A truncated or otherwise malformed array/object argument cannot be reparsed;
+`e-tools--reparse-json-string' returns it unchanged.  Re-coercing the identical
+string would recurse until `max-lisp-eval-depth' and abort the turn, so coercion
+must stop when reparsing makes no progress."
+  (let ((schema '(:type "object"
+                  :properties (:edits (:type "array")))))
+    ;; Invalid JSON (unterminated array) passes through untouched instead of
+    ;; recursing forever.
+    (should (equal (e-tools--coerce-arguments
+                    '(:edits "[{\"oldText\": \"a\", ")
+                    schema)
+                   '(:edits "[{\"oldText\": \"a\", ")))))
+
+(ert-deftest e-tools-test-start-malformed-argument-fails-as-tool-result ()
+  "A malformed argument yields a tool-error result, not a turn abort.
+
+Argument coercion runs inside the guarded region of `e-tools-start', so a value
+that cannot be coerced (or a handler that throws) settles the call through the
+error path and reaches `on-done' as a structured error result rather than
+signalling out of the loop."
+  (let ((registry (e-tools-registry-create))
+        result)
+    (e-tools-register registry
+                      :name "edit"
+                      :description "Reject malformed edits."
+                      :parameters '(:type "object"
+                                    :properties (:edits (:type "array")))
+                      :handler (lambda (arguments)
+                                 ;; A well-formed call would pass a list; a
+                                 ;; malformed string must not reach here as an
+                                 ;; unhandled signal.
+                                 (unless (listp (plist-get arguments :edits))
+                                   (signal 'wrong-type-argument
+                                           (list 'listp
+                                                 (plist-get arguments :edits))))
+                                 "ok"))
+    (e-tools-start
+     registry
+     '(:id "call-1" :name "edit"
+       :arguments (:edits "[{\"oldText\": \"a\", "))
+     :on-done (lambda (value) (setq result value)))
+    (e-tools-test--wait-until (lambda () result))
+    (should result)
+    (should (eq (plist-get result :status) 'error))))
+
 (ert-deftest e-tools-test-coerce-arguments-preserves-json-valued-strings ()
   "A schema-declared string is never reparsed, even when it holds valid JSON."
   (let ((schema '(:type "object"

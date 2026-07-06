@@ -210,8 +210,15 @@ declares a string is never reparsed even when its text is valid JSON."
     (cond
      ((and (stringp value) (member type '("object" "array")))
       ;; Reparse once, then re-run: a stringified object may still hold
-      ;; inner values the same provider stringified independently.
-      (e-tools--coerce-argument (e-tools--reparse-json-string value) schema))
+      ;; inner values the same provider stringified independently.  When the
+      ;; string is not valid JSON, `e-tools--reparse-json-string' returns it
+      ;; unchanged; re-coercing the identical string would recurse forever
+      ;; (a truncated/malformed argument once blew the Lisp eval depth and
+      ;; aborted the turn).  Stop when reparsing made no progress.
+      (let ((reparsed (e-tools--reparse-json-string value)))
+        (if (equal reparsed value)
+            value
+          (e-tools--coerce-argument reparsed schema))))
      ((and (equal type "object") (e-tools--plist-p value))
       (e-tools--coerce-arguments value schema))
      (t value))))
@@ -827,15 +834,6 @@ dynamically visible to tool start functions through
           (when on-done
             (funcall on-done result))
           nil)
-      ;; Coerce arguments to the tool's declared schema types before dispatch.
-      ;; Providers that JSON-stringify nested tool arguments (notably Bedrock)
-      ;; deliver object- and array-typed arguments as strings; reparse them
-      ;; against the schema so every tool sees structured data, not just those
-      ;; that special-case the malformed shape.
-      (setq call (plist-put call :arguments
-                            (e-tools--coerce-arguments
-                             (plist-get call :arguments)
-                             (plist-get tool :parameters))))
       (let ((work (plist-get tool :work))
             (start (plist-get tool :start))
             (handler (plist-get tool :handler))
@@ -925,6 +923,17 @@ dynamically visible to tool start functions through
                                          'cheap))
                (lambda ()
                  (let ((e-tools--current-context tool-context))
+                   ;; Coerce arguments to the tool's declared schema types
+                   ;; before dispatch.  Providers that JSON-stringify nested
+                   ;; tool arguments (notably Bedrock) deliver object- and
+                   ;; array-typed arguments as strings; reparse them against
+                   ;; the schema so every tool sees structured data.  This runs
+                   ;; inside the guarded region so a malformed argument fails as
+                   ;; a tool-error result rather than aborting the whole turn.
+                   (setq call (plist-put call :arguments
+                                         (e-tools--coerce-arguments
+                                          (plist-get call :arguments)
+                                          (plist-get tool :parameters))))
                    (arm-deadline)
                    (when (e-tools--reject-long-sync-handler-p tool tool-context)
                      (signal 'e-tools-blocking-handler-rejected
