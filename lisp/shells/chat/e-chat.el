@@ -44,6 +44,7 @@
 (defvar org-mode-hook)
 (declare-function e-dev-profile-enabled-p "e-dev-profile")
 (declare-function e-dev-profile-measure-thunk "e-dev-profile")
+(declare-function visual-fill-column-mode "ext:visual-fill-column")
 
 (defgroup e-chat nil
   "Chat presentation for e."
