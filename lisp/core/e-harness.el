@@ -715,14 +715,21 @@ preview to avoid duplicating large outputs in session JSONL files."
   :type 'integer
   :group 'e)
 
-(defcustom e-harness-provider-request-deadline-seconds 600.0
-  "Hard wall-clock deadline for one provider request attempt.
+(defcustom e-harness-provider-request-deadline-seconds nil
+  "Optional hard wall-clock deadline attached to a turn's provider requests.
 
-This is separate from adapter-local idle or HTTP timeouts.  It is a lifecycle
-backstop: if a provider request starts but never reports done or error, the
-Work layer cancels the underlying request and the turn settles as a visible
-failure.  Set to nil to disable the harness default; explicit `:deadline'
-turn options still apply."
+Default nil.  The deadline is stamped once when turn options are built and is
+shared by every provider request in the turn, so a non-nil value caps the
+whole turn's wall clock, not one request attempt -- a long turn with many tool
+calls can exceed it and fail even though no single request is stuck.
+
+Leave this nil in normal use: a hung request is already caught by the
+adapter idle deadline (`e-anthropic-request-timeout-seconds',
+`e-openai-request-timeout-seconds'), which re-arms on every response chunk,
+and transient failures are handled by harness retry/backoff
+(`e-harness-retry-max-elapsed-seconds' and friends).  Set a number only when
+you deliberately want a per-turn wall-clock cap; explicit `:deadline' turn
+options still apply regardless."
   :type '(choice (const :tag "No default deadline" nil)
                  number)
   :group 'e)
