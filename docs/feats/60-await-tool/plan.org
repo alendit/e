@@ -3,7 +3,7 @@
 
 * Status
 
-Planned
+Done
 
 * Goal
 
@@ -143,22 +143,24 @@ No per-target timers; one timer per await call, cancelled on settle.
 
 Each slice ends at a useful stopping point.
 
-** Slice 1 -- Event-driven set-await coordinator on e-work (Planned)
+** Slice 1 -- Event-driven set-await coordinator on e-work (Done)
 
 Add =e-work-await-set= (event-driven, callback settle, =all=/=any=, single timeout timer) as the non-blocking sibling of =e-work-await-batch=.
 Expose a terminal-subscription helper (=e-work-on-settle=) that fires immediately when a handle is already terminal, otherwise on its terminal event, layered on the existing =:on-event=/=e-work-add-cleanup= callbacks.
 
 - Stopping value: any Elisp caller can wait on a set of handles without blocking or polling, proven independently of tools, subagents, and the resolver registry.
 - Verification: ERT with cheap/cooperative test handles -- =all= settles after the last finishes; =any= settles after the first; an already-terminal handle counts immediately; the timeout path fires once with the pending set and cancels the timer; a handle that fails/cancels still counts as terminal.  No =accept-process-output= in the coordinator.
+- Landed (=bddc64d=): =e-work-on-settle= and =e-work-await-set= in =lisp/core/e-work.el=; the coordinator subscribes via the terminal-cleanup chain, arms one =run-at-time= timer, and returns a canceller thunk.  ERT in =test/e-work-test.el= (7 new): on-settle fires once (terminal-now and deferred), all-after-last, any-after-first, already-terminal-at-once, failed/cancelled count as terminal, timeout reports pending + cancels timer, canceller detaches.  22/22 pass; byte-compiles clean.
 
-** Slice 2 -- Waitable resolver registry and the await tool (Planned)
+** Slice 2 -- Waitable resolver registry and the await tool (Done)
 
 Add the resolver registry (=e-waitable-register-resolver= / lookup / parse =SCHEME:LOCAL-ID=) and the model-facing =await= async tool over =e-work-await-set=, with the compact report shape and the timeout ceiling/default defcustoms.
 
 - Stopping value: an agent can await any registered waitable by reference id from a single async tool call; the turn holds open without freezing Emacs.
 - Verification: ERT registering a fake scheme whose resolver returns a controllable test handle -- tool settles =on-done= with the report on terminal, returns =timed-out= with pending refs on timeout, reports per-reference errors for unknown scheme/id without failing the call, and rejects a bare id naming the schemes.  A test asserting =await= is present in model-facing tool definitions (it is a tool, unlike the subagents actions).
+- Landed (=9f3b3cb=): =lisp/core/e-waitable.el= (scheme registry, =SCHEME:LOCAL-ID= parse, non-signalling =e-waitable-resolve=) and =lisp/core/e-await-tool.el= (the async =await= tool over =e-work-await-set=, clamped =:timeout=, compact report).  The tool ships in a new =await= capability in the =harness-base= layer, so every harness carries it.  ERT: =test/e-waitable-test.el= (4) and =test/e-await-tool-test.el= (5: registered as a tool, settles on terminal, timeout reports pending, per-reference errors do not fail the call, any-mode).  Reload list and the harness-base capability-list test updated.  All pass; byte-compiles clean.
 
-** Slice 3 -- Subagents as the first consumer (Planned)
+** Slice 3 -- Subagents as the first consumer (Done)
 
 Give the subagent direct runner an =e-work= handle (cooperative carrier whose runner starts the child turn and finishes/fails/cancels the handle from the same turn events that settle the registry today).
 Store the handle on the registry record (=:work-handle=) and add =e-subagent-registry-work-handle=.
@@ -166,14 +168,16 @@ Register the =subagent= resolver scheme in the subagents layer.
 
 - Stopping value: the end-to-end target -- spawn a fan-out of children through actions, then one =await '(:refs [...])= tool call blocks the model's turn (not Emacs) until all settle, returning each child's summary and outputs.
 - Verification: ERT with the fake runner proving the record carries a live handle that reaches =finished= on settle and =cancelled= on shutdown; the =subagent= resolver returns it; an =await= over two spawned ids settles with both summaries.  A bounded live probe after an explicit reload: spawn two =fast-tool-user= children and await them in one call.
+- Landed (=be82964=): =e-subagent-spawn= starts a cooperative =e-work= handle (deferred runner) alongside the child and stores it as =:work-handle=; the settle callback finishes it with the summary+outputs, fails it, or cancels it in lockstep with the record.  =e-subagent-registry-work-handle= returns it (nil for unknown ids).  =e-subagents-register-waitable-resolver= registers scheme =subagent= when the parent layer is created.  ERT in =test/e-subagent-runner-test.el= (3 new): spawn exposes a live awaitable handle that finishes with the result, a failed settle fails the handle, the resolver returns the handle and reports an unknown id as an error.  17/17 runner tests pass.  The live fan-out/await probe is deferred to an explicit reload.
 
-** Slice 4 -- Skill and guidance (Planned)
+** Slice 4 -- Skill and guidance (Done)
 
 Document await in the subagents skill and a short =e://= reference: spawn (actions) then await (tool); prefer await over polling; the timeout is a backstop; raw detail stays behind =session://=.
 Note task-queue tasks and elisp-jobs are awaitable through the same tool once they register their schemes (wiring their resolvers can follow as tiny work).
 
 - Stopping value: the workflow is discoverable, and the poll-loop pattern is retired in the guidance.
 - Verification: skill/reference reads render; no code behavior change.
+- Landed: the subagents skill gained a "Waiting for children" section (=be82964=) steering away from polling toward the await tool; the =await= capability contributes short instructions and the =e://await/refs/await.md= reference (references, modes, report shape, fan-out/fan-in pattern).  task-queue and elisp-job resolvers are the noted follow-up tiny work.
 
 * Required self-check
 
