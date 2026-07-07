@@ -3,7 +3,7 @@
 
 * Status
 
-In-progress
+Done
 
 * Goal
 
@@ -306,9 +306,10 @@ Confirm =e-chat-open= opens a child session on its type instance.
 - Verification: shell smoke (renders child rows, refreshes on change); a bounded live probe opening a child chat after =e-dev-reload= when explicitly requested.
 - Landed: =e-subagent-registry-change-functions= hook fired on register/update; =lisp/shells/e-subagents-shell.el= (=e-subagents-list-buffer=) renders label/type/status/result/outputs rows scoped to a parent session, refreshes on registry change, honors Evil =emacs= state like the task-queue and picker shells, and uses =e-workspace-pop-to-buffer=.  Row actions: RET opens the child chat via =e-chat-open-session= on the child's type instance, =i= interrupts, =k= shuts down, =g= refreshes.  Registered =e-subagents-shell= in =e.el=.  ERT: =test/e-subagents-shell-test.el= (parent-scoped rows, refresh-on-change, row-action commands; 3 tests).  Files byte-compile clean; =git diff --check= clean.  The live open-chat probe is deferred to an explicit reload.
 
-** Slice 6 -- Optional model-facing dispatcher (decision slice)
+** Slice 6 -- Optional model-facing dispatcher (decision slice) (Done)
 
 Decide, based on tool-chaining ergonomics from slices 3--4, whether to add one narrow =subagent= dispatcher tool with an =:operation= selector.
 Implement only if =run_elisp= composition proves insufficient; otherwise record the decision to stay actions-only.
 
 - Stopping value: a clear, recorded decision and, if warranted, a single narrow bridge -- never a per-verb tool family.
+- Decision: *stay actions-only; ship no model-facing dispatcher tool.*  The nine actions (=spawn=, =list=, =status=, =read=, =steer=, =send=, =interrupt=, =shutdown=, =report=) are plain-plist in and out, so a =run_elisp= fan-out/fan-in expresses the load-bearing pattern -- "spawn a child per unit, then collect" -- as an ordinary =dolist=/=mapcar= over =e-actions-call=, which a single tool call cannot.  No ergonomic gap surfaced in slices 3--4 that a dispatcher tool would close: the multi-step orchestration is exactly what tool-chaining (feat 26) already does well, and a dispatcher would only re-wrap the same actions behind an =:operation= selector while inflating the model-visible tool namespace in every session -- the objection feat 34 and =elisp-job= both settled the same way.  Adding it later is a small, reversible change if a concrete need appears, so the reversible choice is to omit it now.
