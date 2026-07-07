@@ -4756,6 +4756,27 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-large-transient-block-throttles-redraw-delay ()
+  "A large visible transient block lengthens the activity redraw delay."
+  (let ((buffer (e-chat-test--buffer nil "chat-redraw-throttle"))
+        (e-chat-activity-redraw-delay 0.05)
+        (e-chat-activity-redraw-large-block-chars 20)
+        (e-chat-activity-redraw-large-block-factor 4.0))
+    (unwind-protect
+        (with-current-buffer buffer
+          ;; No running-status region: default delay.
+          (should (= (e-chat--activity-redraw-delay) 0.05))
+          (let ((inhibit-read-only t))
+            (goto-char (point-max))
+            (let ((start (point)))
+              (insert (make-string 100 ?x))
+              (setq e-chat--running-status-start-marker (copy-marker start))
+              (setq e-chat--running-status-end-marker (copy-marker (point)))))
+          ;; Region past the large-block threshold: delay is multiplied.
+          (should (= (e-chat--activity-redraw-delay) 0.2)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-replace-region-bounded-updates-large-block ()
   "A region past the diff threshold updates through the bounded path."
   (let ((buffer (e-chat-test--buffer nil "chat-replace-region-bounded"))

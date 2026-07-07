@@ -193,6 +193,20 @@ See `e-chat-running-status-diff-max-chars'."
   :type 'number
   :group 'e-chat)
 
+(defcustom e-chat-activity-redraw-large-block-chars 8000
+  "Transient block size above which activity redraws are throttled harder.
+Once the visible running-status region exceeds this many characters, its
+coalescing delay is multiplied by `e-chat-activity-redraw-large-block-factor'
+so a big, rapidly-updating block repaints less often."
+  :type 'integer
+  :group 'e-chat)
+
+(defcustom e-chat-activity-redraw-large-block-factor 4.0
+  "Delay multiplier applied to activity redraws of a large transient block.
+See `e-chat-activity-redraw-large-block-chars'."
+  :type 'number
+  :group 'e-chat)
+
 (defcustom e-chat-activity-reasoning-visible-line-limit 3
   "Maximum non-empty reasoning lines shown in compact activity summaries.
 The complete reasoning text remains available from response details."
@@ -5009,7 +5023,7 @@ When TURN-ID is non-nil, cancel only a redraw for that turn."
               :target-buffer (current-buffer)
               :key turn-id
               :generation generation
-              :delay e-chat-activity-redraw-delay
+              :delay (e-chat--activity-redraw-delay)
               :coalesce t
               :focus-policy 'tail-if-selected
               :reentrancy-policy 'defer
@@ -5025,6 +5039,19 @@ When TURN-ID is non-nil, cancel only a redraw for that turn."
                 (e-chat--run-pending-activity-redraw generation)))
              :on-event (lambda (&rest _)
                          (e-chat--refresh-ui-work-diagnostics)))))))
+
+(defun e-chat--activity-redraw-delay ()
+  "Return the coalescing delay for the next activity redraw.
+A large visible transient block is throttled by
+`e-chat-activity-redraw-large-block-factor' so it repaints less often than a
+small one, since each repaint of a big block costs more."
+  (let ((bounds (e-chat--running-status-bounds)))
+    (if (and bounds
+             (>= (- (cdr bounds) (car bounds))
+                 e-chat-activity-redraw-large-block-chars))
+        (* e-chat-activity-redraw-delay
+           e-chat-activity-redraw-large-block-factor)
+      e-chat-activity-redraw-delay)))
 
 (defun e-chat--run-pending-activity-redraw (&optional expected-generation)
   "Run and clear the pending activity redraw for this chat buffer."
