@@ -297,13 +297,14 @@ Wire =steer=/=send= to =e-harness-steer-active-turn= / =e-harness-queue-prompt=,
 - Verification: ERT for steer/follow-up dispatch and raw-read returning a bounded excerpt / =session://= URI.
 - Landed: registry now stores the live =:child-harness= so lifecycle reaches the child on its own harness; =e-subagent-steer= calls =e-harness-steer-active-turn=, =e-subagent-send= calls =e-harness-queue-prompt=, and =e-subagent-raw-read= returns the child's last =:limit= messages (default 20) as compact role/content plists plus the =session://e/sessions/<child>/messages= URI.  Added =:steer=, =:send=, and =:raw=/=:limit= on =read= to the action surface (and the skill).  ERT: steer/send dispatch (via =cl-letf= on the harness turn-control functions) and raw-read bounded excerpt + URI; 9 tests pass.  Files byte-compile clean; =git diff --check= clean.
 
-** Slice 5 -- Subagents shell and chat integration
+** Slice 5 -- Subagents shell and chat integration (Done)
 
 Add the lineage-aware =tabulated-list= shell with row actions (open chat, interrupt, shutdown), refreshing on registry change and using workspace-aware display.
 Confirm =e-chat-open= opens a child session on its type instance.
 
 - Stopping value: the operator can watch the current session's children and open a full chat with any of them.
 - Verification: shell smoke (renders child rows, refreshes on change); a bounded live probe opening a child chat after =e-dev-reload= when explicitly requested.
+- Landed: =e-subagent-registry-change-functions= hook fired on register/update; =lisp/shells/e-subagents-shell.el= (=e-subagents-list-buffer=) renders label/type/status/result/outputs rows scoped to a parent session, refreshes on registry change, honors Evil =emacs= state like the task-queue and picker shells, and uses =e-workspace-pop-to-buffer=.  Row actions: RET opens the child chat via =e-chat-open-session= on the child's type instance, =i= interrupts, =k= shuts down, =g= refreshes.  Registered =e-subagents-shell= in =e.el=.  ERT: =test/e-subagents-shell-test.el= (parent-scoped rows, refresh-on-change, row-action commands; 3 tests).  Files byte-compile clean; =git diff --check= clean.  The live open-chat probe is deferred to an explicit reload.
 
 ** Slice 6 -- Optional model-facing dispatcher (decision slice)
 

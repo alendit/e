@@ -18,11 +18,19 @@
 (require 'cl-lib)
 (require 'subr-x)
 
+(defvar e-subagent-registry-change-functions nil
+  "Functions run with a registry after any subagent record changes.
+List buffers hook onto this to track live subagent status.")
+
 (cl-defstruct (e-subagent-registry
                (:constructor e-subagent-registry-create))
   (records (make-hash-table :test 'equal))
   (order nil)
   (sequence 0))
+
+(defun e-subagent-registry--notify (registry)
+  "Run change hooks for REGISTRY."
+  (run-hook-with-args 'e-subagent-registry-change-functions registry))
 
 (defun e-subagent-registry--next-id (registry)
   "Return the next stable subagent id from REGISTRY."
@@ -75,6 +83,7 @@ internally so steer/read reach the child session on its own harness."
     (puthash subagent-id record (e-subagent-registry-records registry))
     (setf (e-subagent-registry-order registry)
           (append (e-subagent-registry-order registry) (list subagent-id)))
+    (e-subagent-registry--notify registry)
     (e-subagent-registry-normalize record)))
 
 (defun e-subagent-registry-update (registry subagent-id &rest fields)
@@ -84,6 +93,7 @@ internally so steer/read reach the child session on its own harness."
       (let ((key (pop fields)))
         (when fields
           (plist-put record key (pop fields)))))
+    (e-subagent-registry--notify registry)
     (e-subagent-registry-normalize record)))
 
 (defun e-subagent-registry-get (registry subagent-id)

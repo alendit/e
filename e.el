@@ -109,6 +109,7 @@
   (require 'e-debug)
   (require 'e-background-session)
   (require 'e-task-queue-shell)
+  (require 'e-subagents-shell)
   (require 'e-cron-shell))
 (e-startup-run)
 
