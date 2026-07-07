@@ -6817,7 +6817,11 @@ an approximate full-context estimate."
                            e-chat-harness
                            e-chat-session-id)))
                (model (plist-get options :model))
-               (effort (plist-get options :reasoning-effort)))
+               ;; Accept both the OpenAI-style `:reasoning-effort' and the
+               ;; native Anthropic `:effort' key so the status line reflects
+               ;; the effort an Anthropic harness actually sends.
+               (effort (or (plist-get options :reasoning-effort)
+                           (plist-get options :effort))))
           (format "E Chat: %s - %s - %s/%s%s"
                   status
                   title

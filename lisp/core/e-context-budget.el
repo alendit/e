@@ -245,7 +245,11 @@ and `:approximate'."
                         (ignore-errors
                           (e-harness-turn-options harness session-id))))
            (model (plist-get options :model))
-           (effort (plist-get options :reasoning-effort))
+           ;; OpenAI harnesses carry `:reasoning-effort'; the native Anthropic
+           ;; adapter uses `:effort'.  Read either so the status line reflects
+           ;; the effort actually in effect rather than "effort unset".
+           (effort (or (plist-get options :reasoning-effort)
+                       (plist-get options :effort)))
            (estimated-tokens
             (and (not usage-tokens)
                  (or cached-tokens
