@@ -1,0 +1,193 @@
+#+title: Await Tool (event-driven waiting on work)
+#+startup: overview
+
+* Status
+
+Planned
+
+* Goal
+
+Give an agent one non-blocking way to say "wait until this finishes, or a generous timeout expires," and continue its turn when the wait settles.
+
+The wait must be event-driven, not a poll loop and not a UI-thread block.
+It must work over a *set* of targets (wait for all, or for the first), so a fan-out of subagents collapses into one await call instead of N status reads across N turns.
+It must be generic: anything that runs as =e-work= -- subagents, task-queue tasks, elisp-jobs, long resource operations, future external-event handles -- becomes awaitable through the same surface.
+
+Subagents are the first consumer, but the primitive is the generic work-handle await, not a subagent-specific mechanism.
+
+* Problem
+
+Today an agent that spawns async work has three ways to learn it finished, all wrong for interactive use:
+
+- *Poll* =status=/=read= across turns.  This is what the subagents flow forces now: spawn, then re-read the registry each turn until =:status= flips.  It works but wastes turns, adds latency proportional to poll interval, and reads like busy-waiting.
+- *Block* with =sleep-for=/=accept-process-output= inside =run_elisp=.  This freezes the single UI Emacs thread and is now rejected outright (feat 59 follow-up: the =run_elisp= blocking guard).
+- *=e-work-await-batch=*, which is the right lifecycle but is intentionally fenced off: it signals =e-work-await-in-hot-path= interactively and requires =e-work-with-batch-await=.  It is batch/test-only and, worse, it blocks.
+
+The missing piece is an *event-driven* await: subscribe to each target's terminal event, arm one timeout timer, and resume the caller when the set reaches terminal or the timer fires -- never spinning, never blocking.
+The harness already supports this shape for async tools: a tool with interactive-policy =async= drives its result through a callback, and the harness holds the model's turn open, without blocking the UI, until =on-done= fires.
+An await tool is exactly that async-tool contract pointed at other work's terminal events.
+
+Why a *tool* and not a capability action: an action runs inside =run_elisp='s synchronous eval on the UI thread, so an action that waits would have to block -- the very thing forbidden.  Only a model-facing async tool receives the harness hold-open lifecycle.  So await is the one place the subagents design's "actions-only" stance (feat 59, slice 6) must yield to a single model-facing tool.
+
+* Direction
+
+Reuse =e-work= as the generic work handle; it already carries the terminal lifecycle (=finished=/=failed=/=cancelled=), progress/terminal event callbacks (=e-work--callback=, =e-work-add-cleanup=), a stable id, and =e-work-status=.
+Three additions compose over it:
+
+1. *An event-driven set-await coordinator* in =e-work=, the missing sibling of =e-work-await-batch=.
+   =e-work-await-set= takes handles, a mode (=all=/=any=), a timeout, and a settle callback.
+   It subscribes to each handle's terminal notification, arms exactly one timer, and invokes the callback once with a compact per-handle report when the mode's condition is met or the timeout fires.
+   It never calls =accept-process-output= and never blocks; it is pure subscription + timer.
+   A handle already terminal at subscribe time counts immediately, so awaiting finished work returns at once.
+
+2. *A waitable resolver registry* so the model can name targets by the ids it already holds.
+   The model does not hold raw handle objects; it holds =sub_000003= (subagent), a task-queue task id, an elisp-job id.
+   A resolver maps a reference scheme to a live =e-work= handle: =subagent:sub_000003=, =task:...=, =job:...=.
+   Subsystems register their scheme; the coordinator and tool stay scheme-agnostic.
+   This is the seam that makes the tool generic without the tool knowing about subagents.
+
+3. *A model-facing async await tool* -- a thin wrapper: resolve reference ids to handles, call =e-work-await-set=, settle the tool's =on-done= with the report.
+   Interactive-policy =async=, so the harness holds the turn open without freezing Emacs.
+
+The generic primitive owns waiting; each subsystem owns *being* waitable by handing back an =e-work= handle.
+This matches feat 59's stated intent that "a subagent handle is an =e-work= handle," and it gives task-queue tasks (already an =agent-task= work carrier) and elisp-jobs the same await for free.
+
+* Why generic-over-work-handle, not a bespoke subagent await
+
+The alternative -- a =subagents :await= that watches =e-subagent-registry-change-functions= -- was rejected:
+
+- It would solve waiting only for subagents, then be re-implemented for task-queue and elisp-job.
+- It cannot be an action (actions block), so it would still need a tool; a subagent-only await tool is a narrower version of the generic one with none of the reuse.
+- =e-work= is already the runtime's single "potentially long work" contract (feat 55).  Waiting belongs there, beside =e-work-status= and =e-work-await-batch=, not in a leaf capability.
+
+The cost is that subagents must expose an =e-work= handle (slice 2).
+The direct runner currently subscribes to harness turn events and settles the registry through a =:cancel= closure, with no handle.
+Wrapping that in a cooperative =e-work= spec is the change feat 59 already anticipated and deferred.
+
+* Waitable resolver registry
+
+A tiny registry mapping a reference *scheme* to a resolver function:
+
+#+begin_src elisp
+(e-waitable-register-resolver
+ "subagent"
+ (lambda (id) ; id is the part after "subagent:"
+   ;; Return the live e-work handle for this subagent, or nil if unknown.
+   (e-subagent-registry-work-handle e-subagent-actions-default-registry id)))
+#+end_src
+
+- A reference is =SCHEME:LOCAL-ID=.  The tool parses the scheme, looks up the resolver, and calls it with the local id.
+- A resolver returns a live =e-work= handle or nil.
+- Unknown scheme, unknown id, or a target with no handle yet is a *per-reference* error in the report, never a whole-call failure: awaiting a mix where one id is stale should still wait on the rest.
+- The registry is process-global runtime state (like the tool registry), rebuilt by whichever layers are active; it holds no durable facts.
+
+Bare ids without a scheme are rejected with a message naming the available schemes, so the model does not guess.
+
+* The await tool
+
+#+begin_src elisp
+;; name: await
+(:refs ["subagent:sub_000003" "subagent:sub_000004"]  ; required, 1..N references
+ :mode "all"        ; "all" (default) | "any"
+ :timeout 120)      ; seconds; optional, falls back to a generous default
+#+end_src
+
+Result (compact, never a transcript):
+
+#+begin_src elisp
+(:settled t                     ; nil when the timeout fired first
+ :mode all
+ :reason complete|timed-out
+ :results ((:ref "subagent:sub_000003"
+            :status done
+            :summary "..."
+            :outputs [...])
+           (:ref "subagent:sub_000004"
+            :status running     ; still pending when timeout fired
+            :summary nil)
+           (:ref "subagent:bogus"
+            :status error
+            :error "unknown subagent id")))
+#+end_src
+
+- =mode all= settles when every resolvable reference is terminal, or the timeout fires.
+- =mode any= settles when the first reference goes terminal (fan-out race / "whichever finishes first").
+- The report gives each reference's terminal snapshot -- status, summary, outputs -- pulled from the target's =e-work-status= / the subsystem's normalized record.  It never inlines the child's transcript; detail stays behind =session://= and =read :raw t=.
+- =:reason timed-out= lists which references were still pending, so the model can await again or move on.
+
+The tool caps =:timeout= at a ceiling so a runaway wait still ends; the ceiling and default are defcustoms.
+
+* Timeout is a backstop, not the mechanism
+
+The timeout answers your "wait until X happens or a generous timeout expires."
+The normal path settles on the terminal *event*, immediately when it arrives.
+The single timer only fires if the work never settles, and then the tool returns a =timed-out= report rather than erroring -- so the model can decide to wait again, inspect, or give up.
+No per-target timers; one timer per await call, cancelled on settle.
+
+* Non-goals
+
+- No blocking wait on the UI thread; =e-work-await-batch= stays the batch/test-only blocking form and is untouched.
+- No dependency graph, join planner, or partial-result streaming; =all= and =any= over a flat set is the whole surface.  Fan-in beyond that is the model reading results and deciding.
+- No new durable state; the resolver registry and in-flight await subscriptions are runtime-only.
+- No change to =e-harness= knowledge of subagents or of any specific subsystem; the tool sees =e-work= handles through resolvers.
+- No auto-await on spawn; spawning stays non-blocking and returns a handle, and the agent chooses when to await.
+
+* Decisions
+
+- *Tool, not action*: await must receive the harness async hold-open lifecycle, which only a model-facing async tool gets; an action would have to block.  This is the deliberate, scoped exception to feat 59's actions-only stance.
+- *Generic over =e-work=, subagents as first consumer*: the coordinator, resolver registry, and tool are subsystem-agnostic; subagents plug in by exposing an =e-work= handle and registering the =subagent= scheme.
+- *Timeout returns a report, not an error*: =timed-out= is a normal settled outcome listing pending references, not a signalled condition.  A resolvable-but-unknown reference is a per-reference error inside an otherwise successful call.
+- *One timer per call*: the coordinator arms a single timeout timer and subscribes to terminal events; it never polls and never blocks.
+
+* Slices
+
+Each slice ends at a useful stopping point.
+
+** Slice 1 -- Event-driven set-await coordinator on e-work (Planned)
+
+Add =e-work-await-set= (event-driven, callback settle, =all=/=any=, single timeout timer) as the non-blocking sibling of =e-work-await-batch=.
+Expose a terminal-subscription helper (=e-work-on-settle=) that fires immediately when a handle is already terminal, otherwise on its terminal event, layered on the existing =:on-event=/=e-work-add-cleanup= callbacks.
+
+- Stopping value: any Elisp caller can wait on a set of handles without blocking or polling, proven independently of tools, subagents, and the resolver registry.
+- Verification: ERT with cheap/cooperative test handles -- =all= settles after the last finishes; =any= settles after the first; an already-terminal handle counts immediately; the timeout path fires once with the pending set and cancels the timer; a handle that fails/cancels still counts as terminal.  No =accept-process-output= in the coordinator.
+
+** Slice 2 -- Waitable resolver registry and the await tool (Planned)
+
+Add the resolver registry (=e-waitable-register-resolver= / lookup / parse =SCHEME:LOCAL-ID=) and the model-facing =await= async tool over =e-work-await-set=, with the compact report shape and the timeout ceiling/default defcustoms.
+
+- Stopping value: an agent can await any registered waitable by reference id from a single async tool call; the turn holds open without freezing Emacs.
+- Verification: ERT registering a fake scheme whose resolver returns a controllable test handle -- tool settles =on-done= with the report on terminal, returns =timed-out= with pending refs on timeout, reports per-reference errors for unknown scheme/id without failing the call, and rejects a bare id naming the schemes.  A test asserting =await= is present in model-facing tool definitions (it is a tool, unlike the subagents actions).
+
+** Slice 3 -- Subagents as the first consumer (Planned)
+
+Give the subagent direct runner an =e-work= handle (cooperative carrier whose runner starts the child turn and finishes/fails/cancels the handle from the same turn events that settle the registry today).
+Store the handle on the registry record (=:work-handle=) and add =e-subagent-registry-work-handle=.
+Register the =subagent= resolver scheme in the subagents layer.
+
+- Stopping value: the end-to-end target -- spawn a fan-out of children through actions, then one =await '(:refs [...])= tool call blocks the model's turn (not Emacs) until all settle, returning each child's summary and outputs.
+- Verification: ERT with the fake runner proving the record carries a live handle that reaches =finished= on settle and =cancelled= on shutdown; the =subagent= resolver returns it; an =await= over two spawned ids settles with both summaries.  A bounded live probe after an explicit reload: spawn two =fast-tool-user= children and await them in one call.
+
+** Slice 4 -- Skill and guidance (Planned)
+
+Document await in the subagents skill and a short =e://= reference: spawn (actions) then await (tool); prefer await over polling; the timeout is a backstop; raw detail stays behind =session://=.
+Note task-queue tasks and elisp-jobs are awaitable through the same tool once they register their schemes (wiring their resolvers can follow as tiny work).
+
+- Stopping value: the workflow is discoverable, and the poll-loop pattern is retired in the guidance.
+- Verification: skill/reference reads render; no code behavior change.
+
+* Required self-check
+
+1. *Better off if stopped here?*  After slice 1, the runtime has a reusable non-blocking set-await; after slice 2, any waitable is awaitable from a tool; after slice 3, the subagents flow no longer polls.  Each is a real improvement.
+2. *Final direction*: non-freezing execution as a core property (feat 55) extended to non-freezing *waiting*, uniformly over =e-work=.
+3. *Likely-to-change vs stable*: the =all=/=any= set semantics and the report shape are stable; the set of registered schemes is the variation point, kept local in a resolver registry, so adding task-queue/elisp-job await is additive.
+4. *Owning component*: waiting lives in =e-work= (the work contract) and a thin tool; each subsystem owns being waitable.  One reason to change each.
+5. *Coupling*: the tool depends on =e-work= and the resolver registry, not on subagents; subagents depend on =e-work=, not on the tool.  Dependencies point toward the stable work contract.
+6. *Dependency direction*: no stable code points at a concrete subsystem; the resolver seam inverts it.
+7. *Side effects*: the timer and subscriptions are the only effects, owned by the coordinator and released on settle.
+8. *State*: in-flight subscriptions and the resolver registry are runtime-only; nothing durable added.
+9. *Performance*: event-driven, one timer per call, no polling -- strictly cheaper than the current poll loop.
+10. *Substitutability*: any =e-work= handle is awaitable without narrowing; a resolver that cannot produce a handle yields a per-reference error rather than a fake handle.
+11. *Compatibility*: =e-work-await-batch= and its hot-path fence are unchanged; the =run_elisp= blocking guard stays.
+12. *Legacy to remove*: the poll-loop guidance in the subagents skill is replaced by await.
+13. *Errors*: unknown/unresolvable references surface as per-reference report entries; the timeout is a settled report; unexpected coordinator errors surface, not swallowed.
+14. *Tests*: slice 1 proves the coordinator without tools or subagents; slice 2 proves the tool with a fake scheme; slice 3 proves subagents as a consumer with a fake runner -- each layer tested independently, so a design change in one does not force rewrites in the others.

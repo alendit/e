@@ -70,3 +70,4 @@ Status values for coding agents:
 | 57 | Planned | 57-resource-query-controls/ | Resource Query Controls |
 | 58 | Done | 58-ui-work-substrate/ | UI Work Substrate |
 | 59 | Done | 59-subagents/ | Subagents |
+| 60 | Planned | 60-await-tool/ | Await Tool (event-driven waiting on work) |
