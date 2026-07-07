@@ -4756,6 +4756,28 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-replace-region-bounded-updates-large-block ()
+  "A region past the diff threshold updates through the bounded path."
+  (let ((buffer (e-chat-test--buffer nil "chat-replace-region-bounded"))
+        (e-chat-running-status-diff-max-chars 64))
+    (unwind-protect
+        (with-current-buffer buffer
+          (let ((inhibit-read-only t))
+            (goto-char (point-max))
+            (let* ((start (point))
+                   (old (make-string 200 ?x))
+                   (new (concat (make-string 200 ?x) "-tail")))
+              (insert old)
+              (let ((end (point)))
+                (should (= (e-chat--replace-region-text-minimally
+                            start end new)
+                           (+ start (length new))))
+                (should (string-match-p
+                         (concat (regexp-quote new) "\\'")
+                         (buffer-substring start (point-max))))))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-final-response-uses-visual-marker-face ()
   "Final assistant output is visually distinguished without a text label."
   (let ((buffer (e-chat-test--buffer nil "chat-final-face")))

@@ -177,6 +177,22 @@ concealment are scheduled for a later timer tick."
   :type 'number
   :group 'e-chat)
 
+(defcustom e-chat-running-status-diff-max-chars 20000
+  "Region size above which running-status updates use a bounded diff.
+Below this size, an in-place update walks the region with an exact
+character-by-character prefix/suffix scan.  At or above it, the update is
+handed to `replace-region-contents' with time and cost caps so a very large
+transient activity block degrades to a coarse replacement instead of a
+guaranteed O(n) scan on every progress tick."
+  :type 'integer
+  :group 'e-chat)
+
+(defcustom e-chat-running-status-diff-max-seconds 0.05
+  "Time cap handed to `replace-region-contents' for large running-status diffs.
+See `e-chat-running-status-diff-max-chars'."
+  :type 'number
+  :group 'e-chat)
+
 (defcustom e-chat-activity-reasoning-visible-line-limit 3
   "Maximum non-empty reasoning lines shown in compact activity summaries.
 The complete reasoning text remains available from response details."
@@ -4849,9 +4865,28 @@ unchanged end.  A progress spinner tick re-renders an active turn every
 unchanged; the C-level `string=' guard skips the O(n) prefix/suffix scan for
 that common case instead of walking a large block character by character."
   (let ((old-text (buffer-substring-no-properties start end)))
-    (if (string= old-text new-text)
-        end
-      (e-chat--replace-region-text-diffing start end old-text new-text))))
+    (cond
+     ((string= old-text new-text) end)
+     ((>= (max (length old-text) (length new-text))
+          e-chat-running-status-diff-max-chars)
+      (e-chat--replace-region-text-bounded start end new-text))
+     (t (e-chat--replace-region-text-diffing start end old-text new-text)))))
+
+(defun e-chat--replace-region-text-bounded (start end new-text)
+  "Replace START through END with NEW-TEXT under a bounded diff cost.
+Hands the work to `replace-region-contents' with time and cost caps so a very
+large transient block cannot force an unbounded scan on every progress tick.
+Return the new end position."
+  (let ((marker (copy-marker end t)))
+    (unwind-protect
+        (progn
+          (replace-region-contents
+           start end
+           (lambda () new-text)
+           e-chat-running-status-diff-max-seconds
+           (length new-text))
+          (marker-position marker))
+      (set-marker marker nil))))
 
 (defun e-chat--replace-region-text-diffing (start end old-text new-text)
   "Replace START through END, editing only the span that differs.
