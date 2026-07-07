@@ -644,6 +644,15 @@ intentionally not persisted in session metadata.")
                 window-configuration-change-hook)
     (add-hook 'window-configuration-change-hook
               #'e-chat--tail-selected-active-turn))
+  (unless (memq #'e-chat--flush-deferred-hidden-redraws
+                window-configuration-change-hook)
+    (add-hook 'window-configuration-change-hook
+              #'e-chat--flush-deferred-hidden-redraws))
+  (when (boundp 'window-buffer-change-functions)
+    (unless (memq #'e-chat--flush-deferred-hidden-redraws
+                  window-buffer-change-functions)
+      (add-hook 'window-buffer-change-functions
+                #'e-chat--flush-deferred-hidden-redraws)))
   (when (boundp 'persp-activated-functions)
     (unless (memq #'e-chat--mark-selected-session-read
                   persp-activated-functions)
@@ -801,6 +810,12 @@ intentionally not persisted in session metadata.")
 (defvar-local e-chat--activity-redraw-running nil
   "Non-nil while this buffer is executing an activity redraw.")
 
+(defvar-local e-chat--deferred-hidden-redraw nil
+  "Latest (TURN-ID . KIND) redraw withheld while no window showed this buffer.
+A hidden chat buffer skips the expensive transcript repaint and stores the
+pending turn here so the redraw can be re-issued when the buffer next becomes
+visible.")
+
 (defvar e-chat--recenter-inhibited nil
   "Non-nil when chat display restoration must not call `recenter'.")
 
@@ -882,6 +897,12 @@ progress redraws that never pass through harness event dispatch.")
 
 (defvar e-chat--test-transcript-screen-lines nil
   "Test override for transcript screen-line height.")
+
+(defvar-local e-chat--assume-redraw-visible nil
+  "Test override that treats this buffer as visible for redraw gating.
+Production visibility is decided by `get-buffer-window'; tests that drive
+redraws without a live window set this buffer-local flag, mirroring the
+`e-chat--test-window-body-height' seam.")
 
 (defvar e-chat--refresh-visible-composers-in-progress nil
   "Non-nil while visible e chat composers are being refreshed.")
@@ -1878,6 +1899,16 @@ Return non-nil when a composer was removed."
 (defun e-chat--visible-window ()
   "Return a visible window for the current chat buffer."
   (get-buffer-window (current-buffer) t))
+
+(defun e-chat--redraw-visible-p ()
+  "Return non-nil when this chat buffer should run expensive redraws now.
+A chat buffer displayed in no window is never repainted for progress or
+activity; the redraw is deferred until the buffer next becomes visible.  This
+keeps a background turn from stalling the single main thread by repainting a
+transcript nobody is looking at.  Tests without a live window force visibility
+with `e-chat--assume-redraw-visible'."
+  (or e-chat--assume-redraw-visible
+      (and (get-buffer-window (current-buffer) t) t)))
 
 (defun e-chat--transcript-screen-lines (&optional limit)
   "Return screen lines used by transcript content before point.
@@ -5015,17 +5046,45 @@ When TURN-ID is non-nil, cancel only a redraw for that turn."
    (t 'activity)))
 
 (defun e-chat--request-activity-redraw (turn-id &optional kind)
-  "Schedule one near-future activity redraw for TURN-ID."
+  "Schedule one near-future activity redraw for TURN-ID.
+When this chat buffer is displayed in no window, the repaint is withheld and
+remembered in `e-chat--deferred-hidden-redraw'; it is re-issued the next time
+the buffer becomes visible.  Skipping the transcript rewrite for an unseen
+turn keeps a background session from stalling the main thread."
   (when turn-id
-    (setq e-chat--pending-activity-redraw-turn-id turn-id)
-    (setq e-chat--pending-activity-redraw-kind
-          (e-chat--activity-redraw-kind
-           e-chat--pending-activity-redraw-kind
-           (or kind 'activity)))
-    (unless e-chat--pending-activity-redraw-generation
-      (setq e-chat--pending-activity-redraw-generation
-            (cl-incf e-chat--activity-redraw-generation)))
-    (e-chat--ensure-pending-activity-redraw-work)))
+    (if (not (e-chat--redraw-visible-p))
+        (setq e-chat--deferred-hidden-redraw
+              (cons turn-id
+                    (e-chat--activity-redraw-kind
+                     (cdr e-chat--deferred-hidden-redraw)
+                     (or kind 'activity))))
+      (setq e-chat--pending-activity-redraw-turn-id turn-id)
+      (setq e-chat--pending-activity-redraw-kind
+            (e-chat--activity-redraw-kind
+             e-chat--pending-activity-redraw-kind
+             (or kind 'activity)))
+      (unless e-chat--pending-activity-redraw-generation
+        (setq e-chat--pending-activity-redraw-generation
+              (cl-incf e-chat--activity-redraw-generation)))
+      (e-chat--ensure-pending-activity-redraw-work))))
+
+(defun e-chat--flush-deferred-hidden-redraw ()
+  "Issue a redraw withheld while this chat buffer had no window."
+  (when (and e-chat--deferred-hidden-redraw
+             (e-chat--redraw-visible-p))
+    (let ((turn-id (car e-chat--deferred-hidden-redraw))
+          (kind (cdr e-chat--deferred-hidden-redraw)))
+      (setq e-chat--deferred-hidden-redraw nil)
+      (e-chat--request-activity-redraw turn-id kind))))
+
+(defun e-chat--flush-deferred-hidden-redraws (&rest _)
+  "Flush withheld redraws for every chat buffer that gained a window."
+  (dolist (buffer (buffer-list))
+    (when (buffer-live-p buffer)
+      (with-current-buffer buffer
+        (when (and (derived-mode-p 'e-chat-mode)
+                   e-chat--deferred-hidden-redraw)
+          (e-chat--flush-deferred-hidden-redraw))))))
 
 (defun e-chat--progress-dots ()
   "Return the current active assistant progress glyph string."

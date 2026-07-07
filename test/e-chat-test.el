@@ -59,11 +59,17 @@
             (kill-buffer buffer)))))))
 
 (defun e-chat-test--buffer (&optional items session-id)
-  "Return a chat buffer backed by fake backend ITEMS and SESSION-ID."
+  "Return a chat buffer backed by fake backend ITEMS and SESSION-ID.
+The returned buffer is not displayed in a window, so redraw gating would
+otherwise defer progress and activity repaints.  Force the visible path for
+tests, matching how the buffer behaves when shown to a user."
   (let* ((backend (e-backend-fake-create :items items))
-         (harness (e-harness-create :backend backend)))
-    (e-chat-open :harness harness
-                 :session-id (or session-id "chat-test"))))
+         (harness (e-harness-create :backend backend))
+         (buffer (e-chat-open :harness harness
+                              :session-id (or session-id "chat-test"))))
+    (with-current-buffer buffer
+      (setq e-chat--assume-redraw-visible t))
+    buffer))
 
 (defun e-chat-test--kill-chat-buffers ()
   "Kill all live e chat buffers."
@@ -4471,6 +4477,45 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
               (should-not e-chat--pending-activity-redraw-handle)
               (should-not (e-chat-test--pending-ui-work
                            'activity-redraw "turn-1")))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-hidden-buffer-defers-activity-redraw ()
+  "A chat buffer shown in no window withholds its activity redraw."
+  (let ((buffer (e-chat-test--buffer nil "chat-hidden-redraw"))
+        (redraws 0))
+    (unwind-protect
+        (with-current-buffer buffer
+          (setq e-chat--assume-redraw-visible nil)
+          (cl-letf (((symbol-function 'e-chat--render-turn-transient)
+                     (lambda (&rest _args)
+                       (setq redraws (1+ redraws)))))
+            (e-chat--render-event
+             (e-events-make :type 'turn-started
+                            :session-id e-chat-session-id
+                            :turn-id "turn-1"
+                            :created-at 10))
+            (setq redraws 0)
+            (e-chat--render-event
+             (e-events-make :type 'tool-started
+                            :session-id e-chat-session-id
+                            :turn-id "turn-1"
+                            :payload '(:type tool-call
+                                        :id "call-1"
+                                        :name "read"
+                                        :arguments (:uri "file://x"))))
+            ;; Hidden: no work scheduled, redraw remembered for later.
+            (should-not e-chat--pending-activity-redraw-handle)
+            (should (equal (car e-chat--deferred-hidden-redraw) "turn-1"))
+            (should (= redraws 0))
+            ;; Becoming visible flushes the withheld redraw.
+            (setq e-chat--assume-redraw-visible t)
+            (e-chat--flush-deferred-hidden-redraws)
+            (should-not e-chat--deferred-hidden-redraw)
+            (should (e-chat-test--live-work-handle-p
+                     e-chat--pending-activity-redraw-handle))
+            (e-chat--run-pending-activity-redraw)
+            (should (= redraws 1))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
