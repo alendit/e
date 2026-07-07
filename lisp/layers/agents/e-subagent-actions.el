@@ -210,8 +210,11 @@ HANDLER is called as (REGISTRY CONTEXT ARGUMENTS)."
     :required ["type"])
   "Action parameters for configuring a spawnable type's harness.")
 
-(defun e-subagent-actions-alist (&optional registry)
-  "Return the subagent capability actions plist bound to REGISTRY."
+(defun e-subagent-actions-parent-alist (&optional registry)
+  "Return the parent-facing subagent actions plist bound to REGISTRY.
+These are the actions a session uses to spawn and manage its children:
+spawn, list, status, read, steer, send, interrupt, shutdown, configure-type.
+The child-side `report' is not here; see `e-subagent-actions-child-alist'."
   (let ((registry (or registry e-subagent-actions-default-registry)))
     (list
      :spawn
@@ -247,7 +250,14 @@ HANDLER is called as (REGISTRY CONTEXT ARGUMENTS)."
      :configure-type
      (e-subagent-actions--action
       registry #'e-subagent-actions--configure-type
-      e-subagent-actions--configure-type-parameters)
+      e-subagent-actions--configure-type-parameters))))
+
+(defun e-subagent-actions-child-alist (&optional registry)
+  "Return the child-facing subagent actions plist bound to REGISTRY.
+A spawned child gets only `report', so it can set a structured result for its
+own session without seeing the spawn surface or the spawnable type catalog."
+  (let ((registry (or registry e-subagent-actions-default-registry)))
+    (list
      :report
      (e-subagent-actions--action
       registry #'e-subagent-actions--report

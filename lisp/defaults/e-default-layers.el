@@ -76,11 +76,16 @@
      :summary "Cron-like schedules that fire agent work on a recurrence."
      :feature e-cron-actions
      :factory e-cron-layer-create)
-    (:id subagents
-     :name "Subagents"
-     :summary "Spawnable subagent types, discovery context, and lifecycle."
+    (:id subagents-parent
+     :name "Subagents (parent)"
+     :summary "Spawn, observe, steer, and configure child subagents."
      :feature e-subagents
-     :factory e-subagents-layer-create)
+     :factory e-subagents-parent-layer-create)
+    (:id subagents-child
+     :name "Subagents (child)"
+     :summary "Child-side report action added to every spawned subagent."
+     :feature e-subagents
+     :factory e-subagents-child-layer-create)
     (:id org-canvas
      :name "Org Canvas"
      :summary "Org document canvas context and visibility tools."

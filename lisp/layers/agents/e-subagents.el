@@ -29,6 +29,10 @@
   "Subagents let this session delegate work to child sessions on purpose-built harness types, keeping the child's whole transcript out of this context. Reach them through e-actions-call, never a model-facing tool. Read e://subagents/skills/subagents for the action contract and e://subagents/refs/types.md for the full catalog of spawnable types."
   "Compact model-facing instructions for the subagents capability.")
 
+(defconst e-subagents-child-instructions
+  "You are a subagent: a child session spawned to do one task and return a compact result. Write artifacts under tmp:// (shared with the parent) and keep your final message terse. When you produce artifacts, set a structured result with (e-actions-call 'subagents :report '(:summary \"...\" :outputs [(:kind org-link :uri \"tmp://...\" :label \"...\")])). Otherwise your final message is the result."
+  "Compact model-facing instructions for the child-facing subagents capability.")
+
 (defconst e-subagents-skill
   (string-join
    '("# Subagent work actions"
@@ -139,11 +143,12 @@ e://subagents/refs/types.md."
    :description "Full catalog of spawnable subagent types."
    :reader (lambda (_entry _range) (e-subagents--catalog-markdown))))
 
-(cl-defun e-subagents-capability-create (&key registry)
-  "Create the subagents capability.
+(cl-defun e-subagents-parent-capability-create (&key registry)
+  "Create the parent-facing subagents capability.
 Contributes the discovery surface (types context provider and the read-only
-type catalog), the skill-backed action contract, and the spawn/observe/steer
-actions over REGISTRY (defaults to the process-wide registry)."
+type catalog), the skill-backed action contract, and the parent-facing
+spawn/observe/steer/configure actions over REGISTRY (defaults to the
+process-wide registry).  A session enables this to spawn and manage children."
   (e-capability-with-skills-create
    :id 'subagents
    :name "Subagents"
@@ -151,18 +156,43 @@ actions over REGISTRY (defaults to the process-wide registry)."
    :instructions e-subagents-instructions
    :context-providers (list (e-subagents-types-provider))
    :resources (list #'e-subagents--register-reference-resources)
-   :actions (e-subagent-actions-alist registry)
+   :actions (e-subagent-actions-parent-alist registry)
    :skills (list (e-skill-spec-create
                   :name "subagents"
                   :description "Spawn, observe, steer, and shut down child subagent sessions."
                   :content e-subagents-skill))))
 
-(defun e-subagents-layer-create ()
-  "Create the subagents layer."
-  (e-layer-create
+(cl-defun e-subagents-child-capability-create (&key registry)
+  "Create the child-facing subagents capability.
+A spawned child carries this so it can set a structured result for its own
+session via the `report' action.  It deliberately omits the spawn surface, the
+types context, and the type catalog, so a lean child stays lean.
+
+Its capability id is `subagents' -- the same the parent uses -- so a child's
+\='(e-actions-call \='subagents :report ...) resolves against whichever subagents
+capability variant its harness carries.  The two variants never coexist on one
+harness (parent on the spawning session, child on the spawned session), so the
+shared id causes no action or resource collision."
+  (e-capability-create
    :id 'subagents
-   :name "Subagents"
-   :capabilities (list (e-subagents-capability-create))))
+   :name "Subagents (child)"
+   :instruction-priority 235
+   :instructions e-subagents-child-instructions
+   :actions (e-subagent-actions-child-alist registry)))
+
+(defun e-subagents-parent-layer-create ()
+  "Create the parent-facing subagents layer, enabled on sessions that spawn."
+  (e-layer-create
+   :id 'subagents-parent
+   :name "Subagents (parent)"
+   :capabilities (list (e-subagents-parent-capability-create))))
+
+(defun e-subagents-child-layer-create ()
+  "Create the child-facing subagents layer added to every spawned child."
+  (e-layer-create
+   :id 'subagents-child
+   :name "Subagents (child)"
+   :capabilities (list (e-subagents-child-capability-create))))
 
 (provide 'e-subagents)
 

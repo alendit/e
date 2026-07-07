@@ -90,7 +90,7 @@
     (e-subagents-test--register-types)
     (let* ((messages
             (e-capabilities-context-messages
-             (list (e-subagents-capability-create))))
+             (list (e-subagents-parent-capability-create))))
            (content (mapconcat (lambda (message) (plist-get message :content))
                                messages "\n")))
       (should (string-match-p ":reviewer -- Reviewer -- Use for focused review." content))
@@ -111,7 +111,7 @@
   "The refs/types.md resource lists every spawnable type, hidden included."
   (e-subagents-test--with-empty-registries
     (e-subagents-test--register-types)
-    (let* ((capability (e-subagents-capability-create))
+    (let* ((capability (e-subagents-parent-capability-create))
            (store (e-store-create)))
       (e-capabilities-register-resources capability store)
       (should (member "e://subagents/refs/types.md"

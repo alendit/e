@@ -52,16 +52,31 @@ lineage."
   "Harnesses whose declaring instance's minimal layers/config were applied.
 Keyed weakly by harness so a torn-down harness is re-configured if recreated.")
 
+(defcustom e-subagent-child-layer-ids '(subagents-child)
+  "Layer ids always added to a spawned child harness.
+These are appended to a type's declared `:layers' so a child can always report
+its result, the same way base layers ride along on every harness.  A type may
+still exclude one explicitly by redefining its `:layers'; that is a supported
+choice, not an error."
+  :type '(repeat symbol)
+  :group 'e)
+
 (defun e-subagent--child-harness (instance)
   "Return INSTANCE's live child harness, applying its declared setup once.
-The instance's `:layers' become the harness's enabled layer set and its
-`:layer-config' entries seed runtime capability config, but only on the first
-creation, so a later `configure-type' the parent applies is never clobbered."
+The instance's `:layers' (plus `e-subagent-child-layer-ids') become the
+harness's enabled layer set and its `:layer-config' entries seed runtime
+capability config, but only on the first creation, so a later `configure-type'
+the parent applies is never clobbered."
   (let ((harness (e-harness-instance-get-or-create
                   (e-harness-instance-id instance))))
     (unless (gethash harness e-subagent--configured-harnesses)
-      (when-let ((layers (e-harness-instance-layers instance)))
-        (e-harness-set-enabled-layer-ids harness layers))
+      (let ((layers (e-harness-instance-layers instance)))
+        (when (or layers e-subagent-child-layer-ids)
+          (e-harness-set-enabled-layer-ids
+           harness
+           (append layers
+                   (seq-remove (lambda (id) (memq id layers))
+                               e-subagent-child-layer-ids)))))
       (dolist (entry (append (e-harness-instance-layer-config instance) nil))
         (e-harness-set-capability-config
          harness (car entry) (copy-sequence (cdr entry))))

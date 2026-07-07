@@ -283,9 +283,10 @@ A later configure-type override is preserved across subsequent spawns."
                                        :type :lean :prompt "go" :runner noop))
              (harness (e-subagent-registry-child-harness
                        registry (plist-get record :subagent-id))))
-        ;; Declared layers and config land on the child harness.
+        ;; Declared layers land on the child harness, with the always-added
+        ;; child report layer appended.
         (should (equal (e-harness-enabled-layer-ids harness)
-                       '(harness-base os-base)))
+                       '(harness-base os-base subagents-child)))
         (should (equal (e-harness-capability-config harness 'agents-std-context)
                        '(:skills-include ("writing"))))
         ;; A parent override persists; the second spawn does not re-seed.
@@ -306,16 +307,18 @@ This is the generic way to pass or overwrite layer configuration, e.g. the
       (should (equal (e-harness-capability-config harness 'agents-std-context)
                      '(:skills-include ("writing")))))))
 
-(ert-deftest e-subagent-runner-test-capability-actions-and-skill ()
-  "The capability exposes actions and a readable skill, absent from tools."
+(ert-deftest e-subagent-runner-test-parent-capability-actions-and-skill ()
+  "The parent capability exposes spawn/observe/steer actions and a skill.
+report is child-side and must not be on the parent surface."
   (e-subagent-runner-test--with-instances
     (let* ((registry (e-subagent-registry-create))
-           (capability (e-subagents-capability-create :registry registry))
+           (capability (e-subagents-parent-capability-create :registry registry))
            (store (e-store-create)))
       (should (eq (e-capability-id capability) 'subagents))
       (dolist (action '(:spawn :list :status :read :steer :send
-                        :interrupt :shutdown :configure-type :report))
+                        :interrupt :shutdown :configure-type))
         (should (e-capabilities-action-spec capability action)))
+      (should-not (e-capabilities-action-spec capability :report))
       ;; Actions only: no model-facing tool definitions, like elisp-job.
       (should-not (e-capability-tools capability))
       (e-capabilities-register-resources capability store)
@@ -325,6 +328,41 @@ This is the generic way to pass or overwrite layer configuration, e.g. the
       (should (string-match-p
                "spawn"
                (e-store-read store "e://subagents/skills/subagents" nil))))))
+
+(ert-deftest e-subagent-runner-test-child-capability-is-report-only ()
+  "The child capability exposes only report, and no spawn surface or catalog."
+  (e-subagent-runner-test--with-instances
+    (let* ((registry (e-subagent-registry-create))
+           (capability (e-subagents-child-capability-create :registry registry))
+           (store (e-store-create)))
+      (should (eq (e-capability-id capability) 'subagents))
+      (should (e-capabilities-action-spec capability :report))
+      (dolist (action '(:spawn :list :status :read :steer :send
+                        :interrupt :shutdown :configure-type))
+        (should-not (e-capabilities-action-spec capability action)))
+      (should-not (e-capability-tools capability))
+      ;; No types context and no catalog resource: a lean child stays lean.
+      (should-not (e-capability-context-providers capability))
+      (e-capabilities-register-resources capability store)
+      (should-not (e-store-list store)))))
+
+(ert-deftest e-subagent-runner-test-child-gets-report-layer ()
+  "Every spawned child harness carries the child-side report action."
+  (e-subagent-runner-test--with-instances
+    (let* ((registry (e-subagent-registry-create))
+           (parent (e-harness-create
+                    :backend (e-backend-fake-create :items nil))))
+      (e-harness-create-session parent :id "parent-1")
+      (let* ((record (e-subagent-spawn
+                      registry parent "parent-1"
+                      :type :reviewer :prompt "go"
+                      :runner (lambda (_h _s _p _seed _on) (list :cancel #'ignore))))
+             (child (e-subagent-registry-child-harness
+                     registry (plist-get record :subagent-id)))
+             (caps (mapcar #'e-capability-id
+                           (e-harness-effective-capabilities child))))
+        (should (memq 'subagents-child (e-harness-enabled-layer-ids child)))
+        (should (memq 'subagents caps))))))
 
 (provide 'e-subagent-runner-test)
 
