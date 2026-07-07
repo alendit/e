@@ -49,6 +49,14 @@
   :type 'number
   :group 'e-context-budget)
 
+(defun e-context-budget-options-effort (options)
+  "Return the reasoning-effort recorded in turn OPTIONS, or nil.
+OpenAI-style harnesses store it under `:reasoning-effort'; the native Anthropic
+adapter uses `:effort' (`output_config.effort').  Read either so effort-display
+callers reflect the value actually in effect regardless of provider."
+  (or (plist-get options :reasoning-effort)
+      (plist-get options :effort)))
+
 (defun e-context-budget-model-window (model &optional limits)
   "Return configured max context tokens for MODEL, or nil.
 LIMITS defaults to `e-context-budget-model-token-limits'."
@@ -245,11 +253,7 @@ and `:approximate'."
                         (ignore-errors
                           (e-harness-turn-options harness session-id))))
            (model (plist-get options :model))
-           ;; OpenAI harnesses carry `:reasoning-effort'; the native Anthropic
-           ;; adapter uses `:effort'.  Read either so the status line reflects
-           ;; the effort actually in effect rather than "effort unset".
-           (effort (or (plist-get options :reasoning-effort)
-                       (plist-get options :effort)))
+           (effort (e-context-budget-options-effort options))
            (estimated-tokens
             (and (not usage-tokens)
                  (or cached-tokens
