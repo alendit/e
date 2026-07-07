@@ -3962,10 +3962,17 @@ ACTIVE-AT is used for active thinking duration."
    (e-chat--round-tool-items round)))
 
 (defun e-chat--tool-item-name (item)
-  "Return a compact display name for tool ITEM."
-  (or (plist-get (plist-get item :call-payload) :name)
-      (car (split-string (or (plist-get item :call) "") "\n"))
-      "tool"))
+  "Return a compact display name for tool ITEM.
+When the tool invoked actions (e.g. run_elisp calling `e-actions-call'),
+append the single action name or a count when several distinct actions ran."
+  (let ((name (or (plist-get (plist-get item :call-payload) :name)
+                  (car (split-string (or (plist-get item :call) "") "\n"))
+                  "tool"))
+        (actions (plist-get item :actions)))
+    (cond
+     ((null actions) name)
+     ((= (length actions) 1) (format "%s (%s)" name (car actions)))
+     (t (format "%s (%d actions)" name (length actions))))))
 
 (defun e-chat--round-tool-names-text (round)
   "Return a comma-joined list of the distinct tool names called in ROUND.
@@ -4434,9 +4441,21 @@ its run duration."
    (preview (prin1-to-string preview))
    (t "")))
 
+(defun e-chat--attach-action-to-parent-tool (record payload)
+  "Record PAYLOAD's action name on its parent run_elisp tool item in RECORD.
+Does nothing when the action has no parent tool call or the parent tool
+item is not found."
+  (when-let* ((tool-id (plist-get payload :parent-tool-call-id))
+              (item (e-chat--find-round-tool-item record tool-id))
+              (name (e-chat--format-action-call payload)))
+    (unless (member name (plist-get item :actions))
+      (plist-put item :actions
+                 (append (plist-get item :actions) (list name))))))
+
 (defun e-chat--record-action-started (record payload &optional source)
   "Record action-started PAYLOAD in RECORD."
   (plist-put record :action-count (1+ (or (plist-get record :action-count) 0)))
+  (e-chat--attach-action-to-parent-tool record payload)
   (e-chat--add-intermittent-entry
    record
    "Action call"

@@ -9396,6 +9396,145 @@ last normal window), so the no-normal-window condition is stubbed."
       (when (buffer-live-p chat)
         (kill-buffer chat)))))
 
+(defun e-chat-test--record-with-round ()
+  "Return a fresh turn record carrying one active provider round."
+  (let ((record (list :id "turn-1"
+                      :activity-records nil
+                      :intermittent-entries nil)))
+    (e-chat--append-activity-record
+     record
+     (list :kind 'round
+           :round 1
+           :status 'active
+           :reasoning nil
+           :tool-batches nil))
+    record))
+
+(ert-deftest e-chat-test-run-elisp-tool-name-shows-single-action ()
+  "A run_elisp tool row names the capability/action it invoked."
+  (let ((record (e-chat-test--record-with-round)))
+    (e-chat--record-tool-started
+     record
+     '(:id "call-1" :name "run_elisp" :arguments (:code "..."))
+     'activity 0)
+    (e-chat--record-action-started
+     record
+     '(:parent-tool-call-id "call-1"
+       :capability-id "elisp-job"
+       :action :run-batch)
+     'activity)
+    (let ((item (car (e-chat--round-tool-items
+                      (car (e-chat--activity-records record))))))
+      (should (equal (e-chat--tool-item-name item)
+                     "run_elisp (elisp-job/run-batch)")))))
+
+(ert-deftest e-chat-test-run-elisp-tool-name-counts-multiple-actions ()
+  "A run_elisp tool row counts distinct actions when more than one runs."
+  (let ((record (e-chat-test--record-with-round)))
+    (e-chat--record-tool-started
+     record
+     '(:id "call-1" :name "run_elisp" :arguments (:code "..."))
+     'activity 0)
+    (e-chat--record-action-started
+     record
+     '(:parent-tool-call-id "call-1"
+       :capability-id "elisp-job"
+       :action :run-batch)
+     'activity)
+    (e-chat--record-action-started
+     record
+     '(:parent-tool-call-id "call-1"
+       :capability-id "workspace-awareness"
+       :action :focus)
+     'activity)
+    (let ((item (car (e-chat--round-tool-items
+                      (car (e-chat--activity-records record))))))
+      (should (equal (e-chat--tool-item-name item)
+                     "run_elisp (2 actions)")))))
+
+(ert-deftest e-chat-test-run-elisp-tool-name-dedups-repeated-action ()
+  "A run_elisp tool row keeps the single name when one action repeats."
+  (let ((record (e-chat-test--record-with-round)))
+    (e-chat--record-tool-started
+     record
+     '(:id "call-1" :name "run_elisp" :arguments (:code "..."))
+     'activity 0)
+    (dotimes (_ 2)
+      (e-chat--record-action-started
+       record
+       '(:parent-tool-call-id "call-1"
+         :capability-id "elisp-job"
+         :action :run-batch)
+       'activity))
+    (let ((item (car (e-chat--round-tool-items
+                      (car (e-chat--activity-records record))))))
+      (should (equal (e-chat--tool-item-name item)
+                     "run_elisp (elisp-job/run-batch)")))))
+
+(ert-deftest e-chat-test-top-level-action-leaves-tool-name-unchanged ()
+  "An action with no parent tool call does not alter any tool row."
+  (let ((record (e-chat-test--record-with-round)))
+    (e-chat--record-tool-started
+     record
+     '(:id "call-1" :name "read" :arguments (:path "file"))
+     'activity 0)
+    (e-chat--record-action-started
+     record
+     '(:capability-id "elisp-job" :action :run-batch)
+     'activity)
+    (let ((item (car (e-chat--round-tool-items
+                      (car (e-chat--activity-records record))))))
+      (should (equal (e-chat--tool-item-name item) "read")))))
+
+(ert-deftest e-chat-test-replayed-run-elisp-action-name-renders ()
+  "Replaying a run_elisp tool with a nested action names the action in-buffer."
+  (let* ((store (e-session-store-create))
+         (backend (e-backend-fake-create :items nil))
+         (harness (e-harness-create :backend backend :sessions store))
+         (buffer nil))
+    (unwind-protect
+        (progn
+          (e-harness-create-session harness :id "chat-run-elisp-replay")
+          (e-session-append-message
+           store "chat-run-elisp-replay"
+           '(:role user :content "run it" :turn-id "turn-1"))
+          (e-session-append-activity-event
+           store "chat-run-elisp-replay" "turn-1" 'turn-started nil)
+          (e-session-append-activity-event
+           store "chat-run-elisp-replay" "turn-1" 'provider-request-started
+           '(:status started))
+          (e-session-append-activity-event
+           store "chat-run-elisp-replay" "turn-1" 'tool-started
+           '(:type tool-call :id "call-1" :name "run_elisp"))
+          (e-session-append-activity-event
+           store "chat-run-elisp-replay" "turn-1" 'action-started
+           '(:parent-tool-call-id "call-1"
+             :capability-id "elisp-job"
+             :action :run-batch
+             :status started))
+          (e-session-append-activity-event
+           store "chat-run-elisp-replay" "turn-1" 'tool-finished
+           '(:tool-call (:type tool-call :id "call-1" :name "run_elisp")
+             :result (:status ok :content "done")))
+          (e-session-append-activity-event
+           store "chat-run-elisp-replay" "turn-1" 'provider-request-finished
+           '(:status done))
+          (e-session-append-activity-event
+           store "chat-run-elisp-replay" "turn-1" 'turn-finished nil)
+          (e-session-append-message
+           store "chat-run-elisp-replay"
+           '(:role assistant :content "Final answer." :turn-id "turn-1"))
+          (setq buffer (e-chat-open :harness harness
+                                    :session-id "chat-run-elisp-replay"))
+          (with-current-buffer buffer
+            (let* ((record (e-chat--existing-turn-record "turn-1"))
+                   (round (car (e-chat--activity-records record))))
+              (should (string-match-p
+                       "1 tool call (run_elisp (elisp-job/run-batch))"
+                       (e-chat--activity-round-visible-text round))))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (provide 'e-chat-test)
 
 ;;; e-chat-test.el ends here
