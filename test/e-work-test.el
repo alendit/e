@@ -94,6 +94,148 @@
                             :type 'e-work-await-in-hot-path))))
       (e-work-cancel handle))))
 
+(defun e-work-test--pending-handle ()
+  "Return a fresh non-terminal handle on the render carrier."
+  (e-work-start
+   (e-work-spec-create
+    :id "pending"
+    :execution 'render
+    :interactive-policy 'async
+    :runner (lambda (_arguments _context) :never))
+   '(:delay 600)))
+
+(defun e-work-test--terminal-handle ()
+  "Return a fresh already-finished handle."
+  (e-work-start
+   (e-work-spec-create
+    :id "terminal"
+    :execution 'cheap
+    :interactive-policy 'cheap
+    :runner (lambda (_arguments _context) :ok))
+   nil))
+
+(ert-deftest e-work-test-on-settle-fires-once-on-terminal ()
+  "`e-work-on-settle' fires immediately when terminal, else on settle."
+  ;; Already terminal: fires now.
+  (let ((calls 0))
+    (e-work-on-settle (e-work-test--terminal-handle)
+                      (lambda (_h) (cl-incf calls)))
+    (should (= calls 1)))
+  ;; Pending: fires on the terminal event, exactly once.
+  (let ((handle (e-work-test--pending-handle))
+        (calls 0))
+    (unwind-protect
+        (progn
+          (e-work-on-settle handle (lambda (_h) (cl-incf calls)))
+          (should (= calls 0))
+          (e-work-finish handle :done)
+          (should (= calls 1)))
+      (e-work-cancel handle))))
+
+(ert-deftest e-work-test-await-set-all-settles-after-last ()
+  "MODE all settles only when every handle is terminal."
+  (let* ((a (e-work-test--pending-handle))
+         (b (e-work-test--pending-handle))
+         report)
+    (unwind-protect
+        (progn
+          (e-work-await-set (list a b)
+                            :mode 'all
+                            :on-settle (lambda (r) (setq report r)))
+          (should-not report)
+          (e-work-finish a :a)
+          (should-not report)
+          (e-work-finish b :b)
+          (should report)
+          (should (eq (plist-get report :reason) 'complete))
+          (should (= (length (plist-get report :done)) 2))
+          (should-not (plist-get report :pending)))
+      (e-work-cancel a)
+      (e-work-cancel b))))
+
+(ert-deftest e-work-test-await-set-any-settles-after-first ()
+  "MODE any settles when the first handle is terminal."
+  (let* ((a (e-work-test--pending-handle))
+         (b (e-work-test--pending-handle))
+         report)
+    (unwind-protect
+        (progn
+          (e-work-await-set (list a b)
+                            :mode 'any
+                            :on-settle (lambda (r) (setq report r)))
+          (should-not report)
+          (e-work-finish a :a)
+          (should report)
+          (should (eq (plist-get report :reason) 'complete))
+          (should (= (length (plist-get report :done)) 1))
+          (should (= (length (plist-get report :pending)) 1)))
+      (e-work-cancel a)
+      (e-work-cancel b))))
+
+(ert-deftest e-work-test-await-set-already-terminal-settles-at-once ()
+  "Awaiting handles that are already terminal settles synchronously."
+  (let ((report nil))
+    (e-work-await-set (list (e-work-test--terminal-handle)
+                            (e-work-test--terminal-handle))
+                      :mode 'all
+                      :timeout 60
+                      :on-settle (lambda (r) (setq report r)))
+    (should report)
+    (should (eq (plist-get report :reason) 'complete))))
+
+(ert-deftest e-work-test-await-set-failed-counts-as-terminal ()
+  "A failed or cancelled handle counts toward set completion."
+  (let* ((a (e-work-test--pending-handle))
+         (b (e-work-test--pending-handle))
+         report)
+    (unwind-protect
+        (progn
+          (e-work-await-set (list a b)
+                            :mode 'all
+                            :on-settle (lambda (r) (setq report r)))
+          (e-work-fail a (list 'e-work-error "boom"))
+          (should-not report)
+          (e-work-cancel b)
+          (should report)
+          (should (eq (plist-get report :reason) 'complete)))
+      (e-work-cancel a)
+      (e-work-cancel b))))
+
+(ert-deftest e-work-test-await-set-timeout-reports-pending ()
+  "The timeout settles once with the pending handles and cancels the timer."
+  (let* ((a (e-work-test--pending-handle))
+         (b (e-work-test--pending-handle))
+         report)
+    (unwind-protect
+        (progn
+          (e-work-await-set (list a b)
+                            :mode 'all
+                            :timeout 0.05
+                            :on-settle (lambda (r) (setq report r)))
+          (e-work-finish a :a)
+          ;; Let the timeout timer fire.
+          (sleep-for 0.15)
+          (should report)
+          (should (eq (plist-get report :reason) 'timed-out))
+          (should (= (length (plist-get report :done)) 1))
+          (should (= (length (plist-get report :pending)) 1)))
+      (e-work-cancel a)
+      (e-work-cancel b))))
+
+(ert-deftest e-work-test-await-set-canceller-detaches ()
+  "The returned canceller stops settlement without invoking ON-SETTLE."
+  (let* ((a (e-work-test--pending-handle))
+         (report nil)
+         (cancel (e-work-await-set (list a)
+                                   :mode 'all
+                                   :on-settle (lambda (r) (setq report r)))))
+    (unwind-protect
+        (progn
+          (funcall cancel)
+          (e-work-finish a :a)
+          (should-not report))
+      (e-work-cancel a))))
+
 (ert-deftest e-work-test-process-carrier-starts-before-exit ()
   "The process carrier returns a handle before process completion."
   (let* ((spec (e-work-spec-create

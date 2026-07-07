@@ -336,6 +336,79 @@ This function is rejected from interactive hot paths."
     ('cancelled (signal 'e-work-cancelled (list handle)))
     (state (signal 'e-work-error (list "Unexpected terminal state" state)))))
 
+(defun e-work-on-settle (handle callback)
+  "Call CALLBACK with HANDLE once HANDLE reaches a terminal state.
+When HANDLE is already terminal, call CALLBACK now; otherwise register a
+terminal-event subscription that fires exactly once when it settles.  This is
+the event-driven, non-blocking counterpart to reading `e-work-status' in a
+loop.  CALLBACK runs with HANDLE already in a terminal state, so
+`e-work-status' reports the final result or error."
+  (unless (e-work-handle-p handle)
+    (signal 'wrong-type-argument (list 'e-work-handle-p handle)))
+  (if (e-request-terminal-p (e-work-handle-lifecycle handle))
+      (funcall callback handle)
+    (e-work-add-cleanup handle (lambda (settled-handle)
+                                 (funcall callback settled-handle))))
+  handle)
+
+(cl-defun e-work-await-set (handles &key (mode 'all) timeout on-settle)
+  "Wait for HANDLES event-driven and call ON-SETTLE once when the set settles.
+This is the non-blocking, set-oriented sibling of `e-work-await-batch': it never
+calls `accept-process-output' and never blocks the thread.  It subscribes to
+each handle's terminal event and arms at most one timeout timer.
+
+MODE is `all' (default: settle when every handle is terminal) or `any' (settle
+when the first handle is terminal).  TIMEOUT, when non-nil, is seconds after
+which the wait settles regardless of the handles.
+
+ON-SETTLE is called exactly once with a plist:
+  (:reason complete|timed-out :mode MODE :done DONE :pending PENDING)
+where DONE lists the terminal handles and PENDING the non-terminal ones.  A
+handle already terminal when this is called counts immediately, so awaiting
+finished work settles at once.
+
+Returns a canceller thunk that detaches the wait without invoking ON-SETTLE;
+late terminal callbacks then no-op."
+  (unless (and (listp handles) handles (cl-every #'e-work-handle-p handles))
+    (signal 'wrong-type-argument (list 'e-work-handle-list handles)))
+  (unless (memq mode '(all any))
+    (signal 'wrong-type-argument (list '(member all any) mode)))
+  (let (settled timer)
+    (cl-labels
+        ((terminal-p (handle)
+           (e-request-terminal-p (e-work-handle-lifecycle handle)))
+         (finish (reason)
+           (unless settled
+             (setq settled t)
+             (when (timerp timer)
+               (cancel-timer timer)
+               (setq timer nil))
+             (when on-settle
+               (funcall on-settle
+                        (list :reason reason
+                              :mode mode
+                              :done (cl-remove-if-not #'terminal-p handles)
+                              :pending (cl-remove-if #'terminal-p handles))))))
+         (check ()
+           (unless settled
+             (let ((terminal (cl-count-if #'terminal-p handles)))
+               (pcase mode
+                 ('any (when (> terminal 0) (finish 'complete)))
+                 ('all (when (= terminal (length handles))
+                         (finish 'complete))))))))
+      (dolist (handle handles)
+        (e-work-on-settle handle (lambda (_settled-handle) (check))))
+      ;; Only arm the timeout if no already-terminal handle settled the set
+      ;; during subscription above.
+      (when (and (not settled) timeout)
+        (setq timer (run-at-time timeout nil (lambda () (finish 'timed-out)))))
+      (lambda ()
+        (unless settled
+          (setq settled t)
+          (when (timerp timer)
+            (cancel-timer timer)
+            (setq timer nil)))))))
+
 (defun e-work--setup (handle arguments context)
   "Run HANDLE setup and install cleanup/metadata."
   (when-let ((setup (e-work-spec-setup (e-work-handle-spec handle))))
