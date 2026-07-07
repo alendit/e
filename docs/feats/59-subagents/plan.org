@@ -1,0 +1,307 @@
+#+title: Subagents
+#+startup: overview
+
+* Status
+
+Planned
+
+* Goal
+
+Let a main session spawn, populate, observe, steer, and shut down child agent sessions, and let those children run under a purpose-built harness config and model while returning only a compact result to the parent.
+
+Two dimensions, freely combined:
+
+- *Task parallelization*: one logical job fans out into many child sessions, e.g. "analyze every doc in this directory".
+  The parent spawns a child per unit, then collects results in bulk or reads them back from a shared temp location.
+- *Custom agent for a single task*: a child runs under a config crafted for its job, e.g. a dedicated review agent with review-specific guidance, or a cheaper/faster model for mechanical tool-chaining the parent wants kept out of its own context.
+
+The load-bearing property across both is *context discipline*: a child's whole session stays out of the parent's context.
+The parent sees a handle, a status, and a short result -- typically a pointer into shared =tmp://= storage -- not the child's transcript.
+
+* Direction
+
+Subagents are not a new core runtime primitive.
+They are a capability composed over primitives that already exist:
+
+- =e-harness-instance= (feat 15) already models "a named, configured runtime target with a factory, model metadata, and a default marker."
+  A subagent *type* is a harness instance, extended with a when-to-use description and a discovery-visibility control.
+  This satisfies "define harness configs mostly via harness definition."
+- =e-task-queue= (feat 47) already provides bounded-concurrency scheduling of agent prompts with a runner seam, status lifecycle, per-task =session-id=, =outputs=, cancel, and pause.
+  This is the scheduling substrate for the parallelization dimension.
+- =e-work= (feat 55) already gives a uniform handle with status, progress, cancel, and settle callbacks, and its =agent-task= carrier already wraps the task queue.
+  A subagent handle is an =e-work= handle.
+- =e-session-fork= / =e-harness-fork-session= already seed a fresh session from a source session's messages plus context metadata.
+  This is the "populate via fork" mechanism.
+- Session-scoped =tmp://= roots (=e-session-tmp-resources=) already isolate ephemeral text per session; extending the key from session-id to a lineage id makes parent and children share one =tmp://= namespace.
+- The read-only =session://= scheme (feat 56) already exposes a session's raw transcript and projections; this is how the parent reads a child's raw output when the compact result is not enough.
+- The Agent Shell Fleet capability (feat 34) is the precedent for a capability-owned work registry with normalized records and list/status/read/steer/interrupt actions.
+
+The subagent capability owns the *composition and lineage*: choosing a type, seeding context, marking the durable parent/child relationship, running through a runner (direct turn or the queue), and normalizing child records so the parent can list, read, steer, and shut them down.
+=e-harness= stays unaware of subagents, exactly as it stays unaware of the task queue.
+
+* API surface: actions vs a top-level tool
+
+The repository has a consistent precedent: background/agent-coordination surfaces are *capability actions plus a skill*, reached from =run_elisp= through =e-actions-call=, not model-facing tools.
+=e-task-queue-actions=, =e-elisp-job=, and =e-agent-shell-fleet= all chose this shape deliberately, and each records why in its plan: these are interactive worker runtimes with lifecycle, not static catalogs of deterministic tools, and they should not inflate the model-visible tool namespace in every session.
+
+Subagents match that pattern and should follow it:
+
+- The primary surface is a =subagents= capability exposing actions (=spawn=, =list=, =status=, =read=, =steer=, =interrupt=, =shutdown=, and a child-side =report=), reached with =e-actions-call=.
+- A skill (=e://subagents/skills/subagents=) documents the workflow and the action contract, surfaced through the on-demand skill preamble so it does not sit in every context by default.
+- Action descriptions are already gradually discoverable through the =e-action://= resource scheme, which gives the parent a place to read the full contract only when it decides to use subagents.
+
+Why not a top-level tool as the primary surface:
+
+- It would make "subagents" feel like a peer tool family in every session, the same objection feat 34 raised against first-level Agent Shell tools.
+- Spawn/observe/steer is multi-step orchestration the model already performs well from =run_elisp= via tool chaining (feat 26); a single tool call cannot express "fan out over these ten files, then collect."
+- Actions keep inputs/outputs as plain plists, which compose cleanly inside a =run_elisp= fan-out/fan-in without a per-primitive tool.
+
+Escape hatch, decided during implementation and only if tool-chaining ergonomics demand it (again mirroring feat 34): at most *one* narrow model-facing dispatcher tool =subagent= whose =:operation= selects the action.
+Do not register one first-level tool per verb.
+The default ships actions only.
+
+* Subagent types (harness configs with when-to-use)
+
+Extend =e-harness-instance= minimally rather than inventing a parallel registry.
+A subagent type is a harness instance with:
+
+- =:description= :: free-text "when to use this agent," the field the parent reads to route a task to the right type.
+  Add this slot to =e-harness-instance= and =e-harness-instance-register=.
+- =:context-visibility= :: controls gradual discovery of this type in the parent's context.
+  Values:
+  - =always= :: name + description appear in the default subagents context block.
+  - =on-demand= :: only the name (and kind) appear by default; the description is read on demand from an =e://= resource or the =list= action. [this sounds pretty useless: how does the agent even consider the name? I'd say we don't need this one]
+  - =hidden= :: not surfaced in context at all; usable only when the parent names the id explicitly.
+Default =hidden=, so adding many specialized types does not bloat the default context.
+- =:kind= :: reuse the existing kind slot; subagent types use =subagent= (or a role-specific kind) so =e-harness-instance-list :kind 'subagent= enumerates them without mixing in chat targets.
+
+Registration stays "mostly via harness definition," as requested:
+
+#+begin_src emacs-lisp
+(e-harness-instance-register
+ :id :subagent-reviewer
+ :name "Reviewer"
+ :kind 'subagent
+ :description "Use for focused code or doc review with review-specific guidance."
+ :context-visibility 'always
+ :factory (lambda () (e-default-chat-harness-create :provider 'local-proxy-opus))
+ :metadata '(:model "claude-opus-4" :role reviewer))
+
+(e-harness-instance-register
+ :id :subagent-fast-tools
+ :name "Fast tool-runner"
+ :kind 'subagent
+ :description "Cheap/fast model for mechanical tool chaining kept out of the parent context."
+ :context-visibility 'on-demand
+ :factory (lambda () (e-default-chat-harness-create :provider 'local-proxy-haiku))
+ :metadata '(:model "claude-haiku" :role tool-runner))
+#+end_src
+
+The child's specialized *guidance* comes from the layers/capabilities its harness factory activates -- e.g. a review output-style (feat 38) or a role-specific instruction capability -- not from a subagent-specific instruction channel.
+This keeps role behavior owned by the harness config.
+
+* Context for the parent about available agents (gradual discovery)
+
+This reuses the existing context-provider mechanism; it is not a new context path.
+The =subagents= capability adds one ordinary =e-context-provider= (the same struct and =context-providers= capability slot that =agents-std-context=, MCP, and others already use) to its contributions.
+The harness builds it before the transcript on each turn exactly as it builds every other provider; nothing in =e-harness= or =e-context= changes.
+
+That provider's =build= function contributes one compact block built from =e-harness-instance-list :kind 'subagent=, filtered by =:context-visibility=:
+
+- =always= types: one line each, =id -- name -- description=.
+- =on-demand= types: one line each, =id -- name= only, with a pointer that full descriptions and the action contract live at =e://subagents/refs/types.md= and the =list= action.
+- =hidden= types: omitted.
+
+The provider stays small and backend-neutral, like other context providers.
+The =e://subagents/refs/types.md= resource renders the full catalog (all non-hidden types with descriptions) for on-demand reads, so the default context carries names and routing hints but not every description.
+
+* Spawning and context population
+
+=spawn= creates a child session on the chosen type's harness, seeds its context, records lineage, and starts a run.
+Arguments:
+
+#+begin_src elisp
+(:type :subagent-reviewer      ; harness-instance id; required
+ :prompt "Review tmp://plan.org for ..."  ; the child's task; required
+ :fork t                       ; seed from parent session snapshot (optional)
+ :fork-at "<entry-id>"         ; fork point; defaults to parent head (optional)
+ :seed-messages [ ... ]        ; explicit context messages to inject (optional)
+ :label "review plan.org"      ; human-scannable stub (optional)
+ :schedule 'direct|'queue      ; run now or via the task queue (optional)
+ :metadata (...))              ; opaque passthrough
+#+end_src
+
+Context population supports the three requested modes:
+
+- *Explicit*: =:seed-messages= are appended to the fresh child session before its task prompt.
+  This is the minimal, cheap path and the default.
+- *Fork*: =:fork t= snapshots the parent session's current path and seeds the child with it, reusing =e-session-fork='s message-seed logic and context metadata copy.
+  The child inherits the parent's working context without sharing identity.
+- *Combination*: =:fork t= together with =:seed-messages= forks first, then appends the explicit messages, then runs the task prompt.
+
+Cross-store seeding is a real design point.
+=e-session-fork= operates within one session store; a subagent whose type is a *different* harness instance may use a different store.
+The runner must copy parent message seeds into the child's store rather than assuming a shared store.
+Factor the message-seed transform (=e-session--fork-message-seed=) into a reusable cross-store seeder and note that provider anchors and compaction structure are intentionally not copied (same as fork today).
+When parent and child share a store, the existing fork path is used directly.
+
+* Lineage and durable marking
+
+Child sessions carry durable metadata that ties them to the parent, so the relationship survives restart and is visible in =session://= and the shell:
+
+- =:parent-session-id= :: the spawning session's id.
+- =:subagent-role= :: e.g. =reviewer=, copied from the type metadata.
+- =:subagent-label= :: the human-scannable stub.
+- =:tmp-lineage-id= :: the shared =tmp://= namespace key (see next section).
+
+These live in session metadata (durable), following the state-lifetime guidance: the parent/child relationship is a durable fact, not derived UI state.
+
+* Shared tmp:// between parent and children
+
+Today =e-session-tmp-directory= keys the tmp root by =(harness . session-id)=, so each session has its own =tmp://= namespace.
+Subagents need parent and children to see one namespace, so a child can write =tmp://sub_result_1.org= and the parent can read it back.
+
+Change the tmp root resolution to prefer a *lineage id* over the session id:
+
+- The tmp resolver reads =:tmp-lineage-id= from the session's metadata; when present it keys the root by lineage id, otherwise it falls back to session id (unchanged behavior for non-subagent sessions).
+- The parent's lineage id is its own session id; each spawned child inherits the parent's lineage id.
+  All sessions in one lineage resolve to the same tmp root.
+- Keep the root keyed within the owning harness table.
+  When children run on a different harness instance than the parent, the lineage tmp root must be shared across harnesses; resolve the root through a lineage-keyed table rather than a per-harness table so cross-instance children see the same files.
+  Flag this as the one place the current per-harness keying must generalize.
+
+Cleanup follows lineage: the root is deleted when the lineage's root session is cleaned up, and the existing idle-expiry sweep applies to lineage roots too.
+
+The default subagent guidance (in the skill and the child's runtime guidance) tells children to write results under =tmp://= and keep their final message terse.
+
+* Result communication (protecting parent context)
+
+This is the key context-discipline decision.
+Design: the compact result is the child's *final assistant message by default*, with an optional child-side =report= action that attaches a *structured* result overriding the default.
+
+- *Default (no new surface for the child)*: when a child turn settles, the runner extracts the last assistant message as the result, exactly as the task queue's default runner does today.
+  The child's guidance steers it to make that final message terse, e.g. =Result: tmp://sub_result_1.org -- 3 issues found=.
+  The parent's =status=/=read= returns that short text plus the child's =outputs=, never the transcript.
+- *Structured override (=report= action)*: the child may call =(e-actions-call 'subagents :report '(:outputs [(:kind org-link :uri "tmp://sub_result_1.org" :label "review")] :summary "3 issues found"))= to set a structured result.
+  When present, =report= output wins over the final-message heuristic.
+  This gives a child that produces artifacts a clean, machine-readable channel without forcing every child to.
+
+Why this shape over the alternatives:
+
+- Making the final message *the* result with no override is simplest but gives the child no way to distinguish "chatter" from "the answer," and no structured artifact list.
+- A mandatory =report= tool adds a surface every child must learn and call correctly, and re-implements what the settle path already captures.
+- The combination keeps the zero-friction path (final message) while allowing precision (=report=) when the child produces artifacts.
+  It reuses the existing =outputs= record shape =(:kind :value|:uri :label)= so the queue, the shell, and =read= all speak one vocabulary.
+
+Raw output is always available without polluting the parent: the child's full transcript is a read-only =session://<engine>/sessions/<child-id>/...= resource, which the parent reads only when it explicitly needs detail.
+
+* Handles, tracking, and lifecycle control
+
+=spawn= returns a normalized subagent record and registers it in a capability- owned registry (precedent: =e-agent-shell-work=):
+
+#+begin_src elisp
+(:subagent-id "sub_01H..."
+ :type :subagent-reviewer
+ :role reviewer
+ :status queued|running|blocked|done|failed|cancelled
+ :session-id "..."          ; the child session, for session:// reads
+ :parent-session-id "..."
+ :label "review plan.org"
+ :result-summary "3 issues found"   ; the compact result
+ :outputs (...)                     ; structured artifacts when reported
+ :work-handle <opaque>              ; e-work / task-queue handle
+ :error nil)
+#+end_src
+
+- The record wraps an =e-work= handle (=agent-task= carrier when scheduled through the queue, or a direct-turn runner otherwise), so =status= and progress come from the generic work lifecycle rather than a bespoke status path.
+- =list= returns compact records for the current lineage (children of the calling session), newest-first.
+  =status= returns one full record.
+  =read= returns the compact result plus outputs; a =:raw t= flag returns a bounded excerpt or the =session://= URI for the full transcript.
+- =interrupt= aborts the child's active turn via the work handle (=e-harness-abort= under the hood), leaving the record inspectable.
+  =shutdown= interrupts if running and marks the record terminal, releasing its slot.
+- =steer= and =send= append to the child's running turn or submit a follow-up, reusing =e-harness-steer-active-turn= / =e-harness-queue-prompt= (feat 36).
+  This is how the parent communicates mid-flight.
+
+Because the record wraps existing handles and sessions, a reload can reconnect by scanning sessions whose metadata names the parent lineage, the same reconnection idea feat 34 uses for adopted shells.
+
+* Displaying subagents to the user and opening their chat
+
+Subagent child sessions are ordinary sessions with lineage metadata, so the existing chat surfaces need only a lineage-aware view, not a new shell:
+
+- A =subagents= shell command opens a =tabulated-list= (style of the task-queue and picker shells) showing the current session's children: label, type, status, result summary, outputs count.
+  It refreshes on subagent registry change events and respects workspace-awareness display helpers.
+- Row action "open chat" calls =e-chat-open :session-id CHILD :instance-id TYPE=, which already attaches a chat buffer for any session on any instance (feat 15).
+  The user gets a full live chat with the child.
+- The chat overview/resume pickers can optionally show a child's parent as a label column, since the lineage id is in metadata; this reuses the cross- instance session candidate list rather than adding a command.
+
+* Non-goals
+
+- No new core runtime primitive beside capabilities, sessions, tools, work, and backends; subagents are a capability composed over harness instances, the task queue, =e-work=, fork, and =session://=.
+- No subagent-specific instruction channel on =e-harness=; role behavior comes from the type's harness factory (layers/capabilities/output-style).
+- No dependency graph, priority scheduler, or map-reduce planner in the first slices; parallel fan-out reuses the task queue's FIFO + concurrency cap, and fan-in is the parent reading results.
+- No streaming of child transcripts into the parent context; the parent reads raw output only through =session://= on demand.
+- No first-level model tool family; actions plus a skill, with at most one optional narrow dispatcher tool decided during implementation.
+- No change to =e-harness= knowledge of subagents.
+
+* Open questions
+
+- *Type kind*: one =subagent= kind with a =:role= in metadata, or per-role kinds (=subagent-reviewer=)?
+  A single kind with metadata roles keeps enumeration simple; role-specific behavior already lives in the factory.
+  Leaning single kind.
+- *Direct vs queue by default*: should a lone =spawn= run directly and only multi-spawn fan-outs go through the queue, or should everything go through the queue for uniform admission control?
+  Leaning: default =direct= for a single child, =queue= when the parent explicitly fans out, with =:schedule= to force either.
+- *Lineage tmp keying*: generalizing the tmp root table from per-harness to per-lineage is the one non-additive change; confirm no other consumer relies on the per-harness keying before changing it.
+- *report vs final-message precedence*: confirmed override semantics (report wins).
+  Open: should a child that calls =report= then keep talking have its later final message ignored, or append?
+  Leaning: =report= is authoritative; later chatter does not change the result.
+- *Reconnection scope*: reconnect children by scanning lineage metadata on reload, or persist a compact subagent registry like the task queue does in slice 5?  Leaning: reuse session metadata as the source of truth and rebuild the registry from it, avoiding a second durable store.
+
+* Slices
+
+Each slice ends at a useful stopping point.
+
+** Slice 1 -- Subagent types on harness instances
+
+Add =:description= and =:context-visibility= to =e-harness-instance= and =e-harness-instance-register=; add the =subagent= kind convention.
+Add the =e://subagents/refs/types.md= resource and a small context provider that lists types by visibility.
+
+- Stopping value: the parent can see which subagent types exist and when to use them, with gradual discovery, before any spawning exists.
+- Verification: ERT for registration with description/visibility, list-by-kind, and the context block honoring each visibility value; =git diff --check=.
+
+** Slice 2 -- Lineage-shared tmp:// and durable lineage metadata
+
+Generalize the tmp root resolver to key by =:tmp-lineage-id= with session-id fallback; add the lineage-keyed root table for cross-instance sharing; normalize =:parent-session-id=, =:subagent-role=, =:subagent-label=, =:tmp-lineage-id= in session metadata.
+
+- Stopping value: parent and (future) children can share one =tmp://= namespace, and the parent/child relationship is durably recordable, independently of the spawn action.
+- Verification: ERT proving two sessions with the same lineage id resolve to one tmp root while unrelated sessions stay isolated; cleanup follows lineage; metadata round-trips through =session://=.
+
+** Slice 3 -- Subagent capability, registry, and runner
+
+Add the =subagents= capability with =spawn=, =list=, =status=, =read=, =interrupt=, =shutdown=, and the child-side =report=, over a capability-owned registry.
+Implement the runner using the existing direct-turn and =agent-task= carriers, cross-store context seeding (explicit / fork / combination), and the final-message-with-report-override result path.
+Add the skill.
+
+- Stopping value: a parent can spawn a child of a chosen type with seeded context, track it by handle, read its compact result, and shut it down, all through =e-actions-call=.
+- Verification: action round-trip ERT with a fake runner (spawn -> status -> read), explicit/fork/combination seeding, report override vs final-message default, interrupt/shutdown transitions, and a test asserting the capability is absent from model-facing tool definitions (mirroring =elisp-job=).
+
+** Slice 4 -- Steering, follow-up, and raw-output read
+
+Wire =steer=/=send= to =e-harness-steer-active-turn= / =e-harness-queue-prompt=, and =read :raw t= to the child's =session://= transcript excerpt.
+
+- Stopping value: the parent can converse with a running child and pull raw detail on demand without polluting its own context.
+- Verification: ERT for steer/follow-up dispatch and raw-read returning a bounded excerpt / =session://= URI.
+
+** Slice 5 -- Subagents shell and chat integration
+
+Add the lineage-aware =tabulated-list= shell with row actions (open chat, interrupt, shutdown), refreshing on registry change and using workspace-aware display.
+Confirm =e-chat-open= opens a child session on its type instance.
+
+- Stopping value: the operator can watch the current session's children and open a full chat with any of them.
+- Verification: shell smoke (renders child rows, refreshes on change); a bounded live probe opening a child chat after =e-dev-reload= when explicitly requested.
+
+** Slice 6 -- Optional model-facing dispatcher (decision slice)
+
+Decide, based on tool-chaining ergonomics from slices 3--4, whether to add one narrow =subagent= dispatcher tool with an =:operation= selector.
+Implement only if =run_elisp= composition proves insufficient; otherwise record the decision to stay actions-only.
+
+- Stopping value: a clear, recorded decision and, if warranted, a single narrow bridge -- never a per-verb tool family.
