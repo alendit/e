@@ -168,7 +168,8 @@ returns a handle plist carrying `:cancel'."
                   :session-id child-session-id
                   :parent-session-id parent-session-id
                   :label label
-                  :schedule schedule))
+                  :schedule schedule
+                  :child-harness child-harness))
          (subagent-id (plist-get record :subagent-id))
          (runner (or runner #'e-subagent-direct-runner))
          (handle (funcall runner
@@ -222,6 +223,50 @@ Return the normalized record."
   "Interrupt SUBAGENT-ID if running and mark its record terminal.
 Return the normalized record."
   (e-subagent-interrupt registry subagent-id))
+
+(defun e-subagent-steer (registry subagent-id prompt)
+  "Steer SUBAGENT-ID's running child turn with PROMPT.
+Steers the active turn in place through the child harness so the parent can
+communicate mid-flight.  Return the normalized record."
+  (let ((harness (e-subagent-registry-child-harness registry subagent-id))
+        (session-id (plist-get (e-subagent-registry-get registry subagent-id)
+                               :session-id)))
+    (unless harness
+      (user-error "Subagent %s has no live child harness" subagent-id))
+    (e-harness-steer-active-turn harness session-id prompt)
+    (e-subagent-registry-get registry subagent-id)))
+
+(defun e-subagent-send (registry subagent-id prompt)
+  "Queue a follow-up PROMPT to SUBAGENT-ID's child session.
+Unlike `e-subagent-steer', this submits a follow-up turn rather than steering
+the active one.  Return the normalized record."
+  (let ((harness (e-subagent-registry-child-harness registry subagent-id))
+        (session-id (plist-get (e-subagent-registry-get registry subagent-id)
+                               :session-id)))
+    (unless harness
+      (user-error "Subagent %s has no live child harness" subagent-id))
+    (e-harness-queue-prompt harness session-id prompt)
+    (e-subagent-registry-get registry subagent-id)))
+
+(defun e-subagent-raw-read (registry subagent-id &optional limit)
+  "Return a bounded raw transcript excerpt for SUBAGENT-ID.
+Returns the child's last LIMIT messages (default 20) as compact role/content
+plists plus the child's `session://' URI, so the parent can pull detail on
+demand without the transcript entering its own context."
+  (let* ((record (e-subagent-registry-get registry subagent-id))
+         (harness (e-subagent-registry-child-harness registry subagent-id))
+         (session-id (plist-get record :session-id))
+         (limit (or limit 20))
+         (messages (and harness
+                        (e-harness-messages harness session-id)))
+         (tail (last messages limit)))
+    (list :subagent-id subagent-id
+          :session-id session-id
+          :session-uri (format "session://e/sessions/%s/messages" session-id)
+          :messages (mapcar (lambda (message)
+                              (list :role (plist-get message :role)
+                                    :content (plist-get message :content)))
+                            tail))))
 
 (provide 'e-subagent-runner)
 

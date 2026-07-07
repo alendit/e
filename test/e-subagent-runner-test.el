@@ -196,6 +196,53 @@
                                    (list :cancel #'ignore)))
        :type 'e-subagent-unknown-type))))
 
+(ert-deftest e-subagent-runner-test-steer-and-send-dispatch ()
+  "Steer and send route to the child harness turn control."
+  (e-subagent-runner-test--with-instances
+    (let* ((registry (e-subagent-registry-create))
+           (parent (e-harness-create
+                    :backend (e-backend-fake-create :items nil)))
+           (steered nil)
+           (queued nil))
+      (e-harness-create-session parent :id "parent-1")
+      (let* ((record (e-subagent-spawn
+                      registry parent "parent-1"
+                      :type :reviewer :prompt "go"
+                      :runner (lambda (_h _s _p _seed _on) (list :cancel #'ignore))))
+             (subagent-id (plist-get record :subagent-id)))
+        (cl-letf (((symbol-function 'e-harness-steer-active-turn)
+                   (lambda (_h _s prompt &rest _) (setq steered prompt) "turn-1"))
+                  ((symbol-function 'e-harness-queue-prompt)
+                   (lambda (_h _s prompt &rest _) (setq queued prompt) nil)))
+          (e-subagent-steer registry subagent-id "steer this")
+          (e-subagent-send registry subagent-id "follow up")
+          (should (equal steered "steer this"))
+          (should (equal queued "follow up")))))))
+
+(ert-deftest e-subagent-runner-test-raw-read-returns-excerpt-and-uri ()
+  "Raw read returns a bounded excerpt and the child session:// URI."
+  (e-subagent-runner-test--with-instances
+    (let* ((registry (e-subagent-registry-create))
+           (parent (e-harness-create
+                    :backend (e-backend-fake-create :items nil)))
+           (captured (list nil)))
+      (e-harness-create-session parent :id "parent-1")
+      (let* ((record (e-subagent-spawn
+                      registry parent "parent-1"
+                      :type :reviewer :prompt "go"
+                      :seed-messages (list '(:role user :content "one")
+                                           '(:role assistant :content "two"))
+                      :runner (e-subagent-runner-test--capturing-runner captured)))
+             (subagent-id (plist-get record :subagent-id))
+             (child-session-id (plist-get record :session-id))
+             (raw (e-subagent-raw-read registry subagent-id 1)))
+        (should (equal (plist-get raw :session-uri)
+                       (format "session://e/sessions/%s/messages" child-session-id)))
+        ;; Bounded to the last message only.
+        (should (equal (mapcar (lambda (m) (plist-get m :content))
+                               (plist-get raw :messages))
+                       '("two")))))))
+
 (ert-deftest e-subagent-runner-test-capability-actions-and-skill ()
   "The capability exposes actions and a readable skill, absent from tools."
   (e-subagent-runner-test--with-instances
@@ -203,7 +250,8 @@
            (capability (e-subagents-capability-create :registry registry))
            (store (e-store-create)))
       (should (eq (e-capability-id capability) 'subagents))
-      (dolist (action '(:spawn :list :status :read :interrupt :shutdown :report))
+      (dolist (action '(:spawn :list :status :read :steer :send
+                        :interrupt :shutdown :report))
         (should (e-capabilities-action-spec capability action)))
       ;; Actions only: no model-facing tool definitions, like elisp-job.
       (should-not (e-capability-tools capability))

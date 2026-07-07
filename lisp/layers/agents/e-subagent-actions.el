@@ -61,14 +61,30 @@
                            (e-subagent-actions--subagent-id arguments)))
 
 (defun e-subagent-actions--read (registry _context arguments)
-  "Return the compact result and outputs for a subagent in REGISTRY."
-  (let* ((subagent-id (e-subagent-actions--subagent-id arguments))
-         (record (e-subagent-registry-get registry subagent-id)))
-    (list :subagent-id subagent-id
-          :status (plist-get record :status)
-          :result-summary (plist-get record :result-summary)
-          :outputs (plist-get record :outputs)
-          :session-id (plist-get record :session-id))))
+  "Return the compact result and outputs for a subagent in REGISTRY.
+With `:raw' non-nil, return a bounded transcript excerpt and the child's
+`session://' URI instead."
+  (let ((subagent-id (e-subagent-actions--subagent-id arguments)))
+    (if (plist-get arguments :raw)
+        (e-subagent-raw-read registry subagent-id (plist-get arguments :limit))
+      (let ((record (e-subagent-registry-get registry subagent-id)))
+        (list :subagent-id subagent-id
+              :status (plist-get record :status)
+              :result-summary (plist-get record :result-summary)
+              :outputs (plist-get record :outputs)
+              :session-id (plist-get record :session-id))))))
+
+(defun e-subagent-actions--steer (registry _context arguments)
+  "Steer a running subagent's active turn in REGISTRY."
+  (e-subagent-steer registry
+                    (e-subagent-actions--subagent-id arguments)
+                    (plist-get arguments :prompt)))
+
+(defun e-subagent-actions--send (registry _context arguments)
+  "Queue a follow-up prompt to a subagent in REGISTRY."
+  (e-subagent-send registry
+                   (e-subagent-actions--subagent-id arguments)
+                   (plist-get arguments :prompt)))
 
 (defun e-subagent-actions--interrupt (registry _context arguments)
   "Interrupt a subagent in REGISTRY."
@@ -129,6 +145,33 @@ HANDLER is called as (REGISTRY CONTEXT ARGUMENTS)."
     :required ["subagent-id"])
   "Action parameters for subagent lookup operations.")
 
+(defconst e-subagent-actions--read-parameters
+  '(:type "object"
+    :properties
+    (:subagent-id
+     (:type "string"
+      :description "Subagent id returned by spawn.")
+     :raw
+     (:type "boolean"
+      :description "Return a bounded raw transcript excerpt plus the session:// URI instead of the compact result.")
+     :limit
+     (:type "integer"
+      :description "Maximum raw messages to return (default 20)."))
+    :required ["subagent-id"])
+  "Action parameters for the read action.")
+
+(defconst e-subagent-actions--steer-parameters
+  '(:type "object"
+    :properties
+    (:subagent-id
+     (:type "string"
+      :description "Subagent id returned by spawn.")
+     :prompt
+     (:type "string"
+      :description "Prompt to steer into the running turn or queue as a follow-up."))
+    :required ["subagent-id" "prompt"])
+  "Action parameters for steer and send.")
+
 (defconst e-subagent-actions--report-parameters
   '(:type "object"
     :properties
@@ -158,7 +201,15 @@ HANDLER is called as (REGISTRY CONTEXT ARGUMENTS)."
      :read
      (e-subagent-actions--action
       registry #'e-subagent-actions--read
-      e-subagent-actions--subagent-id-parameters)
+      e-subagent-actions--read-parameters)
+     :steer
+     (e-subagent-actions--action
+      registry #'e-subagent-actions--steer
+      e-subagent-actions--steer-parameters)
+     :send
+     (e-subagent-actions--action
+      registry #'e-subagent-actions--send
+      e-subagent-actions--steer-parameters)
      :interrupt
      (e-subagent-actions--action
       registry #'e-subagent-actions--interrupt

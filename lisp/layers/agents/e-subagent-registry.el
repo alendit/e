@@ -49,10 +49,12 @@
         :error (plist-get record :error)))
 
 (cl-defun e-subagent-registry-register
-    (registry &key type role session-id parent-session-id label schedule)
+    (registry &key type role session-id parent-session-id label schedule
+              child-harness)
   "Register a new subagent record in REGISTRY and return its normalized form.
 The record starts `queued'; the runner transitions it as the child turn
-progresses."
+progresses.  CHILD-HARNESS is the live harness running the child, stored
+internally so steer/read reach the child session on its own harness."
   (let* ((subagent-id (e-subagent-registry--next-id registry))
          (record (list :subagent-id subagent-id
                        :type type
@@ -62,6 +64,7 @@ progresses."
                        :parent-session-id parent-session-id
                        :label label
                        :schedule schedule
+                       :child-harness child-harness
                        :result-summary nil
                        :outputs nil
                        :reported nil
@@ -91,6 +94,10 @@ progresses."
 (defun e-subagent-registry-cancel-function (registry subagent-id)
   "Return the cancel function stored for SUBAGENT-ID, or nil."
   (plist-get (e-subagent-registry--record registry subagent-id) :cancel))
+
+(defun e-subagent-registry-child-harness (registry subagent-id)
+  "Return the live child harness stored for SUBAGENT-ID, or nil."
+  (plist-get (e-subagent-registry--record registry subagent-id) :child-harness))
 
 (defun e-subagent-registry-reported-p (registry subagent-id)
   "Return non-nil when SUBAGENT-ID has a child-reported structured result."
