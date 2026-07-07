@@ -26,6 +26,8 @@
 (define-error 'e-emacs-tools-save-invalid "Emacs buffer cannot be saved")
 (define-error 'e-emacs-tools-run-elisp-timeout
   "run_elisp evaluation exceeded its time budget")
+(define-error 'e-emacs-tools-run-elisp-blocking
+  "run_elisp code calls a blocking wait primitive")
 
 (defcustom e-emacs-tools-run-elisp-print-length 200
   "Maximum sequence entries printed from a `run_elisp' result."
@@ -535,6 +537,50 @@ the cap for that call.  Returns nil when evaluation should run uncapped."
      "run_elisp evaluation aborted after %s seconds; move long-running work to (e-actions-call 'elisp-job :run-batch ...), which runs a separate process you can poll and cancel, or pass a larger :timeout for a one-off"
      timeout))))
 
+(defconst e-emacs-tools-run-elisp-blocking-functions
+  '(sleep-for sit-for accept-process-output
+    read-event read-char read-char-exclusive read-from-minibuffer
+    call-process call-process-region shell-command shell-command-to-string
+    process-file url-retrieve-synchronously
+    e-harness-wait-batch e-work-await-batch)
+  "Function symbols that block the single UI thread when called from run_elisp.
+Waiting on these freezes Emacs; agents must poll across turns instead.  This is
+a cheap, syntactic guard against the common mistakes, not a full sandbox: it
+catches a literal top-level or nested call in the submitted forms, and does not
+see blocking done indirectly through `apply', `funcall', or a helper.")
+
+(defun e-emacs-tools--scan-blocking-call (forms)
+  "Return the first blocking function symbol called literally in FORMS, or nil.
+Walks the read forms looking for a call whose operator is in
+`e-emacs-tools-run-elisp-blocking-functions'.  Quoted data is skipped so a
+blocking symbol only used as a datum does not trip the guard."
+  (let ((found nil))
+    (cl-labels
+        ((walk (form)
+           (when (and (consp form) (not found))
+             (let ((head (car form)))
+               (cond
+                ;; Do not descend into quoted data.
+                ((memq head '(quote function)) nil)
+                (t
+                 (when (and (symbolp head)
+                            (memq head e-emacs-tools-run-elisp-blocking-functions))
+                   (setq found head))
+                 (dolist (sub form)
+                   (walk sub))))))))
+      (dolist (form forms)
+        (walk form)))
+    found))
+
+(defun e-emacs-tools--reject-run-elisp-blocking (symbol)
+  "Signal that run_elisp code calls blocking SYMBOL."
+  (signal
+   'e-emacs-tools-run-elisp-blocking
+   (list
+    (format
+     "run_elisp code calls `%s', which blocks the single UI Emacs thread and freezes the interface. Do not wait inside run_elisp: to observe async work (a subagent, a task-queue task, an elisp-job) poll its status across separate run_elisp calls and let the turn end between checks, or move blocking/long work to (e-actions-call 'elisp-job :run-batch ...). If a blocking call is genuinely required, run it as a top-level tool, not inside run_elisp."
+     symbol))))
+
 (defun e-emacs-tools--byte-prefix (text max-bytes)
   "Return a UTF-8 safe prefix of TEXT no larger than MAX-BYTES."
   (let ((bytes 0)
@@ -711,6 +757,12 @@ DEPTH limits recursive descent.  SEEN tracks container identity to avoid cycles.
     "This runs in the live UI Emacs, so anything that "
     "blocks it -- loading or byte-compiling large Elisp, recursive directory "
     "scans, long computations -- freezes the interface while it runs. "
+    "Do not wait inside run_elisp: a literal call to a blocking primitive "
+    "(sleep-for, sit-for, accept-process-output, read-event, a synchronous "
+    "process/URL call, e-harness-wait-batch, e-work-await-batch) is rejected. "
+    "To observe async work -- a subagent, a task-queue task, an elisp-job -- "
+    "poll its status across separate run_elisp calls and let the turn end "
+    "between checks, rather than sleeping for it. "
     "Evaluation is time-capped; pass :timeout seconds to raise or lower the cap "
     "for one call. Move expensive validation or byte-compilation to "
     "(e-actions-call 'elisp-job :run-batch ...), which runs in a separate "
@@ -726,6 +778,7 @@ DEPTH limits recursive descent.  SEEN tracks container identity to avoid cycles.
    (lambda (arguments)
      (let* ((code (e-emacs-tools--argument-string arguments :code))
             (forms (e-emacs-tools--read-forms code))
+            (blocking (e-emacs-tools--scan-blocking-call forms))
             (timeout (e-emacs-tools--run-elisp-timeout arguments))
             ;; Never let agent code pop the interactive debugger.  This runs
             ;; with no human to dismiss it, so an error (or agent code that
@@ -739,6 +792,13 @@ DEPTH limits recursive descent.  SEEN tracks container identity to avoid cycles.
             (debug-on-quit nil)
             (eval-expression-debug-on-error nil)
             result)
+       ;; Cheap syntactic guard: reject a literal call to a common blocking
+       ;; wait primitive before evaluating.  Waiting inside run_elisp freezes
+       ;; the single UI thread; agents must poll async work across turns.  This
+       ;; catches the frequent mistakes only, not blocking hidden behind apply
+       ;; or a helper -- the timeout below remains the backstop for those.
+       (when blocking
+         (e-emacs-tools--reject-run-elisp-blocking blocking))
        ;; `with-timeout' arms a timer that throws only when execution reaches a
        ;; wait point.  It aborts an eval that blocks or waits (sleep-for, I/O,
        ;; process waits) but cannot preempt a tight compute loop such as

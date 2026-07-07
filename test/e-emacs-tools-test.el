@@ -376,6 +376,40 @@ When READ-ONLY is non-nil, buffer resources only support reads."
                     :status)
                    'error))))
 
+(ert-deftest e-emacs-tools-test-run-elisp-rejects-blocking-wait ()
+  "run_elisp rejects a literal call to a blocking wait primitive."
+  (let ((registry (e-tools-registry-create)))
+    (e-emacs-tools-register-run-elisp registry)
+    (let ((result (e-tools-execute-batch
+                   registry
+                   '(:id "call-1"
+                     :name "run_elisp"
+                     :arguments (:code "(sleep-for 20)")))))
+      (should (eq (plist-get result :status) 'error))
+      (should (string-match-p "sleep-for"
+                              (format "%s" (plist-get result :content)))))
+    (let ((result (e-tools-execute-batch
+                   registry
+                   '(:id "call-2"
+                     :name "run_elisp"
+                     :arguments (:code "(progn (+ 1 2) (accept-process-output nil 1))")))))
+      (should (eq (plist-get result :status) 'error))
+      (should (string-match-p "accept-process-output"
+                              (format "%s" (plist-get result :content)))))))
+
+(ert-deftest e-emacs-tools-test-run-elisp-allows-blocking-symbol-as-data ()
+  "A blocking symbol used only as quoted data does not trip the guard."
+  (let ((registry (e-tools-registry-create)))
+    (e-emacs-tools-register-run-elisp registry)
+    (should (equal (plist-get
+                    (e-tools-execute-batch
+                     registry
+                     '(:id "call-1"
+                       :name "run_elisp"
+                       :arguments (:code "(list 'sleep-for 'accept-process-output)")))
+                    :content)
+                   '(:result "(sleep-for accept-process-output)")))))
+
 (ert-deftest e-emacs-tools-test-run-elisp-bounds-sequence-results ()
   "run_elisp bounds sequence printing before returning tool output."
   (let ((registry (e-tools-registry-create))
@@ -510,9 +544,12 @@ point, so the test loop must yield rather than spin the CPU."
   (let ((registry (e-tools-registry-create))
         (e-emacs-tools-run-elisp-default-timeout 0.1))
     (e-emacs-tools-register-run-elisp registry)
+    ;; Call through funcall so the syntactic blocking guard (which only sees a
+    ;; literal head symbol) does not reject it first; the timeout is the
+    ;; backstop for blocking that escapes the guard.
     (let ((result (e-emacs-tools-test--run-elisp-arguments
                    registry
-                   '(:code "(sleep-for 30)"))))
+                   '(:code "(funcall 'sleep-for 30)"))))
       (should (eq (plist-get result :status) 'error))
       (let ((content (format "%s" (plist-get result :content))))
         (should (string-match-p "aborted after" content))
@@ -526,7 +563,7 @@ point, so the test loop must yield rather than spin the CPU."
     (e-emacs-tools-register-run-elisp registry)
     (let ((result (e-emacs-tools-test--run-elisp-arguments
                    registry
-                   '(:code "(sleep-for 30)" :timeout 0.1))))
+                   '(:code "(funcall 'sleep-for 30)" :timeout 0.1))))
       (should (eq (plist-get result :status) 'error))
       (should (string-match-p
                "aborted after 0.1 seconds"
