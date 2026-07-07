@@ -27,7 +27,10 @@
   factory
   harness-id
   metadata
-  default-p)
+  default-p
+  description
+  (context-visibility 'always)
+  subagent-p)
 
 (defvar e-harness-instance--instances (make-hash-table :test 'equal)
   "Harness instance records keyed by instance id.")
@@ -45,6 +48,12 @@
   (unless (symbolp kind)
     (signal 'wrong-type-argument (list 'symbolp kind))))
 
+(defun e-harness-instance--validate-context-visibility (visibility)
+  "Signal when VISIBILITY is not a valid context-visibility value."
+  (unless (memq visibility '(always hidden))
+    (signal 'wrong-type-argument
+            (list '(member always hidden) visibility))))
+
 (defun e-harness-instance--display-name (id name)
   "Return normalized display NAME for ID."
   (cond
@@ -54,14 +63,24 @@
 
 ;;;###autoload
 (cl-defun e-harness-instance-register
-    (&key id name kind factory harness-id metadata default)
+    (&key id name kind factory harness-id metadata default
+          description (context-visibility 'always) subagent)
   "Register a configured harness instance.
-ID is the stable user-facing target id.  KIND identifies the shell/use kind,
-such as `chat'.  FACTORY, when non-nil, is registered with
-`e-harness-registry' under HARNESS-ID or ID.  METADATA is presentation data.
-When DEFAULT is non-nil, make this instance the default for KIND."
+ID is the stable user-facing target id.  KIND identifies the role the
+instance plays, such as `chat' or `reviewer'.  FACTORY, when non-nil, is
+registered with `e-harness-registry' under HARNESS-ID or ID.  METADATA is
+presentation data.  When DEFAULT is non-nil, make this instance the default
+for KIND.
+
+DESCRIPTION is free-text \"when to use this agent\" routing guidance.
+CONTEXT-VISIBILITY is `always' or `hidden' and controls whether the instance
+appears in the subagents context block.  When SUBAGENT is non-nil, the
+instance is spawnable as a subagent type; this eligibility flag is kept
+separate from KIND so role instances stay reusable across chat and subagent
+use."
   (e-harness-instance--validate-id id)
   (e-harness-instance--validate-kind kind)
+  (e-harness-instance--validate-context-visibility context-visibility)
   (let ((harness-id (or harness-id id)))
     (e-harness-instance--validate-id harness-id)
     (when factory
@@ -73,7 +92,10 @@ When DEFAULT is non-nil, make this instance the default for KIND."
                      :factory factory
                      :harness-id harness-id
                      :metadata metadata
-                     :default-p default)))
+                     :default-p default
+                     :description description
+                     :context-visibility context-visibility
+                     :subagent-p subagent)))
       (puthash id instance e-harness-instance--instances)
       (when (or default
                 (not (gethash kind e-harness-instance--defaults)))
@@ -100,6 +122,19 @@ When DEFAULT is non-nil, make this instance the default for KIND."
           (lambda (left right)
             (string< (symbol-name (e-harness-instance-id left))
                      (symbol-name (e-harness-instance-id right)))))))
+
+(cl-defun e-harness-instance-list-subagents (&key visibility)
+  "Return spawnable subagent instances, optionally filtered by VISIBILITY.
+VISIBILITY, when non-nil, is `always' or `hidden'."
+  (when visibility
+    (e-harness-instance--validate-context-visibility visibility))
+  (seq-filter
+   (lambda (instance)
+     (and (e-harness-instance-subagent-p instance)
+          (or (not visibility)
+              (eq (e-harness-instance-context-visibility instance)
+                  visibility))))
+   (e-harness-instance-list)))
 
 (cl-defun e-harness-instance-default (&key kind)
   "Return the default harness instance for KIND, or nil."

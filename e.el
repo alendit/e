@@ -89,6 +89,7 @@
   (require 'e-agent-shell-fleet)
   (require 'e-task-queue-actions)
   (require 'e-cron-actions)
+  (require 'e-subagents)
   (require 'e-default-layers)
   (require 'e-project-local)
   (require 'e-default-harnesses)
