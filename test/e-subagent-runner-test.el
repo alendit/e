@@ -25,7 +25,9 @@
 (require 'e-subagent-runner)
 (require 'e-subagent-actions)
 (require 'e-subagents)
+(require 'e-waitable)
 (require 'e-work)
+(require 'e-request)
 
 (defmacro e-subagent-runner-test--with-instances (&rest body)
   "Run BODY with isolated harness and harness-instance registries."
@@ -363,6 +365,66 @@ report is child-side and must not be on the parent surface."
                            (e-harness-effective-capabilities child))))
         (should (memq 'subagents-child (e-harness-enabled-layer-ids child)))
         (should (memq 'subagents caps))))))
+
+(ert-deftest e-subagent-runner-test-spawn-exposes-awaitable-work-handle ()
+  "A spawned subagent carries an `e-work' handle that settles with its result."
+  (e-subagent-runner-test--with-instances
+    (let* ((registry (e-subagent-registry-create))
+           (parent (e-harness-create
+                    :backend (e-backend-fake-create :items nil)))
+           (captured (list nil)))
+      (e-harness-create-session parent :id "parent-1")
+      (let* ((record (e-subagent-spawn
+                      registry parent "parent-1"
+                      :type :reviewer :prompt "go"
+                      :runner (e-subagent-runner-test--capturing-runner captured)))
+             (subagent-id (plist-get record :subagent-id))
+             (handle (e-subagent-registry-work-handle registry subagent-id)))
+        (should (e-work-handle-p handle))
+        (should-not (e-request-terminal-p (e-work-handle-lifecycle handle)))
+        (funcall (plist-get (car captured) :on-settle)
+                 'done :summary "done" :outputs [:x])
+        (should (eq (plist-get (e-work-status handle) :state) 'finished))
+        (should (equal (plist-get (plist-get (e-work-status handle) :result)
+                                  :summary)
+                       "done"))))))
+
+(ert-deftest e-subagent-runner-test-work-handle-fails-on-failed-settle ()
+  "A failed subagent settle fails the work handle."
+  (e-subagent-runner-test--with-instances
+    (let* ((registry (e-subagent-registry-create))
+           (parent (e-harness-create
+                    :backend (e-backend-fake-create :items nil)))
+           (captured (list nil)))
+      (e-harness-create-session parent :id "parent-1")
+      (let* ((record (e-subagent-spawn
+                      registry parent "parent-1"
+                      :type :reviewer :prompt "go"
+                      :runner (e-subagent-runner-test--capturing-runner captured)))
+             (handle (e-subagent-registry-work-handle
+                      registry (plist-get record :subagent-id))))
+        (funcall (plist-get (car captured) :on-settle) 'failed :error "boom")
+        (should (eq (plist-get (e-work-status handle) :state) 'failed))))))
+
+(ert-deftest e-subagent-runner-test-waitable-resolver-returns-handle ()
+  "The registered `subagent' scheme resolves an id to its work handle."
+  (e-subagent-runner-test--with-instances
+    (let* ((e-waitable--resolvers (make-hash-table :test 'equal))
+           (registry (e-subagent-registry-create))
+           (parent (e-harness-create
+                    :backend (e-backend-fake-create :items nil))))
+      (e-subagents-register-waitable-resolver registry)
+      (e-harness-create-session parent :id "parent-1")
+      (let* ((record (e-subagent-spawn
+                      registry parent "parent-1"
+                      :type :reviewer :prompt "go"
+                      :runner (lambda (_h _s _p _seed _on) (list :cancel #'ignore))))
+             (subagent-id (plist-get record :subagent-id))
+             (reference (concat "subagent:" subagent-id)))
+        (should (e-work-handle-p
+                 (plist-get (e-waitable-resolve reference) :handle)))
+        ;; An unknown id is a per-reference error, not a signal.
+        (should (plist-get (e-waitable-resolve "subagent:sub_999999") :error))))))
 
 (provide 'e-subagent-runner-test)
 

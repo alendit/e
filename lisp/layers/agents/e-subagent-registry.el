@@ -73,6 +73,7 @@ internally so steer/read reach the child session on its own harness."
                        :label label
                        :schedule schedule
                        :child-harness child-harness
+                       :work-handle nil
                        :result-summary nil
                        :outputs nil
                        :reported nil
@@ -108,6 +109,14 @@ internally so steer/read reach the child session on its own harness."
 (defun e-subagent-registry-child-harness (registry subagent-id)
   "Return the live child harness stored for SUBAGENT-ID, or nil."
   (plist-get (e-subagent-registry--record registry subagent-id) :child-harness))
+
+(defun e-subagent-registry-work-handle (registry subagent-id)
+  "Return the live `e-work' handle stored for SUBAGENT-ID, or nil.
+Returns nil for an unknown id rather than signalling, so a waitable resolver
+can treat a stale reference as unresolvable."
+  (when-let ((record (gethash subagent-id
+                              (e-subagent-registry-records registry))))
+    (plist-get record :work-handle)))
 
 (defun e-subagent-registry-reported-p (registry subagent-id)
   "Return non-nil when SUBAGENT-ID has a child-reported structured result."

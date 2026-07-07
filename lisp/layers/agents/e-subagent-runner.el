@@ -24,6 +24,7 @@
 (require 'e-harness-instances)
 (require 'e-session)
 (require 'e-subagent-registry)
+(require 'e-work)
 
 (define-error 'e-subagent-error "e subagent error")
 (define-error 'e-subagent-unknown-type
@@ -154,6 +155,34 @@ active turn.  ON-SETTLE is called as (STATUS &key summary outputs error)."
                   (reverse (e-harness-messages harness session-id)))))
     (and (stringp content) content)))
 
+(defun e-subagent--work-spec ()
+  "Return the cooperative work spec that wraps a spawned child turn.
+The child turn is driven by the harness, not this runner, so the spec's runner
+defers; `e-subagent-spawn' finishes/fails the handle from the settle callback.
+The handle exists so a subagent is awaitable as an `e-work' handle."
+  (e-work-spec-create
+   :id "subagent"
+   :description "Track a spawned subagent child turn."
+   :execution 'cooperative
+   :interactive-policy 'async
+   :owner 'subagents
+   :runner (lambda (_handle _arguments _context) :deferred)))
+
+(defun e-subagent--settle-work-handle (handle status args)
+  "Settle work HANDLE from a subagent STATUS and settle ARGS.
+The handle mirrors the record's terminal state so `await' can observe it; its
+finished result carries the compact summary and outputs."
+  (when (e-work-handle-p handle)
+    (pcase status
+      ('done (e-work-finish handle
+                            (list :summary (plist-get args :summary)
+                                  :outputs (plist-get args :outputs))))
+      ('failed (e-work-fail handle
+                            (list 'e-subagent-error
+                                  (or (plist-get args :error)
+                                      "Subagent turn failed"))))
+      ('cancelled (e-work-cancel handle)))))
+
 (defun e-subagent--settle (registry subagent-id status &rest args)
   "Settle SUBAGENT-ID in REGISTRY to STATUS with ARGS.
 A child-reported structured result is authoritative: once reported, later
@@ -207,11 +236,18 @@ returns a handle plist carrying `:cancel'."
                   :child-harness child-harness))
          (subagent-id (plist-get record :subagent-id))
          (runner (or runner #'e-subagent-direct-runner))
+         ;; A cooperative work handle mirrors the record's terminal state so a
+         ;; subagent is awaitable as an `e-work' handle.  Its runner defers; the
+         ;; settle callback below finishes/fails/cancels it.
+         (work-handle (e-work-start (e-subagent--work-spec) nil))
          (handle (funcall runner
                           child-harness child-session-id prompt seed-messages
                           (lambda (status &rest args)
+                            (e-subagent--settle-work-handle
+                             work-handle status args)
                             (apply #'e-subagent--settle
                                    registry subagent-id status args)))))
+    (e-subagent-registry-update registry subagent-id :work-handle work-handle)
     (when (and (listp handle) (functionp (plist-get handle :cancel)))
       (e-subagent-registry-update registry subagent-id
                                   :cancel (plist-get handle :cancel)))

@@ -24,6 +24,8 @@
 (require 'e-skills)
 (require 'e-store)
 (require 'e-subagent-actions)
+(require 'e-subagent-registry)
+(require 'e-waitable)
 
 (defconst e-subagents-instructions
   "Subagents let this session delegate work to child sessions on purpose-built harness types, keeping the child's whole transcript out of this context. Reach them through e-actions-call, never a model-facing tool. Read e://subagents/skills/subagents for the action contract and e://subagents/refs/types.md for the full catalog of spawnable types."
@@ -62,7 +64,11 @@
      ""
      "## Context discipline"
      ""
-     "A child shares one `tmp://` namespace with this session (same lineage). Tell children to write artifacts under `tmp://` and keep their final message terse, e.g. `Result: tmp://sub_result_1.org -- 3 issues found`. That terse final message is the default result; a child that produces artifacts should call `report` instead. Read a child's full transcript only on demand through its `session://` resource.")
+     "A child shares one `tmp://` namespace with this session (same lineage). Tell children to write artifacts under `tmp://` and keep their final message terse, e.g. `Result: tmp://sub_result_1.org -- 3 issues found`. That terse final message is the default result; a child that produces artifacts should call `report` instead. Read a child's full transcript only on demand through its `session://` resource."
+     ""
+     "## Waiting for children"
+     ""
+     "Do not poll a child's status across turns, and never sleep to wait. Use the `await` tool (a model-facing tool, not an action): reference each child as `subagent:SUBAGENT-ID`, e.g. `(await :refs [\"subagent:sub_000003\" \"subagent:sub_000004\"] :mode \"all\" :timeout 120)`. It blocks your turn -- not Emacs -- until the referenced children settle (`all`, default) or the first settles (`any`), or the timeout expires, then returns each child's status, summary, and outputs. On timeout it lists the pending references so you can await again. This is the fan-in step after a fan-out: spawn a child per unit, then await them all in one call.")
    "\n")
   "Skill body documenting the subagents action contract.")
 
@@ -180,8 +186,19 @@ shared id causes no action or resource collision."
    :instructions e-subagents-child-instructions
    :actions (e-subagent-actions-child-alist registry)))
 
+(defun e-subagents-register-waitable-resolver (&optional registry)
+  "Register the `subagent' waitable scheme against REGISTRY.
+A reference of the form subagent:SUBAGENT-ID resolves to that subagent's live
+`e-work' handle, so the generic `await' tool can wait on a child without knowing
+about subagents.  REGISTRY defaults to the process-wide subagent registry."
+  (let ((registry (or registry e-subagent-actions-default-registry)))
+    (e-waitable-register-resolver
+     "subagent"
+     (lambda (id) (e-subagent-registry-work-handle registry id)))))
+
 (defun e-subagents-parent-layer-create ()
   "Create the parent-facing subagents layer, enabled on sessions that spawn."
+  (e-subagents-register-waitable-resolver)
   (e-layer-create
    :id 'subagents-parent
    :name "Subagents (parent)"
