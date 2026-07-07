@@ -477,6 +477,20 @@ volatile current-state/history/delta segments."
                     (append block (list :cache_control cache-control)))))
         (vconcat ordered)))))
 
+(defun e-anthropic--thinking-type (options)
+  "Return the `thinking.type' value for OPTIONS, or nil to omit thinking.
+`:anthropic-thinking' controls extended thinking per request/provider: when the
+key is absent, default to `adaptive' so ordinary chat is unchanged; a nil value
+omits the thinking and effort knobs (for models that reject them, e.g. Haiku);
+a string overrides the type."
+  (if (plist-member options :anthropic-thinking)
+      (let ((value (plist-get options :anthropic-thinking)))
+        (cond
+         ((null value) nil)
+         ((stringp value) value)
+         (t "adaptive")))
+    "adaptive"))
+
 (cl-defun e-anthropic-request-body (&key messages options tools)
   "Build an Anthropic Messages request body from MESSAGES, OPTIONS, and TOOLS.
 
@@ -527,9 +541,15 @@ is no system prompt) so Anthropic caches tools + system on the prefix match.
                       (list :cache_control cache-control)))))
     (setq body (append body
                         (list :messages (vconcat
-                                         (mapcar #'e-anthropic--message turns))
-                              :thinking (list :type "adaptive")
-                              :output_config (list :effort effort))))
+                                         (mapcar #'e-anthropic--message turns)))))
+    ;; Extended thinking is opt-outable per request: some gateway models (e.g.
+    ;; Haiku) reject `adaptive' thinking outright.  `:anthropic-thinking' nil
+    ;; omits the thinking + effort knobs entirely; absent it, keep the adaptive
+    ;; default so ordinary chat is unchanged.
+    (when-let ((thinking-type (e-anthropic--thinking-type options)))
+      (setq body (append body
+                         (list :thinking (list :type thinking-type)
+                               :output_config (list :effort effort)))))
     (when-let ((container (plist-get options :anthropic-container-id)))
       (when (and (stringp container) (not (string-empty-p container)))
         (setq body (append body (list :container container)))))

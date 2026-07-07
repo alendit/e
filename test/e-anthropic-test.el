@@ -74,6 +74,23 @@
      :options '(:model "claude-test" :max-tokens 1024))
     :system)))
 
+(ert-deftest e-anthropic-test-request-body-omits-thinking-when-opted-out ()
+  "An explicit nil :anthropic-thinking omits the thinking and effort knobs.
+Models such as Haiku reject `adaptive' thinking; a subagent harness opts out."
+  (let ((body (e-anthropic-request-body
+               :messages '((:role user :content "hello"))
+               :options '(:model "claude-haiku" :max-tokens 1024
+                          :anthropic-thinking nil))))
+    (should-not (plist-member body :thinking))
+    (should-not (plist-member body :output_config))))
+
+(ert-deftest e-anthropic-test-request-body-keeps-adaptive-thinking-by-default ()
+  "Absent :anthropic-thinking, the adaptive thinking default is unchanged."
+  (let ((body (e-anthropic-request-body
+               :messages '((:role user :content "hello"))
+               :options '(:model "claude-test" :max-tokens 1024))))
+    (should (equal (plist-get body :thinking) '(:type "adaptive")))))
+
 (ert-deftest e-anthropic-test-request-body-maps-tool-definitions ()
   "Backend-neutral tools map to Messages tools with input_schema."
   (should

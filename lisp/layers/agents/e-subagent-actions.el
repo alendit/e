@@ -96,6 +96,14 @@ With `:raw' non-nil, return a bounded transcript excerpt and the child's
   (e-subagent-shutdown registry
                        (e-subagent-actions--subagent-id arguments)))
 
+(defun e-subagent-actions--configure-type (_registry _context arguments)
+  "Configure a spawnable type's shared harness from ARGUMENTS."
+  (e-subagent-configure-type
+   (plist-get arguments :type)
+   :enable-layers (plist-get arguments :enable-layers)
+   :disable-layers (plist-get arguments :disable-layers)
+   :skills (plist-get arguments :skills)))
+
 (defun e-subagent-actions--report (registry context arguments)
   "Record a child-reported structured result for CONTEXT's own session."
   (or (e-subagent-report
@@ -184,6 +192,24 @@ HANDLER is called as (REGISTRY CONTEXT ARGUMENTS)."
     :required [])
   "Action parameters for the child-side report action.")
 
+(defconst e-subagent-actions--configure-type-parameters
+  '(:type "object"
+    :properties
+    (:type
+     (:type "string"
+      :description "Spawnable subagent type id to configure, e.g. tool-user.")
+     :enable-layers
+     (:type "array"
+      :description "Layer ids to enable on the type's shared harness, e.g. [\"web\"].")
+     :disable-layers
+     (:type "array"
+      :description "Layer ids to disable on the type's shared harness.")
+     :skills
+     (:type "array"
+      :description "Restrict agents-std-context skills to these names (requires that layer)."))
+    :required ["type"])
+  "Action parameters for configuring a spawnable type's harness.")
+
 (defun e-subagent-actions-alist (&optional registry)
   "Return the subagent capability actions plist bound to REGISTRY."
   (let ((registry (or registry e-subagent-actions-default-registry)))
@@ -218,6 +244,10 @@ HANDLER is called as (REGISTRY CONTEXT ARGUMENTS)."
      (e-subagent-actions--action
       registry #'e-subagent-actions--shutdown
       e-subagent-actions--subagent-id-parameters)
+     :configure-type
+     (e-subagent-actions--action
+      registry #'e-subagent-actions--configure-type
+      e-subagent-actions--configure-type-parameters)
      :report
      (e-subagent-actions--action
       registry #'e-subagent-actions--report

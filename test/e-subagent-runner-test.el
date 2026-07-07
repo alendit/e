@@ -243,6 +243,21 @@
                                (plist-get raw :messages))
                        '("two")))))))
 
+(ert-deftest e-subagent-runner-test-configure-type-toggles-layers ()
+  "configure-type enables and disables layers on the type's shared harness."
+  (e-subagent-runner-test--with-instances
+    ;; Give the reviewer type a real harness with a couple of default layers so
+    ;; enable/disable have something to move.  `os-base' and `web' are ordinary
+    ;; registered layers.
+    (let* ((harness (e-harness-instance-get-or-create :reviewer)))
+      (e-harness-set-enabled-layer-ids harness '(os-base))
+      (let ((result (e-subagent-configure-type
+                     :reviewer :enable-layers '("emacs-base")
+                     :disable-layers '("os-base"))))
+        (should (eq (plist-get result :type) :reviewer))
+        (should (memq 'emacs-base (plist-get result :enabled-layers)))
+        (should-not (memq 'os-base (plist-get result :enabled-layers)))))))
+
 (ert-deftest e-subagent-runner-test-capability-actions-and-skill ()
   "The capability exposes actions and a readable skill, absent from tools."
   (e-subagent-runner-test--with-instances
@@ -251,7 +266,7 @@
            (store (e-store-create)))
       (should (eq (e-capability-id capability) 'subagents))
       (dolist (action '(:spawn :list :status :read :steer :send
-                        :interrupt :shutdown :report))
+                        :interrupt :shutdown :configure-type :report))
         (should (e-capabilities-action-spec capability action)))
       ;; Actions only: no model-facing tool definitions, like elisp-job.
       (should-not (e-capability-tools capability))

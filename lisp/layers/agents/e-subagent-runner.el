@@ -197,6 +197,46 @@ catalog keys instances by keyword."
    ((stringp value) (intern (concat ":" (string-remove-prefix ":" value))))
    (t (signal 'wrong-type-argument (list 'keywordp :type)))))
 
+(defun e-subagent--layer-symbol (value)
+  "Return VALUE as a layer id symbol.
+Layer ids arrive from the action surface as strings."
+  (cond
+   ((and (symbolp value) value) value)
+   ((stringp value) (intern value))
+   (t (signal 'wrong-type-argument (list 'symbolp value)))))
+
+(defun e-subagent-configure-type
+    (type &rest args)
+  "Configure the shared harness for spawnable TYPE and return its state.
+ARGS is a plist of `:enable-layers', `:disable-layers', and `:skills'.
+ENABLE-LAYERS and DISABLE-LAYERS toggle layers on the type's shared harness, so
+the parent turns individual capabilities on or off for every child of that type.
+SKILLS, when non-nil, restricts the `agents-std-context' skill set to the named
+skills (requires that layer enabled); nil leaves the skill selection untouched.
+Because children of a type share one harness, this configures the type, not a
+single child."
+  (let* ((type (e-subagent--normalize-type type))
+         (instance (e-subagent--type-instance type))
+         (harness (e-harness-instance-get-or-create type))
+         (enable-layers (plist-get args :enable-layers))
+         (disable-layers (plist-get args :disable-layers))
+         (skills (plist-get args :skills)))
+    (ignore instance)
+    (dolist (layer (append disable-layers nil))
+      (e-harness-disable-layer-id harness (e-subagent--layer-symbol layer)))
+    (dolist (layer (append enable-layers nil))
+      (e-harness-enable-layer-id harness (e-subagent--layer-symbol layer)))
+    (when skills
+      (e-harness-set-capability-config
+       harness 'agents-std-context
+       (list :include (mapcar (lambda (name) (format "%s" name))
+                              (append skills nil)))))
+    (list :type type
+          :enabled-layers (e-harness-enabled-layer-ids harness)
+          :skills (when skills
+                    (mapcar (lambda (name) (format "%s" name))
+                            (append skills nil))))))
+
 (defun e-subagent-report (registry session-id outputs summary)
   "Record a child-reported structured result for SESSION-ID in REGISTRY.
 OUTPUTS is a structured artifact list; SUMMARY is a short result string.  The
