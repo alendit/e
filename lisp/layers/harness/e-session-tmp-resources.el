@@ -37,8 +37,20 @@
 (define-error 'e-session-tmp-resources-process-failed
   "tmp:// discovery command failed")
 
-(defvar e-session-tmp--roots (make-hash-table :test 'eq)
-  "Session tmp root tables keyed by harness object.")
+(declare-function e-harness-sessions "e-harness")
+(declare-function e-session-get "e-session")
+
+(defvar e-session-tmp--roots (make-hash-table :test 'equal)
+  "Session tmp root directories keyed by lineage id.
+A lineage id defaults to a session's own id, so ordinary sessions keep an
+isolated root.  Subagent children inherit their parent's lineage id, so an
+entire subagent lineage -- even across different harness instances -- resolves
+to one shared root.")
+
+(defvar e-session-tmp--lineage-harnesses (make-hash-table :test 'equal)
+  "Harnesses referencing each lineage root, keyed by lineage id.
+Used to release a shared root only once every referencing harness has torn
+down, so a child harness cleanup never deletes a root the parent still uses.")
 
 (defcustom e-session-tmp-default-max-age-seconds (* 24 60 60)
   "Default maximum idle age before session tmp roots are expired."
@@ -56,45 +68,78 @@
     (signal 'e-session-tmp-resources-missing-session
             (list "tmp:// resources require an active harness session"))))
 
-(defun e-session-tmp--session-table (harness)
-  "Return the tmp root table for HARNESS."
-  (or (gethash harness e-session-tmp--roots)
-      (puthash harness (make-hash-table :test 'equal) e-session-tmp--roots)))
+(defun e-session-tmp--lineage-id (harness session-id)
+  "Return the tmp lineage id for HARNESS SESSION-ID.
+The lineage id is the session's durable `:tmp-lineage-id' metadata when present,
+so a subagent lineage shares one root; otherwise it is SESSION-ID, so ordinary
+sessions stay isolated."
+  (or (when (and harness
+                 (fboundp 'e-harness-sessions)
+                 (fboundp 'e-session-get))
+        (ignore-errors
+          (when-let* ((store (e-harness-sessions harness))
+                      (session (e-session-get store session-id)))
+            (plist-get (plist-get session :metadata) :tmp-lineage-id))))
+      session-id))
+
+(defun e-session-tmp--reference-lineage (lineage-id harness)
+  "Record that HARNESS references the root for LINEAGE-ID."
+  (let ((harnesses (gethash lineage-id e-session-tmp--lineage-harnesses)))
+    (unless (memq harness harnesses)
+      (puthash lineage-id (cons harness harnesses)
+               e-session-tmp--lineage-harnesses))))
+
+(defun e-session-tmp--forget-lineage (lineage-id)
+  "Forget LINEAGE-ID root and reference bookkeeping."
+  (remhash lineage-id e-session-tmp--roots)
+  (remhash lineage-id e-session-tmp--lineage-harnesses))
 
 (defun e-session-tmp-directory (harness session-id)
-  "Return the session tmp directory for HARNESS and SESSION-ID."
+  "Return the tmp directory for HARNESS SESSION-ID, keyed by lineage."
   (e-session-tmp--require-session harness session-id)
-  (let ((table (e-session-tmp--session-table harness)))
-    (or (gethash session-id table)
-        (puthash session-id
+  (let ((lineage-id (e-session-tmp--lineage-id harness session-id)))
+    (e-session-tmp--reference-lineage lineage-id harness)
+    (or (gethash lineage-id e-session-tmp--roots)
+        (puthash lineage-id
                  (file-name-as-directory
                   (make-temp-file
-                   (format "e-session-%s-" (secure-hash 'sha1 session-id))
+                   (format "e-session-%s-" (secure-hash 'sha1 lineage-id))
                    t))
-                 table))))
+                 e-session-tmp--roots))))
 
 (defun e-session-tmp-cleanup-session (harness session-id)
-  "Delete tmp resources owned by HARNESS SESSION-ID."
+  "Delete tmp resources for HARNESS SESSION-ID's lineage root.
+The shared lineage root is removed only when SESSION-ID is the lineage root
+session, so cleaning up a subagent child never destroys a root its parent still
+uses."
   (e-session-tmp--require-session harness session-id)
-  (let* ((table (gethash harness e-session-tmp--roots))
-         (root (and table (gethash session-id table))))
-    (when table
-      (remhash session-id table))
-    (when (and root (file-directory-p root))
-      (delete-directory root t))
+  (let* ((lineage-id (e-session-tmp--lineage-id harness session-id))
+         (root (gethash lineage-id e-session-tmp--roots)))
+    (when (equal session-id lineage-id)
+      (e-session-tmp--forget-lineage lineage-id)
+      (when (and root (file-directory-p root))
+        (delete-directory root t)))
     root))
 
 (defun e-session-tmp-cleanup-harness (harness)
-  "Delete all tmp resources owned by HARNESS."
-  (let ((table (gethash harness e-session-tmp--roots)))
-    (when table
-      (maphash
-       (lambda (_session-id root)
-         (when (and root (file-directory-p root))
-           (delete-directory root t)))
-       table)
-      (remhash harness e-session-tmp--roots))
-    harness))
+  "Delete tmp resources whose lineage roots HARNESS still solely references.
+A lineage root shared with another live harness is retained; HARNESS is only
+dropped from its reference set."
+  (let (drop)
+    (maphash
+     (lambda (lineage-id harnesses)
+       (when (memq harness harnesses)
+         (let ((remaining (delq harness (copy-sequence harnesses))))
+           (if remaining
+               (puthash lineage-id remaining e-session-tmp--lineage-harnesses)
+             (push lineage-id drop)))))
+     e-session-tmp--lineage-harnesses)
+    (dolist (lineage-id drop)
+      (let ((root (gethash lineage-id e-session-tmp--roots)))
+        (e-session-tmp--forget-lineage lineage-id)
+        (when (and root (file-directory-p root))
+          (delete-directory root t)))))
+  harness)
 
 (defun e-session-tmp--root-age-seconds (root now)
   "Return ROOT idle age in seconds at NOW, or nil when ROOT is unavailable."
@@ -112,7 +157,7 @@
       (set-file-times root))))
 
 (defun e-session-tmp-cleanup-expired (&optional max-age-seconds now)
-  "Delete session tmp roots idle longer than MAX-AGE-SECONDS.
+  "Delete lineage tmp roots idle longer than MAX-AGE-SECONDS.
 MAX-AGE-SECONDS defaults to `e-session-tmp-default-max-age-seconds'.  NOW
 defaults to the current time.  Return a list of deleted root directories."
   (let* ((max-age (or max-age-seconds e-session-tmp-default-max-age-seconds))
@@ -121,23 +166,15 @@ defaults to the current time.  Return a list of deleted root directories."
          deleted)
     (when (and (numberp max-age) (>= max-age 0))
       (maphash
-       (lambda (harness table)
-         (maphash
-          (lambda (session-id root)
-            (let ((age (e-session-tmp--root-age-seconds root now)))
-              (when (or (null age) (> age max-age))
-                (push (list harness session-id root) expired))))
-          table))
+       (lambda (lineage-id root)
+         (let ((age (e-session-tmp--root-age-seconds root now)))
+           (when (or (null age) (> age max-age))
+             (push (cons lineage-id root) expired))))
        e-session-tmp--roots)
       (dolist (entry expired)
-        (let* ((harness (nth 0 entry))
-               (session-id (nth 1 entry))
-               (root (nth 2 entry))
-               (table (gethash harness e-session-tmp--roots)))
-          (when table
-            (remhash session-id table)
-            (when (= (hash-table-count table) 0)
-              (remhash harness e-session-tmp--roots)))
+        (let ((lineage-id (car entry))
+              (root (cdr entry)))
+          (e-session-tmp--forget-lineage lineage-id)
           (when (and root (file-directory-p root))
             (delete-directory root t)
             (push root deleted)))))
@@ -807,8 +844,8 @@ the deleted file path, or nil when the reference is not session-tmp backed, its
 session root is already gone, or the referenced file is already absent."
   (e-session-tmp--require-session harness session-id)
   (when-let* ((uri (e-session-tmp--reference-uri reference))
-              (table (gethash harness e-session-tmp--roots))
-              (root (gethash session-id table)))
+              (lineage-id (e-session-tmp--lineage-id harness session-id))
+              (root (gethash lineage-id e-session-tmp--roots)))
     (let* ((relative-name (e-session-tmp--relative-name-from-uri uri))
            (path (e-session-tmp--path-in-root root relative-name)))
       (when (file-exists-p path)

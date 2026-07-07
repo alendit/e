@@ -130,6 +130,26 @@
      :lifetime durable-reference
      :indexed t
      :legacy t)
+    (:parent-session-id
+     :owner subagents
+     :state-class session-config
+     :lifetime durable
+     :indexed t)
+    (:subagent-role
+     :owner subagents
+     :state-class session-config
+     :lifetime durable
+     :indexed t)
+    (:subagent-label
+     :owner subagents
+     :state-class session-config
+     :lifetime durable
+     :indexed t)
+    (:tmp-lineage-id
+     :owner subagents
+     :state-class session-config
+     :lifetime durable
+     :indexed t)
     (:mcp-active
      :owner mcp
      :state-class capability-state

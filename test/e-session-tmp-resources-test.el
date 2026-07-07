@@ -119,6 +119,55 @@ blocked on the interactive coding-system picker."
       (should-not (file-exists-p root-1))
       (should-not (file-exists-p root-2)))))
 
+(ert-deftest e-session-tmp-test-lineage-shares-root-across-sessions ()
+  "Sessions sharing a lineage id resolve to one tmp root; others stay isolated."
+  (should (require 'e-session-tmp-resources nil t))
+  (let* ((harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :intrinsic-capabilities
+                   (list (e-session-tmp-capability-create)))))
+    (e-harness-create-session harness :id "parent"
+                              :metadata '(:tmp-lineage-id "parent"))
+    (e-harness-create-session harness :id "child"
+                              :metadata '(:tmp-lineage-id "parent"))
+    (e-harness-create-session harness :id "unrelated")
+    (unwind-protect
+        (let ((parent-root (e-session-tmp-directory harness "parent"))
+              (child-root (e-session-tmp-directory harness "child"))
+              (unrelated-root (e-session-tmp-directory harness "unrelated")))
+          (should (equal parent-root child-root))
+          (should-not (equal parent-root unrelated-root))
+          ;; A file the child writes is visible to the parent.
+          (e-session-tmp-write harness "child" "sub_result.txt" "done")
+          (should (equal (e-resources-read
+                          (e-harness-resources harness "parent" "turn-1")
+                          "tmp://sub_result.txt"
+                          nil)
+                         "done")))
+      (e-session-tmp-cleanup-harness harness))))
+
+(ert-deftest e-session-tmp-test-lineage-child-cleanup-keeps-shared-root ()
+  "Cleaning up a child session keeps the shared lineage root for the parent."
+  (should (require 'e-session-tmp-resources nil t))
+  (let* ((harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :intrinsic-capabilities
+                   (list (e-session-tmp-capability-create)))))
+    (e-harness-create-session harness :id "parent"
+                              :metadata '(:tmp-lineage-id "parent"))
+    (e-harness-create-session harness :id "child"
+                              :metadata '(:tmp-lineage-id "parent"))
+    (unwind-protect
+        (let ((root (e-session-tmp-directory harness "child")))
+          (should (file-directory-p root))
+          ;; Child cleanup must not delete the shared root.
+          (e-session-tmp-cleanup-session harness "child")
+          (should (file-directory-p root))
+          ;; The lineage-root session's cleanup releases it.
+          (e-session-tmp-cleanup-session harness "parent")
+          (should-not (file-directory-p root)))
+      (e-session-tmp-cleanup-harness harness))))
+
 (ert-deftest e-session-tmp-test-cleanup-expired-deletes-stale-roots ()
   "Expired tmp cleanup deletes only roots older than the configured age."
   (should (require 'e-session-tmp-resources nil t))

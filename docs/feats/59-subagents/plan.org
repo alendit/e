@@ -271,12 +271,13 @@ Add the =e://subagents/refs/types.md= resource and a small context provider that
 - Verification: ERT for registration with description/visibility/subagent-flag, enumeration of spawnable instances by the flag, and the context block honoring =always= vs =hidden=; =git diff --check=.
 - Landed: new =:description=/=:context-visibility=/=:subagent-p= slots and =e-harness-instance-list-subagents= in =e-harness-instances.el=; new =e-subagents= capability/layer (types context provider + =refs/types.md= catalog) in =lisp/layers/agents/e-subagents.el=; registered in =e-default-layers= and =e.el=.  ERT: =test/e-subagents-test.el= (5 tests) and =test/e-harness-instances-test.el= pass; =git diff --check= clean; both files byte-compile clean.  Live Emacs unchanged (no reload).
 
-** Slice 2 -- Lineage-shared tmp:// and durable lineage metadata
+** Slice 2 -- Lineage-shared tmp:// and durable lineage metadata (Done)
 
 Generalize the tmp root resolver to key by =:tmp-lineage-id= with session-id fallback; add the lineage-keyed root table for cross-instance sharing; normalize =:parent-session-id=, =:subagent-role=, =:subagent-label=, =:tmp-lineage-id= in session metadata.
 
 - Stopping value: parent and (future) children can share one =tmp://= namespace, and the parent/child relationship is durably recordable, independently of the spawn action.
 - Verification: ERT proving two sessions with the same lineage id resolve to one tmp root while unrelated sessions stay isolated; cleanup follows lineage; metadata round-trips through =session://=.
+- Landed: =e-session-tmp--roots= re-keyed from per-harness tables to a single lineage-id table, plus a lineage->harnesses reference table so a shared root is released only when its last referencing harness tears down and only the lineage-root session's cleanup deletes it; =e-session-tmp--lineage-id= reads =:tmp-lineage-id= metadata with session-id fallback.  Added the four durable =subagents=-owned metadata keys to =e-session-metadata-schema=.  ERT: =test/e-session-tmp-resources-test.el= (lineage sharing + child-cleanup-keeps-root, 22 pass), =test/e-raw-result-cleanup-test.el= (lineage-keyed reference cleanup), and =test/e-session-test.el= metadata round-trip (65 pass).  Both files byte-compile clean; =git diff --check= clean.  Note: metadata values are JSON-persisted, so =:subagent-role= round-trips as a string, not a symbol.
 
 ** Slice 3 -- Subagent capability, registry, and runner
 

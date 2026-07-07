@@ -894,6 +894,29 @@
                            t))))
       (delete-directory directory t))))
 
+(ert-deftest e-session-test-subagent-lineage-metadata-round-trips ()
+  "Durable subagent lineage metadata persists through replay."
+  (let* ((directory (make-temp-file "e-session-subagent-" t))
+         (store (e-session-persistent-store-create directory))
+         (session-id (plist-get (e-session-create store :id "child-1") :id)))
+    (unwind-protect
+        (progn
+          (e-session-set-session-config
+           store session-id
+           '(:parent-session-id "parent-1"
+             :subagent-role "reviewer"
+             :subagent-label "review plan.org"
+             :tmp-lineage-id "parent-1"))
+          (let* ((loaded (e-session-persistent-store-create directory))
+                 (metadata (plist-get (e-session-get loaded session-id)
+                                      :metadata)))
+            (should (equal (plist-get metadata :parent-session-id) "parent-1"))
+            (should (equal (plist-get metadata :subagent-role) "reviewer"))
+            (should (equal (plist-get metadata :subagent-label)
+                           "review plan.org"))
+            (should (equal (plist-get metadata :tmp-lineage-id) "parent-1"))))
+      (delete-directory directory t))))
+
 (ert-deftest e-session-test-replay-drops-known-transient-metadata ()
   "Legacy replay removes known presentation and high-churn focus metadata."
   (let* ((directory (make-temp-file "e-session-legacy-metadata-" t))
