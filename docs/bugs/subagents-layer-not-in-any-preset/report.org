@@ -1,0 +1,20 @@
+#+title: Subagents capability is never active, so children cannot report and parents cannot dispatch
+#+startup: overview
+
+* What was reported
+
+During a live test, a =fast-tool-user= subagent was spawned to find and
+summarize a session about cybernetics.  The child completed the task, wrote its
+summary to =tmp://cybernetics-summary.md=, and produced a correct one-line
+result.  However, its structured =report= call did not populate =:outputs=; the
+result summary came through only as the child's final assistant message.
+
+The user asked to investigate why the =report=-with-=:outputs= path did not
+work when the child called it from its own =run_elisp=.
+
+* Observed symptom
+
+- The child's =read=/=status= record shows a non-nil =:result-summary= (from the
+  final message) but =:outputs nil=.
+- The intended structured artifact list (an =org-link= to the tmp summary) never
+  reached the parent's record.

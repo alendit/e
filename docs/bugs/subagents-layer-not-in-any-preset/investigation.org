@@ -1,0 +1,141 @@
+#+title: Investigation -- subagents capability never active
+#+startup: overview
+
+* Conclusion (root cause)
+
+The =report= failure is not a wiring bug in the =report= action.  It is a
+consequence of a larger defect: *the =subagents= layer is registered as a known
+layer but is not part of any harness's active layer set*, so the =subagents=
+capability -- which owns all the actions, including =report= -- is never active
+on either the parent or the child harness.
+
+The child's =report= call therefore signalled, in its own transcript:
+
+#+begin_example
+run_elisp status error:
+  e action capability is not active: "Capability subagents is not active"
+  (:error e-actions-unknown-capability)
+#+end_example
+
+The child then fell back to ending its turn with a plain final message, which
+the direct runner captured as =:result-summary=.  =:outputs= stayed nil because
+=report= -- the only thing that sets =:outputs= -- never ran.
+
+This is two coupled gaps:
+
+1. *Parent side*: the =subagents= layer is missing from
+   =e-default-chat-layer-ids=, so the main chat agent has no =subagents=
+   capability.  In the live test the spawn only worked because it was driven by
+   calling =e-subagent-spawn= directly from =run_elisp=, bypassing the action
+   dispatcher.  =(e-actions-call 'subagents :spawn ...)= would have failed the
+   same way.
+
+2. *Child side*: the lean tool-runner types declare
+   =:layers (harness-base os-base emacs-base)= and nothing adds =subagents=, so
+   a child cannot call =report= (nor =spawn=, for sub-subagents).
+
+* Evidence
+
+** Live capability sets
+
+Parent chat harness (=:chat-default=):
+
+#+begin_example
+:default-chat-layer-ids (agents-std-context harness-base harness-advanced e
+  os-base emacs-base web text-editing org-canvas project-local dev-personal
+  task-queue slack-mcp)
+:parent-has-subagents nil
+:subagents-in-default nil
+#+end_example
+
+Child harness (=:fast-tool-user=):
+
+#+begin_example
+:child-layers (harness-base os-base emacs-base)
+:child-capabilities (harness-base-context raw-result-resources
+  session-tmp-resources session-resources tool-output-truncation base-guidance
+  file-handling shell-process output-style chat-output-mode emacs-awareness
+  buffer-read selection-context buffer-edit elisp-eval elisp-job
+  workspace-awareness)
+:subagents-active nil
+#+end_example
+
+The =subagents= layer *is* registered (=e-layer-get 'subagents= is non-nil) and
+its capability is well-formed: it carries the full action set
+=(:spawn :list :status :read :steer :send :interrupt :shutdown :configure-type
+:report)= and a compact types context block.  It is simply not enabled anywhere.
+
+** Child transcript excerpt
+
+The child's own transcript shows the write succeeding and the report failing:
+
+#+begin_example
+tool write  -> ok  tmp://cybernetics-summary.md
+tool run_elisp (e-actions-call 'subagents :report (list :summary "..." :outputs ...))
+  -> status error
+     "e action capability is not active: \"Capability subagents is not active\""
+     (:error e-actions-unknown-capability)
+#+end_example
+
+** Dispatcher path
+
+=e-actions--find-capability= (lisp/core/e-actions.el) resolves the target by
+scanning =e-harness-effective-capabilities=.  When =subagents= is not in the
+effective set, it signals =e-actions-unknown-capability=.  The action
+definitions are correct; they are just unreachable.
+
+* Why the =:report= result path is otherwise sound
+
+Confirmed by inspection and prior ERT (=e-subagent-runner-test=):
+
+- =e-subagent-report= sets =:reported t=, =:outputs=, and =:result-summary= and
+  is authoritative over a later final message
+  (=e-subagent-runner-test-report-overrides-final-message= passes).
+- The =report= action normalizes its =:outputs=/=:summary= arguments and calls
+  =e-subagent-report= against the *calling child's* session id resolved from the
+  action context (=e-subagent-registry-find-by-session=).
+
+So once the capability is active on the child, the same call the child already
+attempted will populate =:outputs=.
+
+* Design question: where should =subagents= be enabled?
+
+Two independent decisions:
+
+1. *Parent enablement.*  =subagents= belongs in the default chat preset (or an
+   opt-in preset) so the main agent can dispatch =spawn=/=list=/... through the
+   action surface rather than only through direct Elisp.  Adding =subagents= to
+   =e-default-chat-layer-ids= is the natural fix.
+
+2. *Child enablement.*  A spawnable child needs at least the child-side
+   =report= action (and, if sub-spawning is allowed, the rest).  Options:
+
+   a. Add =subagents= to each tool-runner type's declared =:layers=.  Simple,
+      but every future subagent type must remember it, and it pulls the full
+      types context block + all nine actions into the lean child.
+
+   b. Have the *runner* ensure a minimal child-side reporting surface is always
+      present, independent of the type's declared layers.  This keeps "a
+      subagent can always report" an invariant of spawning rather than a
+      per-type opt-in, and avoids leaking the spawn/types discovery context into
+      a child that should stay lean.
+
+   Option (b) matches the feature's intent: =report= is part of the subagent
+   contract, not an optional capability.  A child should be able to report
+   without being told it can spawn its own children or seeing the spawnable
+   type catalog.
+
+* Proposed fix (for a follow-up change, not yet applied)
+
+- Add =subagents= to =e-default-chat-layer-ids= (parent side).
+- Give the child a guaranteed report surface.  Prefer splitting the capability:
+  a small always-present child-side piece exposing =report= (and =read= of the
+  child's own result), separate from the parent-facing spawn/observe/steer
+  actions and the types discovery context.  The runner activates the child-side
+  piece on every spawned child; the full parent-facing =subagents= layer is
+  enabled only where a session should be able to spawn.
+
+* Status
+
+Root cause identified and verified live.  No code changed yet; fix deferred to a
+follow-up per the two decisions above.
