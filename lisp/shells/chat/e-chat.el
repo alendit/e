@@ -4842,9 +4842,22 @@ When RECORD is nil, clear only buffer-local status markers."
 
 (defun e-chat--replace-region-text-minimally (start end new-text)
   "Replace START through END with NEW-TEXT by touching only changed text.
-Return the new end position."
-  (let* ((old-text (buffer-substring-no-properties start end))
-         (prefix-length (e-chat--common-prefix-length old-text new-text))
+Return the new end position.
+When the region already holds NEW-TEXT verbatim, do nothing but return the
+unchanged end.  A progress spinner tick re-renders an active turn every
+`e-chat-progress-interval' seconds while the transient activity block text is
+unchanged; the C-level `string=' guard skips the O(n) prefix/suffix scan for
+that common case instead of walking a large block character by character."
+  (let ((old-text (buffer-substring-no-properties start end)))
+    (if (string= old-text new-text)
+        end
+      (e-chat--replace-region-text-diffing start end old-text new-text))))
+
+(defun e-chat--replace-region-text-diffing (start end old-text new-text)
+  "Replace START through END, editing only the span that differs.
+OLD-TEXT is the current region text and NEW-TEXT its replacement; the two are
+known to differ.  Return the new end position."
+  (let* ((prefix-length (e-chat--common-prefix-length old-text new-text))
          (suffix-length
           (e-chat--common-suffix-length old-text new-text prefix-length))
          (replace-start (+ start prefix-length))

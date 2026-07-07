@@ -4726,6 +4726,36 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-replace-region-minimally-skips-unchanged-text ()
+  "Re-rendering identical running-status text edits nothing."
+  (let ((buffer (e-chat-test--buffer nil "chat-replace-region-noop")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (let ((inhibit-read-only t)
+                (changes 0))
+            (goto-char (point-max))
+            (let ((start (point)))
+              (insert "a large activity block of text")
+              (let ((end (point)))
+                (add-hook 'after-change-functions
+                          (lambda (&rest _) (setq changes (1+ changes)))
+                          nil t)
+                ;; Identical text: no buffer modification, end unchanged.
+                (should (= (e-chat--replace-region-text-minimally
+                            start end "a large activity block of text")
+                           end))
+                (should (= changes 0))
+                ;; A real change still edits only the differing span.
+                (should (= (e-chat--replace-region-text-minimally
+                            start end "a large activity block of TEXT")
+                           end))
+                (should (> changes 0))
+                (should (string-match-p
+                         "a large activity block of TEXT"
+                         (buffer-string)))))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-final-response-uses-visual-marker-face ()
   "Final assistant output is visually distinguished without a text label."
   (let ((buffer (e-chat-test--buffer nil "chat-final-face")))
