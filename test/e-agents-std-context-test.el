@@ -593,8 +593,7 @@
                   (expand-file-name ".agents/skills" home))
                  (e-capability-config
                   '((agents-std-context
-                     :include ("skills/global/research" "Keep" "Drop")
-                     :exclude ("Drop"))))
+                     :skills-exclude ("Drop"))))
                  (harness
                   (e-harness-create
                    :backend (e-backend-fake-create :items nil)
@@ -655,7 +654,7 @@
                  (e-agents-std-context-global-skills-directory
                   (expand-file-name ".agents/skills" home))
                  (e-capability-config
-                  '((agents-std-context :include ("Alpha"))))
+                  '((agents-std-context :skills-include ("Alpha"))))
                  (harness
                   (e-harness-create
                    :backend (e-backend-fake-create :items nil)
@@ -669,7 +668,7 @@
               (should (string-match-p "Alpha: Alpha skill" content))
               (should-not (string-match-p "Beta: Beta skill" content)))
             (setq e-capability-config
-                  '((agents-std-context :include ("Beta"))))
+                  '((agents-std-context :skills-include ("Beta"))))
             (let ((content
                    (e-agents-std-context-test--context-content
                     harness
@@ -699,7 +698,7 @@
                  (e-agents-std-context-global-skills-directory
                   (expand-file-name ".agents/skills" home))
                  (e-capability-config
-                  '((agents-std-context :include ("Alpha"))))
+                  '((agents-std-context :skills-include ("Alpha"))))
                  (harness
                   (e-harness-create
                    :backend (e-backend-fake-create :items nil)
@@ -719,7 +718,7 @@
                 "e://agents-std-context/skills/global/beta"
                 nil)))
             (setq e-capability-config
-                  '((agents-std-context :include ("Beta"))))
+                  '((agents-std-context :skills-include ("Beta"))))
             (let ((store (e-harness-store harness "session-1")))
               (should (string-match-p
                        "Beta body"
@@ -738,7 +737,7 @@
 (ert-deftest e-agents-std-context-test-capability-exposes-effective-config ()
   "The capability carries option metadata and resolved config."
   (let ((e-capability-config
-         '((agents-std-context :include ("skills/global/research")))))
+         '((agents-std-context :skills-include ("skills/global/research")))))
     (let ((capability
            (e-agents-std-context-capability-create default-directory)))
       (should
@@ -746,7 +745,7 @@
            e-agents-std-context-config-options))
       (should
        (equal (e-capability-config capability)
-              '(:include ("skills/global/research") :exclude nil))))))
+              '(:skills-include ("skills/global/research") :skills-exclude nil))))))
 
 (provide 'e-agents-std-context-test)
 

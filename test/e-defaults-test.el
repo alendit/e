@@ -403,7 +403,7 @@
            nil
            'silent)
           (write-region
-           "((nil . ((e-capability-config . ((agents-std-context :include (\"Keep\")))))))"
+           "((nil . ((e-capability-config . ((agents-std-context :skills-include (\"Keep\")))))))"
            nil
            (expand-file-name ".dir-locals.el" project)
            nil

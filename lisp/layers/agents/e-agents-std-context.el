@@ -48,19 +48,21 @@
 (defconst e-agents-std-context-config-options
   (list
    (e-capability-config-option-create
-    :key :include
+    :key :skills-include
     :type '(repeat string)
     :default nil
     :documentation
-    "Skill names or resource paths to include.  Nil includes all skills."
+    "Skill names or resource paths to allow.  Nil includes all skills.
+Mutually exclusive with `:skills-exclude'."
     :normalizer #'e-capability-config-string-list
     :validator #'e-capability-config-string-list-p)
    (e-capability-config-option-create
-    :key :exclude
+    :key :skills-exclude
     :type '(repeat string)
     :default nil
     :documentation
-    "Skill names or resource paths to exclude.  Exclude wins over include."
+    "Skill names or resource paths to deny.  Nil excludes nothing.
+Mutually exclusive with `:skills-include'."
     :normalizer #'e-capability-config-string-list
     :validator #'e-capability-config-string-list-p))
   "Configuration option specs owned by `agents-std-context'.")
@@ -231,19 +233,24 @@ slugs across those scopes intentionally remain distinct resources."
       (string= selector (e-skill-spec-path skill))))
 
 (defun e-agents-std-context--skill-selected-p (skill config)
-  "Return non-nil when SKILL is selected by CONFIG."
-  (let ((include (plist-get config :include))
-        (exclude (plist-get config :exclude)))
-    (and (or (null include)
-             (cl-some
-              (lambda (selector)
-                (e-agents-std-context--skill-match-p selector skill))
-              include))
-         (not
-          (cl-some
-           (lambda (selector)
-             (e-agents-std-context--skill-match-p selector skill))
-           exclude)))))
+  "Return non-nil when SKILL is selected by CONFIG.
+`:skills-include' is an allowlist and `:skills-exclude' a denylist; they are
+mutually exclusive, and include wins if both are somehow set."
+  (let ((include (plist-get config :skills-include))
+        (exclude (plist-get config :skills-exclude)))
+    (cond
+     (include
+      (cl-some
+       (lambda (selector)
+         (e-agents-std-context--skill-match-p selector skill))
+       include))
+     (exclude
+      (not
+       (cl-some
+        (lambda (selector)
+          (e-agents-std-context--skill-match-p selector skill))
+        exclude)))
+     (t t))))
 
 (defun e-agents-std-context--filter-skill-specs (skills config)
   "Return SKILLS selected by CONFIG."
