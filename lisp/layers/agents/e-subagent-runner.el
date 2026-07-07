@@ -205,37 +205,66 @@ Layer ids arrive from the action surface as strings."
    ((stringp value) (intern value))
    (t (signal 'wrong-type-argument (list 'symbolp value)))))
 
+(defun e-subagent--capability-symbol (value)
+  "Return VALUE as a capability id symbol."
+  (cond
+   ((and (symbolp value) value) value)
+   ((stringp value) (intern value))
+   (t (signal 'wrong-type-argument (list 'symbolp value)))))
+
+(defun e-subagent--capability-config-plist (value)
+  "Return VALUE normalized to a capability config plist.
+Action arguments arrive with string keys; intern them to keywords."
+  (let (plist)
+    (while value
+      (let ((key (pop value))
+            (val (and value (pop value))))
+        (setq plist
+              (plist-put plist
+                         (cond
+                          ((keywordp key) key)
+                          ((symbolp key)
+                           (intern (concat ":" (symbol-name key))))
+                          ((stringp key)
+                           (intern (concat ":" (string-remove-prefix ":" key))))
+                          (t (signal 'wrong-type-argument (list key))))
+                         val))))
+    plist))
+
 (defun e-subagent-configure-type
     (type &rest args)
   "Configure the shared harness for spawnable TYPE and return its state.
-ARGS is a plist of `:enable-layers', `:disable-layers', and `:skills'.
+ARGS is a plist of `:enable-layers', `:disable-layers', and `:layer-config'.
 ENABLE-LAYERS and DISABLE-LAYERS toggle layers on the type's shared harness, so
 the parent turns individual capabilities on or off for every child of that type.
-SKILLS, when non-nil, restricts the `agents-std-context' skill set to the named
-skills (requires that layer enabled); nil leaves the skill selection untouched.
-Because children of a type share one harness, this configures the type, not a
-single child."
+LAYER-CONFIG is an alist mapping a capability id to an option plist, applied as
+that capability's runtime config; this is the generic way to pass or overwrite
+layer configuration (e.g. `agents-std-context' `:skills-include').  Because
+children of a type share one harness, this configures the type, not a single
+child."
   (let* ((type (e-subagent--normalize-type type))
          (instance (e-subagent--type-instance type))
          (harness (e-harness-instance-get-or-create type))
          (enable-layers (plist-get args :enable-layers))
          (disable-layers (plist-get args :disable-layers))
-         (skills (plist-get args :skills)))
+         (layer-config (plist-get args :layer-config)))
     (ignore instance)
     (dolist (layer (append disable-layers nil))
       (e-harness-disable-layer-id harness (e-subagent--layer-symbol layer)))
     (dolist (layer (append enable-layers nil))
       (e-harness-enable-layer-id harness (e-subagent--layer-symbol layer)))
-    (when skills
+    (dolist (entry (append layer-config nil))
       (e-harness-set-capability-config
-       harness 'agents-std-context
-       (list :include (mapcar (lambda (name) (format "%s" name))
-                              (append skills nil)))))
+       harness
+       (e-subagent--capability-symbol (car entry))
+       (e-subagent--capability-config-plist (cdr entry))))
     (list :type type
           :enabled-layers (e-harness-enabled-layer-ids harness)
-          :skills (when skills
-                    (mapcar (lambda (name) (format "%s" name))
-                            (append skills nil))))))
+          :capability-config
+          (mapcar (lambda (entry)
+                    (let ((id (e-subagent--capability-symbol (car entry))))
+                      (cons id (e-harness-capability-config harness id))))
+                  (append layer-config nil)))))
 
 (defun e-subagent-report (registry session-id outputs summary)
   "Record a child-reported structured result for SESSION-ID in REGISTRY.

@@ -49,7 +49,7 @@
      "- `send`: input `(:subagent-id STRING :prompt STRING)`. Queues a follow-up turn to the child."
      "- `interrupt`: input `(:subagent-id STRING)`. Aborts the child's active turn, leaving the record inspectable."
      "- `shutdown`: input `(:subagent-id STRING)`. Interrupts if running and marks the record terminal."
-     "- `configure-type`: input `(:type STRING :enable-layers ARRAY :disable-layers ARRAY :skills ARRAY)`. Turns individual capabilities on or off for a spawnable type's shared harness, and optionally restricts its `agents-std-context` skill set to named skills. Because children of a type share one harness, this configures the type, not a single child; call it before spawning."
+     "- `configure-type`: input `(:type STRING :enable-layers ARRAY :disable-layers ARRAY :layer-config ALIST)`. Turns individual capabilities on or off for a spawnable type's shared harness. `layer-config` maps a capability id to its option plist, the generic way to pass or overwrite a layer's configuration -- e.g. `((agents-std-context :skills-include (\"writing\")))` to allow only the `writing` skill, or `:skills-exclude` to deny a few. Because children of a type share one harness, this configures the type, not a single child; call it before spawning."
      "- `report` (child-side): input `(:outputs ARRAY :summary STRING)`. A child calls this to set a structured result that overrides its final message. `outputs` entries are `(:kind :value|:uri :label)`."
      ""
      "## Minimal context by default"

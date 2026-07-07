@@ -102,7 +102,7 @@ With `:raw' non-nil, return a bounded transcript excerpt and the child's
    (plist-get arguments :type)
    :enable-layers (plist-get arguments :enable-layers)
    :disable-layers (plist-get arguments :disable-layers)
-   :skills (plist-get arguments :skills)))
+   :layer-config (plist-get arguments :layer-config)))
 
 (defun e-subagent-actions--report (registry context arguments)
   "Record a child-reported structured result for CONTEXT's own session."
@@ -204,9 +204,9 @@ HANDLER is called as (REGISTRY CONTEXT ARGUMENTS)."
      :disable-layers
      (:type "array"
       :description "Layer ids to disable on the type's shared harness.")
-     :skills
-     (:type "array"
-      :description "Restrict agents-std-context skills to these names (requires that layer)."))
+     :layer-config
+     (:type "object"
+      :description "Alist mapping a capability id to its option plist, e.g. ((agents-std-context :skills-include (\"writing\"))). Generic way to pass or overwrite a layer's configuration."))
     :required ["type"])
   "Action parameters for configuring a spawnable type's harness.")
 

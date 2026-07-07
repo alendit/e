@@ -247,8 +247,8 @@
   "configure-type enables and disables layers on the type's shared harness."
   (e-subagent-runner-test--with-instances
     ;; Give the reviewer type a real harness with a couple of default layers so
-    ;; enable/disable have something to move.  `os-base' and `web' are ordinary
-    ;; registered layers.
+    ;; enable/disable have something to move.  `os-base' and `emacs-base' are
+    ;; ordinary registered layers.
     (let* ((harness (e-harness-instance-get-or-create :reviewer)))
       (e-harness-set-enabled-layer-ids harness '(os-base))
       (let ((result (e-subagent-configure-type
@@ -257,6 +257,18 @@
         (should (eq (plist-get result :type) :reviewer))
         (should (memq 'emacs-base (plist-get result :enabled-layers)))
         (should-not (memq 'os-base (plist-get result :enabled-layers)))))))
+
+(ert-deftest e-subagent-runner-test-configure-type-passes-layer-config ()
+  "configure-type writes a capability's runtime config on the type's harness.
+This is the generic way to pass or overwrite layer configuration, e.g. the
+`agents-std-context' skill allowlist."
+  (e-subagent-runner-test--with-instances
+    (let ((harness (e-harness-instance-get-or-create :reviewer)))
+      (e-subagent-configure-type
+       :reviewer
+       :layer-config '((agents-std-context :skills-include ("writing"))))
+      (should (equal (e-harness-capability-config harness 'agents-std-context)
+                     '(:skills-include ("writing")))))))
 
 (ert-deftest e-subagent-runner-test-capability-actions-and-skill ()
   "The capability exposes actions and a readable skill, absent from tools."
