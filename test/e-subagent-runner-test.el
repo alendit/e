@@ -33,7 +33,9 @@
   `(let ((e-harness-registry--instances (make-hash-table :test 'equal))
          (e-harness-registry--factories (make-hash-table :test 'equal))
          (e-harness-instance--instances (make-hash-table :test 'equal))
-         (e-harness-instance--defaults (make-hash-table :test 'equal)))
+         (e-harness-instance--defaults (make-hash-table :test 'equal))
+         (e-subagent--configured-harnesses
+          (make-hash-table :test 'eq :weakness 'key)))
      (e-harness-instance-register
       :id :reviewer
       :name "Reviewer"
@@ -257,6 +259,40 @@
         (should (eq (plist-get result :type) :reviewer))
         (should (memq 'emacs-base (plist-get result :enabled-layers)))
         (should-not (memq 'os-base (plist-get result :enabled-layers)))))))
+
+(ert-deftest e-subagent-runner-test-instance-layers-seed-child-harness ()
+  "An instance's declared :layers/:layer-config seed its child harness once.
+A later configure-type override is preserved across subsequent spawns."
+  (e-subagent-runner-test--with-instances
+    (e-harness-instance-register
+     :id :lean
+     :name "Lean"
+     :kind 'tool-user
+     :subagent t
+     :description "Lean tool runner."
+     :layers '(harness-base os-base)
+     :layer-config '((agents-std-context :skills-include ("writing")))
+     :factory (lambda () (e-harness-create
+                          :backend (e-backend-fake-create :items nil))))
+    (let* ((registry (e-subagent-registry-create))
+           (parent (e-harness-create
+                    :backend (e-backend-fake-create :items nil)))
+           (noop (lambda (_h _s _p _seed _on) (list :cancel #'ignore))))
+      (e-harness-create-session parent :id "parent-1")
+      (let* ((record (e-subagent-spawn registry parent "parent-1"
+                                       :type :lean :prompt "go" :runner noop))
+             (harness (e-subagent-registry-child-harness
+                       registry (plist-get record :subagent-id))))
+        ;; Declared layers and config land on the child harness.
+        (should (equal (e-harness-enabled-layer-ids harness)
+                       '(harness-base os-base)))
+        (should (equal (e-harness-capability-config harness 'agents-std-context)
+                       '(:skills-include ("writing"))))
+        ;; A parent override persists; the second spawn does not re-seed.
+        (e-subagent-configure-type :lean :enable-layers '("web"))
+        (e-subagent-spawn registry parent "parent-1"
+                          :type :lean :prompt "again" :runner noop)
+        (should (memq 'web (e-harness-enabled-layer-ids harness)))))))
 
 (ert-deftest e-subagent-runner-test-configure-type-passes-layer-config ()
   "configure-type writes a capability's runtime config on the type's harness.

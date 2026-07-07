@@ -48,6 +48,26 @@ lineage."
       (signal 'e-subagent-unknown-type (list type)))
     instance))
 
+(defvar e-subagent--configured-harnesses (make-hash-table :test 'eq :weakness 'key)
+  "Harnesses whose declaring instance's minimal layers/config were applied.
+Keyed weakly by harness so a torn-down harness is re-configured if recreated.")
+
+(defun e-subagent--child-harness (instance)
+  "Return INSTANCE's live child harness, applying its declared setup once.
+The instance's `:layers' become the harness's enabled layer set and its
+`:layer-config' entries seed runtime capability config, but only on the first
+creation, so a later `configure-type' the parent applies is never clobbered."
+  (let ((harness (e-harness-instance-get-or-create
+                  (e-harness-instance-id instance))))
+    (unless (gethash harness e-subagent--configured-harnesses)
+      (when-let ((layers (e-harness-instance-layers instance)))
+        (e-harness-set-enabled-layer-ids harness layers))
+      (dolist (entry (append (e-harness-instance-layer-config instance) nil))
+        (e-harness-set-capability-config
+         harness (car entry) (copy-sequence (cdr entry))))
+      (puthash harness t e-subagent--configured-harnesses))
+    harness))
+
 (defun e-subagent--child-metadata (instance parent-session-id lineage-id label)
   "Return durable child session metadata for INSTANCE under a parent lineage."
   (let ((role (e-harness-instance-kind instance)))
@@ -153,7 +173,7 @@ returns a handle plist carrying `:cancel'."
     (signal 'wrong-type-argument (list 'stringp :prompt)))
   (let* ((type (e-subagent--normalize-type type))
          (instance (e-subagent--type-instance type))
-         (child-harness (e-harness-instance-get-or-create type))
+         (child-harness (e-subagent--child-harness instance))
          (lineage-id (e-subagent--lineage-id parent-harness parent-session-id))
          (metadata (e-subagent--child-metadata
                     instance parent-session-id lineage-id label))

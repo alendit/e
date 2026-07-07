@@ -30,7 +30,9 @@
   default-p
   description
   (context-visibility 'always)
-  subagent-p)
+  subagent-p
+  layers
+  layer-config)
 
 (defvar e-harness-instance--instances (make-hash-table :test 'equal)
   "Harness instance records keyed by instance id.")
@@ -64,7 +66,8 @@
 ;;;###autoload
 (cl-defun e-harness-instance-register
     (&key id name kind factory harness-id metadata default
-          description (context-visibility 'always) subagent)
+          description (context-visibility 'always) subagent
+          layers layer-config)
   "Register a configured harness instance.
 ID is the stable user-facing target id.  KIND identifies the role the
 instance plays, such as `chat' or `reviewer'.  FACTORY, when non-nil, is
@@ -77,7 +80,13 @@ CONTEXT-VISIBILITY is `always' or `hidden' and controls whether the instance
 appears in the subagents context block.  When SUBAGENT is non-nil, the
 instance is spawnable as a subagent type; this eligibility flag is kept
 separate from KIND so role instances stay reusable across chat and subagent
-use."
+use.
+
+LAYERS, when non-nil, is the instance's declared enabled layer id list; the
+subagent runner applies it as the child harness's minimal layer set.
+LAYER-CONFIG, when non-nil, is an alist mapping a capability id to its option
+plist, applied as that instance's initial runtime capability config.  Both are
+declarative selection metadata; the factory still builds the live harness."
   (e-harness-instance--validate-id id)
   (e-harness-instance--validate-kind kind)
   (e-harness-instance--validate-context-visibility context-visibility)
@@ -95,7 +104,9 @@ use."
                      :default-p default
                      :description description
                      :context-visibility context-visibility
-                     :subagent-p subagent)))
+                     :subagent-p subagent
+                     :layers layers
+                     :layer-config layer-config)))
       (puthash id instance e-harness-instance--instances)
       (when (or default
                 (not (gethash kind e-harness-instance--defaults)))
