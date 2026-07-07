@@ -21,11 +21,39 @@
 (require 'e-context)
 (require 'e-harness-instances)
 (require 'e-layers)
+(require 'e-skills)
 (require 'e-store)
+(require 'e-subagent-actions)
 
 (defconst e-subagents-instructions
-  "Subagents let this session delegate work to child sessions on purpose-built harness types, keeping the child's whole transcript out of this context. Read e://subagents/refs/types.md for the full catalog of spawnable types."
+  "Subagents let this session delegate work to child sessions on purpose-built harness types, keeping the child's whole transcript out of this context. Reach them through e-actions-call, never a model-facing tool. Read e://subagents/skills/subagents for the action contract and e://subagents/refs/types.md for the full catalog of spawnable types."
   "Compact model-facing instructions for the subagents capability.")
+
+(defconst e-subagents-skill
+  (string-join
+   '("# Subagent work actions"
+     ""
+     "Subagents delegate work to child sessions on purpose-built harness types. A child's whole transcript stays out of this session's context: you see a handle, a status, and a compact result. The e harness does not know about subagents."
+     ""
+     "## Choosing a type"
+     ""
+     "Spawnable types are harness instances tagged as subagents. The always-visible ones are listed in your context; read `e://subagents/refs/types.md' for the full catalog including hidden types. Route a task to the type whose description fits it."
+     ""
+     "## Actions"
+     ""
+     "- `spawn`: input `(:type STRING :prompt STRING :seed-messages ARRAY :label STRING :schedule STRING)`. Creates a fresh child session on the type's harness, seeds it (prompt only by default; `:seed-messages` appends explicit context first), records lineage, and starts a non-blocking run. Returns a subagent record immediately. `:schedule` is `direct` (default) or `queue`."
+     "- `list`: returns compact records for the current session's direct children, newest-first."
+     "- `status`: input `(:subagent-id STRING)`. Returns one full record."
+     "- `read`: input `(:subagent-id STRING)`. Returns the compact result summary plus structured outputs."
+     "- `interrupt`: input `(:subagent-id STRING)`. Aborts the child's active turn, leaving the record inspectable."
+     "- `shutdown`: input `(:subagent-id STRING)`. Interrupts if running and marks the record terminal."
+     "- `report` (child-side): input `(:outputs ARRAY :summary STRING)`. A child calls this to set a structured result that overrides its final message. `outputs` entries are `(:kind :value|:uri :label)`."
+     ""
+     "## Context discipline"
+     ""
+     "A child shares one `tmp://` namespace with this session (same lineage). Tell children to write artifacts under `tmp://` and keep their final message terse, e.g. `Result: tmp://sub_result_1.org -- 3 issues found`. That terse final message is the default result; a child that produces artifacts should call `report` instead. Read a child's full transcript only on demand through its `session://` resource.")
+   "\n")
+  "Skill body documenting the subagents action contract.")
 
 (defun e-subagents--type-line (instance)
   "Return the one-line context entry for subagent INSTANCE."
@@ -104,18 +132,23 @@ e://subagents/refs/types.md."
    :description "Full catalog of spawnable subagent types."
    :reader (lambda (_entry _range) (e-subagents--catalog-markdown))))
 
-(defun e-subagents-capability-create ()
+(cl-defun e-subagents-capability-create (&key registry)
   "Create the subagents capability.
-Slice 1 contributes only the discovery surface: the types context provider and
-the read-only type catalog.  Spawn/observe/steer actions arrive in later
-slices."
-  (e-capability-create
+Contributes the discovery surface (types context provider and the read-only
+type catalog), the skill-backed action contract, and the spawn/observe/steer
+actions over REGISTRY (defaults to the process-wide registry)."
+  (e-capability-with-skills-create
    :id 'subagents
    :name "Subagents"
    :instruction-priority 235
    :instructions e-subagents-instructions
    :context-providers (list (e-subagents-types-provider))
-   :resources (list #'e-subagents--register-reference-resources)))
+   :resources (list #'e-subagents--register-reference-resources)
+   :actions (e-subagent-actions-alist registry)
+   :skills (list (e-skill-spec-create
+                  :name "subagents"
+                  :description "Spawn, observe, steer, and shut down child subagent sessions."
+                  :content e-subagents-skill))))
 
 (defun e-subagents-layer-create ()
   "Create the subagents layer."
