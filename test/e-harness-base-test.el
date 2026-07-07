@@ -52,8 +52,10 @@
     (should (equal (mapcar #'e-capability-id
                            (e-layer-capabilities layer))
                    '(harness-base-context
+                     await
                      raw-result-resources
                      session-tmp-resources
+                     session-resources
                      tool-output-truncation)))))
 
 (ert-deftest e-harness-base-test-context-asks-for-novel-reasoning-messages ()
