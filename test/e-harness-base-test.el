@@ -101,9 +101,7 @@
              (e-harness-resources harness "session-1" "turn-1")))
     (should (equal (e-harness-base-test--tmp-operation-ids
                     (e-harness-resources harness "session-1" "turn-1"))
-                   (if (executable-find "wot")
-                       '(read table-of-content write edit glob search)
-                     '(read write edit glob search))))
+                   '(read write edit glob search)))
     (should (equal (mapcar #'e-hook-id
                            (e-hooks-for-point
                             (e-harness-hooks harness)

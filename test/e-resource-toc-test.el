@@ -13,7 +13,10 @@
 
 (require 'ert)
 (require 'e)
+(require 'e-file-capabilities)
+(require 'e-harness)
 (require 'e-resource-toc)
+(require 'e-tools)
 
 (defun e-resource-toc-test--fake-wot (directory)
   "Create a fake wot executable in DIRECTORY."
@@ -101,6 +104,56 @@
                            "json"))))
       (delete-directory bin-directory t)
       (delete-directory file-directory t))))
+
+
+(ert-deftest e-resource-toc-test-capability-toggles-operation ()
+  "The resource-toc capability owns table-of-content registration."
+  (let* ((bin-directory (make-temp-file "e-resource-toc-bin-" t))
+         (project-directory (make-temp-file "e-resource-toc-project-" t))
+         (_wot (e-resource-toc-test--fake-wot bin-directory))
+         (_file (write-region "(defun sample () nil)
+"
+                              nil
+                              (expand-file-name "sample.el" project-directory)
+                              nil
+                              'silent))
+         (exec-path (list bin-directory))
+         (harness (e-harness-create :project-root project-directory)))
+    (unwind-protect
+        (let ((file-capability
+               (e-file-handling-capability-create project-directory))
+              (toc-capability
+               (e-resource-toc-capability-create)))
+          (e-harness-set-intrinsic-capabilities harness (list file-capability))
+          (should (e-resources-methods-for-operation
+                   (e-harness-resources harness "session" "turn")
+                   e-operation-read))
+          (should-not (e-resources-methods-for-operation
+                       (e-harness-resources harness "session" "turn")
+                       e-operation-table-of-content))
+          (should-not (member "table_of_content"
+                              (mapcar (lambda (definition)
+                                        (plist-get definition :name))
+                                      (e-tools-definitions
+                                       (e-harness-tools harness "session" "turn")))))
+          (e-harness-set-intrinsic-capabilities
+           harness
+           (list file-capability toc-capability))
+          (should (e-resources-methods-for-operation
+                   (e-harness-resources harness "session" "turn")
+                   e-operation-table-of-content))
+          (should (member "table_of_content"
+                          (mapcar (lambda (definition)
+                                    (plist-get definition :name))
+                                  (e-tools-definitions
+                                   (e-harness-tools harness "session" "turn")))))
+          (let ((result (e-resources-table-of-content
+                         (e-harness-resources harness "session" "turn")
+                         "file://sample.el")))
+            (should (string-match-p "--stdin.*--language><elisp>"
+                                    (plist-get result :content)))))
+      (delete-directory bin-directory t)
+      (delete-directory project-directory t))))
 
 (provide 'e-resource-toc-test)
 

@@ -46,6 +46,11 @@
      :summary "Workspace file and shell tools."
      :feature e-base
      :factory e-base-layer-create)
+    (:id resource-toc
+     :name "Resource Table Of Content"
+     :summary "wot-backed table-of-content resource operation."
+     :feature e-resource-toc
+     :factory e-resource-toc-layer-create)
     (:id emacs-base
      :name "Emacs Base"
      :summary "Live Emacs buffer awareness and editing tools."

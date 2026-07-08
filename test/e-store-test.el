@@ -117,7 +117,7 @@
     (should (equal captured '("e://dynamic/refs/log.md" nil)))
     (should (equal (mapcar #'e-operation-id
                            (e-resources-operations resources))
-                   '(read glob search table-of-content)))
+                   '(read glob search)))
     (should-error (e-resources-write resources "e://readonly/refs/a.md" "no")
                   :type 'e-resources-unsupported-operation)
     (should-error (e-resources-edit resources "e://readonly/refs/a.md"

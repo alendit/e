@@ -324,7 +324,8 @@ SESSION-ID and TURN-ID are passed to context-aware resource providers."
        registry
        :harness harness
        :session-id session-id
-       :turn-id turn-id))
+       :turn-id turn-id
+       :store store))
     (when (e-store-list store)
       (e-resources-register registry (e-store-resource-methods store)))
     registry))

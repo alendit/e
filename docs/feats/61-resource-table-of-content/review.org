@@ -15,7 +15,8 @@ No unresolved review findings are recorded yet.
 
 - Added =table-of-content= as a standard resource operation with tool name =table_of_content=.
 - Added shared =e-resource-toc= helpers for =wot= discovery, option validation, language inference, synchronous batch helpers, and async Work specs.
-- Registered =table-of-content= for =file://=, =buffer://=, =e://=, =e-action://=, =tmp://=, and =raw-result://= when =wot= is installed.
+- Combined all =table-of-content= resource method registration into the =resource-toc= capability and layer so the operation can be toggled on and off.
+- Registered =table-of-content= for active =file://=, =buffer://=, =e://=, =e-action://=, =tmp://=, and =raw-result://= schemes when =wot= is installed and =resource-toc= is active.
 - Did not register =table-of-content= for =session://=.
 - Added helper tests for =e-resource-toc=.
 - Updated operation and harness-base tests for the new operation.

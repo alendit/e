@@ -13,7 +13,17 @@
 
 (require 'cl-lib)
 (require 'subr-x)
+(require 'e-action-resources)
+(require 'e-base-tools)
+(require 'e-capabilities)
+(require 'e-emacs-tools)
+(require 'e-harness)
+(require 'e-layers)
+(require 'e-raw-results)
 (require 'e-request)
+(require 'e-resources)
+(require 'e-session-tmp-resources)
+(require 'e-store)
 (require 'e-work)
 
 (define-error 'e-resource-toc-missing-command
@@ -340,6 +350,250 @@ CONTENT-RESOLVER accepts WORK-ARGUMENTS and CONTEXT and returns a plist with
          (process-send-string process (plist-get request :content))
          (process-send-eof process)
          :deferred)))))
+
+
+(defun e-resource-toc--context-harness (context)
+  "Return harness from registration CONTEXT, or nil."
+  (plist-get context :harness))
+
+(defun e-resource-toc--context-session-id (context)
+  "Return session id from registration CONTEXT, or nil."
+  (plist-get context :session-id))
+
+(defun e-resource-toc--context-turn-id (context)
+  "Return turn id from registration CONTEXT, or nil."
+  (plist-get context :turn-id))
+
+(defun e-resource-toc--context-store (context)
+  "Return e:// store from registration CONTEXT, or nil."
+  (plist-get context :store))
+
+(defun e-resource-toc--registry-has-read-scheme-p (registry scheme)
+  "Return non-nil when REGISTRY already has read support for SCHEME."
+  (cl-some (lambda (method)
+             (equal (e-resource-method-scheme method) scheme))
+           (e-resources-methods-for-operation registry e-operation-read)))
+
+(defun e-resource-toc--workspace-roots (context)
+  "Return workspace roots for resource TOC CONTEXT."
+  (let ((harness (e-resource-toc--context-harness context))
+        (session-id (e-resource-toc--context-session-id context))
+        (turn-id (e-resource-toc--context-turn-id context)))
+    (or (and (e-harness-p harness)
+             session-id
+             (e-harness-workspace-roots harness session-id turn-id))
+        (list (file-name-as-directory (expand-file-name default-directory))))))
+
+(defun e-resource-toc--file-request (uri options context)
+  "Return a stdin-backed TOC request for file URI using CONTEXT roots."
+  (let* ((roots (e-resource-toc--workspace-roots context))
+         (path (e-base-tools--resource-path uri roots))
+         (group (e-base-tools-file-buffer-coherence-group path (plist-get uri :uri)))
+         (buffer (e-base-tools--preferred-buffer-for-group group)))
+    (list :uri (plist-get uri :uri)
+          :name path
+          :content (if buffer
+                       (with-current-buffer buffer
+                         (buffer-substring-no-properties (point-min) (point-max)))
+                     (e-base-tools--file-disk-text path))
+          :options options)))
+
+(defun e-resource-toc--file-method (context)
+  "Return a file:// table-of-content method for CONTEXT."
+  (e-resource-method-create
+   :scheme "file"
+   :operation e-operation-table-of-content
+   :description "Workspace text files outlined with wot. Uses live buffer text when it is the coherent view; session:// is not supported."
+   :uri-patterns '("file://<path>")
+   :handler (lambda (uri options)
+              (let ((request (e-resource-toc--file-request uri options context)))
+                (e-resource-toc-run-content
+                 (plist-get request :uri)
+                 (plist-get request :name)
+                 (plist-get request :content)
+                 (plist-get request :options))))
+   :work (e-resource-toc-content-work
+          (lambda (work-arguments _work-context)
+            (e-resource-toc--file-request
+             (plist-get work-arguments :uri)
+             (car (plist-get work-arguments :operation-arguments))
+             context)))))
+
+(defun e-resource-toc--buffer-request (uri options)
+  "Return a stdin-backed TOC request for buffer URI."
+  (let* ((name (e-emacs-tools--buffer-resource-name uri))
+         (buffer (e-emacs-tools--buffer name)))
+    (with-current-buffer buffer
+      (list :uri (plist-get uri :uri)
+            :name (or buffer-file-name name)
+            :content (buffer-substring-no-properties (point-min) (point-max))
+            :options options))))
+
+(defun e-resource-toc--buffer-method ()
+  "Return a buffer:// table-of-content method."
+  (e-resource-method-create
+   :scheme "buffer"
+   :operation e-operation-table-of-content
+   :description "Live Emacs buffers outlined by piping buffer text to wot --stdin. Pass language when inference is ambiguous."
+   :uri-patterns '("buffer://<buffer-name>")
+   :handler (lambda (uri options)
+              (let ((request (e-resource-toc--buffer-request uri options)))
+                (e-resource-toc-run-content
+                 (plist-get request :uri)
+                 (plist-get request :name)
+                 (plist-get request :content)
+                 (plist-get request :options))))
+   :work (e-resource-toc-content-work
+          (lambda (work-arguments _context)
+            (e-resource-toc--buffer-request
+             (plist-get work-arguments :uri)
+             (car (plist-get work-arguments :operation-arguments)))))))
+
+(defun e-resource-toc--store-method (store)
+  "Return an e:// table-of-content method backed by STORE."
+  (e-resource-method-create
+   :scheme "e"
+   :operation e-operation-table-of-content
+   :description "Capability-contributed in-memory resources outlined by piping text to wot --stdin. Pass language when inference is ambiguous."
+   :uri-patterns '("e://<capability>/skills/<skill>"
+                   "e://<capability>/refs/<name>.md"
+                   "e://<capability>/<path>")
+   :handler (lambda (uri options)
+              (e-resource-toc-run-content
+               (plist-get uri :uri)
+               (plist-get uri :address)
+               (e-store-read store (plist-get uri :uri) nil)
+               options))
+   :work (e-resource-toc-content-work
+          (lambda (work-arguments _context)
+            (let ((uri (plist-get work-arguments :uri)))
+              (list :uri (plist-get uri :uri)
+                    :name (plist-get uri :address)
+                    :content (e-store-read store (plist-get uri :uri) nil)
+                    :options (car (plist-get work-arguments
+                                             :operation-arguments))))))))
+
+(defun e-resource-toc--action-method (context)
+  "Return an e-action:// table-of-content method for CONTEXT."
+  (let ((harness (e-resource-toc--context-harness context))
+        (session-id (e-resource-toc--context-session-id context))
+        (turn-id (e-resource-toc--context-turn-id context)))
+    (e-resource-method-create
+     :scheme "e-action"
+     :operation e-operation-table-of-content
+     :description "Generated action descriptions outlined by piping Markdown text to wot --stdin."
+     :uri-patterns '("e-action://active"
+                     "e-action://<capability>"
+                     "e-action://<capability>/<action>")
+     :handler (lambda (uri options)
+                (e-resource-toc-run-content
+                 (plist-get uri :uri)
+                 (plist-get uri :address)
+                 (e-action-resources--read harness session-id turn-id uri nil)
+                 options
+                 "markdown"))
+     :work (e-resource-toc-content-work
+            (lambda (work-arguments _work-context)
+              (let ((uri (plist-get work-arguments :uri)))
+                (list :uri (plist-get uri :uri)
+                      :name (plist-get uri :address)
+                      :content (e-action-resources--read
+                                harness session-id turn-id uri nil)
+                      :options (car (plist-get work-arguments
+                                               :operation-arguments))
+                      :fallback-language "markdown")))))))
+
+(defun e-resource-toc--tmp-file-request (uri options context)
+  "Return a file-backed TOC request for tmp URI."
+  (let* ((harness (e-resource-toc--context-harness context))
+         (session-id (e-resource-toc--context-session-id context))
+         (relative-name (plist-get uri :address))
+         (path (e-session-tmp--path harness session-id relative-name)))
+    (list :uri (plist-get uri :uri)
+          :file path
+          :options options)))
+
+(defun e-resource-toc--tmp-method (context)
+  "Return a tmp:// table-of-content method for CONTEXT."
+  (e-resource-method-create
+   :scheme "tmp"
+   :operation e-operation-table-of-content
+   :description "Ephemeral session-scoped temporary text resources outlined with wot on the backing file."
+   :uri-patterns '("tmp://<relative-path>")
+   :handler (lambda (uri options)
+              (let ((request (e-resource-toc--tmp-file-request uri options context)))
+                (e-resource-toc-run-file
+                 (plist-get request :uri)
+                 (plist-get request :file)
+                 (plist-get request :options))))
+   :work (e-resource-toc-file-work
+          (lambda (work-arguments _work-context)
+            (e-resource-toc--tmp-file-request
+             (plist-get work-arguments :uri)
+             (car (plist-get work-arguments :operation-arguments))
+             context)))))
+
+(defun e-resource-toc--raw-result-method ()
+  "Return a raw-result:// table-of-content method."
+  (e-resource-method-create
+   :scheme "raw-result"
+   :operation e-operation-table-of-content
+   :description "Generic ephemeral raw tool result resources outlined by piping text to wot --stdin. Pass language when inference is ambiguous."
+   :uri-patterns '("raw-result://<name>")
+   :handler (lambda (parsed-uri options)
+              (e-resource-toc-run-content
+               (plist-get parsed-uri :uri)
+               (plist-get parsed-uri :address)
+               (e-raw-results-read (plist-get parsed-uri :uri))
+               options))
+   :work (e-resource-toc-content-work
+          (lambda (work-arguments _context)
+            (let ((uri (plist-get work-arguments :uri)))
+              (list :uri (plist-get uri :uri)
+                    :name (plist-get uri :address)
+                    :content (e-raw-results-read (plist-get uri :uri))
+                    :options (car (plist-get work-arguments
+                                             :operation-arguments))))))))
+
+(defun e-resource-toc-register-resource-methods (registry &rest context)
+  "Register all table-of-content resource methods in REGISTRY.
+CONTEXT is the harness resource registration context.  Registration is skipped
+when wot is not installed in `exec-path'.  The method for each scheme is added
+only when the corresponding read resource scheme is already active, except e://
+which follows the active store."
+  (when (e-resource-toc-available-p)
+    (dolist (method (delq nil
+                          (list (when (e-resource-toc--registry-has-read-scheme-p registry "file")
+                                  (e-resource-toc--file-method context))
+                                (when (e-resource-toc--registry-has-read-scheme-p registry "buffer")
+                                  (e-resource-toc--buffer-method))
+                                (when-let ((store (e-resource-toc--context-store context)))
+                                  (when (e-store-list store)
+                                    (e-resource-toc--store-method store)))
+                                (when (e-resource-toc--registry-has-read-scheme-p registry "e-action")
+                                  (e-resource-toc--action-method context))
+                                (when (e-resource-toc--registry-has-read-scheme-p registry "tmp")
+                                  (e-resource-toc--tmp-method context))
+                                (when (e-resource-toc--registry-has-read-scheme-p registry "raw-result")
+                                  (e-resource-toc--raw-result-method)))))
+      (e-resources-register registry method))))
+
+(defun e-resource-toc-capability-create ()
+  "Create the resource table-of-content capability."
+  (e-capability-create
+   :id 'resource-toc
+   :name "Resource Table Of Content"
+   :resource-methods
+   (list (e-capability-resource-method-provider-create
+          :handler #'e-resource-toc-register-resource-methods))))
+
+(defun e-resource-toc-layer-create ()
+  "Create the resource table-of-content layer."
+  (e-layer-create
+   :id 'resource-toc
+   :name "Resource Table Of Content"
+   :requires '(harness-base e os-base emacs-base)
+   :capabilities (list (e-resource-toc-capability-create))))
 
 (provide 'e-resource-toc)
 
