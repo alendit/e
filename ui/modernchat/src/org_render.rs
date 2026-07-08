@@ -32,12 +32,19 @@ pub fn parse_blocks(input: &str) -> Vec<OrgBlock> {
             let lang = rest.trim().to_string();
             let mut body = Vec::new();
             while let Some(src_line) = lines.next() {
-                if src_line.trim_start().to_ascii_lowercase().starts_with("#+end_src") {
+                if src_line
+                    .trim_start()
+                    .to_ascii_lowercase()
+                    .starts_with("#+end_src")
+                {
                     break;
                 }
                 body.push(src_line.to_string());
             }
-            blocks.push(OrgBlock::Source { lang, body: body.join("\n") });
+            blocks.push(OrgBlock::Source {
+                lang,
+                body: body.join("\n"),
+            });
             continue;
         }
         if let Some(rest) = trimmed.strip_prefix("#+begin_quote") {
@@ -45,7 +52,11 @@ pub fn parse_blocks(input: &str) -> Vec<OrgBlock> {
             flush(&mut blocks, &mut paragraph);
             let mut body = Vec::new();
             while let Some(quote_line) = lines.next() {
-                if quote_line.trim_start().to_ascii_lowercase().starts_with("#+end_quote") {
+                if quote_line
+                    .trim_start()
+                    .to_ascii_lowercase()
+                    .starts_with("#+end_quote")
+                {
                     break;
                 }
                 body.push(quote_line.to_string());
@@ -77,7 +88,11 @@ pub fn render_org(ui: &mut Ui, input: &str) {
     for block in parse_blocks(input) {
         match block {
             OrgBlock::Heading { level, text } => {
-                let size = match level { 1 => 22.0, 2 => 19.0, _ => 16.0 };
+                let size = match level {
+                    1 => 22.0,
+                    2 => 19.0,
+                    _ => 16.0,
+                };
                 ui.label(RichText::new(text).strong().size(size));
             }
             OrgBlock::ListItem(text) => {
@@ -88,12 +103,16 @@ pub fn render_org(ui: &mut Ui, input: &str) {
             }
             OrgBlock::Source { lang, body } => {
                 ui.group(|ui| {
-                    if !lang.is_empty() { ui.label(RichText::new(lang).small().weak()); }
+                    if !lang.is_empty() {
+                        ui.label(RichText::new(lang).small().weak());
+                    }
                     ui.monospace(body);
                 });
             }
             OrgBlock::Quote(body) => {
-                ui.group(|ui| { ui.label(RichText::new(body).italics().color(Color32::GRAY)); });
+                ui.group(|ui| {
+                    ui.label(RichText::new(body).italics().color(Color32::GRAY));
+                });
             }
             OrgBlock::Paragraph(text) => render_inline(ui, &text),
         }
@@ -113,7 +132,9 @@ mod tests {
 
     #[test]
     fn parses_common_blocks() {
-        let blocks = parse_blocks("* Title\n\n- item\n\n#+begin_src emacs-lisp\n(message \"hi\")\n#+end_src\n");
+        let blocks = parse_blocks(
+            "* Title\n\n- item\n\n#+begin_src emacs-lisp\n(message \"hi\")\n#+end_src\n",
+        );
         assert!(matches!(blocks[0], OrgBlock::Heading { level: 1, .. }));
         assert!(matches!(blocks[1], OrgBlock::ListItem(_)));
         assert!(matches!(blocks[2], OrgBlock::Source { .. }));
