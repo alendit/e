@@ -5666,16 +5666,8 @@ SOURCE identifies where the entry came from for duplicate suppression."
     ((or "You" "Assistant") (e-chat--entry-glyph title))
     (_ (format "%s %s" (e-chat--entry-glyph title) title))))
 
-(defun e-chat--display-content-text (content)
-  "Return CONTENT as chat display text."
-  (cond
-   ((stringp content) content)
-   ((null content) "")
-   (t (format "%S" content))))
-
 (defun e-chat--entry-text (title content)
   "Return display text for chat entry TITLE and CONTENT."
-  (setq content (e-chat--display-content-text content))
   (if (member title '("You" "Assistant"))
       (format "%s %s\n\n" (e-chat--entry-heading title) content)
     (format "%s\n%s\n\n" (e-chat--entry-heading title) content)))
@@ -6108,7 +6100,6 @@ non-nil, is used by focused block activation."
          :metadata (list :title title
                          :ensure-composer (and ensure-composer t)))
    (lambda ()
-     (setq content (e-chat--display-content-text content))
      (let* ((active-turn-id (or e-chat--progress-turn-id
                                 (e-chat--running-status-turn-id)))
             (active-record (and active-turn-id
@@ -6951,9 +6942,8 @@ When REFRESH-MODE-LINE is non-nil, also refresh context-aware mode-line text."
   (let ((role (plist-get message :role))
         (content (plist-get message :content)))
     (pcase role
-      ('user (cons "You" (e-chat--display-content-text content)))
-      ('assistant (cons "Assistant" (e-chat--display-content-text content)))
-      ('tool-call (cons "Tool call" (e-chat--format-tool-call content)))
+      ('user (cons "You" content))
+      ('assistant (cons "Assistant" content))
       ('tool (cons "Tool" (format "%S" content)))
       (_ (cons (format "%s" role) (format "%S" content))))))
 

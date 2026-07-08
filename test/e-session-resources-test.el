@@ -110,6 +110,27 @@
                       '(:unit "line" :start 1 :end 1))
                      "# Session session-1 messages\n")))))
 
+(ert-deftest e-session-resources-test-read-stringifies-structured-message-content ()
+  "session:// messages projection renders structured tool-call content."
+  (e-session-resources-test--with-empty-config
+    (let* ((harness (e-session-resources-test--harness))
+           (resources (e-session-resources-test--resources harness)))
+      (e-harness-create-session harness :id "session-1")
+      (e-session-append-message
+       (e-harness-sessions harness)
+       "session-1"
+       '(:role tool-call
+         :content (:type tool_call
+                   :id "call-1"
+                   :name "glob"
+                   :arguments (:uri "session:///" :limit 20))))
+      (let ((messages (e-resources-read
+                       resources
+                       "session://e/sessions/session-1/messages"
+                       nil)))
+        (should (string-match-p ":name \"glob\"" messages))
+        (should (string-match-p "session:///" messages))))))
+
 (ert-deftest e-session-resources-test-search-defaults-to-messages-and-can-narrow-projections ()
   "Session-root search uses messages by default and glob can select activity."
   (e-session-resources-test--with-empty-config

@@ -838,25 +838,6 @@ tests, matching how the buffer behaves when shown to a user."
             (e-harness-abort e-chat-harness e-chat-session-id)))
         (kill-buffer buffer)))))
 
-(ert-deftest e-chat-test-insert-entry-renders-structured-content ()
-  "Durable entry insertion stringifies structured content instead of failing."
-  (let ((buffer (e-chat-test--buffer nil "chat-structured-entry")))
-    (unwind-protect
-        (with-current-buffer buffer
-          (e-chat--insert-entry
-           "Assistant"
-           '(:type tool_call
-             :id "call-1"
-             :name "glob"
-             :arguments (:uri "session:///" :limit 20))
-           nil
-           "turn-1")
-          (let ((content (buffer-string)))
-            (should (string-match-p ":name \"glob\"" content))
-            (should (string-match-p "session:///" content))))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
-
 (ert-deftest e-chat-test-queued-prompts-survive-failure-and-cancel-rendering ()
   "Queue chrome survives terminal error and cancellation entries."
   (let* ((backend (e-backend-create

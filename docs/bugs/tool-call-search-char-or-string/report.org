@@ -9,6 +9,10 @@ The user reported that search/resource tool calls fail in chat with:
 Wrong type argument: char-or-string-p, (:type tool_call :id "..." :name "glob" :arguments (:uri "session:///" :limit 20))
 #+end_example
 
-The visible failing call was a =glob= tool call against =session:///=.
+The visible failing call first appeared while the agent was using session
+resources to find and inspect a previous session.  A follow-up screenshot showed
+the active tool as =read= after a session search result had been selected.
 
-Expected behavior: the provider tool call should execute through the normal tool path and chat rendering should not try to insert a structured plist as text.
+Expected behavior: =session://= message projections should render persisted
+structured transcript content as stable text instead of passing raw plists to
+Emacs insertion functions.

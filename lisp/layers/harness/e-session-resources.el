@@ -263,9 +263,9 @@ session id as their second argument."
 
 (defun e-session-resources--message-content (message)
   "Return readable content for MESSAGE."
-  (or (plist-get message :content)
-      (plist-get message :text)
-      ""))
+  (e-session-resources--format-value
+   (or (plist-get message :content)
+       (plist-get message :text))))
 
 (defun e-session-resources--render-entry-list (title entries)
   "Render TITLE and plist ENTRIES as text."
