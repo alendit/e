@@ -1,0 +1,363 @@
+#+title: Resource Table Of Content
+#+startup: overview
+
+* Status
+
+Planned
+
+* Goal
+
+Add a new read-only resource operation named =table-of-content= that returns a compact =wot= outline for a URI-addressed resource.
+
+The operation should be available for all current non-session resource schemes when the =wot= executable is installed in =PATH=.
+
+The first target schemes are:
+
+- =file://=
+- =buffer://=
+- =e://=
+- =e-action://=
+- =tmp://=
+- =raw-result://=
+
+Do not enable it for =session://= in this feature.
+
+* Problem
+
+Agents often need a quick structural reference before reading a large resource.
+
+Today an agent can use =read=, =glob=, and =search=, but those operations either return text or text matches. They do not expose source or document structure.
+
+The =wot= CLI already produces compact table-of-contents style outlines from many file types and can read either explicit file paths or stdin with a language hint.
+
+The resource facade should expose that capability directly so agents can ask for a resource outline without knowing whether the resource is backed by a file, an Emacs buffer, a capability store entry, an action description, a temporary resource, or a raw result.
+
+* User stories
+
+- As an agent, I can ask for a compact outline of =file://lisp/core/e-resources.el= before reading exact line ranges.
+- As an agent, I can ask for an outline of a live =buffer://= resource and include unsaved buffer text.
+- As an agent, I can ask for an outline of an in-memory =e://= skill or reference resource.
+- As an agent, I can ask for an outline of an =e-action://= generated action contract.
+- As an agent, I can ask for an outline of a =tmp://= resource created earlier in the session.
+- As an agent, I can ask for an outline of a =raw-result://= resource.
+- As an agent, I do not see or call the operation when =wot= is not installed.
+- As an agent, I get a clear unsupported-operation error for =session://=.
+
+* Operation contract
+
+Add a new standard resource operation with id =table-of-content=.
+
+Recommended model-facing tool name: =table_of_content=.
+
+Use a JSON-safe tool name while keeping the operation id and resource method name aligned with the user-facing term =table-of-content=.
+
+Parameters:
+
+- =uri= :: required resource URI.
+- =max-depth= :: optional integer passed to =wot --max-depth=.
+- =max-items= :: optional integer passed to =wot --max-items=.
+- =min-lines= :: optional integer passed to =wot --min-lines=.
+- =format= :: optional string, initially =markdown= or =json=.
+- =language= :: optional string used for stdin-backed resources when file extension or resource metadata is not enough.
+- =lenient= :: optional boolean passed to =wot --lenient= for supported parsers.
+
+Default behavior should match =wot= defaults unless this project has a strong reason to cap output more tightly.
+
+Return shape:
+
+#+begin_src elisp
+(:content "...outline text..."
+ :metadata (:uri "file://..."
+            :operation table-of-content
+            :format "markdown"
+            :wot-executable "/path/to/wot"
+            :language nil))
+#+end_src
+
+If =format= is =json=, return the JSON text as =:content= for the first slice. A later slice can add structured parsing if needed.
+
+* Registration policy
+
+Only register =table-of-content= methods when =(executable-find "wot")= returns non-nil.
+
+This keeps generated tool descriptions honest. When =wot= is missing, agents should not see the tool as available.
+
+If =wot= disappears after registration, the handler should fail clearly with a missing executable error.
+
+Do not register =table-of-content= for =session://= even when =wot= is installed.
+
+* File-backed resources
+
+For =file://= and =tmp://= resources, prefer calling =wot= with an explicit file path.
+
+=file://= should resolve the resource through the existing workspace root checks. It must not allow a file URI to escape the configured root.
+
+=file://= should preserve the existing coherence rule: live buffer text wins when a linked file buffer has unsaved edits. If this cannot be satisfied by passing a path directly, the method should use the same stdin path as in-memory resources for that case.
+
+=tmp://= can use its session-scoped backing file path directly after normal tmp path validation.
+
+* In-memory resources
+
+For =buffer://=, =e://=, =e-action://=, and =raw-result://=, read the resource content and pass it to =wot --stdin=.
+
+The stdin call must provide a language when possible.
+
+Language inference order:
+
+1. explicit =language= argument;
+2. file name or URI extension when present;
+3. resource metadata when it exposes a language or media type;
+4. a conservative fallback based on scheme and known content type;
+5. clear error asking for =language= when =wot --stdin= cannot infer the parser.
+
+Use =wot --stdin --language LANG= for stdin-backed calls.
+
+Avoid writing in-memory resources to durable workspace files just to call =wot=. A temporary process stdin or session-local temporary file is acceptable only when needed by Emacs process APIs.
+
+* Current scheme behavior
+
+** =file://=
+
+Owner: =lisp/layers/base/e-base-tools.el=.
+
+Implementation should reuse:
+
+- URI parsing and root resolution;
+- file/buffer coherence helpers;
+- existing process execution and Work plumbing where practical.
+
+Fast path:
+
+- if no live buffer override exists, call =wot FILE=.
+
+Coherence path:
+
+- if a linked live buffer should supply the text, call =wot --stdin --language LANG= with buffer content.
+
+** =buffer://=
+
+Owner: =lisp/layers/emacs/e-emacs-tools.el=.
+
+Use buffer text without properties.
+
+Infer language from:
+
+- buffer file name;
+- buffer name extension;
+- major mode mapping where useful;
+- explicit =language= argument.
+
+** =e://=
+
+Owner: =lisp/core/e-store.el=.
+
+Read the in-memory resource text through the store and pass it on stdin.
+
+Infer language from the resource URI extension first. Skills and references often have stable names such as =.md=.
+
+** =e-action://=
+
+Owner: =lisp/layers/e-action-resources.el=.
+
+Render the generated action description as text and pass it on stdin.
+
+Default language should be =markdown= unless an explicit argument overrides it.
+
+** =tmp://=
+
+Owner: =lisp/layers/harness/e-session-tmp-resources.el=.
+
+Use the backing file path when possible.
+
+If tmp coherence ever gains a live-buffer override, follow the same stdin fallback as =file://=.
+
+** =raw-result://=
+
+Owner: =lisp/core/e-raw-results.el=.
+
+This scheme currently exposes =read= only. Add =table-of-content= without adding =glob= or =search=.
+
+Read the raw result content and pass it on stdin.
+
+Infer language from the raw result URI or metadata when available. Otherwise require explicit =language=.
+
+** =session://=
+
+Do not register this operation for sessions in this feature.
+
+Rationale:
+
+- session projections can be large and mixed-format;
+- session search and projection selection are already semantic operations;
+- outlining a full transcript is likely to be noisy;
+- a future session-specific outline should decide projection scope explicitly.
+
+* Process and async behavior
+
+=wot= is an external process. The operation should use Work-backed async execution when exposed as a model-facing tool in interactive turns.
+
+Do not run =wot= synchronously on the live Emacs UI path for ordinary tool execution.
+
+Recommended shape:
+
+- add a shared helper that builds validated =wot= argv;
+- add a shared helper or Work spec for stdin-backed =wot= calls;
+- use direct process execution rather than shell interpolation when possible;
+- if a shell pipe is used for stdin, quote every argument and keep the command narrow.
+
+The user request mentions wiring a bash call for file resources and piping in-memory resources through bash. The implementation can satisfy the behavior with safer direct process APIs if those APIs support stdin cleanly. If not, use a small, quoted shell command.
+
+* Output limits
+
+=wot= already has =--max-depth=, =--max-items=, and =--min-lines=.
+
+The resource operation should still respect the existing tool output truncation layer. It should not add a second unrelated truncation policy unless tests show =wot= can produce too much output under defaults.
+
+* Tool descriptions
+
+Generated descriptions should say:
+
+- the operation returns a =wot= table-of-contents outline;
+- =wot= must be installed in =PATH=;
+- active supported schemes are all current schemes except =session://=;
+- file-backed schemes may call =wot= on the file path;
+- in-memory schemes pipe resource text to =wot --stdin=;
+- callers can pass =language= when stdin language inference is ambiguous.
+
+Example:
+
+#+begin_example
+Table of content for a URI-addressed resource using wot. For file:// and tmp:// resources this calls wot on the backing file when safe. For buffer://, e://, e-action://, and raw-result:// resources this pipes the resource text to wot --stdin. session:// is not supported.
+#+end_example
+
+* Compatibility
+
+This is additive.
+
+Existing =read=, =write=, =edit=, =glob=, and =search= behavior must not change.
+
+Existing resource method registration should remain valid when =wot= is missing.
+
+Do not require every resource method handler to know about =table-of-content=. Register a method only for schemes that support it.
+
+* Implementation slices
+
+** Slice 1: Plan
+
+Files:
+
+- =docs/feats/60-resource-table-of-content/plan.org=
+- =docs/feats/index.org=
+
+Work:
+
+1. Record the feature goal and resource-scheme policy.
+2. Keep status =Planned= until reviewed.
+
+** Slice 2: Operation contract and shared =wot= helpers
+
+Likely files:
+
+- =lisp/core/e-operations.el=
+- =lisp/core/e-resources.el=
+- new helper such as =lisp/core/e-resource-toc.el= or =lisp/core/e-wot.el=
+- =test/e-operations-test.el=
+- new helper tests such as =test/e-resource-toc-test.el=
+
+Work:
+
+1. Add =e-operation-table-of-content=.
+2. Add it to the standard operation list only when registration can attach active methods, or ensure no model-facing tool is generated without methods.
+3. Add a public wrapper such as =e-resources-table-of-content=.
+4. Implement option validation for =max-depth=, =max-items=, =min-lines=, =format=, =language=, and =lenient=.
+5. Implement =wot= executable discovery.
+6. Implement safe argv construction.
+7. Add unit tests for dispatch, option validation, and missing =wot= behavior.
+
+** Slice 3: File and tmp implementations
+
+Likely files:
+
+- =lisp/layers/base/e-base-tools.el=
+- =lisp/layers/harness/e-session-tmp-resources.el=
+- =test/e-base-tools-test.el=
+- =test/e-session-tmp-resources-test.el=
+
+Work:
+
+1. Add =file://= =table-of-content= registration when =wot= exists.
+2. Add =tmp://= =table-of-content= registration when =wot= exists.
+3. Use explicit file paths when safe.
+4. Use stdin fallback when live coherent content differs from disk.
+5. Add tests using a fake =wot= executable on =exec-path=.
+6. Test that =file://= still rejects paths outside the workspace root.
+
+** Slice 4: In-memory implementations
+
+Likely files:
+
+- =lisp/layers/emacs/e-emacs-tools.el=
+- =lisp/core/e-store.el=
+- =lisp/layers/e-action-resources.el=
+- =lisp/core/e-raw-results.el=
+- related tests for each resource owner.
+
+Work:
+
+1. Add stdin-backed =table-of-content= for =buffer://=.
+2. Add stdin-backed =table-of-content= for =e://=.
+3. Add stdin-backed =table-of-content= for =e-action://=.
+4. Add stdin-backed =table-of-content= for =raw-result://=.
+5. Add language inference helpers or scheme-specific inference functions.
+6. Add tests that stdin content reaches fake =wot=.
+7. Add tests that ambiguous stdin content asks for =language= clearly.
+
+** Slice 5: Harness descriptions and integration tests
+
+Likely files:
+
+- =lisp/core/e-harness.el= only if description generation needs operation-specific text.
+- =test/e-harness-test.el=
+- =test/e-harness-base-test.el=
+
+Work:
+
+1. Assert the generated tool is present when =wot= exists and a supported method is active.
+2. Assert the generated tool is absent when =wot= is missing.
+3. Assert =session://= does not appear under active URI schemes for =table-of-content=.
+4. Assert resource usage metadata records =:operation table-of-content=.
+
+* Verification
+
+Run focused operation and helper tests:
+
+#+begin_src sh
+rtk eldev test test/e-operations-test.el test/e-resources-test.el test/e-resource-toc-test.el
+#+end_src
+
+Run focused resource owner tests:
+
+#+begin_src sh
+rtk eldev test test/e-base-tools-test.el test/e-emacs-tools-test.el test/e-store-test.el test/e-action-resources-test.el test/e-session-tmp-resources-test.el test/e-raw-results-test.el
+#+end_src
+
+Run harness tests for generated tool exposure:
+
+#+begin_src sh
+rtk eldev test test/e-harness-test.el test/e-harness-base-test.el
+#+end_src
+
+Manual live check after implementation and reload:
+
+1. Confirm =(executable-find "wot")= is non-nil.
+2. Ask =table_of_content= for =file://lisp/core/e-resources.el=.
+3. Ask =table_of_content= for a live =buffer://= buffer with unsaved edits.
+4. Ask =table_of_content= for an =e://= skill resource.
+5. Confirm no =session://= method is listed in the generated =table_of_content= description.
+
+* Open questions
+
+- Should the model-facing tool name be =table_of_content= or =table-of-content=? The plan recommends =table_of_content= for consistency with JSON tool naming, while keeping the operation id =table-of-content=.
+- Should =format=json= return parsed data or raw JSON text? The plan recommends raw text in the first slice.
+- Which language names should be inferred from Emacs major modes? Start small and prefer explicit =language= when uncertain.
+- Should unsupported stdin language inference fail before starting =wot=, or should it run =wot= and surface the parser error? Prefer early validation when no extension or explicit language is available.
