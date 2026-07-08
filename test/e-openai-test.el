@@ -1114,6 +1114,31 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
                     :code)
                    "context_length_exceeded"))))
 
+(ert-deftest e-openai-test-response-error-message-bounds-large-message ()
+  "Responses failure message text is capped before becoming diagnostics."
+  (let* ((e-openai-diagnostic-string-max-bytes 32)
+         (text (make-string 200 ?x))
+         (message
+          (e-openai-codex--response-error-message
+           `(:type "response.failed"
+             :response (:error (:message ,text))))))
+    (should (< (string-bytes message) 180))
+    (should (string-prefix-p (make-string 32 ?x) message))
+    (should (string-match-p "OpenAI diagnostic string truncated" message))))
+
+(ert-deftest e-openai-test-response-error-message-bounds-fallback-event ()
+  "Unexpected Responses failure events are printed through a bounded preview."
+  (let* ((e-openai-diagnostic-print-length 4)
+         (e-openai-diagnostic-print-level 3)
+         (e-openai-diagnostic-string-max-bytes 48)
+         (e-openai-diagnostic-result-max-bytes 220)
+         (event `(:type "response.failed"
+                  :unexpected ,(make-list 30 (make-string 100 ?z))))
+         (message (e-openai-codex--response-error-message event)))
+    (should (< (string-bytes message) 360))
+    (should (string-match-p "OpenAI diagnostic" message))
+    (should-not (string-match-p (make-string 80 ?z) message))))
+
 
 (ert-deftest e-openai-test-chat-completion-url-appends-chat-path ()
   "Chat Completion providers append /chat/completions unless already present."
@@ -1819,6 +1844,52 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
         (should-not done-status)
         (should (eq (car error) 'e-openai-request-timeout))
         (should (= close-count 1))))))
+
+(ert-deftest e-openai-test-websocket-error-diagnostics-are-bounded ()
+  "Responses WebSocket library errors do not raw-print unbounded details."
+  (let* ((e-openai-diagnostic-print-length 4)
+         (e-openai-diagnostic-print-level 3)
+         (e-openai-diagnostic-string-max-bytes 48)
+         (e-openai-diagnostic-result-max-bytes 220)
+         (process-environment
+          (cons "OPENAI_GATEWAY_API_KEY=test-gateway-token" process-environment))
+         (e-openai-model-providers
+          '((openai-websocket
+             :name "OpenAI WebSocket"
+             :base-url "https://gateway.example.test/v1"
+             :env-key "OPENAI_GATEWAY_API_KEY"
+             :wire-api responses
+             :responses-transport websocket
+             :requires-openai-auth nil)))
+         on-error error done-status (close-count 0))
+    (cl-letf (((symbol-function 'websocket-open)
+               (lambda (_url &rest args)
+                 (setq on-error (plist-get args :on-error))
+                 'fake-websocket))
+              ((symbol-function 'websocket-send-text)
+               (lambda (websocket _text)
+                 (funcall on-error
+                          websocket
+                          :payload (make-list 40 (make-string 100 ?w)))))
+              ((symbol-function 'websocket-close)
+               (lambda (&rest _args)
+                 (cl-incf close-count)
+                 t)))
+      (e-backend-start (e-openai-backend-create :provider 'openai-websocket)
+                       :messages '((:role user :content "hello"))
+                       :options '(:model "gpt-test")
+                       :on-item #'ignore
+                       :on-done (lambda (status)
+                                  (setq done-status status))
+                       :on-error (lambda (err) (setq error err)))
+      (should (e-openai-test--wait-until (lambda () error) 0.2))
+      (should-not done-status)
+      (should (eq (car error) 'error))
+      (should (string-match-p "Responses WebSocket error" (cadr error)))
+      (should (string-match-p "OpenAI diagnostic" (cadr error)))
+      (should-not (string-match-p (make-string 80 ?w) (cadr error)))
+      (should (< (string-bytes (cadr error)) 420))
+      (should (= close-count 1)))))
 
 (ert-deftest e-openai-test-websocket-cancel-closes-request ()
   "Responses WebSocket cancellation runs its cleanup path."

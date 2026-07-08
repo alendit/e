@@ -8,6 +8,7 @@ State values for coding agents:
 
 | State  | Path | Title |
 |--------+------+-------|
+| Closed | openai-websocket-diagnostic-format-freeze/ | OpenAI WebSocket diagnostic formatting freezes Emacs |
 | Closed | tool-call-search-char-or-string/ | Tool Call Search Char Or String |
 | New    | mid-turn-auto-compaction-no-boundary/ | Mid-turn Auto Compaction No Boundary |
 | Closed | repaint-prompt-below-turn-output/ | Repaint Prompt Below Turn Output |

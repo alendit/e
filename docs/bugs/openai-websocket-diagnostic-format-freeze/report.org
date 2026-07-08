@@ -1,0 +1,16 @@
+#+title: OpenAI WebSocket diagnostic formatting freezes Emacs
+#+startup: overview
+
+* Report
+
+The running Emacs instance became unresponsive while active =e= sessions were
+using the OpenAI Responses WebSocket transport.
+
+The process stayed at about 100% CPU and did not answer a small
+=emacsclient --timeout=2 --eval ...= probe.  macOS samples showed the main
+thread inside the websocket process filter, spending its time in
+=styled_format= / =prin1-to-string= / =print_object=.
+
+The expected behavior is that provider diagnostic and error fallback strings are
+bounded before formatting, even when websocket library error arguments or
+unexpected provider failure events contain large nested data.

@@ -1,0 +1,73 @@
+#+title: OpenAI WebSocket diagnostic formatting freezes Emacs investigation
+#+startup: overview
+
+* Evidence
+
+The live Emacs process was sampled while it was unresponsive.  The samples were
+written to:
+
+- =/private/tmp/e-emacs-82088-sample-1.txt=
+- =/private/tmp/e-emacs-82088-sample-2.txt=
+
+Both samples showed the same hot path:
+
+#+begin_example
+read_process_output
+  websocket_outer_filter
+    styled_format
+      Fprin1_to_string
+        print_object
+#+end_example
+
+The same process could not answer a scalar =emacsclient --timeout=2 --eval=
+probe.  The second sample reported a physical footprint of 25.0G and a 34.7G
+peak.
+
+Recent persisted session evidence showed a broad =run_elisp= buffer scan that
+matched the internal = *code-conversion-work*= buffer and returned raw websocket
+frame text while another WebSocket provider request was active.
+
+* Source Path
+
+The =run_elisp= result printer already bounds returned tool results in
+=lisp/layers/emacs/e-emacs-tools.el=.
+
+The sampled freeze was not in that boundary.  It was in the OpenAI adapter's
+WebSocket diagnostic fallback formatting in =lisp/adapters/openai/e-openai.el=:
+
+- =handle-error= formatted websocket library callback arguments with raw =%S=.
+- =e-openai-codex--response-error-message= formatted unexpected failure events
+  with raw =%S= when no structured error message was present.
+
+Those fallback paths run on the live Emacs process filter path, so they need the
+same bounded-printing discipline as tool-result rendering.
+
+* Fix
+
+OpenAI provider diagnostics now use a bounded diagnostic printer:
+
+- strings are byte-capped before container printing;
+- lists, vectors, and hash tables are traversed only up to configured depth and
+  length limits;
+- cycles are represented with a compact marker;
+- the final diagnostic string is byte-capped.
+
+The WebSocket library error fallback and unexpected Responses failure-event
+fallback both use this bounded formatter.  Structured provider error messages
+are also byte-capped before becoming backend-error content.
+
+* Validation
+
+Added focused tests in =test/e-openai-test.el= for:
+
+- large structured Responses failure messages;
+- unexpected failure events that require fallback printing;
+- WebSocket library error callback arguments containing large nested data.
+
+Validation run:
+
+- =rtk eldev test -f test/e-openai-test.el= passed: 80 tests, 80 expected
+  results.
+- =rtk eldev compile= passed with existing unrelated unused-variable warnings
+  in =e-base-tools.el= and =e-session-tmp-resources.el=.
+- =git diff --check= passed.

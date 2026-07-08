@@ -100,6 +100,26 @@ When nil, Responses WebSocket requests do not time out locally."
                  (number :tag "Seconds"))
   :group 'e-openai)
 
+(defcustom e-openai-diagnostic-print-length 50
+  "Maximum list/vector/hash entries printed in OpenAI diagnostic fallbacks."
+  :type 'integer
+  :group 'e-openai)
+
+(defcustom e-openai-diagnostic-print-level 6
+  "Maximum nested depth printed in OpenAI diagnostic fallbacks."
+  :type 'integer
+  :group 'e-openai)
+
+(defcustom e-openai-diagnostic-string-max-bytes 4096
+  "Maximum bytes shown for one string in OpenAI diagnostic fallbacks."
+  :type 'integer
+  :group 'e-openai)
+
+(defcustom e-openai-diagnostic-result-max-bytes (* 8 1024)
+  "Maximum bytes shown for a full OpenAI diagnostic fallback."
+  :type 'integer
+  :group 'e-openai)
+
 (defun e-openai--custom-override-p (symbol)
   "Return non-nil when SYMBOL has a Custom override."
   (or (get symbol 'saved-value)
@@ -128,6 +148,129 @@ uncustomized old defaults to the current bounded value."
         (unless (eq current-key key)
           (setq result (append result (list current-key value))))))
     result))
+
+(defun e-openai--diagnostic-byte-prefix (text max-bytes)
+  "Return a prefix of TEXT no longer than MAX-BYTES."
+  (let ((bytes 0)
+        (index 0)
+        (length (length text)))
+    (while (and (< index length)
+                (<= (+ bytes
+                       (string-bytes (substring text index (1+ index))))
+                    max-bytes))
+      (setq bytes (+ bytes (string-bytes (substring text index (1+ index)))))
+      (setq index (1+ index)))
+    (substring text 0 index)))
+
+(defun e-openai--bounded-diagnostic-text (text)
+  "Return TEXT bounded for provider diagnostics."
+  (let* ((text (or text ""))
+         (max-bytes (max 0 e-openai-diagnostic-string-max-bytes))
+         (original-bytes (string-bytes text)))
+    (if (<= original-bytes max-bytes)
+        text
+      (let* ((preview (e-openai--diagnostic-byte-prefix text max-bytes))
+             (shown-bytes (string-bytes preview)))
+        (format
+         "%s\n[OpenAI diagnostic string truncated: showing first %d of %d bytes]"
+         preview shown-bytes original-bytes)))))
+
+(defun e-openai--diagnostic-preview-value (value depth seen)
+  "Return a bounded preview copy of VALUE for provider diagnostics.
+DEPTH limits recursive descent.  SEEN tracks container identity."
+  (cond
+   ((stringp value)
+    (e-openai--bounded-diagnostic-text value))
+   ((or (not value) (symbolp value) (numberp value) (characterp value))
+    value)
+   ((<= depth 0)
+    '...)
+   ((or (consp value) (vectorp value) (hash-table-p value))
+    (if (gethash value seen)
+        "#<cycle>"
+      (puthash value t seen)
+      (cond
+       ((consp value)
+        (let ((tail value)
+              (items nil)
+              (count 0)
+              (limit (max 0 e-openai-diagnostic-print-length)))
+          (while (and (consp tail) (< count limit))
+            (push (e-openai--diagnostic-preview-value
+                   (car tail) (1- depth) seen)
+                  items)
+            (setq tail (cdr tail))
+            (setq count (1+ count)))
+          (cond
+           ((consp tail)
+            (append (nreverse items) '(...)))
+           ((null tail)
+            (nreverse items))
+           (t
+            (append (nreverse items)
+                    (list :dotted-tail
+                          (e-openai--diagnostic-preview-value
+                           tail (1- depth) seen)))))))
+       ((vectorp value)
+        (let* ((limit (max 0 e-openai-diagnostic-print-length))
+               (count (min (length value) limit))
+               (items nil))
+          (dotimes (index count)
+            (push (e-openai--diagnostic-preview-value
+                   (aref value index) (1- depth) seen)
+                  items))
+          (apply #'vector
+                 (nreverse
+                  (if (< count (length value))
+                      (cons '... items)
+                    items)))))
+       ((hash-table-p value)
+        (let ((pairs nil)
+              (count 0)
+              (limit (max 0 e-openai-diagnostic-print-length))
+              (truncated nil))
+          (catch 'done
+            (maphash
+             (lambda (key entry)
+               (if (>= count limit)
+                   (progn
+                     (setq truncated t)
+                     (throw 'done nil))
+                 (push
+                  (cons
+                   (e-openai--diagnostic-preview-value key (1- depth) seen)
+                   (e-openai--diagnostic-preview-value entry (1- depth) seen))
+                  pairs)
+                 (setq count (1+ count))))
+             value))
+          (list :hash-table-preview (nreverse pairs)
+                :truncated truncated
+                :test (hash-table-test value)))))))
+   (t value)))
+
+(defun e-openai--truncate-diagnostic-string (text)
+  "Return TEXT capped to `e-openai-diagnostic-result-max-bytes'."
+  (let* ((max-bytes (max 0 e-openai-diagnostic-result-max-bytes))
+         (original-bytes (string-bytes text)))
+    (if (<= original-bytes max-bytes)
+        text
+      (let* ((preview (e-openai--diagnostic-byte-prefix text max-bytes))
+             (shown-bytes (string-bytes preview)))
+        (format
+         "%s\n\n[OpenAI diagnostic truncated: showing first %d of %d bytes]"
+         preview shown-bytes original-bytes)))))
+
+(defun e-openai--bounded-diagnostic-string (value)
+  "Return a bounded printed representation of VALUE for provider diagnostics."
+  (let* ((preview
+          (e-openai--diagnostic-preview-value
+           value
+           (max 0 e-openai-diagnostic-print-level)
+           (make-hash-table :test 'eq)))
+         (print-length (max 0 e-openai-diagnostic-print-length))
+         (print-level (max 0 e-openai-diagnostic-print-level)))
+    (e-openai--truncate-diagnostic-string
+     (prin1-to-string preview))))
 
 (defun e-openai--legacy-codex-response-store-profile-p (provider-id profile)
   "Return non-nil when PROFILE is the old built-in unstored Codex default."
@@ -1025,8 +1168,9 @@ list.  Return a cancellable `e-backend-request' handle."
              (settle-error '(error "Responses WebSocket closed before completion"))))
          (handle-error (&rest args)
            (settle-error (list 'error
-                               (format "Responses WebSocket error: %S"
-                                       args)))))
+                               (format "Responses WebSocket error: %s"
+                                       (e-openai--bounded-diagnostic-string
+                                        args))))))
       (setq websocket
             (websocket-open
              url
@@ -1118,9 +1262,12 @@ list.  Return a cancellable `e-backend-request' handle."
          (error (or (plist-get response :error)
                     (plist-get event :error))))
     (or (and (listp error)
-             (plist-get error :message))
-        (and (stringp error) error)
-        (format "%S" event))))
+             (when-let ((message (plist-get error :message)))
+               (and (stringp message)
+                    (e-openai--bounded-diagnostic-text message))))
+        (and (stringp error)
+             (e-openai--bounded-diagnostic-text error))
+        (e-openai--bounded-diagnostic-string event))))
 
 (defun e-openai-codex--number-or-nil (value)
   "Return VALUE when it is numeric, otherwise nil."
