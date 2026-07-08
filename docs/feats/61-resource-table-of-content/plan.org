@@ -246,7 +246,7 @@ Do not require every resource method handler to know about =table-of-content=. R
 
 Files:
 
-- =docs/feats/60-resource-table-of-content/plan.org=
+- =docs/feats/61-resource-table-of-content/plan.org=
 - =docs/feats/index.org=
 
 Work:

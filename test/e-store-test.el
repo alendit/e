@@ -109,12 +109,15 @@
             '(:matches [(:uri "e://dynamic/refs/log.md"
                           :line 1
                           :column 9
-                          :text "dynamic needle")]
+                          :text "dynamic needle"
+                          :score 1409
+                          :matched-terms ["needle"]
+                          :rank 1)]
               :truncated nil)))
     (should (equal captured '("e://dynamic/refs/log.md" nil)))
     (should (equal (mapcar #'e-operation-id
                            (e-resources-operations resources))
-                   '(read glob search)))
+                   '(read glob search table-of-content)))
     (should-error (e-resources-write resources "e://readonly/refs/a.md" "no")
                   :type 'e-resources-unsupported-operation)
     (should-error (e-resources-edit resources "e://readonly/refs/a.md"

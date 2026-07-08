@@ -479,8 +479,8 @@ When QUERY-METADATA is non-nil, include sortable timestamp metadata."
         (base64-decode-string bytes))))
 
 (defun e-session-tmp--search-match-from-rg-json
-    (line root scope glob-pattern)
-  "Return a search match plist for rg JSON LINE under ROOT, or nil."
+    (line root scope glob-pattern query options)
+  "Return a ranked search match plist for rg JSON LINE under ROOT, or nil."
   (let* ((object (json-parse-string line :object-type 'plist :array-type 'list))
          (type (plist-get object :type)))
     (when (equal type "match")
@@ -491,55 +491,41 @@ When QUERY-METADATA is non-nil, include sortable timestamp metadata."
                          (or (e-session-tmp--rg-json-text
                               (plist-get data :lines))
                              "")))
-             (submatches (plist-get data :submatches))
-             (first-match (car submatches))
-             (start (or (plist-get first-match :start) 0))
              (absolute (expand-file-name path root))
-             (relative (file-relative-name absolute root)))
+             (relative (file-relative-name absolute root))
+             (name (e-session-tmp--result-name absolute scope))
+             (uri (concat "tmp://" relative)))
         (when (or (null glob-pattern)
-                  (e-resource-pattern-glob-match-p
-                   glob-pattern
-                   (e-session-tmp--result-name absolute scope)
-                   t))
-          (list :uri (concat "tmp://" relative)
-                :line (plist-get data :line_number)
-                :column (1+ start)
-                :text line-text))))))
+                  (e-resource-pattern-glob-match-p glob-pattern name t))
+          (when-let ((score (e-resource-pattern-search-score
+                             line-text query options uri name)))
+            (list :uri uri
+                  :line (plist-get data :line_number)
+                  :column (plist-get score :column)
+                  :text line-text
+                  :score (plist-get score :score)
+                  :matched-terms (plist-get score :matched-terms))))))))
 
 (defun e-session-tmp--search-advanced-p (options)
-  "Return non-nil when OPTIONS contains tmp resource candidate controls."
+  "Return non-nil when OPTIONS needs tmp resource enumeration."
   (seq-some (lambda (key) (plist-member options key))
-            '(:resource-sort-by :resource-sort-order :resource-limit
+            '(:multiline :multi-term :resource-sort-by :resource-sort-order :resource-limit
               :created-after :created-before :updated-after :updated-before)))
 
 (defun e-session-tmp--search-one-advanced (resource query options root)
-  "Return search matches for RESOURCE using Emacs search."
+  "Return ranked search matches for RESOURCE using Emacs search."
   (let* ((uri (plist-get resource :uri))
          (relative (string-remove-prefix "tmp://" uri))
-         (path (expand-file-name relative root))
-         (case-fold-search (not (plist-get options :case-sensitive)))
-         (regexp (e-resource-pattern-search-emacs-regexp query options))
-         matches)
+         (path (expand-file-name relative root)))
     (when (file-regular-p path)
       (with-temp-buffer
         (insert-file-contents path)
-        (goto-char (point-min))
-        (catch 'done
-          (while (re-search-forward regexp nil t)
-            (let ((start (match-beginning 0))
-                  (end (match-end 0)))
-              (push (list :uri uri
-                          :line (line-number-at-pos start)
-                          :column (1+ (- start (line-beginning-position)))
-                          :text (buffer-substring-no-properties
-                                 (line-beginning-position)
-                                 (line-end-position)))
-                    matches)
-              (when (= start end)
-                (if (eobp)
-                    (throw 'done nil)
-                  (forward-char 1))))))))
-    (nreverse matches)))
+        (e-resource-pattern-search-matches-in-text
+         uri
+         (buffer-string)
+         query
+         options
+         (plist-get resource :name))))))
 
 (defun e-session-tmp--search-resource-advanced
     (harness session-id uri query options)
@@ -561,7 +547,7 @@ When QUERY-METADATA is non-nil, include sortable timestamp metadata."
                            (plist-get options :updated-after)
                            (plist-get options :updated-before)))
          (resources (append (plist-get resource-result :resources) nil))
-         (actual-limit (e-session-tmp--discovery-limit
+         (actual-limit (e-resource-pattern-search-limit
                         (plist-get options :limit)))
          matches)
     (dolist (resource resources)
@@ -569,19 +555,22 @@ When QUERY-METADATA is non-nil, include sortable timestamp metadata."
             (append matches
                     (e-session-tmp--search-one-advanced
                      resource query options root))))
-    (list :matches (vconcat (seq-take matches actual-limit))
-          :truncated (> (length matches) actual-limit))))
+    (let ((ranked (e-resource-pattern-rank-search-matches
+                   matches (1+ actual-limit))))
+      (list :matches (vconcat (seq-take ranked actual-limit))
+            :truncated (> (length ranked) actual-limit)))))
 
 (defun e-session-tmp--search-resource (harness session-id uri query options)
   "Search tmp resources under parsed URI for QUERY with OPTIONS."
-  (if (e-session-tmp--search-advanced-p options)
+  (if (or (> (length (e-resource-pattern-search-terms query)) 1)
+          (e-session-tmp--search-advanced-p options))
       (e-session-tmp--search-resource-advanced harness session-id uri query options)
     (let* ((root (e-session-tmp-directory harness session-id))
          (scope (e-session-tmp--scope-path harness session-id uri))
          (scope-relative (e-session-tmp--scope-relative-name uri))
          (glob-pattern (plist-get options :glob))
-         (query-regexp (e-resource-pattern-search-rg-regexp query options))
-         (actual-limit (e-session-tmp--discovery-limit
+         (query-regexp (e-resource-pattern-search-rg-prefilter-regexp query options))
+         (actual-limit (e-resource-pattern-search-limit
                         (plist-get options :limit)))
          (args (append
                 (list "--json"
@@ -606,26 +595,32 @@ When QUERY-METADATA is non-nil, include sortable timestamp metadata."
                            line
                            root
                            scope
-                           glob-pattern)))
+                           glob-pattern
+                           query
+                           options)))
           (push match matches)))
-      (setq matches (nreverse matches))
-	      (list :matches (vconcat (seq-take matches actual-limit))
-	            :truncated (> (length matches) actual-limit))))))
+      (let ((ranked (e-resource-pattern-rank-search-matches
+                     (nreverse matches) (1+ actual-limit))))
+        (list :matches (vconcat (seq-take ranked actual-limit))
+              :truncated (> (length ranked) actual-limit)))))))
 
 (defun e-session-tmp--search-content
-    (lines root scope glob-pattern actual-limit)
-  "Return tmp search content from rg JSON LINES."
+    (lines root scope glob-pattern actual-limit query options)
+  "Return ranked tmp search content from rg JSON LINES."
   (let (matches)
     (dolist (line lines)
       (when-let ((match (e-session-tmp--search-match-from-rg-json
                          line
                          root
                          scope
-                         glob-pattern)))
+                         glob-pattern
+                         query
+                         options)))
         (push match matches)))
-    (setq matches (nreverse matches))
-    (list :matches (vconcat (seq-take matches actual-limit))
-          :truncated (> (length matches) actual-limit))))
+    (let ((ranked (e-resource-pattern-rank-search-matches
+                   (nreverse matches) (1+ actual-limit))))
+      (list :matches (vconcat (seq-take ranked actual-limit))
+            :truncated (> (length ranked) actual-limit)))))
 
 (defun e-session-tmp--glob-work-command
     (harness session-id work-arguments _context)
@@ -732,7 +727,7 @@ When QUERY-METADATA is non-nil, include sortable timestamp metadata."
       (let* ((root (e-session-tmp-directory harness session-id))
              (scope-relative (e-session-tmp--scope-relative-name uri))
              (glob-pattern (plist-get options :glob))
-             (query-regexp (e-resource-pattern-search-rg-regexp query options))
+             (query-regexp (e-resource-pattern-search-rg-prefilter-regexp query options))
              (args (append
                     (list "--json"
                           "--line-number"
@@ -745,7 +740,8 @@ When QUERY-METADATA is non-nil, include sortable timestamp metadata."
                     (list "-e" query-regexp scope-relative))))
         (when glob-pattern
           (e-resource-pattern-compile-glob glob-pattern))
-        (if (e-session-tmp--search-advanced-p options)
+        (if (or (> (length (e-resource-pattern-search-terms query)) 1)
+                (e-session-tmp--search-advanced-p options))
             (list :immediate
                   (e-session-tmp--search-resource harness session-id uri query options)
                   :metadata (list :operation 'search :scheme "tmp"))
@@ -758,20 +754,24 @@ When QUERY-METADATA is non-nil, include sortable timestamp metadata."
 (defun e-session-tmp--search-work-result
     (harness session-id raw work-arguments _context)
   "Return tmp search resource content from process RAW result."
-  (let ((uri (plist-get work-arguments :uri))
-        (arguments (plist-get work-arguments :operation-arguments)))
-    (pcase-let ((`(,_query ,options) arguments))
-      (let* ((root (e-session-tmp-directory harness session-id))
-             (scope (e-session-tmp--scope-path harness session-id uri))
-             (glob-pattern (plist-get options :glob))
-             (actual-limit (e-session-tmp--discovery-limit
-                            (plist-get options :limit))))
-        (e-session-tmp--search-content
-         (plist-get raw :lines)
-         root
-         scope
-         glob-pattern
-         actual-limit)))))
+  (if (plist-member raw :matches)
+      raw
+    (let ((uri (plist-get work-arguments :uri))
+          (arguments (plist-get work-arguments :operation-arguments)))
+      (pcase-let ((`(,_query ,options) arguments))
+        (let* ((root (e-session-tmp-directory harness session-id))
+               (scope (e-session-tmp--scope-path harness session-id uri))
+               (glob-pattern (plist-get options :glob))
+               (actual-limit (e-resource-pattern-search-limit
+                              (plist-get options :limit))))
+          (e-session-tmp--search-content
+           (plist-get raw :lines)
+           root
+           scope
+           glob-pattern
+           actual-limit
+           _query
+           options))))))
 
 (defun e-session-tmp--search-work (harness session-id)
   "Return tmp search work spec for HARNESS SESSION-ID."

@@ -245,33 +245,18 @@ and optional range."
    (line-end-position)))
 
 (defun e-store--search-entry (entry query options)
-  "Return search matches for ENTRY and QUERY with OPTIONS."
-  (let ((content (e-store-read-entry entry nil))
-        (case-fold-search (not (plist-get options :case-sensitive)))
-        (regexp (e-resource-pattern-search-emacs-regexp query options))
-        matches)
-    (with-temp-buffer
-      (insert content)
-      (goto-char (point-min))
-      (catch 'done
-        (while (re-search-forward regexp nil t)
-          (let ((start (match-beginning 0))
-                (end (match-end 0)))
-            (push (list :uri (e-store-entry-uri entry)
-                        :line (line-number-at-pos start)
-                        :column (1+ (- start (line-beginning-position)))
-                        :text (e-store--current-line-text))
-                  matches)
-            (when (= start end)
-              (if (eobp)
-                  (throw 'done nil)
-                (forward-char 1)))))))
-    (nreverse matches)))
+  "Return ranked search matches for ENTRY and QUERY with OPTIONS."
+  (e-resource-pattern-search-matches-in-text
+   (e-store-entry-uri entry)
+   (e-store-read-entry entry nil)
+   query
+   options
+   (e-store-entry-path entry)))
 
 (defun e-store-search (store uri query options)
   "Search STORE resources under parsed URI for QUERY with OPTIONS."
   (let* ((root-address (e-store--root-address uri))
-         (actual-limit (e-store--discovery-limit
+         (actual-limit (e-resource-pattern-search-limit
                         (plist-get options :limit)))
          (entries (e-store--matching-entries
                    store
@@ -299,8 +284,10 @@ and optional range."
       (setq matches
             (append matches
                     (e-store--search-entry entry query options))))
-    (list :matches (vconcat (seq-take matches actual-limit))
-          :truncated (> (length matches) actual-limit))))
+    (let ((ranked (e-resource-pattern-rank-search-matches
+                   matches (1+ actual-limit))))
+      (list :matches (vconcat (seq-take ranked actual-limit))
+            :truncated (> (length ranked) actual-limit)))))
 
 (defun e-store-resource-method (store)
   "Return a read-only e:// resource method backed by STORE."

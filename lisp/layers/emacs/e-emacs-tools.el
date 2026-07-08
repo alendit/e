@@ -349,31 +349,18 @@ When VISIBLE-ONLY is non-nil, include only buffers visible in windows."
    (line-end-position)))
 
 (defun e-emacs-tools--buffer-search-one (buffer query options)
-  "Return search matches for BUFFER and QUERY with OPTIONS."
-  (let ((case-fold-search (not (plist-get options :case-sensitive)))
-        (regexp (e-resource-pattern-search-emacs-regexp query options))
-        matches)
-    (with-current-buffer buffer
-      (save-excursion
-        (goto-char (point-min))
-        (catch 'done
-          (while (re-search-forward regexp nil t)
-            (let ((start (match-beginning 0))
-                  (end (match-end 0)))
-              (push (list :uri (concat "buffer://" (buffer-name buffer))
-                          :line (line-number-at-pos start)
-                          :column (1+ (- start (line-beginning-position)))
-                          :text (e-emacs-tools--current-line-text))
-                    matches)
-              (when (= start end)
-                (if (eobp)
-                    (throw 'done nil)
-                  (forward-char 1))))))))
-    (nreverse matches)))
+  "Return ranked search matches for BUFFER and QUERY with OPTIONS."
+  (with-current-buffer buffer
+    (e-resource-pattern-search-matches-in-text
+     (concat "buffer://" (buffer-name buffer))
+     (buffer-substring-no-properties (point-min) (point-max))
+     query
+     options
+     (buffer-name buffer))))
 
 (defun e-emacs-tools--buffer-search-resource (uri query options)
   "Search live buffer resources under parsed URI for QUERY with OPTIONS."
-  (let* ((actual-limit (e-emacs-tools--discovery-limit
+  (let* ((actual-limit (e-resource-pattern-search-limit
                         (plist-get options :limit)))
          (buffers (e-emacs-tools--buffer-resource-candidates
                    uri
@@ -399,8 +386,10 @@ When VISIBLE-ONLY is non-nil, include only buffers visible in windows."
             (append matches
                     (e-emacs-tools--buffer-search-one
                      buffer query options))))
-    (list :matches (vconcat (seq-take matches actual-limit))
-          :truncated (> (length matches) actual-limit))))
+    (let ((ranked (e-resource-pattern-rank-search-matches
+                   matches (1+ actual-limit))))
+      (list :matches (vconcat (seq-take ranked actual-limit))
+            :truncated (> (length ranked) actual-limit)))))
 
 (defun e-emacs-tools--read-buffer-resource (uri range)
   "Read parsed buffer URI with structured RANGE."

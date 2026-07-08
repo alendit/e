@@ -154,7 +154,10 @@ When READ-ONLY is non-nil, buffer resources only support reads."
                   `(:matches [(:uri ,(concat "buffer://" (buffer-name alpha))
                                 :line 1
                                 :column 7
-                                :text "Alpha needle")]
+                                :text "Alpha needle"
+                                :score 1409
+                                :matched-terms ["needle"]
+                                :rank 1)]
                     :truncated nil)))
           (should
            (equal (plist-get
@@ -171,7 +174,10 @@ When READ-ONLY is non-nil, buffer resources only support reads."
                   `(:matches [(:uri ,(concat "buffer://" (buffer-name beta))
                                 :line 2
                                 :column 1
-                                :text "needle again")]
+                                :text "needle again"
+                                :score 1418
+                                :matched-terms ["needle" "again"]
+                                :rank 1)]
                     :truncated nil))))
       (kill-buffer alpha)
       (kill-buffer beta))))

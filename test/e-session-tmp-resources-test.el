@@ -108,11 +108,13 @@ blocked on the interactive coding-system picker."
   (let* ((harness (e-harness-create
                    :backend (e-backend-fake-create :items nil)
                    :intrinsic-capabilities
-                   (list (e-session-tmp-capability-create)))))
-    (e-session-tmp-write harness "session-1" "one.txt" "one")
-    (e-session-tmp-write harness "session-2" "two.txt" "two")
-    (let ((root-1 (e-session-tmp-directory harness "session-1"))
-          (root-2 (e-session-tmp-directory harness "session-2")))
+                   (list (e-session-tmp-capability-create))))
+         (session-1 (format "cleanup-%s-1" (gensym)))
+         (session-2 (format "cleanup-%s-2" (gensym))))
+    (e-session-tmp-write harness session-1 "one.txt" "one")
+    (e-session-tmp-write harness session-2 "two.txt" "two")
+    (let ((root-1 (e-session-tmp-directory harness session-1))
+          (root-2 (e-session-tmp-directory harness session-2)))
       (should (file-directory-p root-1))
       (should (file-directory-p root-2))
       (should (eq (e-session-tmp-cleanup-harness harness) harness))
@@ -290,7 +292,10 @@ blocked on the interactive coding-system picker."
             '(:matches [(:uri "tmp://tool-results/out.txt"
                           :line 1
                           :column 1
-                          :text "needle again")]
+                          :text "needle again"
+                          :score 1409
+                          :matched-terms ["needle"]
+                          :rank 1)]
               :truncated nil)))
     (should
 	     (equal (e-resources-search

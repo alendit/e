@@ -300,7 +300,10 @@ printf '%s\\n' delayed.txt
                   '(:matches [(:uri "file://src/one.el"
                                 :line 1
                                 :column 7
-                                :text "Alpha needle")]
+                                :text "Alpha needle"
+                                :score 1409
+                                :matched-terms ["needle"]
+                                :rank 1)]
                     :truncated nil)))
           (should
            (equal (plist-get
@@ -316,7 +319,10 @@ printf '%s\\n' delayed.txt
                   '(:matches [(:uri "file://src/two.txt"
                                 :line 2
                                 :column 1
-                                :text "needle again")]
+                                :text "needle again"
+                                :score 1418
+                                :matched-terms ["needle" "again"]
+                                :rank 1)]
                     :truncated nil)))
           (should
            (equal (plist-get

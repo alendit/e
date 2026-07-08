@@ -904,8 +904,8 @@ When QUERY-METADATA is non-nil, include sortable timestamp metadata."
         (base64-decode-string bytes))))
 
 (defun e-base-tools--search-match-from-rg-json
-    (line directory scope glob-pattern)
-  "Return a search match plist for rg JSON LINE, or nil."
+    (line directory scope glob-pattern query options)
+  "Return a ranked search match plist for rg JSON LINE, or nil."
   (let* ((object (json-parse-string line :object-type 'plist :array-type 'list))
          (type (plist-get object :type)))
     (when (equal type "match")
@@ -916,54 +916,40 @@ When QUERY-METADATA is non-nil, include sortable timestamp metadata."
                          (or (e-base-tools--rg-json-text
                               (plist-get data :lines))
                              "")))
-             (submatches (plist-get data :submatches))
-             (first-match (car submatches))
-             (start (or (plist-get first-match :start) 0))
-             (absolute (expand-file-name path (e-base-tools--primary-root directory))))
+             (absolute (expand-file-name path (e-base-tools--primary-root directory)))
+             (name (e-base-tools--file-result-name absolute scope))
+             (uri (e-base-tools--file-resource-uri absolute directory)))
         (when (or (null glob-pattern)
-                  (e-resource-pattern-glob-match-p
-                   glob-pattern
-                   (e-base-tools--file-result-name absolute scope)
-                   t))
-          (list :uri (e-base-tools--file-resource-uri absolute directory)
-                :line (plist-get data :line_number)
-                :column (1+ start)
-                :text line-text))))))
+                  (e-resource-pattern-glob-match-p glob-pattern name t))
+          (when-let ((score (e-resource-pattern-search-score
+                             line-text query options uri name)))
+            (list :uri uri
+                  :line (plist-get data :line_number)
+                  :column (plist-get score :column)
+                  :text line-text
+                  :score (plist-get score :score)
+                  :matched-terms (plist-get score :matched-terms))))))))
 
 
 (defun e-base-tools--file-search-one-advanced (resource query options directory)
-  "Return search matches for RESOURCE using Emacs search for advanced controls."
+  "Return ranked search matches for RESOURCE using Emacs search."
   (let* ((uri (plist-get resource :uri))
          (relative (string-remove-prefix "file://" uri))
-         (path (expand-file-name relative (e-base-tools--primary-root directory)))
-         (case-fold-search (not (plist-get options :case-sensitive)))
-         (regexp (e-resource-pattern-search-emacs-regexp query options))
-         matches)
+         (path (expand-file-name relative (e-base-tools--primary-root directory))))
     (when (file-regular-p path)
       (with-temp-buffer
         (insert-file-contents path)
-        (goto-char (point-min))
-        (catch 'done
-          (while (re-search-forward regexp nil t)
-            (let ((start (match-beginning 0))
-                  (end (match-end 0)))
-              (push (list :uri uri
-                          :line (line-number-at-pos start)
-                          :column (1+ (- start (line-beginning-position)))
-                          :text (buffer-substring-no-properties
-                                 (line-beginning-position)
-                                 (line-end-position)))
-                    matches)
-              (when (= start end)
-                (if (eobp)
-                    (throw 'done nil)
-                  (forward-char 1))))))))
-    (nreverse matches)))
+        (e-resource-pattern-search-matches-in-text
+         uri
+         (buffer-string)
+         query
+         options
+         (plist-get resource :name))))))
 
 (defun e-base-tools--file-search-advanced-p (options)
-  "Return non-nil when OPTIONS contains file resource candidate controls."
+  "Return non-nil when OPTIONS needs file resource enumeration."
   (seq-some (lambda (key) (plist-member options key))
-            '(:resource-sort-by :resource-sort-order :resource-limit
+            '(:multiline :multi-term :resource-sort-by :resource-sort-order :resource-limit
               :created-after :created-before :updated-after :updated-before)))
 
 (defun e-base-tools--file-search-resource-advanced
@@ -984,7 +970,7 @@ When QUERY-METADATA is non-nil, include sortable timestamp metadata."
                            (plist-get options :updated-after)
                            (plist-get options :updated-before)))
          (resources (append (plist-get resource-result :resources) nil))
-         (actual-limit (e-base-tools--file-discovery-limit
+         (actual-limit (e-resource-pattern-search-limit
                         (plist-get options :limit)))
          matches)
     (dolist (resource resources)
@@ -992,19 +978,22 @@ When QUERY-METADATA is non-nil, include sortable timestamp metadata."
             (append matches
                     (e-base-tools--file-search-one-advanced
                      resource query options directory))))
-    (list :matches (vconcat (seq-take matches actual-limit))
-          :truncated (> (length matches) actual-limit))))
+    (let ((ranked (e-resource-pattern-rank-search-matches
+                   matches (1+ actual-limit))))
+      (list :matches (vconcat (seq-take ranked actual-limit))
+            :truncated (> (length ranked) actual-limit)))))
 
 (defun e-base-tools--file-search-resource (uri query options directory)
   "Search file resources under parsed URI for QUERY with OPTIONS."
-  (if (e-base-tools--file-search-advanced-p options)
+  (if (or (> (length (e-resource-pattern-search-terms query)) 1)
+          (e-base-tools--file-search-advanced-p options))
       (e-base-tools--file-search-resource-advanced uri query options directory)
     (let* ((primary (e-base-tools--primary-root directory))
          (scope (e-base-tools--resource-path uri directory))
          (scope-relative (e-base-tools--file-scope-relative-path uri directory))
          (glob-pattern (plist-get options :glob))
-         (query-regexp (e-resource-pattern-search-rg-regexp query options))
-         (actual-limit (e-base-tools--file-discovery-limit
+         (query-regexp (e-resource-pattern-search-rg-prefilter-regexp query options))
+         (actual-limit (e-resource-pattern-search-limit
                         (plist-get options :limit)))
          (args (append
                 (list "--json"
@@ -1029,26 +1018,32 @@ When QUERY-METADATA is non-nil, include sortable timestamp metadata."
                            line
                            directory
                            scope
-                           glob-pattern)))
+                           glob-pattern
+                           query
+                           options)))
           (push match matches)))
-      (setq matches (nreverse matches))
-      (list :matches (vconcat (seq-take matches actual-limit))
-            :truncated (> (length matches) actual-limit))))))
+      (let ((ranked (e-resource-pattern-rank-search-matches
+                     (nreverse matches) (1+ actual-limit))))
+        (list :matches (vconcat (seq-take ranked actual-limit))
+              :truncated (> (length ranked) actual-limit)))))))
 
 (defun e-base-tools--file-search-content
-    (lines directory scope glob-pattern actual-limit)
-  "Return file search content from rg JSON LINES."
+    (lines directory scope glob-pattern actual-limit query options)
+  "Return ranked file search content from rg JSON LINES."
   (let (matches)
     (dolist (line lines)
       (when-let ((match (e-base-tools--search-match-from-rg-json
                          line
                          directory
                          scope
-                         glob-pattern)))
+                         glob-pattern
+                         query
+                         options)))
         (push match matches)))
-    (setq matches (nreverse matches))
-    (list :matches (vconcat (seq-take matches actual-limit))
-          :truncated (> (length matches) actual-limit))))
+    (let ((ranked (e-resource-pattern-rank-search-matches
+                   (nreverse matches) (1+ actual-limit))))
+      (list :matches (vconcat (seq-take ranked actual-limit))
+            :truncated (> (length ranked) actual-limit)))))
 
 (defun e-base-tools--file-search-work-command (directory work-arguments _context)
   "Return process command for file search WORK-ARGUMENTS rooted at DIRECTORY."
@@ -1059,7 +1054,7 @@ When QUERY-METADATA is non-nil, include sortable timestamp metadata."
              (scope-relative (e-base-tools--file-scope-relative-path
                               uri directory))
              (glob-pattern (plist-get options :glob))
-             (query-regexp (e-resource-pattern-search-rg-regexp query options))
+             (query-regexp (e-resource-pattern-search-rg-prefilter-regexp query options))
              (metadata (list :operation 'search :scheme "file"))
              (args (append
                     (list "--json"
@@ -1073,7 +1068,8 @@ When QUERY-METADATA is non-nil, include sortable timestamp metadata."
                     (list "-e" query-regexp scope-relative))))
         (when glob-pattern
           (e-resource-pattern-compile-glob glob-pattern))
-        (if (e-base-tools--file-search-advanced-p options)
+        (if (or (> (length (e-resource-pattern-search-terms query)) 1)
+                (e-base-tools--file-search-advanced-p options))
             (list :immediate
                   (e-base-tools--file-search-resource uri query options directory)
                   :metadata metadata)
@@ -1086,19 +1082,23 @@ When QUERY-METADATA is non-nil, include sortable timestamp metadata."
 (defun e-base-tools--file-search-work-result
     (directory raw work-arguments _context)
   "Return file search resource content from process RAW result."
-  (let ((uri (plist-get work-arguments :uri))
-        (arguments (plist-get work-arguments :operation-arguments)))
-    (pcase-let ((`(,_query ,options) arguments))
-      (let* ((scope (e-base-tools--resource-path uri directory))
-             (glob-pattern (plist-get options :glob))
-             (actual-limit (e-base-tools--file-discovery-limit
-                            (plist-get options :limit))))
-        (e-base-tools--file-search-content
-         (plist-get raw :lines)
-         directory
-         scope
-         glob-pattern
-         actual-limit)))))
+  (if (plist-member raw :matches)
+      raw
+    (let ((uri (plist-get work-arguments :uri))
+          (arguments (plist-get work-arguments :operation-arguments)))
+      (pcase-let ((`(,_query ,options) arguments))
+        (let* ((scope (e-base-tools--resource-path uri directory))
+               (glob-pattern (plist-get options :glob))
+               (actual-limit (e-resource-pattern-search-limit
+                              (plist-get options :limit))))
+          (e-base-tools--file-search-content
+           (plist-get raw :lines)
+           directory
+           scope
+           glob-pattern
+           actual-limit
+           _query
+           options))))))
 
 (defun e-base-tools--file-search-work (directory)
   "Return file search work spec rooted at DIRECTORY."

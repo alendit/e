@@ -179,7 +179,7 @@ nested tool arguments (notably Bedrock) are reparsed against the tool schema in
                               :case-sensitive (:type "boolean"
                                                :description "When non-nil, match query case-sensitively.")
                               :whole-word (:type "boolean"
-                                           :description "When non-nil, matches must start and end at word boundaries around the full query.")
+                                           :description "When non-nil, each query term must match on word boundaries.")
                               :multiline (:type "boolean"
                                           :description "When non-nil, whitespace gaps may cross line boundaries.")
                               :limit (:type "number"

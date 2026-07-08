@@ -611,23 +611,14 @@ session id as their second argument."
              (list (format "Invalid session glob root: %s"
                            (plist-get uri :uri)))))))
 
-(defun e-session-resources--search-record (uri content query options limit)
-  "Return matches in CONTENT for URI, capped to LIMIT."
-  (let* ((case-fold-search (not (plist-get options :case-sensitive)))
-         (regexp (e-resource-pattern-search-emacs-regexp query options))
-         (lines (split-string content "\n"))
-         (line-number 1)
-         matches)
-    (dolist (line lines)
-      (when (and (< (length matches) limit)
-                 (string-match regexp line))
-        (push (list :uri uri
-                    :line line-number
-                    :column (1+ (match-beginning 0))
-                    :text line)
-              matches))
-      (setq line-number (1+ line-number)))
-    (nreverse matches)))
+(defun e-session-resources--search-record (uri content query options name)
+  "Return ranked matches in CONTENT for URI."
+  (e-resource-pattern-search-matches-in-text
+   uri
+   content
+   query
+   options
+   name))
 
 (defun e-session-resources--search-glob-match-p
     (glob-pattern engine-id session-id title projection)
@@ -745,8 +736,9 @@ projections."
 (defun e-session-resources--search (harness uri query options)
   "Search parsed session URI for HARNESS."
   (e-session-resources--require-harness harness)
-  (let* ((actual-limit (e-session-resources--limit (plist-get options :limit)))
-         (collection-limit (1+ actual-limit))
+  (let* ((actual-limit (e-resource-pattern-search-limit
+                        (plist-get options :limit)))
+         (collection-limit most-positive-fixnum)
          (glob-pattern (plist-get options :glob))
          (targets (e-session-resources--query-search-targets
                    (e-session-resources--search-targets
@@ -773,9 +765,11 @@ projections."
                           engine session-id projection)
                          query
                          options
-                         (- collection-limit (length matches))))))))
-    (list :matches (vconcat (seq-take matches actual-limit))
-          :truncated (> (length matches) actual-limit))))
+                         (format "%s/%s" session-id projection)))))))
+    (let ((ranked (e-resource-pattern-rank-search-matches
+                   matches (1+ actual-limit))))
+      (list :matches (vconcat (seq-take ranked actual-limit))
+            :truncated (> (length ranked) actual-limit)))))
 
 (cl-defun e-session-resources-register-resource-methods
     (registry &key harness &allow-other-keys)

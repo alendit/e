@@ -101,20 +101,22 @@ used by all schemes.
 
 ** Scope
 
-=search= searches resource text under a URI root using a small query language,
-not raw regex.  Implementations translate the query into =rg= regex, Emacs
-regex, or native scanning as needed.
+=search= searches resource text under a URI root using a ranked lexical query,
+not raw regex.  Implementations translate the query into =rg= prefilters,
+Emacs regex, or native scanning as needed, then rank matches consistently.
 
 The query language is intended for model-generated "find this text-like thing"
 usage, not arbitrary regular expressions.
 
 ** Syntax
 
-The first slice should support:
+The first slice supports:
 
-- literal word/text parts;
-- =*= as a wildcard inside a word/text part;
-- generalized whitespace matching;
+- literal word/text terms;
+- =*= as a wildcard inside a term;
+- all query terms must match;
+- ranked results based on phrase match, proximity, occurrence count, and URI/name
+  hits;
 - explicit modes for case sensitivity, whole-word matching, and multiline
   matching.
 

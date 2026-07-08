@@ -332,27 +332,20 @@
           :truncated (> (length queried) actual-limit))))
 
 (defun e-action-resources--search-record (record query options)
-  "Return matches for QUERY in RECORD using OPTIONS."
-  (let* ((case-fold-search (not (plist-get options :case-sensitive)))
-         (regexp (e-resource-pattern-search-emacs-regexp query options))
-         (lines (split-string (plist-get record :content) "\n"))
-         (line-number 1)
-         matches)
-    (dolist (line lines)
-      (when (string-match regexp line)
-        (push (list :uri (plist-get record :uri)
-                    :line line-number
-                    :column (1+ (match-beginning 0))
-                    :text line)
-              matches))
-      (setq line-number (1+ line-number)))
-    (nreverse matches)))
+  "Return ranked matches for QUERY in RECORD using OPTIONS."
+  (e-resource-pattern-search-matches-in-text
+   (plist-get record :uri)
+   (plist-get record :content)
+   query
+   options
+   (plist-get record :name)))
 
 (defun e-action-resources--search (harness session-id turn-id uri query options)
   "Search action description resources for QUERY."
   (e-action-resources--require-context harness)
   (let* ((scope (e-action-resources--scope-prefix (plist-get uri :address)))
-         (actual-limit (or (plist-get options :limit) 1000))
+         (actual-limit (e-resource-pattern-search-limit
+                        (plist-get options :limit)))
          (glob-pattern (plist-get options :glob))
          (records (cl-remove-if-not
                    (lambda (record)
@@ -377,8 +370,10 @@
       (setq matches
             (append matches
                     (e-action-resources--search-record record query options))))
-    (list :matches (vconcat (seq-take matches actual-limit))
-          :truncated (> (length matches) actual-limit))))
+    (let ((ranked (e-resource-pattern-rank-search-matches
+                   matches (1+ actual-limit))))
+      (list :matches (vconcat (seq-take ranked actual-limit))
+            :truncated (> (length ranked) actual-limit)))))
 
 
 (defun e-action-resources--table-of-content (harness session-id turn-id uri options)
