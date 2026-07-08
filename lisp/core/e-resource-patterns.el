@@ -103,6 +103,16 @@
    (e-resource-pattern--glob-segments pattern)
    "/"))
 
+(defun e-resource-pattern-glob-fd-candidate-pattern (pattern)
+  "Return an fd glob that finds candidates for facade glob PATTERN.
+fd matches pathless globs against basenames.  For facade patterns that contain
+path separators, search by the final path segment and let the portable facade
+matcher filter exact results afterward."
+  (let* ((normalized (directory-file-name pattern))
+         (basename (file-name-nondirectory normalized)))
+    (e-resource-pattern-glob-fd-pattern
+     (if (string-empty-p basename) pattern basename))))
+
 (defun e-resource-pattern-glob-max-depth (pattern)
   "Return the maximum path depth for facade glob PATTERN, or nil if unbounded."
   (let ((segments (e-resource-pattern--glob-segments pattern)))

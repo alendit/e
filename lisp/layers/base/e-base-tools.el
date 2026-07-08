@@ -712,7 +712,7 @@ When QUERY-METADATA is non-nil, include sortable timestamp metadata."
          (scope (e-base-tools--resource-path uri directory))
          (scope-relative (e-base-tools--file-scope-relative-path uri directory))
          (actual-pattern (or pattern "*"))
-         (fd-pattern (e-resource-pattern-glob-fd-pattern actual-pattern))
+         (fd-pattern (e-resource-pattern-glob-fd-candidate-pattern actual-pattern))
          (fd-max-depth (e-resource-pattern-glob-max-depth actual-pattern))
          (actual-limit (e-base-tools--file-discovery-limit limit))
          (advanced (or sort-by sort-order created-after created-before
@@ -813,7 +813,7 @@ When QUERY-METADATA is non-nil, include sortable timestamp metadata."
              (scope-relative (e-base-tools--file-scope-relative-path
                               uri directory))
              (actual-pattern (or pattern "*"))
-             (fd-pattern (e-resource-pattern-glob-fd-pattern actual-pattern))
+             (fd-pattern (e-resource-pattern-glob-fd-candidate-pattern actual-pattern))
              (fd-max-depth (e-resource-pattern-glob-max-depth actual-pattern))
              (actual-limit (e-base-tools--file-discovery-limit limit))
              (advanced (seq-some #'identity query-arguments))
