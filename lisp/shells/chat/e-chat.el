@@ -19,6 +19,7 @@
 (require 'subr-x)
 (require 'e-chat-session)
 (require 'e-chat-output-mode)
+(require 'e-chat-service)
 (require 'e-context-inspection)
 (require 'e-context-status)
 (require 'e-capabilities)
@@ -7353,18 +7354,16 @@ reload.  User-facing commands should call `e-chat-new' or `e-chat-resume'."
 
 (cl-defun e-chat-create-session (&key harness metadata id)
   "Create and return a chat session in HARNESS with METADATA and optional ID."
-  (e-harness-create-session
-   (or harness (e-chat--default-harness))
+  (e-chat-service-create-session
+   :harness (or harness (e-chat--default-harness))
    :id id
    :metadata metadata))
 
 (cl-defun e-chat-submit-session
     (harness session-id prompt &key references delay metadata)
   "Submit PROMPT with REFERENCES and METADATA to HARNESS SESSION-ID."
-  (e-chat-session-submit
-   harness
-   session-id
-   prompt
+  (e-chat-service-submit-session
+   harness session-id prompt
    :references references
    :delay delay
    :metadata metadata))

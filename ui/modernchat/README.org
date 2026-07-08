@@ -1,0 +1,13 @@
+#+title: e Modern Chat UI
+
+This is the Rust/WASM egui frontend for =e-modernchat-new=.
+
+Build from the repository root after initializing the =emacs-egui= submodule:
+
+#+begin_src sh
+git submodule update --init emacs-egui
+wasm-pack build --target web --release --out-dir pkg ui/modernchat
+#+end_src
+
+The generated =pkg/= directory is ignored by git. It must exist locally before
+=M-x e-modernchat-new= can launch the xwidget UI.

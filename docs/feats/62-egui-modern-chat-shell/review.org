@@ -1,0 +1,184 @@
+#+title: Review: egui Modern Chat Shell
+#+startup: overview
+
+* Status
+
+In-review.
+
+* Review summary
+
+The first implementation slice is ready for review.
+
+It adds =e-modernchat-new= as an optional egui-backed chat shell, vendors
+=emacs-egui= as a submodule, adds a Rust/WASM UI, extracts a small
+shell-neutral chat service, and keeps the existing =e-chat= shell as the stable
+fallback.
+
+No review findings are open from this implementation pass.
+
+* Scope reviewed
+
+Files and artifacts:
+
+- =.gitmodules=
+- =emacs-egui/= submodule
+- =e.el=
+- =Eldev=
+- =lisp/dev/e-dev.el=
+- =lisp/shells/chat/e-chat-service.el=
+- =lisp/shells/chat/e-chat.el=
+- =lisp/shells/modernchat/e-modernchat.el=
+- =lisp/shells/modernchat/e-modernchat-view-model.el=
+- =test/e-modernchat-test.el=
+- =ui/modernchat/=
+- =~/.doom.d/packages.el= package recipe update
+
+Plan slices checked:
+
+- optional runtime loading;
+- view-model bridge;
+- debounced live update subscription;
+- Rust egui app and reusable Org renderer;
+- shell-neutral chat service extraction;
+- build and validation commands.
+
+* What looks good
+
+- =e-modernchat= does not require =emacs-egui= at module load time.
+- The command reports a clear error when the runtime or WASM package is absent.
+- The Rust UI renders the planned top bar, side panel, timeline, inspector, and composer.
+- The first Org renderer handles common block shapes and is isolated in =org_render.rs= for reuse.
+- =e-chat= now delegates its public session creation and submit seams through =e-chat-service=.
+- The current text chat test suite still passes with that delegation.
+
+* Verification performed during this review pass
+
+#+begin_src sh
+eldev test -f test/e-modernchat-test.el
+#+end_src
+
+#+begin_example
+Ran 3 tests, 3 results as expected, 0 unexpected
+#+end_example
+
+#+begin_src sh
+eldev test -f test/e-chat-test.el -f test/e-modernchat-test.el -f test/e-chat-output-mode-test.el
+#+end_src
+
+#+begin_example
+Ran 310 tests, 309 results as expected, 0 unexpected, 1 skipped
+SKIPPED e-chat-test-assistant-markdown-renders-with-text-properties
+#+end_example
+
+#+begin_src sh
+eldev compile --warnings-as-errors \
+  lisp/shells/chat/e-chat.el \
+  lisp/shells/chat/e-chat-service.el \
+  lisp/shells/modernchat/e-modernchat-view-model.el \
+  lisp/shells/modernchat/e-modernchat.el
+#+end_src
+
+#+begin_example
+ELC lisp/shells/modernchat/e-modernchat.el
+ELC lisp/shells/chat/e-chat-service.el
+ELC lisp/shells/modernchat/e-modernchat-view-model.el
+ELC lisp/shells/chat/e-chat.el
+#+end_example
+
+#+begin_src sh
+cargo test --manifest-path ui/modernchat/Cargo.toml
+#+end_src
+
+#+begin_example
+running 2 tests
+test org_render::tests::parses_common_blocks ... ok
+test tests::deserializes_minimal_state ... ok
+#+end_example
+
+#+begin_src sh
+wasm-pack build --target web --release --out-dir pkg ui/modernchat
+#+end_src
+
+#+begin_example
+[INFO]: Your wasm pkg is ready to publish at ui/modernchat/pkg.
+#+end_example
+
+#+begin_src sh
+eldev eval '(progn (require (quote e-modernchat)) ... )'
+#+end_src
+
+#+begin_example
+(:modernchat t
+ :egui "/Users/dimitrivorona/projects/elisp/e/emacs-egui/lisp/emacs-egui.el"
+ :ui t)
+#+end_example
+
+* UX and performance playthrough
+
+Batch validation covered the launch preconditions and state conversion.
+A live xwidget playthrough was not performed in the running Emacs because the
+running instance was not reloaded with the new shell code during this pass.
+
+The main UX path is ready for manual review after reload:
+
+1. run =git submodule update --init emacs-egui= if needed;
+2. run =wasm-pack build --target web --release --out-dir pkg ui/modernchat=;
+3. reload =e= or restart Emacs;
+4. run =M-x e-modernchat-new=;
+5. send a prompt, inspect streaming state, expand/select activities, and open a resource.
+
+* Plan coverage
+
+- Feature-gated shell module: implemented.
+- View-model bridge: implemented with bounded message and activity snapshots.
+- Live updates: implemented with harness subscription and debounce.
+- Rust egui app: implemented as a first slice with top bar, side panel, timeline, inspector, composer, and common Org rendering.
+- UI actions: implemented for send, cancel, open resource, and output mode.
+- Shell-neutral chat service: implemented for create, submit, steer, queue, abort, and output-mode operations.
+- Build and validation commands: documented and exercised.
+
+* Architecture review
+
+Dependency direction is acceptable.
+Core harness code does not depend on =emacs-egui= or Rust.
+The modern shell depends on harness/session services and the optional vendored UI runtime.
+The Rust app sees only DTOs and emits semantic UI actions.
+
+The only durable state reused by the feature is existing chat session state.
+New state is buffer-local UI/session metadata and Rust-side selection/composer state.
+
+* Doom and local dependency notes
+
+=~/.doom.d/packages.el= was updated so the local =e= package recipe includes:
+
+- =lisp/shells/modernchat/*.el=
+- =ui/modernchat/index.html=
+- =ui/modernchat/pkg/*=
+- =emacs-egui/lisp/*.el=
+
+Local dependencies checked:
+
+#+begin_example
+wasm-pack 0.15.0
+rustup installed
+wasm32-unknown-unknown target installed
+cargo 1.95.0
+#+end_example
+
+Attempts to run =~/.emacs.d/bin/doom sync= and =~/.emacs.d/bin/doom --version=
+timed out in this shell before producing output.  The configuration file was
+updated, but Doom sync itself was not observed to complete.
+
+* Live reload
+
+Repository-side validation passed.
+The running Emacs was left unchanged.
+A reload or restart is needed before =M-x e-modernchat-new= is available in the
+live Emacs session.
+
+* Unresolved
+
+None in the implementation itself.
+
+Operational note: rerun Doom sync from the user's normal terminal if the Doom
+CLI timeout reproduces here.

@@ -1,0 +1,75 @@
+;;; e-modernchat-test.el --- Tests for egui modern chat shell -*- lexical-binding: t; -*-
+
+;; Copyright (C) 2026 Dimitri Vorona
+
+;; Author: Dimitri Vorona
+;; SPDX-License-Identifier: MIT
+
+;;; Commentary:
+
+;; Tests for the shell-neutral chat service and modernchat view-model builder.
+
+;;; Code:
+
+(require 'ert)
+(require 'e)
+(require 'e-backend)
+(require 'e-chat-service)
+(require 'e-modernchat)
+(require 'e-modernchat-view-model)
+(require 'e-session)
+
+(ert-deftest e-modernchat-view-model-test-snapshot-bounds-messages ()
+  "Snapshots include recent bounded messages and session metadata."
+  (let ((harness (e-harness-create
+                  :backend (e-backend-create :name "noop")
+                  :enabled-layer-ids nil)))
+    (e-harness-create-session
+     harness
+     :id "session-1"
+     :metadata '(:project-root "/tmp/project/"
+                 :context-attachments ((:uri "file:///tmp/a.org"
+                                         :label "a.org"))))
+    (dotimes (index 3)
+      (e-session-append-message
+       (e-harness-sessions harness)
+       "session-1"
+       (list :id (format "m-%d" index)
+             :role 'user
+             :content (format "message %d" index))))
+    (let* ((snapshot (e-modernchat-view-model-snapshot
+                      harness "session-1" :message-limit 2 :activity-limit 0))
+           (session (cdr (assq 'session snapshot)))
+           (messages (cdr (assq 'messages snapshot)))
+           (attachments (cdr (assq 'attachments snapshot))))
+      (should (equal (cdr (assq 'id session)) "session-1"))
+      (should (= (length messages) 2))
+      (should (equal (cdr (assq 'id (aref messages 0))) "m-1"))
+      (should (= (length attachments) 1))
+      (should (equal (cdr (assq 'uri (aref attachments 0)))
+                     "file:///tmp/a.org")))))
+
+(ert-deftest e-modernchat-test-runtime-missing-is-command-time-error ()
+  "The module loads without emacs-egui; command use reports missing runtime."
+  (cl-letf (((symbol-function 'e-modernchat--runtime-available-p)
+             (lambda () nil)))
+    (should-error (e-modernchat--ensure-runtime) :type 'user-error)))
+
+(ert-deftest e-chat-service-test-submit-delegates-to-chat-session ()
+  "Shell-neutral submit service delegates to chat-session submit."
+  (let ((called nil))
+    (cl-letf (((symbol-function 'e-chat-session-submit)
+               (lambda (harness session-id prompt &rest args)
+                 (setq called (list harness session-id prompt args))
+                 :submitted)))
+      (should (eq (e-chat-service-submit-session
+                   'harness "s1" "hello" :references '(r1) :metadata '(:m t))
+                  :submitted))
+      (should (equal (list (nth 0 called) (nth 1 called) (nth 2 called))
+                     '(harness "s1" "hello")))
+      (should (equal (plist-get (nth 3 called) :references) '(r1)))
+      (should (equal (plist-get (nth 3 called) :metadata) '(:m t))))))
+
+(provide 'e-modernchat-test)
+
+;;; e-modernchat-test.el ends here

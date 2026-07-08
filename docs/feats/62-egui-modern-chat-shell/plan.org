@@ -3,7 +3,7 @@
 
 * Status
 
-Ready.
+In-review.
 
 * Goal
 
@@ -42,21 +42,20 @@ The egui app receives a narrow JSON view model.
 It sends semantic UI events back to Elisp.
 Elisp translates those events into existing harness and shell-service operations.
 
-** Build on emacs-egui as an optional Doom-installed dependency
+** Build on vendored emacs-egui as an optional runtime
 
-The first implementation should treat =emacs-egui= as optional and externally installed.
-The user's Doom config may add =emacs-egui= to =load-path= or install it through the normal Doom package path.
-The =e= repository should not vendor =emacs-egui= for this feature.
+The first implementation should vendor =emacs-egui= as a git submodule, matching =emacs-workspace-hud=.
+The =e= package may add the submodule's =lisp/= directory to =load-path= when present.
 
-If =emacs-egui= is not available, =e-modernchat-new= should fail with a clear message and leave the existing chat shell untouched.
-The shell module should be loadable without =emacs-egui=; only invoking the command should require the runtime.
+If the submodule is missing, or the WASM package has not been built, =e-modernchat-new= should fail with a clear message and leave the existing chat shell untouched.
+The shell module should be loadable without initializing =emacs-egui=; only invoking the command should require the runtime and UI assets.
 
 Recommended repository shape:
 
 #+begin_example
 lisp/shells/modernchat/e-modernchat.el
 lisp/shells/modernchat/e-modernchat-view-model.el
-lisp/shells/modernchat/e-modernchat-org-render.el
+emacs-egui/                    # git submodule
 ui/modernchat/Cargo.toml
 ui/modernchat/src/lib.rs
 ui/modernchat/index.html
@@ -395,10 +394,9 @@ Mitigation: keep the dependency optional, place integration behind one module, a
 
 * Resolved Decisions
 
-- =emacs-egui= should be installed by the user's Doom config or otherwise placed on =load-path=.
-  The =e= repository should not vendor it for this feature.
-- The shell should load only when =emacs-egui= is present.
-  The rest of =e= must load without it.
+- =emacs-egui= should be vendored as a git submodule, matching =emacs-workspace-hud=.
+- The shell should invoke =emacs-egui= only when the user runs =e-modernchat-new=.
+  The rest of =e= must load even when the submodule has not been initialized.
 - The first implementation should require =wasm-pack= locally and should document the build path.
   It should not rely on committed built WASM artifacts.
 - The first egui app should render Org directly for common assistant output.

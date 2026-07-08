@@ -43,7 +43,9 @@
       "lisp/defaults"
       "lisp/shells"
       "lisp/shells/chat"
+      "lisp/shells/modernchat"
       "lisp/adapters/openai"
+      "emacs-egui/lisp"
       "lisp/adapters/anthropic"
       "lisp/dev")
     "Source directories containing e libraries.")
@@ -78,7 +80,9 @@
                            "lisp/defaults"
                            "lisp/shells"
                            "lisp/shells/chat"
+                           "lisp/shells/modernchat"
                            "lisp/adapters/openai"
+                           "emacs-egui/lisp"
                            "lisp/dev")))
     (add-to-list 'load-path (expand-file-name subdirectory directory))))
 
@@ -103,6 +107,7 @@
   (require 'e-keymap-hints)
   (require 'e-picker)
   (require 'e-chat)
+  (require 'e-modernchat)
   (require 'e-chat-starter)
   (require 'e-canvas)
   (require 'e-org-canvas)
