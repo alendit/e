@@ -1,0 +1,462 @@
+#+title: egui Modern Chat Shell
+#+startup: overview
+
+* Status
+
+Ready.
+
+* Goal
+
+Create a new optional presentation shell, =e-modernchat-new=, that uses =emacs-egui= to render a modern GPU-accelerated chat and flow UI inside Emacs.
+
+The shell should provide a richer alternative to the current text-buffer chat without replacing it.
+It should reuse the existing =e= harness, session store, work lifecycle, tool/resource surfaces, and capability model.
+The new shell owns only presentation, UI state, and user interaction.
+
+* Problem
+
+The current chat shell is powerful because it is native Emacs text.
+It also has clear limits for visual flow inspection:
+
+- tool calls and results are hard to scan in long transcripts;
+- streaming state, queued work, subagents, and async tasks compete for the same textual surface;
+- context attachments and resource references are not visually grouped;
+- inspection of turn internals requires jumping between transcript text, activity events, resources, and debug commands;
+- richer interaction patterns such as side panels, collapsible cards, filters, and virtualized timelines are awkward in a text buffer.
+
+=emacs-egui= offers a plausible presentation substrate: Rust =egui= compiled to WASM, hosted in Emacs through =xwidget-webkit=, with Emacs-to-WASM state pushes and WASM-to-Emacs events.
+
+* Design Direction
+
+** Keep this as a presentation shell
+
+=e-modernchat-new= must not move policy out of the harness.
+
+The existing architecture boundary stays intact:
+
+- the harness owns sessions, turns, context construction, tools, resources, actions, provider calls, work state, and persistence;
+- capabilities own behavior contracts;
+- the new modern chat shell owns buffers, xwidgets, egui state projection, commands, keymaps, and rendering.
+
+The egui app receives a narrow JSON view model.
+It sends semantic UI events back to Elisp.
+Elisp translates those events into existing harness and shell-service operations.
+
+** Build on emacs-egui as an optional Doom-installed dependency
+
+The first implementation should treat =emacs-egui= as optional and externally installed.
+The user's Doom config may add =emacs-egui= to =load-path= or install it through the normal Doom package path.
+The =e= repository should not vendor =emacs-egui= for this feature.
+
+If =emacs-egui= is not available, =e-modernchat-new= should fail with a clear message and leave the existing chat shell untouched.
+The shell module should be loadable without =emacs-egui=; only invoking the command should require the runtime.
+
+Recommended repository shape:
+
+#+begin_example
+lisp/shells/modernchat/e-modernchat.el
+lisp/shells/modernchat/e-modernchat-view-model.el
+lisp/shells/modernchat/e-modernchat-org-render.el
+ui/modernchat/Cargo.toml
+ui/modernchat/src/lib.rs
+ui/modernchat/index.html
+#+end_example
+
+Do not force the whole =e= runtime to depend on Rust tooling at load time.
+The first implementation should require developers or users to run =wasm-pack= locally.
+The feature should document the build command and should not assume committed =pkg/= artifacts.
+
+** Use a view-model bridge
+
+Add an Elisp bridge that projects the current session into JSON.
+
+Initial view model fields:
+
+#+begin_src js
+{
+  "session": {
+    "id": "...",
+    "name": "...",
+    "projectRoot": "...",
+    "activeTurnId": "...",
+    "model": "...",
+    "layers": ["os-base", "emacs-base", "web"]
+  },
+  "messages": [
+    {
+      "id": "...",
+      "turnId": "...",
+      "role": "user|assistant|system|tool",
+      "status": "final|streaming|error",
+      "createdAt": "...",
+      "content": "...",
+      "contentMode": "org|markdown|plain"
+    }
+  ],
+  "activities": [
+    {
+      "id": "...",
+      "turnId": "...",
+      "kind": "tool-call|tool-result|action|work|subagent|resource|error",
+      "status": "running|ok|error|cancelled",
+      "title": "...",
+      "summary": "...",
+      "detail": {...}
+    }
+  ],
+  "attachments": [
+    {
+      "id": "...",
+      "kind": "buffer|file|resource|canvas|image",
+      "label": "...",
+      "uri": "..."
+    }
+  ],
+  "composer": {
+    "text": "",
+    "enabled": true,
+    "placeholder": "Ask e..."
+  }
+}
+#+end_src
+
+Keep this model small and stable.
+Avoid exposing raw session internals directly to Rust.
+Prefer explicit fields that the UI needs.
+
+** Prefer incremental state updates
+
+Large sessions should not be pushed wholesale after every event.
+
+The first slice may push full snapshots for correctness.
+It must isolate that behind bridge functions so a later slice can switch to diffs without rewriting the UI.
+
+Suggested bridge operations:
+
+- =e-modernchat--snapshot= returns a bounded snapshot;
+- =e-modernchat--push-snapshot= pushes the current snapshot to egui;
+- =e-modernchat--push-event= pushes a small update when one event changes;
+- =e-modernchat--visible-window= controls transcript windowing.
+
+The egui app should be prepared for:
+
+- initial full snapshot;
+- message append/update events;
+- activity append/update events;
+- attachment add/remove events;
+- session metadata refresh.
+
+** Start with a read-mostly flow timeline
+
+The MVP should render the current session and active turn before it tries to replace all chat input behavior.
+
+Initial UI layout:
+
+- top bar with session name, model, project root, and active status;
+- left side panel with session/layer/tool/context summaries;
+- central virtualized timeline with message cards and activity cards;
+- right inspector panel for selected tool call, resource, attachment, or work item;
+- bottom composer with prompt entry and send button.
+
+Card types:
+
+- user message;
+- assistant message with streaming status;
+- tool call;
+- tool result;
+- resource read/write/edit;
+- action dispatch;
+- work item/subagent/task;
+- context attachment;
+- error.
+
+** UI actions from egui
+
+The Rust UI should emit semantic events, not Elisp forms.
+
+Initial actions:
+
+- =send-message= with composer text;
+- =cancel-turn= for an active turn;
+- =retry-turn= for the last failed or selected turn;
+- =select-message=;
+- =select-activity=;
+- =open-resource= for a resource URI;
+- =copy-text= for message/tool text;
+- =toggle-card= for local UI expansion state;
+- =set-filter= for timeline filters;
+- =set-output-mode= if the existing chat output mode capability should be exposed in the UI.
+
+Elisp handles these actions by calling existing services.
+The egui side must not know about harness internals.
+
+* Scope
+
+** In scope
+
+- Add a new command named =e-modernchat-new=.
+- Add an optional =emacs-egui= app registration for the modern chat UI.
+- Add an Elisp shell/bridge module for creating the xwidget buffer and pushing session state.
+- Add a Rust =egui= WASM app that renders the first modern chat/flow timeline.
+- Subscribe to session/work updates and refresh the view in bounded ways.
+- Support sending a new user prompt through the existing harness path.
+- Support opening resources back in Emacs from UI cards.
+- Keep the existing text chat shell unchanged.
+
+** Out of scope for the first feature
+
+- Replacing =e-chat= as the default shell.
+- Full rich Org editing inside egui.
+- Full Emacs Org feature parity, including agenda, Babel execution, export, complex tables, and every link type.
+- Durable egui UI layout persistence.
+- Multi-session search across all persisted sessions.
+- Native non-xwidget rendering.
+- Making =emacs-egui= a hard dependency of =e=.
+
+* Implementation Plan
+
+** 1. Add a feature-gated shell module
+
+Files:
+
+- =lisp/shells/modernchat/e-modernchat.el=
+- possibly =lisp/shells/modernchat/e-modernchat-view-model.el=
+
+Work:
+
+- Define =e-modernchat-new= as an interactive command.
+- Require =emacs-egui= lazily and signal a clear user error when missing.
+- Create or reuse a chat harness instance the same way the current chat shell does, without duplicating harness construction policy.
+- Create an =emacs-egui= buffer named like =*e-modernchat: SESSION*=.
+- Register the app asset directory.
+- Keep buffer-local bindings for harness, session id, egui session, selected timeline item, and the current bounded view window.
+
+** 2. Build the Elisp view model
+
+Files:
+
+- =lisp/shells/modernchat/e-modernchat-view-model.el=
+- tests under =test/=
+
+Work:
+
+- Convert session messages into stable message DTOs.
+- Convert activity events into stable activity DTOs.
+- Include active turn and work status when available.
+- Include context attachments from existing chat-session metadata.
+- Include effective layer ids and output mode.
+- Bound transcript size for the initial implementation.
+
+The view-model builder should be pure or mostly pure.
+It should be testable with fixture sessions without opening xwidgets.
+
+** 3. Wire live updates
+
+Files:
+
+- =lisp/shells/modernchat/e-modernchat.el=
+
+Work:
+
+- Subscribe to harness/session/work events through existing subscriber or hook seams.
+- Debounce UI pushes so rapid streaming updates do not flood =xwidget-webkit-execute-script=.
+- Push full snapshots for the first slice if needed, but keep a single bridge boundary for later diff updates.
+- Cancel timers and unsubscribe when the modern chat buffer is killed.
+
+** 4. Add the Rust egui app and reusable Org renderer
+
+Files:
+
+- =ui/modernchat/Cargo.toml=
+- =ui/modernchat/src/lib.rs=
+- =ui/modernchat/src/org_render.rs=
+- =ui/modernchat/index.html=
+
+Work:
+
+- Depend on =emacs-egui-sdk= and =egui=/=eframe=.
+- Implement an =EguiEmacsApp= whose state is the modern chat view model.
+- Render a top bar, side panel, central timeline, inspector, and bottom composer.
+- Use egui collapsible cards for tool calls, tool results, resources, and work items.
+- Add a small reusable Org renderer for common assistant output.
+- Support headings, lists, paragraphs, emphasis, verbatim/code spans, source blocks, quote/example blocks, and Org links in the first slice.
+- Emit semantic =open-link= or =open-resource= actions for Org links rather than trying to implement every link behavior in Rust.
+- Keep UI-local expansion/selection/filter state in Rust.
+- Emit semantic events with =emacs_post_message=.
+
+** 5. Extract shell-neutral chat application services
+
+Files:
+
+- =lisp/shells/chat/e-chat-service.el=, or another small shell-neutral module near =e-chat-session=
+- =lisp/shells/chat/e-chat.el=
+- =lisp/shells/modernchat/e-modernchat.el=
+
+Work:
+
+- Extract the already-small public seams from =e-chat.el= before adding modernchat-specific calls.
+- Move or wrap =e-chat-create-session= as a shell-neutral session creation service.
+- Move or wrap =e-chat-submit-session= as a shell-neutral submit service over =e-chat-session-submit=.
+- Add shell-neutral services for steering, queueing, and aborting turns over =e-chat-session-steer=, =e-chat-session-queue=, and =e-chat-session-abort=.
+- Add a shell-neutral output-mode service over =e-chat-output-mode-session-set= and =e-chat-output-mode-resolve=.
+- Keep buffer-specific behavior in =e-chat.el=: composer extraction, text deletion, rerendering, point-based retry target discovery, status strings, and buffer navigation.
+- =send-message= in =e-modernchat= should call the shell-neutral submit service.
+- =cancel-turn= should call the shell-neutral abort service.
+- =open-resource= should use existing resource/buffer presentation helpers.
+- Selection and filter events may remain UI-local unless Emacs needs to know.
+
+Do not copy turn-start logic into the new shell.
+The modern shell should share the same service path as the text chat shell.
+
+** 6. Add build and validation commands
+
+Work:
+
+- Document how to build the WASM artifact with =wasm-pack=.
+- Add a focused check that verifies Elisp loads when =emacs-egui= is absent.
+- Add a focused check that invoking =e-modernchat-new= reports a clear missing-runtime error when =emacs-egui= is absent.
+- Add a batch check for the view-model tests.
+- Add Rust build validation where available, but keep ordinary Elisp test runs independent of local Rust toolchain availability.
+
+* Test Plan
+
+** Elisp tests
+
+- View-model builder converts fixture messages into message DTOs.
+- View-model builder converts activity/tool events into activity DTOs.
+- Snapshot bounding avoids unbounded transcript payloads.
+- Missing =emacs-egui= produces a clear user error only when =e-modernchat-new= is invoked.
+- Killing the modern chat buffer clears timers/subscriptions.
+- UI action dispatch maps known actions to the expected application service calls and rejects unknown actions clearly.
+
+** Rust/UI checks
+
+- =cargo check= for the WASM UI crate.
+- =wasm-pack build --target web= for the UI artifact when toolchain is present.
+- A minimal deserialize test or fixture for the JSON state model.
+- Org rendering fixtures for headings, lists, emphasis, verbatim spans, source blocks, quotes, and links.
+
+** Manual validation
+
+- Open =M-x e-modernchat-new=.
+- Confirm the xwidget opens in the current workspace.
+- Confirm a current session renders messages and activity cards.
+- Send a prompt and observe streaming assistant output.
+- Expand a tool call and inspect its result.
+- Open a resource URI from a card and confirm Emacs shows the right buffer or resource view.
+- Kill the modern chat buffer and confirm no update timers keep firing.
+
+* Acceptance Criteria
+
+- =M-x e-modernchat-new= opens an egui-backed modern chat shell when =emacs-egui= and xwidgets are available.
+- The existing =e-chat= shell remains unchanged and remains the fallback.
+- The modern shell renders a bounded session timeline with message and activity cards.
+- The timeline shows tool calls, tool results, resources, work/subagent/task status, attachments, errors, and streaming assistant state where available.
+- The composer can send a prompt through the shared shell-neutral chat service path.
+- UI actions are semantic JSON events handled by Elisp.
+- Missing =emacs-egui= or missing xwidget support fails with a clear message and no partial shell state.
+- Elisp view-model tests pass without requiring Rust, =emacs-egui=, or xwidgets.
+- Rust/WASM build validation passes when =wasm-pack= is available.
+- Common Org assistant output renders in the egui timeline without delegating every message to an Emacs buffer.
+
+* Risks And Mitigations
+
+** xwidget portability
+
+=xwidget-webkit= support varies by platform and Emacs build.
+
+Mitigation: keep =e-modernchat-new= optional and keep =e-chat= as the stable fallback.
+
+** Text editing quality
+
+egui text input may not match native Emacs editing, completion, or keybindings.
+
+Mitigation: keep the first composer simple.
+Consider a later hybrid composer that uses an Emacs buffer for prompt editing and egui for visualization.
+
+** Large transcript performance
+
+Pushing entire sessions through JavaScript can become expensive.
+
+Mitigation: bound the initial snapshot, debounce updates, and isolate the bridge so incremental diffs can replace full snapshots later.
+
+** Duplicated chat send logic
+
+The current chat shell owns composer mechanics, but the core submit seam is already small: =e-chat-submit-session= delegates to =e-chat-session-submit=, and =e-chat-abort= delegates to =e-chat-session-abort=.
+
+Mitigation: extract or wrap those seams in a shell-neutral chat service before the modern shell calls them.
+Do not duplicate harness turn logic in the new shell.
+
+** emacs-egui maturity
+
+=emacs-egui= is young and vendor-oriented.
+
+Mitigation: keep the dependency optional, place integration behind one module, and avoid coupling core runtime code to the UI framework.
+
+* Resolved Decisions
+
+- =emacs-egui= should be installed by the user's Doom config or otherwise placed on =load-path=.
+  The =e= repository should not vendor it for this feature.
+- The shell should load only when =emacs-egui= is present.
+  The rest of =e= must load without it.
+- The first implementation should require =wasm-pack= locally and should document the build path.
+  It should not rely on committed built WASM artifacts.
+- The first egui app should render Org directly for common assistant output.
+  The renderer should be factored so other egui-backed shells can reuse it.
+- =e-modernchat-new= should use the same persisted sessions as =e-chat= by default.
+- Shell-neutral service extraction should start from the current small seams:
+  - =e-chat-create-session=;
+  - =e-chat-submit-session=;
+  - =e-chat-session-submit=;
+  - =e-chat-session-steer=;
+  - =e-chat-session-queue=;
+  - =e-chat-session-abort=;
+  - =e-chat-output-mode-session-set=;
+  - =e-chat-output-mode-resolve=.
+
+* Open Questions
+
+None for the first planning pass.
+
+* Design Self-Check
+
+1. If this work package stopped here, would the project be better off than if it had not been built?
+   - Yes.
+     It adds an optional richer presentation surface without weakening the existing chat shell.
+2. What final direction does this move toward?
+   - A clear split where =e= can support multiple shells over the same harness and session model, including richer visual shells for flow inspection.
+3. Which decisions are likely to change, uncertain, or stable?
+   - Stable: the harness owns policy and the shell owns presentation.
+   - Likely to change: snapshot versus diff transport, artifact packaging, and exact card layout.
+   - Uncertain choices are kept local to the modernchat bridge and UI crate.
+4. What component owns this behavior, and why?
+   - =e-modernchat= owns the xwidget buffer, egui session, view projection, and UI event handling because those are presentation concerns.
+5. Does this change increase or reduce coupling?
+   - It adds a new optional adapter boundary.
+     Coupling stays low if Rust only sees explicit DTOs and semantic events.
+6. Did any dependency start pointing the wrong way?
+   - No. Core harness code should not depend on =emacs-egui=.
+     The shell depends on the harness and optional UI runtime.
+7. Could any side effect be moved outward into an adapter or shell?
+   - The xwidget, HTTP IPC, timers, and buffer display side effects all belong in the shell/bridge, not in core.
+8. What state does this change add or mutate?
+   - Buffer-local UI state, egui session metadata, selected item, filters, expansion state, and bounded view window.
+     Durable session state remains in the existing session store.
+9. What is the performance impact?
+   - The main risk is pushing too much JSON during streaming.
+     Bounding and debouncing are required.
+     The view-model builder should be measured before this becomes a default shell.
+10. Are the abstractions semantically real?
+    - Yes.
+      A shell-neutral view model and semantic UI event bridge are real boundaries between Emacs runtime policy and Rust rendering.
+11. What compatibility expectations apply?
+    - Existing chat sessions and =e-chat= behavior must remain compatible.
+      The new shell is additive and optional.
+12. What legacy code can we remove now?
+    - None in this feature.
+      A later slice may remove duplicated send logic after a shell-neutral service exists.
+13. Where are expected errors handled, and where do unexpected errors surface?
+    - Missing =emacs-egui=, missing xwidgets, and UI action validation should produce clear user errors.
+      Unexpected harness/provider errors should surface through existing turn/work error paths.
+14. What tests prove the core behavior independently of the full system?
+    - Pure view-model tests and action-dispatch tests prove most behavior without xwidgets, WebKit, Rust, or provider calls.
