@@ -145,6 +145,10 @@
     summary))
 
 ;;;###autoload
+(autoload 'e-modernchat-new "e-modernchat" "Create a new egui-backed modern chat session." t)
+;;;###autoload
+(autoload 'e-modernchat-shell "e-modernchat" "Return the modern chat presentation shell manifest." nil)
+;;;###autoload
 (autoload 'e-dev-reload "e-dev" "Reload e package files during development." t)
 ;;;###autoload
 (autoload 'e-dev-mark-reload-required
