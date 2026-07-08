@@ -1,0 +1,23 @@
+#+title: Repaint Prompt Below Turn Output
+#+startup: overview
+
+* Report
+
+The user reported a repaint/order bug in the e chat buffer: after system
+messages such as auto-compaction messages, the prompt/user entry can appear
+below existing turn output instead of above the turn output.
+
+The screenshot showed transient turn output first, then the rendered user prompt
+=continue=, then system compaction messages, and finally the empty composer.
+
+* Expected
+
+Durable transcript entries, including user prompts and compact system events,
+stay above transient active-turn output.  The editable composer stays at the
+bottom.
+
+* Actual
+
+With a stale visible running-status block whose progress owner had already been
+cleared, newly inserted durable entries were appended after the transient turn
+output.

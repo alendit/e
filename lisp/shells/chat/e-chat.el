@@ -4670,6 +4670,13 @@ When RECORD is nil, clear only buffer-local status markers."
     (when (and start end (< start end))
       (cons start end))))
 
+(defun e-chat--running-status-turn-id ()
+  "Return the turn id for the visible running status, or nil."
+  (when-let ((bounds (e-chat--running-status-bounds)))
+    (or (get-text-property (car bounds) 'e-chat-progress-turn-id)
+        (get-text-property (car bounds) 'e-chat-transient-turn-id)
+        (get-text-property (car bounds) 'e-chat-turn-id))))
+
 (defun e-chat--position-running-offset (position bounds)
   "Return POSITION's offset inside BOUNDS, or nil."
   (when (and position
@@ -6093,7 +6100,8 @@ non-nil, is used by focused block activation."
          :metadata (list :title title
                          :ensure-composer (and ensure-composer t)))
    (lambda ()
-     (let* ((active-turn-id e-chat--progress-turn-id)
+     (let* ((active-turn-id (or e-chat--progress-turn-id
+                                (e-chat--running-status-turn-id)))
             (active-record (and active-turn-id
                                 (e-chat--existing-turn-record active-turn-id)))
             (composer-state (e-chat--capture-composer-state))

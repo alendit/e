@@ -1,0 +1,68 @@
+#+title: Repaint Prompt Below Turn Output Investigation
+#+startup: overview
+
+* Investigation
+
+The presentation owner is =lisp/shells/chat/e-chat.el=.  Durable transcript
+entries are inserted through =e-chat--insert-entry=, while active thinking/tool
+output is represented by the running-status region.
+
+The bad order reproduced in batch Emacs with this sequence:
+
+1. Render an active turn and a reasoning delta.
+2. Let the running-status text remain visible.
+3. Clear =e-chat--progress-turn-id=, matching a stale progress-owner state.
+4. Render a late user =message-added= event.
+
+Before the fix, the resulting buffer order was:
+
+#+begin_example
+thought
+
+> continue
+
+...
+#+end_example
+
+=e-chat--insert-entry= only treated =e-chat--progress-turn-id= as evidence that
+active transient output needed to be lifted below the durable entry.  If the
+visible running-status text remained but the progress owner was nil, the helper
+did not delete and re-render that transient region before inserting the user or
+system entry.
+
+The code already tags running-status text with =e-chat-progress-turn-id=,
+=e-chat-transient-turn-id=, and =e-chat-turn-id=.  The fix adds
+=e-chat--running-status-turn-id= and lets =e-chat--insert-entry= use the visible
+running-status turn id when =e-chat--progress-turn-id= is nil.
+
+* Live Check
+
+A bounded =emacsclient --eval= probe confirmed the running Emacs has =e-chat=
+loaded from this checkout:
+
+#+begin_example
+(:e-chat-loaded t
+ :insert-entry-source "/Users/dimitrivorona/projects/elisp/e/lisp/shells/chat/e-chat.el"
+ :progress-turn-bound t)
+#+end_example
+
+The running Emacs was not reloaded or mutated.
+
+* Validation
+
+Added =e-chat-test-durable-entry-stays-above-stale-running-status=.  It
+recreates the stale-owner state, inserts a user prompt and an auto-compaction
+system event, and asserts the durable order:
+
+#+begin_example
+continue < Auto-compaction started < thought < composer
+#+end_example
+
+Repository-side validation:
+
+#+begin_example
+rtk emacs -Q --batch -L . -l e.el -l test/e-chat-test.el -f ert-run-tests-batch-and-exit
+#+end_example
+
+Result: 299 tests ran, 298 passed, 1 existing markdown-rendering test skipped,
+and 0 failed.

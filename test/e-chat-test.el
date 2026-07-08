@@ -4026,6 +4026,54 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-durable-entry-stays-above-stale-running-status ()
+  "Durable entries stay above visible transient output with no progress owner."
+  (let ((buffer (e-chat-test--buffer nil "chat-stale-running-order")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat--render-event
+           (e-events-make :type 'turn-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 10))
+          (e-chat-test--mark-active-turn "turn-1")
+          (e-chat--render-event
+           (e-events-make :type 'reasoning-delta
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :payload '(:content "thought")))
+          (e-ui-work-with-batch-drain
+              (e-ui-work-drain-batch :buffer (current-buffer)))
+          (setq e-chat--progress-turn-id nil)
+          (e-chat--render-event
+           (e-events-make :type 'message-added
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :created-at 10
+                          :payload '(:message (:role user
+                                                :content "continue"))))
+          (e-chat--render-event
+           (e-events-make :type 'compaction-started
+                          :session-id e-chat-session-id
+                          :turn-id "turn-1"
+                          :payload '(:reason auto)))
+          (let ((user-pos (save-excursion
+                            (goto-char (point-min))
+                            (search-forward "continue")))
+                (system-pos (save-excursion
+                              (goto-char (point-min))
+                              (search-forward "Auto-compaction started")))
+                (thought-pos (save-excursion
+                               (goto-char (point-min))
+                               (search-forward "thought")))
+                (composer-pos (marker-position e-chat--composer-start-marker)))
+            (should (< user-pos system-pos))
+            (should (< system-pos thought-pos))
+            (should (< thought-pos composer-pos))
+            (should (e-chat--composer-active-p))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-progress-rerender-preserves-scrollback-focus ()
   "Progress redraws preserve point and window focus when reading scrollback."
   (let ((buffer (e-chat-test--buffer nil "chat-progress-scroll-focus"))
