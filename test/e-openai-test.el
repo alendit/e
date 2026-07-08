@@ -939,6 +939,17 @@ event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{
       :name "now"
       :arguments (:format "iso"))))))
 
+(ert-deftest e-openai-test-parse-tool-call-event ()
+  "Responses tool_call items become backend-neutral tool calls."
+  (should
+   (equal
+    (e-openai-codex-parse-stream
+     "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"tool_call\",\"id\":\"call-1\",\"name\":\"glob\",\"arguments\":{\"uri\":\"session:///\",\"limit\":20}}}\n\n")
+    '((:type tool-call
+      :id "call-1"
+      :name "glob"
+      :arguments (:uri "session:///" :limit 20))))))
+
 (ert-deftest e-openai-test-parse-reasoning-summary-delta ()
   "Responses reasoning summary deltas become backend-neutral reasoning items."
   (should

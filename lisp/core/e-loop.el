@@ -67,6 +67,14 @@
         (setq rest (cddr rest)))
       sanitized)))
 
+(defun e-loop--normalized-backend-item (item)
+  "Return backend-neutral ITEM with legacy provider spellings normalized."
+  (let ((type (plist-get item :type)))
+    (cond
+     ((member type '(tool_call "tool_call" "tool-call"))
+      (plist-put (copy-sequence item) :type 'tool-call))
+     (t item))))
+
 (defun e-loop--request-lifecycle-payload (request status &optional started-at)
   "Return sanitized lifecycle payload for REQUEST with STATUS.
 STARTED-AT is the `float-time' value captured when the provider request was
@@ -354,52 +362,54 @@ tool I/O, and turn settlement are callback-driven."
                    (item)
                    (unless (or settled (cancelled))
                      (condition-case err
-                         (pcase (plist-get item :type)
-                           ('assistant-delta
-                            (setq response-assistant-content
-                                  (concat response-assistant-content
-                                          (plist-get item :content)))
-                            (e-loop--emit :on-event on-event
-                                          :type 'assistant-delta
-                                          :payload item))
-                           ('assistant-message
-                            (setq response-assistant-message
-                                  (plist-get item :content)))
-                           ('reasoning-delta
-                            (e-loop--emit :on-event on-event
-                                          :type 'reasoning-delta
-                                          :payload item))
-                           ('reasoning-raw-delta
-                            (e-loop--emit :on-event on-event
-                                          :type 'reasoning-raw-delta
-                                          :payload item))
-                           ('tool-call
-                            (enqueue-tool-call item))
-                           ('token-usage
-                            (setq token-usage
-                                  (plist-get item :usage))
-                            (e-loop--emit
-                             :on-event on-event
-                             :type 'token-usage
-                             :payload token-usage))
-                           ('provider-anchor-candidate
-                            (e-loop--emit
-                             :on-event on-event
-                             :type 'provider-anchor-candidate
-                             :payload item))
-                           ('done
-                            (setq done-reason
-                                  (plist-get item :reason)))
-                           ('backend-error
-                            (fail-provider
-                             (list 'e-loop-backend-error
-                                   (plist-get item :content)
-                                   (plist-get item :payload))))
-                           (_
-                            (e-loop--emit
-                             :on-event on-event
-                             :type 'backend-item-ignored
-                             :payload item)))
+                         (progn
+                           (setq item (e-loop--normalized-backend-item item))
+                           (pcase (plist-get item :type)
+                             ('assistant-delta
+                              (setq response-assistant-content
+                                    (concat response-assistant-content
+                                            (plist-get item :content)))
+                              (e-loop--emit :on-event on-event
+                                            :type 'assistant-delta
+                                            :payload item))
+                             ('assistant-message
+                              (setq response-assistant-message
+                                    (plist-get item :content)))
+                             ('reasoning-delta
+                              (e-loop--emit :on-event on-event
+                                            :type 'reasoning-delta
+                                            :payload item))
+                             ('reasoning-raw-delta
+                              (e-loop--emit :on-event on-event
+                                            :type 'reasoning-raw-delta
+                                            :payload item))
+                             ('tool-call
+                              (enqueue-tool-call item))
+                             ('token-usage
+                              (setq token-usage
+                                    (plist-get item :usage))
+                              (e-loop--emit
+                               :on-event on-event
+                               :type 'token-usage
+                               :payload token-usage))
+                             ('provider-anchor-candidate
+                              (e-loop--emit
+                               :on-event on-event
+                               :type 'provider-anchor-candidate
+                               :payload item))
+                             ('done
+                              (setq done-reason
+                                    (plist-get item :reason)))
+                             ('backend-error
+                              (fail-provider
+                               (list 'e-loop-backend-error
+                                     (plist-get item :content)
+                                     (plist-get item :payload))))
+                             (_
+                              (e-loop--emit
+                               :on-event on-event
+                               :type 'backend-item-ignored
+                               :payload item))))
                        (error
                         (fail-provider err)))))
                   (enqueue-tool-call

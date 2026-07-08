@@ -1067,13 +1067,16 @@ list.  Return a cancellable `e-backend-request' handle."
 (defun e-openai-codex--function-call-item-p (item)
   "Return non-nil when ITEM is a Responses function-call item."
   (and (listp item)
-       (equal (plist-get item :type) "function_call")))
+       (member (plist-get item :type)
+               '("function_call" "tool_call" function_call tool_call))))
 
 (defun e-openai-codex--parse-function-arguments (arguments)
   "Parse JSON ARGUMENTS from a Responses function call."
-  (if (and (stringp arguments) (not (string-empty-p arguments)))
-      (e-openai-codex--parse-json arguments)
-    nil))
+  (cond
+   ((and (stringp arguments) (not (string-empty-p arguments)))
+    (e-openai-codex--parse-json arguments))
+   ((listp arguments) arguments)
+   (t nil)))
 
 (defun e-openai-codex--sequence-list (value)
   "Return VALUE as a list when it is a JSON array sequence."
@@ -1230,7 +1233,8 @@ LIMIT defaults to 240 characters."
            (e-openai-codex--function-call-item-p (plist-get event :item)))
       (let ((item (plist-get event :item)))
         (list :type 'tool-call
-              :id (plist-get item :call_id)
+              :id (or (plist-get item :call_id)
+                      (plist-get item :id))
               :name (plist-get item :name)
               :arguments (e-openai-codex--parse-function-arguments
                           (plist-get item :arguments)))))

@@ -1,0 +1,42 @@
+#+title: Tool Call Search Char Or String Investigation
+#+startup: overview
+
+* Investigation
+
+The screenshot showed a provider/tool-call plist reaching a string insertion path:
+
+#+begin_example
+(:type tool_call :id "..." :name "glob" :arguments (:uri "session:///" :limit 20))
+#+end_example
+
+Source inspection found three relevant boundaries:
+
+- =lisp/adapters/openai/e-openai.el= normalized Responses =function_call= output items, but not the newer/raw =tool_call= item spelling.
+- =lisp/core/e-loop.el= dispatched backend-neutral =tool-call= items, but did not normalize backend item spellings before dispatch.
+- =lisp/shells/chat/e-chat.el= assumed durable entry content was already a string. Older persisted or replayed structured content could still trip =format=, =insert=, or display bookkeeping with a raw plist.
+
+No live Emacs reload or probe was run. The running editor was left unchanged; the investigation used the user screenshot, source inspection, and repository-side tests.
+
+* Fix
+
+The fix keeps ownership at the existing boundaries:
+
+- OpenAI Responses parsing now accepts =tool_call= as a tool-call item, uses either =call_id= or =id=, and accepts already-structured argument plists.
+- The core loop normalizes legacy/backend item spellings such as =tool_call= to =tool-call= before dispatching.
+- Chat durable entry rendering now coerces structured content to display text at the insert boundary, and replay formats tool-call messages through the existing tool-call formatter.
+
+* Validation
+
+Focused regression tests passed:
+
+#+begin_example
+rtk eldev test -f test/e-openai-test.el e-openai-test-parse-tool-call-event -f test/e-loop-test.el e-loop-test-normalizes-tool-call-backend-item-spelling -f test/e-chat-test.el e-chat-test-insert-entry-renders-structured-content
+#+end_example
+
+Affected suites passed:
+
+#+begin_example
+rtk eldev test -f test/e-openai-test.el -f test/e-loop-test.el -f test/e-chat-test.el
+#+end_example
+
+Result: 403 tests ran, 402 passed, 1 existing markdown rendering test skipped.

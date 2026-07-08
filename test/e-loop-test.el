@@ -302,6 +302,58 @@
                        provider-request-finished
                        turn-finished))))))
 
+(ert-deftest e-loop-test-normalizes-tool-call-backend-item-spelling ()
+  "Provider tool_call items follow the backend-neutral tool-call path."
+  (let* ((calls 0)
+         (backend (e-backend-create
+                   :name "fake-tool-call-spelling"
+                   :stream (cl-function
+                            (lambda (&key messages options on-item)
+                              (ignore messages options)
+                              (setq calls (1+ calls))
+                              (if (= calls 1)
+                                  (progn
+                                    (funcall on-item
+                                             '(:type tool_call
+                                               :id "call-1"
+                                               :name "echo"
+                                               :arguments (:text "hi")))
+                                    (funcall on-item
+                                             '(:type done :reason tool-use)))
+                                (funcall on-item
+                                         '(:type assistant-message
+                                           :content "done"))
+                                (funcall on-item
+                                         '(:type done :reason stop)))))))
+         (tools (e-tools-registry-create))
+         (appended nil)
+         (events nil))
+    (e-tools-register tools
+                      :name "echo"
+                      :description "Echo text."
+                      :handler (lambda (arguments) (plist-get arguments :text)))
+    (e-loop-run-turn-batch
+     :session-id "session-1"
+     :turn-id "turn-1"
+     :messages '((:role user :content "hi"))
+     :backend backend
+     :tools tools
+     :options nil
+     :on-event (lambda (type payload)
+                 (push (list :type type :payload payload) events))
+     :append-message (lambda (message)
+                       (push message appended)))
+    (let ((tool-call (cl-find 'tool-call appended
+                              :key (lambda (message)
+                                     (plist-get message :role)))))
+      (should (member 'tool-started
+                      (mapcar (lambda (event) (plist-get event :type))
+                              events)))
+      (should (equal (plist-get (plist-get tool-call :content) :type)
+                     'tool-call))
+      (should (equal (plist-get (plist-get tool-call :content) :name)
+                     "echo")))))
+
 (ert-deftest e-loop-test-emits-raw-reasoning-events-without-assistant-text ()
   "Raw reasoning events are surfaced without becoming assistant output."
   (let* ((backend (e-backend-create

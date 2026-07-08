@@ -1,0 +1,14 @@
+#+title: Tool Call Search Char Or String
+#+startup: overview
+
+* Report
+
+The user reported that search/resource tool calls fail in chat with:
+
+#+begin_example
+Wrong type argument: char-or-string-p, (:type tool_call :id "..." :name "glob" :arguments (:uri "session:///" :limit 20))
+#+end_example
+
+The visible failing call was a =glob= tool call against =session:///=.
+
+Expected behavior: the provider tool call should execute through the normal tool path and chat rendering should not try to insert a structured plist as text.
