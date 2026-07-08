@@ -26,9 +26,10 @@ When it turns into work, create =docs/feats/<n>-session-learning/= and leave thi
 - The strongest published pattern for a coding agent is not vector-retrieved episodic memory.
   It is *manual demonstration on a few items, then codify the output into a versioned skill, then schedule it*.
   That is Garry Tan's "Thin Harness, Fat Skills," reduced to a loop: Concept -> Prototype -> Evaluate -> Codify -> Cron -> Monitor.
-- =e= already owns every surface that loop needs: skills as construction-time specs backed by =e://= resources (=e-skills=), a task queue, a cron engine with deterministic guards (=e-cron=), background sessions, and read-only =session://= access to persisted history including foreign engines.
+- =e= already owns every surface that loop needs: capabilities as the general construction-time extension surface, agent skills as a distribution standard that maps onto a subset of those capabilities and is backed by =e://= resources (=e-skills=), a task queue, a cron engine with deterministic guards (=e-cron=), background sessions, and read-only =session://= access to persisted history including foreign engines.
 - The realistic first slice is an *extraction pass*, not an autonomous memory system: a scheduled or on-demand agent action that reads recent sessions (own and foreign), proposes a skill or an AGENTS.md guidance edit, and leaves it for human review before it becomes durable.
-  Retrieval-heavy episodic memory is a later, optional layer.
+  This is a sequencing choice, not a dismissal of memory systems: shipped memory products prove that fact/preference recall is useful, but =e='s sharper unsolved problem is repeated procedural work, where a reviewable skill or guidance patch gives a safer and more testable artifact than opaque episodic retrieval.
+  Retrieval-heavy episodic memory is a later, optional layer once the durable-artifact path is working.
 - We already built this loop once, outside =e=: *Goodnite* mines Claude Code and Cursor traces nightly (=goodnite dream=), clusters recurring episodes, proposes skills, and hands a human a review list.
   It validates the cornerstone and supplies concrete mechanisms to reuse — recurrence by clustering, failure as an eligibility filter, mine/amend/drop routing, held-out replay validation, script-vs-skill split, and a content-keyed suggestion ledger.
   The =e= version's advantage is doing this in-harness over the normalized, cross-engine =session://= layer instead of as a separate Python pipeline.
@@ -57,6 +58,18 @@ Representative systems:
 Retrieval for this layer is either "inject everything small enough" (rules files) or "retrieve top-k by similarity" (vector stores).
 For a coding agent the rules-file style wins on transparency and reviewability; vector recall wins only when the fact set is too large to inject.
 
+This layer is real and product-proven.
+ChatGPT, Claude, Cursor, and rules-file systems ship variants of it because it is immediately useful: it reduces repeated preference setting, remembers stable project facts, and gives the model more context without changing the task loop.
+That is exactly why it is not the best first research slice for =e=.
+The main engineering questions are scoping, freshness, user review, and retrieval quality; those are important, but they do not exploit =e='s distinctive surfaces beyond =AGENTS.md= and context injection.
+
+The first =e= slice should instead target the gap memory products do not close: repeated procedural work.
+If a user keeps asking for the same multi-step operation, remembering that fact is weaker than producing the thing that performs or guides the operation next time.
+A proposed skill, capability, cron rule, or =AGENTS.md= patch is inspectable, diffable, testable on held-out sessions, and removable.
+An episodic memory hit is harder to audit and can silently steer a coding agent with stale or mis-scoped precedent.
+
+So the priority claim is narrow: build fact/policy memory where it is plainly useful, but make process extraction the first session-learning experiment because it creates durable artifacts and has a clearer review gate.
+
 ** Layer 2: process and skill extraction
 
 "When a FIT run fails, pull the crash log, symbolicate it, and post the cluster."
@@ -75,7 +88,7 @@ Representative systems:
 - *Reflexion (Shinn, 2023)* :: after a failed attempt, the agent writes a verbal self-critique and carries it into the next attempt.
   The lesson: failures are a primary learning signal, and the extracted lesson can be plain text fed forward, not a weight update.
 - *Skills as method calls (Claude Code / Agent Skills)* :: a =SKILL.md= with frontmatter (name, description, when-to-use) plus a body of procedure, loaded progressively — the description is cheap and always visible, the body loads on demand.
-  This is exactly =e='s skill model (=e-skills=, =e-capability-with-skills-create=): compact model-facing metadata pointing at a read-only =e://= body.
+  This maps onto a subset of =e='s capability model: =e-skills= packages compact model-facing metadata and a read-only =e://= body as an agent-skill distribution form.
 
 * The cornerstone: Thin Harness, Fat Skills
 
@@ -124,14 +137,14 @@ It needs an extraction pass wired across existing surfaces.
 |-----------+--------------------|
 | Read past work | =session://= resources (=e-session-resources=), messages / activity / compactions projections; own facts also in =AGENTS.md= via =e-agents-std-context= |
 | Prototype / demonstrate | ordinary chat turns and the task queue (=e-task-queue=) running the job on real items |
-| Codify | =e-skills=: =e-skill-spec-create= + =e-capability-with-skills-create=, or a filesystem =SKILL.md= discovered by =e-skills= directory discovery; guidance edits land in =AGENTS.md= |
+| Codify | =e= capabilities as the general extension surface; =e-skills= for the agent-skill subset via =e-skill-spec-create= + =e-capability-with-skills-create=, or a filesystem =SKILL.md= discovered by =e-skills= directory discovery; guidance edits land in =AGENTS.md= |
 | Cron | =e-cron= schedules with deterministic =guard= predicates, firing =:enqueue= (task-queue prompt) or =:wake= (background session) |
 | Monitor | scheduled-cron overview command; session history of the scheduled runs, read back through =session://= |
 
 The one missing piece is the *extraction pass itself*: the agent action that reads recent sessions, detects a recurring shape or a repeated correction, and proposes a skill or an =AGENTS.md= edit.
 Everything downstream already exists.
 
-Notably, =e='s skill model is already the "skill as method call, progressively disclosed" pattern from the Claude Code leak that Tan's essay cites: compact description in context, full body behind an =e://= read.
+Notably, =e='s agent-skill subset already matches the "skill as method call, progressively disclosed" pattern from the Claude Code leak that Tan's essay cites: compact description in context, full body behind an =e://= read, all as one form of the broader capability system.
 So "codify into a skill" is a native operation, not an adaptation.
 
 * The e-specific dimension: learning from other harnesses
