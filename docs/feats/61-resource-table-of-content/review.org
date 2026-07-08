@@ -1,0 +1,47 @@
+#+title: Resource Table Of Content Review
+#+startup: overview
+
+* Status
+
+In-review
+
+* Summary
+
+Implementation is ready for review.
+
+No unresolved review findings are recorded yet.
+
+* Evidence
+
+- Added =table-of-content= as a standard resource operation with tool name =table_of_content=.
+- Added shared =e-resource-toc= helpers for =wot= discovery, option validation, language inference, synchronous batch helpers, and async Work specs.
+- Registered =table-of-content= for =file://=, =buffer://=, =e://=, =e-action://=, =tmp://=, and =raw-result://= when =wot= is installed.
+- Did not register =table-of-content= for =session://=.
+- Added helper tests for =e-resource-toc=.
+- Updated operation and harness-base tests for the new operation.
+
+* Validation
+
+#+begin_src sh
+rtk eldev test test/e-operations-test.el test/e-resources-test.el
+#+end_src
+
+Passed.
+
+#+begin_src sh
+rtk eldev test test/e-resource-toc-test.el
+#+end_src
+
+Passed.
+
+#+begin_src sh
+rtk eldev test test/e-session-tmp-resources-test.el
+#+end_src
+
+Passed.
+
+#+begin_src sh
+rtk eldev test test/e-operations-test.el test/e-resources-test.el test/e-resource-toc-test.el test/e-harness-base-test.el test/e-base-tools-test.el test/e-emacs-tools-test.el test/e-store-test.el test/e-action-resources-test.el test/e-session-tmp-resources-test.el test/e-raw-results-test.el
+#+end_src
+
+One known unrelated order-dependent failure appeared in =e-session-tmp-test-cleanup-harness-deletes-all-session-roots= when run after the larger group. The same test passed alone and in its own file.

@@ -18,6 +18,7 @@
 (require 'e-operations)
 (require 'e-resource-patterns)
 (require 'e-resource-query)
+(require 'e-resource-toc)
 (require 'e-resources)
 (require 'e-tools)
 
@@ -487,20 +488,56 @@ When VISIBLE-ONLY is non-nil, include only buffers visible in windows."
    :uri-patterns '("buffer://<optional-buffer-name-prefix>")
    :handler #'e-emacs-tools--buffer-search-resource))
 
+
+(defun e-emacs-tools--buffer-table-of-content-request (uri options)
+  "Return a stdin-backed table-of-content request for buffer URI."
+  (let* ((name (e-emacs-tools--buffer-resource-name uri))
+         (buffer (e-emacs-tools--buffer name)))
+    (with-current-buffer buffer
+      (list :uri (plist-get uri :uri)
+            :name (or buffer-file-name name)
+            :content (buffer-substring-no-properties (point-min) (point-max))
+            :options options))))
+
+(defun e-emacs-tools--buffer-table-of-content-method ()
+  "Return a buffer table-of-content resource method, if available."
+  (when (e-resource-toc-available-p)
+    (e-resource-method-create
+     :scheme "buffer"
+     :operation e-operation-table-of-content
+     :description "Live Emacs buffers outlined by piping buffer text to wot --stdin. Pass language when inference is ambiguous."
+     :uri-patterns '("buffer://<buffer-name>")
+     :handler (lambda (uri options)
+                (let ((request (e-emacs-tools--buffer-table-of-content-request uri options)))
+                  (e-resource-toc-run-content
+                   (plist-get request :uri)
+                   (plist-get request :name)
+                   (plist-get request :content)
+                   (plist-get request :options))))
+     :work (e-resource-toc-content-work
+            (lambda (work-arguments _context)
+              (e-emacs-tools--buffer-table-of-content-request
+               (plist-get work-arguments :uri)
+               (car (plist-get work-arguments :operation-arguments))))))))
+
 (defun e-emacs-tools-register-buffer-read-resource (registry)
   "Register read-only buffer resource methods in REGISTRY."
-  (dolist (method (list (e-emacs-tools--buffer-read-method)
-                        (e-emacs-tools--buffer-glob-method)
-                        (e-emacs-tools--buffer-search-method)))
+  (dolist (method (delq nil
+                         (list (e-emacs-tools--buffer-read-method)
+                               (e-emacs-tools--buffer-glob-method)
+                               (e-emacs-tools--buffer-search-method)
+                               (e-emacs-tools--buffer-table-of-content-method))))
     (e-resources-register registry method)))
 
 (defun e-emacs-tools-register-buffer-resource (registry)
   "Register buffer resource methods in REGISTRY."
-  (dolist (method (list (e-emacs-tools--buffer-read-method)
-                        (e-emacs-tools--buffer-write-method)
-                        (e-emacs-tools--buffer-edit-method)
-                        (e-emacs-tools--buffer-glob-method)
-                        (e-emacs-tools--buffer-search-method)))
+  (dolist (method (delq nil
+                         (list (e-emacs-tools--buffer-read-method)
+                               (e-emacs-tools--buffer-write-method)
+                               (e-emacs-tools--buffer-edit-method)
+                               (e-emacs-tools--buffer-glob-method)
+                               (e-emacs-tools--buffer-search-method)
+                               (e-emacs-tools--buffer-table-of-content-method))))
     (e-resources-register registry method)))
 
 (defun e-emacs-tools--read-forms (code)

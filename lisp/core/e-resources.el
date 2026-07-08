@@ -175,6 +175,10 @@ UPDATED-BEFORE are optional scheme-supported query controls."
   "Search URI through REGISTRY for QUERY with optional OPTIONS."
   (e-resources-call registry e-operation-search uri query options))
 
+(defun e-resources-table-of-content (registry uri &optional options)
+  "Return a table-of-content outline for URI through REGISTRY."
+  (e-resources-call registry e-operation-table-of-content uri options))
+
 (defun e-resources-operations (registry)
   "Return operations implemented by REGISTRY."
   (copy-sequence (e-resources-registry-operations registry)))

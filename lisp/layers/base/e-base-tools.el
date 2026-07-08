@@ -20,6 +20,7 @@
 (require 'e-resource-coherence)
 (require 'e-resource-patterns)
 (require 'e-resource-query)
+(require 'e-resource-toc)
 (require 'e-request)
 (require 'e-resources)
 (require 'e-tools)
@@ -1294,20 +1295,60 @@ When QUERY-METADATA is non-nil, include sortable timestamp metadata."
                uri query options directory))
    :work (e-base-tools--file-search-work directory)))
 
+
+(defun e-base-tools--file-table-of-content-request (uri options directory)
+  "Return a stdin-backed table-of-content request for file URI."
+  (let* ((path (e-base-tools--resource-path uri directory))
+         (group (e-base-tools-file-buffer-coherence-group path (plist-get uri :uri)))
+         (buffer (e-base-tools--preferred-buffer-for-group group)))
+    (list :uri (plist-get uri :uri)
+          :name path
+          :content (if buffer
+                       (with-current-buffer buffer
+                         (buffer-substring-no-properties (point-min) (point-max)))
+                     (e-base-tools--file-disk-text path))
+          :options options)))
+
+(defun e-base-tools--file-table-of-content-method (directory)
+  "Return a file table-of-content resource method rooted at DIRECTORY, if available."
+  (when (e-resource-toc-available-p)
+    (e-resource-method-create
+     :scheme "file"
+     :operation e-operation-table-of-content
+     :description "Workspace text files outlined with wot. Uses live buffer text when it is the coherent view; session:// is not supported."
+     :uri-patterns '("file://<path>")
+     :handler (lambda (uri options)
+                (let ((request (e-base-tools--file-table-of-content-request uri options directory)))
+                  (e-resource-toc-run-content
+                   (plist-get request :uri)
+                   (plist-get request :name)
+                   (plist-get request :content)
+                   (plist-get request :options))))
+     :work (e-resource-toc-content-work
+            (lambda (work-arguments _context)
+              (e-base-tools--file-table-of-content-request
+               (plist-get work-arguments :uri)
+               (car (plist-get work-arguments :operation-arguments))
+               directory))))))
+
 (defun e-base-tools-register-file-read-resource (registry directory)
   "Register read-only file resource methods in REGISTRY rooted at DIRECTORY."
-  (dolist (method (list (e-base-tools--file-read-method directory)
-                        (e-base-tools--file-glob-method directory)
-                        (e-base-tools--file-search-method directory)))
+  (dolist (method (delq nil
+                         (list (e-base-tools--file-read-method directory)
+                               (e-base-tools--file-glob-method directory)
+                               (e-base-tools--file-search-method directory)
+                               (e-base-tools--file-table-of-content-method directory))))
     (e-resources-register registry method)))
 
 (defun e-base-tools-register-file-resource (registry directory)
   "Register file resource methods in REGISTRY rooted at DIRECTORY."
-  (dolist (method (list (e-base-tools--file-read-method directory)
-                        (e-base-tools--file-write-method directory)
-                        (e-base-tools--file-edit-method directory)
-                        (e-base-tools--file-glob-method directory)
-                        (e-base-tools--file-search-method directory)))
+  (dolist (method (delq nil
+                         (list (e-base-tools--file-read-method directory)
+                               (e-base-tools--file-write-method directory)
+                               (e-base-tools--file-edit-method directory)
+                               (e-base-tools--file-glob-method directory)
+                               (e-base-tools--file-search-method directory)
+                               (e-base-tools--file-table-of-content-method directory))))
     (e-resources-register registry method)))
 
 (defun e-base-tools--line-ending (content)

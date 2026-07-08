@@ -449,7 +449,7 @@ SESSION-ID and TURN-ID are passed to context-aware resource providers."
 
 (defun e-harness--resource-operation-async-p (operation)
   "Return non-nil when OPERATION should expose an async tool start."
-  (memq (e-operation-id-of operation) '(glob search)))
+  (memq (e-operation-id-of operation) '(glob search table-of-content)))
 
 (defun e-harness--register-resource-operation-tool (registry resources operation)
   "Register OPERATION in REGISTRY as a model-facing tool backed by RESOURCES."

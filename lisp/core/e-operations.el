@@ -173,7 +173,7 @@ nested tool arguments (notably Bedrock) are reparsed against the tool schema in
                  :properties (:uri (:type "string"
                                     :description "Resource URI root to search, such as file://lisp/ or buffer://.")
                               :query (:type "string"
-                                      :description "Facade search query. Literal characters match literally; * is a non-whitespace wildcard.")
+                                      :description "Ranked lexical query. All whitespace-separated terms must match; literal characters match literally; * is a non-whitespace wildcard.")
                               :glob (:type "string"
                                      :description "Optional glob pattern limiting resources to search.")
                               :case-sensitive (:type "boolean"
@@ -212,12 +212,47 @@ nested tool arguments (notably Bedrock) are reparsed against the tool schema in
                            :created-after :created-before
                            :updated-after :updated-before))))))
 
+(defconst e-operation-table-of-content
+  (e-operation-create
+   :id 'table-of-content
+   :tool-name "table_of_content"
+   :description (concat
+                 "Table of content for a URI-addressed resource using wot. "
+                 "For file-backed resources this calls wot on the backing file when safe. "
+                 "For in-memory resources this pipes resource text to wot --stdin. "
+                 "session:// is not supported.")
+   :parameters '(:type "object"
+                 :properties (:uri (:type "string"
+                                    :description "Resource URI to outline, such as file://README.org, buffer://*scratch*, or e://capability/refs/name.md.")
+                              :max-depth (:type "number"
+                                          :description "Optional wot --max-depth value.")
+                              :max-items (:type "number"
+                                          :description "Optional wot --max-items value.")
+                              :min-lines (:type "number"
+                                          :description "Optional wot --min-lines value.")
+                              :format (:type "string"
+                                       :enum ["markdown" "json"]
+                                       :description "Optional wot output format. Defaults to markdown.")
+                              :language (:type "string"
+                                         :description "Optional wot language, useful for stdin-backed resources when inference is ambiguous.")
+                              :lenient (:type "boolean"
+                                        :description "When non-nil, pass --lenient to wot."))
+                 :required ["uri"])
+   :dispatch (lambda (call arguments)
+               (funcall call
+                        (e-operations--argument-string arguments :uri)
+                        (e-operations--present-options
+                         arguments
+                         '(:max-depth :max-items :min-lines
+                           :format :language :lenient))))))
+
 (defconst e-operations-standard
   (list e-operation-read
         e-operation-write
         e-operation-edit
         e-operation-glob
-        e-operation-search)
+        e-operation-search
+        e-operation-table-of-content)
   "Standard resource operation contracts exposed by the harness when active.")
 
 (defun e-operation-id-of (operation)

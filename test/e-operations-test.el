@@ -43,7 +43,14 @@
   (should (eq (e-operation-id e-operation-search) 'search))
   (should (equal (e-operation-tool-name e-operation-search) "search"))
   (should (equal (plist-get (e-operation-parameters e-operation-search) :required)
-                 ["uri" "query"])))
+                 ["uri" "query"]))
+  (should (eq (e-operation-id e-operation-table-of-content) 'table-of-content))
+  (should (equal (e-operation-tool-name e-operation-table-of-content)
+                 "table_of_content"))
+  (should (equal (plist-get (e-operation-parameters
+                             e-operation-table-of-content)
+                            :required)
+                 ["uri"])))
 
 (ert-deftest e-operations-test-dispatchers-normalize-tool-arguments ()
   "Operation dispatchers adapt model tool arguments to resource calls."
@@ -72,17 +79,23 @@
                :whole-word t
                :multiline t
                :limit 7))
+    (funcall (e-operation-dispatch e-operation-table-of-content)
+             (lambda (&rest args) (push args calls) "toc-result")
+             '(:uri "test://toc"
+               :max-depth 2
+               :language "elisp"))
     (should (equal (nreverse calls)
                    '(("test://read" (:unit "line" :start 1 :end 2))
                      ("test://write" "content")
                      ("test://edit" ((:oldText "a" :newText "b")))
-                     ("test://glob" "*.el" 5 nil)
+                     ("test://glob" "*.el" 5 nil nil nil nil nil nil nil)
                      ("test://search" "needle"
                       (:glob "*.el"
                        :case-sensitive t
                        :whole-word t
                        :multiline t
-                       :limit 7)))))))
+                       :limit 7))
+                     ("test://toc" (:max-depth 2 :language "elisp")))))))
 
 (ert-deftest e-operations-test-edit-coerces-bare-edit-object ()
   "The edit dispatcher wraps a lone edit object into a one-element array.

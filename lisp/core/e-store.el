@@ -16,6 +16,7 @@
 (require 'e-operations)
 (require 'e-resource-patterns)
 (require 'e-resource-query)
+(require 'e-resource-toc)
 (require 'e-resources)
 (require 'seq)
 (require 'subr-x)
@@ -344,12 +345,39 @@ and optional range."
    :handler (lambda (uri query options)
               (e-store-search store uri query options))))
 
+
+(defun e-store-table-of-content-resource-method (store)
+  "Return a table-of-content e:// resource method backed by STORE, if available."
+  (when (e-resource-toc-available-p)
+    (e-resource-method-create
+     :scheme "e"
+     :operation e-operation-table-of-content
+     :description "Capability-contributed in-memory resources outlined by piping text to wot --stdin. Pass language when inference is ambiguous."
+     :uri-patterns '("e://<capability>/skills/<skill>"
+                     "e://<capability>/refs/<name>.md"
+                     "e://<capability>/<path>")
+     :handler (lambda (uri options)
+                (e-resource-toc-run-content
+                 (plist-get uri :uri)
+                 (plist-get uri :address)
+                 (e-store-read store (plist-get uri :uri) nil)
+                 options))
+     :work (e-resource-toc-content-work
+            (lambda (work-arguments _context)
+              (let ((uri (plist-get work-arguments :uri)))
+                (list :uri (plist-get uri :uri)
+                      :name (plist-get uri :address)
+                      :content (e-store-read store (plist-get uri :uri) nil)
+                      :options (car (plist-get work-arguments :operation-arguments)))))))))
+
 (defun e-store-resource-methods (store)
   "Return a registration function for read-only e:// STORE methods."
   (lambda (registry)
-    (dolist (method (list (e-store-resource-method store)
-                          (e-store-glob-resource-method store)
-                          (e-store-search-resource-method store)))
+    (dolist (method (delq nil
+                           (list (e-store-resource-method store)
+                                 (e-store-glob-resource-method store)
+                                 (e-store-search-resource-method store)
+                                 (e-store-table-of-content-resource-method store))))
       (e-resources-register registry method))))
 
 (provide 'e-store)

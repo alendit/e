@@ -16,6 +16,7 @@
 (require 'subr-x)
 (require 'e-capabilities)
 (require 'e-operations)
+(require 'e-resource-toc)
 (require 'e-resources)
 (require 'e-tools)
 
@@ -184,6 +185,29 @@ defaults to the current time.  Return the list of deleted file paths."
             (push path deleted)))))
     (nreverse deleted)))
 
+
+(defun e-raw-results--table-of-content-method ()
+  "Return a raw-result table-of-content resource method, if available."
+  (when (e-resource-toc-available-p)
+    (e-resource-method-create
+     :scheme "raw-result"
+     :operation e-operation-table-of-content
+     :description "Generic ephemeral raw tool result resources outlined by piping text to wot --stdin. Pass language when inference is ambiguous."
+     :uri-patterns '("raw-result://<name>")
+     :handler (lambda (parsed-uri options)
+                (e-resource-toc-run-content
+                 (plist-get parsed-uri :uri)
+                 (plist-get parsed-uri :address)
+                 (e-raw-results-read (plist-get parsed-uri :uri))
+                 options))
+     :work (e-resource-toc-content-work
+            (lambda (work-arguments _context)
+              (let ((uri (plist-get work-arguments :uri)))
+                (list :uri (plist-get uri :uri)
+                      :name (plist-get uri :address)
+                      :content (e-raw-results-read (plist-get uri :uri))
+                      :options (car (plist-get work-arguments :operation-arguments)))))))))
+
 (defun e-raw-results--register-resource-methods (registry &rest _context)
   "Register raw-result resource methods in REGISTRY."
   (e-resources-register
@@ -195,6 +219,8 @@ defaults to the current time.  Return the list of deleted file paths."
     :uri-patterns '("raw-result://<name>")
     :handler (lambda (parsed-uri _range)
                (e-raw-results-read (plist-get parsed-uri :uri)))))
+  (when-let ((method (e-raw-results--table-of-content-method)))
+    (e-resources-register registry method))
   nil)
 
 (defun e-raw-results-capability-create ()

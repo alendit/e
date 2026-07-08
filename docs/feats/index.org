@@ -70,9 +70,5 @@ Status values for coding agents:
 | 57 | Planned | 57-resource-query-controls/ | Resource Query Controls |
 | 58 | Done | 58-ui-work-substrate/ | UI Work Substrate |
 | 59 | Done | 59-subagents/ | Subagents |
-<<<<<<< HEAD
 | 60 | Done | 60-await-tool/ | Await Tool (event-driven waiting on work) |
-||||||| parent of d946a38 (Plan resource table of content operation)
-=======
-| 60 | Ready | 60-resource-table-of-content/ | Resource Table Of Content |
->>>>>>> d946a38 (Plan resource table of content operation)
+| 61 | In-review | 61-resource-table-of-content/ | Resource Table Of Content |

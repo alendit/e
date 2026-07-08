@@ -21,6 +21,7 @@
 (require 'e-operations)
 (require 'e-resource-patterns)
 (require 'e-resource-query)
+(require 'e-resource-toc)
 (require 'e-request)
 (require 'e-resources)
 (require 'e-tools)
@@ -939,6 +940,38 @@ root and is suitable for streaming writes."
       (setq index (1+ index)))
     new-content))
 
+
+(defun e-session-tmp--table-of-content-file-request (harness session-id uri options)
+  "Return a file-backed table-of-content request for tmp URI."
+  (let* ((relative-name (plist-get uri :address))
+         (path (e-session-tmp--path harness session-id relative-name)))
+    (list :uri (plist-get uri :uri)
+          :file path
+          :options options)))
+
+(defun e-session-tmp--table-of-content-method (harness session-id)
+  "Return a tmp table-of-content resource method, if available."
+  (when (e-resource-toc-available-p)
+    (e-resource-method-create
+     :scheme "tmp"
+     :operation e-operation-table-of-content
+     :description "Ephemeral session-scoped temporary text resources outlined with wot on the backing file."
+     :uri-patterns '("tmp://<relative-path>")
+     :handler (lambda (uri options)
+                (let ((request (e-session-tmp--table-of-content-file-request
+                                harness session-id uri options)))
+                  (e-resource-toc-run-file
+                   (plist-get request :uri)
+                   (plist-get request :file)
+                   (plist-get request :options))))
+     :work (e-resource-toc-file-work
+            (lambda (work-arguments _context)
+              (e-session-tmp--table-of-content-file-request
+               harness
+               session-id
+               (plist-get work-arguments :uri)
+               (car (plist-get work-arguments :operation-arguments))))))))
+
 (cl-defun e-session-tmp--register-resource-methods
     (registry &key harness session-id &allow-other-keys)
   "Register tmp:// resource methods in REGISTRY for HARNESS SESSION-ID."
@@ -1025,6 +1058,8 @@ root and is suitable for streaming writes."
                query
                options))
    :work (e-session-tmp--search-work harness session-id)))
+  (when-let ((method (e-session-tmp--table-of-content-method harness session-id)))
+    (e-resources-register registry method))
   nil)
 
 (defun e-session-tmp-capability-create ()

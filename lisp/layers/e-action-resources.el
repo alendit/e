@@ -20,6 +20,7 @@
 (require 'e-harness)
 (require 'e-resource-patterns)
 (require 'e-resource-query)
+(require 'e-resource-toc)
 (require 'e-resources)
 
 (define-error 'e-action-resources-invalid-uri
@@ -379,6 +380,39 @@
     (list :matches (vconcat (seq-take matches actual-limit))
           :truncated (> (length matches) actual-limit))))
 
+
+(defun e-action-resources--table-of-content (harness session-id turn-id uri options)
+  "Return a table-of-content outline for action description URI."
+  (e-resource-toc-run-content
+   (plist-get uri :uri)
+   (plist-get uri :address)
+   (e-action-resources--read harness session-id turn-id uri nil)
+   options
+   "markdown"))
+
+(defun e-action-resources--table-of-content-method (harness session-id turn-id)
+  "Return an e-action table-of-content resource method, if available."
+  (when (e-resource-toc-available-p)
+    (e-resource-method-create
+     :scheme "e-action"
+     :operation e-operation-table-of-content
+     :description "Generated action descriptions outlined by piping Markdown text to wot --stdin."
+     :uri-patterns '("e-action://active"
+                     "e-action://<capability>"
+                     "e-action://<capability>/<action>")
+     :handler (lambda (uri options)
+                (e-action-resources--table-of-content
+                 harness session-id turn-id uri options))
+     :work (e-resource-toc-content-work
+            (lambda (work-arguments _context)
+              (let ((uri (plist-get work-arguments :uri)))
+                (list :uri (plist-get uri :uri)
+                      :name (plist-get uri :address)
+                      :content (e-action-resources--read
+                                harness session-id turn-id uri nil)
+                      :options (car (plist-get work-arguments :operation-arguments))
+                      :fallback-language "markdown")))))))
+
 (cl-defun e-action-resources-register-resource-methods
     (registry &key harness session-id turn-id &allow-other-keys)
   "Register e-action:// resource methods in REGISTRY."
@@ -414,8 +448,11 @@
                              "e-action://<capability>")
              :handler (lambda (uri query options)
                         (e-action-resources--search
-                         harness session-id turn-id uri query options)))))
-    (e-resources-register registry method)))
+                         harness session-id turn-id uri query options)))
+            (e-action-resources--table-of-content-method
+             harness session-id turn-id)))
+    (when method
+      (e-resources-register registry method))))
 
 (defun e-action-resources-capability-create ()
   "Create the action description resource capability."
