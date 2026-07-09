@@ -627,6 +627,88 @@ Counts attempts in the returned (BACKEND . COUNTER) cons's cdr."
     (should (member 'turn-failed
                     (mapcar (lambda (e) (plist-get e :type)) events)))))
 
+(ert-deftest e-harness-test-retry-deadline-resets-after-successful-request ()
+  "Successful provider work does not consume the transient-retry budget.
+A turn that blips retryably, recovers, then spends longer than the retry
+budget doing real work (a tool call) must still retry a later blip: the
+budget bounds a consecutive failure burst, not the turn's total wall clock."
+  (let* ((e-harness-retry-initial-backoff-seconds 0.02)
+         (e-harness-retry-backoff-multiplier 1.0)
+         (e-harness-retry-max-backoff-seconds 0.02)
+         ;; Budget covers a short failure burst but is far shorter than the
+         ;; tool's runtime, so a never-reset deadline would be long expired
+         ;; by the time the follow-up request blips.
+         (e-harness-retry-max-elapsed-seconds 0.2)
+         (tool-delay 0.5)
+         (counter (list 0))
+         (backend
+          (e-backend-create
+           :name "flaky-then-tool"
+           :start
+           (cl-function
+            (lambda (&key messages options on-item on-done on-error
+                           on-request-start)
+              (ignore messages options on-error)
+              ;; Publish a request handle like the real adapters, so the loop
+              ;; emits provider-request-started/finished lifecycle events.
+              (when on-request-start
+                (funcall on-request-start
+                         (e-backend-request-create :cancel (lambda () t))))
+              (run-at-time
+               0 nil
+               (lambda ()
+                 (cl-incf (car counter))
+                 (pcase (car counter)
+                   ;; First request blips: plants the retry deadline.
+                   (1 (funcall on-item
+                               '(:type backend-error
+                                 :content "529: overloaded_error"
+                                 :payload (:status 529))))
+                   ;; Recovers into a tool call.
+                   (2 (funcall on-item '(:type tool-call
+                                         :id "call-1"
+                                         :name "slow-tool"
+                                         :arguments (:text "hi")))
+                      (funcall on-item '(:type done :reason tool-use)))
+                   ;; Follow-up after the long tool blips again.
+                   (3 (funcall on-item
+                               '(:type backend-error
+                                 :content "529: overloaded_error"
+                                 :payload (:status 529))))
+                   ;; Final recovery.
+                   (_ (funcall on-item
+                               '(:type assistant-message :content "done"))
+                      (funcall on-item '(:type done :reason stop))))
+                 (funcall on-done '(:status done))))
+              nil))))
+         (tools (e-tools-registry-create))
+         (harness (e-harness-create :backend backend))
+         (events nil))
+    (e-tools-register
+     tools
+     :name "slow-tool"
+     :description "Runs longer than the retry budget."
+     :start
+     (cl-function
+      (lambda (&key arguments on-done on-error on-request-start)
+        (ignore arguments on-error)
+        (let ((request (e-tools-request-create :cancel (lambda () t))))
+          (when on-request-start (funcall on-request-start request))
+          (run-at-time tool-delay nil
+                       (lambda () (funcall on-done "tool done")))
+          request))))
+    (cl-letf (((symbol-function 'e-harness-tools)
+               (lambda (_harness &optional _session-id _turn-id) tools)))
+      (e-harness-subscribe harness (lambda (event) (push event events)))
+      (e-harness-create-session harness :id "session-1")
+      (e-harness-prompt-async harness "session-1" "question")
+      (let ((settled (e-harness-wait-batch harness "session-1" 5.0)))
+        (should (equal (plist-get settled :status) 'done)))
+      (let ((types (mapcar (lambda (e) (plist-get e :type)) events)))
+        ;; The follow-up blip is retried rather than settling the turn failed.
+        (should (= 2 (seq-count (lambda (ty) (eq ty 'turn-retrying)) types)))
+        (should-not (memq 'turn-failed types))))))
+
 (ert-deftest e-harness-test-non-retryable-error-fails-immediately ()
   "A genuine client-fault backend error settles without any retry."
   (let* ((e-harness-retry-max-elapsed-seconds 5.0)

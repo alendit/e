@@ -2414,6 +2414,17 @@ cancellation.  SESSION-ID identifies the session."
 	                       (plist-put entry :open-tool-call payload))
 	                      ('tool-finished
 	                       (plist-put entry :open-tool-call nil))
+	                      ('provider-request-finished
+	                       ;; A request that completes clears the transient-retry
+	                       ;; window: the budget bounds a consecutive failure
+	                       ;; burst, not the turn's total wall clock.  Without
+	                       ;; this a long turn (many successful requests, slow
+	                       ;; tools) lets the deadline planted by an early blip
+	                       ;; expire, so a late transport blip settles the turn
+	                       ;; failed instead of retrying.
+	                       (when (eq (plist-get payload :status) 'done)
+	                         (plist-put entry :retry-deadline nil)
+	                         (plist-put entry :retry-attempt nil)))
 	                      ('provider-anchor-candidate
 	                       (plist-put
 	                        entry
