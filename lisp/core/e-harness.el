@@ -1940,7 +1940,10 @@ For `e-compaction-error' return only the bare reason string; the
          (eq (car err) 'e-compaction-error)
          (stringp (cadr err)))
     (cadr err))
-   (t (error-message-string err))))
+   ;; Fallthrough for an arbitrary condition.  Route through the bounded
+   ;; formatter: a cyclic or huge error payload would otherwise wedge the
+   ;; printer and spin Emacs at 100% CPU.
+   (t (e-work-error-message err))))
 
 (defun e-harness--backend-error-details (err)
   "Return structured provider details from condition ERR, or nil."

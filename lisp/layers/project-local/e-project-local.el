@@ -292,7 +292,7 @@ re-primes cleanly instead of reusing a half-loaded layer."
           'e-project-local
           (format "Priming project-local extensions for %s failed: %s"
                   (abbreviate-file-name root)
-                  (error-message-string err))
+                  (e-work-error-message err))
           :warning)
          nil)))))
 

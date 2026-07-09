@@ -297,7 +297,7 @@ domain-side failure never rolls back the already-persisted verdict."
       (condition-case err
           (let ((effect (funcall fn event)))
             (when effect (push effect effects)))
-        (error (push (list :error (error-message-string err)) effects))))
+        (error (push (list :error (e-work-error-message err)) effects))))
     (nreverse effects)))
 
 (defun e-annotation-tools--actions ()

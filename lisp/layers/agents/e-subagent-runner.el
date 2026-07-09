@@ -140,7 +140,7 @@ active turn.  ON-SETTLE is called as (STATUS &key summary outputs error)."
       (condition-case err
           (e-harness-prompt-async child-harness child-session-id prompt)
         (error
-         (finish 'failed :error (error-message-string err))))
+         (finish 'failed :error (e-work-error-message err))))
       (list :cancel
             (lambda ()
               (ignore-errors

@@ -370,7 +370,7 @@ When nil, prefer the current Emacs executable and fall back to `emacs' on
   "Return public terminal message for JOB."
   (or (plist-get (e-elisp-job--work-result job) :suffix)
       (when-let ((err (e-elisp-job--work-error job)))
-        (error-message-string err))))
+        (e-work-error-message err))))
 
 (defun e-elisp-job--exit-code (job)
   "Return process exit code for JOB, when known."

@@ -590,6 +590,39 @@
     (should (equal (plist-get (e-work-handle-result handle) :summary)
                    "Work"))))
 
+(ert-deftest e-work-test-error-message-formats-plain-condition ()
+  "A plain error condition formats to its normal message."
+  (should (string-match-p
+           "boom"
+           (e-work-error-message '(error "boom")))))
+
+(ert-deftest e-work-test-error-message-bounds-huge-payload ()
+  "A condition carrying a huge data payload formats to a bounded string.
+This is the shape that hung Emacs: a backend error whose condition data was
+enormous.  `error-message-string' with the caller's print settings builds one
+ever-growing string (RSS climbing ~1GB/min, 100% CPU) until memory runs out.
+The guard binds `print-length'/`print-level', so the message stays small."
+  (let* ((big (make-list 1000000 42))
+         (err (list 'e-loop-backend-error "upstream reset" big))
+         (message (e-work-error-message err)))
+    (should (stringp message))
+    ;; Unbounded this would be millions of chars; the caps keep it tiny.
+    (should (< (length message) 4096))))
+
+(ert-deftest e-work-test-error-message-terminates-on-cyclic-payload ()
+  "A condition whose data is a self-referential cycle still formats.
+`print-circle' lets the printer emit cycle markers instead of recursing
+forever, so the call returns promptly rather than hanging."
+  (let ((cyclic (list 1 2 3)))
+    (setcdr (cddr cyclic) cyclic)      ; 3's cdr points back at the head
+    (let ((message (with-timeout (5 (ert-fail "e-work-error-message did not terminate"))
+                     ;; A defined error prints its data (unlike bare `error',
+                     ;; which collapses to "peculiar error").
+                     (e-work-error-message (list 'e-loop-backend-error "reset" cyclic)))))
+      (should (stringp message))
+      ;; `print-circle' emits the #N=/#N# cycle markers rather than looping.
+      (should (string-match-p "#[0-9]+" message)))))
+
 (provide 'e-work-test)
 
 ;;; e-work-test.el ends here

@@ -93,6 +93,18 @@
   result
   error)
 
+(defun e-work-error-message (err)
+  "Return `error-message-string' for ERR with the printer bounded.
+`error-message-string' prints the condition's data with the caller's print
+settings.  A condition whose data is cyclic or huge (harness state, a buffer, a
+process object) then makes the printer loop without end, spinning Emacs at 100%
+CPU while memory climbs until it crashes.  Bind the printer to detect cycles and
+cap size so formatting a hostile error always terminates."
+  (let ((print-circle t)
+        (print-length 100)
+        (print-level 8))
+    (error-message-string err)))
+
 (defun e-work--next-id (spec)
   "Return a fresh work id for SPEC."
   (format "%s/%d"

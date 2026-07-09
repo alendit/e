@@ -435,7 +435,7 @@ strings."
                              e-tools-nested-async-tool-rejected))
            (stringp (cadr err)))
       (cadr err)
-    (error-message-string err)))
+    (e-work-error-message err)))
 
 (defun e-tool-lifecycle-prepare-call (lifecycle tool-call)
   "Return TOOL-CALL after LIFECYCLE preparation."

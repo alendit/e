@@ -228,7 +228,7 @@
   "Return payload fields for ERR."
   (list :status 'error
         :error-class (car err)
-        :message (error-message-string err)))
+        :message (e-work-error-message err)))
 
 (defun e-actions-dispatch (capability action &optional arguments options)
   "Dispatch CAPABILITY ACTION with ARGUMENTS and return a dispatch plist.

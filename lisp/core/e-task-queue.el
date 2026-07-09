@@ -326,7 +326,7 @@ is missing or unresolvable settles `failed' without stalling the dispatcher."
               (e-task-queue--settle
                queue task-id 'failed
                :error (format "Cannot resolve harness instance %s: %s"
-                              instance-id (error-message-string err)))
+                              instance-id (e-work-error-message err)))
               nil))))
       (when harness
         (let ((handle
@@ -540,7 +540,7 @@ function that aborts the active turn."
       (condition-case err
           (e-harness-prompt-async harness session-id (plist-get task :prompt))
         (error
-         (finish 'failed :error (error-message-string err))))
+         (finish 'failed :error (e-work-error-message err))))
       (list :session-id session-id
             :cancel (lambda () (ignore-errors (e-harness-abort harness session-id)))))))
 

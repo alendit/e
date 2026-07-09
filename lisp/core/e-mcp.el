@@ -1123,7 +1123,7 @@ the callback runs."
    'e-mcp
    (format "MCP server %s unavailable, skipping: %s"
            (e-mcp-server-id server)
-           (error-message-string err))
+           (e-work-error-message err))
    :warning))
 
 (defun e-mcp--ensure-catalog-started (servers)
@@ -1244,7 +1244,7 @@ Interactively, refresh all servers seen during capability construction."
                       (message "MCP refresh finished"))
            :on-error (lambda (err)
                        (display-warning 'e-mcp
-                                        (error-message-string err)
+                                        (e-work-error-message err)
                                         :warning)))
           nil)
       (e-mcp--invalidate-catalog servers)
