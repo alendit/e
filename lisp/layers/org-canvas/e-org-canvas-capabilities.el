@@ -17,6 +17,7 @@
 (require 'e-chat-session)
 (require 'e-context)
 (require 'e-harness)
+(require 'e-hooks)
 (require 'e-layers)
 (require 'e-session)
 (require 'e-workspaces)
@@ -32,6 +33,14 @@
 (defconst e-org-canvas--document-instructions
   "Scope: document. Consider the whole Org document. Add, reorganize, summarize, or enrich information in the appropriate location across the document. Use visibility tools to inspect or reveal relevant sections as needed."
   "Model-facing instructions for Org Canvas document scope.")
+
+(defconst e-org-canvas--org-output-style-instructions
+  "Org source style for this canvas:
+Write Org prose with one sentence per physical line.
+Do not hard-wrap prose to a fill column.
+Let Emacs visual-line or display wrapping handle width.
+Before finalizing an edit, check newly written Org prose for accidental wrapped sentences."
+  "File-aware output-style guidance for Org Canvas sessions.")
 
 (defvar e-org-canvas-harness)
 (defvar e-org-canvas-session-id)
@@ -609,6 +618,25 @@ and returns the number of paragraphs whose text changed."
       #'e-org-canvas--reflow-sentences-tool
       empty-object))))
 
+(defun e-org-canvas--system-guidance-hook (fragments context)
+  "Add Org-source output style guidance to FRAGMENTS for Org Canvas CONTEXT."
+  (let* ((harness (plist-get context :harness))
+         (session-id (plist-get context :session-id))
+         (metadata (and harness
+                        session-id
+                        (e-org-canvas-session-metadata harness session-id))))
+    (if (eq (plist-get metadata :mode) 'org)
+        (append
+         fragments
+         (list
+          (e-capabilities-system-guidance-fragment-create
+           :id 'org-source-style
+           :owner 'org-canvas
+           :content e-org-canvas--org-output-style-instructions
+           :priority 262
+           :cache-placement 'dynamic-context)))
+      fragments)))
+
 (defun e-org-canvas-capability-create ()
   "Create the Org Canvas gated capability."
   (e-capability-create
@@ -621,6 +649,12 @@ and returns the number of paragraphs whose text changed."
           :cache-placement 'dynamic-context
           :build #'e-org-canvas-context-provider
           :snapshot-build #'e-org-canvas-context-snapshot-provider))
+   :hooks
+   (list (e-hook-create
+          :id "org-canvas-org-output-style"
+          :point :system-guidance
+          :handler #'e-org-canvas--system-guidance-hook
+          :description "Add Org source style guidance for Org Canvas sessions."))
    :actions (e-org-canvas--actions)))
 
 (defun e-org-canvas-layer-create ()

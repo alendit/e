@@ -172,6 +172,43 @@
     (should (equal (e-hooks-run-reduce registry :post-tool-call "value" nil)
                    "value-hooked"))))
 
+(ert-deftest e-capabilities-test-system-guidance-hook-adds-system-fragment ()
+  "Capability hooks can extend the backend-neutral system guidance fragments."
+  (let (captured-context)
+    (let* ((capability
+            (e-capability-create
+             :id 'guidance
+             :hooks
+             (list (e-hook-create
+                    :id "50-add-guidance"
+                    :point :system-guidance
+                    :handler
+                    (lambda (fragments context)
+                      (setq captured-context context)
+                      (append
+                       fragments
+                       (list
+                        (e-capabilities-system-guidance-fragment-create
+                         :id 'extra
+                         :owner 'guidance
+                         :content "Hook guidance."
+                         :priority 240
+                         :cache-placement 'static-prefix))))))))
+           (context
+            (e-capabilities-context
+             (list capability)
+             :harness 'harness
+             :session-id "session"
+             :turn-id "turn"))
+           (messages (plist-get context :messages))
+           (segments (plist-get context :segments)))
+      (should (equal (plist-get captured-context :harness) 'harness))
+      (should (equal (plist-get captured-context :session-id) "session"))
+      (should (equal messages '((:role system :content "Hook guidance."))))
+      (should (equal (plist-get (car segments) :kind) 'static-prefix))
+      (should (equal (plist-get (car segments) :id)
+                     '(guidance system-guidance extra))))))
+
 (ert-deftest e-capabilities-test-context-messages ()
   "Context messages include instructions before provider messages."
   (let* ((provider

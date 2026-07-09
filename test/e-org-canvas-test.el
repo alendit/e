@@ -907,6 +907,22 @@
           (should (string-match-p "point=42" content))
           (should (string-match-p "Cached heading" content)))))))
 
+(ert-deftest e-org-canvas-test-plain-session-does-not-get-org-source-style ()
+  "Org Canvas style guidance is gated by Org Canvas session metadata."
+  (let ((harness (e-org-canvas-test--harness t)))
+    (e-harness-create-session harness :id "plain")
+    (let* ((context (e-harness-context harness "plain"))
+           (content (mapconcat
+                     (lambda (message) (or (plist-get message :content) ""))
+                     (plist-get context :messages)
+                     "\n"))
+           (segment-ids (mapcar (lambda (segment)
+                                  (plist-get segment :id))
+                                (plist-get context :segments))))
+      (should-not (string-match-p "Org source style for this canvas" content))
+      (should-not (member '(org-canvas system-guidance org-source-style)
+                          segment-ids)))))
+
 (ert-deftest e-org-canvas-test-document-context-uses-whole-document-scope ()
   "Document-scope context asks the model to consider the full Org document."
   (let ((harness (e-org-canvas-test--harness t)))
@@ -923,10 +939,14 @@
        '(:role user
          :content "Use the whole document."
          :metadata (:org-canvas-scope document)))
-      (let ((content (mapconcat
-                      (lambda (message) (or (plist-get message :content) ""))
-                      (plist-get (e-harness-context harness "org") :messages)
-                      "\n")))
+      (let* ((context (e-harness-context harness "org"))
+             (content (mapconcat
+                       (lambda (message) (or (plist-get message :content) ""))
+                       (plist-get context :messages)
+                       "\n"))
+             (segment-ids (mapcar (lambda (segment)
+                                    (plist-get segment :id))
+                                  (plist-get context :segments))))
         (should (string-match-p "whole Org document" content))
         (should (string-match-p "point=" content))
         ;; Guidance must point durable writes at document-uri and warn off the
@@ -941,7 +961,12 @@
         ;; Org prose should use sentence-per-line source formatting rather
         ;; than hard wrapping sentences to a fill column.
         (should (string-match-p "sentence-per-line" content))
-        (should (string-match-p "do not hard-wrap" content))))))
+        (should (string-match-p "do not hard-wrap" content))
+        ;; Org Canvas also contributes the rule through the generic
+        ;; system-guidance hook so output-style extensions can be file-aware.
+        (should (string-match-p "Org source style for this canvas" content))
+        (should (member '(org-canvas system-guidance org-source-style)
+                        segment-ids))))))
 
 (ert-deftest e-org-canvas-test-submit-records-scope-focus-and_canvas_metadata ()
   "Prompt submission records Org Canvas turn metadata through chat-session."

@@ -302,11 +302,50 @@ Acceptance:
 - Long style prose grows the cached system prefix. Styles are short and stable,
   so prompt-cache impact is small; styles live in =static-prefix= so they cache.
 
+* Implemented follow-up: file-aware style guidance and system-prompt extensions
+
+Implemented a capability-owned =:system-guidance= hook that lets active capabilities add backend-neutral system guidance fragments before provider serialization.
+Org Canvas now uses this hook to add Org source style guidance when the active session targets an Org document.
+
+** Org Canvas sentence-per-line rule
+
+Org Canvas should contribute a file-aware output-style extension when the active canvas target is an Org document.
+The extension should say that Org prose uses one sentence per physical line.
+It should also say not to hard-wrap prose to a fill column.
+It should ask the agent to check newly written Org prose for accidental wrapped sentences before finalizing.
+This rule belongs in the style layer because it shapes the model's written output, even though Org Canvas also owns the target document and editing workflow.
+
+** Generic system-prompt extension hook
+
+Add a generic capability hook for system-prompt guidance before backend serialization.
+The hook should reduce over a structured list of system guidance fragments, not raw provider-specific request text.
+Each fragment should carry an id, priority, cache-placement, owner capability, and content.
+The hook context should include harness, session id, turn id, context purpose, project root, shell metadata, and any active resource or canvas metadata that is safe to expose.
+Capabilities should be able to add fragments, adjust their own fragments, or decline to contribute.
+Capabilities should not be able to rewrite unrelated safety guidance without an explicit contract.
+
+** Output-style extension contract
+
+Output style should become one consumer of the generic hook rather than a special case.
+The selected style remains the base fragment.
+Capabilities can add scoped style extensions after the base style, ordered by priority.
+Org Canvas can then add the Org sentence-per-line rule only when the target file type is Org.
+Other shells or capabilities can later add Markdown, code-review, teaching, or artifact-specific style rules without changing backend adapters.
+
+** Acceptance for the follow-up
+
+- An Org Canvas turn over an Org document includes the sentence-per-line style extension in the system prompt.
+- A non-Org chat turn does not include the Org Canvas style extension.
+- The extension is visible in context inspection with a stable fragment id and owner.
+- Tests prove that the generic hook can add a system guidance fragment without provider-specific code.
+- Tests prove that provider adapters still receive the guidance in the system channel, not as a user turn.
+
 * Later Work
 
 - Composer-level one-off style override (a prefix shortcut, cf. feature 31).
 - Style composition / layering when a real need appears.
 - A richer style-management UI once the registry has many entries.
+- File-aware style extensions through capability-owned system-prompt hooks.
 
 * Provenance
 

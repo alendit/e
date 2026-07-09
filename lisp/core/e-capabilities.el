@@ -20,6 +20,7 @@
 (require 'e-resources)
 (require 'e-store)
 (require 'e-work)
+(require 'subr-x)
 
 (cl-defstruct (e-capability
                (:constructor e-capability--create
@@ -198,6 +199,43 @@ slot existed."
       (e-capability--prompts capability)
     nil))
 
+(defconst e-capabilities-system-guidance-default-capability-index 100000
+  "Synthetic capability index for system-guidance hook fragments.
+Hook fragments sort by cache placement and priority first.  This large fallback
+index keeps them after ordinary capability instruction fragments at the same
+priority unless the hook author supplies a more specific ordering later.")
+
+(cl-defun e-capabilities-system-guidance-fragment-create
+    (&key id owner content (priority 200) (cache-placement 'static-prefix)
+          (message-index 0))
+  "Create a backend-neutral system guidance fragment.
+ID is a stable fragment id owned by OWNER.  CONTENT is system-message prose.
+PRIORITY and CACHE-PLACEMENT use the same ordering contract as capability
+instructions and context providers.  The returned plist is suitable for the
+`:system-guidance' capability hook point, which reduces over context fragments
+before backend serialization."
+  (unless id
+    (user-error "System guidance fragment requires :id"))
+  (unless owner
+    (user-error "System guidance fragment requires :owner"))
+  (unless (and (stringp content) (not (string-empty-p content)))
+    (signal 'wrong-type-argument (list 'stringp content)))
+  (let ((rank (e-context-cache-placement-rank cache-placement)))
+    (list :cache-placement rank
+          :priority priority
+          :capability-index e-capabilities-system-guidance-default-capability-index
+          :provider-index 0
+          :message-index message-index
+          :segment-kind (pcase cache-placement
+                          ('static-prefix 'static-prefix)
+                          ('stable-context 'stable-context)
+                          ('dynamic-context 'current-state))
+          :segment-id (list owner 'system-guidance id)
+          :message (list :role 'system :content content)
+          :owner owner
+          :guidance-id id
+          :system-guidance t)))
+
 (dolist (symbol '(e-capability-id
                   e-capability-name
                   e-capability-instructions
@@ -331,6 +369,13 @@ status-like callers."
              thereis (< left-item right-item)
              until (/= left-item right-item))))
 
+(defun e-capabilities--hooks-registry (capabilities)
+  "Return a hook registry built from CAPABILITIES."
+  (let ((registry (e-hooks-registry-create)))
+    (dolist (capability capabilities)
+      (e-capabilities-register-hooks capability registry))
+    registry))
+
 (cl-defun e-capabilities--context-fragments
     (capabilities &key harness session-id turn-id context-purpose)
   "Return sorted context fragments contributed by CAPABILITIES.
@@ -380,6 +425,16 @@ providers."
               (setq message-index (1+ message-index))))
           (setq provider-index (1+ provider-index))))
       (setq capability-index (1+ capability-index)))
+    (setq fragments
+          (e-hooks-run-reduce
+           (e-capabilities--hooks-registry capabilities)
+           :system-guidance
+           fragments
+           (list :harness harness
+                 :session-id session-id
+                 :turn-id turn-id
+                 :context-purpose context-purpose
+                 :capabilities capabilities)))
     (sort fragments #'e-capabilities--fragment-less-p)))
 
 (defun e-capabilities--fragment-segment (fragment)
