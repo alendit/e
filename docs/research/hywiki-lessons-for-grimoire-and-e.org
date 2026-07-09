@@ -1,0 +1,283 @@
+#+title: Research: HyWiki lessons for Grimoire and e
+#+date: 2026-07-09
+#+startup: overview
+
+* Source
+
+- Charlie Holland, "HyWiki: Zero Markup Hypertext", 2026-07-07:
+  https://www.chiply.dev/post-hyperbole-hywiki
+
+* Goal
+
+Capture what HyWiki and Hyperbole's implicit-button model suggest for the
+Grimoire + =e= split.
+
+This is background research, not an implementation plan. The question is not
+whether to copy HyWiki. The question is which ideas clarify the boundary
+between durable knowledge artifacts in Grimoire and live, cross-buffer behavior
+in =e=.
+
+* Summary
+
+HyWiki's strongest idea is that a concept can be promoted once and then become
+actionable wherever matching text already appears. The note or page is only the
+durable anchor. The live value comes from a runtime that recognizes ordinary
+text patterns and attaches actions to them across buffers.
+
+For Grimoire and =e=, that suggests this split:
+
+- Grimoire owns curated concepts, topic pages, source notes, aliases, and the
+  durable graph.
+- =e= owns recognition at point, visual activation, action dispatch, and
+  cross-buffer reach inside Emacs.
+- Existing files remain ordinary Org, Markdown, code comments, email, web
+  captures, and generated artifacts. Concept activation should ride alongside
+  them as a sidecar behavior instead of requiring a migration into a single
+  note schema.
+
+* What the article contributes
+
+** Promote concepts instead of pre-structuring all notes
+
+The article frames HyWiki as low-friction because users can keep writing plain
+text and only promote a concept when it becomes worth curating. Once promoted,
+future and existing occurrences of the concept become actionable.
+
+This maps well to Grimoire. A topic page should be the result of curation, not
+the mandatory starting point for every sentence or capture. The useful action is
+often "promote this thing I am already looking at" rather than "stop writing and
+create a fully structured note first".
+
+** Let the file system remain the knowledge substrate
+
+HyWiki's sidecar lesson is that the whole file system can be treated as
+knowledge-bearing text. The wiki directory is the curated index, but not the
+only place where knowledge exists.
+
+For Grimoire, this argues against treating =topics/= as the only meaningful
+surface. =topics/= can remain the durable concept layer while notes in projects,
+session transcripts, research files, source comments, and imported references
+can still participate through recognition and actions.
+
+** Make activation runtime-owned
+
+Hyperbole's implicit buttons work because the runtime recognizes actionable
+patterns around point and dispatches an action. The durable page is not doing
+all the work. The runtime is.
+
+For =e=, this reinforces the existing vocabulary:
+
+- A model-facing tool is not the right primitive for this.
+- A shell-facing capability action is closer, because activation starts from
+  user-visible text and should resolve through the active harness/session
+  context.
+- Presentation shells own keymaps, overlays, and buffer interaction; harnesses
+  own session, capability, resource, and action policy.
+
+** Use syntax as a convention, not as the core system
+
+HyWiki uses WikiWords as the minimal syntax. That exact convention is probably
+too narrow for Grimoire because many useful concepts are lowercase phrases,
+proper names with spaces, Org IDs, repo symbols, feature IDs, bug slugs, and
+source URLs.
+
+The transferable idea is not PascalCase. It is "recognizable text plus an
+associated action". Grimoire should be able to expose a concept registry with
+canonical names, aliases, and source-backed identifiers; =e= can decide which
+recognizers are cheap and safe enough to run in live buffers.
+
+* Grimoire implications
+
+** Concept registry as durable artifact
+
+Grimoire could treat each curated topic as a concept record with:
+
+- canonical display name;
+- stable topic path or ID;
+- aliases and recognizer forms;
+- source links and provenance;
+- optional actions such as open topic, append source note, show mentions,
+  create follow-up work, or explain current concept in context.
+
+This keeps the durable knowledge graph in Grimoire without forcing every
+consumer to understand the full topic file structure.
+
+** Promotion workflow
+
+A useful Grimoire action would be:
+
+#+begin_example
+Promote text at point -> create/update topic -> register canonical name/aliases
+#+end_example
+
+The command should work from a project buffer, a chat transcript, an EWW page,
+an email, or a research file. The current context becomes source material for
+the new concept, but the original buffer does not need to be rewritten with
+explicit links.
+
+** Mention discovery as audit, not mandatory linking
+
+HyWiki's lesson is that explicit links are not the only way to make a graph
+useful. Grimoire can still keep explicit Org links and IDs where they are
+valuable, but unlinked mentions should become first-class audit material:
+
+- "show all recognized mentions for this concept";
+- "promote this mention to an explicit source note";
+- "ignore this false positive here";
+- "add this spelling as an alias".
+
+That makes the graph grow from real writing rather than from link bookkeeping.
+
+** Sidecar over migration
+
+Grimoire should remain able to sit beside existing notes and projects. A
+HyWiki-like layer should not require converting every note into Grimoire topic
+syntax. The better target is:
+
+#+begin_example
+ordinary files + Grimoire concept registry + e runtime activation
+#+end_example
+
+* e implications
+
+** Implicit concept actions
+
+=e= could provide a shell-level "implicit concept action" capability:
+
+- inspect text at point and nearby context;
+- ask active capabilities for recognizers;
+- rank matching actions;
+- show a compact action menu when multiple matches apply;
+- execute through =e-actions-call=, not through model-facing tools.
+
+This is broader than Grimoire. File paths, feature IDs, bug report slugs,
+session IDs, tool-call IDs, symbols, URLs, Org IDs, and Grimoire concepts can
+all be recognized through the same interaction shape.
+
+** Keep recognition cheap and bounded
+
+Cross-buffer activation must respect =e='s main-thread constraints. Recognition
+should be cheap at point and conservative for visible-region overlays. Expensive
+mention search belongs in background work, cached resources, or explicit
+commands, not in every redisplay pass.
+
+Likely boundaries:
+
+- at-point recognizers run synchronously only if they are bounded local scans;
+- visible-region decoration uses caches and small budgets;
+- corpus-wide mention discovery runs as async work;
+- large concept registries are indexed outside hot presentation paths.
+
+** Presentation shell owns affordances
+
+The chat shell, Org Canvas shell, and future project shells should own their
+keybindings and overlays. The harness should not know how a particular buffer
+draws a recognized concept.
+
+The harness can own:
+
+- capability/action registration;
+- current workspace/session context;
+- resource lookup;
+- policy for which capabilities are active.
+
+The shell can own:
+
+- action key behavior;
+- visual highlighting;
+- transient menus;
+- preview text;
+- buffer-local enablement.
+
+** Avoid turning this into a model tool
+
+The user action "open or promote this concept" should not require a model turn.
+Models may request Grimoire operations through tools when appropriate, but the
+direct user path should stay local and deterministic.
+
+This distinction matters because implicit activation needs to feel like editor
+infrastructure, not a chat interaction.
+
+* Candidate experiments
+
+** Experiment 1: Grimoire concept resource
+
+Expose Grimoire topics as a resource table that =e= can query:
+
+- canonical name;
+- path;
+- aliases;
+- recognizer type;
+- last modified time;
+- short summary.
+
+The first pass can be read-only. It would prove whether =e= can resolve text at
+point to a Grimoire topic without introducing a new Grimoire editing workflow.
+
+** Experiment 2: At-point concept action
+
+Add a small =e= action that resolves text at point against a static concept
+resource and opens the matching topic. Keep it explicit: one command, no global
+overlays, no corpus scanning.
+
+Success criterion: from any Org or code buffer, invoking the action on a known
+concept opens the Grimoire topic through the active project/workspace context.
+
+** Experiment 3: Promote selection to Grimoire topic
+
+Add a separate action that takes the active region or symbol at point and
+creates a draft Grimoire topic with source provenance. This should be an
+explicit command because it writes durable knowledge.
+
+Success criterion: the original buffer remains unchanged, the topic is created,
+and the source context is captured in the topic or an associated note.
+
+** Experiment 4: Mention audit
+
+Run an async mention search for one concept across selected workspace roots and
+store the results as an audit artifact. Do not show live overlays yet.
+
+Success criterion: Grimoire can answer "where does this concept already appear?"
+without requiring explicit links.
+
+* Open questions
+
+- What is Grimoire's canonical concept record: topic frontmatter, a generated
+  index, a sidecar data file, or a combination?
+- How should aliases be reviewed so a broad alias does not create noisy matches
+  everywhere?
+- Which recognizers belong to Grimoire, and which belong to =e= core or other
+  capabilities?
+- Should concept activation be enabled per workspace, per shell, per buffer, or
+  per capability?
+- How should false positives be suppressed without embedding too much
+  tool-specific markup into ordinary files?
+- What is the smallest useful first slice that improves local navigation without
+  committing to always-on overlays?
+
+* Non-goals
+
+- Do not replace Org links, Org IDs, backlinks, or Graphify-style analysis.
+  This idea complements them.
+- Do not require PascalCase concept names.
+- Do not require migration of existing Grimoire or project notes.
+- Do not run corpus-wide scans on the Emacs UI thread.
+- Do not route ordinary editor activation through an LLM unless the chosen
+  action explicitly asks for model reasoning.
+
+* Provisional conclusion
+
+HyWiki is most useful here as an architectural precedent: durable concepts and
+live activation should be separate. Grimoire should curate concepts and their
+provenance. =e= should make recognized text actionable in the current editor
+context through capability actions and presentation-shell affordances.
+
+The promising direction is a sidecar concept-action layer:
+
+#+begin_example
+Grimoire concept registry -> e recognizers -> capability actions at point
+#+end_example
+
+Start read-only and explicit. Once the ownership split works, promotion and
+mention-audit actions can add durable write paths without making every note
+carry explicit link markup.
