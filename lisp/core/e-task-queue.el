@@ -29,6 +29,7 @@
 (require 'subr-x)
 (require 'e-harness)
 (require 'e-harness-instances)
+(require 'e-work)
 
 (defgroup e-task-queue nil
   "Bounded-concurrency agent task queue."
@@ -79,7 +80,8 @@ original task), `:session-id' (the failed session to reference), and `:error'.")
 Each function is called with the queue.  Intended for observation (shells,
 tests); handlers must not mutate the queue.")
 
-(define-error 'e-task-queue-unknown-task "Unknown task id")
+(define-error 'e-task-queue-error "Task queue error")
+(define-error 'e-task-queue-unknown-task "Unknown task id" 'e-task-queue-error)
 
 (cl-defstruct (e-task-queue (:constructor e-task-queue--create))
   "An in-memory task queue with a bounded dispatcher.
@@ -171,8 +173,10 @@ truncated prompt prefix in `:prompt-summary'."
 
 (defun e-task-queue--normalize (record)
   "Return a model-facing copy of RECORD without runtime-only fields."
-  (list :task-id (plist-get record :task-id)
-        :status (plist-get record :status)
+  (let ((task-id (plist-get record :task-id)))
+    (list :task-id task-id
+          :await-ref (format "task:%s" task-id)
+          :status (plist-get record :status)
         :prompt (plist-get record :prompt)
         :origin-prompt (plist-get record :origin-prompt)
         :summary (plist-get record :summary)
@@ -184,8 +188,8 @@ truncated prompt prefix in `:prompt-summary'."
         :finished-at (plist-get record :finished-at)
         :session-id (plist-get record :session-id)
         :retries (or (plist-get record :retries) 0)
-        :outputs (plist-get record :outputs)
-        :error (plist-get record :error)))
+          :outputs (plist-get record :outputs)
+          :error (plist-get record :error))))
 
 (defun e-task-queue--notify (queue)
   "Run change hooks for QUEUE."
@@ -206,6 +210,50 @@ truncated prompt prefix in `:prompt-summary'."
 (defun e-task-queue-outputs (queue task-id)
   "Return the outputs collected for TASK-ID in QUEUE."
   (plist-get (e-task-queue--record queue task-id) :outputs))
+
+(defun e-task-queue-work-handle (queue task-id)
+  "Return TASK-ID's live `e-work' handle, or nil when it is unknown."
+  (when-let ((record (gethash task-id (e-task-queue-records queue))))
+    (plist-get record :work-handle)))
+
+(defun e-task-queue--work-spec ()
+  "Return the cooperative work spec tracking one queued task."
+  (e-work-spec-create
+   :id "task-queue-task"
+   :description "Track a queued agent task."
+   :execution 'cooperative
+   :interactive-policy 'async
+   :owner 'task-queue
+   :runner (lambda (_handle _arguments _context) :deferred)))
+
+(defun e-task-queue--work-handle-for-status (record)
+  "Return a work handle mirroring RECORD's current status."
+  (let ((handle (e-work-start (e-task-queue--work-spec) nil)))
+    (pcase (plist-get record :status)
+      ('done
+       (e-work-finish handle
+                      (list :summary (e-task-queue-record-display-summary record)
+                            :outputs (plist-get record :outputs))))
+      ('failed
+       (e-work-fail handle
+                    (list 'e-task-queue-error
+                          (or (plist-get record :error) "Task failed"))))
+      ('cancelled (e-work-cancel handle)))
+    handle))
+
+(defun e-task-queue--settle-work-handle (record status)
+  "Settle RECORD's work handle for terminal STATUS."
+  (when-let ((handle (plist-get record :work-handle)))
+    (pcase status
+      ('done
+       (e-work-finish handle
+                      (list :summary (e-task-queue-record-display-summary record)
+                            :outputs (plist-get record :outputs))))
+      ('failed
+       (e-work-fail handle
+                    (list 'e-task-queue-error
+                          (or (plist-get record :error) "Task failed"))))
+      ('cancelled (e-work-cancel handle)))))
 
 ;; --- dispatch helpers -------------------------------------------------------
 
@@ -302,7 +350,8 @@ QUEUE after a real transition."
         nil)
        (t
         (plist-put record :status status)
-        (plist-put record :finished-at (e-task-queue--timestamp))))
+        (plist-put record :finished-at (e-task-queue--timestamp))
+        (e-task-queue--settle-work-handle record status)))
       (e-task-queue--notify queue)
       (e-task-queue--dispatch queue))))
 
@@ -391,7 +440,10 @@ may already be running when this returns."
                        :retries 0
                        :outputs nil
                        :error nil
-                       :handle nil)))
+                       :handle nil
+                       :work-handle nil)))
+    (plist-put record :work-handle
+               (e-task-queue--work-handle-for-status record))
     (puthash task-id record (e-task-queue-records queue))
     (setf (e-task-queue-order queue)
           (append (e-task-queue-order queue) (list task-id)))
@@ -410,6 +462,7 @@ settle.  Terminal tasks are returned unchanged."
        (plist-put record :status 'cancelled)
        (plist-put record :pausing nil)
        (plist-put record :finished-at (e-task-queue--timestamp))
+       (e-task-queue--settle-work-handle record 'cancelled)
        (e-task-queue--notify queue))
       ('running
        (let ((handle (plist-get record :handle)))
@@ -419,6 +472,7 @@ settle.  Terminal tasks are returned unchanged."
          (plist-put record :handle nil)
          (when (and (listp handle) (functionp (plist-get handle :cancel)))
            (ignore-errors (funcall (plist-get handle :cancel))))
+         (e-task-queue--settle-work-handle record 'cancelled)
          (e-task-queue--notify queue)
          (e-task-queue--dispatch queue))))
     (e-task-queue--normalize record)))
@@ -627,6 +681,9 @@ is normalized to `queued' for a best-effort re-run."
       (setq record (plist-put record :finished-at nil)))
     (setq record (plist-put record :handle nil))
     (setq record (plist-put record :pausing nil))
+    (setq record
+          (plist-put record :work-handle
+                     (e-task-queue--work-handle-for-status record)))
     record))
 
 (defun e-task-queue-load (queue)

@@ -56,6 +56,20 @@ BINDINGS is an alist of (LOCAL-ID . HANDLE) under the \"fake\" scheme."
     (e-await-tool-register registry)
     (should (gethash "await" (e-tools-registry-tools registry)))))
 
+(ert-deftest e-await-tool-test-schema-stays-minimal ()
+  "Await relies on async action guidance instead of duplicating it in schema."
+  (let ((registry (e-tools-registry-create)))
+    (e-await-tool-register registry)
+    (let* ((tool (gethash "await" (e-tools-registry-tools registry)))
+           (parameters (plist-get tool :parameters))
+           (properties (plist-get parameters :properties)))
+      (should (equal (plist-get tool :description)
+                     "Wait for async work references to settle without blocking Emacs."))
+      (should (equal (plist-get parameters :required) ["refs"]))
+      (should-not (plist-get (plist-get properties :refs) :description))
+      (should-not (plist-get (plist-get properties :mode) :description))
+      (should-not (plist-get (plist-get properties :timeout) :description)))))
+
 (ert-deftest e-await-tool-test-settles-on-terminal ()
   "Await settles with a report when all references become terminal."
   (let ((a (e-await-tool-test--pending-handle)))

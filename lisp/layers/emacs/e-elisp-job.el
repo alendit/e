@@ -17,6 +17,7 @@
 (require 'seq)
 (require 'subr-x)
 (require 'e-capabilities)
+(require 'e-waitable)
 (require 'e-work)
 
 (defgroup e-elisp-job nil
@@ -393,6 +394,7 @@ When INCLUDE-CONTENT is non-nil, include the current bounded content preview."
                     (e-elisp-job--exit-code job))))
     (append
      (list :job_id (plist-get job :job_id)
+           :await-ref (format "elisp-job:%s" (plist-get job :job_id))
            :operation (plist-get job :operation)
            :status (e-elisp-job--status-symbol job)
            :started_at (plist-get job :started_at)
@@ -460,6 +462,14 @@ ARGUMENTS is a plist with :code and optional :directory, :load_path, and
     (setq job (e-elisp-job--job-put job :handle handle))
     (e-elisp-job--snapshot job)))
 
+(defun e-elisp-job-register-waitable-resolver ()
+  "Register the `elisp-job' waitable scheme."
+  (e-waitable-register-resolver
+   "elisp-job"
+   (lambda (id)
+     (when-let ((job (gethash id e-elisp-job--jobs)))
+       (plist-get job :handle)))))
+
 (defun e-elisp-job-status (job-id)
   "Return status for Elisp JOB-ID."
   (e-elisp-job--snapshot (e-elisp-job--job job-id) t))
@@ -508,6 +518,7 @@ ARGUMENTS is a plist with :code and optional :directory, :load_path, and
 
 (defun e-elisp-job-capability-create ()
   "Create the Elisp job action capability."
+  (e-elisp-job-register-waitable-resolver)
   (e-capability-create
    :id 'elisp-job
    :name "Elisp Job"

@@ -19,6 +19,7 @@
 (require 'e-layers)
 (require 'e-skills)
 (require 'e-task-queue)
+(require 'e-waitable)
 (require 'e-work)
 
 (defconst e-task-queue-actions-instructions
@@ -87,6 +88,13 @@ expects and pass an existing keyword or nil through unchanged."
    ((stringp value)
     (intern (concat ":" (string-remove-prefix ":" value))))
    (t (signal 'wrong-type-argument (list 'stringp :harness-instance-id)))))
+
+(defun e-task-queue-actions-register-waitable-resolver (&optional queue)
+  "Register the `task' waitable scheme for QUEUE."
+  (let ((queue (or queue e-task-queue-actions-default-queue)))
+    (e-waitable-register-resolver
+     "task"
+     (lambda (id) (e-task-queue-work-handle queue id)))))
 
 (defun e-task-queue-actions--enqueue (queue arguments)
   "Enqueue work described by ARGUMENTS on QUEUE."
@@ -249,9 +257,11 @@ QUEUE defaults to `e-task-queue-actions-default-queue'."
 Rehydrate the default durable queue from disk the first time the layer is
 built, so queued and paused work survives an Emacs restart."
   (e-task-queue-actions-ensure-loaded)
+  (e-task-queue-actions-register-waitable-resolver)
   (e-layer-create
    :id 'task-queue
    :name "Task Queue"
+   :requires '(async-control)
    :capabilities (list (e-task-queue-capability-create))))
 
 (provide 'e-task-queue-actions)

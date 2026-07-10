@@ -150,30 +150,14 @@ a mix still waits on the resolvable references."
   (e-tools-register
    registry
    :name "await"
-   :description
-   (concat
-    "Wait until referenced async work settles, or a generous timeout expires, "
-    "then return a compact per-reference report. Use this instead of polling "
-    "status across turns: the turn holds open while the wait runs event-driven, "
-    "without freezing Emacs. Reference work by \"SCHEME:LOCAL-ID\", e.g. "
-    "\"subagent:sub_000003\". mode \"all\" (default) settles when every "
-    "resolvable reference is terminal; mode \"any\" settles at the first. On "
-    "timeout the report has :settled nil, :reason timed-out, and lists pending "
-    "references so you can await again or move on. An unknown reference is a "
-    "per-reference error in the report, not a whole-call failure. The report "
-    "gives each reference's terminal status, summary, and outputs; pull deeper "
-    "detail from the target subsystem (e.g. a subagent's session:// transcript) "
-    "on demand.")
+   :description "Wait for async work references to settle without blocking Emacs."
    :parameters '(:type "object"
                  :properties
                  (:refs (:type "array"
-                         :items (:type "string")
-                         :description "Work references as SCHEME:LOCAL-ID.")
+                         :items (:type "string"))
                   :mode (:type "string"
-                         :enum ["all" "any"]
-                         :description "Settle when all (default) or any reference is terminal.")
-                  :timeout (:type "number"
-                            :description "Seconds to wait before a timed-out report; clamped to a ceiling."))
+                         :enum ["all" "any"])
+                  :timeout (:type "number"))
                  :required ["refs"])
    :work (e-await-tool--work)
    :blocking-class 'unknown))

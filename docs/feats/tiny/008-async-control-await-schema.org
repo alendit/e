@@ -1,0 +1,30 @@
+#+title: Async Control Ownership and Minimal Await Schema
+#+startup: overview
+
+* Change
+
+The model-facing =await= join primitive now belongs to a focused
+=async-control= layer instead of =harness-base=.  Async-capable layers require
+that layer.  Subagent, task queue, and Elisp job action results expose explicit
+await references, and task queue and Elisp job work now register resolvers.
+
+The =await= tool schema now keeps only one short description and the three
+argument shapes.  It fell from 1,250 to 305 serialized bytes, or from about 280
+to 69 =o200k= tokens.  Domain action guidance remains responsible for
+explaining reference formats, modes, timeout behavior, and result handling.
+
+* Why tiny
+
+This is a narrow ownership and context-size adjustment over the existing
+=e-work= and =e-waitable= contracts.  It does not add a second dispatcher or
+change the event-driven await lifecycle.
+
+* Validation
+
+#+begin_src sh
+rtk eldev test -f test/e-await-tool-test.el -f test/e-harness-base-test.el -f test/e-subagent-runner-test.el -f test/e-task-queue-test.el -f test/e-emacs-base-test.el -f test/e-defaults-test.el -f test/e-waitable-test.el
+rtk eldev compile
+git diff --check
+#+end_src
+
+All 88 focused tests passed.  Compilation passed.

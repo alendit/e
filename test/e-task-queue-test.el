@@ -81,6 +81,8 @@ tests need a runner whose handle carries one."
                    :runner (e-task-queue-test--fake-runner recorder)))
            (record (e-task-queue-enqueue queue :prompt "do thing")))
       (should (stringp (plist-get record :task-id)))
+      (should (equal (plist-get record :await-ref)
+                     (format "task:%s" (plist-get record :task-id))))
       (should (equal (plist-get record :prompt) "do thing"))
       ;; Cap is 2 by default and nothing else is running, so it dispatched.
       (should (eq (plist-get (e-task-queue-get queue (plist-get record :task-id))

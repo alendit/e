@@ -82,6 +82,9 @@
         (should (eq (plist-get record :type) :reviewer))
         (should (eq (plist-get record :role) 'reviewer))
         (should (eq (plist-get record :status) 'running))
+        (should (equal (plist-get record :await-ref)
+                       (format "subagent:%s"
+                               (plist-get record :subagent-id))))
         (should (equal (plist-get record :parent-session-id) "parent-1"))
         (should (equal (plist-get call :prompt) "Review tmp://plan.org"))
         ;; Child session carries durable lineage metadata sharing the parent id.

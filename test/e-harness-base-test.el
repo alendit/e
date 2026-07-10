@@ -52,7 +52,6 @@
     (should (equal (mapcar #'e-capability-id
                            (e-layer-capabilities layer))
                    '(harness-base-context
-                     await
                      raw-result-resources
                      session-tmp-resources
                      session-resources

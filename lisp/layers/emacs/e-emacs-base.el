@@ -27,6 +27,7 @@
   (e-layer-create
    :id 'emacs-base
    :name "Emacs Base"
+   :requires '(async-control)
    :capabilities (list (e-emacs-awareness-capability-create)
                        (e-buffer-read-capability-create)
                        (e-selection-context-capability-create)

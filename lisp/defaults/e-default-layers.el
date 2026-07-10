@@ -41,6 +41,11 @@
      :summary "Harness-owned controller-loop and advanced work-management capabilities."
      :feature e-harness-advanced
      :factory e-harness-advanced-layer-create)
+    (:id async-control
+     :name "Async Control"
+     :summary "Cross-domain event-driven waiting for async capability work."
+     :feature e-async-control
+     :factory e-async-control-layer-create)
     (:id os-base
      :name "OS Base"
      :summary "Workspace file and shell tools."

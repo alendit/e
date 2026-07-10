@@ -184,6 +184,9 @@
   (should (memq 'harness-advanced
                 (mapcar (lambda (spec) (plist-get spec :id))
                         e-default-layer-specs)))
+  (should (memq 'async-control
+                (mapcar (lambda (spec) (plist-get spec :id))
+                        e-default-layer-specs)))
   (should (memq 'os-base
                 (mapcar (lambda (spec) (plist-get spec :id))
                         e-default-layer-specs)))
@@ -301,7 +304,8 @@
         (should (equal (e-harness-enabled-layer-ids harness)
                        '(agents-std-context harness-base e os-base emacs-base)))
         (should (equal (e-harness-effective-layer-ids harness)
-                       '(agents-std-context harness-base e os-base emacs-base)))
+                       '(agents-std-context harness-base e os-base
+                         async-control emacs-base)))
         (should (memq 'chat-session
                       (mapcar #'e-capability-id
                               (e-harness-active-capabilities harness))))

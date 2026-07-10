@@ -202,6 +202,7 @@ about subagents.  REGISTRY defaults to the process-wide subagent registry."
   (e-layer-create
    :id 'subagents-parent
    :name "Subagents (parent)"
+   :requires '(async-control)
    :capabilities (list (e-subagents-parent-capability-create))))
 
 (defun e-subagents-child-layer-create ()

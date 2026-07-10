@@ -45,16 +45,18 @@ List buffers hook onto this to track live subagent status.")
 
 (defun e-subagent-registry-normalize (record)
   "Return the model-facing normalized copy of internal RECORD."
-  (list :subagent-id (plist-get record :subagent-id)
-        :type (plist-get record :type)
-        :role (plist-get record :role)
-        :status (plist-get record :status)
-        :session-id (plist-get record :session-id)
-        :parent-session-id (plist-get record :parent-session-id)
-        :label (plist-get record :label)
-        :result-summary (plist-get record :result-summary)
-        :outputs (plist-get record :outputs)
-        :error (plist-get record :error)))
+  (let ((subagent-id (plist-get record :subagent-id)))
+    (list :subagent-id subagent-id
+          :await-ref (format "subagent:%s" subagent-id)
+          :type (plist-get record :type)
+          :role (plist-get record :role)
+          :status (plist-get record :status)
+          :session-id (plist-get record :session-id)
+          :parent-session-id (plist-get record :parent-session-id)
+          :label (plist-get record :label)
+          :result-summary (plist-get record :result-summary)
+          :outputs (plist-get record :outputs)
+          :error (plist-get record :error))))
 
 (cl-defun e-subagent-registry-register
     (registry &key type role session-id parent-session-id label schedule
