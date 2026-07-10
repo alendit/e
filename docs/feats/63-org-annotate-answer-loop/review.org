@@ -1,0 +1,115 @@
+#+title: Org-Annotate Answer Loop -- Review
+#+startup: overview
+
+* Scope
+
+Review of the implementation of feature 63 against =plan.org=. The feature
+pivots the =annotations= capability from the Simply Annotate sidecar backend to
+the org-annotate in-file model, adds a reusable "answer the open threads"
+operation, an interactive command, and an unattended sweep loop.
+
+* Plan contract vs implementation
+
+** Slice 1 -- org-annotate backend + stable actions -- met
+
+- =lisp/layers/annotations/e-annotation-org.el= wraps the org-annotate public
+  API (=org-annotate-entries=, =org-annotate-get=, =org-annotate-reply=,
+  =org-annotate-create=, =org-annotate-set-state=) headless. Every action is
+  guarded to Org files (=e-annotation-org--require-org-file=); a non-Org or nil
+  target signals =user-error=.
+- The actionable predicate (=open= state AND non-agent last author) lives in
+  =e-annotation-org--actionable-p= and is surfaced on every listed thread as
+  =:actionable=, with an =actionable-only= filter on =:list=.
+- Stable action names on the =annotations= capability: =:list=, =:reply=,
+  =:add=, =:resolve= (=lisp/layers/annotations/e-annotations.el=). =:reply= is
+  the new append-only verb.
+- The resolve hook variable keeps its name
+  (=e-annotation-tools-resolve-functions=) so grimoire's =agenda-review=
+  subscriber attaches unchanged. The event now carries =:annotation-id= /
+  =:state= plus =:thread-id= / =:verdict= aliases for the existing subscriber
+  shape.
+
+*Deviation (accepted):* the plan proposed keeping the capability inside
+=text-editing=. The implementation retires =text-editing= entirely (its only
+content was the annotation surface and the two annotation skills) and adds a
+dedicated =annotations= layer, which the plan named as the preferred option.
+=e-annotation-tools.el=, =e-text-editing.el=, and the =simply-annotate= skill
+are removed.
+
+** Slice 2 -- reusable answer operation + Tier 0 command -- met
+
+- =lisp/layers/annotations/e-annotation-answer.el= collects actionable threads,
+  builds a fixed prompt (document path, sources dir, the =org-annotate= skill
+  ref, the thread list, and reply/propose/resolve instructions),
+  =configure-type='s the answerer type once (=e-annotation-answer-layers=), and
+  spawns a queued non-blocking subagent.
+- =e-annotations-answer= is the interactive Tier-0 command; it dispatches with
+  no content prompt and reports whether anything was actionable.
+- The prompt instructs reply-only answering and =:add= proposals for prose
+  corrections, never background prose edits.
+
+** Slice 3 -- Tier 1 session-context seeding -- met
+
+- =e-annotations-answer= with a prefix argument sets =with-session-context=,
+  which exports the current session context via
+  =context-inspection/export-context= and attaches it as a single
+  =:seed-messages= system message. The seedless path is the default; seeding is
+  best-effort and never blocks dispatch.
+
+** Slice 4 -- Tier 2 sweep loop -- met
+
+- =e-annotation-answer-sweep= is a generic primitive over a supplied file set.
+  It honors the =e-annotation-answer-sweep-inhibit= kill switch, defers a file
+  whose live buffer has unsaved edits, skips non-Org and no-actionable files,
+  and enqueues one task per remaining file onto the task queue (whose own
+  =max-parallel= is the concurrency cap). Policy (which directories, cron
+  cadence) is left to grimoire, per the mechanism/policy split.
+
+*Deviation (accepted):* the plan's concurrency rule described "append headless,
+then revert an unmodified live buffer." The implementation instead writes
+directly into an unmodified live buffer and saves it
+(=e-annotation-org--write=), which keeps overlays and visited-modtime coherent
+without a separate revert. A modified live buffer signals
+=e-annotation-org-buffer-dirty=, which the sweep turns into a defer. The
+observable contract (never clobber unsaved edits; stay coherent) is identical.
+
+*Not implemented (out of the layer's scope, matches mechanism/policy split):*
+the per-thread =topic/:log-add= observability line is grimoire policy and is not
+part of the e-side mechanism. The sweep returns a structured
+dispatched/deferred/skipped summary the policy layer can log.
+
+* Activation gating
+
+Per the request, the capability is active only when org-annotate is installed.
+=e-annotations-capability-create= returns nil when
+=e-annotation-org-available-p= is false, so =e-annotations-layer-create=
+carries no capability and a session without org-annotate simply lacks the
+annotations actions/skill. The =annotations= layer id is still always enabled on
+the default chat harness; only the capability is conditional. org-annotate is
+not a hard package dependency (=e-test-does-not-declare-annotation-backend-dependency=).
+
+* Verification
+
+- Focused ERT (org-annotate installed locally):
+  =test/e-annotation-org-test.el= (guard, list/actionable, agent-reply
+  idempotence, add, resolve + hook, hook-error capture, modified-buffer defer,
+  action dispatch, capability-omitted-without-backend) and
+  =test/e-annotation-answer-test.el= (prompt content, dispatch spawn/noop,
+  sweep enqueue/kill-switch/defer) -- 15/15 passing.
+- Byte-compilation of the three new files is clean.
+- =git diff --check= clean.
+- Full suite: the 7 remaining failures reproduce on a clean checkout of =main=
+  before this change (context-inspection export, dev reload defaults ordering,
+  harness store glob/search, nonblocking sweep audit, org-canvas synchronous
+  progress, ui-work carrier guard) and are pre-existing, not introduced here.
+  The dev-reload defaults test was updated only to reflect =text-editing= ->
+  =annotations= in the layer preset.
+
+* Open notes
+
+- Live =e-dev-reload= + live probe from =plan.org= Verification was not run;
+  repository-side ERT and compile stand in. The running Emacs was left
+  unchanged.
+- The org-canvas =respond-to-threads= shell now reads actionable threads from
+  the org-annotate backend and seeds a reply/resolve prompt; its unit tests are
+  updated. A full live canvas walk-through was not performed.

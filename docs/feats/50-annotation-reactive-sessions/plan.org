@@ -10,7 +10,16 @@ annotation, or an edit proposal) on its own.
 
 * Status
 
-Planned.
+Superseded by feature 63 (Org-Annotate Answer Loop).
+
+This feature targeted the Simply Annotate sidecar store and a file-notify
+reactive trigger. Feature 63 pivots the annotations substrate to org-annotate
+(Org files only), builds the reusable answer operation, the interactive
+command, and the unattended sweep loop, and retires the Simply Annotate
+backend this plan depended on. The "react without an explicit prompt" and
+"loop, not a one-off" goals are carried forward there; a change trigger, if
+still wanted, becomes an input that feeds 63's answer operation rather than a
+bespoke prompt. Not implemented; no code shipped under this number.
 
 * Problem
 

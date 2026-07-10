@@ -33,8 +33,8 @@
 (require 'seq)
 (require 'subr-x)
 
-(declare-function e-annotation-tools-available-p "e-annotation-tools")
-(declare-function e-annotation-tools-list "e-annotation-tools")
+(declare-function e-annotation-org-available-p "e-annotation-org")
+(declare-function e-annotation-org-list "e-annotation-org")
 
 (defgroup e-org-canvas nil
   "Org Canvas shell for e."
@@ -67,8 +67,9 @@
      "Review each thread listed below, address what it asks, and update the"
      "document where appropriate."
      "Record your reply on the thread with annotation actions:"
-     "use `(e-actions-call 'annotations :list ...)` to re-read current threads,"
-     "and `(e-actions-call 'annotations :resolve ...)` to append a reply and set a verdict once a proposal is genuinely settled."
+     "use `(e-actions-call 'annotations :list '(:file FILE :actionable-only t))` to re-read current threads,"
+     "`(e-actions-call 'annotations :reply '(:file FILE :id ID :body TEXT))` to append your answer,"
+     "and `(e-actions-call 'annotations :resolve '(:file FILE :id ID))` to set state once a thread is genuinely settled."
      "Do not resolve a thread whose request you have not actually handled.")
    " ")
   "Prompt preamble seeded by `e-org-canvas-respond-to-threads'."
@@ -1555,18 +1556,21 @@ paragraphs changed."
       (e-org-canvas--display-input-buffer input))))
 
 (defun e-org-canvas--thread-open-p (thread)
-  "Return non-nil when THREAD summary is still awaiting a response.
-A thread is open while it carries no accepted/rejected verdict and its status
-is not one of Simply Annotate's terminal states."
-  (and (null (plist-get thread :verdict))
-       (not (member (plist-get thread :status) '("resolved" "closed")))))
+  "Return non-nil when THREAD summary is still awaiting an agent response.
+The org-annotate backend marks such a thread `:actionable' (open state, with a
+non-agent last author); once the agent replies the thread is no longer
+actionable, so a repeated response pass never double-answers."
+  (and (plist-get thread :actionable) t))
 
 (defun e-org-canvas--open-threads (file)
-  "Return open annotation thread summaries on FILE."
-  (unless (e-annotation-tools-available-p)
-    (user-error "Annotation tools are not available; install simply-annotate"))
-  (let ((threads (plist-get (e-annotation-tools-list :file file) :threads)))
-    (seq-filter #'e-org-canvas--thread-open-p threads)))
+  "Return actionable annotation thread summaries on FILE."
+  (unless (e-annotation-org-available-p)
+    (user-error "Annotation actions are not available; install org-annotate"))
+  (plist-get (e-annotation-org-list :file file :actionable-only t) :threads))
+
+(defun e-org-canvas--thread-comment (thread)
+  "Return THREAD's first message body, or nil."
+  (plist-get (car (plist-get thread :messages)) :body))
 
 (defun e-org-canvas--threads-prompt (file threads)
   "Return the prompt text asking the agent to respond to THREADS on FILE."
@@ -1575,11 +1579,10 @@ is not one of Simply Annotate's terminal states."
     (insert (format "File: %s\n\n" file))
     (insert (format "Open threads (%d):\n" (length threads)))
     (dolist (thread threads)
-      (insert (format "- thread %s [chars %s..%s]: %s\n"
-                      (plist-get thread :thread-id)
-                      (plist-get thread :start)
-                      (plist-get thread :end)
-                      (or (plist-get thread :proposal) "(no text)"))))
+      (insert (format "- annotation %s [%s]: %s\n"
+                      (plist-get thread :id)
+                      (or (plist-get thread :range-text) "no range")
+                      (or (e-org-canvas--thread-comment thread) "(no comment)"))))
     (buffer-string)))
 
 ;;;###autoload

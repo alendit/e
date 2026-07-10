@@ -73,3 +73,4 @@ Status values for coding agents:
 | 60 | Done | 60-await-tool/ | Await Tool (event-driven waiting on work) |
 | 61 | In-review | 61-resource-table-of-content/ | Resource Table Of Content |
 | 62 | In-review | 62-egui-modern-chat-shell/ | egui Modern Chat Shell |
+| 63 | In-review | 63-org-annotate-answer-loop/ | Org-Annotate Answer Loop |

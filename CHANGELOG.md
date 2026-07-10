@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- The `annotations` capability pivots from the Simply Annotate sidecar backend
+  to the org-annotate in-file model (Org files only). It exposes stable actions
+  `:list`, `:reply`, `:add`, and `:resolve` over `<<oa:...>>` anchors and the
+  file-local `* Annotations :noexport:` section, guarded to Org files. A new
+  reusable answer operation, the interactive `e-annotations-answer` command
+  (optionally seeded with the current session's context), and a generic sweep
+  primitive (`e-annotation-answer-sweep`) dispatch a background subagent that
+  replies to actionable threads and proposes prose corrections rather than
+  editing the document. The actionable predicate (open state, non-agent last
+  author) makes every dispatch idempotent, so a repeated command or sweep never
+  double-answers. The capability activates only when org-annotate is installed;
+  the retired `text-editing` layer, the Simply Annotate backend, and the
+  `simply-annotate` skill are removed.
+
 - The cron engine (`e-cron`) now separates schedule *definitions* from runtime
   *state*.  A `last-fire` time is persisted per schedule to `e-cron-state-file`
   (default under the user emacs directory), so a schedule's cadence survives

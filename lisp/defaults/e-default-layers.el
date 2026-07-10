@@ -66,11 +66,11 @@
      :summary "Web search, passive fetch, and browser tools."
      :feature e-web
      :factory e-web-layer-create)
-    (:id text-editing
-     :name "Text Editing"
-     :summary "Progressive guidance for text editing workflows."
-     :feature e-text-editing
-     :factory e-text-editing-layer-create)
+    (:id annotations
+     :name "Annotations"
+     :summary "org-annotate answer-loop actions, skill, and command."
+     :feature e-annotations
+     :factory e-annotations-layer-create)
     (:id agent-shell-fleet
      :name "Agent Shell Fleet"
      :summary "Agent Shell worker handoff, adoption, and status actions."

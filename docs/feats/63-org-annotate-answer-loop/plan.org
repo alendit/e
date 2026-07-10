@@ -1,0 +1,238 @@
+#+title: Org-Annotate Answer Loop
+#+startup: overview
+
+* Status
+
+In-review. Implemented across all four slices; see review.org.
+
+* Goal
+
+Make "answer the open annotation threads on a document" a first-class,
+repeatable =e= operation over the *org-annotate* in-file model, exposed three
+ways that share one core:
+
+1. an interactive Emacs command that dispatches the answer in the background
+   without prompting the user for content (Tier 0),
+2. the same command optionally seeded with the current interactive session's
+   context (Tier 1, "fork-lite"),
+3. an unattended sweep that keeps every document's open threads answered as a
+   closed loop (Tier 2, loop engineering).
+
+* Problem
+
+Answering annotation threads is currently hand-driven. In the motivating
+session the agent answered a thread by driving =org-annotate-reply= through
+=run_elisp= directly, because the =annotations= capability exposes *actions*
+only over the Simply Annotate sidecar database
+(=e-annotation-tools.el=); the org-annotate in-file model
+(=<<oa:...>>= anchors + =* Annotations :noexport:=) is *guidance only* (a
+skill, no actions). The documents that actually carry annotations in grimoire
+use org-annotate, so the actionable path and the real data model are
+mismatched.
+
+We want the operation to be repeatable and, ultimately, unattended: a
+background loop that reads open threads, researches against the document's own
+linked sources, and posts replies — coming back to answers rather than empty
+threads.
+
+Related but distinct: feature 50 (Annotation-Reactive Background Sessions)
+proposes a *reactive trigger* (wake a session when the Simply Annotate store
+changes). This feature pivots the substrate to org-annotate, adds the
+*reusable answer operation + command*, and builds the *sweep loop*. The two
+converge on the same "loop, not a one-off" principle; 50's file-notify trigger
+can later feed this feature's answer operation instead of a bespoke prompt.
+
+* Decision: pivot to org-annotate, org files only
+
+- The =annotations= capability *pivots to org-annotate* and drops the
+  Simply Annotate backend. It is *not* backend-neutral; there is one backend.
+- All actions are *guarded to Org files* (=derived-mode-p 'org-mode= /
+  =.org= extension). A non-Org target is a loud error, never a silent no-op.
+- *Action names stay stable* (=:list=, =:add=, =:resolve=), with =:reply=
+  added as the append-only verb. The backend underneath swaps from
+  Simply Annotate to org-annotate. This keeps the two existing callers
+  working with minimal edits:
+  - grimoire =agenda-review= resolve hook
+    (=e-annotation-tools-resolve-functions=), and
+  - the Org Canvas =e-org-canvas-respond-to-threads= shell, whose seeded
+    prompt already calls =(e-actions-call 'annotations :list/:resolve ...)=.
+
+* Design
+
+** Actions (org-annotate, Org-file-only)
+
+Thin wrappers over the org-annotate package API, run headless in a
+file-visiting buffer:
+
+- =:list= — =org-annotate-entries= normalized to result plists
+  (=:id :state :range-text :messages= with per-message =:author=). Optional
+  =actionable-only= filter (see predicate).
+- =:reply= — =org-annotate-reply ID BODY "agent"=. *Append-only.*
+- =:add= — =org-annotate-create BEG END BODY "agent"= (proposal / new thread).
+- =:resolve= — =org-annotate-set-state= (+ optional reply), preserving the
+  =e-annotation-tools-resolve-functions= hook so grimoire's =agenda-apply=
+  still executes accepted proposals.
+
+Headless access mirrors the current =with-file-context= helper: visit the
+file in a temp buffer, run the org-annotate API, write back. Refresh a live
+buffer's overlays with =org-annotate-refresh= only when it is safe (see
+concurrency).
+
+** The actionable predicate (loop keystone)
+
+A thread is *actionable* when =:state = "open"= AND the last message's author
+is not =agent=. This single predicate makes every tier idempotent: once the
+agent has replied, the thread's last author is =agent= and it drops out of the
+worklist, so a timer may sweep indefinitely without ever double-answering. The
+loop's own output removes work from its input — the closed-loop property.
+
+** Correlation without a payload
+
+The Simply Annotate backend stored a =payload= (carrying an org-id) so
+=agenda-review= could tie a thread to an agenda entry. org-annotate has no
+payload field, but the annotation's *own id is an =OA_ID=* and grimoire
+already resolves review by org-id. So correlation moves from "payload org-id"
+to "annotation id + the target entry's =:SOURCE:= / =:ID:= link". This is the
+only non-mechanical migration for the =agenda-review= caller.
+
+** The reusable answer operation
+
+Given a file:
+
+1. Collect actionable threads via =:list= with =actionable-only=.
+2. Build a *fixed* prompt (not a user question): the canvas URI, the
+   actionable thread ids + range texts, the document's =sources/= directory,
+   and the =org-annotate= skill name.
+3. Spawn a =:tool-user= subagent with that prompt, =:schedule queue=,
+   non-blocking. =configure-type= the answerer type *once* to enable the
+   =org-annotate= skill and (if research needs it) =web= / Slack layers.
+4. The subagent replies (append-only). It does *not* rewrite prose under a
+   live buffer; a needed correction is emitted as a *proposal* (=:add=, or a
+   grimoire =agenda-review= proposal keyed to the annotation id) that the
+   human accepts interactively.
+
+*Background = reply + propose. Foreground human = accept edits.* This is the
+same non-destructive "agent proposes, human accepts" contract the agenda layer
+already enforces via =agenda-apply=.
+
+** Concurrency (org file *is* the store)
+
+Because org-annotate writes the document itself, a background reply can
+collide with a live canvas buffer. Rule:
+
+- Append the reply headless.
+- If the file has a live *modified* buffer, *defer and requeue* rather than
+  write — the loop is idempotent and catches it next pass.
+- If the live buffer is *unmodified*, revert it after writing so overlays and
+  visited-modtime stay coherent.
+
+Prose corrections are always proposals, never background writes, which keeps
+the destructive path off the automated loop entirely.
+
+** Tiers
+
+- *Tier 0 — command.* =e-annotations-answer= (interactive): run the reusable
+  operation on the current Org buffer's file. No content prompt; dispatches a
+  background subagent and returns immediately.
+- *Tier 1 — session context.* =e-annotations-answer= with
+  =:with-session-context=: attach =context-inspection/export-context= as
+  =:seed-messages= on the spawn ("fork-lite"). e has no true session-fork
+  primitive and does not need one here — the document links its own sources
+  and the anchor marks the exact claim, so a well-seeded cold subagent gets
+  most of the value. The seed is enrichment; design the seedless path first
+  (Tier 2 has no interactive session to fork from).
+- *Tier 2 — sweep loop.* A =task-queue= sweep, scheduled on grimoire's =cron=:
+  scan Org files for actionable threads, enqueue one answer task per file,
+  each task running the exact Tier-0 operation. Loop hygiene: a kill switch, a
+  concurrency cap, per-file backoff when a live modified buffer exists, and a
+  =topic/:log-add= line per answered thread for observability. Structurally
+  this mirrors grimoire's =agenda-triage-session= (a long-lived background
+  loop keeping a review queue non-empty); reuse that shape rather than
+  inventing a scheduler.
+
+** Mechanism vs policy split
+
+- *e layer (mechanism):* org-annotate actions + the actionable predicate + the
+  reusable answer operation + the =e-annotations-answer= command + a generic
+  sweep primitive over a supplied set of files.
+- *grimoire project-local (policy):* which directories to sweep, cron cadence,
+  and the =agenda-apply= resolve hook that executes accepted edit proposals.
+
+This mirrors graphify-refresh: mechanism in the layer, policy ("at a triage
+round boundary") in the domain.
+
+* File layout
+
+Rework the =text-editing= layer's annotation capability. Minimal churn option
+is to keep it inside =text-editing=; given the scope growth, prefer a
+dedicated =annotations= layer:
+
+- =e-annotation-org.el= — org-annotate backend + actionable predicate
+  (replaces =e-annotation-tools.el='s Simply Annotate backend).
+- =e-annotation-answer.el= — reusable operation, =e-annotations-answer=
+  command, generic sweep primitive.
+- layer file — assembles the capability (stable action names), the
+  =org-annotate= skill, the command, and keeps
+  =e-annotation-tools-resolve-functions=.
+
+Retire the =simply-annotate= skill and the Simply Annotate backend. Update the
+=e-org-canvas-respond-to-threads= seed prompt only if action semantics change
+(they should not — names are stable).
+
+* Non-goals
+
+- No backend neutrality; org-annotate only, Org files only.
+- No Simply Annotate backend retained.
+- No true session-fork core primitive; Tier 1 uses export-context seeding.
+- No auto-accept of prose edits; destructive changes are always proposals a
+  human accepts via the existing =agenda-apply= path.
+- No new scheduler; Tier 2 reuses =task-queue= + grimoire =cron=.
+- The feature-50 reactive file-notify trigger is out of scope here; this
+  feature provides the answer operation it can later call.
+
+* Acceptance
+
+- =(e-actions-call 'annotations :list ...)= on an Org file returns
+  org-annotate threads; on a non-Org file it errors loudly.
+- =:reply= appends an =agent= message; =:resolve= sets state and fires the
+  resolve hook; grimoire =agenda-review= still commits verdicts unchanged.
+- =e-annotations-answer= on a document with open user-authored threads
+  dispatches a background subagent that posts a reply per actionable thread
+  and proposes (never applies) any prose correction, with no content prompt.
+- Re-running the command or sweep does not double-answer: an
+  agent-last-authored thread is not actionable.
+- The Tier-2 sweep answers actionable threads across a supplied set of Org
+  files, honors the kill switch and concurrency cap, defers files with a live
+  modified buffer, and logs each answered thread.
+
+* Verification
+
+- Focused ERT: actionable predicate (open + user-last vs agent-last),
+  Org-file guard, headless =:reply=/=:resolve= round-trips, idempotent re-run,
+  concurrency defer on a modified live buffer.
+- =git diff --check=.
+- =e-dev-reload= and a bounded live probe: add a fixture annotation, run
+  =e-annotations-answer=, assert one scoped background dispatch and an
+  appended agent reply, when an Emacs server is available and reload is not
+  skipped.
+
+* Slices
+
+** Slice 1 -- org-annotate backend + stable actions
+Swap the =annotations= actions (=:list=/=:add=/=:resolve=, add =:reply=) onto
+org-annotate; guard to Org files; keep the resolve hook. Retire the Simply
+Annotate backend and skill. Migrate =agenda-review= correlation to annotation
+id.
+
+** Slice 2 -- reusable answer operation + Tier 0 command
+=e-annotation-answer.el=: actionable-thread collection, fixed-prompt builder,
+=configure-type= the answerer once, =e-annotations-answer= interactive command
+dispatching a queued background subagent. Reply-only; propose edits.
+
+** Slice 3 -- Tier 1 session-context seeding
+=:with-session-context= flag attaching =context-inspection/export-context= as
+=:seed-messages=.
+
+** Slice 4 -- Tier 2 sweep loop
+Generic sweep primitive over a supplied file set + grimoire cron policy;
+kill switch, concurrency cap, live-modified-buffer backoff, per-thread log.

@@ -2085,32 +2085,25 @@ Body
       (should (memq command-id command-ids))))
   (should (eq (e-shell-id (e-shell-get 'org-canvas)) 'org-canvas)))
 
-(ert-deftest e-org-canvas-test-open-threads-filters-resolved ()
-  "Only threads lacking a verdict and terminal status are treated as open."
-  (should (e-org-canvas--thread-open-p '(:thread-id "a" :verdict nil
-                                         :status "open")))
-  (should (e-org-canvas--thread-open-p '(:thread-id "b" :verdict nil
-                                         :status "in-progress")))
-  (should-not (e-org-canvas--thread-open-p '(:thread-id "c"
-                                             :verdict "accepted"
-                                             :status "open")))
-  (should-not (e-org-canvas--thread-open-p '(:thread-id "d" :verdict nil
-                                             :status "resolved")))
-  (should-not (e-org-canvas--thread-open-p '(:thread-id "e" :verdict nil
-                                             :status "closed"))))
+(ert-deftest e-org-canvas-test-open-threads-uses-actionable-flag ()
+  "Only threads the backend marks actionable are treated as open."
+  (should (e-org-canvas--thread-open-p '(:id "a" :actionable t)))
+  (should-not (e-org-canvas--thread-open-p '(:id "b" :actionable nil)))
+  (should-not (e-org-canvas--thread-open-p '(:id "c"))))
 
 (ert-deftest e-org-canvas-test-threads-prompt-enumerates-open-threads ()
-  "The seeded prompt lists each open thread with its id, region, and text."
+  "The seeded prompt lists each open thread with its id, range, and comment."
   (let ((prompt (e-org-canvas--threads-prompt
                  "/tmp/notes.org"
-                 '((:thread-id "t-1" :start 5 :end 9 :proposal "tighten intro")
-                   (:thread-id "t-2" :start 20 :end 30 :proposal nil)))))
+                 '((:id "t-1" :range-text "intro line"
+                    :messages ((:author "user" :body "tighten intro")))
+                   (:id "t-2" :range-text nil :messages nil)))))
     (should (string-match-p "Open threads (2)" prompt))
-    (should (string-match-p "thread t-1 \\[chars 5\\.\\.9\\]: tighten intro"
+    (should (string-match-p "annotation t-1 \\[intro line\\]: tighten intro"
                             prompt))
-    (should (string-match-p "thread t-2 \\[chars 20\\.\\.30\\]: (no text)"
+    (should (string-match-p "annotation t-2 \\[no range\\]: (no comment)"
                             prompt))
-    (should (string-match-p "e-actions-call 'annotations :resolve" prompt))))
+    (should (string-match-p "e-actions-call 'annotations :reply" prompt))))
 
 (ert-deftest e-org-canvas-test-respond-to-threads-seeds-document-prompt ()
   "Responding to threads opens a document-scoped pane listing open threads."
@@ -2125,8 +2118,8 @@ Body
                    (lambda () (list harness "session-1" target)))
                   ((symbol-function 'e-org-canvas--open-threads)
                    (lambda (_file)
-                     '((:thread-id "t-1" :start 1 :end 4
-                        :proposal "clarify scope"))))
+                     '((:id "t-1" :range-text "scope line"
+                        :messages ((:author "user" :body "clarify scope"))))))
                   ((symbol-function 'display-buffer)
                    (lambda (buffer &rest _args)
                      (setq input buffer)

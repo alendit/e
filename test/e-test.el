@@ -201,12 +201,13 @@
   (require 'e)
   (should (string= e-version "0.1.0")))
 
-(ert-deftest e-test-does-not-declare-simply-annotate-dependency ()
-  "Simply Annotate is optional, not a hard package dependency."
+(ert-deftest e-test-does-not-declare-annotation-backend-dependency ()
+  "org-annotate is optional, not a hard package dependency."
   (with-temp-buffer
     (insert-file-contents (expand-file-name "e.el" default-directory))
-    (should-not (assq 'simply-annotate
-                      (read (lm-header "Package-Requires"))))))
+    (let ((requires (read (lm-header "Package-Requires"))))
+      (should-not (assq 'org-annotate requires))
+      (should-not (assq 'simply-annotate requires)))))
 
 (ert-deftest e-test-adds-source-subdirectories-to-load-path ()
   "The package makes nested source directories available for require/autoload."

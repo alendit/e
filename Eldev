@@ -20,7 +20,7 @@
               "lisp/layers/emacs"
               "lisp/layers/evidence"
               "lisp/layers/web"
-              "lisp/layers/text-editing"
+              "lisp/layers/annotations"
               "lisp/layers/org-canvas"
               "lisp/layers/project-local"
               "lisp/layers/chat"
@@ -46,3 +46,20 @@
 
 (eldev-use-package-archive 'melpa)
 (eldev-add-extra-dependencies 'test '(simply-annotate (2 3 0)))
+
+;; org-annotate is not published to a package archive.  When a local checkout is
+;; present (for example the straight.el clone in the user's Emacs), add it to
+;; the load path so the annotation tests can require it; otherwise those tests
+;; skip themselves.
+(let ((org-annotate-dir
+       (seq-find
+        #'file-directory-p
+        (list (expand-file-name
+               ".local/straight/repos/org-annotate/"
+               (or (getenv "EMACS_DIR")
+                   (expand-file-name "~/.config/emacs/")))
+              (expand-file-name
+               ".local/straight/repos/org-annotate/"
+               (expand-file-name "~/.emacs.d/"))))))
+  (when org-annotate-dir
+    (add-to-list 'load-path org-annotate-dir)))
