@@ -51,6 +51,11 @@
      :summary "Workspace file and shell tools."
      :feature e-base
      :factory e-base-layer-create)
+    (:id resource-discovery
+     :name "Resource Discovery"
+     :summary "On-demand advanced glob, search, and outline guidance."
+     :feature e-resource-discovery
+     :factory e-resource-discovery-layer-create)
     (:id resource-toc
      :name "Resource Table Of Content"
      :summary "wot-backed table-of-content resource operation."

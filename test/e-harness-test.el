@@ -2992,6 +2992,35 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
     (should (string-match-p "Described resources" description))
     (should (string-match-p "line, offset" description))))
 
+(ert-deftest e-harness-test-discovery-tool-descriptions-stay-lean ()
+  "Discovery tools omit active scheme details from their prompt schemas."
+  (let* ((capability
+          (e-capability-create
+           :id 'discovery-description-capability
+           :resource-methods
+           (list (lambda (registry)
+                   (dolist (operation (list e-operation-glob
+                                            e-operation-search))
+                     (e-resources-register
+                      registry
+                      (e-resource-method-create
+                       :scheme "described"
+                       :operation operation
+                       :description "Verbose scheme detail."
+                       :uri-patterns '("described://<id>")
+                       :handler #'ignore)))))))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :intrinsic-capabilities (list capability))))
+    (dolist (name '("glob" "search"))
+      (let* ((tool (seq-find (lambda (definition)
+                               (equal (plist-get definition :name) name))
+                             (e-tools-definitions (e-harness-tools harness))))
+             (description (plist-get tool :description)))
+        (should tool)
+        (should-not (string-match-p "described://" description))
+        (should-not (string-match-p "Verbose scheme detail" description))))))
+
 (ert-deftest e-harness-test-write-tool-description-states-create-invariant ()
   "Generated write descriptions state the shared create/overwrite contract."
   (let* ((capability
@@ -3204,8 +3233,8 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
                             :name "refs/guide.md"
                             :kind resource)]
               :truncated nil)))
-    (should
-     (equal (plist-get
+    (let* ((content
+            (plist-get
              (e-tools-execute-batch
               (e-harness-tools harness)
               '(:id "call-2"
@@ -3214,12 +3243,15 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
                             :query "needle"
                             :glob "refs/*"
                             :limit 5)))
-             :content)
-            '(:matches [(:uri "e://reference-capability/refs/guide.md"
-                          :line 1
-                          :column 17
-                          :text "Reference guide needle")]
-              :truncated nil)))))
+             :content))
+           (match (aref (plist-get content :matches) 0)))
+      (should-not (plist-get content :truncated))
+      (should (equal (plist-get match :uri)
+                     "e://reference-capability/refs/guide.md"))
+      (should (= (plist-get match :line) 1))
+      (should (= (plist-get match :column) 17))
+      (should (equal (plist-get match :text)
+                     "Reference guide needle")))))
 
 (ert-deftest e-harness-test-skill-resources-do-not-support-write-or-edit ()
   "Skill resources are read-only even when advertised through resource tools."

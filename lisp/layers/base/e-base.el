@@ -39,6 +39,7 @@ or `find ~/.config/doom -name ...`, rather than `.`, `~`, or the filesystem root
     (e-layer-create
      :id 'os-base
      :name "OS Base"
+     :requires '(resource-discovery)
      :capabilities (list (e-base-guidance-capability-create
                           e-base-instructions
                           :instruction-priority 230)

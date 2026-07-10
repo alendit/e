@@ -50,7 +50,15 @@
   (should (equal (plist-get (e-operation-parameters
                              e-operation-table-of-content)
                             :required)
-                 ["uri"])))
+                 ["uri"]))
+  (dolist (operation (list e-operation-glob
+                           e-operation-search
+                           e-operation-table-of-content))
+    (let ((properties (plist-get (e-operation-parameters operation)
+                                 :properties)))
+      (while properties
+        (pop properties)
+        (should-not (plist-get (pop properties) :description))))))
 
 (ert-deftest e-operations-test-dispatchers-normalize-tool-arguments ()
   "Operation dispatchers adapt model tool arguments to resource calls."

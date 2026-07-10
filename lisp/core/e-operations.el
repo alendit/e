@@ -127,29 +127,19 @@ nested tool arguments (notably Bedrock) are reparsed against the tool schema in
   (e-operation-create
    :id 'glob
    :tool-name "glob"
-   :description "List URI-addressed resources matching an optional glob pattern."
+   :description "List resources under a URI root."
    :parameters '(:type "object"
-                 :properties (:uri (:type "string"
-                                    :description "Resource URI root to list, such as file://lisp/ or buffer://.")
-                              :pattern (:type "string"
-                                        :description "Optional glob pattern to match beneath the resource root, such as *.el.")
-                              :case-sensitive (:type "boolean"
-                                               :description "When non-nil or omitted, match the glob pattern case-sensitively.")
-                              :limit (:type "number"
-                                      :description "Maximum number of resources to return.")
-                              :sort-by (:type "string"
-                                        :description "Optional resource metadata field to sort by, such as default, name, uri, created-at, updated-at, or a scheme-specific field.")
+                 :properties (:uri (:type "string")
+                              :pattern (:type "string")
+                              :case-sensitive (:type "boolean")
+                              :limit (:type "number")
+                              :sort-by (:type "string")
                               :sort-order (:type "string"
-                                           :enum ["desc" "asc"]
-                                           :description "Optional sort order. Defaults to desc for explicit sort fields.")
-                              :created-after (:type "string"
-                                              :description "Inclusive ISO 8601 created-at lower bound, when the scheme supports it.")
-                              :created-before (:type "string"
-                                               :description "Inclusive ISO 8601 created-at upper bound, when the scheme supports it.")
-                              :updated-after (:type "string"
-                                              :description "Inclusive ISO 8601 updated-at lower bound, when the scheme supports it.")
-                              :updated-before (:type "string"
-                                               :description "Inclusive ISO 8601 updated-at upper bound, when the scheme supports it."))
+                                           :enum ["desc" "asc"])
+                              :created-after (:type "string")
+                              :created-before (:type "string")
+                              :updated-after (:type "string")
+                              :updated-before (:type "string"))
                  :required ["uri"])
    :dispatch (lambda (call arguments)
                (funcall call
@@ -168,37 +158,23 @@ nested tool arguments (notably Bedrock) are reparsed against the tool schema in
   (e-operation-create
    :id 'search
    :tool-name "search"
-   :description "Search URI-addressed resources for text matches."
+   :description "Search resources under a URI root."
    :parameters '(:type "object"
-                 :properties (:uri (:type "string"
-                                    :description "Resource URI root to search, such as file://lisp/ or buffer://.")
-                              :query (:type "string"
-                                      :description "Ranked lexical query. All whitespace-separated terms must match; literal characters match literally; * is a non-whitespace wildcard.")
-                              :glob (:type "string"
-                                     :description "Optional glob pattern limiting resources to search.")
-                              :case-sensitive (:type "boolean"
-                                               :description "When non-nil, match query case-sensitively.")
-                              :whole-word (:type "boolean"
-                                           :description "When non-nil, each query term must match on word boundaries.")
-                              :multiline (:type "boolean"
-                                          :description "When non-nil, whitespace gaps may cross line boundaries.")
-                              :limit (:type "number"
-                                      :description "Maximum number of text matches to return.")
-                              :resource-sort-by (:type "string"
-                                                 :description "Optional resource metadata field used to order resource candidates before search.")
+                 :properties (:uri (:type "string")
+                              :query (:type "string")
+                              :glob (:type "string")
+                              :case-sensitive (:type "boolean")
+                              :whole-word (:type "boolean")
+                              :multiline (:type "boolean")
+                              :limit (:type "number")
+                              :resource-sort-by (:type "string")
                               :resource-sort-order (:type "string"
-                                                    :enum ["desc" "asc"]
-                                                    :description "Optional resource candidate sort order.")
-                              :resource-limit (:type "number"
-                                               :description "Optional maximum number of resource candidates to search before returning text matches.")
-                              :created-after (:type "string"
-                                              :description "Inclusive ISO 8601 created-at lower bound for resource candidates, when the scheme supports it.")
-                              :created-before (:type "string"
-                                               :description "Inclusive ISO 8601 created-at upper bound for resource candidates, when the scheme supports it.")
-                              :updated-after (:type "string"
-                                              :description "Inclusive ISO 8601 updated-at lower bound for resource candidates, when the scheme supports it.")
-                              :updated-before (:type "string"
-                                               :description "Inclusive ISO 8601 updated-at upper bound for resource candidates, when the scheme supports it."))
+                                                    :enum ["desc" "asc"])
+                              :resource-limit (:type "number")
+                              :created-after (:type "string")
+                              :created-before (:type "string")
+                              :updated-after (:type "string")
+                              :updated-before (:type "string"))
                  :required ["uri" "query"])
    :dispatch (lambda (call arguments)
                (funcall call
@@ -216,27 +192,16 @@ nested tool arguments (notably Bedrock) are reparsed against the tool schema in
   (e-operation-create
    :id 'table-of-content
    :tool-name "table_of_content"
-   :description (concat
-                 "Table of content for a URI-addressed resource using wot. "
-                 "For file-backed resources this calls wot on the backing file when safe. "
-                 "For in-memory resources this pipes resource text to wot --stdin. "
-                 "session:// is not supported.")
+   :description "Outline a URI-addressed resource."
    :parameters '(:type "object"
-                 :properties (:uri (:type "string"
-                                    :description "Resource URI to outline, such as file://README.org, buffer://*scratch*, or e://capability/refs/name.md.")
-                              :max-depth (:type "number"
-                                          :description "Optional wot --max-depth value.")
-                              :max-items (:type "number"
-                                          :description "Optional wot --max-items value.")
-                              :min-lines (:type "number"
-                                          :description "Optional wot --min-lines value.")
+                 :properties (:uri (:type "string")
+                              :max-depth (:type "number")
+                              :max-items (:type "number")
+                              :min-lines (:type "number")
                               :format (:type "string"
-                                       :enum ["markdown" "json"]
-                                       :description "Optional wot output format. Defaults to markdown.")
-                              :language (:type "string"
-                                         :description "Optional wot language, useful for stdin-backed resources when inference is ambiguous.")
-                              :lenient (:type "boolean"
-                                        :description "When non-nil, pass --lenient to wot."))
+                                       :enum ["markdown" "json"])
+                              :language (:type "string")
+                              :lenient (:type "boolean"))
                  :required ["uri"])
    :dispatch (lambda (call arguments)
                (funcall call

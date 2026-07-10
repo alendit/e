@@ -346,22 +346,31 @@ SESSION-ID and TURN-ID are passed to context-aware resource providers."
               (format "Range units: %s." (string-join range-modes ", ")))))
      " ")))
 
+(defconst e-harness-lean-resource-operation-ids
+  '(glob search table-of-content)
+  "Resource operations whose schemas stay lean.
+Detailed scheme and advanced-option guidance for these discovery operations is
+available through e:// resources instead of repeating it in every request.")
+
 (defun e-harness--resource-operation-description (resources operation)
   "Return model-facing description for OPERATION over active RESOURCES."
-  (let ((methods (e-resources-methods-for-operation resources operation)))
-    (string-join
-     (list (e-operation-description operation)
-           ""
-           "Active URI schemes:"
-           (mapconcat #'e-harness--resource-method-description methods "\n"))
-	   "\n")))
+  (if (memq (e-operation-id operation)
+            e-harness-lean-resource-operation-ids)
+      (e-operation-description operation)
+    (let ((methods (e-resources-methods-for-operation resources operation)))
+      (string-join
+       (list (e-operation-description operation)
+             ""
+             "Active URI schemes:"
+             (mapconcat #'e-harness--resource-method-description methods "\n"))
+       "\n"))))
 
 (defun e-harness--resource-operation-metadata (operation uri)
   "Return compact resource usage metadata for OPERATION over URI."
   (e-tools-resource-usage-metadata
    (e-operation-tool-name operation)
    (list (list :uri uri
-               :operation (e-operation-id-of operation)))))
+               :operation (e-operation-id operation)))))
 
 (defun e-harness--resource-operation-result (operation uri content)
   "Return CONTENT as the current resource OPERATION tool result when possible."
