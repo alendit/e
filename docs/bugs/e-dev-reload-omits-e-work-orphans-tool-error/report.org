@@ -1,0 +1,20 @@
+#+title: e-dev reload omits e-work and orphans tool errors
+#+startup: overview
+
+* Report
+
+The user reported that the recent and still-open chat session showed one
+=glob= tool call as =Running= for more than fifteen minutes.
+
+The affected session is
+=20260710T094517-87dee6149f94=.  Its current turn
+=01KX61SKN43J49Y525JMRDQVPJ= started =glob= call
+=call_6Oxno3OQwY2CN89HiVOh6Df4= and never recorded =tool-finished=,
+=turn-finished=, or =turn-failed=.
+
+* Expected
+
+A resource-operation error must settle the tool with an error result and let
+the loop continue or fail the turn visibly.  Reloading repository source must
+not leave newly loaded callers depending on stale definitions from the
+pre-reload image.

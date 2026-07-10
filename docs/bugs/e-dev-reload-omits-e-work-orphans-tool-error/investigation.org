@@ -1,0 +1,78 @@
+#+title: e-dev reload omits e-work and orphans tool errors investigation
+#+startup: overview
+
+* Symptoms
+
+- Persisted session
+  =~/.emacs.d/.local/cache/e/sessions/sessions/20260710T094517-87dee6149f94.jsonl=
+  records =tool-started= for =glob= at =2026-07-10T13:00:03Z=.
+- The call arguments were:
+  =tmp://tool-results/01KX60965NKS3T7NEWDKM6GHWD/=,
+  =bash-call_*.txt=, =sort-by= =updated-at=, =sort-order= =desc=, and
+  =limit= =5=.
+- The same timestamp records the provider request finishing successfully, but
+  the session contains no later =tool-finished= or turn-terminal event.
+- A bounded live probe showed the visible chat buffer still attached to the
+  same harness, with progress turn =01KX61SKN43J49Y525JMRDQVPJ= and the
+  harness entry still =running=.
+- The harness entry still names the exact =glob= call as =:open-tool-call=,
+  while =:request= remains the already-finished =e-backend-request=.  It never
+  advanced to an =e-tools-request= or Work handle.
+- There is no live =fd= process and no matching Emacs Work process.  A
+  two-second host sample showed Emacs idle in its ordinary command loop, so the
+  status is orphaned rather than backed by slow work.
+
+* Trigger
+
+The trailing slash in the requested =tmp://.../= directory is rejected by
+=e-session-tmp--scope-relative-name= as
+=e-session-tmp-resources-invalid-path=.  A repository-side probe of the same
+advanced glob shape settles normally as a structured tool error.
+
+The invalid path is therefore only the trigger.  It should not leave the turn
+running.
+
+* Root Cause
+
+Commit =dcb2a67= introduced =e-work-error-message= in =e-work.el= and changed
+=e-tools--condition-message= in =e-tools.el= to call it.
+
+=e-dev-reload= reloads =lisp/core/e-tools.el=, but its explicit source list
+does not include =lisp/core/e-work.el=.  The running image consequently mixed
+the new =e-tools--condition-message= with the old loaded =e-work.el=.
+
+Live scalar evidence:
+
+- =e-tools-start= resolves to the repository source.
+- =e-work-start= resolves through the Straight build link, but its loaded
+  definition predates the new helper.
+- =(fboundp 'e-work-error-message)= returns nil.
+- Calling =e-tools--condition-message= on the resource-path condition fails
+  with =void-function e-work-error-message=.
+
+The secondary error occurs inside the asynchronous tool settlement path.  It
+escapes before =finish-error= can call the tool's completion callback, leaving
+the loop's open-tool marker and harness active-turn entry intact even though no
+carrier remains active.
+
+* Fix Direction
+
+- Add =lisp/core/e-work.el= to the =e-dev-reload= source set before
+  =lisp/core/e-tools.el= so dependency order is respected.
+- Add reload regression coverage proving that a helper newly introduced in a
+  dependency is present before its reloaded caller runs.
+- Add a focused lifecycle regression in which a Work-backed resource tool
+  errors during start and prove that =tool-finished= plus a turn terminal or
+  follow-up event is emitted.
+- Consider deriving or validating the reload set from declared source
+  dependencies so a manual list cannot silently create another mixed-version
+  image.
+
+The trailing-slash =tmp://= directory contract should be reviewed separately:
+either normalize directory roots or make the model-facing URI contract reject
+them clearly before dispatch.  That does not replace the settlement fix.
+
+* Current State
+
+This investigation made no runtime changes.  The affected turn remains marked
+running, and the user's Emacs was neither aborted nor reloaded.
