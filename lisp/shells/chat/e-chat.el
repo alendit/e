@@ -215,7 +215,11 @@ The complete reasoning text remains available from response details."
   :group 'e-chat)
 
 (defcustom e-chat-model-context-token-limits
-  '(("gpt-5.5" . 258400)
+  '(("gpt-5.6" . 353400)
+    ("gpt-5.6-sol" . 353400)
+    ("gpt-5.6-terra" . 353400)
+    ("gpt-5.6-luna" . 353400)
+    ("gpt-5.5" . 258400)
     ("gpt-5.4" . 1050000)
     ("gpt-5.4-pro" . 1050000)
     ("gpt-5.3-codex" . 400000)

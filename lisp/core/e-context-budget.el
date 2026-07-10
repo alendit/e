@@ -27,7 +27,11 @@
   :group 'e)
 
 (defcustom e-context-budget-model-token-limits
-  '(("gpt-5.5" . 258400)
+  '(("gpt-5.6" . 353400)
+    ("gpt-5.6-sol" . 353400)
+    ("gpt-5.6-terra" . 353400)
+    ("gpt-5.6-luna" . 353400)
+    ("gpt-5.5" . 258400)
     ("gpt-5.4" . 1050000)
     ("gpt-5.4-pro" . 1050000)
     ("gpt-5.3-codex" . 400000)

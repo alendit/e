@@ -7484,6 +7484,12 @@ gamma
 
 (ert-deftest e-chat-test-mode-line-status-formats-model-effort-and-context ()
   "Mode-line status includes model, effort, and estimated context usage."
+  (dolist (model '("gpt-5.6"
+                   "gpt-5.6-sol"
+                   "gpt-5.6-terra"
+                   "gpt-5.6-luna"))
+    (should (equal (e-chat--model-context-token-limit model)
+                   353400)))
   (should (equal (e-chat--model-context-token-limit "gpt-5.5")
                  258400))
   ;; Anthropic models resolve a context limit too (Claude Opus/Sonnet/Fable are

@@ -21,11 +21,32 @@
 
 (ert-deftest e-context-budget-test-model-window-uses-table ()
   "Model windows are read from the supplied or default budget table."
+  (dolist (model '("gpt-5.6"
+                   "gpt-5.6-sol"
+                   "gpt-5.6-terra"
+                   "gpt-5.6-luna"))
+    (should (equal (e-context-budget-model-window model) 353400)))
   (should (equal (e-context-budget-model-window "gpt-5.5") 258400))
   (should (equal (e-context-budget-model-window
                   "custom" '(("custom" . 1234)))
                  1234))
   (should-not (e-context-budget-model-window "missing" '())))
+
+(ert-deftest e-context-budget-test-gpt-56-sol-window-enables-auto-compaction ()
+  "GPT-5.6 Sol provider usage can cross the auto-compaction threshold."
+  (let* ((harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :default-options '(:model "gpt-5.6-sol")))
+         (store (e-harness-sessions harness))
+         (e-harness-auto-compaction-reserve-tokens 16384))
+    (e-session-create store :id "gpt-56-budget")
+    (e-session-append-message
+     store "gpt-56-budget" '(:role user :content "large context"))
+    (e-session-append-activity-event
+     store "gpt-56-budget" "turn-1" 'token-usage
+     '(:input-tokens 340000 :total-tokens 340100))
+    (should (e-harness--auto-compaction-needed-p
+             harness "gpt-56-budget"))))
 
 (ert-deftest e-context-budget-test-used-tokens-prefers-fresh-provider-usage ()
   "Fresh provider token usage is used before estimating context."

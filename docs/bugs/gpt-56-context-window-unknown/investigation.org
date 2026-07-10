@@ -1,0 +1,92 @@
+#+title: Investigation: GPT-5.6 Context Window Unknown
+#+startup: overview
+
+* Summary
+
+The failure came from missing GPT-5.6 model metadata in =e=, not from the
+compaction implementation itself.
+
+The running Emacs reported:
+
+#+begin_example
+(:model "gpt-5.6-sol" :window nil)
+#+end_example
+
+=e-context-budget-model-token-limits= did not contain =gpt-5.6-sol=, so
+=e-context-budget-model-window= returned nil.  The presentation-owned
+=e-chat-model-context-token-limits= table also lacked the model, which produced
+the =?= denominator in the mode line.
+
+* Autocompaction Path
+
+=e-harness--auto-compaction-needed-p= obtains used tokens and the model window.
+It only triggers when both are integers and usage is greater than the window
+minus =e-harness-auto-compaction-reserve-tokens=.  An unknown window therefore
+disables the threshold by design.
+
+This matches the observed order: the provider rejected the oversized turn, and
+manual compaction was only started afterward.
+
+* Remaining Mid-turn Boundary
+
+This fix restores turn-start threshold detection for GPT-5.6.  With the default
+=16384= token reserve, =gpt-5.6-sol= requests become eligible for
+autocompaction above =353400 - 16384 = 337016= used tokens.
+
+It does not add automatic mid-turn threshold enforcement.
+=e-harness--maybe-auto-compact-session= still runs from the prompt-start path,
+so a long turn that starts below the threshold can cross it during repeated tool
+and provider loops.  The reported turn made 48 tool calls, so that existing
+mid-turn limitation may also have contributed after the missing-model lookup
+disabled the initial check.  Active-turn compaction remains available through
+the explicit =compact_session= path and is separate from this model-metadata
+fix.
+
+* Effective Codex Window
+
+OpenAI's public API model documentation gives GPT-5.6 Sol, Terra, and Luna a
+1,050,000-token API context window.  The ChatGPT-backed Codex surface used by
+this checkout has a smaller effective window.
+
+The current =~/.codex/models_cache.json= entry reports for all three GPT-5.6
+variants:
+
+#+begin_example
+context_window: 372000
+max_context_window: 372000
+effective_context_window_percent: 95
+#+end_example
+
+The effective budget is therefore =372000 * 0.95 = 353400= tokens.  This is the
+same convention already represented by the existing GPT-5.5 mapping:
+=272000 * 0.95 = 258400=.
+
+* Fix
+
+Added =353400= entries for =gpt-5.6=, =gpt-5.6-sol=,
+=gpt-5.6-terra=, and =gpt-5.6-luna= to:
+
+- =e-context-budget-model-token-limits= for autocompaction;
+- =e-chat-model-context-token-limits= for presentation status.
+
+The unsuffixed alias remains useful for API-backed profiles even though this
+machine's ChatGPT-backed Codex profile uses the concrete =gpt-5.6-sol= slug.
+
+The static mapping is intentionally conservative for API-backed profiles whose
+transport may expose the larger public window.  A future provider-owned model
+metadata contract could distinguish transport-specific windows without making
+the core budget module read Codex-private cache files.
+
+* Validation
+
+- Live scalar probe confirmed =gpt-5.6-sol= previously resolved to a nil window.
+- Focused core budget tests prove every GPT-5.6 alias resolves to =353400=.
+- Focused autocompaction coverage proves GPT-5.6 Sol usage can cross the default
+  threshold and request compaction.
+- Focused chat coverage proves the mode-line lookup resolves every GPT-5.6
+  alias instead of rendering an unknown denominator.
+- =eldev test -f test/e-context-budget-test.el=: 8/8 passed.
+- Focused =e-chat-test-mode-line-status-formats-model-effort-and-context=: 1/1
+  passed.
+- Existing known-window and unknown-window autocompaction tests: 2/2 passed.
+- Repository-side checks passed; the running Emacs was left unchanged.

@@ -1,0 +1,32 @@
+#+title: Report: GPT-5.6 Context Window Unknown
+#+startup: overview
+
+* Report
+
+The user reported that a long =gpt-5.6-sol= chat failed with:
+
+#+begin_example
+Turn failed: Your input exceeds the context window of this model. Please
+adjust your prompt and try again.
+#+end_example
+
+At the same time, the chat mode line showed:
+
+#+begin_example
+e-chat gpt-5.6-sol/high ?(370k/? tok)
+#+end_example
+
+Manual compaction could still be started after the failed turn.
+
+* Expected
+
+The chat status should show the effective GPT-5.6 context window, and
+turn-start autocompaction should use that window to compact before the provider
+rejects an oversized request.
+
+* Actual
+
+Both the core budget table and the presentation-owned chat table lacked GPT-5.6
+entries.  The status therefore rendered an unknown denominator, and the
+autocompaction threshold deliberately skipped the model because its window was
+unknown.
