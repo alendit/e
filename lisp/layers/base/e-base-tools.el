@@ -72,6 +72,14 @@ default and restores unbounded runs, which is discouraged."
 (defconst e-base-tools--max-bytes (* 16 1024)
   "Maximum text bytes returned by base tools before truncation.")
 
+(defconst e-base-tools--replace-contents-max-secs 0.5
+  "Time budget for the diff in `e-base-tools--save-buffer-content-to-file'.
+Passed as `replace-buffer-contents' MAX-SECS.  Without a budget its Myers diff
+is superlinear and runs entirely in C -- uninterruptible by \\[keyboard-quit]
+or a timer -- so a large edit that differs throughout hangs Emacs at 100% CPU
+indefinitely.  Past this budget the call falls back to a plain delete+insert,
+which loses overlay anchoring but always terminates.")
+
 (defun e-base-tools--argument-string (arguments key)
   "Return required string argument KEY from ARGUMENTS."
   (let ((value (plist-get arguments key)))
@@ -314,10 +322,13 @@ buffer's detected coding cannot encode CONTENT."
               ;; position 1.  Minor modes that persist overlay regions on
               ;; `before-save-hook' (e.g. Simply Annotate serializes annotation
               ;; threads from their overlays) would otherwise write collapsed
-              ;; (1 . 1) regions to disk.  `replace-buffer-contents' only falls
-              ;; back to delete+insert past its time budget, never worse than
-              ;; the prior behavior.
-              (replace-buffer-contents source))
+              ;; (1 . 1) regions to disk.  MAX-SECS bounds the diff: past the
+              ;; budget it falls back to delete+insert (losing overlay
+              ;; anchoring) rather than hanging.  The bound is mandatory -- the
+              ;; diff runs in C and no timer or C-g can interrupt it, so a big
+              ;; edit that differs throughout would otherwise spin forever.
+              (replace-buffer-contents
+               source e-base-tools--replace-contents-max-secs))
           (kill-buffer source)))
       (save-buffer)
       (e-base-tools--buffer-link-state buffer))))

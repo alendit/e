@@ -928,6 +928,40 @@ its text instead."
         (kill-buffer buffer))
       (delete-directory directory t))))
 
+(ert-deftest e-base-tools-test-save-buffer-content-bounds-large-diff ()
+  "A large write that differs throughout completes promptly and correctly.
+Regression: `replace-buffer-contents' without a MAX-SECS budget runs a
+superlinear Myers diff in C -- uninterruptible by a timer or \\[keyboard-quit] --
+so a big edit differing on every line hung Emacs at 100% CPU for hours.  The
+budget forces a delete+insert fallback; the write must still land the exact new
+content, and it must return in well under the wall-clock a full diff would take."
+  (let* ((directory (make-temp-file "e-base-large-diff-" t))
+         (file (expand-file-name "big.txt" directory))
+         (original (with-temp-buffer
+                     (dotimes (i 8000)
+                       (insert (format "line %d with café content\n" i)))
+                     (buffer-string)))
+         ;; Differs on every single line -> worst case for the diff.
+         (replacement (replace-regexp-in-string "line" "LINE changed" original))
+         buffer)
+    (unwind-protect
+        (progn
+          (write-region original nil file nil 'silent)
+          (setq buffer (find-file-noselect file))
+          (let ((t0 (float-time)))
+            (e-base-tools--save-buffer-content-to-file buffer replacement)
+            (should (< (- (float-time) t0) 5.0)))
+          ;; The bounded path must still write the exact requested content.
+          (should (equal (with-current-buffer buffer (buffer-string)) replacement))
+          (should (equal (with-temp-buffer
+                           (insert-file-contents file)
+                           (buffer-string))
+                         replacement)))
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer (set-buffer-modified-p nil))
+        (kill-buffer buffer))
+      (delete-directory directory t))))
+
 (ert-deftest e-base-tools-test-resource-sync-status-reports-needs-save-and-stale ()
   "The resource_sync_status tool reports linked buffer coherence states."
   (let* ((directory (make-temp-file "e-base-sync-status-" t))
