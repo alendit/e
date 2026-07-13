@@ -82,11 +82,31 @@ A content-keyed evidence identity should prevent rejected or already-routed obse
 ** Out-of-band and forked execution
 
 The default design should keep reporting work out of the main session.
-A post-turn observer can run in a fresh child session or queued background session, read the completed parent turn through =session://=, and write reports through the process-reporting action.
-This should be a fresh observer session with a durable reference to the parent, not a transcript fork copied into the child.
-The child should receive only a session/turn reference and narrow trigger metadata, then read the bounded projection it needs.
-Its transcript and result must stay out of the parent context unless a human explicitly opens them.
+A post-turn observer can run in a fresh child session or queued background session, inspect the completed parent turn through =session://=, and write reports through the process-reporting action.
+This is a fresh linked observer session, not a fork of the parent's transcript or assembled request context.
+The child does not inherit the parent's transcript, provider anchor, compaction state, live canvas or buffer context, active tool catalog, project guidance, or task-specific capability context by default.
+It receives its own small observer-harness prefix plus a parent session id, turn id, narrow trigger metadata, and only the evidence selected for observation.
+Its transcript and result stay out of the parent context unless a human explicitly opens them.
 A cheaper model can perform this observational pass when its quality is sufficient.
+
+=session://= is the evidence boundary and source of truth, not a request to recreate the parent's context in the child.
+It gives the observer stable, read-only, provenance-preserving access to selected parent projections without copying the whole session at spawn time.
+The runtime may resolve a bounded =session://= projection before the child's first provider request and append that evidence as a late dynamic seed message.
+This avoids a mandatory model-issued =read= call and its follow-up provider request.
+The child may read additional projections on demand when the bounded seed is insufficient, but broad reads should be exceptional and measured.
+
+The observer context should have three explicit parts, in cache-friendly order:
+
+1. *Stable observer prefix* :: the small observer role, decision policy, output schema, and minimal read/write surface.
+   Version this prefix and give repeated observer requests a stable cache key where the provider supports it.
+2. *Compact observation task* :: report-store state needed for deduplication plus the parent session/turn reference and trigger kind.
+3. *Dynamic evidence suffix* :: the smallest parent message and activity slice needed to judge the candidate, placed after the stable prefix so it does not shorten the reusable cache prefix.
+
+Do not trade a smaller uncached suffix for a large inherited parent prefix merely because the inherited prefix may be cached.
+Cached tokens still have cost, consume context capacity, and may expose irrelevant instructions that distort the observer's judgment.
+Track total input, cached input, uncached input, and evidence size separately when comparing observer shapes.
+Prefer fresh observer sessions with a stable harness prefix and bounded evidence over one long-lived observer transcript whose accumulated history grows on every report.
+Batch related candidates only when one bounded evidence bundle and one decision pass cost less than separate observers without weakening provenance or deduplication.
 
 Forking helps with report formulation, enrichment, deduplication, and triage, but it does not by itself make an in-band tool call free.
 Under the normal function-calling protocol, the main model stops when it emits the call and waits for a tool result before a follow-up provider request can finish the task.
@@ -203,8 +223,11 @@ Those totals are the denominator and validation evidence; the counterfactual del
 * Acceptance
 
 - The default main-session configuration can produce process reports without exposing a report tool, adding report guidance, blocking the main session, or injecting observer output into its context.
-- Default observation runs in an isolated child or queued background session that receives references rather than a copied parent transcript.
-- Deterministic candidate selection and batching bound background model cost.
+- Default observation runs in an isolated child or queued background session and does not inherit the parent's transcript or assembled context.
+- The observer receives a stable minimal prefix, a parent session/turn reference, and a bounded evidence projection resolved through =session://=.
+- The first observer request does not require a model-issued resource read when the runtime can seed the selected evidence directly.
+- Observer cost reports separate total, cached, and uncached input tokens so cache benefit does not hide irrelevant inherited context.
+- Deterministic candidate selection and measured batching bound background model cost.
 - A terminal side-channel capture mode is evaluated against isolated observation before adding an ordinary tool to default context.
 - An explicit opt-in =process_report= tool can preserve the task-performing model's own judgment when that value justifies the measured interruption cost.
 - A report can describe failure, correction, workaround, recurrence, or success without claiming that the event is a bug.

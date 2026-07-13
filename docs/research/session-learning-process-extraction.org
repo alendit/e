@@ -303,6 +303,8 @@ Concrete direction:
    A request-shape counterfactual can calculate direct context deltas after removing report artifacts.
    Replay or controlled A/B sessions are still required to estimate interruption overhead and changed model behavior.
    Default capture should therefore run after the turn in an isolated observer session, leaving the main session free of report guidance, tool calls, results, and child output; any ordinary in-band tool mode should be opt-in and costed separately.
+   The observer is a fresh linked session, not a copy of the parent's context.
+   It should use a small stable cacheable prefix and a bounded dynamic evidence suffix resolved from =session://=, while tracking total, cached, and uncached observer input separately.
 
 This changes the first-slice sequencing slightly.
 A session-learning extractor can start with =session://= alone, but once =52= exists it should read open process reports first, use them as anchors into session history, and then run broader recurrence mining.
