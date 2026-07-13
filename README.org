@@ -215,3 +215,30 @@ The harness owns lifecycle and runtime ordering, while capabilities own named be
 ** Current direction
 
 =e= is moving toward a capability-first runtime where agents can be live-configured inside Emacs. The important architectural seam is that the same harness can support multiple shells, provider adapters, context strategies, and tool/capability sets without making any one UI or provider the center of the system.
+
+*** Process reporting
+
+The default parent harness exposes one small =process_marker= tool. It accepts a
+=signal= and one short =note=, then returns only =ok=. The runtime links the
+marker to its session, turn, provider request, tool/action telemetry, redacted
+previews, and resolvable =session://= evidence.
+
+The =process-reporting= capability also exposes durable actions:
+
+#+begin_src elisp
+(e-actions-call 'process-reporting :list)
+(e-actions-call 'process-reporting :read '(:marker-id "..."))
+(e-actions-call 'process-reporting :triage
+                '(:marker-id "..."
+                  :outcome "runtime-defect"
+                  :status "routed"
+                  :decision-note "Linked to the investigation."
+                  :target-reference "docs/bugs/example/"))
+#+end_src
+
+Markers are immutable. Triage and offline extraction cost records append as
+separate facts in =~/.emacs.d/e/process-reporting/records.jsonl= (or the
+configured =e-process-reporting-directory=). The =:cost-report= action reports
+request-shape byte attribution with an explicit =utf-8-bytes/4= estimate. It
+does not claim behavioral or interruption cost; those require replay or A/B
+measurement.
