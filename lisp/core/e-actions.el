@@ -18,6 +18,7 @@
 (require 'e-capabilities)
 (require 'e-harness)
 (require 'e-session)
+(require 'e-telemetry)
 (require 'e-tools)
 (require 'e-work)
 
@@ -172,30 +173,8 @@
                                     (symbol-name name)))))))))))
 
 (defun e-actions--preview (value)
-  "Return a compact printable preview for VALUE."
-  (let* ((text (prin1-to-string value))
-         (max-bytes 4096)
-         (original-bytes (string-bytes text))
-         (truncated (> original-bytes max-bytes))
-         (preview
-          (if truncated
-              (let ((bytes 0)
-                    (index 0)
-                    (length (length text)))
-                (while (and (< index length)
-                            (let ((next-bytes
-                                   (string-bytes
-                                    (substring text index (1+ index)))))
-                              (when (<= (+ bytes next-bytes) max-bytes)
-                                (setq bytes (+ bytes next-bytes))
-                                t)))
-                  (setq index (1+ index)))
-                (substring text 0 index))
-            text)))
-    (list :content preview
-          :truncated truncated
-          :original-bytes original-bytes
-          :shown-bytes (string-bytes preview))))
+  "Return a compact redacted printable preview for VALUE."
+  (e-telemetry-preview value))
 
 (defun e-actions--parent-tool-call-id (context)
   "Return parent tool call id from CONTEXT, if any."

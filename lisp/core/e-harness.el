@@ -29,6 +29,7 @@
 (require 'e-session)
 (require 'e-shells)
 (require 'e-store)
+(require 'e-telemetry)
 (require 'e-tools)
 (require 'e-work)
 (require 'subr-x)
@@ -948,29 +949,31 @@ ordinary backoff."
     (substring text 0 index)))
 
 (defun e-harness--compact-tool-result-for-activity (result)
-  "Return compact durable activity representation of tool RESULT."
+  "Return compact redacted durable activity representation of tool RESULT."
   (let* ((content (plist-get result :content))
          (content-text (e-tools-result-content-text content))
-         (original-bytes (string-bytes content-text))
-         (max-bytes (max 0 e-harness-durable-tool-finished-result-preview-bytes))
-         (truncated (> original-bytes max-bytes))
-         (preview (if truncated
-                      (e-harness--string-byte-prefix content-text max-bytes)
-                    content-text))
-         (metadata (copy-sequence (plist-get result :metadata)))
-         (summary (list :tool-call-id (plist-get result :tool-call-id)
-                        :name (plist-get result :name)
-                        :status (plist-get result :status)
-                        :content preview
-                        :metadata metadata)))
-    (when truncated
+         (redacted (e-telemetry--redact-string content-text))
+         (preview (e-telemetry-preview
+                   redacted
+                   (max 0 e-harness-durable-tool-finished-result-preview-bytes)))
+         (preview-content (if (stringp content)
+                              (e-harness--string-byte-prefix
+                               redacted
+                               (max 0 e-harness-durable-tool-finished-result-preview-bytes))
+                            (plist-get preview :content)))
+         (metadata (append (copy-sequence (plist-get result :metadata))
+                           (list :activity-preview preview))))
+    (when (plist-get preview :truncated)
       (setq metadata (plist-put metadata :activity-truncated t))
       (setq metadata (plist-put metadata :activity-original-bytes
-                                original-bytes))
+                                (string-bytes content-text)))
       (setq metadata (plist-put metadata :activity-shown-bytes
-                                (string-bytes preview)))
-      (plist-put summary :metadata metadata))
-    summary))
+                                (plist-get preview :shown-bytes))))
+    (list :tool-call-id (plist-get result :tool-call-id)
+          :name (plist-get result :name)
+          :status (plist-get result :status)
+          :content preview-content
+          :metadata metadata)))
 
 (defun e-harness--compact-tool-finished-payload (payload)
   "Return PAYLOAD with a compact `:result' for durable activity storage."
@@ -983,9 +986,21 @@ ordinary backoff."
         copy)
     payload))
 
+(defun e-harness--compact-tool-started-payload (payload)
+  "Return PAYLOAD with tool arguments replaced by a redacted preview."
+  (let* ((copy (copy-tree payload))
+         (call (if (plist-get copy :tool-call)
+                   (plist-get copy :tool-call)
+                 copy)))
+    (when (plist-member call :arguments)
+      (plist-put call :arguments
+                 (e-telemetry-preview (plist-get call :arguments))))
+    copy))
+
 (defun e-harness--durable-activity-payload (type payload)
   "Return durable activity PAYLOAD for event TYPE."
   (pcase type
+    ('tool-started (e-harness--compact-tool-started-payload payload))
     ('tool-finished (e-harness--compact-tool-finished-payload payload))
     (_ payload)))
 

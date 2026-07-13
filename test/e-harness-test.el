@@ -1086,12 +1086,14 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
                         (eq (plist-get event :event-type) 'token-usage))
                       events)))
       (should usage-event)
-      (should (equal (plist-get usage-event :payload)
-                     '(:input-tokens 202598
-                       :cached-input-tokens 7552
-                       :output-tokens 419
-                       :reasoning-output-tokens 139
-                       :total-tokens 203017))))))
+      (let ((payload (plist-get usage-event :payload)))
+        (should (equal (plist-get payload :input-tokens) 202598))
+        (should (equal (plist-get payload :cached-input-tokens) 7552))
+        (should (equal (plist-get payload :output-tokens) 419))
+        (should (equal (plist-get payload :reasoning-output-tokens) 139))
+        (should (equal (plist-get payload :total-tokens) 203017))
+        (should (stringp (plist-get payload :provider-request-id)))
+        (should (= (plist-get payload :provider-request-ordinal) 1))))))
 
 (ert-deftest e-harness-test-provider-anchor-candidates-are-persisted ()
   "Provider anchor candidates persist with covered entry and context metadata."
