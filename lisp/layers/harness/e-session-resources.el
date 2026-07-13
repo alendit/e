@@ -51,7 +51,8 @@ engine id `e' is always registered from the active harness session store.
 An adapter is a plist that provides function-valued operations named
 `:list-sessions', `:render-summary', `:render-messages', and optional
 `:render-activity', `:render-events', `:render-compactions',
-`:render-provider-anchors', and `:projections'.  Adapter functions receive the
+`:render-provider-anchors', `:render-process-reports', and `:projections'.
+Adapter functions receive the
 engine object as their first argument.  Session-specific renderers receive the
 session id as their second argument."
   :type 'sexp
@@ -63,7 +64,8 @@ session id as their second argument."
   :group 'e)
 
 (defconst e-session-resources--projection-order
-  '("summary" "messages" "activity" "events" "compactions" "provider-anchors")
+  '("summary" "messages" "activity" "events" "compactions" "provider-anchors"
+    "process-reports")
   "Projection order for session:// session roots.")
 
 (defun e-session-resources--require-harness (harness)
@@ -280,6 +282,12 @@ session id as their second argument."
             (e-session-resources--insert-field "created-at" (plist-get entry :created-at))
             (e-session-resources--insert-field "turn-id" (plist-get entry :turn-id))
             (e-session-resources--insert-field "event-type" (plist-get entry :event-type))
+            (e-session-resources--insert-field "report-type" (plist-get entry :report-type))
+            (e-session-resources--insert-field "marker-id" (plist-get entry :marker-id))
+            (e-session-resources--insert-field "signal" (plist-get entry :signal))
+            (e-session-resources--insert-field "note" (plist-get entry :note))
+            (e-session-resources--insert-field "status" (plist-get entry :status))
+            (e-session-resources--insert-field "outcome" (plist-get entry :outcome))
             (e-session-resources--insert-field "provider-id" (plist-get entry :provider-id))
             (e-session-resources--insert-field "model" (plist-get entry :model))
             (e-session-resources--insert-field "covered-entry-id" (plist-get entry :covered-entry-id))
@@ -325,6 +333,7 @@ session id as their second argument."
       (insert (format "- session events: %s\n" (length (e-session-session-events store session-id))))
       (insert (format "- compactions: %s\n" (length (e-session-compactions store session-id))))
       (insert (format "- provider anchors: %s\n" (length (e-session-provider-anchors store session-id))))
+      (insert (format "- process reports: %s\n" (length (e-session-process-reports store session-id))))
       (insert "\nReadable subresources:\n")
       (dolist (projection projections)
         (insert (format "- %s\n"
@@ -375,6 +384,10 @@ session id as their second argument."
                          (format "Session %s provider anchors" session-id)
                          (e-session-provider-anchors
                           (e-session-resources--e-store engine) session-id)))
+    ("process-reports" (e-session-resources--render-entry-list
+                        (format "Session %s process reports" session-id)
+                        (e-session-process-reports
+                         (e-session-resources--e-store engine) session-id)))
     (_
      (signal 'e-session-resources-unsupported-projection
              (list (format "Unsupported session projection: %s"
@@ -389,6 +402,7 @@ session id as their second argument."
     ("events" :render-events)
     ("compactions" :render-compactions)
     ("provider-anchors" :render-provider-anchors)
+    ("process-reports" :render-process-reports)
     (_ (intern (format ":render-%s" projection)))))
 
 (defun e-session-resources--render-projection (engine session-id projection)
@@ -814,7 +828,8 @@ projections."
                            "session engines. Searching a session root uses "
                            "the messages projection by default; narrow the "
                            "URI or glob to search activity, events, "
-                           "compactions, or provider anchors explicitly.")
+                           "compactions, provider anchors, or process reports "
+                           "explicitly.")
              :uri-patterns '("session://"
                              "session://<engine-id>/sessions/"
                              "session://<engine-id>/sessions/<session-id>/"

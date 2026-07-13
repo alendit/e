@@ -49,6 +49,11 @@
        (e-harness-sessions harness)
        "session-1"
        '(:role user :content "hello"))
+      (e-session-append-process-report
+       (e-harness-sessions harness)
+       "session-1"
+       '(:report-type "marker" :marker-id "marker-1"
+         :signal "success" :note "A useful method worked."))
       (let* ((engines (e-resources-glob resources "session://" nil 5))
              (engine-items (append (plist-get engines :resources) nil)))
         (should (equal (mapcar (lambda (item) (plist-get item :uri))
@@ -68,11 +73,13 @@
                            resources
                            "session://e/sessions/session-1/"
                            nil
-                           5))
+                           10))
              (uris (mapcar (lambda (item) (plist-get item :uri))
                            (append (plist-get projections :resources) nil))))
         (should (member "session://e/sessions/session-1/summary" uris))
-        (should (member "session://e/sessions/session-1/messages" uris))))))
+        (should (member "session://e/sessions/session-1/messages" uris))
+        (should (member "session://e/sessions/session-1/process-reports"
+                        uris))))))
 
 (ert-deftest e-session-resources-test-read-summary-and-messages-with-range ()
   "session:// read returns stable text projections and line ranges."
@@ -109,6 +116,29 @@
                       "session://e/sessions/session-1/messages"
                       '(:unit "line" :start 1 :end 1))
                      "# Session session-1 messages\n")))))
+
+(ert-deftest e-session-resources-test-read-process-reports ()
+  "session:// exposes out-of-band process reports separately from messages."
+  (e-session-resources-test--with-empty-config
+    (let* ((harness (e-session-resources-test--harness))
+           (resources (e-session-resources-test--resources harness))
+           (store (e-harness-sessions harness)))
+      (e-harness-create-session harness :id "session-1")
+      (e-session-append-process-report
+       store "session-1"
+       '(:report-type "marker" :marker-id "marker-1"
+         :signal "success" :note "A useful method worked."))
+      (let ((reports (e-resources-read
+                      resources
+                      "session://e/sessions/session-1/process-reports"
+                      nil))
+            (messages (e-resources-read
+                       resources
+                       "session://e/sessions/session-1/messages"
+                       nil)))
+        (should (string-match-p "marker-1" reports))
+        (should (string-match-p "A useful method worked" reports))
+        (should-not (string-match-p "A useful method worked" messages))))))
 
 (ert-deftest e-session-resources-test-read-stringifies-structured-message-content ()
   "session:// messages projection renders structured tool-call content."

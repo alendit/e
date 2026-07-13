@@ -14,24 +14,42 @@
 (require 'e-tools)
 
 (cl-defmacro e-process-reporting-test--with-store ((store directory) &body body)
-  "Run BODY with isolated STORE in DIRECTORY."
+  "Run BODY with an isolated persistent session STORE in DIRECTORY."
   (declare (indent 1) (debug ((symbolp symbolp) body)))
   `(let* ((,directory (make-temp-file "e-process-reporting-" t))
-          (,store (e-process-reporting-store-create :directory ,directory)))
+          (,store (e-session-persistent-store-create ,directory)))
      (unwind-protect
          (progn ,@body)
        (delete-directory ,directory t))))
 
 (defun e-process-reporting-test--harness (store)
-  "Return a harness with process reporting backed by STORE."
+  "Return a harness with process reporting and session STORE."
   (let ((harness (e-harness-create
-                  :backend (e-backend-fake-create :items nil))))
+                  :backend (e-backend-fake-create :items nil)
+                  :sessions store)))
     (e-harness-activate-capability
-     harness (e-process-reporting-capability-create store))
-    (e-harness-create-session
-     harness :id "session-1"
-     :metadata '(:project-root "/tmp/project/"))
+     harness (e-process-reporting-capability-create))
+    (condition-case nil
+        (e-session-get store "session-1")
+      (e-session-missing
+       (e-harness-create-session
+        harness :id "session-1"
+        :metadata '(:project-root "/tmp/project/"))))
     harness))
+
+(defun e-process-reporting-test--context (harness)
+  "Return the standard process-reporting action context for HARNESS."
+  (list :harness harness :session-id "session-1" :turn-id "turn-1"))
+
+(defun e-process-reporting-test--list (harness &optional arguments)
+  "List current-session process markers in HARNESS."
+  (e-process-reporting-list
+   (e-process-reporting-test--context harness) arguments))
+
+(defun e-process-reporting-test--read (harness marker-id)
+  "Read current-session MARKER-ID in HARNESS."
+  (e-process-reporting-read
+   (e-process-reporting-test--context harness) marker-id))
 
 (defun e-process-reporting-test--call-action
     (harness action arguments &optional context)
@@ -40,33 +58,6 @@
    'process-reporting action arguments
    (list :harness harness :session-id "session-1" :turn-id "turn-1"
          :context context)))
-
-(ert-deftest e-process-reporting-test-lockf-timeout-is-an-integer ()
-  (let ((e-process-reporting-lock-timeout 5.0))
-    (cl-letf (((symbol-function 'executable-find)
-               (lambda (program)
-                 (and (equal program "lockf") "/usr/bin/lockf"))))
-      (should
-       (equal
-        (e-process-reporting--lock-command "/tmp/process-reporting.lock")
-        '("lockf" "-s" "-k" "-t" "5"
-          "/tmp/process-reporting.lock"
-          "sh" "-c" "printf 'acquired\\n'; cat >/dev/null"))))))
-
-(ert-deftest e-process-reporting-test-live-lock-cannot-be-reclaimed ()
-  (e-process-reporting-test--with-store (store directory)
-    (let ((e-process-reporting-lock-timeout 0.05)
-          (first (e-process-reporting--acquire-lock store)))
-      (unwind-protect
-          (progn
-            (should-error (e-process-reporting--acquire-lock store)
-                          :type 'file-error)
-            (should (process-live-p (car first))))
-        (e-process-reporting--release-lock first)))
-    (let ((after-release (e-process-reporting--acquire-lock store)))
-      (unwind-protect
-          (should (process-live-p (car after-release)))
-        (e-process-reporting--release-lock after-release)))))
 
 (ert-deftest e-process-reporting-test-tool-is-tiny-and-returns-minimal-ack ()
   (e-process-reporting-test--with-store (store directory)
@@ -111,8 +102,11 @@
                '(:tool-call (:id "marker-call" :name "process_marker"))))
              (trigger (plist-get record :trigger))
              (serialized (prin1-to-string record)))
+        (should (equal (plist-get record :type) "marker"))
         (should (equal (plist-get record :session-uri)
                        "session://e/sessions/session-1/"))
+        (should (equal (plist-get record :process-reports-uri)
+                       "session://e/sessions/session-1/process-reports"))
         (should (equal (plist-get record :tool-call-id) "marker-call"))
         (should (equal (plist-get trigger :call-id) "failed-call"))
         (should (string-match-p "REDACTED" serialized))
@@ -133,15 +127,20 @@
              :status "routed" :decision-note "Track as feature work."
              :target-reference "docs/feats/99-example/"))
       (should (equal marker marker-copy))
-      (let* ((loaded (e-process-reporting-store-create :directory directory))
-             (listed (e-process-reporting-list loaded))
-             (read (e-process-reporting-read loaded marker-id)))
+      (let* ((loaded-store (e-session-persistent-store-create directory))
+             (loaded-harness (e-process-reporting-test--harness loaded-store))
+             (listed (e-process-reporting-test--list loaded-harness))
+             (read (e-process-reporting-test--read loaded-harness marker-id)))
         (should (= (length listed) 1))
         (should (equal (plist-get (car listed) :status) "routed"))
         (should (equal (plist-get (plist-get read :marker) :note)
                        "A direct operation was absent."))
         (should (= (length (plist-get read :triage)) 1))
-        (should (= (length (e-process-reporting-store-events loaded)) 2))))))
+        (should (equal (plist-get (car (plist-get read :triage)) :type)
+                       "triage"))
+        (should (= (length (e-session-process-reports
+                            loaded-store "session-1"))
+                   2))))))
 
 (ert-deftest e-process-reporting-test-terminal-evidence-is-suppressed-until-changed ()
   (e-process-reporting-test--with-store (store directory)
@@ -159,7 +158,7 @@
                       '(:signal "repetition" :note "Different evidence repeated."))))
         (should (plist-get again :suppressed))
         (should-not (plist-get changed :suppressed))
-        (should (= (length (e-process-reporting-list store)) 2))))))
+        (should (= (length (e-process-reporting-test--list harness)) 2))))))
 
 (ert-deftest e-process-reporting-test-extraction-ledger-stays-separate ()
   (e-process-reporting-test--with-store (store directory)
@@ -175,8 +174,10 @@
              :provider-request-ids ["request-9"]
              :token-usage '(:input-tokens 12 :output-tokens 3)
              :estimation-method "provider-reported batch usage"))
-      (let ((read (e-process-reporting-read store marker-id)))
+      (let ((read (e-process-reporting-test--read harness marker-id)))
         (should (= (length (plist-get read :extractions)) 1))
+        (should (equal (plist-get (car (plist-get read :extractions)) :type)
+                       "extraction"))
         (should-not (plist-member (plist-get read :marker) :token-usage))))))
 
 (ert-deftest e-process-reporting-test-request-shape-report-preserves-paired-measures ()
@@ -209,55 +210,41 @@
         (should-not (plist-get report :provider-tokenizer-used))
         (should-not (plist-get report :behavioral-estimate))))))
 
-(ert-deftest e-process-reporting-test-two-store-writers-refresh-and-recover-tail ()
-  (e-process-reporting-test--with-store (store-a directory)
-    (let* ((store-b (e-process-reporting-store-create :directory directory))
-           (harness-a (e-process-reporting-test--harness store-a))
-           (harness-b (e-process-reporting-test--harness store-b))
-           (marker-a
-            (e-process-reporting-test--call-action
-             harness-a :mark '(:signal "success" :note "First writer.")))
-           (marker-b
-            (e-process-reporting-test--call-action
-             harness-b :mark '(:signal "failure" :note "Second writer."))))
-      (should (= (length (e-process-reporting-list store-a)) 2))
-      (should (plist-get (e-process-reporting-read
-                          store-b (plist-get marker-a :id))
-                         :marker))
-      (e-actions-call
-       'process-reporting :triage
-       (list :marker-id (plist-get marker-b :id)
-             :outcome "understood" :status "closed"
-             :decision-note "Peer marker seen.")
-       (list :harness harness-a :session-id "session-1" :turn-id "turn-1"))
-      (with-temp-buffer
-        (insert "{\"type\":\"marker\"")
-        (write-region (point-min) (point-max)
-                      (e-process-reporting--file store-a) t 'silent))
-      (should (= (length (e-process-reporting-list store-b)) 2))
-      (should (string-suffix-p
-               "\n"
-               (with-temp-buffer
-                 (insert-file-contents (e-process-reporting--file store-a))
-                 (buffer-string)))))))
+(ert-deftest e-process-reporting-test-reports-use-session-store-not-transcript ()
+  (e-process-reporting-test--with-store (store directory)
+    (let* ((harness (e-process-reporting-test--harness store))
+           (marker (e-process-reporting-test--call-action
+                    harness :mark '(:signal "success" :note "Stored once.")))
+           (reports (e-session-process-reports store "session-1"))
+           (disk (with-temp-buffer
+                   (insert-file-contents
+                    (e-session--session-file store "session-1"))
+                   (buffer-string))))
+      (should (= (length reports) 1))
+      (should (equal (plist-get (car reports) :id) (plist-get marker :id)))
+      (should-not (e-session-messages store "session-1"))
+      (should (string-match-p "\\\"type\\\":\\\"process-report\\\"" disk))
+      (should-not (string-match-p "records.jsonl" disk)))))
 
-(ert-deftest e-process-reporting-test-terminal-suppression-is-atomic-across-stores ()
-  (e-process-reporting-test--with-store (store-a directory)
-    (let* ((store-b (e-process-reporting-store-create :directory directory))
-           (harness-a (e-process-reporting-test--harness store-a))
-           (harness-b (e-process-reporting-test--harness store-b))
+(ert-deftest e-process-reporting-test-terminal-suppression-is-session-scoped ()
+  (e-process-reporting-test--with-store (store directory)
+    (let* ((harness (e-process-reporting-test--harness store))
            (arguments '(:signal "repetition" :note "Shared evidence."))
            (marker (e-process-reporting-test--call-action
-                    harness-a :mark arguments)))
+                    harness :mark arguments)))
       (e-process-reporting-test--call-action
-       harness-a :triage
+       harness :triage
        (list :marker-id (plist-get marker :id) :outcome "duplicate"
              :status "rejected" :decision-note "Terminal."))
-      (should (plist-get
-               (e-process-reporting-test--call-action
-                harness-b :mark arguments)
-               :suppressed))
-      (should (= (length (e-process-reporting-list store-a)) 1)))))
+      (e-harness-create-session harness :id "session-2")
+      (let ((other
+             (e-actions-call
+              'process-reporting :mark arguments
+              (list :harness harness :session-id "session-2"
+                    :turn-id "turn-1"))))
+        (should-not (plist-get other :suppressed))
+        (should (= (length (e-session-process-reports store "session-1")) 2))
+        (should (= (length (e-session-process-reports store "session-2")) 1))))))
 
 (ert-deftest e-process-reporting-test-marker-rejects-extra-fields-before-handler ()
   (e-process-reporting-test--with-store (store directory)
@@ -271,7 +258,7 @@
              (list :harness harness :session-id "session-1"
                    :turn-id "turn-1"))))
       (should (eq (plist-get result :status) 'error))
-      (should-not (e-process-reporting-list store)))))
+      (should-not (e-process-reporting-test--list harness)))))
 
 (ert-deftest e-process-reporting-test-loop-rejection-projects-undeclared-fields ()
   (e-process-reporting-test--with-store (store directory)
@@ -313,7 +300,7 @@
                     (e-session-activity-events
                      (e-harness-sessions harness) "session-1")))))
         (should-not (string-match-p "must-not-retain\\|:impact" serialized))
-        (should-not (e-process-reporting-list store))))))
+        (should-not (e-process-reporting-test--list harness))))))
 
 (ert-deftest e-process-reporting-test-loop-rejects-invalid-marker-schema-before-persistence ()
   (dolist (case
@@ -368,7 +355,7 @@
                        (e-harness-sessions harness) "session-1")))))
           (when secret
             (should-not (string-match-p (regexp-quote secret) serialized)))
-          (should-not (e-process-reporting-list store)))))))
+          (should-not (e-process-reporting-test--list harness)))))))
 
 (ert-deftest e-process-reporting-test-note-and-extraction-free-text-are-redacted ()
   (e-process-reporting-test--with-store (store directory)
@@ -384,7 +371,7 @@
              :estimation-method "api_key=hidden-key estimate"))
       (let ((disk (with-temp-buffer
                     (insert-file-contents
-                     (e-process-reporting--file store))
+                     (e-session--session-file store "session-1"))
                     (buffer-string))))
         (should (string-match-p "REDACTED" disk))
         (should-not (string-match-p
@@ -409,9 +396,13 @@
                       harness :mark
                       '(:signal "success" :note "Nested action mattered.")))
              (marker-id (plist-get marker :id))
-             (loaded (e-process-reporting-store-create :directory directory))
+             (loaded-store (e-session-persistent-store-create directory))
+             (loaded-harness
+              (e-process-reporting-test--harness loaded-store))
              (reloaded-marker
-              (plist-get (e-process-reporting-read loaded marker-id) :marker))
+              (plist-get (e-process-reporting-test--read
+                          loaded-harness marker-id)
+                         :marker))
              (chain (plist-get reloaded-marker :trigger-chain)))
         (should (= (length chain) 2))
         (should (equal (plist-get (car chain) :call-id) "action-1"))

@@ -1,0 +1,14 @@
+#+title: Process Reporting Lockf Float Timeout
+#+startup: overview
+
+* Report
+
+After Emacs restarted following an unrelated native xwidget crash,
+=M-x e-chat-active-sessions= repeatedly failed with:
+
+#+begin_src text
+Timed out waiting for process-reporting store lock: /Users/dimitrivorona/.emacs.d/.local/cache/e/process-reporting/records.jsonl.lock
+#+end_src
+
+The failure persisted even though the lock file and any surviving lock-helper
+process were absent.

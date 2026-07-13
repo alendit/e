@@ -291,6 +291,7 @@
                   "branch-summary"
                   "compaction"
                   "provider-anchor"
+                  "process-report"
                   "current-branch"
                   "messages-cleared"))
     (should (eq (e-session--queued-record-criticality
@@ -1444,6 +1445,27 @@
                              (plist-get event :event-type))
                            (e-session-activity-events store "session-1"))
                    '(reasoning-delta tool-started)))))
+
+(ert-deftest e-session-test-process-reports-persist-outside-messages ()
+  "Process reports replay as dedicated entries outside the transcript."
+  (let* ((directory (make-temp-file "e-session-process-report-" t))
+         (store (e-session-persistent-store-create directory)))
+    (unwind-protect
+        (progn
+          (e-session-create store :id "session-1")
+          (let ((report
+                 (e-session-append-process-report
+                  store "session-1"
+                  '(:report-type "marker" :marker-id "marker-1"))))
+            (should (eq (plist-get report :type) 'process-report))
+            (should (equal (plist-get report :marker-id) "marker-1")))
+          (should-not (e-session-messages store "session-1"))
+          (let* ((loaded (e-session-persistent-store-create directory))
+                 (reports (e-session-process-reports loaded "session-1")))
+            (should (= (length reports) 1))
+            (should (equal (plist-get (car reports) :marker-id) "marker-1"))
+            (should-not (e-session-messages loaded "session-1"))))
+      (delete-directory directory t))))
 
 (ert-deftest e-session-test-append-activity-event-can-skip-index-write ()
   "Activity event append callers can skip immediate index persistence."

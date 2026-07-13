@@ -1134,6 +1134,62 @@ No running Emacs was reloaded. The repository-side =e-dev= notification marks a
 full reload as required for the changed core and process-reporting files. Run
 =M-x e-dev-reload= when the active turn is idle.
 
+* Storage simplification after operator feedback
+
+** Resolution
+
+The standalone process-reporting JSONL store and its advisory lock solved a
+concurrency problem created by the storage design itself. A marker is emitted by
+one agent in one session, while the session store already owns durable append,
+replay, write queuing, identity, and lifecycle for that session.
+
+Process reporting now appends dedicated =process-report= session records.
+Marker, triage, and extraction records remain separately append-only, but the
+process-reporting capability derives its views from the active session instead
+of maintaining a second store and indexes. The records are deliberately not
+=:messages=, so they stay out of backend context. The built-in =session://=
+engine exposes them through the =process-reports= projection for offline review
+and extraction.
+
+The standalone directory option, JSONL serializer, lock helper, timeout,
+incomplete-tail recovery, and cross-store concurrency tests were removed. No
+compatibility reader remains for the obsolete file because feature 52 is still
+in review and session-owned persistence is the intended contract.
+
+** Evidence
+
+- =e-session-test-process-reports-persist-outside-messages= proves the core
+  record type persists and replays without entering the transcript.
+- =e-process-reporting-test-reports-use-session-store-not-transcript= proves
+  marker capture writes the session JSONL and does not append a chat message.
+- =e-process-reporting-test-terminal-suppression-is-session-scoped= proves
+  suppression decisions remain local to the owning session.
+- =e-session-resources-test-read-process-reports= proves offline consumers can
+  read the dedicated =session://.../process-reports= projection.
+
+Repository-side validation after the simplification:
+
+- Process-reporting plus session core: 82/82 passed.
+- Process-reporting, session core, and session resources: 90/91 passed; the one
+  failure is the existing session-resource tool-description baseline, while the
+  new process-report projection tests passed.
+- Affected broader suite: 250/252 passed; the two failures are the existing
+  nonblocking-sweep inventory and session-resource description baselines.
+- Full suite: 1602/1609 passed, 6 failed, 1 skipped. The five established
+  baseline failures remain. The additional chat focus failure passed in an
+  immediate isolated rerun and does not touch this slice.
+- =eldev compile --set all= passed with existing warnings only.
+- =git diff --check= passed.
+
+** Architecture review
+
+The session store now owns the persistence side effect and record lifetime. The
+process-reporting capability owns only its narrow domain policy and query
+surface. This removes the dependency on platform lock helpers, the parallel
+store lifecycle, and the duplicated append/replay/indexing implementation. The
+new session record contract is semantically distinct from provider-visible
+messages and does not require a compatibility shim.
+
 * Unresolved
 
 - No third-review findings remain open.

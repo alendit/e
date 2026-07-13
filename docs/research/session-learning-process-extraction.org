@@ -269,7 +269,7 @@ Why they belong together:
   The two sources cover different blind spots.
 - *A process report is a strong seed for extraction.* It already carries the agent's explanation plus a session/turn pointer and structured runtime context.
   That is a cleaner starting point than an undirected transcript scan.
-  The extraction pass should treat the process-report store as a first-class input alongside =session://= history.
+  The extraction pass should treat session-owned =process-report= records as a first-class input alongside transcript history.
 - *Bug reporting becomes one outcome rather than the capture model.* Early classification as a bug assumes both cause and remedy before enough evidence exists.
   Neutral capture preserves the observation so triage can distinguish runtime defects from missing guidance, missing capabilities, reusable procedures, and one-off mistakes.
 - *Both stages preserve provenance.* The append-only report records what the agent observed.
@@ -285,7 +285,7 @@ Concrete direction:
    It should record the agent's judgment that a process event is worth retaining rather than automatically mirror every error.
 2. The report schema should include a neutral summary and detail, an optional descriptive signal such as failure, correction, workaround, repetition, success, missing operation, or performance, and stable pointers into the learning substrate.
    Those pointers include session id, turn id, project root, relevant tool/action, redacted argument and outcome context, error details when present, and any telemetry call id from feat 44.
-3. The process-report store should be append-only, reviewable, and resource/action-readable.
+3. Session-owned =process-report= records should be append-only, reviewable, and resource/action-readable.
    Session learning should consume a stable =list=/=read= surface rather than scrape private implementation files.
 4. Triage should route reports to runtime defect, missing capability, recurring judgment-shaped procedure, deterministic procedure, unattended recurring work, project fact or policy, or no action.
    The corresponding artifacts are bug work, feature work, skills, scripts or actions, cron/task-queue workflows, scoped guidance, or a closed report.
@@ -332,7 +332,7 @@ Recommended first slice, ordered by leverage and reversibility:
 5. *A cron schedule* (=e-cron=) that runs the extraction pass on a recurrence with a cheap deterministic guard ("any sessions since last run or open process reports?"), enqueuing the pass on the task queue so a wakeup with nothing to learn is a no-op.
 
 Adopt from Goodnite, in priority order: cluster-by-embedding recurrence with a decayed =recency_score= instead of literal repeat detection (step 3); the three-way mine/amend/drop route against the existing skill set as the dedup mechanism; a content-keyed suggestion ledger so rejected proposals do not re-surface; and the script-vs-skill distinction (=scriptable=) so deterministic tool-call prefixes become scripts rather than judgment skills.
-Treat the feat 52 process-report store as a first-class evidence input once it lands.
+Treat feat 52's session-owned =process-report= records as a first-class evidence input once they land.
 
 Deliberately deferred: autonomous silent memory writes, online vector recall (offline clustering in a batch job is fine), and self-modifying skills without review.
 Keep the human in the codify step until the extraction quality is proven, exactly as the Prototype -> Evaluate gate in the source loop demands.

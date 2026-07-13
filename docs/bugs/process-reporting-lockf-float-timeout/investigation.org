@@ -1,0 +1,50 @@
+#+title: Process Reporting Lockf Float Timeout Investigation
+#+startup: overview
+
+* Evidence
+
+- No =lockf= process held the store and the process-reporting directory was
+  empty when the failure occurred.
+- Running the intended =lockf= command with an integer timeout acquired the
+  real store path immediately.
+- A bounded live Emacs probe showed that
+  =e-process-reporting--lock-command= emitted =-t 5.0= from the numeric default
+  =e-process-reporting-lock-timeout=.
+- macOS =/usr/bin/lockf= rejects that spelling with exit status 64 and
+  =lockf: invalid timeout "5.0"=.
+- The acquisition function interpreted every helper exit before the
+  =acquired= marker as lock contention, so it hid this command-line error behind
+  the timeout message.
+
+* Conclusion
+
+There was no stale lock.  The macOS adapter formatted a valid Lisp numeric
+configuration into an invalid =lockf= argument, and the acquisition boundary
+misclassified the adapter failure.
+
+The adapter bug also exposed an unnecessary ownership boundary. Process reports
+belong to one agent session, whose store already owns durable append and replay.
+The standalone cross-session JSONL file created concurrency that the domain does
+not require.
+
+* Fix
+
+- Add a dedicated =process-report= record type to the session store. Marker,
+  triage, and extraction facts append to the active session's JSONL and replay
+  through the normal session path.
+- Keep process reports outside =:messages= so they never enter provider context.
+- Make list, read, suppression, triage, extraction, and cost reporting operate
+  on the active session's report records.
+- Remove the standalone process-reporting store, directory setting, lock helper,
+  timeout, indexes, incomplete-tail recovery, and multi-writer tests.
+- Do not retain a compatibility reader for the obsolete standalone file; feature
+  52 is still in review, and the session record is now the intended contract.
+
+* Validation
+
+- Process-reporting plus session core passed 82/82 tests, including dedicated
+  coverage for persistence, replay, transcript exclusion, and session-scoped
+  suppression.
+- The affected broader suite passed 250/252; both failures are established
+  unrelated baselines. Compilation passed with existing warnings only.
+- The running Emacs remained unchanged.

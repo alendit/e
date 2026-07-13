@@ -60,7 +60,7 @@
 
 (defconst e-session--replay-list-fields
   '(:session-events :messages :activity-events :branch-summaries
-    :compactions :provider-anchors)
+    :compactions :provider-anchors :process-reports)
   "Session fields accumulated in reverse order while replaying JSONL.")
 
 (defconst e-session--list-tail-fields
@@ -68,7 +68,8 @@
     (:activity-events . :activity-events-tail)
     (:branch-summaries . :branch-summaries-tail)
     (:compactions . :compactions-tail)
-    (:provider-anchors . :provider-anchors-tail))
+    (:provider-anchors . :provider-anchors-tail)
+    (:process-reports . :process-reports-tail))
   "Internal append-only list fields and their cached tail cells.")
 
 (defconst e-session-metadata-schema
@@ -539,6 +540,7 @@ arrays and sometimes inverted key/value pairs."
     "branch-summary"
     "compaction"
     "provider-anchor"
+    "process-report"
     "current-branch"
     "messages-cleared")
   "Persistent record types that must flush before derived queued records.")
@@ -963,7 +965,8 @@ and RECORD supplies persisted identity fields during replay."
             (plist-get session :activity-events)
             (plist-get session :branch-summaries)
             (plist-get session :compactions)
-            (plist-get session :provider-anchors))))
+            (plist-get session :provider-anchors)
+            (plist-get session :process-reports))))
 
 (defun e-session-entry-by-id (store session-id entry-id)
   "Return durable entry ENTRY-ID from SESSION-ID."
@@ -1325,6 +1328,7 @@ and RECORD supplies persisted identity fields during replay."
                             :current-branch nil
                             :compactions nil
                             :provider-anchors nil
+                            :process-reports nil
                             :created-at (or (plist-get record :created-at)
                                             timestamp)
                             :updated-at (or (plist-get record :updated-at)
@@ -1447,6 +1451,18 @@ and RECORD supplies persisted identity fields during replay."
            timestamp
            record))
          (e-session--touch store session timestamp)))
+      ("process-report"
+       (when session
+         (e-session--prepend-replayed-item
+          session
+          :process-reports
+          (e-session--normalize-entry-from-record
+           session
+           'process-report
+           (plist-get record :report)
+           timestamp
+           record))
+         (e-session--touch store session timestamp)))
       ("current-branch"
        (when session
          (plist-put session :current-branch
@@ -1547,6 +1563,7 @@ and RECORD supplies persisted identity fields during replay."
              :current-branch nil
              :compactions nil
              :provider-anchors nil
+             :process-reports nil
              :turn-options nil
              :created-at (plist-get entry :created-at)
              :updated-at (plist-get entry :updated-at)
@@ -1850,6 +1867,7 @@ ON-ERROR receives a condition list, and ON-PROGRESS receives byte progress."
                         :current-branch nil
                         :compactions nil
                         :provider-anchors nil
+                        :process-reports nil
                         :turn-options nil
                         :created-at timestamp
                         :updated-at timestamp
@@ -1954,6 +1972,11 @@ fork's session name (otherwise it inherits the source name)."
   "Return provider anchor records for SESSION-ID in STORE in insertion order."
   (copy-sequence
    (plist-get (e-session-get store session-id) :provider-anchors)))
+
+(defun e-session-process-reports (store session-id)
+  "Return process reports for SESSION-ID in STORE in insertion order."
+  (copy-sequence
+   (plist-get (e-session-get store session-id) :process-reports)))
 
 (cl-defun e-session-latest-compatible-provider-anchor
     (store session-id provider-id &key model fingerprints)
@@ -2158,6 +2181,32 @@ New code should prefer the narrower typed metadata helpers."
     (when write-index
       (e-session--write-index store))
     event))
+
+(defun e-session-append-process-report (store session-id report)
+  "Append out-of-band process REPORT to SESSION-ID in STORE.
+Process reports are durable session entries but are not transcript messages and
+therefore never enter backend context."
+  (let* ((session (e-session-get store session-id))
+         (timestamp (e-session--timestamp))
+         (report (e-session--normalize-entry-from-record
+                  session
+                  'process-report
+                  (copy-sequence report)
+                  timestamp)))
+    (e-session--append-list-item session :process-reports report)
+    (e-session--index-entry store session-id report)
+    (e-session--touch store session timestamp)
+    (e-session--refresh-file-field store session)
+    (e-session--append-record
+     store session-id
+     (list :type "process-report"
+           :session-id session-id
+           :id (plist-get report :id)
+           :parent-id (plist-get report :parent-id)
+           :timestamp timestamp
+           :report report))
+    (e-session--write-index store)
+    report))
 
 (cl-defun e-session-append-branch-summary
     (store session-id branch-id summary &key metadata)

@@ -7,7 +7,7 @@ Give the task-performing agent a first-class way to place small process markers 
 A marker is a terse observation, not a finished report or diagnosis.
 Process marking is a pure observability and learning function.
 It does not help complete the current task, so every token, provider request, delay, tool result, and context entry it causes is additional cost that later learning must repay.
-The marker lands in a durable, reviewable store with stable pointers back into the session.
+The marker lands as a durable, reviewable record in the active session store.
 Later offline extraction gathers surrounding context and may turn one or more markers into a bug, runtime fix, missing capability, skill, script, cron job, guidance edit, or no action.
 
 * Problem
@@ -57,13 +57,17 @@ Offline extraction can recover surrounding evidence through =session://= and can
 
 ** Where reports land
 
-- A process-reporting capability owns an append-only store that is cheap to write and easy to inspect.
+- The session store owns persistence and replay through a dedicated =process-report= record type.
+  Process-report records are out-of-band session entries, not transcript messages, so backend context contains only the normal conversation.
+- The process-reporting capability owns capture policy, report schemas, suppression, triage, and report access over the active session's records.
 - The capability exposes stable =list= and =read= actions or resources so human review and later extraction passes do not scrape private storage files.
 - Reports use narrow persisted schemas and a shared best-effort redaction boundary.
   Arguments previews and error text reuse the telemetry-preview path rather than dumping raw payloads, and arbitrary tool metadata is not copied.
   Because free text can contain unknown secret forms, the first slice does not claim mathematically secret-free persistence; operators must apply the same retention and access controls used for session telemetry.
 - The original report remains immutable.
   Triage decisions and links to resulting work append separate records so provenance is preserved.
+- There is no separate process-reporting directory, JSONL file, in-memory store, or lock.
+  The obsolete standalone store is removed without a compatibility reader because feature 52 is still in review and the session record is the intended durable contract.
 
 ** Triage and outcomes
 
@@ -209,6 +213,7 @@ Those totals are the denominator and validation evidence; the counterfactual del
 - The model-visible result is the smallest protocol-valid acknowledgement and does not repeat marker data.
 - Marker capture does not spawn a child or gather session context.
 - Each marker stores stable references that later extraction can resolve through =session://=.
+- Marker, triage, and extraction facts persist as dedicated =process-report= session records and stay out of provider-visible transcript messages.
 - A stable =list=/=read= path lets humans and extraction agents review markers later.
 - Triage can append an outcome and optional target reference while leaving the original marker unchanged.
 - Bug work is one supported triage outcome rather than the identity of the marker tool.
@@ -223,7 +228,7 @@ Those totals are the denominator and validation evidence; the counterfactual del
 1. The first slice is useful by itself because it preserves high-signal evidence and supports human triage before downstream automation exists.
 2. It moves toward a closed learning loop from explicit capture through session corroboration to reviewed durable artifacts.
 3. The stable decision is neutral append-only capture; signal vocabulary, triage states, storage location, and review UI remain local and reversible.
-4. A process-reporting capability owns capture, storage, and report access; downstream systems own bugs, features, skills, scripts, schedules, and guidance.
+4. The session store owns durable record persistence and replay. A process-reporting capability owns capture semantics and report access; downstream systems own bugs, features, skills, scripts, schedules, and guidance.
 5. The design reduces coupling by exposing narrow report and triage records instead of binding capture to an issue tracker or extractor.
 6. Policy does not depend on concrete UI or storage adapters; those implement the capability-owned contracts.
 7. Redaction, persistence, and presentation remain side effects at the capability and shell boundaries.
@@ -231,7 +236,7 @@ Those totals are the denominator and validation evidence; the counterfactual del
 9. The default path adds one deliberately tiny model-facing surface and pays a provider round trip only when the parent emits a marker; enrichment, clustering, and cross-session mining stay offline.
 10. The capture contract applies to every signal without weakening behavior or requiring unsupported outcome fields.
 11. The original =bug_report= idea remains compatible as the runtime-defect triage outcome, while the bug-only tool name and schema are removed.
-12. No separate bug-report store or bug-specific capture path should remain once process reporting exists.
+12. No separate process-report or bug-report store and no bug-specific capture path should remain once process reporting exists.
 13. Expected validation and routing errors return to the caller; unexpected persistence and redaction failures must surface rather than be swallowed.
 14. Focused tests should prove neutral capture, context attachment and redaction, immutable evidence, appended triage, and stable list/read behavior without a full shell.
 
@@ -246,11 +251,15 @@ The first parent-side slice is implemented and ready for review as of 2026-07-13
   and stores request-shape revisions, hashes, byte lengths, model/cache fields,
   and process-marker surface/call/result attribution.
 - =ef812a1= adds the default parent-side =process_marker= tool, matching
-  =process-reporting/:mark= action, append-only JSONL marker store, list/read,
+  =process-reporting/:mark= action, initial marker persistence, list/read,
   immutable appended triage, evidence identity suppression, extraction ledger,
   request-shape cost report, automatic =session://= links, checkpoint/call ids,
   redacted telemetry evidence, default-layer registration, and focused tests.
 - =d33be0c= documents the tool, action, store, triage, and accounting surfaces.
+- The session-ownership simplification replaces the standalone marker JSONL,
+  advisory lock, and process-local indexes with dedicated =process-report=
+  records in each session's existing store. Focused tests prove replay,
+  transcript exclusion, session-scoped suppression, and unchanged report APIs.
 
 Repository-side evidence:
 

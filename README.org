@@ -149,6 +149,7 @@ Sessions are durable, append-only records stored as JSONL plus an index. They ho
 - assistant messages
 - tool results
 - activity events
+- out-of-band process reports
 - session metadata
 - branch summaries and compactions
 - model and reasoning-effort overrides
@@ -237,12 +238,12 @@ The =process-reporting= capability also exposes durable actions:
 #+end_src
 
 Markers are immutable. Triage and offline extraction cost records append as
-separate facts in =~/.emacs.d/e/process-reporting/records.jsonl= (or the
-configured =e-process-reporting-directory=). Writers refresh and serialize each
-read/check/append operation with an inter-process lock, and recover only an
-incomplete final JSONL record. Persisted free text crosses the shared redaction
-boundary, while activity and extraction records use named schemas instead of
-copying arbitrary metadata.
+dedicated =process-report= entries in the active session's own JSONL file. They
+are durable session facts, but they are not transcript messages and never enter
+provider context. This keeps one persistence owner per session and requires no
+second process-reporting file or lock. Persisted free text crosses the shared
+redaction boundary, while activity and extraction records use named schemas
+instead of copying arbitrary metadata.
 
 The =:cost-report= action reports per-request paired byte measures for the
 actual request and marker-free request shape. It separates passive surface,
