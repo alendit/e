@@ -170,7 +170,13 @@
                     (list (format "Missing required action argument: %s"
                                   (if (stringp name)
                                       name
-                                    (symbol-name name)))))))))))
+                                    (symbol-name name))))))))
+      (when (eq (plist-get parameters :additionalProperties) :json-false)
+        (let ((properties (plist-get parameters :properties)))
+          (cl-loop for key in arguments by #'cddr do
+                   (unless (plist-member properties key)
+                     (signal 'e-actions-invalid-arguments
+                             (list (format "Unknown action argument: %s" key))))))))))
 
 (defun e-actions--preview (value)
   "Return a compact redacted printable preview for VALUE."
@@ -207,7 +213,7 @@
   "Return payload fields for ERR."
   (list :status 'error
         :error-class (car err)
-        :message (e-work-error-message err)))
+        :message-preview (e-telemetry-preview (e-work-error-message err))))
 
 (defun e-actions-dispatch (capability action &optional arguments options)
   "Dispatch CAPABILITY ACTION with ARGUMENTS and return a dispatch plist.

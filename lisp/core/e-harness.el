@@ -948,11 +948,29 @@ ordinary backoff."
       (setq index (1+ index)))
     (substring text 0 index)))
 
+(defun e-harness--safe-tool-result-metadata (metadata preview content-text)
+  "Return a narrow durable schema derived from tool METADATA."
+  (let ((safe (list :activity-preview preview)))
+    (dolist (key '(:tmp-uri :resource-uri :work-id :transport
+                   :blocking-class :refresh-context))
+      (let ((value (plist-get metadata key)))
+        (when (or (stringp value) (numberp value)
+                  (memq value '(t nil :json-false)))
+          (setq safe (append safe (list key value))))))
+    (when (plist-get preview :truncated)
+      (setq safe
+            (append safe
+                    (list :activity-truncated t
+                          :activity-original-bytes (string-bytes content-text)
+                          :activity-shown-bytes
+                          (plist-get preview :shown-bytes)))))
+    safe))
+
 (defun e-harness--compact-tool-result-for-activity (result)
   "Return compact redacted durable activity representation of tool RESULT."
   (let* ((content (plist-get result :content))
          (content-text (e-tools-result-content-text content))
-         (redacted (e-telemetry--redact-string content-text))
+         (redacted (e-telemetry-redact-string content-text))
          (preview (e-telemetry-preview
                    redacted
                    (max 0 e-harness-durable-tool-finished-result-preview-bytes)))
@@ -961,14 +979,9 @@ ordinary backoff."
                                redacted
                                (max 0 e-harness-durable-tool-finished-result-preview-bytes))
                             (plist-get preview :content)))
-         (metadata (append (copy-sequence (plist-get result :metadata))
-                           (list :activity-preview preview))))
-    (when (plist-get preview :truncated)
-      (setq metadata (plist-put metadata :activity-truncated t))
-      (setq metadata (plist-put metadata :activity-original-bytes
-                                (string-bytes content-text)))
-      (setq metadata (plist-put metadata :activity-shown-bytes
-                                (plist-get preview :shown-bytes))))
+         (metadata
+          (e-harness--safe-tool-result-metadata
+           (plist-get result :metadata) preview content-text)))
     (list :tool-call-id (plist-get result :tool-call-id)
           :name (plist-get result :name)
           :status (plist-get result :status)

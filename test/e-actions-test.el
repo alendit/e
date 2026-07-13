@@ -226,6 +226,31 @@
       (let ((matches (e-resources-search resources "e-action://" "rename" nil)))
         (should (< 0 (length (plist-get matches :matches))))))))
 
+(ert-deftest e-actions-test-failed-activity-redacts-error-message ()
+  (let* ((harness (e-harness-create :backend (e-backend-fake-create :items nil)))
+         (capability
+          (e-capability-create
+           :id 'failing-secret-action
+           :actions
+           (list :run
+                 (e-action-cheap-create
+                  :runner (lambda (_arguments _context)
+                            (user-error "token=super-secret action failed")))))))
+    (e-harness-activate-capability harness capability)
+    (e-harness-create-session harness :id "session-1")
+    (should-error
+     (e-actions-call 'failing-secret-action :run nil
+                     (list :harness harness :session-id "session-1"
+                           :turn-id "turn-1")))
+    (let* ((events (e-session-activity-events
+                    (e-harness-sessions harness) "session-1"))
+           (failed (seq-find (lambda (event)
+                               (eq (plist-get event :event-type) 'action-failed))
+                             events))
+           (serialized (prin1-to-string failed)))
+      (should (string-match-p "REDACTED" serialized))
+      (should-not (string-match-p "super-secret" serialized)))))
+
 (provide 'e-actions-test)
 
 ;;; e-actions-test.el ends here

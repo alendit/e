@@ -32,10 +32,20 @@
              "cookie" "set-cookie" "token"))
      name)))
 
-(defun e-telemetry--redact-string (text)
+(defun e-telemetry-redact-string (text)
   "Return TEXT with common inline credential forms redacted."
   (let ((case-fold-search t)
         (redacted text))
+    (setq redacted
+          (replace-regexp-in-string
+           "\\b\\(https?://[^/:@[:space:]]+:\\)[^@/[:space:]]+@"
+           (lambda (match)
+             (save-match-data
+               (if (string-match ":" match)
+                   (concat (substring match 0 (1+ (match-beginning 0)))
+                           e-telemetry-redacted-value "@")
+                 e-telemetry-redacted-value)))
+           redacted t t))
     (setq redacted
           (replace-regexp-in-string
            "\\_<\\(Bearer\\|Basic\\)\\_>[[:space:]]+[^[:space:]'\"]+"
@@ -59,7 +69,7 @@
 SEEN is an internal cycle guard."
   (let ((seen (or seen (make-hash-table :test 'eq))))
     (cond
-     ((stringp value) (e-telemetry--redact-string value))
+     ((stringp value) (e-telemetry-redact-string value))
      ((or (null value) (numberp value) (symbolp value)) value)
      ((gethash value seen) "[CYCLE]")
      ((hash-table-p value)

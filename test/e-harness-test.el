@@ -1042,6 +1042,27 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
         (should (equal (plist-get metadata :activity-original-bytes) 64))
         (should (equal (plist-get metadata :tmp-uri) "tmp://full.txt"))))))
 
+(ert-deftest e-harness-test-tool-finished-activity-drops-unknown-metadata ()
+  "Durable tool activity stores only named safe metadata fields."
+  (let ((harness (e-harness-create
+                  :backend (e-backend-fake-create :items nil))))
+    (e-harness-create-session harness :id "session-1")
+    (e-harness--emit-turn-event
+     harness "session-1" "turn-1" 'tool-finished
+     '(:tool-call (:id "call-1" :name "probe")
+       :result (:tool-call-id "call-1" :name "probe" :status ok
+                :content "ok"
+                :metadata (:authorization "Bearer raw-secret"
+                           :nested (:token "raw-nested")
+                           :tmp-uri "tmp://safe"))))
+    (let* ((event (car (e-harness-session-activity-events
+                        harness "session-1")))
+           (metadata (plist-get (plist-get (plist-get event :payload) :result)
+                                :metadata))
+           (serialized (prin1-to-string metadata)))
+      (should (equal (plist-get metadata :tmp-uri) "tmp://safe"))
+      (should-not (string-match-p "raw-secret\\|raw-nested" serialized)))))
+
 (ert-deftest e-harness-test-activity-events-declare-persistence-class ()
   "Every durable activity event declares why it is persisted."
   (dolist (type e-harness--durable-activity-event-types)

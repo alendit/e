@@ -238,6 +238,24 @@ unchanged.  See `e-tools--coerce-argument'."
                      result))
       (nreverse result))))
 
+(defun e-tools--validate-exact-arguments (arguments parameters)
+  "Signal when exact object ARGUMENTS contains undeclared keys."
+  (when (and (e-tools--plist-p arguments)
+             (eq (plist-get parameters :additionalProperties) :json-false))
+    (let ((properties (plist-get parameters :properties)))
+      (cl-loop for key in arguments by #'cddr do
+               (unless (plist-member properties key)
+                 (signal 'wrong-type-argument
+                         (list 'declared-tool-argument key)))))))
+
+(defun e-tools--prepare-call-arguments (call tool)
+  "Coerce and validate CALL arguments against TOOL's runtime schema."
+  (let* ((parameters (plist-get tool :parameters))
+         (arguments (e-tools--coerce-arguments
+                     (plist-get call :arguments) parameters)))
+    (e-tools--validate-exact-arguments arguments parameters)
+    (plist-put call :arguments arguments)))
+
 (defun e-tools--json-key (key)
   "Return stable JSON object key text for KEY."
   (cond
@@ -713,10 +731,7 @@ resource metadata."
      ((e-tools-long-blocking-class-p (e-tools--blocking-class tool))
       (e-tools--nested-long-tool-result call tool))
      (t
-      (setq call (plist-put call :arguments
-                            (e-tools--coerce-arguments
-                             (plist-get call :arguments)
-                             (plist-get tool :parameters))))
+      (setq call (e-tools--prepare-call-arguments call tool))
       (let* ((nested-state (or (plist-get context :nested-tool-state)
                                (list :count 0 :sequence 0)))
              (tool-context (append (list :tool-call call
@@ -930,10 +945,7 @@ dynamically visible to tool start functions through
                    ;; the schema so every tool sees structured data.  This runs
                    ;; inside the guarded region so a malformed argument fails as
                    ;; a tool-error result rather than aborting the whole turn.
-                   (setq call (plist-put call :arguments
-                                         (e-tools--coerce-arguments
-                                          (plist-get call :arguments)
-                                          (plist-get tool :parameters))))
+                   (setq call (e-tools--prepare-call-arguments call tool))
                    (arm-deadline)
                    (when (e-tools--reject-long-sync-handler-p tool tool-context)
                      (signal 'e-tools-blocking-handler-rejected
