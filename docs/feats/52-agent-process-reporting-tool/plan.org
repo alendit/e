@@ -1,0 +1,126 @@
+#+title: Agent Process-Reporting Tool
+#+startup: overview
+
+* Goal
+
+Give the agent a first-class =process_report= tool/action it can call to preserve a useful observation about how work went while the evidence is fresh.
+The report lands in a durable, reviewable store without derailing the current turn.
+Capture stays neutral about the remedy: a later triage step may turn the report into a bug, runtime fix, missing capability, skill, script, cron job, guidance edit, or no action.
+
+* Problem
+
+The agent today has no durable channel for observations about its own work process.
+A broken tool call, repeated correction, successful workaround, missing operation, or reusable sequence is either worked around silently or narrated in chat, where it is hard to find and easy to lose.
+The same rough edge or useful method can therefore be rediscovered in later sessions without becoming tracked work or reusable guidance.
+We want the agent's lived experience of the runtime and task process to feed back into improving both.
+
+Framing the capture tool as =bug_report= makes the agent classify the cause and remedy too early.
+A report may reveal a runtime defect, but it may instead show missing guidance, a capability gap, a recurring procedure worth codifying, a deterministic sequence worth scripting, or a one-off misunderstanding.
+The capture step should preserve evidence and intent; triage should decide what the evidence means.
+
+* Design
+
+** A neutral process-reporting tool
+
+- A =process_report= tool and matching =e-actions-call= action let the agent record an observation mid-turn.
+  The call returns quickly and does not block or steer the current work.
+- Guidance encourages intentional capture after events such as a failed operation, correction, workaround, repeated multi-step sequence, missing affordance, performance problem, or notably effective method.
+- The tool does not require the agent to name the final work item or assert that the runtime has a bug.
+
+** What a process report captures
+
+- =summary= :: one sentence naming the observed process event.
+- =detail= :: optional account of what happened, what was expected or desired, and why the observation may matter.
+- =signal= :: optional descriptive hint from a small vocabulary such as =failure=, =correction=, =workaround=, =repetition=, =success=, =missing-operation=, or =performance=.
+  This describes the evidence; it does not choose the triage outcome.
+- =impact= :: optional indication of cost or urgency without assuming a defect.
+- =context= :: auto-attached session id, turn id, project root, and relevant capability/tool/action name, arguments preview, outcome, error, or telemetry call id.
+  The agent should not have to restate what the runtime already knows.
+- =evidence= :: optional pointers to other turns, sessions, annotations, or prior reports that show recurrence.
+
+** Where reports land
+
+- A process-reporting capability owns an append-only store that is cheap to write and easy to inspect.
+- The capability exposes stable =list= and =read= actions or resources so human review and later extraction passes do not scrape private storage files.
+- Reports never contain secrets by construction.
+  Arguments previews and error text reuse the existing telemetry-preview redaction path rather than dumping raw payloads.
+- The original report remains immutable.
+  Triage decisions and links to resulting work append separate records so provenance is preserved.
+
+** Triage and outcomes
+
+Triage interprets a process report and routes it to zero or more durable outcomes:
+
+- *Runtime defect* :: create or link bug investigation and fix work.
+- *Missing capability* :: create or link feature work.
+- *Recurring judgment-shaped procedure* :: propose a skill or =AGENTS.md= guidance edit.
+- *Deterministic procedure* :: propose a script, tool, or action.
+- *Recurring unattended work* :: propose a cron schedule or task-queue workflow after the procedure is proven.
+- *Project fact or policy* :: propose a scoped guidance or configuration edit.
+- *Duplicate, understood, or not actionable* :: close or reject without creating work.
+
+The first slice needs only a small triage record: outcome kind, optional target reference, decision note, and status.
+It does not need to implement every downstream workflow.
+A content-keyed evidence identity should prevent rejected or already-routed observations from being raised again until the evidence changes.
+
+** Relationship to telemetry and session learning
+
+- Action telemetry from feat 44 records action outcomes mechanically.
+  A process report records the agent's judgment that an event is worth retaining and explains why.
+  A report can reference the telemetry call that supplies mechanical evidence.
+- Session learning reads process reports as high-precision anchors into =session://= history.
+  Broader session mining can then corroborate recurrence, find related unreported episodes, and propose the right durable artifact.
+- Explicit reports and implicit mining cover different blind spots.
+  Reporting depends on the agent noticing significance, while mining can find repeated patterns nobody reported.
+
+** Surfacing
+
+- A =list=/=read= path, and optionally a picker, lets the human review open reports and their triage decisions.
+- A later inbox-triage or grimoire integration may turn routed outcomes into project work.
+  Keep that integration out of the first slice; first make capture, evidence, and routing reliable.
+
+* Non-goals
+
+- Not automatic error capture.
+  A failed tool call is telemetry, not automatically a process report.
+  The agent decides when an event is worth retaining.
+- Not limited to failures.
+  Successful workarounds and repeated useful procedures are valid evidence.
+- Not a full issue tracker.
+  Assignment, comments, and rich workflow stay in the downstream system selected by triage.
+- Not autonomous self-modification.
+  Skills, scripts, schedules, and guidance remain proposals until reviewed.
+- Not user-facing reporting.
+  This is the agent's channel for process evidence.
+
+* Acceptance
+
+- The agent can call =process_report= mid-turn, the call returns without disrupting the turn, and the report persists.
+- A report can describe failure, correction, workaround, recurrence, or success without claiming that the event is a bug.
+- The runtime auto-captures relevant session, turn, project, action/tool, redacted argument, result/error, and telemetry context when available.
+- A stable =list=/=read= path lets humans and extraction agents review reports later.
+- Triage can append an outcome and optional target reference while leaving the original report unchanged.
+- Bug work is one supported triage outcome rather than the identity of the reporting tool.
+
+* Design self-check
+
+1. The first slice is useful by itself because it preserves high-signal evidence and supports human triage before downstream automation exists.
+2. It moves toward a closed learning loop from explicit capture through session corroboration to reviewed durable artifacts.
+3. The stable decision is neutral append-only capture; signal vocabulary, triage states, storage location, and review UI remain local and reversible.
+4. A process-reporting capability owns capture, storage, and report access; downstream systems own bugs, features, skills, scripts, schedules, and guidance.
+5. The design reduces coupling by exposing narrow report and triage records instead of binding capture to an issue tracker or extractor.
+6. Policy does not depend on concrete UI or storage adapters; those implement the capability-owned contracts.
+7. Redaction, persistence, and presentation remain side effects at the capability and shell boundaries.
+8. Reports and appended triage decisions are durable facts; derived groupings, rankings, and review views should remain rebuildable.
+9. Mid-turn capture must be bounded and cheap; clustering, model analysis, and cross-session mining stay on background paths.
+10. The capture contract applies to every signal without weakening behavior or requiring unsupported outcome fields.
+11. The original =bug_report= idea remains compatible as the runtime-defect triage outcome, while the bug-only tool name and schema are removed.
+12. No separate bug-report store or bug-specific capture path should remain once process reporting exists.
+13. Expected validation and routing errors return to the caller; unexpected persistence and redaction failures must surface rather than be swallowed.
+14. Focused tests should prove neutral capture, context attachment and redaction, immutable evidence, appended triage, and stable list/read behavior without a full shell.
+
+* Provenance
+
+The original grimoire inbox item proposed a =bug_report= tool for recording things that did not work and was triaged on 2026-07-03.
+Feature 52 then pivoted to a general process-reporting channel after connecting the capture idea to session learning and process extraction.
+The original bug-report use case remains as the runtime-defect outcome of triage rather than the capture model.

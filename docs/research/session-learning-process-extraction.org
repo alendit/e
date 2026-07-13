@@ -30,9 +30,10 @@ When it turns into work, create =docs/feats/<n>-session-learning/= and leave thi
 - The realistic first slice is an *extraction pass*, not an autonomous memory system: a scheduled or on-demand agent action that reads recent sessions (own and foreign), proposes a skill or an AGENTS.md guidance edit, and leaves it for human review before it becomes durable.
   This is a sequencing choice, not a dismissal of memory systems: shipped memory products prove that fact/preference recall is useful, but =e='s sharper unsolved problem is repeated procedural work, where a reviewable skill or guidance patch gives a safer and more testable artifact than opaque episodic retrieval.
   Retrieval-heavy episodic memory is a later, optional layer once the durable-artifact path is working.
-- The planned agent-facing bug-report sink is the capture side of the same loop.
-  It gives the agent a high-precision way to record friction as it happens, while session mining supplies the lower-precision but broader implicit signal from repeated corrections and recurring failures.
-  The extraction pass should read both sources and cite both kinds of evidence when it proposes a skill, guidance edit, or runtime fix.
+- The planned agent-facing process-reporting tool in feat 52 is the explicit capture side of the same loop.
+  It lets the agent preserve high-precision evidence about failures, corrections, workarounds, repeated procedures, and successful methods while session mining supplies broader implicit evidence.
+  A later triage step decides whether the report implies a bug, capability, skill, script, schedule, guidance edit, or no action.
+  The extraction pass should read both explicit reports and session history, then cite both kinds of evidence in its proposals.
 - We already built this loop once, outside =e=: *Goodnite* mines Claude Code and Cursor traces nightly (=goodnite dream=), clusters recurring episodes, proposes skills, and hands a human a review list.
   It validates the cornerstone and supplies concrete mechanisms to reuse — recurrence by clustering, failure as an eligibility filter, mine/amend/drop routing, held-out replay validation, script-vs-skill split, and a content-keyed suggestion ledger.
   The =e= version's advantage is doing this in-harness over the normalized, cross-engine =session://= layer instead of as a separate Python pipeline.
@@ -253,55 +254,52 @@ Nothing reaches the skills repo without an explicit user decision.
 - *No fact/preference layer.* Goodnite deliberately does not learn "the user prefers org over markdown."
   That is consistent with the note's two-layer split, but it means Layer 1 is still unowned — =AGENTS.md= edits remain the place for it.
 
-* Connection to the agent bug-report / feedback sink (feat 52)
+* Connection to process reporting (feat 52)
 
-The failure-signal thread in this note — Reflexion's "failures are the primary learning signal" and Goodnite's =failure=-classified episodes — overlaps directly with planned dev work =52-agent-bug-report-tool=.
-They are two halves of the same loop and should be designed together.
-
-=52= gives the agent a first-class =bug_report= tool/action to record, at the moment of friction, that something did not work: a broken tool call, a wrong result, a confusing API, a missing capability.
-Reports land in an append-only, reviewable store with auto-attached context (capability/tool/action name, arguments preview, error class, session id, turn id, project root).
+Planned dev work =52-agent-process-reporting-tool= is the explicit capture side of the session-learning loop.
+It gives the agent a first-class =process_report= tool/action for preserving an observation about how work went while the evidence is fresh.
+The report may describe a failure, correction, workaround, repeated sequence, missing affordance, performance cost, or successful method.
+Capture is neutral about the remedy.
+Triage later decides whether the evidence should become a runtime bug, capability, skill, script, cron job, guidance edit, or no action.
 
 Why they belong together:
 
-- *=52= is an explicit failure signal; session mining is an implicit one.* The bug-report tool captures friction the agent *notices* and chooses to file.
-  The extraction pass infers friction the agent *did not* file, from repeated corrections and low cluster =success_rate=.
-  The two cover different blind spots: a filed report is high-precision but depends on the agent recognizing the problem; a mined signal catches the silent, recurring failures nobody flagged.
-- *A filed report is a strong seed for extraction.* A =bug_report= already carries structured context and a session/turn pointer.
-  That is a much cleaner starting point for "what recurring problem should become a skill or an =AGENTS.md= fix" than a raw transcript scan.
-  The extraction pass should treat the bug-report store as a *first-class input*, alongside =session://= history — high-signal, pre-attributed evidence.
-- *Same append-only, human-gated store shape.* =52='s report store and this note's proposal staging are the same kind of artifact: cheap to write, accumulates, decoupled from the current turn, mined later by a human or a scheduled pass.
-  They should share the storage lifetime discipline (append-only, content-keyed, reviewable) rather than inventing two stores.
-- *Two outputs of one loop.* =52= is the *capture* end (record friction); session learning is the *codify* end (turn accumulated friction and recurrence into a durable skill or guidance edit).
-  Feat 52's own plan says it wants "the agent's lived experience of the runtime to feed back into improving the runtime" — that feedback only closes when something reads the reports and acts.
-  This note's extraction pass is that reader.
-
-Design implication: when =52= lands, the extraction action should read the bug-report store as an evidence source, and a mined skill or fix proposal should be able to cite the bug reports that motivated it.
-Conversely, the bug-report store is where the extraction pass can record "this recurring failure has no owning skill yet" so it is not rediscovered every run — the same anti-re-nag role Goodnite's suggestion ledger plays.
+- *=52= supplies explicit evidence; session mining supplies implicit evidence.* A process report captures an event the agent notices and judges worth retaining.
+  The extraction pass can find related events the agent did not report by scanning repeated requests, corrections, tool-call shapes, and cluster outcomes.
+  The two sources cover different blind spots.
+- *A process report is a strong seed for extraction.* It already carries the agent's explanation plus a session/turn pointer and structured runtime context.
+  That is a cleaner starting point than an undirected transcript scan.
+  The extraction pass should treat the process-report store as a first-class input alongside =session://= history.
+- *Bug reporting becomes one outcome rather than the capture model.* Early classification as a bug assumes both cause and remedy before enough evidence exists.
+  Neutral capture preserves the observation so triage can distinguish runtime defects from missing guidance, missing capabilities, reusable procedures, and one-off mistakes.
+- *Both stages preserve provenance.* The append-only report records what the agent observed.
+  A separate triage decision records what the system or reviewer concluded and links any resulting work.
+  The original evidence should remain unchanged.
+- *The loop has distinct capture and codify stages.* Feat 52 records process evidence without interrupting the task.
+  Session learning corroborates recurrence and proposes the durable artifact.
+  Human review remains the gate before a proposal changes runtime behavior.
 
 Concrete direction:
 
 1. =52= should stay small and intentional.
-   It should capture the agent's judgment that something was defect-worthy, not become automatic telemetry for every error.
-   That keeps the signal high enough to use as seed evidence.
-2. The report schema should include stable pointers into the learning substrate: session id, turn id, project root, triggering tool/action name, redacted argument preview, error class, and any telemetry call id from feat 44.
-   These are the join keys that let the extraction pass go from a report to the surrounding session evidence.
-3. The report store should be append-only, reviewable, and resource/action-readable.
-   Session learning should not scrape private implementation files if =52= can expose =list= and =read= actions with the redacted, structured view it already owns.
-4. Triage should route reports into three buckets: runtime defect, missing capability, or recurring procedure.
-   Runtime defects become ordinary bug/fix work.
-   Missing capabilities may become feature work.
-   Recurring procedures become candidate skills, scripts, cron jobs, or =AGENTS.md= guidance edits.
-5. Extraction proposals should cite reports as strong evidence but still require corroboration when possible.
-   A single clear report can justify a runtime fix.
-   A recurring-skill proposal is stronger when a report plus session mining show the same shape more than once.
-6. The proposal ledger and the bug-report store should share the same anti-re-nag discipline.
-   If a human rejects a proposed skill for a content-keyed evidence set, later runs should not refile the same suggestion unless new evidence changes the hash.
-7. The bug-report sink should also improve future extraction prompts.
-   Reports contain the agent's own expected-vs-actual explanation, which is usually a better problem statement than the raw transcript around a failure.
+   It should record the agent's judgment that a process event is worth retaining rather than automatically mirror every error.
+2. The report schema should include a neutral summary and detail, an optional descriptive signal such as failure, correction, workaround, repetition, success, missing operation, or performance, and stable pointers into the learning substrate.
+   Those pointers include session id, turn id, project root, relevant tool/action, redacted argument and outcome context, error details when present, and any telemetry call id from feat 44.
+3. The process-report store should be append-only, reviewable, and resource/action-readable.
+   Session learning should consume a stable =list=/=read= surface rather than scrape private implementation files.
+4. Triage should route reports to runtime defect, missing capability, recurring judgment-shaped procedure, deterministic procedure, unattended recurring work, project fact or policy, or no action.
+   The corresponding artifacts are bug work, feature work, skills, scripts or actions, cron/task-queue workflows, scoped guidance, or a closed report.
+5. Extraction proposals should cite reports as strong evidence and corroborate recurrence through session mining when the proposed outcome depends on recurrence.
+   One clear report can justify a runtime investigation.
+   A skill or schedule proposal should usually point to repeated evidence.
+6. Reports and proposals should share content-keyed anti-re-nag discipline.
+   A rejected or already-routed evidence set should not reappear unless new evidence changes its identity.
+7. Process reports should improve extraction prompts.
+   The agent's concise account of what mattered is often a better query and problem statement than the raw transcript alone.
 
 This changes the first-slice sequencing slightly.
-A session-learning extractor can start with =session://= alone, but once =52= exists it should read bug reports first, use them as anchors into session history, and only then run broader mining over recent sessions.
-That sequence spends model attention on places where the agent already noticed friction, while still preserving the broader Goodnite-style recurrence scan.
+A session-learning extractor can start with =session://= alone, but once =52= exists it should read open process reports first, use them as anchors into session history, and then run broader recurrence mining.
+That sequence spends model attention on events already judged significant while preserving the broader Goodnite-style scan.
 
 * Design space summary and recommendation
 
@@ -318,15 +316,15 @@ Recommended first slice, ordered by leverage and reversibility:
 1. *An extraction action* (owned by a "session-learning" capability, called from =run_elisp= via =e-actions-call=) that reads recent =session://= history — starting with the =e= engine — and produces a *proposal*: a candidate =SKILL.md= or a candidate =AGENTS.md= guidance edit, with cited evidence (the sessions and the repeated ask/correction that triggered it).
    The proposal is written for human review, never applied silently.
    This is the reflection step from Generative Agents, scoped to procedures.
-2. *A bug-report-backed seed path* once feat 52 lands: read explicit bug reports first, group them by project and failure shape, and use their session/turn pointers as anchors into =session://=.
-   This makes the extractor cheaper and more precise because the agent has already marked these turns as friction.
+2. *A process-report-backed seed path* once feat 52 lands: read explicit process reports first, group them by project and observed process shape, and use their session/turn pointers as anchors into =session://=.
+   This makes the extractor cheaper and more precise because the agent has already marked these events as significant.
 3. *A "asked twice" detector* as the broader extraction trigger: scan history for a repeated user request or a repeated correction of the same mistake.
    This turns Tan's management test into a concrete signal and keeps the pass from proposing noise.
 4. *A Codex session engine adapter* registered in =e-session-resource-engines=, so the same extraction action reads Codex rollouts under =session://codex/…= with a normalized projection and source provenance.
-5. *A cron schedule* (=e-cron=) that runs the extraction pass on a recurrence with a cheap deterministic guard ("any sessions since last run or untriaged bug reports?"), enqueuing the pass on the task queue so a wakeup with nothing to learn is a no-op.
+5. *A cron schedule* (=e-cron=) that runs the extraction pass on a recurrence with a cheap deterministic guard ("any sessions since last run or open process reports?"), enqueuing the pass on the task queue so a wakeup with nothing to learn is a no-op.
 
 Adopt from Goodnite, in priority order: cluster-by-embedding recurrence with a decayed =recency_score= instead of literal repeat detection (step 3); the three-way mine/amend/drop route against the existing skill set as the dedup mechanism; a content-keyed suggestion ledger so rejected proposals do not re-surface; and the script-vs-skill distinction (=scriptable=) so deterministic tool-call prefixes become scripts rather than judgment skills.
-Treat the feat 52 bug-report store as a first-class evidence input once it lands.
+Treat the feat 52 process-report store as a first-class evidence input once it lands.
 
 Deliberately deferred: autonomous silent memory writes, online vector recall (offline clustering in a batch job is fine), and self-modifying skills without review.
 Keep the human in the codify step until the extraction quality is proven, exactly as the Prototype -> Evaluate gate in the source loop demands.
@@ -337,8 +335,8 @@ Keep the human in the codify step until the extraction quality is proven, exactl
   Literal repeated requests are rare; semantically-equivalent repeats need a cheap comparison that does not require a full model pass per session.
 - Where do proposed skills live before acceptance?
   A staging directory the extraction pass writes and a human promotes, versus a proposal annotation on the session that triggered it (=e= already has an annotations capability).
-- Should bug-report triage and session-learning proposals share one review surface, or should feat 52 expose a narrow inbox that the extractor reads and writes back to?
-- What status model is just enough for a report once the extractor sees it: open, linked-to-proposal, fixed, rejected, or snoozed?
+- Should process-report triage and session-learning proposals share one review surface, or should feat 52 expose a narrow evidence inbox that the extractor reads and links from?
+- What status model is just enough for a report once triage sees it: open, routed, linked-to-proposal, resolved, rejected, or snoozed?
 - How does an accepted skill get attributed to a project-local capability versus a global one, given the source session's cwd?
 - What is the storage lifetime of the extraction pass's own state (last-run marker, seen-session set)?
   Per the state-lifetime guidance it should be the smallest durable marker, not a mirror of session content.
