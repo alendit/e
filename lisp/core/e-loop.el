@@ -15,6 +15,7 @@
 (require 'subr-x)
 (require 'e-backend)
 (require 'e-request)
+(require 'e-session)
 (require 'e-tools)
 (require 'e-work)
 
@@ -75,13 +76,85 @@
       (plist-put (copy-sequence item) :type 'tool-call))
      (t item))))
 
-(defun e-loop--request-lifecycle-payload (request status &optional started-at)
-  "Return sanitized lifecycle payload for REQUEST with STATUS.
-STARTED-AT is the `float-time' value captured when the provider request was
-published, used to calculate `:elapsed-seconds' for finished events."
+(defun e-loop--shape-value (value)
+  "Return durable hash and byte length for model-visible VALUE."
+  (let ((text (prin1-to-string value)))
+    (list :sha256 (secure-hash 'sha256 text)
+          :bytes (string-bytes text))))
+
+(defun e-loop--process-marker-surface-shape (messages options)
+  "Return request-shape attribution for process marker surface."
+  (let* ((tools (plist-get options :tools))
+         (tool (seq-find (lambda (definition)
+                           (equal (plist-get definition :name)
+                                  "process_marker"))
+                         tools))
+         (guidance (seq-filter
+                    (lambda (message)
+                      (and (eq (plist-get message :role) 'system)
+                           (string-match-p
+                            "process_marker"
+                            (format "%s" (plist-get message :content)))))
+                    messages))
+         (calls (seq-filter
+                 (lambda (message)
+                   (and (eq (plist-get message :role) 'tool-call)
+                        (equal (plist-get (plist-get message :content) :name)
+                               "process_marker")))
+                 messages))
+         (call-ids (mapcar (lambda (message)
+                             (plist-get (plist-get message :content) :id))
+                           calls))
+         (results (seq-filter
+                   (lambda (message)
+                     (and (eq (plist-get message :role) 'tool)
+                          (member (plist-get (plist-get message :content)
+                                             :tool-call-id)
+                                  call-ids)))
+                   messages))
+         (tool-text (prin1-to-string tool))
+         (guidance-text (prin1-to-string guidance))
+         (call-text (prin1-to-string calls))
+         (result-text (prin1-to-string results)))
+    (list :present (and tool t)
+          :tool-bytes (if tool (string-bytes tool-text) 0)
+          :tool-sha256 (and tool (secure-hash 'sha256 tool-text))
+          :guidance-bytes (if guidance (string-bytes guidance-text) 0)
+          :guidance-sha256 (and guidance
+                                (secure-hash 'sha256 guidance-text))
+          :call-bytes (if calls (string-bytes call-text) 0)
+          :call-sha256 (and calls (secure-hash 'sha256 call-text))
+          :result-bytes (if results (string-bytes result-text) 0)
+          :result-sha256 (and results (secure-hash 'sha256 result-text)))))
+
+(defun e-loop--request-shape (messages options)
+  "Return reconstructable content hashes for one provider request."
+  (list :revision "request-shape-v1"
+        :messages (e-loop--shape-value messages)
+        :tools (e-loop--shape-value (plist-get options :tools))
+        :options (e-loop--shape-value options)
+        :model (plist-get options :model)
+        :reasoning-effort (or (plist-get options :reasoning-effort)
+                              (plist-get options :effort))
+        :prompt-cache-key (plist-get options :prompt-cache-key)
+        :prompt-cache-retention (plist-get options :prompt-cache-retention)
+        :tokenizer-revision (plist-get options :tokenizer-revision)
+        :process-marker-surface
+        (e-loop--process-marker-surface-shape messages options)))
+
+(defun e-loop--request-lifecycle-payload
+    (request status request-id request-ordinal request-shape
+             &optional started-at)
+  "Return sanitized lifecycle payload for REQUEST with stable identity.
+REQUEST-ID and REQUEST-ORDINAL join all events for one provider request.
+REQUEST-SHAPE contains hashes and sizes of model-visible request ingredients.
+STARTED-AT is the `float-time' value captured when the request was published."
   (let* ((metadata (and (e-backend-request-p request)
                         (e-backend-request-metadata request)))
-         (payload (list :provider (plist-get metadata :provider)
+         (payload (list :provider-request-id request-id
+                        :provider-request-ordinal request-ordinal
+                        :request-shape request-shape
+                        :provider (plist-get metadata :provider)
                         :transport (plist-get metadata :transport)
                         :url-host (plist-get metadata :url-host)
                         :url-path (plist-get metadata :url-path)
@@ -139,7 +212,8 @@ tool I/O, and turn settlement are callback-driven."
   (ignore session-id turn-id)
   (let ((turn-messages (copy-sequence messages))
         (settled nil)
-        (active-request nil))
+        (active-request nil)
+        (provider-request-sequence 0))
     (cl-labels
         ((cancelled ()
            (and cancelled-p (funcall cancelled-p)))
@@ -189,6 +263,9 @@ tool I/O, and turn settlement are callback-driven."
                   (token-usage nil)
                   (done-reason nil)
                   (provider-request nil)
+                  (provider-request-id nil)
+                  (provider-request-ordinal nil)
+                  (provider-request-shape nil)
                   (provider-request-started-at nil)
                   (provider-request-finished nil))
               (cl-labels
@@ -198,6 +275,12 @@ tool I/O, and turn settlement are callback-driven."
                    (publish-provider-request
                     (request)
                     (setq provider-request request)
+                    (setq provider-request-sequence
+                          (1+ provider-request-sequence))
+                    (setq provider-request-id (e-session-generate-ulid))
+                    (setq provider-request-ordinal provider-request-sequence)
+                    (setq provider-request-shape
+                          (e-loop--request-shape turn-messages options))
                     (setq provider-request-started-at (float-time))
                     (setq provider-request-finished nil)
                     (publish-request request)
@@ -206,7 +289,8 @@ tool I/O, and turn settlement are callback-driven."
                      :type 'provider-request-started
                      :payload
                      (e-loop--request-lifecycle-payload
-                      request 'started)))
+                      request 'started provider-request-id
+                      provider-request-ordinal provider-request-shape)))
                    (finish-provider-request
                     (status)
                     (when (and provider-request
@@ -217,7 +301,8 @@ tool I/O, and turn settlement are callback-driven."
                        :type 'provider-request-finished
                        :payload
                        (e-loop--request-lifecycle-payload
-                        provider-request status
+                        provider-request status provider-request-id
+                        provider-request-ordinal provider-request-shape
                         provider-request-started-at))))
                    (fail-provider
                     (err)
@@ -387,7 +472,12 @@ tool I/O, and turn settlement are callback-driven."
                               (enqueue-tool-call item))
                              ('token-usage
                               (setq token-usage
-                                    (plist-get item :usage))
+                                    (append
+                                     (copy-sequence (plist-get item :usage))
+                                     (list :provider-request-id
+                                           provider-request-id
+                                           :provider-request-ordinal
+                                           provider-request-ordinal)))
                               (e-loop--emit
                                :on-event on-event
                                :type 'token-usage
