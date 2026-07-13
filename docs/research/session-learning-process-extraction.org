@@ -296,11 +296,13 @@ Concrete direction:
    A rejected or already-routed evidence set should not reappear unless new evidence changes its identity.
 7. Process reports should improve extraction prompts.
    The agent's concise account of what mattered is often a better query and problem statement than the raw transcript alone.
-8. Process reporting should carry enough attribution data for post-hoc token-cost accounting.
-   Provider-reported =token-usage= events already give exact request totals, while stored tool/action events identify calls and results.
-   Add a stable provider-request id or ordinal across request lifecycle and token-usage events, preserve the process-report tool/action call ids, and retain descriptor and guidance revision hashes.
-   A later report can estimate the tool's surface, invocation, and follow-up context footprint as a percentage of provider-reported usage.
-   Treat that as accounting attribution; proving causal overhead requires replay or A/B runs without the tool.
+8. Process reporting should carry enough attribution data for counterfactual cost accounting.
+   It is a pure observability function and cannot improve the current task, so every main-session token, provider round trip, delay, and context entry it induces is overhead that later learning must repay.
+   Provider-reported =token-usage= events give request totals, while stored tool/action events identify calls and results.
+   Add a stable provider-request id or ordinal across request lifecycle and token-usage events, preserve process-report and observer lineage ids, retain reconstructable request ingredients, and record descriptor and guidance revisions.
+   A request-shape counterfactual can calculate direct context deltas after removing report artifacts.
+   Replay or controlled A/B sessions are still required to estimate interruption overhead and changed model behavior.
+   Default capture should therefore run after the turn in an isolated observer session, leaving the main session free of report guidance, tool calls, results, and child output; any ordinary in-band tool mode should be opt-in and costed separately.
 
 This changes the first-slice sequencing slightly.
 A session-learning extractor can start with =session://= alone, but once =52= exists it should read open process reports first, use them as anchors into session history, and then run broader recurrence mining.

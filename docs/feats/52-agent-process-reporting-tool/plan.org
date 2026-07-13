@@ -3,8 +3,10 @@
 
 * Goal
 
-Give the agent a first-class =process_report= tool/action it can call to preserve a useful observation about how work went while the evidence is fresh.
-The report lands in a durable, reviewable store without derailing the current turn.
+Give the system a first-class process-reporting path that preserves useful observations about how agent work went while the evidence is fresh.
+Process reporting is a pure observability and learning function.
+It does not help complete the current task, so every token, provider request, delay, tool result, and context entry it causes in the main session is additional cost that later learning must repay.
+The report lands in a durable, reviewable store without steering or delaying the current task when an out-of-band path can avoid it.
 Capture stays neutral about the remedy: a later triage step may turn the report into a bug, runtime fix, missing capability, skill, script, cron job, guidance edit, or no action.
 
 * Problem
@@ -20,12 +22,16 @@ The capture step should preserve evidence and intent; triage should decide what 
 
 * Design
 
-** A neutral process-reporting tool
+** A neutral process-reporting path
 
-- A =process_report= tool and matching =e-actions-call= action let the agent record an observation mid-turn.
-  The call returns quickly and does not block or steer the current work.
-- Guidance encourages intentional capture after events such as a failed operation, correction, workaround, repeated multi-step sequence, missing affordance, performance problem, or notably effective method.
-- The tool does not require the agent to name the final work item or assert that the runtime has a bug.
+- The semantic operation is =process_report=, but it should not automatically become an always-visible model-facing tool.
+  Tool exposure, default guidance, invocation protocol, and storage are separate design decisions.
+- A matching =e-actions-call= action gives runtime code, observers, and background agents a stable write path without requiring a dedicated tool in every main-session request.
+- The operation records events such as a failed operation, correction, workaround, repeated multi-step sequence, missing affordance, performance problem, or notably effective method.
+- Capture stays descriptive.
+  It does not require the caller to name the final work item or assert that the runtime has a bug.
+- If an explicit model-facing tool is enabled, its descriptor and default guidance must be minimal, its arguments must rely on auto-attached context, and its model-visible result must be the smallest protocol-valid acknowledgement.
+  A fast implementation alone is insufficient because a normal function call still interrupts generation and causes a follow-up provider request.
 
 ** What a process report captures
 
@@ -73,46 +79,104 @@ A content-keyed evidence identity should prevent rejected or already-routed obse
 - Explicit reports and implicit mining cover different blind spots.
   Reporting depends on the agent noticing significance, while mining can find repeated patterns nobody reported.
 
-** Token-cost accounting
+** Out-of-band and forked execution
 
-Track the model-context footprint of process reporting so its value can later be compared with its recurring cost.
-Keep this accounting post-hoc and derived where possible rather than adding mutable counters to each report.
+The default design should keep reporting work out of the main session.
+A post-turn observer can run in a fresh child session or queued background session, read the completed parent turn through =session://=, and write reports through the process-reporting action.
+This should be a fresh observer session with a durable reference to the parent, not a transcript fork copied into the child.
+The child should receive only a session/turn reference and narrow trigger metadata, then read the bounded projection it needs.
+Its transcript and result must stay out of the parent context unless a human explicitly opens them.
+A cheaper model can perform this observational pass when its quality is sufficient.
 
-Separate three costs:
+Forking helps with report formulation, enrichment, deduplication, and triage, but it does not by itself make an in-band tool call free.
+Under the normal function-calling protocol, the main model stops when it emits the call and waits for a tool result before a follow-up provider request can finish the task.
+Returning a child handle immediately reduces tool execution latency but still adds the call, result, follow-up request, and retained context to the main session.
+Therefore the main session should not spawn the observer through an ordinary tool call by default.
+The runtime should trigger observation after a turn settles, or from durable activity events, without asking the task-performing model to wait.
 
-1. *Surface cost* :: the estimated tokens for the =process_report= tool descriptor and always-injected guidance on every provider request where the tool is active.
-2. *Invocation cost* :: the estimated tokens for the model-emitted tool call arguments and the model-visible tool result.
-3. *Follow-up cost* :: the extra context carried into provider requests after an invocation, including the call and result retained in the transcript.
+Use a staged capture architecture:
 
-The provider already supplies exact request-level totals for input, cached input, output, reasoning output, and total tokens, and =e= stores these as durable =token-usage= activity events.
+1. *Deterministic candidate selection* :: existing telemetry and turn events identify narrow candidates after the turn without another model request.
+   A failed call is evidence, not automatically a report; policy decides whether it is worth queueing for observation.
+2. *Isolated observation* :: a background child reads only selected parent evidence and decides whether to write or amend a report.
+   Batch several candidates when possible so observer startup and prompt cost are not paid once per event.
+3. *Later recurrence mining* :: scheduled session learning finds successful methods, repetition, and cross-session patterns that one-turn triggers cannot identify cheaply.
+
+This creates three model-facing capture modes:
+
+1. *Default observational mode* :: no process-report descriptor or guidance is present in the main session.
+   A deterministic post-turn trigger queues isolated observation only for selected candidates.
+2. *Terminal side-channel mode to investigate* :: the main model emits a compact report payload alongside its answer, the runtime stores it after generation, and the payload is omitted from future task context.
+   This preserves more of the task-performing model's judgment without a follow-up request, but it still consumes guidance and output tokens and needs an explicit harness/provider contract rather than pretending to be a normal tool call.
+3. *Explicit ordinary-tool mode* :: an opt-in debug configuration exposes a tiny =process_report= tool when preserving the task-performing model's judgment is worth the full interruption cost.
+   This is the most expensive mode and should not define the default cost profile.
+
+The observer should first use existing telemetry and a bounded session projection.
+Model work belongs in the child only when deciding significance or writing a useful explanation requires judgment.
+The design should compare report precision and downstream yield across these modes, not assume that the most explicit mode is worth its cost.
+
+** Counterfactual cost accounting
+
+Because process reporting cannot improve the current task, all of its direct and induced costs count as overhead against a hypothetical execution without process reporting.
+The primary metric is therefore incremental cost relative to that counterfactual, not merely the percentage of observed tokens occupied by report artifacts.
+Keep accounting post-hoc and derived where possible rather than adding mutable counters to each report.
+
+Separate four costs:
+
+1. *Passive surface overhead* :: tokens and cache effects from the tool descriptor and default guidance on every main-session provider request where they are present, including requests where no report is created.
+2. *Active invocation overhead* :: output tokens used to emit the report call plus input tokens for the model-visible result and retained call record.
+3. *Interruption overhead* :: the extra provider round trip, repeated prompt prefix, latency, and any changed task output caused by stopping generation for the report call.
+4. *Observer overhead* :: provider tokens, latency, and compute used by a forked or background observer.
+   This does not pollute or block the main session, but it remains additional system cost.
+
+For each mode, report total incremental cost as the counterfactual main-session delta plus observer cost:
+
+#+begin_example
+incremental cost = cost(main with reporting) - cost(main without reporting) + cost(observer)
+relative overhead = incremental cost / cost(main without reporting)
+#+end_example
+
+For default observational mode, the design target is a zero provider-token and zero provider-request delta in the main session, leaving observer cost as the dominant measurable overhead.
+Runtime hook CPU and queue latency still count, but should be reported outside model-token cost.
+
+Use two levels of counterfactual measurement:
+
+- *Request-shape counterfactual* :: reconstruct each actual provider request and a paired request from the same snapshot with process-report descriptors, guidance, calls, and results removed.
+  Tokenize both payloads with the provider tokenizer.
+  This gives a deterministic direct context delta while holding the rest of the observed session fixed.
+- *Behavioral counterfactual* :: replay from the checkpoint immediately before reporting with the process-report surface disabled, or randomly enable reporting across comparable sessions.
+  Compare total provider tokens, request count, wall time, task quality, and completion outcome.
+  Repeated trials are needed because model output is stochastic.
+
+The request-shape comparison measures attributable bytes or tokens but cannot estimate how the model would have continued instead of emitting the report call.
+Only replay or controlled A/B data can estimate interruption overhead and changed behavior.
+The plan should report direct context deltas and behavioral estimates separately rather than presenting one as the other.
+
+The provider already supplies request totals for input, cached input, output, reasoning output, and total tokens, and =e= stores them as durable =token-usage= events.
 Tool and action lifecycle events already preserve turn ids, tool-call ids, action-call ids, parent tool-call ids, argument previews, result previews, and elapsed time.
-That is enough to calculate useful relative measures if request and usage events can be joined reliably.
-
-Preserve or add the following attribution data:
+Preserve or add the following data so both counterfactuals remain possible:
 
 - A stable provider-request id or request ordinal on =provider-request-started=, =provider-request-finished=, and the corresponding =token-usage= event.
   Event order within a turn is a fallback, not a durable join contract, because a tool turn can issue several provider requests.
-- The =process_report= tool-call id and any nested process-reporting action-call id on the stored report.
-- The exact model-visible tool descriptor revision or a content hash that lets post-hoc analysis reconstruct it.
-- The exact model-visible guidance revision or content hash for guidance whose cost is assigned to process reporting.
-- The byte or character lengths of model-visible call arguments and results when exact text is intentionally unavailable after redaction.
+- The exact model-visible request ingredients or durable content hashes and revisions for tool descriptors, guidance blocks, messages, tool calls, and tool results.
+- A checkpoint or reconstructable session state immediately before an explicit report invocation.
+- The =process_report= tool-call id, nested process-reporting action-call id, resulting report id, and any observer child-session or task id.
+- Provider, model, model parameters, prompt-cache state where available, tokenizer revision, request timing, and task completion outcome.
+- Original byte or character lengths for redacted model-visible arguments and results when exact text cannot be retained.
 
 A post-hoc report can then show:
 
-- estimated process-reporting tokens per provider request and per session;
-- process-reporting tokens as a percentage of provider-reported input and output tokens;
-- cached versus uncached input share when the provider reports it;
-- invocation count and estimated tokens per accepted, rejected, duplicate, or unresolved report;
-- estimated tokens per downstream outcome, such as a confirmed bug, accepted skill, or guidance change.
+- direct incremental main-session tokens per request and per session;
+- extra main-session provider requests and wall time caused by explicit capture;
+- background observer tokens and latency, reported separately from main-session pollution;
+- overhead for sessions where reporting was available but unused;
+- overhead per accepted, rejected, duplicate, or unresolved report;
+- overhead per useful downstream outcome, such as a confirmed bug, accepted skill, or guidance change.
 
 Use the provider tokenizer when one is available.
 Otherwise record the estimation method and use one stable approximation, such as UTF-8 bytes or characters converted to estimated tokens.
-Relative comparisons remain useful when the same estimator is used across revisions.
-
-This is accounting attribution, not a causal estimate.
-Logs can show how much context the descriptor, guidance, call, and result occupy, but they cannot prove how many tokens the model would have used in a counterfactual run without the tool.
-A causal claim would require an A/B or replay experiment with the tool removed.
-Do not label request-to-request token deltas as savings or overhead without such a comparison.
+Never call provider-reported request totals alone the tool's cost.
+Those totals are the denominator and validation evidence; the counterfactual delta is the cost estimate.
 
 ** Surfacing
 
@@ -122,9 +186,9 @@ Do not label request-to-request token deltas as savings or overhead without such
 
 * Non-goals
 
-- Not automatic error capture.
-  A failed tool call is telemetry, not automatically a process report.
-  The agent decides when an event is worth retaining.
+- Not automatic promotion of every error into a process report.
+  A failed tool call is telemetry and a possible observer candidate.
+  Deterministic policy or an isolated observer decides whether the event is worth retaining.
 - Not limited to failures.
   Successful workarounds and repeated useful procedures are valid evidence.
 - Not a full issue tracker.
@@ -132,19 +196,27 @@ Do not label request-to-request token deltas as savings or overhead without such
 - Not autonomous self-modification.
   Skills, scripts, schedules, and guidance remain proposals until reviewed.
 - Not user-facing reporting.
-  This is the agent's channel for process evidence.
+  This is an observability channel for process evidence.
+- Not a current-task aid.
+  Do not justify context, latency, or token overhead as helping the task in which the observation occurred.
 
 * Acceptance
 
-- The agent can call =process_report= mid-turn, the call returns without disrupting the turn, and the report persists.
+- The default main-session configuration can produce process reports without exposing a report tool, adding report guidance, blocking the main session, or injecting observer output into its context.
+- Default observation runs in an isolated child or queued background session that receives references rather than a copied parent transcript.
+- Deterministic candidate selection and batching bound background model cost.
+- A terminal side-channel capture mode is evaluated against isolated observation before adding an ordinary tool to default context.
+- An explicit opt-in =process_report= tool can preserve the task-performing model's own judgment when that value justifies the measured interruption cost.
 - A report can describe failure, correction, workaround, recurrence, or success without claiming that the event is a bug.
 - The runtime auto-captures relevant session, turn, project, action/tool, redacted argument, result/error, and telemetry context when available.
 - A stable =list=/=read= path lets humans and extraction agents review reports later.
 - Triage can append an outcome and optional target reference while leaving the original report unchanged.
 - Bug work is one supported triage outcome rather than the identity of the reporting tool.
 - Durable telemetry can join each process-report invocation to its provider requests and =token-usage= events through stable ids rather than event-order inference.
-- A post-hoc report can estimate surface, invocation, and follow-up token footprints and express them as a share of provider-reported usage.
-- Every estimate names its tokenizer or approximation and does not claim causal overhead without an A/B or replay comparison.
+- A post-hoc report can reconstruct a request-shape counterfactual without process-report artifacts and calculate the direct incremental context cost.
+- Replay or controlled A/B measurement can estimate interruption overhead relative to sessions without reporting.
+- Main-session pollution and background-observer cost are reported separately.
+- Every estimate names its tokenizer or approximation and does not claim behavioral overhead from request-shape accounting alone.
 
 * Design self-check
 
@@ -156,7 +228,7 @@ Do not label request-to-request token deltas as savings or overhead without such
 6. Policy does not depend on concrete UI or storage adapters; those implement the capability-owned contracts.
 7. Redaction, persistence, and presentation remain side effects at the capability and shell boundaries.
 8. Reports and appended triage decisions are durable facts; derived groupings, rankings, and review views should remain rebuildable.
-9. Mid-turn capture must be bounded and cheap; clustering, model analysis, and cross-session mining stay on background paths.
+9. The default path adds no model-facing surface or provider round trip to the main session; observation, clustering, and cross-session mining stay on bounded background paths.
 10. The capture contract applies to every signal without weakening behavior or requiring unsupported outcome fields.
 11. The original =bug_report= idea remains compatible as the runtime-defect triage outcome, while the bug-only tool name and schema are removed.
 12. No separate bug-report store or bug-specific capture path should remain once process reporting exists.
