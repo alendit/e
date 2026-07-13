@@ -1,0 +1,150 @@
+#+title: Review: Agent Process-Reporting Tool
+#+author: e implementation
+#+date: 2026-07-13
+#+startup: overview
+
+* Status
+
+In-review.
+
+* Review summary
+
+The first parent-side slice is ready for parent review.
+It adds neutral capture, durable append-only evidence and triage, redacted
+telemetry links, request attribution, extraction accounting, registration,
+documentation, and focused tests.
+No child session, enrichment request, or session-history gather runs during
+capture.
+
+* Scope reviewed
+
+- =lisp/core/e-telemetry.el=, action/tool durable previews, and their tests.
+- Provider request identity, request-shape attribution, and token-usage joins in
+  =lisp/core/e-loop.el=.
+- =lisp/layers/harness/e-process-reporting.el= and its store, tool, actions,
+  triage, extraction ledger, and cost report.
+- Default layer, harness, package, reload, README, and feature-ledger
+  registration.
+- The acceptance and architecture checks in =plan.org=.
+
+* What looks good
+
+- The model tool schema contains only =signal= and =note= and returns =ok=.
+- The action and tool share one capture service.
+- Marker records stay immutable. Triage and extraction records append.
+- Marker context uses stable session, turn, checkpoint, provider-request,
+  tool-call, action-call, activity-event, and =session://= references.
+- Shared telemetry redaction prevents marker evidence from copying raw argument,
+  result, or error payloads.
+- Content-keyed evidence suppresses terminal rejected or routed evidence until
+  the evidence changes.
+- Request-shape attribution names its byte approximation and explicitly refuses
+  to present it as behavioral overhead.
+
+* Verification
+
+#+begin_src sh
+eldev -q test \
+  -f test/e-process-reporting-test.el \
+  -f test/e-telemetry-test.el \
+  -f test/e-actions-test.el \
+  -f test/e-loop-test.el \
+  -f test/e-harness-test.el \
+  -f test/e-defaults-test.el \
+  -f test/e-dev-test.el \
+  -f test/e-layers-test.el \
+  -f test/e-usage-report-test.el \
+  -f test/e-session-test.el
+#+end_src
+
+#+begin_example
+Ran 266 tests, 266 results as expected, 0 unexpected.
+#+end_example
+
+#+begin_src sh
+eldev -q compile --set all
+#+end_src
+
+#+begin_example
+Completed with existing test-only warnings about unwind forms, Evil variables,
+debug helper definitions, and deprecated autoload APIs.
+#+end_example
+
+#+begin_src sh
+eldev -q test
+#+end_src
+
+#+begin_example
+Ran 1586 tests, 1580 expected, 5 unexpected, 1 skipped.
+The five unrelated failures reproduce in isolated affected files:
+- nonblocking sweep expected-count baseline;
+- Org Canvas synchronous progress rendering;
+- session-resource discovery tool description;
+- annotation skill inventory;
+- await-test direct render-carrier guard.
+#+end_example
+
+#+begin_src sh
+git diff --check
+#+end_src
+
+#+begin_example
+Passed with no output.
+#+end_example
+
+* UX and performance playthrough
+
+This slice has no new presentation shell or interactive UI.
+Focused tests exercise empty-store first use, direct action capture, model tool
+capture, restart/reload of the JSONL store, list/read, triage, duplicate
+suppression, extraction accounting, redaction, and request-shape reporting.
+Capture performs one bounded append and in-memory index update. It does not scan
+sessions, spawn work, or call a provider.
+
+* Live reload
+
+The user's running Emacs was left unchanged.
+The project action recorded a full reload requirement for feature 52.
+The new behavior becomes available after =M-x e-dev-reload= is run while idle.
+
+* Plan coverage
+
+The first slice meets the online capture, durable review, triage, redaction,
+registration, guidance, and attribution requirements.
+Provider-tokenizer accounting and repeated replay/A-B experiments are later
+measurement executions. The slice stores the stable checkpoint, request shape,
+request identity, usage joins, and estimate method needed to run them without
+changing online capture.
+
+* Architecture review
+
+The process-reporting capability owns marker semantics and durable facts.
+Core telemetry owns shared redaction and provider-request identity.
+The loop stores hashes and sizes rather than depending on a provider adapter or
+process-reporting storage implementation.
+The model interface stays narrow. The append-only file is private behind
+capability actions.
+No presentation, issue tracker, extractor, or child-agent dependency points
+into capture.
+
+* Design self-check
+
+1. The slice is useful alone because it preserves and routes high-signal process evidence.
+2. It moves toward offline session learning and reviewed durable outcomes.
+3. Signal vocabularies and triage states are local constants; stable append-only facts and ids are direct models.
+4. Process reporting owns capture, marker storage, review, and triage.
+5. The tool takes two fields. Other consumers use narrow actions.
+6. Core telemetry does not depend on the process-reporting capability.
+7. Persistence stays at the capability boundary. Provider lifecycle attribution stays in the loop.
+8. Markers, triage, and extraction ledgers are durable facts. Cost summaries are derived.
+9. Passive overhead is one tiny descriptor and one guidance sentence. Active persistence is one append.
+10. The capture contract applies uniformly to all supported signals.
+11. No legacy compatibility path was added.
+12. There was no prior process-report store to retain.
+13. Validation errors surface. Persistence and redaction errors are not swallowed.
+14. Focused tests isolate store, redaction, capture, triage, and attribution behavior.
+
+* Unresolved
+
+No implementation blockers are known.
+Parent review is pending.

@@ -232,6 +232,44 @@ Those totals are the denominator and validation evidence; the counterfactual del
 13. Expected validation and routing errors return to the caller; unexpected persistence and redaction failures must surface rather than be swallowed.
 14. Focused tests should prove neutral capture, context attachment and redaction, immutable evidence, appended triage, and stable list/read behavior without a full shell.
 
+* Implementation evidence
+
+The first parent-side slice is implemented and ready for review as of 2026-07-13.
+
+- =30e7a34= adds the shared bounded telemetry preview and applies redaction to
+  action arguments/results and durable tool arguments/results.
+- =a1b9b69= gives each provider request a durable id and ordinal, joins
+  =provider-request-started=, =provider-request-finished=, and =token-usage=,
+  and stores request-shape revisions, hashes, byte lengths, model/cache fields,
+  and process-marker surface/call/result attribution.
+- =ef812a1= adds the default parent-side =process_marker= tool, matching
+  =process-reporting/:mark= action, append-only JSONL marker store, list/read,
+  immutable appended triage, evidence identity suppression, extraction ledger,
+  request-shape cost report, automatic =session://= links, checkpoint/call ids,
+  redacted telemetry evidence, default-layer registration, and focused tests.
+- =d33be0c= documents the tool, action, store, triage, and accounting surfaces.
+
+Repository-side evidence:
+
+- Focused plus affected broader suite: 266/266 passed.
+- Full repository suite: 1580 passed, 5 failed, 1 skipped. The five failures
+  reproduce in their isolated files and concern existing nonblocking baselines,
+  Org Canvas progress rendering, session-resource discovery text, annotation
+  skill inventory, and an await-test architecture guard. None touches feature
+  52 source.
+- =eldev compile --set all= completed. It reported only existing warnings in
+  tests for unwind forms, Evil free variables, debug helper definitions, and
+  deprecated autoload APIs.
+- =git diff --check= passed.
+- The running Emacs was not reloaded. =e-dev-mark-reload-required= recorded a
+  full reload requirement for the new runtime behavior.
+
+The first slice records deterministic request-shape attribution. Actual
+behavioral replay/A-B trials and provider-tokenizer integrations remain
+measurement operations, not online marker-capture work. The durable checkpoint,
+request ids, request shape, token usage joins, and completion events preserve
+the evidence those later trials need.
+
 * Provenance
 
 The original grimoire inbox item proposed a =bug_report= tool for recording things that did not work and was triaged on 2026-07-03.
