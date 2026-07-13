@@ -82,73 +82,93 @@
     (list :sha256 (secure-hash 'sha256 text)
           :bytes (string-bytes text))))
 
-(defun e-loop--process-marker-surface-shape (messages options)
-  "Return request-shape attribution for process marker surface."
-  (let* ((tools (plist-get options :tools))
-         (tool (seq-find (lambda (definition)
-                           (equal (plist-get definition :name)
-                                  "process_marker"))
-                         tools))
-         (guidance (seq-filter
-                    (lambda (message)
-                      (and (eq (plist-get message :role) 'system)
-                           (string-match-p
-                            "process_marker"
-                            (format "%s" (plist-get message :content)))))
-                    messages))
-         (calls (seq-filter
+(defun e-loop--without-marker-messages (messages)
+  "Return MESSAGES with complete process_marker call/result pairs removed."
+  (let* ((call-ids
+          (delq nil
+                (mapcar
                  (lambda (message)
-                   (and (eq (plist-get message :role) 'tool-call)
-                        (equal (plist-get (plist-get message :content) :name)
-                               "process_marker")))
-                 messages))
-         (call-ids (mapcar (lambda (message)
-                             (plist-get (plist-get message :content) :id))
-                           calls))
-         (results (seq-filter
-                   (lambda (message)
-                     (and (eq (plist-get message :role) 'tool)
-                          (member (plist-get (plist-get message :content)
-                                             :tool-call-id)
-                                  call-ids)))
-                   messages))
-         (tool-text (prin1-to-string tool))
-         (guidance-text (prin1-to-string guidance))
-         (call-text (prin1-to-string calls))
-         (result-text (prin1-to-string results)))
-    (list :present (and tool t)
-          :tool-bytes (if tool (string-bytes tool-text) 0)
-          :tool-sha256 (and tool (secure-hash 'sha256 tool-text))
-          :guidance-bytes (if guidance (string-bytes guidance-text) 0)
-          :guidance-sha256 (and guidance
-                                (secure-hash 'sha256 guidance-text))
-          :call-bytes (if calls (string-bytes call-text) 0)
-          :call-sha256 (and calls (secure-hash 'sha256 call-text))
-          :result-bytes (if results (string-bytes result-text) 0)
-          :result-sha256 (and results (secure-hash 'sha256 result-text)))))
+                   (when (and (eq (plist-get message :role) 'tool-call)
+                              (equal (plist-get
+                                      (plist-get message :content) :name)
+                                     "process_marker"))
+                     (plist-get (plist-get message :content) :id)))
+                 messages))))
+    (seq-remove
+     (lambda (message)
+       (or (and (eq (plist-get message :role) 'tool-call)
+                (member (plist-get (plist-get message :content) :id)
+                        call-ids))
+           (and (eq (plist-get message :role) 'tool)
+                (member (plist-get (plist-get message :content)
+                                   :tool-call-id)
+                        call-ids))))
+     messages)))
+
+(defun e-loop--without-marker-guidance (messages)
+  "Return MESSAGES without the process marker guidance block."
+  (seq-remove
+   (lambda (message)
+     (and (eq (plist-get message :role) 'system)
+          (string-match-p "process_marker"
+                          (format "%s" (plist-get message :content)))))
+   messages))
+
+(defun e-loop--without-marker-tool (tools)
+  "Return TOOLS without the process_marker descriptor."
+  (seq-remove (lambda (tool)
+                (equal (plist-get tool :name) "process_marker"))
+              tools))
+
+(defun e-loop--request-snapshot (messages options)
+  "Return one backend-neutral provider request value."
+  (let ((copy (copy-tree options)))
+    (plist-put copy :messages (copy-tree messages))
+    copy))
 
 (defun e-loop--request-shape (messages options)
-  "Return reconstructable content hashes for one provider request."
-  (list :revision "request-shape-v1"
-        :messages (e-loop--shape-value messages)
-        :tools (e-loop--shape-value (plist-get options :tools))
-        :options (e-loop--shape-value options)
-        :model (plist-get options :model)
-        :reasoning-effort (or (plist-get options :reasoning-effort)
-                              (plist-get options :effort))
-        :prompt-cache-key (plist-get options :prompt-cache-key)
-        :prompt-cache-retention (plist-get options :prompt-cache-retention)
-        :tokenizer-revision (plist-get options :tokenizer-revision)
-        :process-marker-surface
-        (e-loop--process-marker-surface-shape messages options)))
+  "Measure actual and marker-free request shapes without retaining content."
+  (let* ((actual (e-loop--request-snapshot messages options))
+         (no-active-messages (e-loop--without-marker-messages messages))
+         (no-passive-messages (e-loop--without-marker-guidance messages))
+         (paired-messages
+          (e-loop--without-marker-guidance no-active-messages))
+         (no-passive-options (copy-tree options))
+         (paired-options (copy-tree options)))
+    (plist-put no-passive-options :tools
+               (e-loop--without-marker-tool
+                (plist-get no-passive-options :tools)))
+    (plist-put paired-options :tools
+               (e-loop--without-marker-tool
+                (plist-get paired-options :tools)))
+    (let ((without-passive
+           (e-loop--request-snapshot no-passive-messages no-passive-options))
+          (without-active
+           (e-loop--request-snapshot no-active-messages options))
+          (paired
+           (e-loop--request-snapshot paired-messages paired-options)))
+      (list :revision "request-shape-v2"
+            :serialization "backend-neutral-elisp-v1"
+            :tokenizer-revision (plist-get options :tokenizer-revision)
+            :actual-shape (e-loop--shape-value actual)
+            :without-passive-shape (e-loop--shape-value without-passive)
+            :without-active-shape (e-loop--shape-value without-active)
+            :paired-shape (e-loop--shape-value paired)
+            :model (plist-get options :model)
+            :reasoning-effort (or (plist-get options :reasoning-effort)
+                                  (plist-get options :effort))
+            :prompt-cache-key (plist-get options :prompt-cache-key)
+            :prompt-cache-retention
+            (plist-get options :prompt-cache-retention)))))
 
 (defun e-loop--request-lifecycle-payload
     (request status request-id request-ordinal request-shape
-             &optional started-at)
+             &optional started-at cause)
   "Return sanitized lifecycle payload for REQUEST with stable identity.
 REQUEST-ID and REQUEST-ORDINAL join all events for one provider request.
 REQUEST-SHAPE contains hashes and sizes of model-visible request ingredients.
-STARTED-AT is the `float-time' value captured when the request was published."
+STARTED-AT is the `float-time' value captured when the request was published.
+CAUSE names the completed tool call that induced a follow-up request."
   (let* ((metadata (and (e-backend-request-p request)
                         (e-backend-request-metadata request)))
          (payload (list :provider-request-id request-id
@@ -162,6 +182,11 @@ STARTED-AT is the `float-time' value captured when the request was published."
                                                      :timeout-seconds)
                         :deadline (plist-get metadata :deadline)
                         :status status)))
+    (when cause
+      (setq payload
+            (append payload
+                    (list :caused-by-tool-call-id (plist-get cause :id)
+                          :caused-by-tool-name (plist-get cause :name)))))
     (when-let ((diagnostics
                 (e-loop--sanitize-diagnostics
                  (plist-get metadata :diagnostics))))
@@ -213,7 +238,8 @@ tool I/O, and turn settlement are callback-driven."
   (let ((turn-messages (copy-sequence messages))
         (settled nil)
         (active-request nil)
-        (provider-request-sequence 0))
+        (provider-request-sequence 0)
+        (next-request-cause nil))
     (cl-labels
         ((cancelled ()
            (and cancelled-p (funcall cancelled-p)))
@@ -267,7 +293,8 @@ tool I/O, and turn settlement are callback-driven."
                   (provider-request-ordinal nil)
                   (provider-request-shape nil)
                   (provider-request-started-at nil)
-                  (provider-request-finished nil))
+                  (provider-request-finished nil)
+                  (provider-request-cause next-request-cause))
               (cl-labels
                   ((response-text ()
                      (or response-assistant-message
@@ -275,6 +302,7 @@ tool I/O, and turn settlement are callback-driven."
                    (publish-provider-request
                     (request)
                     (setq provider-request request)
+                    (setq next-request-cause nil)
                     (setq provider-request-sequence
                           (1+ provider-request-sequence))
                     (setq provider-request-id (e-session-generate-ulid))
@@ -290,7 +318,8 @@ tool I/O, and turn settlement are callback-driven."
                      :payload
                      (e-loop--request-lifecycle-payload
                       request 'started provider-request-id
-                      provider-request-ordinal provider-request-shape)))
+                      provider-request-ordinal provider-request-shape nil
+                      provider-request-cause)))
                    (finish-provider-request
                     (status)
                     (when (and provider-request
@@ -303,7 +332,8 @@ tool I/O, and turn settlement are callback-driven."
                        (e-loop--request-lifecycle-payload
                         provider-request status provider-request-id
                         provider-request-ordinal provider-request-shape
-                        provider-request-started-at))))
+                        provider-request-started-at
+                        provider-request-cause))))
                    (fail-provider
                     (err)
                     (finish-provider-request 'error)
@@ -362,6 +392,7 @@ tool I/O, and turn settlement are callback-driven."
                                  (plist-get (plist-get result :metadata)
                                             :refresh-context))
                         (setq turn-messages (funcall refresh-messages)))
+                      (setq next-request-cause tool-call)
                       (start-next-tool)
                       (maybe-start-followup)))
                    (start-next-tool
@@ -477,7 +508,11 @@ tool I/O, and turn settlement are callback-driven."
                                      (list :provider-request-id
                                            provider-request-id
                                            :provider-request-ordinal
-                                           provider-request-ordinal)))
+                                           provider-request-ordinal
+                                           :caused-by-tool-call-id
+                                           (plist-get provider-request-cause :id)
+                                           :caused-by-tool-name
+                                           (plist-get provider-request-cause :name))))
                               (e-loop--emit
                                :on-event on-event
                                :type 'token-usage

@@ -212,7 +212,7 @@
                      (plist-get finished-payload :request-shape)))
       (should (equal (plist-get (plist-get started-payload :request-shape)
                                 :revision)
-                     "request-shape-v1"))
+                     "request-shape-v2"))
       (should (eq (plist-get started-payload :status) 'started))
       (should (eq (plist-get finished-payload :status) 'done))
       (should (numberp (plist-get finished-payload :elapsed-seconds)))
@@ -310,6 +310,63 @@
                        provider-request-started
                        provider-request-finished
                        turn-finished))))))
+
+(ert-deftest e-loop-test-followup-request-carries-tool-cause ()
+  "The request induced by a tool result has a stable cause join."
+  (let* ((calls 0)
+         (backend
+          (e-backend-create
+           :name "cause-followup"
+           :stream
+           (cl-function
+            (lambda (&key messages options on-item)
+              (ignore messages options)
+              (setq calls (1+ calls))
+              (if (= calls 1)
+                  (progn
+                    (funcall on-item
+                             '(:type tool-call :id "marker-call"
+                               :name "process_marker"
+                               :arguments (:signal "success" :note "ok")))
+                    (funcall on-item
+                             '(:type token-usage :usage (:input-tokens 10)))
+                    (funcall on-item '(:type done :reason tool-use)))
+                (funcall on-item
+                         '(:type token-usage :usage (:input-tokens 20)))
+                (funcall on-item
+                         '(:type assistant-message :content "done"))
+                (funcall on-item '(:type done :reason stop)))))))
+         (tools (e-tools-registry-create))
+         events)
+    (e-tools-register tools :name "process_marker" :description "mark"
+                      :handler (lambda (_arguments) "ok"))
+    (e-loop-run-turn-batch
+     :session-id "session-1" :turn-id "turn-1"
+     :messages '((:role user :content "hi"))
+     :backend backend :tools tools
+     :options '(:tools ((:name "process_marker")))
+     :on-event (lambda (type payload)
+                 (push (list :type type :payload payload) events))
+     :append-message #'ignore)
+    (let* ((ordered (nreverse events))
+           (started (seq-filter
+                     (lambda (event)
+                       (eq (plist-get event :type) 'provider-request-started))
+                     ordered))
+           (usage (seq-filter
+                   (lambda (event)
+                     (eq (plist-get event :type) 'token-usage))
+                   ordered))
+           (followup (plist-get (cadr started) :payload))
+           (followup-usage (plist-get (cadr usage) :payload)))
+      (should (equal (plist-get followup :caused-by-tool-call-id)
+                     "marker-call"))
+      (should (equal (plist-get followup :caused-by-tool-name)
+                     "process_marker"))
+      (should (equal (plist-get followup-usage :caused-by-tool-call-id)
+                     "marker-call"))
+      (should (equal (plist-get followup-usage :provider-request-id)
+                     (plist-get followup :provider-request-id))))))
 
 (ert-deftest e-loop-test-normalizes-tool-call-backend-item-spelling ()
   "Provider tool_call items follow the backend-neutral tool-call path."

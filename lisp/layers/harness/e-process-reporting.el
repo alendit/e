@@ -30,6 +30,16 @@
   :group 'e
   :prefix "e-process-reporting-")
 
+(defcustom e-process-reporting-lock-timeout 5.0
+  "Seconds to wait for another process-reporting writer."
+  :type 'number
+  :group 'e-process-reporting)
+
+(defcustom e-process-reporting-stale-lock-seconds 300
+  "Age after which an unverifiable process-reporting lock is stale."
+  :type 'integer
+  :group 'e-process-reporting)
+
 (defcustom e-process-reporting-directory
   (locate-user-emacs-file "e/process-reporting/")
   "Directory containing append-only process reporting records."
@@ -84,8 +94,88 @@
   (concat (json-encode record)
           "\n"))
 
-(defun e-process-reporting--append-file (store record)
-  "Append RECORD durably to STORE."
+(defun e-process-reporting--lock-directory (store)
+  "Return the inter-process lock directory for STORE."
+  (concat (e-process-reporting--file store) ".lock"))
+
+(defun e-process-reporting--lock-owner-file (store)
+  "Return the lock owner file for STORE."
+  (expand-file-name "owner.json" (e-process-reporting--lock-directory store)))
+
+(defun e-process-reporting--write-lock-owner (store)
+  "Write this Emacs process as lock owner for STORE."
+  (let ((coding-system-for-write 'utf-8-unix))
+    (write-region
+     (json-encode (list :pid (emacs-pid)
+                        :host (system-name)
+                        :created-at (float-time)))
+     nil (e-process-reporting--lock-owner-file store) nil 'silent)))
+
+(defun e-process-reporting--read-lock-owner (store)
+  "Return lock owner metadata for STORE, or nil."
+  (condition-case nil
+      (let ((json-object-type 'plist)
+            (json-array-type 'list))
+        (json-read-file (e-process-reporting--lock-owner-file store)))
+    (error nil)))
+
+(defun e-process-reporting--local-process-live-p (pid)
+  "Return non-nil when local PID still exists."
+  (and (integerp pid)
+       (> pid 0)
+       (ignore-errors (process-attributes pid))))
+
+(defun e-process-reporting--stale-lock-p (store)
+  "Return non-nil when STORE's lock can no longer have a live owner."
+  (let* ((owner (e-process-reporting--read-lock-owner store))
+         (pid (plist-get owner :pid))
+         (host (plist-get owner :host))
+         (created-at (plist-get owner :created-at)))
+    (cond
+     ((and (equal host (system-name)) (integerp pid))
+      (not (e-process-reporting--local-process-live-p pid)))
+     ((numberp created-at)
+      (> (- (float-time) created-at)
+         e-process-reporting-stale-lock-seconds))
+     (t nil))))
+
+(defun e-process-reporting--acquire-lock (store)
+  "Acquire STORE's inter-process lock or signal a bounded error."
+  (let ((lock (e-process-reporting--lock-directory store))
+        (deadline (+ (float-time) e-process-reporting-lock-timeout))
+        acquired)
+    (make-directory (file-name-directory lock) t)
+    (while (not acquired)
+      (condition-case err
+          (progn
+            (make-directory lock)
+            (setq acquired t)
+            (condition-case owner-error
+                (e-process-reporting--write-lock-owner store)
+              (error
+               (delete-directory lock t)
+               (signal (car owner-error) (cdr owner-error)))))
+        (file-already-exists
+         (if (e-process-reporting--stale-lock-p store)
+             (ignore-errors (delete-directory lock t))
+           (when (>= (float-time) deadline)
+             (signal 'file-error
+                     (list "Timed out waiting for process-reporting store lock"
+                           lock)))
+           (sleep-for 0.01)))
+        (error (signal (car err) (cdr err)))))
+    lock))
+
+(defun e-process-reporting--call-with-lock (store function)
+  "Call FUNCTION with STORE exclusively locked."
+  (let ((lock (e-process-reporting--acquire-lock store)))
+    (unwind-protect
+        (funcall function)
+      (when (file-directory-p lock)
+        (delete-directory lock t)))))
+
+(defun e-process-reporting--append-file-unlocked (store record)
+  "Append one complete RECORD to locked STORE."
   (let ((file (e-process-reporting--file store))
         (coding-system-for-write 'utf-8-unix))
     (make-directory (file-name-directory file) t)
@@ -112,46 +202,77 @@
                    (list record)))))
   record)
 
-(defun e-process-reporting--append (store record)
-  "Append RECORD to STORE and its in-memory indexes."
-  (e-process-reporting--append-file store record)
-  (e-process-reporting--index-event store record))
-
-(defun e-process-reporting-load (store)
-  "Load append-only STORE records and rebuild indexes."
+(defun e-process-reporting--reset-indexes (store)
+  "Reset STORE's derived indexes."
   (setf (e-process-reporting-store-events store) nil
         (e-process-reporting-store-markers store)
         (make-hash-table :test 'equal)
         (e-process-reporting-store-triage store)
         (make-hash-table :test 'equal)
-        (e-process-reporting-store-extractions store) nil)
+        (e-process-reporting-store-extractions store) nil))
+
+(defun e-process-reporting--load-unlocked (store)
+  "Load locked STORE and recover an incomplete final record."
+  (e-process-reporting--reset-indexes store)
   (let ((file (e-process-reporting--file store))
         (coding-system-for-read 'utf-8))
     (when (file-readable-p file)
       (with-temp-buffer
         (insert-file-contents file)
-        (goto-char (point-min))
-        (while (not (eobp))
-          (let ((line (buffer-substring-no-properties
-                       (line-beginning-position) (line-end-position))))
-            (unless (string-empty-p line)
-              (e-process-reporting--index-event
-               store
-               (json-parse-string line
-                                  :object-type 'plist
-                                  :array-type 'list
-                                  :null-object nil
-                                  :false-object :json-false))))
-          (forward-line 1)))))
-  (setf (e-process-reporting-store-loaded store) t)
+        (let* ((end (point-max))
+               (complete-end
+                (if (or (= end (point-min))
+                        (eq (char-before end) ?\n))
+                    end
+                  (save-excursion
+                    (goto-char end)
+                    (if (search-backward "\n" nil t)
+                        (1+ (point))
+                      (point-min))))))
+          (when (< complete-end end)
+            ;; A killed writer can leave only the final JSON line incomplete.
+            ;; The exclusive lock makes truncation safe.  Complete malformed
+            ;; lines still fail below instead of being silently discarded.
+            (let ((coding-system-for-write 'utf-8-unix))
+              (write-region (point-min) complete-end file nil 'silent))
+            (delete-region complete-end end))
+          (goto-char (point-min))
+          (while (< (point) complete-end)
+            (let ((line (buffer-substring-no-properties
+                         (line-beginning-position) (line-end-position))))
+              (unless (string-empty-p line)
+                (e-process-reporting--index-event
+                 store
+                 (json-parse-string line
+                                    :object-type 'plist
+                                    :array-type 'list
+                                    :null-object nil
+                                    :false-object :json-false))))
+            (forward-line 1)))))
+    (setf (e-process-reporting-store-loaded store) t))
   store)
 
+(defun e-process-reporting--append-unlocked (store record)
+  "Append RECORD to locked STORE and its indexes."
+  (e-process-reporting--append-file-unlocked store record)
+  (e-process-reporting--index-event store record))
+
+(defun e-process-reporting--with-current-store (store function)
+  "Refresh STORE under lock, then call FUNCTION with it."
+  (setq store (or store e-process-reporting-default-store))
+  (e-process-reporting--call-with-lock
+   store
+   (lambda ()
+     (e-process-reporting--load-unlocked store)
+     (funcall function store))))
+
+(defun e-process-reporting-load (store)
+  "Load append-only STORE records and rebuild indexes safely."
+  (e-process-reporting--with-current-store store #'identity))
+
 (defun e-process-reporting-ensure-loaded (&optional store)
-  "Return STORE after loading it once."
-  (let ((store (or store e-process-reporting-default-store)))
-    (unless (e-process-reporting-store-loaded store)
-      (e-process-reporting-load store))
-    store))
+  "Return STORE refreshed from its durable records file."
+  (e-process-reporting-load (or store e-process-reporting-default-store)))
 
 (defun e-process-reporting--string-argument (arguments key &optional required)
   "Return string KEY from ARGUMENTS, enforcing REQUIRED."
@@ -193,16 +314,50 @@
              (equal (format "%s" (plist-get payload :capability-id))
                     "process-reporting")))))
 
-(defun e-process-reporting--latest-trigger-event (harness session-id turn-id)
-  "Return latest relevant activity event before marker capture."
-  (seq-find
-   (lambda (event)
-     (and (equal (plist-get event :turn-id) turn-id)
-          (memq (plist-get event :event-type)
-                '(tool-finished action-finished action-failed
-                  tool-started action-started))
-          (not (e-process-reporting--own-event-p event))))
-   (reverse (e-process-reporting--activity-events harness session-id))))
+(defun e-process-reporting--event-parent-tool-call-id (event)
+  "Return EVENT's stable enclosing tool call id, if any."
+  (plist-get (plist-get event :payload) :parent-tool-call-id))
+
+(defun e-process-reporting--trigger-events (harness session-id turn-id)
+  "Return the explicit operation chain relevant before marker capture."
+  (let* ((events (e-process-reporting--activity-events harness session-id))
+         (candidates
+          (seq-filter
+           (lambda (event)
+             (and (equal (plist-get event :turn-id) turn-id)
+                  (memq (plist-get event :event-type)
+                        '(tool-finished action-finished action-failed
+                          tool-started action-started))
+                  (not (e-process-reporting--own-event-p event))))
+           events))
+         (latest (car (last candidates)))
+         (latest-action
+          (or (and latest
+                   (memq (plist-get latest :event-type)
+                         '(action-finished action-failed action-started))
+                   latest)
+              (seq-find
+               (lambda (event)
+                 (memq (plist-get event :event-type)
+                       '(action-finished action-failed action-started)))
+               (reverse candidates))))
+         (parent-id (and latest-action
+                         (e-process-reporting--event-parent-tool-call-id
+                          latest-action)))
+         (parent
+          (and parent-id
+               (seq-find
+                (lambda (event)
+                  (and (memq (plist-get event :event-type)
+                             '(tool-finished tool-started))
+                       (equal (e-process-reporting--event-call-id event)
+                              parent-id)))
+                (reverse candidates))))
+         result)
+    (dolist (event (list latest-action parent latest))
+      (when (and event (not (memq event result)))
+        (setq result (append result (list event)))))
+    result))
 
 (defun e-process-reporting--event-call-id (event)
   "Return stable tool or action call id from EVENT."
@@ -248,7 +403,9 @@
                                      :arguments))))
       (list :activity-event-id (plist-get event :id)
             :event-type (format "%s" (plist-get event :event-type))
-            :call-id (e-process-reporting--event-call-id event)
+            :call-id call-id
+            :parent-tool-call-id
+            (e-process-reporting--event-parent-tool-call-id event)
             :name (e-process-reporting--event-name event)
             :status (or (plist-get payload :status)
                         (plist-get result :status))
@@ -262,11 +419,20 @@
                  (e-telemetry-preview (plist-get result :content)))
             :error-preview
             (and (or (plist-get payload :message)
+                     (plist-get payload :message-preview)
                      (eq (plist-get result :status) 'error)
                      (equal (plist-get result :status) "error"))
-                 (e-telemetry-preview
-                  (or (plist-get payload :message)
-                      (plist-get result :content))))))))
+                 (or (plist-get payload :message-preview)
+                     (e-telemetry-preview
+                      (or (plist-get payload :message)
+                          (plist-get result :content)))))))))
+
+(defun e-process-reporting--trigger-chain (harness session-id turn-id)
+  "Return durable previews for the relevant explicit operation chain."
+  (let ((events (e-process-reporting--activity-events harness session-id)))
+    (mapcar (lambda (event)
+              (e-process-reporting--event-preview event events))
+            (e-process-reporting--trigger-events harness session-id turn-id))))
 
 (defun e-process-reporting--tool-call-context (context)
   "Return current process marker tool call from action CONTEXT."
@@ -289,16 +455,21 @@
       (plist-get message :parent-id))))
 
 (defun e-process-reporting--current-request-id (harness session-id turn-id)
-  "Return provider request id active at the current point in TURN-ID."
-  (let ((events (reverse (e-process-reporting--activity-events harness session-id))))
-    (when-let ((event
-                (seq-find
-                 (lambda (candidate)
-                   (and (equal (plist-get candidate :turn-id) turn-id)
-                        (eq (plist-get candidate :event-type)
-                            'provider-request-started)))
-                 events)))
-      (plist-get (plist-get event :payload) :provider-request-id))))
+  "Return provider request id only while it is active in TURN-ID."
+  (let ((states (make-hash-table :test 'equal))
+        latest)
+    (dolist (event (e-process-reporting--activity-events harness session-id))
+      (when (equal (plist-get event :turn-id) turn-id)
+        (let* ((type (plist-get event :event-type))
+               (payload (plist-get event :payload))
+               (id (plist-get payload :provider-request-id)))
+          (pcase type
+            ('provider-request-started
+             (setq latest id)
+             (puthash id t states))
+            ('provider-request-finished
+             (puthash id nil states))))))
+    (and latest (gethash latest states) latest)))
 
 (defun e-process-reporting--evidence-id (signal note session-id turn-id trigger)
   "Return content-keyed identity for marker evidence."
@@ -325,58 +496,60 @@
 
 (defun e-process-reporting-mark (store arguments context)
   "Append a process marker described by ARGUMENTS using action CONTEXT."
-  (let* ((store (e-process-reporting-ensure-loaded store))
-         (signal (e-process-reporting--member-argument
+  (let* ((signal (e-process-reporting--member-argument
                   arguments :signal e-process-reporting-signals))
-         (note (e-process-reporting--note arguments))
+         (note (e-telemetry-redact-string
+                (e-process-reporting--note arguments)))
          (harness (plist-get context :harness))
          (session-id (plist-get context :session-id))
          (turn-id (plist-get context :turn-id))
          (tool-call (e-process-reporting--tool-call-context context))
          (tool-call-id (plist-get tool-call :id))
-         (trigger-event (e-process-reporting--latest-trigger-event
+         (trigger-chain (e-process-reporting--trigger-chain
                          harness session-id turn-id))
-         (trigger (e-process-reporting--event-preview
-                   trigger-event
-                   (e-process-reporting--activity-events harness session-id)))
+         (trigger (car trigger-chain))
          (evidence-id (e-process-reporting--evidence-id
-                       signal note session-id turn-id trigger))
-         (terminal (e-process-reporting--terminal-evidence-marker
-                    store evidence-id)))
-    (if terminal
-        (list :marker-id (plist-get terminal :id)
-              :evidence-id evidence-id
-              :suppressed t)
-      (let* ((marker-id (e-session-generate-ulid))
-             (project-root (e-harness-project-root harness session-id turn-id))
-             (record
-              (list :type "marker"
-                    :id marker-id
-                    :marker-id marker-id
-                    :evidence-id evidence-id
-                    :created-at (e-process-reporting--timestamp)
-                    :signal signal
-                    :note note
-                    :session-id session-id
-                    :turn-id turn-id
-                    :project-root project-root
-                    :session-uri
-                    (format "session://e/sessions/%s/" session-id)
-                    :messages-uri
-                    (format "session://e/sessions/%s/messages" session-id)
-                    :activity-uri
-                    (format "session://e/sessions/%s/activity" session-id)
-                    :checkpoint-entry-id
-                    (e-process-reporting--checkpoint-entry-id
-                     harness session-id tool-call-id)
-                    :provider-request-id
-                    (e-process-reporting--current-request-id
-                     harness session-id turn-id)
-                    :tool-call-id tool-call-id
-                    :action-call-id (plist-get context :action-call-id)
-                    :trigger trigger)))
-        (e-process-reporting--append store record)
-        (copy-tree record)))))
+                       signal note session-id turn-id trigger)))
+    (e-process-reporting--with-current-store
+     store
+     (lambda (store)
+       (if-let ((terminal (e-process-reporting--terminal-evidence-marker
+                           store evidence-id)))
+           (list :marker-id (plist-get terminal :id)
+                 :evidence-id evidence-id
+                 :suppressed t)
+         (let* ((marker-id (e-session-generate-ulid))
+                (project-root
+                 (e-harness-project-root harness session-id turn-id))
+                (record
+                 (list :type "marker"
+                       :id marker-id
+                       :marker-id marker-id
+                       :evidence-id evidence-id
+                       :created-at (e-process-reporting--timestamp)
+                       :signal signal
+                       :note note
+                       :session-id session-id
+                       :turn-id turn-id
+                       :project-root project-root
+                       :session-uri
+                       (format "session://e/sessions/%s/" session-id)
+                       :messages-uri
+                       (format "session://e/sessions/%s/messages" session-id)
+                       :activity-uri
+                       (format "session://e/sessions/%s/activity" session-id)
+                       :checkpoint-entry-id
+                       (e-process-reporting--checkpoint-entry-id
+                        harness session-id tool-call-id)
+                       :provider-request-id
+                       (e-process-reporting--current-request-id
+                        harness session-id turn-id)
+                       :tool-call-id tool-call-id
+                       :action-call-id (plist-get context :action-call-id)
+                       :trigger trigger
+                       :trigger-chain trigger-chain)))
+           (e-process-reporting--append-unlocked store record)
+           (copy-tree record)))))))
 
 (defun e-process-reporting-list (store &optional arguments)
   "Return marker summaries from STORE, newest-first."
@@ -424,99 +597,189 @@
 
 (defun e-process-reporting-triage (store arguments)
   "Append a triage decision from ARGUMENTS to STORE."
-  (let* ((store (e-process-reporting-ensure-loaded store))
-         (marker-id (e-process-reporting--string-argument
-                     arguments :marker-id t))
-         (outcome (e-process-reporting--member-argument
-                   arguments :outcome e-process-reporting-outcomes))
-         (status (e-process-reporting--member-argument
-                  arguments :status e-process-reporting-triage-statuses))
-         (decision-note (e-process-reporting--string-argument
-                         arguments :decision-note t))
-         (target (e-process-reporting--string-argument
-                  arguments :target-reference)))
-    (unless (gethash marker-id (e-process-reporting-store-markers store))
-      (user-error "Unknown process marker: %s" marker-id))
-    (copy-tree
-     (e-process-reporting--append
-      store
-      (append
-       (list :type "triage"
-             :id (e-session-generate-ulid)
-             :marker-id marker-id
-             :created-at (e-process-reporting--timestamp)
-             :outcome outcome
-             :status status
-             :decision-note decision-note)
-       (when target (list :target-reference target)))))))
+  (let ((marker-id (e-process-reporting--string-argument
+                    arguments :marker-id t))
+        (outcome (e-process-reporting--member-argument
+                  arguments :outcome e-process-reporting-outcomes))
+        (status (e-process-reporting--member-argument
+                 arguments :status e-process-reporting-triage-statuses))
+        (decision-note
+         (e-telemetry-redact-string
+          (e-process-reporting--string-argument
+           arguments :decision-note t)))
+        (target (e-process-reporting--string-argument
+                 arguments :target-reference)))
+    (e-process-reporting--with-current-store
+     store
+     (lambda (store)
+       (unless (gethash marker-id (e-process-reporting-store-markers store))
+         (user-error "Unknown process marker: %s" marker-id))
+       (copy-tree
+        (e-process-reporting--append-unlocked
+         store
+         (append
+          (list :type "triage"
+                :id (e-session-generate-ulid)
+                :marker-id marker-id
+                :created-at (e-process-reporting--timestamp)
+                :outcome outcome
+                :status status
+                :decision-note decision-note)
+          (when target
+            (list :target-reference
+                  (e-telemetry-redact-string target))))))))))
+
+(defun e-process-reporting--string-vector (arguments key &optional required)
+  "Return KEY from ARGUMENTS as a vector of strings."
+  (let* ((value (plist-get arguments key))
+         (items (cond ((vectorp value) (append value nil))
+                      ((listp value) value)
+                      (t nil))))
+    (when (and required (null items))
+      (user-error "%s requires at least one value" key))
+    (unless (cl-every #'stringp items)
+      (user-error "%s must contain only strings" key))
+    (vconcat (mapcar #'e-telemetry-redact-string items))))
+
+(defun e-process-reporting--token-usage (value)
+  "Return a narrow numeric extraction token usage schema from VALUE."
+  (let (result)
+    (dolist (key '(:input-tokens :cached-input-tokens :output-tokens
+                   :reasoning-output-tokens :total-tokens))
+      (when-let ((number (plist-get value key)))
+        (unless (numberp number)
+          (user-error "%s must be numeric" key))
+        (setq result (append result (list key number)))))
+    result))
 
 (defun e-process-reporting-record-extraction (store arguments context)
   "Append offline extraction cost attribution from ARGUMENTS and CONTEXT."
-  (let* ((store (e-process-reporting-ensure-loaded store))
-         (marker-ids (append (plist-get arguments :marker-ids) nil))
-         (method (e-process-reporting--string-argument
-                  arguments :estimation-method t)))
-    (unless (and marker-ids (cl-every #'stringp marker-ids))
-      (user-error "Extraction accounting requires marker-ids"))
-    (dolist (marker-id marker-ids)
-      (unless (gethash marker-id (e-process-reporting-store-markers store))
-        (user-error "Unknown process marker: %s" marker-id)))
-    (copy-tree
-     (e-process-reporting--append
-      store
-      (list :type "extraction"
-            :id (e-session-generate-ulid)
-            :created-at (e-process-reporting--timestamp)
-            :marker-ids marker-ids
-            :session-evidence (plist-get arguments :session-evidence)
-            :provider-request-ids (plist-get arguments :provider-request-ids)
-            :token-usage (plist-get arguments :token-usage)
-            :estimation-method method
-            :session-id (plist-get context :session-id)
-            :turn-id (plist-get context :turn-id))))))
+  (let* ((marker-ids
+          (append (e-process-reporting--string-vector
+                   arguments :marker-ids t) nil))
+         (method
+          (e-telemetry-redact-string
+           (e-process-reporting--string-argument
+            arguments :estimation-method t)))
+         (session-evidence
+          (e-process-reporting--string-vector arguments :session-evidence))
+         (request-ids
+          (e-process-reporting--string-vector
+           arguments :provider-request-ids))
+         (usage (e-process-reporting--token-usage
+                 (plist-get arguments :token-usage))))
+    (e-process-reporting--with-current-store
+     store
+     (lambda (store)
+       (dolist (marker-id marker-ids)
+         (unless (gethash marker-id (e-process-reporting-store-markers store))
+           (user-error "Unknown process marker: %s" marker-id)))
+       (copy-tree
+        (e-process-reporting--append-unlocked
+         store
+         (list :type "extraction"
+               :id (e-session-generate-ulid)
+               :created-at (e-process-reporting--timestamp)
+               :marker-ids marker-ids
+               :session-evidence session-evidence
+               :provider-request-ids request-ids
+               :token-usage usage
+               :estimation-method method
+               :session-id (plist-get context :session-id)
+               :turn-id (plist-get context :turn-id))))))))
+
+(defun e-process-reporting--request-usage (events request-id)
+  "Return provider token usage in EVENTS joined to REQUEST-ID."
+  (when-let ((event
+              (seq-find
+               (lambda (candidate)
+                 (and (eq (plist-get candidate :event-type) 'token-usage)
+                      (equal (plist-get (plist-get candidate :payload)
+                                        :provider-request-id)
+                             request-id)))
+               events)))
+    (copy-tree (plist-get event :payload))))
+
+(defun e-process-reporting--shape-bytes (shape key)
+  "Return byte count under KEY in request SHAPE."
+  (or (plist-get (plist-get shape key) :bytes) 0))
+
+(defun e-process-reporting--request-cost-entry (event events)
+  "Return one honest paired request attribution entry."
+  (let* ((payload (plist-get event :payload))
+         (shape (plist-get payload :request-shape))
+         (actual (e-process-reporting--shape-bytes shape :actual-shape))
+         (paired (e-process-reporting--shape-bytes shape :paired-shape))
+         (without-passive
+          (e-process-reporting--shape-bytes shape :without-passive-shape))
+         (without-active
+          (e-process-reporting--shape-bytes shape :without-active-shape))
+         (cause-name (plist-get payload :caused-by-tool-name)))
+    (list :provider-request-id (plist-get payload :provider-request-id)
+          :provider-request-ordinal
+          (plist-get payload :provider-request-ordinal)
+          :caused-by-tool-call-id
+          (plist-get payload :caused-by-tool-call-id)
+          :marker-follow-up (equal cause-name "process_marker")
+          :actual-bytes actual
+          :paired-bytes paired
+          :direct-context-delta-bytes (- actual paired)
+          :passive-surface-bytes (- actual without-passive)
+          :active-marker-bytes (- actual without-active)
+          :token-usage
+          (e-process-reporting--request-usage
+           events (plist-get payload :provider-request-id))
+          :serialization (plist-get shape :serialization)
+          :tokenizer-revision (plist-get shape :tokenizer-revision))))
 
 (defun e-process-reporting-cost-report (store context)
-  "Return request-shape accounting for CONTEXT session markers."
+  "Return paired request-shape accounting for CONTEXT session markers."
   (let* ((store (e-process-reporting-ensure-loaded store))
          (harness (plist-get context :harness))
          (session-id (plist-get context :session-id))
          (events (e-process-reporting--activity-events harness session-id))
-         (requests (seq-filter
-                    (lambda (event)
-                      (eq (plist-get event :event-type)
-                          'provider-request-started))
-                    events))
-         (markers (seq-filter
-                   (lambda (marker)
-                     (equal (plist-get marker :session-id) session-id))
-                   (hash-table-values
-                    (e-process-reporting-store-markers store))))
-         (surface-bytes 0))
-    (dolist (event requests)
-      (let* ((shape (plist-get (plist-get event :payload) :request-shape))
-             (surface (plist-get shape :process-marker-surface)))
-        (setq surface-bytes
-              (+ surface-bytes
-                 (or (plist-get surface :tool-bytes) 0)
-                 (or (plist-get surface :guidance-bytes) 0)
-                 (or (plist-get surface :call-bytes) 0)
-                 (or (plist-get surface :result-bytes) 0)))))
-    (list :scope "request-shape"
+         (requests
+          (seq-filter
+           (lambda (event)
+             (eq (plist-get event :event-type) 'provider-request-started))
+           events))
+         (entries
+          (mapcar (lambda (event)
+                    (e-process-reporting--request-cost-entry event events))
+                  requests))
+         (markers
+          (seq-filter
+           (lambda (marker)
+             (equal (plist-get marker :session-id) session-id))
+           (hash-table-values
+            (e-process-reporting-store-markers store))))
+         (delta-bytes
+          (apply #'+ (mapcar (lambda (entry)
+                               (plist-get entry :direct-context-delta-bytes))
+                             entries))))
+    (list :scope "request-shape-counterfactual"
           :session-id session-id
           :provider-request-count (length requests)
           :marker-count (length markers)
-          :passive-surface-bytes surface-bytes
-          :estimated-passive-surface-tokens (ceiling (/ surface-bytes 4.0))
-          :estimation-method "utf-8-bytes/4"
+          :marker-follow-up-request-count
+          (cl-count-if (lambda (entry)
+                         (plist-get entry :marker-follow-up))
+                       entries)
+          :requests entries
+          :direct-context-delta-bytes delta-bytes
+          :estimation-method "backend-neutral-serialized-utf-8-bytes"
+          :provider-tokenizer-used nil
           :behavioral-estimate nil
-          :note "Request-shape attribution does not estimate changed model behavior or interruption cost.")))
+          :note
+          "Paired byte deltas preserve enough request data for post-hoc provider serialization/tokenization; they do not claim provider-token or behavioral overhead.")))
 
 (defconst e-process-reporting--marker-parameters
   `(:type "object"
     :properties
     (:signal (:type "string" :enum ,(vconcat e-process-reporting-signals))
      :note (:type "string" :maxLength 280))
-    :required ["signal" "note"])
+    :required ["signal" "note"]
+    :additionalProperties :json-false)
   "Small process marker input schema.")
 
 (defconst e-process-reporting--marker-id-parameters
