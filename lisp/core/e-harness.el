@@ -1055,11 +1055,144 @@ When INCLUDE-ARGUMENTS is non-nil, retain only a bounded redacted preview."
                           (e-harness--compact-tool-result-for-activity result)))))
     projected))
 
+(defun e-harness--activity-field (payload key predicate &optional transform)
+  "Return KEY and its PAYLOAD value when PREDICATE accepts the value.
+Apply TRANSFORM when supplied."
+  (let ((value (and (listp payload) (plist-get payload key))))
+    (when (funcall predicate value)
+      (list key (if transform (funcall transform value) value)))))
+
+(defun e-harness--safe-activity-string (value)
+  "Return redacted VALUE when it is a string."
+  (and (stringp value) (e-telemetry-redact-string value)))
+
+(defun e-harness--request-shape-measure-projection (measure)
+  "Return a narrow durable projection of request-shape MEASURE."
+  (when (listp measure)
+    (append
+     (e-harness--activity-field
+      measure :sha256 #'stringp #'e-harness--safe-activity-string)
+     (e-harness--activity-field measure :bytes #'numberp))))
+
+(defun e-harness--request-shape-activity-projection (shape)
+  "Return a narrow redacted durable projection of request SHAPE."
+  (when (listp shape)
+    (let (projected)
+      (dolist (key '(:revision :serialization :tokenizer-revision :model
+                     :reasoning-effort :prompt-cache-key-sha256
+                     :prompt-cache-retention))
+        (setq projected
+              (append projected
+                      (e-harness--activity-field
+                       shape key #'stringp #'e-harness--safe-activity-string))))
+      (setq projected
+            (append projected
+                    (e-harness--activity-field
+                     shape :prompt-cache-key-present
+                     (lambda (value) (memq value '(t :json-false))))))
+      (dolist (key '(:actual-shape :without-passive-shape
+                     :without-active-shape :paired-shape))
+        (when-let ((measure
+                    (e-harness--request-shape-measure-projection
+                     (plist-get shape key))))
+          (setq projected (append projected (list key measure)))))
+      projected)))
+
+(defun e-harness--tool-cause-activity-projection (cause)
+  "Return a narrow redacted durable projection of tool CAUSE."
+  (when (listp cause)
+    (append
+     (e-harness--activity-field
+      cause :id #'stringp #'e-harness--safe-activity-string)
+     (e-harness--activity-field
+      cause :name #'stringp #'e-harness--safe-activity-string))))
+
+(defun e-harness--tool-causes-activity-projection (causes)
+  "Return a vector of narrow durable tool CAUSES."
+  (when (or (listp causes) (vectorp causes))
+    (vconcat (delq nil
+                   (mapcar #'e-harness--tool-cause-activity-projection
+                           (append causes nil))))))
+
+(defun e-harness--request-cause-activity-fields (payload)
+  "Return narrow causal fields retained from provider PAYLOAD."
+  (let (fields)
+    (dolist (key '(:caused-by-tool-call-id :caused-by-tool-name))
+      (setq fields
+            (append fields
+                    (e-harness--activity-field
+                     payload key #'stringp #'e-harness--safe-activity-string))))
+    (when-let ((causes
+                (e-harness--tool-causes-activity-projection
+                 (plist-get payload :caused-by-tool-calls))))
+      (setq fields (append fields (list :caused-by-tool-calls causes))))
+    fields))
+
+(defun e-harness--provider-diagnostics-activity-projection (diagnostics)
+  "Return named scalar provider DIAGNOSTICS safe for durable activity."
+  (let (projected)
+    (dolist (key '(:model :reasoning-effort :effort :response-store
+                   :prompt-cache-key-present :prompt-cache-retention-present
+                   :provider-continuation :previous-response-id-present
+                   :provider-anchor-present :input-message-count :tool-count
+                   :responses-transport :max-tokens :prompt-cache
+                   :anthropic-cache-mode :anthropic-cache-breakpoint
+                   :anthropic-cache-ttl :anthropic-container-id-present))
+      (when (and (listp diagnostics) (plist-member diagnostics key))
+        (let ((value (e-harness--safe-activity-scalar
+                      (plist-get diagnostics key))))
+          (when (or value (null (plist-get diagnostics key)))
+            (setq projected (append projected (list key value)))))))
+    projected))
+
+(defun e-harness--provider-request-activity-projection (payload)
+  "Return a narrow redacted durable provider lifecycle PAYLOAD."
+  (let (projected)
+    (dolist (key '(:provider-request-id :provider :transport :url-host
+                   :url-path :status))
+      (when (and (listp payload) (plist-member payload key))
+        (let ((value (e-harness--safe-activity-scalar (plist-get payload key))))
+          (when value
+            (setq projected (append projected (list key value)))))))
+    (dolist (key '(:provider-request-ordinal :timeout-seconds :deadline
+                   :elapsed-seconds))
+      (setq projected
+            (append projected
+                    (e-harness--activity-field payload key #'numberp))))
+    (when-let ((shape
+                (e-harness--request-shape-activity-projection
+                 (plist-get payload :request-shape))))
+      (setq projected (append projected (list :request-shape shape))))
+    (when-let ((diagnostics
+                (e-harness--provider-diagnostics-activity-projection
+                 (plist-get payload :diagnostics))))
+      (setq projected (append projected (list :diagnostics diagnostics))))
+    (append projected (e-harness--request-cause-activity-fields payload))))
+
+(defun e-harness--token-usage-activity-projection (payload)
+  "Return a narrow durable projection of token-usage PAYLOAD."
+  (let (projected)
+    (dolist (key '(:input-tokens :cached-input-tokens :output-tokens
+                   :reasoning-output-tokens :total-tokens
+                   :provider-request-ordinal))
+      (setq projected
+            (append projected
+                    (e-harness--activity-field payload key #'numberp))))
+    (setq projected
+          (append projected
+                  (e-harness--activity-field
+                   payload :provider-request-id #'stringp
+                   #'e-harness--safe-activity-string)))
+    (append projected (e-harness--request-cause-activity-fields payload))))
+
 (defun e-harness--durable-activity-payload (type payload)
-  "Return durable activity PAYLOAD for event TYPE."
+  "Return narrow durable activity PAYLOAD for event TYPE."
   (pcase type
     ('tool-started (e-harness--compact-tool-started-payload payload))
     ('tool-finished (e-harness--compact-tool-finished-payload payload))
+    ((or 'provider-request-started 'provider-request-finished)
+     (e-harness--provider-request-activity-projection payload))
+    ('token-usage (e-harness--token-usage-activity-projection payload))
     (_ payload)))
 
 (defun e-harness--append-durable-activity-event

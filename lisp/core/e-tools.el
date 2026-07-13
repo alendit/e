@@ -240,22 +240,96 @@ unchanged.  See `e-tools--coerce-argument'."
                      result))
       (nreverse result))))
 
-(defun e-tools--validate-exact-arguments (arguments parameters)
-  "Signal when exact object ARGUMENTS contains undeclared keys."
-  (when (and (e-tools--plist-p arguments)
-             (eq (plist-get parameters :additionalProperties) :json-false))
-    (let ((properties (plist-get parameters :properties)))
-      (cl-loop for key in arguments by #'cddr do
-               (unless (plist-member properties key)
+(defun e-tools--schema-property-key (name)
+  "Return the plist key represented by JSON Schema property NAME."
+  (cond
+   ((keywordp name) name)
+   ((symbolp name) (intern (concat ":" (symbol-name name))))
+   ((stringp name) (intern (concat ":" name)))
+   (t nil)))
+
+(defun e-tools--schema-list (value)
+  "Return JSON Schema array VALUE as a Lisp list."
+  (cond
+   ((vectorp value) (append value nil))
+   ((listp value) value)
+   (t nil)))
+
+(defun e-tools--schema-type-p (value type)
+  "Return non-nil when VALUE conforms to JSON Schema TYPE."
+  (pcase type
+    ("string" (stringp value))
+    ("number" (numberp value))
+    ("integer" (integerp value))
+    ("boolean" (memq value '(t :json-false)))
+    ("object" (e-tools--plist-p value))
+    ("array" (or (listp value) (vectorp value)))
+    ("null" (null value))
+    (_ t)))
+
+(defun e-tools--validate-schema-value (value schema field)
+  "Signal unless VALUE satisfies the supported SCHEMA keywords for FIELD."
+  (let ((type (plist-get schema :type))
+        (enum (and (plist-member schema :enum)
+                   (e-tools--schema-list (plist-get schema :enum)))))
+    (unless (e-tools--schema-type-p value type)
+      (signal 'e-tools-invalid-arguments
+              (list (format "Tool argument %s has the wrong type" field))))
+    (when (and enum (not (member value enum)))
+      (signal 'e-tools-invalid-arguments
+              (list (format "Tool argument %s is not an allowed value" field))))
+    (when (stringp value)
+      (when (and (numberp (plist-get schema :minLength))
+                 (< (length value) (plist-get schema :minLength)))
+        (signal 'e-tools-invalid-arguments
+                (list (format "Tool argument %s is too short" field))))
+      (when (and (numberp (plist-get schema :maxLength))
+                 (> (length value) (plist-get schema :maxLength)))
+        (signal 'e-tools-invalid-arguments
+                (list (format "Tool argument %s is too long" field))))
+      (when (and (plist-get schema :nonBlank)
+                 (string-empty-p (string-trim value)))
+        (signal 'e-tools-invalid-arguments
+                (list (format "Tool argument %s must not be blank" field))))
+      (when (and (plist-get schema :singleLine)
+                 (string-match-p "[\n\r]" value))
+        (signal 'e-tools-invalid-arguments
+                (list (format "Tool argument %s must be one line" field))))
+      (when (and (stringp (plist-get schema :pattern))
+                 (not (string-match-p (plist-get schema :pattern) value)))
+        (signal 'e-tools-invalid-arguments
+                (list (format "Tool argument %s has an invalid format" field)))))))
+
+(defun e-tools--validate-arguments (arguments parameters)
+  "Validate object ARGUMENTS against the supported PARAMETERS schema.
+The runtime enforces object shape, required fields, scalar types, enum values,
+and string length and pattern constraints before transcript persistence."
+  (when (equal (plist-get parameters :type) "object")
+    (unless (e-tools--plist-p arguments)
+      (signal 'e-tools-invalid-arguments
+              (list "Tool arguments must be an object"))))
+  (let ((properties (plist-get parameters :properties)))
+    (dolist (name (e-tools--schema-list (plist-get parameters :required)))
+      (let ((key (e-tools--schema-property-key name)))
+        (unless (and key (plist-member arguments key))
+          (signal 'e-tools-invalid-arguments
+                  (list (format "Missing required tool argument: %s" name))))))
+    (when (e-tools--plist-p arguments)
+      (cl-loop for (key value) on arguments by #'cddr do
+               (cond
+                ((plist-member properties key)
+                 (e-tools--validate-schema-value
+                  value (plist-get properties key) key))
+                ((eq (plist-get parameters :additionalProperties) :json-false)
                  (signal 'e-tools-invalid-arguments
-                         (list "Tool arguments contain undeclared fields")))))))
+                         (list "Tool arguments contain undeclared fields"))))))))
 
 (defun e-tools--prepare-call-arguments (call tool)
   "Coerce and validate CALL arguments against TOOL's runtime schema."
   (let* ((parameters (plist-get tool :parameters))
          (arguments (e-tools--coerce-arguments
                      (plist-get call :arguments) parameters)))
-    (e-tools--validate-exact-arguments arguments parameters)
+    (e-tools--validate-arguments arguments parameters)
     (plist-put call :arguments arguments)))
 
 (defun e-tools-prepare-call (registry call)
@@ -270,10 +344,10 @@ inside `e-tools-start'."
       copy)))
 
 (defun e-tools-project-call-for-rejection (registry call)
-  "Return CALL with arguments projected to REGISTRY's declared fields.
-This projection is safe to retain in transcript and activity when exact schema
-validation rejects the original call.  The original call still goes through
-`e-tools-start' so the model receives a normal tool error."
+  "Return a bounded schema-valid projection of rejected CALL arguments.
+Only declared values that independently satisfy their property schema survive.
+The original call still goes through `e-tools-start' so the model receives a
+normal tool error, while rejected text cannot enter transcript or activity."
   (let* ((copy (copy-tree call))
          (tool (gethash (plist-get copy :name)
                         (e-tools-registry-tools registry)))
@@ -284,7 +358,13 @@ validation rejects the original call.  The original call still goes through
          projected)
     (when (and tool (e-tools--plist-p arguments))
       (cl-loop for (key value) on arguments by #'cddr do
-               (when (plist-member properties key)
+               (when (and (plist-member properties key)
+                          (condition-case nil
+                              (progn
+                                (e-tools--validate-schema-value
+                                 value (plist-get properties key) key)
+                                t)
+                            (e-tools-invalid-arguments nil)))
                  (setq projected (append projected (list key value))))))
     (plist-put copy :arguments projected)))
 

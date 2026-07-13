@@ -315,6 +315,61 @@
         (should-not (string-match-p "must-not-retain\\|:impact" serialized))
         (should-not (e-process-reporting-list store))))))
 
+(ert-deftest e-process-reporting-test-loop-rejects-invalid-marker-schema-before-persistence ()
+  (dolist (case
+           '((missing-note (:signal "success") nil)
+             (wrong-signal-type (:signal 7 :note "Short.") nil)
+             (invalid-signal (:signal "unknown" :note "Short.") nil)
+             (blank-note (:signal "success" :note "   ") nil)
+             (multiline-note (:signal "success" :note "first\nsecret-line")
+                             "secret-line")
+             (overlong-note (:signal "success" :note nil) "long-secret")))
+    (e-process-reporting-test--with-store (store directory)
+      (let* ((harness (e-process-reporting-test--harness store))
+             (registry (e-harness-tools harness "session-1" "turn-1"))
+             (arguments (copy-tree (nth 1 case)))
+             (secret (nth 2 case))
+             (calls 0)
+             appended)
+        (when (eq (car case) 'overlong-note)
+          (setq arguments
+                (plist-put arguments :note
+                           (concat "long-secret-" (make-string 280 ?x)))))
+        (let ((backend
+               (e-backend-create
+                :name "marker-schema-rejection"
+                :stream
+                (cl-function
+                 (lambda (&key messages options on-item)
+                   (ignore messages options)
+                   (setq calls (1+ calls))
+                   (if (= calls 1)
+                       (progn
+                         (funcall on-item
+                                  (list :type 'tool-call :id "marker-call"
+                                        :name "process_marker"
+                                        :arguments arguments))
+                         (funcall on-item '(:type done :reason tool-use)))
+                     (funcall on-item '(:type assistant-message :content "done"))
+                     (funcall on-item '(:type done :reason stop))))))))
+          (e-loop-run-turn-batch
+           :session-id "session-1" :turn-id "turn-1"
+           :messages '((:role user :content "hi"))
+           :backend backend :tools registry
+           :options (list :tools (e-tools-definitions registry))
+           :on-event (lambda (type payload)
+                       (e-harness--emit-turn-event
+                        harness "session-1" "turn-1" type payload))
+           :append-message (lambda (message) (push message appended))))
+        (let ((serialized
+               (prin1-to-string
+                (list appended
+                      (e-session-activity-events
+                       (e-harness-sessions harness) "session-1")))))
+          (when secret
+            (should-not (string-match-p (regexp-quote secret) serialized)))
+          (should-not (e-process-reporting-list store)))))))
+
 (ert-deftest e-process-reporting-test-note-and-extraction-free-text-are-redacted ()
   (e-process-reporting-test--with-store (store directory)
     (let* ((harness (e-process-reporting-test--harness store))
@@ -363,6 +418,57 @@
         (should (equal (plist-get (car chain) :parent-tool-call-id) "run-1"))
         (should (equal (plist-get (cadr chain) :call-id) "run-1"))
         (should (equal (plist-get (cadr chain) :event-type) "tool-finished"))))))
+
+(ert-deftest e-process-reporting-test-trigger-chain-keeps-running-parent-tool ()
+  (e-process-reporting-test--with-store (store directory)
+    (let ((harness (e-process-reporting-test--harness store)))
+      (e-harness--emit-turn-event
+       harness "session-1" "turn-1" 'tool-started
+       '(:id "run-1" :name "run_elisp_probe" :arguments nil))
+      (e-harness--emit-turn-event
+       harness "session-1" "turn-1" 'action-finished
+       '(:action-call-id "action-1" :capability-id outer :action :run
+         :parent-tool-call-id "run-1" :status ok))
+      (let ((chain
+             (plist-get
+              (e-process-reporting-test--call-action
+               harness :mark
+               '(:signal "success" :note "Running parent mattered."))
+              :trigger-chain)))
+        (should (= (length chain) 2))
+        (should (equal (plist-get (car chain) :call-id) "action-1"))
+        (should (equal (plist-get (cadr chain) :call-id) "run-1"))
+        (should (equal (plist-get (cadr chain) :event-type) "tool-started"))))))
+
+(ert-deftest e-process-reporting-test-trigger-chain-keeps-latest-independent-operation ()
+  (dolist (history
+           '(((action-finished
+               (:action-call-id "old-action" :capability-id old :action :run
+                :status ok))
+              (tool-finished
+               (:tool-call (:id "fresh-tool" :name "bash")
+                :result (:tool-call-id "fresh-tool" :name "bash"
+                         :status ok :content "done")))
+              "fresh-tool")
+             ((tool-finished
+               (:tool-call (:id "old-tool" :name "bash")
+                :result (:tool-call-id "old-tool" :name "bash"
+                         :status ok :content "done")))
+              (action-failed
+               (:action-call-id "fresh-action" :capability-id fresh :action :run
+                :status error))
+              "fresh-action")))
+    (e-process-reporting-test--with-store (store directory)
+      (let ((harness (e-process-reporting-test--harness store)))
+        (dolist (event (butlast history))
+          (e-harness--emit-turn-event
+           harness "session-1" "turn-1" (car event) (cadr event)))
+        (let* ((marker (e-process-reporting-test--call-action
+                        harness :mark
+                        '(:signal "success" :note "Latest operation mattered.")))
+               (chain (plist-get marker :trigger-chain)))
+          (should (= (length chain) 1))
+          (should (equal (plist-get (car chain) :call-id) (car (last history)))))))))
 
 (ert-deftest e-process-reporting-test-completed-request-is-not-current ()
   (e-process-reporting-test--with-store (store directory)

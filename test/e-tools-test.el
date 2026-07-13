@@ -798,6 +798,49 @@ signalling out of the loop."
                     schema)
                    '(:content "{\"not\": \"reparsed\"}")))))
 
+(ert-deftest e-tools-test-prepare-call-validates-supported-schema-keywords ()
+  "Runtime validation covers compact consumer schemas before dispatch."
+  (let ((registry (e-tools-registry-create)))
+    (e-tools-register
+     registry
+     :name "compact"
+     :description "Validate compact input."
+     :parameters
+     '(:type "object"
+       :properties
+       (:signal (:type "string" :enum ["ok"])
+        :note (:type "string" :minLength 1 :maxLength 5
+               :nonBlank t :singleLine t)
+        :count (:type "integer")
+        :enabled (:type "boolean"))
+       :required ["signal" "note"]
+       :additionalProperties :json-false)
+     :handler (lambda (_arguments) "ok"))
+    (should
+     (equal
+      (plist-get
+       (e-tools-prepare-call
+        registry
+        '(:id "call-1" :name "compact"
+          :arguments (:signal "ok" :note "short" :count 1 :enabled t)))
+       :arguments)
+      '(:signal "ok" :note "short" :count 1 :enabled t)))
+    (dolist (arguments
+             '((:note "short")
+               (:signal 1 :note "short")
+               (:signal "bad" :note "short")
+               (:signal "ok" :note "")
+               (:signal "ok" :note "      ")
+               (:signal "ok" :note "longer")
+               (:signal "ok" :note "a\nb")
+               (:signal "ok" :note "short" :count 1.5)
+               (:signal "ok" :note "short" :enabled yes)
+               (:signal "ok" :note "short" :extra t)))
+      (should-error
+       (e-tools-prepare-call
+        registry (list :id "call-1" :name "compact" :arguments arguments))
+       :type 'e-tools-invalid-arguments))))
+
 (ert-deftest e-tools-test-start-coerces-stringified-arguments-before-dispatch ()
   "Tool handlers receive schema-typed data even from stringifying providers."
   (let ((registry (e-tools-registry-create))

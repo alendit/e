@@ -168,7 +168,11 @@
             :model (plist-get options :model)
             :reasoning-effort (or (plist-get options :reasoning-effort)
                                   (plist-get options :effort))
-            :prompt-cache-key (plist-get options :prompt-cache-key)
+            :prompt-cache-key-present
+            (and (plist-get options :prompt-cache-key) t)
+            :prompt-cache-key-sha256
+            (when-let ((key (plist-get options :prompt-cache-key)))
+              (secure-hash 'sha256 (format "%s" key)))
             :prompt-cache-retention
             (plist-get options :prompt-cache-retention)))))
 

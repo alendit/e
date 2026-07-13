@@ -351,31 +351,40 @@
   (plist-get (plist-get event :payload) :parent-tool-call-id))
 
 (defun e-process-reporting--trigger-events (harness session-id turn-id)
-  "Return the explicit operation chain relevant before marker capture."
+  "Return the explicit latest completed operation chain before capture."
   (let* ((events (e-process-reporting--activity-events harness session-id))
          (candidates
           (seq-filter
            (lambda (event)
              (and (equal (plist-get event :turn-id) turn-id)
                   (memq (plist-get event :event-type)
-                        '(tool-finished action-finished action-failed
-                          tool-started action-started))
+                        '(tool-started tool-finished action-started
+                          action-finished action-failed))
                   (not (e-process-reporting--own-event-p event))))
            events))
-         (latest (car (last candidates)))
-         (latest-action
-          (or (and latest
-                   (memq (plist-get latest :event-type)
-                         '(action-finished action-failed action-started))
-                   latest)
-              (seq-find
-               (lambda (event)
-                 (memq (plist-get event :event-type)
-                       '(action-finished action-failed action-started)))
-               (reverse candidates))))
-         (parent-id (and latest-action
-                         (e-process-reporting--event-parent-tool-call-id
-                          latest-action)))
+         (latest
+          (seq-find
+           (lambda (event)
+             (memq (plist-get event :event-type)
+                   '(tool-finished action-finished action-failed)))
+           (reverse candidates)))
+         (latest-type (plist-get latest :event-type))
+         (latest-tool-p (eq latest-type 'tool-finished))
+         (latest-tool-id (and latest-tool-p
+                              (e-process-reporting--event-call-id latest)))
+         (nested-action
+          (and latest-tool-id
+               (seq-find
+                (lambda (event)
+                  (and (memq (plist-get event :event-type)
+                             '(action-finished action-failed))
+                       (equal
+                        (e-process-reporting--event-parent-tool-call-id event)
+                        latest-tool-id)))
+                (reverse candidates))))
+         (parent-id
+          (and (not latest-tool-p) latest
+               (e-process-reporting--event-parent-tool-call-id latest)))
          (parent
           (and parent-id
                (seq-find
@@ -384,12 +393,11 @@
                              '(tool-finished tool-started))
                        (equal (e-process-reporting--event-call-id event)
                               parent-id)))
-                (reverse candidates))))
-         result)
-    (dolist (event (list latest-action parent latest))
-      (when (and event (not (memq event result)))
-        (setq result (append result (list event)))))
-    result))
+                (reverse candidates)))))
+    (cond
+     (nested-action (list nested-action latest))
+     (parent (list latest parent))
+     (latest (list latest)))))
 
 (defun e-process-reporting--event-call-id (event)
   "Return stable tool or action call id from EVENT."
@@ -821,7 +829,8 @@
   `(:type "object"
     :properties
     (:signal (:type "string" :enum ,(vconcat e-process-reporting-signals))
-     :note (:type "string" :maxLength 280))
+     :note (:type "string" :minLength 1 :maxLength 280
+            :nonBlank t :singleLine t))
     :required ["signal" "note"]
     :additionalProperties :json-false)
   "Small process marker input schema.")

@@ -1156,6 +1156,82 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
         (should (stringp (plist-get payload :provider-request-id)))
         (should (= (plist-get payload :provider-request-ordinal) 1))))))
 
+(ert-deftest e-harness-test-provider-telemetry-is-narrow-on-disk-and-reload ()
+  "Provider lifecycle and usage cross a narrow redacted durable boundary."
+  (let* ((directory (make-temp-file "e-harness-provider-telemetry-" t))
+         (secret "Bearer disk-provider-secret")
+         (cache-key "cache-key-disk-secret")
+         (backend
+          (e-backend-create
+           :name "durable-provider-projection"
+           :start
+           (cl-function
+            (lambda (&key messages options on-item on-done on-error
+                           on-request-start)
+              (ignore messages options on-error)
+              (funcall on-request-start
+                       (e-backend-request-create
+                        :metadata
+                        (list :provider secret
+                              :transport 'websocket
+                              :url-host "https://user:password@example.test"
+                              :url-path "/responses?token=disk-path-secret"
+                              :diagnostics
+                              (list :model "api_key=disk-model-secret"
+                                    :reasoning-effort "high"
+                                    :unknown "disk-diagnostic-secret"))))
+              (funcall on-item '(:type assistant-message :content "answer"))
+              (funcall on-item
+                       '(:type token-usage
+                         :usage (:input-tokens 12 :output-tokens 3
+                                 :total-tokens 15
+                                 :unknown "disk-usage-secret")))
+              (funcall on-item '(:type done :reason stop))
+              (funcall on-done '(:status done))
+              nil))))
+         (store (e-session-persistent-store-create directory))
+         (harness (e-harness-create
+                   :backend backend :sessions store
+                   :default-options (list :prompt-cache-key cache-key))))
+    (unwind-protect
+        (progn
+          (e-harness-create-session harness :id "session-1")
+          (e-harness-prompt-batch harness "session-1" "question")
+          (e-session-flush-write-queue store)
+          (let ((disk
+                 (with-temp-buffer
+                   (insert-file-contents
+                    (e-session--session-file store "session-1"))
+                   (buffer-string))))
+            (should (string-match-p "REDACTED" disk))
+            (should-not
+             (string-match-p
+              "disk-provider-secret\\|password@example\\|disk-path-secret\\|disk-model-secret\\|disk-diagnostic-secret\\|disk-usage-secret\\|cache-key-disk-secret"
+              disk)))
+          (let* ((loaded (e-session-persistent-store-create directory))
+                 (activity (e-session-activity-events loaded "session-1"))
+                 (started (seq-find
+                           (lambda (event)
+                             (eq (plist-get event :event-type)
+                                 'provider-request-started))
+                           activity))
+                 (usage (seq-find
+                         (lambda (event)
+                           (eq (plist-get event :event-type) 'token-usage))
+                         activity))
+                 (started-payload (plist-get started :payload))
+                 (usage-payload (plist-get usage :payload))
+                 (shape (plist-get started-payload :request-shape)))
+            (should (equal (plist-get started-payload :provider)
+                           "Bearer [REDACTED]"))
+            (should (stringp (plist-get shape :prompt-cache-key-sha256)))
+            (should-not (plist-member shape :prompt-cache-key))
+            (should-not (plist-member
+                         (plist-get started-payload :diagnostics) :unknown))
+            (should (= (plist-get usage-payload :input-tokens) 12))
+            (should-not (plist-member usage-payload :unknown))))
+      (delete-directory directory t))))
+
 (ert-deftest e-harness-test-provider-anchor-candidates-are-persisted ()
   "Provider anchor candidates persist with covered entry and context metadata."
   (e-harness-test--with-empty-layer-registry
