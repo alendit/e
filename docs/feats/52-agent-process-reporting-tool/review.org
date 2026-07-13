@@ -13,15 +13,21 @@ The parent-side =process_marker= surface is small and returns only =ok=.
 The implementation also gives provider request lifecycle events stable ids and joins token-usage events to those ids.
 
 The first fix pass resolved the six original findings in its focused cases.
-A fresh independent second review reopened five findings. The final fix pass
-resolves all five with kernel-held advisory locking, durable trigger arrays,
-complete telemetry projections, exact segment-based paired accounting, complete
-follow-up cause sets, and rejection projection before transcript or activity
-writes.
+A fresh independent second review reopened five findings. The second fix pass
+resolved those five in their focused cases with kernel-held advisory locking,
+durable trigger arrays, segment-based paired accounting, complete follow-up
+cause sets, and unknown-field projection before transcript or activity writes.
+
+A fresh independent third review after =3302a58= and =d7e30e0= reopened three
+findings. Provider-request and token-usage activity still lack a narrow redacted
+persistence projection. Runtime tool validation rejects undeclared fields before
+transcript writes but does not enforce the rest of the marker schema there. The
+trigger-chain selector can also put an older unrelated action ahead of the most
+recent tool.
 
 Exact canonical provider payload/tokenizer integration remains a documented
 deferral. No public claim treats the current byte measure as provider-token or
-behavioral cost. The feature stays In-review pending operator approval.
+behavioral cost. The feature stays In-review with the third-pass findings open.
 
 * Scope reviewed
 
@@ -821,8 +827,229 @@ runtime-action-extra-value-retained=nil
 No running Emacs was reloaded.
 The runtime changes require =M-x e-dev-reload= when the user is ready.
 
+* Third independent review after =3302a58= and =d7e30e0=
+
+This pass reread the project review rules, final =plan.org=, and the complete
+review history. It inspected all feature source and tests, with special focus on
+the shared =e-tools=, =e-actions=, =e-harness=, =e-loop=, and telemetry changes
+in =3302a58=. It recreated the prior race, JSON persistence, redaction,
+multi-tool accounting, and rejected-field probes in fresh batch Emacs
+processes. No running Emacs was reloaded.
+
+** Verification
+
+#+begin_src sh
+cd /Users/dimitrivorona/projects/elisp/e
+timeout 120 eldev -q test \
+  -f test/e-process-reporting-test.el \
+  -f test/e-telemetry-test.el \
+  -f test/e-loop-test.el \
+  -f test/e-defaults-test.el \
+  -f test/e-actions-test.el \
+  -f test/e-harness-test.el \
+  -f test/e-tools-test.el
+timeout 120 eldev -q test
+timeout 120 eldev -q compile
+git diff --check
+#+end_src
+
+#+begin_example
+Ran 236 focused and affected tests, 236 results as expected, 0 unexpected.
+Ran 1604 full-suite tests, 1598 results as expected, 5 unexpected, 1 skipped.
+Compilation passed without output.
+git diff --check passed.
+#+end_example
+
+The five full-suite failures match the established unrelated baseline:
+nonblocking sweep, Org Canvas synchronous progress, session-resource discovery
+text, annotation inventory, and the UI Work architecture guard. The
+nonblocking sweep includes the reviewed bounded advisory-lock wait.
+
+Fresh independent probes produced these results:
+
+#+begin_example
+advisory lock, two processes:
+  statuses=0/0
+  A acquired 1783947668.172666, released 1783947668.535568
+  B acquired 1783947668.552289, released 1783947668.912987
+  json-lines=2 ids=(A B)
+
+JSON trigger-chain reload:
+  json-chain=("act" "tool")
+
+common redaction fixtures:
+  redaction-retained=nil
+  redaction-marker-count=6
+
+paired guidance and multi-tool accounting:
+  paired-keeps-unrelated=t
+  markers=1 requests=2
+  follow-causes=((:id "marker-call" :name "process_marker")
+                 (:id "echo-call" :name "echo"))
+  marker-follow-up-request-count=1
+  both token-usage events have request ids
+
+unknown-field rejection:
+  rejected-projection=(:signal "success" :note "short")
+  rejected-result=(error "Tool arguments contain undeclared fields")
+  rejected-leak=nil
+
+request telemetry persistence bypass:
+  raw-path=t raw-diag=t raw-bearer=t raw-cache=t raw-usage=t
+
+declared but invalid note:
+  marker-count=0 transcript-secret=t activity-secret=nil
+  complete 281-character note retained in transcript=t
+
+trigger relevance:
+  trigger=("old-action" "old/:run")
+  chain=(("old-action" "old/:run") ("fresh-tool" "bash"))
+#+end_example
+
+** TODO High: Provider lifecycle and usage telemetry bypass the persistence redaction boundary
+
+*** Expected
+
+The plan requires revisioned secret-safe request-shape hashes and measures,
+narrow persisted schemas, and a shared best-effort redaction boundary. The
+second review resolution states that durable telemetry always uses narrow
+projections rather than retaining arbitrary payloads.
+
+*** Observed
+
+=e-harness--durable-activity-payload= at =lisp/core/e-harness.el:1058-1063=
+projects only =tool-started= and =tool-finished=. Every provider-request and
+token-usage payload is appended unchanged.
+
+=e-loop--request-shape= at =lisp/core/e-loop.el:140-173= copies
+=:prompt-cache-key= directly into the durable shape record. The provider
+lifecycle builder at lines 188-223 copies provider, transport, URL host/path,
+and every scalar diagnostic string without using =e-telemetry-redact-string=.
+The token-usage path at lines 539-554 copies every field supplied in the
+backend's usage plist.
+
+A fresh disk-equivalent activity probe supplied secrets through
+=:prompt-cache-key=, =:url-path=, two diagnostic strings, and an extra usage
+field. All five exact values remained in durable activity. This is independent
+of the common credential fixtures, which the string redactor itself handled.
+
+*** Why this matters
+
+Provider adapters and future backends can persist credentials, signed paths,
+cache identifiers, or arbitrary diagnostic text outside the redaction boundary.
+The request-shape record also violates its stated hash-and-measure-only contract
+by retaining the cache key itself.
+
+*** Smallest fix direction
+
+Define narrow durable projections for provider-request lifecycle and token-usage
+events at the harness persistence boundary. Retain only named numeric usage
+fields and named lifecycle fields. Redact every retained string. Replace the
+raw prompt-cache key with presence, revision, or a one-way hash when identity is
+needed. Add disk-level tests that inject secrets through each retained string
+and unknown backend field.
+
+** TODO Medium: Pre-transcript marker validation enforces only unknown fields
+
+*** Expected
+
+The plan limits the model payload to an accepted signal and one short note. The
+second review resolution says known tool calls are validated before transcript
+and activity writes so rejected payload does not create the active context and
+telemetry footprint the schema is meant to prevent.
+
+*** Observed
+
+=e-tools-prepare-call= reaches =e-tools--validate-exact-arguments= at
+=lisp/core/e-tools.el:242-274=. That validator checks only undeclared keys. It
+does not enforce required fields, scalar types, enum membership, =maxLength=,
+or the marker's one-line rule. The semantic checks run later in the marker
+action, after =e-loop= has appended the tool-call message at
+=lisp/core/e-loop.el:448-459=.
+
+A fresh full-loop probe sent a declared =:note= longer than 280 characters with
+an inline secret. Marker persistence correctly rejected it, but the complete
+note remained in the session transcript. Durable tool activity was redacted and
+bounded, so this is a transcript and follow-up-context leak rather than a repeat
+of the unknown-field activity leak.
+
+*** Why this matters
+
+A provider can bypass the compact marker contract while still adding arbitrary
+rejected text to durable session history and the next model request. The current
+fix protects only one JSON Schema keyword.
+
+*** Smallest fix direction
+
+Validate the complete consumer-shaped marker contract before appending its
+provider call. A small generic validator may be justified only for the schema
+keywords the runtime actually promises. Otherwise give the marker tool an
+explicit pre-persistence validator. Preserve protocol validity with a declared,
+bounded rejection projection. Add full-loop probes for missing fields, wrong
+types, invalid enum values, multiline notes, and overlong notes.
+
+** TODO Medium: Trigger selection can prefer an older unrelated action
+
+*** Expected
+
+A marker should attach the relevant triggering tool or action. The nested-action
+fix should preserve an action with its explicit parent tool when that action is
+part of the latest operation, without pulling unrelated older work into a new
+marker.
+
+*** Observed
+
+=e-process-reporting--trigger-events= at
+=lisp/layers/harness/e-process-reporting.el:345-391= searches backward for any
+action whenever the latest event is a tool. It then always places that action
+first, even when it has no =:parent-tool-call-id= and a newer independent tool
+has completed.
+
+A fresh probe emitted =old-action=, then completed =fresh-tool=, then captured a
+marker. The marker's primary =:trigger= was =old-action= and the chain was
+=((old-action) (fresh-tool))=. The evidence id therefore also keys suppression
+to the unrelated old action.
+
+*** Why this matters
+
+Markers can point extraction at the wrong operation and suppress or duplicate
+evidence under the wrong identity during ordinary multi-operation turns.
+
+*** Smallest fix direction
+
+Start from the latest completed relevant event. Include an action before its
+parent tool only when explicit parent-call relations connect that action to the
+latest operation. Otherwise keep only the latest independent tool or action.
+Add turn-history tests for old action then new tool, old tool then new action,
+nested action inside a tool, failures, and multiple independent operations.
+
+** Confirmed third-pass resolutions and non-findings
+
+- Kernel advisory locking serialized two independent batch writers. Their
+  critical sections did not overlap, both exited zero, and both JSON lines
+  reloaded.
+- Trigger chains retain array structure and exact call ids after JSONL reload.
+- The shared string redactor removed tested GitHub, OpenAI, AWS, URL-userinfo,
+  signed-query, and authorization fixtures. The open redaction finding is the
+  missing persistence projection around that helper.
+- Exact segment identity preserves unrelated =process_marker= mentions in the
+  paired request shape.
+- A full marker-plus-echo turn retained both causes, counted one marker follow-up
+  request, and joined both usage events to stable request ids.
+- Undeclared marker fields are projected out before transcript/activity writes
+  and return a generic tool error. The open validation finding concerns declared
+  values that violate the rest of the schema.
+- The minimal successful result remains =ok=. Capture does not spawn a child or
+  gather session history.
+
 * Unresolved
 
-- No review findings remain open.
-- Deliberate deferral: canonical provider payload reconstruction and provider tokenizer execution remain unimplemented and unclaimed.
-- Keep the feature and index at =In-review= pending operator approval.
+- High: provider lifecycle and token-usage telemetry lack a narrow redacted
+  durable projection.
+- Medium: pre-transcript marker validation does not enforce required, type,
+  enum, length, or one-line constraints.
+- Medium: trigger selection can prefer an older unrelated action over the latest
+  independent tool.
+- Deliberate deferral: canonical provider payload reconstruction and provider
+  tokenizer execution remain unimplemented and unclaimed.
+- Keep the feature and index at =In-review= pending fixes and operator approval.
