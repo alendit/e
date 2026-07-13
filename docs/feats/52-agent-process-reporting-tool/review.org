@@ -1190,9 +1190,100 @@ store lifecycle, and the duplicated append/replay/indexing implementation. The
 new session record contract is semantically distinct from provider-visible
 messages and does not require a compatibility shim.
 
+* Parent review after session-store simplification
+
+The session-owned storage direction is the correct simplification.
+The focused feature and affected core suites pass, and the only failure in the broader session-resource set is the previously recorded tool-description baseline.
+The current worktree is otherwise clean except for the unrelated =emacs-egui= submodule state and an obsolete untracked =docs/feats/52-agent-bug-report-tool/plan.org= stub.
+
+** TODO Medium: Process reports participate in transcript ancestry
+
+*** Expected
+
+The plan calls process reports out-of-band session entries that never affect provider-visible transcript behavior.
+They should not alter the transcript parent chain, compaction path, fork boundary, or clear/reset semantics.
+
+*** Observed
+
+=e-session-append-process-report= normalizes reports through =e-session--normalize-entry-from-record=.
+That helper advances =:current-head-id=.
+A later message therefore receives the process report as its =:parent-id=, and =e-session-current-path= contains =process-report= entries between transcript messages.
+An independent batch probe produced:
+
+#+begin_example
+:path-types (session-event message process-report message)
+#+end_example
+
+The provider context currently filters to messages, so this does not expose report text directly.
+It still changes the durable transcript ancestry and makes an observability side channel part of the conversation branch.
+
+*** Why this matters
+
+This violates the intended out-of-band ownership boundary.
+It can affect code that reasons about current-path entry ranges, forks at the current head, compaction boundaries, or future branch operations even though the marker should be observational only.
+
+*** Smallest fix direction
+
+Give process reports durable ids and indexing without advancing the session's transcript head.
+Do not assign their parent from =:current-head-id= unless there is a separate explicit evidence reference field.
+Replay should append and index them without changing =:current-head-id=.
+Add tests proving that message parent ids, =e-session-current-path=, fork snapshots, and compaction boundaries are identical with and without an intervening marker.
+
+** TODO Medium: “Durable” marker acknowledgement precedes queued persistence
+
+*** Expected
+
+The marker tool returns =ok= only after the observation is durably recorded, or the contract clearly states that capture is acknowledged in memory and may be lost before the session write queue flushes.
+The feature describes markers as durable process evidence.
+
+*** Observed
+
+The default session store uses =:write-mode 'queued=.
+=e-session-append-process-report= queues the record and immediately returns it; =process_marker= then returns =ok=.
+A second store opened before the timer flush sees zero reports while the first store already acknowledged capture:
+
+#+begin_example
+:before-flush 0
+:queued 1
+#+end_example
+
+A crash or forced Emacs exit in that interval loses the marker.
+
+*** Why this matters
+
+The tool exists specifically to preserve a fleeting parent-agent judgment.
+Acknowledging it before persistence weakens the main user-facing guarantee and creates a small but real loss window.
+
+*** Smallest fix direction
+
+Choose and document one contract.
+For strong capture semantics, synchronously flush the marker record before returning =ok= while allowing the derived index write to remain queued.
+If the project intentionally accepts queued durability, rename the guarantee and test the loss window explicitly.
+
+** TODO Low: Search defaults exclude process markers
+
+*** Expected
+
+Markers should serve as high-precision anchors for later offline extraction through =session://=.
+A broad session search should be able to discover marker notes, or the extraction workflow should have a documented marker-first listing step.
+
+*** Observed
+
+The =process-reports= projection is readable and searchable when named explicitly.
+However, =session://= root and session-root searches default to only the =messages= projection unless a glob requests all projections.
+There is no dedicated cross-session marker listing action or resource root.
+
+*** Why this matters
+
+A later extractor that starts with broad =session://= search can silently miss the explicit evidence feature 52 was built to provide.
+The data is available, but the default discovery path does not prioritize it.
+
+*** Smallest fix direction
+
+Either include =process-reports= in the default search targets for built-in =e= sessions, or document and test a marker-first extraction workflow that globs or reads =process-reports= explicitly before broader transcript mining.
+
 * Unresolved
 
-- No third-review findings remain open.
-- Deliberate deferral: canonical provider payload reconstruction and provider
-  tokenizer execution remain unimplemented and unclaimed.
-- Keep the feature and index at =In-review= pending operator approval.
+- Two Medium findings and one Low finding remain from the parent review.
+- Deliberate deferral: canonical provider payload reconstruction and provider tokenizer execution remain unimplemented and unclaimed.
+- Keep the feature and index at =In-review= pending resolution and operator approval.
