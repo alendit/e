@@ -69,7 +69,7 @@
                       (e-tools-definitions registry)))
            result)
       (should (equal (plist-get definition :description)
-                     "Save one process observation."))
+                     "Save one task-relative tool or action observation."))
       (should (equal (plist-get (plist-get definition :parameters) :required)
                      ["signal" "note"]))
       (setq result
@@ -111,6 +111,30 @@
         (should (equal (plist-get trigger :call-id) "failed-call"))
         (should (string-match-p "REDACTED" serialized))
         (should-not (string-match-p "top-secret\\|private-value" serialized))))))
+
+(ert-deftest e-process-reporting-test-effective-action-feedback-is-task-relative ()
+  "Positive action feedback retains the action identity and agent judgment."
+  (e-process-reporting-test--with-store (store directory)
+    (let ((harness (e-process-reporting-test--harness store)))
+      (e-harness--emit-turn-event
+       harness "session-1" "turn-1" 'action-started
+       '(:action-call-id "action-1" :capability-id web :action fetch
+         :arguments (:uri "https://example.test") :status started))
+      (e-harness--emit-turn-event
+       harness "session-1" "turn-1" 'action-finished
+       '(:action-call-id "action-1" :capability-id web :action fetch
+         :status ok :result (:content "done")))
+      (let* ((record
+              (e-process-reporting-test--call-action
+               harness :mark
+               '(:signal "effective"
+                 :note "The fetch action supplied the task evidence directly.")))
+             (trigger (plist-get record :trigger)))
+        (should (equal (plist-get record :signal) "effective"))
+        (should (equal (plist-get record :note)
+                       "The fetch action supplied the task evidence directly."))
+        (should (equal (plist-get trigger :call-id) "action-1"))
+        (should (equal (plist-get trigger :name) "web/fetch"))))))
 
 (ert-deftest e-process-reporting-test-durable-list-read-and-append-only-triage ()
   (e-process-reporting-test--with-store (store directory)

@@ -5,7 +5,7 @@
 
 * Status
 
-In-review.
+Done.
 
 * Review summary
 
@@ -25,7 +25,8 @@ of the latest operation chain.
 
 Exact canonical provider payload/tokenizer integration remains a documented
 deferral. No public claim treats the current byte measure as provider-token or
-behavioral cost. The feature stays In-review pending operator approval.
+behavioral cost. The operator accepted the remaining gaps for this slice and
+confirmed that positive and negative tool/action feedback are both core uses.
 
 * Scope reviewed
 
@@ -1196,7 +1197,7 @@ The session-owned storage direction is the correct simplification.
 The focused feature and affected core suites pass, and the only failure in the broader session-resource set is the previously recorded tool-description baseline.
 The current worktree is otherwise clean except for the unrelated =emacs-egui= submodule state and an obsolete untracked =docs/feats/52-agent-bug-report-tool/plan.org= stub.
 
-** TODO Medium: Process reports participate in transcript ancestry
+** Accepted Medium: Process reports participate in transcript ancestry
 
 *** Expected
 
@@ -1229,7 +1230,7 @@ Do not assign their parent from =:current-head-id= unless there is a separate ex
 Replay should append and index them without changing =:current-head-id=.
 Add tests proving that message parent ids, =e-session-current-path=, fork snapshots, and compaction boundaries are identical with and without an intervening marker.
 
-** TODO Medium: “Durable” marker acknowledgement precedes queued persistence
+** Accepted Medium: “Durable” marker acknowledgement precedes queued persistence
 
 *** Expected
 
@@ -1260,7 +1261,7 @@ Choose and document one contract.
 For strong capture semantics, synchronously flush the marker record before returning =ok= while allowing the derived index write to remain queued.
 If the project intentionally accepts queued durability, rename the guarantee and test the loss window explicitly.
 
-** TODO Low: Search defaults exclude process markers
+** Accepted Low: Search defaults exclude process markers
 
 *** Expected
 
@@ -1282,8 +1283,9 @@ The data is available, but the default discovery path does not prioritize it.
 
 Either include =process-reports= in the default search targets for built-in =e= sessions, or document and test a marker-first extraction workflow that globs or reads =process-reports= explicitly before broader transcript mining.
 
-* Unresolved
+* Completion
 
-- Two Medium findings and one Low finding remain from the parent review.
-- Deliberate deferral: canonical provider payload reconstruction and provider tokenizer execution remain unimplemented and unclaimed.
-- Keep the feature and index at =In-review= pending resolution and operator approval.
+- The operator accepted the ancestry, queued-durability, and search-default gaps for this slice.
+- Canonical provider payload reconstruction and provider tokenizer execution remain explicit, unclaimed deferrals.
+- Positive and negative task-relative feedback about tool and action use is part of the accepted capture contract.
+- Feature 52 is complete.

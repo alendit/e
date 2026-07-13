@@ -30,13 +30,13 @@
   :prefix "e-process-reporting-")
 
 (defconst e-process-reporting-instructions
-  "Call process_marker only for one high-value process observation worth retaining; do not narrate it or repeat unchanged evidence."
+  "Call process_marker for one high-value task-relative observation about tool or action use: what worked, caused friction, or should be reused; do not narrate it or repeat unchanged evidence."
   "Minimal parent-facing process marker guidance.")
 
 (defconst e-process-reporting-signals
-  '("failure" "correction" "workaround" "repetition" "success"
-    "missing-operation" "performance")
-  "Accepted descriptive marker signals.")
+  '("failure" "friction" "correction" "workaround" "repetition"
+    "success" "effective" "missing-operation" "performance")
+  "Accepted task-relative process marker signals.")
 
 (defconst e-process-reporting-outcomes
   '("runtime-defect" "missing-capability" "judgment-procedure"
@@ -662,7 +662,7 @@
   (e-tools-register
    registry
    :name "process_marker"
-   :description "Save one process observation."
+   :description "Save one task-relative tool or action observation."
    :parameters e-process-reporting--marker-parameters
    :blocking-class 'cheap
    :handler

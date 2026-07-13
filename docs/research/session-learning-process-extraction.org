@@ -30,8 +30,8 @@ When it turns into work, create =docs/feats/<n>-session-learning/= and leave thi
 - The realistic first slice is an *extraction pass*, not an autonomous memory system: a scheduled or on-demand agent action that reads recent sessions (own and foreign), proposes a skill or an AGENTS.md guidance edit, and leaves it for human review before it becomes durable.
   This is a sequencing choice, not a dismissal of memory systems: shipped memory products prove that fact/preference recall is useful, but =e='s sharper unsolved problem is repeated procedural work, where a reviewable skill or guidance patch gives a safer and more testable artifact than opaque episodic retrieval.
   Retrieval-heavy episodic memory is a later, optional layer once the durable-artifact path is working.
-- The planned agent-facing process-reporting tool in feat 52 is the explicit capture side of the same loop.
-  It lets the agent preserve high-precision evidence about failures, corrections, workarounds, repeated procedures, and successful methods while session mining supplies broader implicit evidence.
+- The agent-facing process-reporting tool in feat 52 is the explicit capture side of the same loop.
+  It lets the agent preserve task-relative feedback about tool and action use: failures, friction, corrections, workarounds, repeated procedures, and effective methods, while session mining supplies broader implicit evidence.
   A later triage step decides whether the report implies a bug, capability, skill, script, schedule, guidance edit, or no action.
   The extraction pass should read both explicit reports and session history, then cite both kinds of evidence in its proposals.
 - We already built this loop once, outside =e=: *Goodnite* mines Claude Code and Cursor traces nightly (=goodnite dream=), clusters recurring episodes, proposes skills, and hands a human a review list.

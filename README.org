@@ -219,10 +219,9 @@ The harness owns lifecycle and runtime ordering, while capabilities own named be
 
 *** Process reporting
 
-The default parent harness exposes one small =process_marker= tool. It accepts a
-=signal= and one short =note=, then returns only =ok=. The runtime links the
-marker to its session, turn, provider request, tool/action telemetry, redacted
-previews, and resolvable =session://= evidence.
+The default parent harness exposes one small =process_marker= tool for task-relative feedback about tool and action use.
+It accepts a =signal= and one short =note= describing what worked, caused friction, or should be reused, then returns only =ok=.
+The runtime links the marker to its session, turn, provider request, tool/action telemetry, redacted previews, and resolvable =session://= evidence.
 
 The =process-reporting= capability also exposes durable actions:
 

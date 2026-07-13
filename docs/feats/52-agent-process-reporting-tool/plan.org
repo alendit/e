@@ -4,7 +4,8 @@
 * Goal
 
 Give the task-performing agent a first-class way to place small process markers into the session while the relevant judgment is fresh.
-A marker is a terse observation, not a finished report or diagnosis.
+A marker captures task-relative feedback about tool or action use, including both friction and effective methods.
+It is a terse observation, not a finished report or diagnosis.
 Process marking is a pure observability and learning function.
 It does not help complete the current task, so every token, provider request, delay, tool result, and context entry it causes is additional cost that later learning must repay.
 The marker lands as a durable, reviewable record in the active session store.
@@ -28,7 +29,7 @@ The capture step should preserve evidence and intent; triage should decide what 
 - The default capture path is a small model-facing =process_marker= tool called directly by the task-performing agent.
   The parent already has the process judgment in context; capture should preserve that judgment rather than pay another model to reconstruct it.
 - A matching =e-actions-call= action gives runtime code and later extraction agents the same semantic write path.
-- The marker records events such as a failed operation, correction, workaround, repeated multi-step sequence, missing affordance, performance problem, or notably effective method.
+- The marker records task-relative tool or action feedback such as a failed operation, friction, correction, workaround, repeated sequence, missing affordance, performance problem, successful method, or notably effective operation.
 - Capture stays descriptive.
   It does not require the caller to name the final work item or assert that the runtime has a bug.
 - The descriptor and default guidance must be extremely small.
@@ -42,8 +43,8 @@ The capture step should preserve evidence and intent; triage should decide what 
 
 The model-supplied payload should fit in one short tool call:
 
-- =signal= :: a descriptive hint from a small vocabulary such as =failure=, =correction=, =workaround=, =repetition=, =success=, =missing-operation=, or =performance=.
-- =note= :: one short sentence naming what mattered.
+- =signal= :: a descriptive hint from a small vocabulary: =failure=, =friction=, =correction=, =workaround=, =repetition=, =success=, =effective=, =missing-operation=, or =performance=.
+- =note= :: one short sentence stating what the tool or action did in relation to the task and why it helped or caused friction.
 
 The runtime attaches everything it already knows:
 
@@ -53,6 +54,7 @@ The runtime attaches everything it already knows:
 - redacted argument, outcome, error, and telemetry references when available.
 
 Do not ask the parent agent for detail, impact, expected-versus-actual restatement, recurrence evidence, or a proposed remedy in the capture call.
+The signal and note carry the agent-only judgment; the runtime-attached session, turn, and trigger chain identify the task and relevant tool or action.
 Offline extraction can recover surrounding evidence through =session://= and can ask a later model to produce a richer report only when the marker proves useful.
 
 ** Where reports land
@@ -195,7 +197,7 @@ Those totals are the denominator and validation evidence; the counterfactual del
   A failed tool call is telemetry, not automatically process evidence.
   The task-performing agent decides when an event carries a judgment worth marking.
 - Not limited to failures.
-  Successful workarounds and repeated useful procedures are valid evidence.
+  Effective tools, successful actions, useful workarounds, and repeated procedures are first-class evidence.
 - Not a full issue tracker.
   Assignment, comments, and rich workflow stay in the downstream system selected by triage.
 - Not autonomous self-modification.
@@ -242,7 +244,7 @@ Those totals are the denominator and validation evidence; the counterfactual del
 
 * Implementation evidence
 
-The first parent-side slice is implemented and ready for review as of 2026-07-13.
+The first parent-side slice was accepted as complete on 2026-07-13.
 
 - =30e7a34= adds the shared bounded telemetry preview and applies redaction to
   action arguments/results and durable tool arguments/results.
