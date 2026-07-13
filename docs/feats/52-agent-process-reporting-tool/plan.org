@@ -73,6 +73,47 @@ A content-keyed evidence identity should prevent rejected or already-routed obse
 - Explicit reports and implicit mining cover different blind spots.
   Reporting depends on the agent noticing significance, while mining can find repeated patterns nobody reported.
 
+** Token-cost accounting
+
+Track the model-context footprint of process reporting so its value can later be compared with its recurring cost.
+Keep this accounting post-hoc and derived where possible rather than adding mutable counters to each report.
+
+Separate three costs:
+
+1. *Surface cost* :: the estimated tokens for the =process_report= tool descriptor and always-injected guidance on every provider request where the tool is active.
+2. *Invocation cost* :: the estimated tokens for the model-emitted tool call arguments and the model-visible tool result.
+3. *Follow-up cost* :: the extra context carried into provider requests after an invocation, including the call and result retained in the transcript.
+
+The provider already supplies exact request-level totals for input, cached input, output, reasoning output, and total tokens, and =e= stores these as durable =token-usage= activity events.
+Tool and action lifecycle events already preserve turn ids, tool-call ids, action-call ids, parent tool-call ids, argument previews, result previews, and elapsed time.
+That is enough to calculate useful relative measures if request and usage events can be joined reliably.
+
+Preserve or add the following attribution data:
+
+- A stable provider-request id or request ordinal on =provider-request-started=, =provider-request-finished=, and the corresponding =token-usage= event.
+  Event order within a turn is a fallback, not a durable join contract, because a tool turn can issue several provider requests.
+- The =process_report= tool-call id and any nested process-reporting action-call id on the stored report.
+- The exact model-visible tool descriptor revision or a content hash that lets post-hoc analysis reconstruct it.
+- The exact model-visible guidance revision or content hash for guidance whose cost is assigned to process reporting.
+- The byte or character lengths of model-visible call arguments and results when exact text is intentionally unavailable after redaction.
+
+A post-hoc report can then show:
+
+- estimated process-reporting tokens per provider request and per session;
+- process-reporting tokens as a percentage of provider-reported input and output tokens;
+- cached versus uncached input share when the provider reports it;
+- invocation count and estimated tokens per accepted, rejected, duplicate, or unresolved report;
+- estimated tokens per downstream outcome, such as a confirmed bug, accepted skill, or guidance change.
+
+Use the provider tokenizer when one is available.
+Otherwise record the estimation method and use one stable approximation, such as UTF-8 bytes or characters converted to estimated tokens.
+Relative comparisons remain useful when the same estimator is used across revisions.
+
+This is accounting attribution, not a causal estimate.
+Logs can show how much context the descriptor, guidance, call, and result occupy, but they cannot prove how many tokens the model would have used in a counterfactual run without the tool.
+A causal claim would require an A/B or replay experiment with the tool removed.
+Do not label request-to-request token deltas as savings or overhead without such a comparison.
+
 ** Surfacing
 
 - A =list=/=read= path, and optionally a picker, lets the human review open reports and their triage decisions.
@@ -101,6 +142,9 @@ A content-keyed evidence identity should prevent rejected or already-routed obse
 - A stable =list=/=read= path lets humans and extraction agents review reports later.
 - Triage can append an outcome and optional target reference while leaving the original report unchanged.
 - Bug work is one supported triage outcome rather than the identity of the reporting tool.
+- Durable telemetry can join each process-report invocation to its provider requests and =token-usage= events through stable ids rather than event-order inference.
+- A post-hoc report can estimate surface, invocation, and follow-up token footprints and express them as a share of provider-reported usage.
+- Every estimate names its tokenizer or approximation and does not claim causal overhead without an A/B or replay comparison.
 
 * Design self-check
 
