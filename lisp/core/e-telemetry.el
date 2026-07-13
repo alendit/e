@@ -54,15 +54,24 @@
                (concat (car (split-string match)) " "
                        e-telemetry-redacted-value)))
            redacted t t))
-    (replace-regexp-in-string
-     "\\b\\(api[_-]?key\\|access[_-]?token\\|refresh[_-]?token\\|password\\|passwd\\|secret\\|token\\)\\b[[:space:]]*\\([=:]\\)[[:space:]]*['\"]?[^[:space:],;}\"']+"
-     (lambda (match)
-       (save-match-data
-         (if (string-match "[=:]" match)
-             (concat (substring match 0 (1+ (match-beginning 0)))
-                     e-telemetry-redacted-value)
-           e-telemetry-redacted-value)))
-     redacted t t)))
+    (setq redacted
+          (replace-regexp-in-string
+           "\\b\\(api[_-]?key\\|access[_-]?token\\|refresh[_-]?token\\|password\\|passwd\\|secret\\|token\\|signature\\|sig\\|x-amz-credential\\|x-amz-signature\\)\\b[[:space:]]*\\([=:]\\)[[:space:]]*['\"]?[^[:space:]&,;}\"']+"
+           (lambda (match)
+             (save-match-data
+               (if (string-match "[=:]" match)
+                   (concat (substring match 0 (1+ (match-beginning 0)))
+                           e-telemetry-redacted-value)
+                 e-telemetry-redacted-value)))
+           redacted t t))
+    (dolist (pattern '("\\bgh[pousr]_[A-Za-z0-9_]+"
+                       "\\bsk-[A-Za-z0-9_-]+"
+                       "\\bAKIA[0-9A-Z]\\{16\\}\\b"
+                       "\\bASIA[0-9A-Z]\\{16\\}\\b"))
+      (setq redacted
+            (replace-regexp-in-string pattern e-telemetry-redacted-value
+                                      redacted t t)))
+    redacted))
 
 (defun e-telemetry-redact-value (value &optional seen)
   "Return a copy of VALUE with sensitive fields and strings redacted.

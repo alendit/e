@@ -35,11 +35,6 @@
   :type 'number
   :group 'e-process-reporting)
 
-(defcustom e-process-reporting-stale-lock-seconds 300
-  "Age after which an unverifiable process-reporting lock is stale."
-  :type 'integer
-  :group 'e-process-reporting)
-
 (defcustom e-process-reporting-directory
   (locate-user-emacs-file "e/process-reporting/")
   "Directory containing append-only process reporting records."
@@ -91,88 +86,124 @@
 
 (defun e-process-reporting--json-line (record)
   "Return RECORD as one deterministic JSON line."
-  (concat (json-encode record)
-          "\n"))
+  (let ((encoded (copy-tree record)))
+    ;; `json-encode' mistakes a Lisp list of plists for one object.  Repeated
+    ;; durable records must be vectors so their JSON representation is an
+    ;; array and reload reconstructs the original list of plists.
+    (when (equal (plist-get encoded :type) "marker")
+      (plist-put encoded :trigger-chain
+                 (vconcat (plist-get encoded :trigger-chain))))
+    (concat (json-encode encoded) "\n")))
 
-(defun e-process-reporting--lock-directory (store)
-  "Return the inter-process lock directory for STORE."
+(defun e-process-reporting--trigger-record-p (value)
+  "Return non-nil when VALUE is one durable trigger record."
+  (and (listp value)
+       (or (null value) (keywordp (car value)))
+       (stringp (plist-get value :activity-event-id))
+       (stringp (plist-get value :event-type))))
+
+(defun e-process-reporting--validate-record-shape (record)
+  "Return RECORD after validating repeated durable record shapes."
+  (when (equal (plist-get record :type) "marker")
+    (let ((chain (plist-get record :trigger-chain)))
+      (unless (and (listp chain)
+                   (cl-every #'e-process-reporting--trigger-record-p chain))
+        (signal 'wrong-type-argument
+                (list 'process-reporting-trigger-chain-p chain)))))
+  record)
+
+(defun e-process-reporting--lock-file (store)
+  "Return the persistent advisory lock file for STORE."
   (concat (e-process-reporting--file store) ".lock"))
 
-(defun e-process-reporting--lock-owner-file (store)
-  "Return the lock owner file for STORE."
-  (expand-file-name "owner.json" (e-process-reporting--lock-directory store)))
-
-(defun e-process-reporting--write-lock-owner (store)
-  "Write this Emacs process as lock owner for STORE."
-  (let ((coding-system-for-write 'utf-8-unix))
-    (write-region
-     (json-encode (list :pid (emacs-pid)
-                        :host (system-name)
-                        :created-at (float-time)))
-     nil (e-process-reporting--lock-owner-file store) nil 'silent)))
-
-(defun e-process-reporting--read-lock-owner (store)
-  "Return lock owner metadata for STORE, or nil."
-  (condition-case nil
-      (let ((json-object-type 'plist)
-            (json-array-type 'list))
-        (json-read-file (e-process-reporting--lock-owner-file store)))
-    (error nil)))
-
-(defun e-process-reporting--local-process-live-p (pid)
-  "Return non-nil when local PID still exists."
-  (and (integerp pid)
-       (> pid 0)
-       (ignore-errors (process-attributes pid))))
-
-(defun e-process-reporting--stale-lock-p (store)
-  "Return non-nil when STORE's lock can no longer have a live owner."
-  (let* ((owner (e-process-reporting--read-lock-owner store))
-         (pid (plist-get owner :pid))
-         (host (plist-get owner :host))
-         (created-at (plist-get owner :created-at)))
+(defun e-process-reporting--lock-command (file)
+  "Return a platform lock helper command for FILE."
+  ;; macOS `lockf' rejects decimal spellings such as "5.0" even though this
+  ;; option is intentionally a Lisp number.  Round up so sub-second values do
+  ;; not shorten the helper's bound below Emacs's own deadline.
+  (let ((timeout (number-to-string
+                  (max 1 (ceiling e-process-reporting-lock-timeout))))
+        (holder "printf 'acquired\\n'; cat >/dev/null"))
     (cond
-     ((and (equal host (system-name)) (integerp pid))
-      (not (e-process-reporting--local-process-live-p pid)))
-     ((numberp created-at)
-      (> (- (float-time) created-at)
-         e-process-reporting-stale-lock-seconds))
-     (t nil))))
+     ((executable-find "lockf")
+      (list "lockf" "-s" "-k" "-t" timeout file
+            "sh" "-c" holder))
+     ((executable-find "flock")
+      (list "flock" "-w" timeout file "sh" "-c" holder))
+     (t
+      (user-error "Process reporting requires lockf or flock")))))
 
 (defun e-process-reporting--acquire-lock (store)
-  "Acquire STORE's inter-process lock or signal a bounded error."
-  (let ((lock (e-process-reporting--lock-directory store))
-        (deadline (+ (float-time) e-process-reporting-lock-timeout))
-        acquired)
-    (make-directory (file-name-directory lock) t)
-    (while (not acquired)
-      (condition-case err
-          (progn
-            (make-directory lock)
-            (setq acquired t)
-            (condition-case owner-error
-                (e-process-reporting--write-lock-owner store)
-              (error
-               (delete-directory lock t)
-               (signal (car owner-error) (cdr owner-error)))))
-        (file-already-exists
-         (if (e-process-reporting--stale-lock-p store)
-             (ignore-errors (delete-directory lock t))
-           (when (>= (float-time) deadline)
-             (signal 'file-error
-                     (list "Timed out waiting for process-reporting store lock"
-                           lock)))
-           (sleep-for 0.01)))
-        (error (signal (car err) (cdr err)))))
-    lock))
+  "Acquire STORE's kernel-held advisory lock or signal a bounded error."
+  (let* ((file (e-process-reporting--lock-file store))
+         (buffer (generate-new-buffer " *e-process-reporting-lock*"))
+         (deadline (+ (float-time) e-process-reporting-lock-timeout))
+         (process nil)
+         acquired)
+    (make-directory (file-name-directory file) t)
+    (condition-case err
+        (progn
+          (setq process
+                (make-process
+                 :name "e-process-reporting-lock"
+                 :buffer buffer
+                 :command (e-process-reporting--lock-command file)
+                 :connection-type 'pipe
+                 :noquery t))
+          (while (and (not acquired)
+                      (process-live-p process)
+                      (< (float-time) deadline))
+            (accept-process-output process 0.01)
+            (with-current-buffer buffer
+              (setq acquired
+                    (save-excursion
+                      (goto-char (point-min))
+                      (search-forward "acquired\n" nil t)))))
+          (unless acquired
+            ;; Drain any final helper diagnostics before classifying failure.
+            (accept-process-output process 0.01)
+            (let ((timed-out (>= (float-time) deadline))
+                  (status (process-status process))
+                  (exit-status (process-exit-status process))
+                  (diagnostic
+                   (with-current-buffer buffer
+                     (string-trim (buffer-string)))))
+              (when (process-live-p process)
+                (delete-process process))
+              (if timed-out
+                  (signal
+                   'file-error
+                   (list "Timed out waiting for process-reporting store lock"
+                         file))
+                (signal
+                 'file-error
+                 (list "Process-reporting lock helper exited before acquisition"
+                       file status exit-status diagnostic)))))
+          (cons process buffer))
+      (error
+       (when (process-live-p process)
+         (delete-process process))
+       (when (buffer-live-p buffer)
+         (kill-buffer buffer))
+       (signal (car err) (cdr err))))))
+
+(defun e-process-reporting--release-lock (lock)
+  "Release advisory LOCK returned by `e-process-reporting--acquire-lock'."
+  (let ((process (car lock))
+        (buffer (cdr lock)))
+    (when (process-live-p process)
+      (process-send-eof process)
+      (while (process-live-p process)
+        (accept-process-output process 0.01)))
+    (when (buffer-live-p buffer)
+      (kill-buffer buffer))))
 
 (defun e-process-reporting--call-with-lock (store function)
   "Call FUNCTION with STORE exclusively locked."
   (let ((lock (e-process-reporting--acquire-lock store)))
     (unwind-protect
         (funcall function)
-      (when (file-directory-p lock)
-        (delete-directory lock t)))))
+      (e-process-reporting--release-lock lock))))
 
 (defun e-process-reporting--append-file-unlocked (store record)
   "Append one complete RECORD to locked STORE."
@@ -243,11 +274,12 @@
               (unless (string-empty-p line)
                 (e-process-reporting--index-event
                  store
-                 (json-parse-string line
-                                    :object-type 'plist
-                                    :array-type 'list
-                                    :null-object nil
-                                    :false-object :json-false))))
+                 (e-process-reporting--validate-record-shape
+                  (json-parse-string line
+                                     :object-type 'plist
+                                     :array-type 'list
+                                     :null-object nil
+                                     :false-object :json-false)))))
             (forward-line 1)))))
     (setf (e-process-reporting-store-loaded store) t))
   store)
@@ -714,13 +746,25 @@
           (e-process-reporting--shape-bytes shape :without-passive-shape))
          (without-active
           (e-process-reporting--shape-bytes shape :without-active-shape))
-         (cause-name (plist-get payload :caused-by-tool-name)))
+         (causes
+          (or (plist-get payload :caused-by-tool-calls)
+              (when-let ((name (plist-get payload :caused-by-tool-name)))
+                (list (list :id (plist-get payload :caused-by-tool-call-id)
+                            :name name)))))
+         (marker-causes
+          (seq-filter (lambda (cause)
+                        (equal (plist-get cause :name) "process_marker"))
+                      causes)))
     (list :provider-request-id (plist-get payload :provider-request-id)
           :provider-request-ordinal
           (plist-get payload :provider-request-ordinal)
           :caused-by-tool-call-id
           (plist-get payload :caused-by-tool-call-id)
-          :marker-follow-up (equal cause-name "process_marker")
+          :caused-by-tool-calls (copy-tree causes)
+          :marker-follow-up (not (null marker-causes))
+          :marker-follow-up-call-ids
+          (vconcat (mapcar (lambda (cause) (plist-get cause :id))
+                           marker-causes))
           :actual-bytes actual
           :paired-bytes paired
           :direct-context-delta-bytes (- actual paired)

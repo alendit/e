@@ -105,14 +105,25 @@
                         call-ids))))
      messages)))
 
-(defun e-loop--without-marker-guidance (messages)
-  "Return MESSAGES without the process marker guidance block."
-  (seq-remove
-   (lambda (message)
-     (and (eq (plist-get message :role) 'system)
-          (string-match-p "process_marker"
-                          (format "%s" (plist-get message :content)))))
-   messages))
+(defun e-loop--marker-guidance-segment-p (segment)
+  "Return non-nil when SEGMENT is process-reporting capability guidance."
+  (equal (plist-get segment :id) '(process-reporting instructions)))
+
+(defun e-loop--remove-message-once (messages target)
+  "Return MESSAGES with the first message equal to TARGET removed."
+  (let (removed result)
+    (dolist (message messages (nreverse result))
+      (if (and (not removed) (equal message target))
+          (setq removed t)
+        (push message result)))))
+
+(defun e-loop--without-marker-guidance (messages segments)
+  "Return MESSAGES without guidance identified by context SEGMENTS."
+  (let ((result messages))
+    (dolist (segment segments result)
+      (when (e-loop--marker-guidance-segment-p segment)
+        (dolist (message (plist-get segment :messages))
+          (setq result (e-loop--remove-message-once result message)))))))
 
 (defun e-loop--without-marker-tool (tools)
   "Return TOOLS without the process_marker descriptor."
@@ -126,13 +137,13 @@
     (plist-put copy :messages (copy-tree messages))
     copy))
 
-(defun e-loop--request-shape (messages options)
+(defun e-loop--request-shape (messages options segments)
   "Measure actual and marker-free request shapes without retaining content."
   (let* ((actual (e-loop--request-snapshot messages options))
          (no-active-messages (e-loop--without-marker-messages messages))
-         (no-passive-messages (e-loop--without-marker-guidance messages))
+         (no-passive-messages (e-loop--without-marker-guidance messages segments))
          (paired-messages
-          (e-loop--without-marker-guidance no-active-messages))
+          (e-loop--without-marker-guidance no-active-messages segments))
          (no-passive-options (copy-tree options))
          (paired-options (copy-tree options)))
     (plist-put no-passive-options :tools
@@ -161,14 +172,27 @@
             :prompt-cache-retention
             (plist-get options :prompt-cache-retention)))))
 
+(defun e-loop--request-cause-fields (causes)
+  "Return stable lifecycle fields for completed tool-call CAUSES."
+  (when causes
+    (let* ((last-cause (car (last causes)))
+           (records
+            (mapcar (lambda (cause)
+                      (list :id (plist-get cause :id)
+                            :name (plist-get cause :name)))
+                    causes)))
+      (list :caused-by-tool-call-id (plist-get last-cause :id)
+            :caused-by-tool-name (plist-get last-cause :name)
+            :caused-by-tool-calls (vconcat records)))))
+
 (defun e-loop--request-lifecycle-payload
     (request status request-id request-ordinal request-shape
-             &optional started-at cause)
+             &optional started-at causes)
   "Return sanitized lifecycle payload for REQUEST with stable identity.
 REQUEST-ID and REQUEST-ORDINAL join all events for one provider request.
 REQUEST-SHAPE contains hashes and sizes of model-visible request ingredients.
 STARTED-AT is the `float-time' value captured when the request was published.
-CAUSE names the completed tool call that induced a follow-up request."
+CAUSES lists every completed tool call that induced a follow-up request."
   (let* ((metadata (and (e-backend-request-p request)
                         (e-backend-request-metadata request)))
          (payload (list :provider-request-id request-id
@@ -182,11 +206,9 @@ CAUSE names the completed tool call that induced a follow-up request."
                                                      :timeout-seconds)
                         :deadline (plist-get metadata :deadline)
                         :status status)))
-    (when cause
+    (when causes
       (setq payload
-            (append payload
-                    (list :caused-by-tool-call-id (plist-get cause :id)
-                          :caused-by-tool-name (plist-get cause :name)))))
+            (append payload (e-loop--request-cause-fields causes))))
     (when-let ((diagnostics
                 (e-loop--sanitize-diagnostics
                  (plist-get metadata :diagnostics))))
@@ -224,7 +246,7 @@ CAUSE names the completed tool call that induced a follow-up request."
 (cl-defun e-loop-start-turn
     (&key session-id turn-id messages backend tools tool-lifecycle options on-event
           append-message refresh-messages on-request-start on-done on-error
-          cancelled-p drain-pending-input)
+          cancelled-p drain-pending-input segments)
   "Start one async agent turn for SESSION-ID and TURN-ID.
 MESSAGES, BACKEND, TOOLS, TOOL-LIFECYCLE, and OPTIONS describe the turn input.
 ON-EVENT, APPEND-MESSAGE, REFRESH-MESSAGES, ON-REQUEST-START, ON-DONE,
@@ -239,7 +261,7 @@ tool I/O, and turn settlement are callback-driven."
         (settled nil)
         (active-request nil)
         (provider-request-sequence 0)
-        (next-request-cause nil))
+        (next-request-causes nil))
     (cl-labels
         ((cancelled ()
            (and cancelled-p (funcall cancelled-p)))
@@ -294,7 +316,7 @@ tool I/O, and turn settlement are callback-driven."
                   (provider-request-shape nil)
                   (provider-request-started-at nil)
                   (provider-request-finished nil)
-                  (provider-request-cause next-request-cause))
+                  (provider-request-causes next-request-causes))
               (cl-labels
                   ((response-text ()
                      (or response-assistant-message
@@ -302,13 +324,13 @@ tool I/O, and turn settlement are callback-driven."
                    (publish-provider-request
                     (request)
                     (setq provider-request request)
-                    (setq next-request-cause nil)
+                    (setq next-request-causes nil)
                     (setq provider-request-sequence
                           (1+ provider-request-sequence))
                     (setq provider-request-id (e-session-generate-ulid))
                     (setq provider-request-ordinal provider-request-sequence)
                     (setq provider-request-shape
-                          (e-loop--request-shape turn-messages options))
+                          (e-loop--request-shape turn-messages options segments))
                     (setq provider-request-started-at (float-time))
                     (setq provider-request-finished nil)
                     (publish-request request)
@@ -319,7 +341,7 @@ tool I/O, and turn settlement are callback-driven."
                      (e-loop--request-lifecycle-payload
                       request 'started provider-request-id
                       provider-request-ordinal provider-request-shape nil
-                      provider-request-cause)))
+                      provider-request-causes)))
                    (finish-provider-request
                     (status)
                     (when (and provider-request
@@ -333,7 +355,7 @@ tool I/O, and turn settlement are callback-driven."
                         provider-request status provider-request-id
                         provider-request-ordinal provider-request-shape
                         provider-request-started-at
-                        provider-request-cause))))
+                        provider-request-causes))))
                    (fail-provider
                     (err)
                     (finish-provider-request 'error)
@@ -392,7 +414,8 @@ tool I/O, and turn settlement are callback-driven."
                                  (plist-get (plist-get result :metadata)
                                             :refresh-context))
                         (setq turn-messages (funcall refresh-messages)))
-                      (setq next-request-cause tool-call)
+                      (setq next-request-causes
+                            (append next-request-causes (list tool-call)))
                       (start-next-tool)
                       (maybe-start-followup)))
                    (start-next-tool
@@ -403,12 +426,24 @@ tool I/O, and turn settlement are callback-driven."
                                (not (cancelled)))
                       (condition-case err
                           (let* ((entry (pop tool-queue))
-                                 (tool-call
+                                 (execution-call
                                   (if tool-lifecycle
                                       (e-tool-lifecycle-prepare-call
                                        tool-lifecycle
                                        (plist-get entry :tool-call))
                                     (plist-get entry :tool-call)))
+                                 (tool-call
+                                  (if (not (e-tools-registry-p tools))
+                                      execution-call
+                                    (condition-case nil
+                                        (e-tools-prepare-call
+                                         tools execution-call)
+                                      (error
+                                       ;; Keep provider protocol shape while
+                                       ;; dropping undeclared rejected fields
+                                       ;; before transcript and activity writes.
+                                       (e-tools-project-call-for-rejection
+                                        tools execution-call)))))
                                  (tool-token (list :tool-call tool-call))
                                  (tool-call-message
                                   (list :role 'tool-call
@@ -426,7 +461,7 @@ tool I/O, and turn settlement are callback-driven."
                                    (if tool-lifecycle
                                        (e-tool-lifecycle-start-call
                                         tool-lifecycle
-                                        tool-call
+                                        execution-call
                                         :on-request-start
                                         (lambda (request)
                                           (publish-tool-request
@@ -444,7 +479,7 @@ tool I/O, and turn settlement are callback-driven."
                                         :on-error #'fail)
                                      (e-tools-start
                                       tools
-                                      tool-call
+                                      execution-call
                                       :context
                                       (list :session-id session-id
                                             :turn-id turn-id
@@ -508,11 +543,9 @@ tool I/O, and turn settlement are callback-driven."
                                      (list :provider-request-id
                                            provider-request-id
                                            :provider-request-ordinal
-                                           provider-request-ordinal
-                                           :caused-by-tool-call-id
-                                           (plist-get provider-request-cause :id)
-                                           :caused-by-tool-name
-                                           (plist-get provider-request-cause :name))))
+                                           provider-request-ordinal)
+                                     (e-loop--request-cause-fields
+                                      provider-request-causes)))
                               (e-loop--emit
                                :on-event on-event
                                :type 'token-usage
@@ -641,7 +674,7 @@ tool I/O, and turn settlement are callback-driven."
 
 (cl-defun e-loop-run-turn-batch
     (&key session-id turn-id messages backend tools tool-lifecycle options on-event
-          append-message refresh-messages on-request-start)
+          append-message refresh-messages on-request-start segments)
   "Synchronously run one agent turn from batch/test code.
 SESSION-ID and TURN-ID identify the turn.
 MESSAGES, BACKEND, TOOLS, TOOL-LIFECYCLE, OPTIONS, ON-EVENT, APPEND-MESSAGE,
@@ -661,6 +694,7 @@ one."
      :tools tools
      :tool-lifecycle tool-lifecycle
      :options options
+     :segments segments
      :on-event on-event
      :append-message append-message
      :refresh-messages refresh-messages

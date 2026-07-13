@@ -956,7 +956,11 @@ ordinary backoff."
       (let ((value (plist-get metadata key)))
         (when (or (stringp value) (numberp value)
                   (memq value '(t nil :json-false)))
-          (setq safe (append safe (list key value))))))
+          (setq safe
+                (append safe
+                        (list key (if (stringp value)
+                                      (e-telemetry-redact-string value)
+                                    value)))))))
     (when (plist-get preview :truncated)
       (setq safe
             (append safe
@@ -988,27 +992,68 @@ ordinary backoff."
           :content preview-content
           :metadata metadata)))
 
-(defun e-harness--compact-tool-finished-payload (payload)
-  "Return PAYLOAD with a compact `:result' for durable activity storage."
-  (if (and (listp payload) (e-tools-result-p (plist-get payload :result)))
-      (let ((copy (copy-sequence payload)))
-        (plist-put copy
-                   :result
-                   (e-harness--compact-tool-result-for-activity
-                    (plist-get payload :result)))
-        copy)
-    payload))
+(defun e-harness--safe-activity-scalar (value)
+  "Return VALUE safe for a narrow durable activity identity field."
+  (cond
+   ((stringp value) (e-telemetry-redact-string value))
+   ((or (numberp value) (symbolp value) (null value)) value)
+   (t nil)))
+
+(defun e-harness--tool-call-activity-projection (call include-arguments)
+  "Return a narrow durable projection of tool CALL.
+When INCLUDE-ARGUMENTS is non-nil, retain only a bounded redacted preview."
+  (when (listp call)
+    (let ((projected
+           (list :id (e-harness--safe-activity-scalar (plist-get call :id))
+                 :name (e-harness--safe-activity-scalar
+                        (plist-get call :name)))))
+      (when (and include-arguments (plist-member call :arguments))
+        (setq projected
+              (append projected
+                      (list :arguments
+                            (e-telemetry-preview
+                             (plist-get call :arguments))))))
+      projected)))
+
+(defun e-harness--tool-relation-activity-fields (payload)
+  "Return named causal fields retained from tool activity PAYLOAD."
+  (let (fields)
+    (dolist (key '(:nested :parent-tool-call-id :depth))
+      (when (and (listp payload) (plist-member payload key))
+        (let ((value (e-harness--safe-activity-scalar
+                      (plist-get payload key))))
+          (when value
+            (setq fields (append fields (list key value)))))))
+    fields))
 
 (defun e-harness--compact-tool-started-payload (payload)
-  "Return PAYLOAD with tool arguments replaced by a redacted preview."
-  (let* ((copy (copy-tree payload))
-         (call (if (plist-get copy :tool-call)
-                   (plist-get copy :tool-call)
-                 copy)))
-    (when (plist-member call :arguments)
-      (plist-put call :arguments
-                 (e-telemetry-preview (plist-get call :arguments))))
-    copy))
+  "Return a narrow redacted durable projection of tool-started PAYLOAD."
+  (let* ((wrapped (and (listp payload) (plist-member payload :tool-call)))
+         (call (and (listp payload)
+                    (if wrapped (plist-get payload :tool-call) payload)))
+         (projected (e-harness--tool-call-activity-projection call t))
+         (relations (e-harness--tool-relation-activity-fields payload)))
+    (if wrapped
+        (append (list :tool-call projected) relations)
+      (append projected relations))))
+
+(defun e-harness--compact-tool-finished-payload (payload)
+  "Return a narrow durable projection of tool-finished PAYLOAD."
+  (let* ((call (and (listp payload) (plist-get payload :tool-call)))
+         (result (and (listp payload) (plist-get payload :result)))
+         (projected
+          (append
+           (list :tool-call
+                 (e-harness--tool-call-activity-projection call nil))
+           (e-harness--tool-relation-activity-fields payload))))
+    ;; Unknown, malformed, and legacy result shapes retain only call identity
+    ;; and causal fields.  They never fall back to persisting the raw payload.
+    (when (e-tools-result-p result)
+      (setq projected
+            (append projected
+                    (list :result
+                          (e-harness--compact-tool-result-for-activity result)))))
+    projected))
 
 (defun e-harness--durable-activity-payload (type payload)
   "Return durable activity PAYLOAD for event TYPE."
@@ -2262,6 +2307,7 @@ When a turn produced multiple assistant messages, return the last one."
         :tools (e-harness-tools harness session-id turn-id)
         :tool-lifecycle (e-harness-tool-lifecycle harness session-id turn-id)
         :options (plist-get context :options)
+        :segments (plist-get context :segments)
         :on-event (or on-event
                       (lambda (type payload)
                         (e-harness--emit-turn-event

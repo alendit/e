@@ -1063,6 +1063,46 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
       (should (equal (plist-get metadata :tmp-uri) "tmp://safe"))
       (should-not (string-match-p "raw-secret\\|raw-nested" serialized)))))
 
+(ert-deftest e-harness-test-tool-finished-activity-redacts-safe-metadata-strings ()
+  "Named metadata fields still cross the shared string redactor."
+  (let ((harness (e-harness-create
+                  :backend (e-backend-fake-create :items nil))))
+    (e-harness-create-session harness :id "session-1")
+    (e-harness--emit-turn-event
+     harness "session-1" "turn-1" 'tool-finished
+     '(:tool-call (:id "call-1" :name "probe")
+       :result (:tool-call-id "call-1" :name "probe" :status ok
+                :content "ok"
+                :metadata
+                (:tmp-uri "https://user:password@example.test/file?token=raw-token"
+                 :resource-uri "https://example.test/file?X-Amz-Signature=signed-secret"))))
+    (let* ((event (car (e-harness-session-activity-events
+                        harness "session-1")))
+           (serialized (prin1-to-string event)))
+      (should (string-match-p "REDACTED" serialized))
+      (should-not
+       (string-match-p "password\\|raw-token\\|signed-secret" serialized)))))
+
+(ert-deftest e-harness-test-malformed-tool-finished-activity-never-falls-back-raw ()
+  "Malformed legacy payloads retain identity, not arbitrary raw values."
+  (let ((harness (e-harness-create
+                  :backend (e-backend-fake-create :items nil))))
+    (e-harness-create-session harness :id "session-1")
+    (e-harness--emit-turn-event
+     harness "session-1" "turn-1" 'tool-finished
+     '(:tool-call (:id "call-1" :name "legacy")
+       :result (:content "token=raw-secret")
+       :authorization "Bearer raw-auth"
+       :unknown (:secret "raw-nested")))
+    (let* ((event (car (e-harness-session-activity-events
+                        harness "session-1")))
+           (payload (plist-get event :payload))
+           (serialized (prin1-to-string payload)))
+      (should (equal (plist-get (plist-get payload :tool-call) :id) "call-1"))
+      (should-not (plist-member payload :result))
+      (should-not
+       (string-match-p "raw-secret\\|raw-auth\\|raw-nested" serialized)))))
+
 (ert-deftest e-harness-test-activity-events-declare-persistence-class ()
   "Every durable activity event declares why it is persisted."
   (dolist (type e-harness--durable-activity-event-types)

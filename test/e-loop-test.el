@@ -368,6 +368,85 @@
       (should (equal (plist-get followup-usage :provider-request-id)
                      (plist-get followup :provider-request-id))))))
 
+(ert-deftest e-loop-test-request-shape-removes-only-marker-guidance-segment ()
+  "Unrelated messages mentioning process_marker stay in the paired shape."
+  (let* ((marker-message '(:role system :content "marker guidance"))
+         (unrelated
+          '(:role system
+            :content "A long project policy mentions process_marker but is unrelated."))
+         (messages (list marker-message unrelated '(:role user :content "hi")))
+         (options '(:tools ((:name "process_marker") (:name "echo"))))
+         (segments
+          (list (list :id '(process-reporting instructions)
+                      :messages (list marker-message))))
+         (shape (e-loop--request-shape messages options segments))
+         (expected-options (copy-tree options)))
+    (plist-put expected-options :tools '((:name "echo")))
+    (should
+     (equal
+      (plist-get (plist-get shape :without-passive-shape) :sha256)
+      (plist-get
+       (e-loop--shape-value
+        (e-loop--request-snapshot
+         (list unrelated '(:role user :content "hi")) expected-options))
+       :sha256)))
+    (should-not
+     (equal
+      (plist-get (plist-get shape :without-passive-shape) :sha256)
+      (plist-get
+       (e-loop--shape-value
+        (e-loop--request-snapshot
+         '((:role user :content "hi")) expected-options))
+       :sha256)))))
+
+(ert-deftest e-loop-test-followup-request-carries-all-tool-causes ()
+  "A marker remains a cause when another tool finishes in the same response."
+  (let* ((calls 0)
+         (backend
+          (e-backend-create
+           :name "multi-cause-followup"
+           :stream
+           (cl-function
+            (lambda (&key messages options on-item)
+              (ignore messages options)
+              (setq calls (1+ calls))
+              (if (= calls 1)
+                  (progn
+                    (funcall on-item
+                             '(:type tool-call :id "marker-call"
+                               :name "process_marker" :arguments nil))
+                    (funcall on-item
+                             '(:type tool-call :id "echo-call"
+                               :name "echo" :arguments nil))
+                    (funcall on-item '(:type done :reason tool-use)))
+                (funcall on-item '(:type token-usage :usage (:input-tokens 20)))
+                (funcall on-item '(:type assistant-message :content "done"))
+                (funcall on-item '(:type done :reason stop)))))))
+         (tools (e-tools-registry-create))
+         events)
+    (dolist (name '("process_marker" "echo"))
+      (e-tools-register tools :name name :description name
+                        :handler (lambda (_arguments) "ok")))
+    (e-loop-run-turn-batch
+     :session-id "session-1" :turn-id "turn-1"
+     :messages '((:role user :content "hi"))
+     :backend backend :tools tools
+     :options '(:tools ((:name "process_marker") (:name "echo")))
+     :on-event (lambda (type payload)
+                 (push (list :type type :payload payload) events))
+     :append-message #'ignore)
+    (let* ((started
+            (seq-filter
+             (lambda (event)
+               (eq (plist-get event :type) 'provider-request-started))
+             (nreverse events)))
+           (followup (plist-get (cadr started) :payload))
+           (causes (plist-get followup :caused-by-tool-calls)))
+      (should
+       (equal (append causes nil)
+              '((:id "marker-call" :name "process_marker")
+                (:id "echo-call" :name "echo")))))))
+
 (ert-deftest e-loop-test-normalizes-tool-call-backend-item-spelling ()
   "Provider tool_call items follow the backend-neutral tool-call path."
   (let* ((calls 0)

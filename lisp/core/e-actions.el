@@ -176,7 +176,7 @@
           (cl-loop for key in arguments by #'cddr do
                    (unless (plist-member properties key)
                      (signal 'e-actions-invalid-arguments
-                             (list (format "Unknown action argument: %s" key))))))))))
+                             (list "Action arguments contain undeclared fields")))))))))
 
 (defun e-actions--preview (value)
   "Return a compact redacted printable preview for VALUE."
@@ -229,12 +229,8 @@ OPTIONS may include `:harness', `:session-id', `:turn-id', or `:context'."
          (started-at (float-time))
          (capability-object
           (e-actions--find-capability harness session-id turn-id capability-id))
+         activity-arguments
          failure-emitted)
-    (e-actions--emit-activity
-     harness session-id turn-id 'action-started
-     (e-actions--activity-payload
-      call-id capability-id action-key arguments context
-      :status 'started))
     (condition-case err
         (progn
           (unless capability-object
@@ -274,6 +270,15 @@ OPTIONS may include `:harness', `:session-id', `:turn-id', or `:context'."
                           :capability capability-id
                           :action action-key)))
               (e-actions--validate-arguments action-spec arguments)
+              ;; Rejected arguments never cross the durable activity boundary.
+              ;; Only a schema-valid payload is eligible for started/finished
+              ;; telemetry; failures before this point retain no caller values.
+              (setq activity-arguments arguments)
+              (e-actions--emit-activity
+               harness session-id turn-id 'action-started
+               (e-actions--activity-payload
+                call-id capability-id action-key activity-arguments context
+                :status 'started))
               (cl-labels
                   ((make-finish
                     (settled)
@@ -283,7 +288,7 @@ OPTIONS may include `:harness', `:session-id', `:turn-id', or `:context'."
                         (e-actions--emit-activity
                          harness session-id turn-id 'action-finished
                          (e-actions--activity-payload
-                          call-id capability-id action-key arguments context
+                          call-id capability-id action-key activity-arguments context
                           :status 'ok
                           :elapsed-seconds (- (float-time) started-at)
                           :result (e-actions--preview value))))))
@@ -297,7 +302,7 @@ OPTIONS may include `:harness', `:session-id', `:turn-id', or `:context'."
                          harness session-id turn-id 'action-failed
                          (apply #'e-actions--activity-payload
                                 call-id capability-id action-key
-                                arguments context
+                                activity-arguments context
                                 (append
                                  (list :elapsed-seconds
                                        (- (float-time) started-at))
@@ -329,7 +334,7 @@ OPTIONS may include `:harness', `:session-id', `:turn-id', or `:context'."
          (e-actions--emit-activity
           harness session-id turn-id 'action-failed
           (apply #'e-actions--activity-payload
-                 call-id capability-id action-key arguments context
+                 call-id capability-id action-key activity-arguments context
                  (append
                   (list :elapsed-seconds (- (float-time) started-at))
                   (e-actions--error-payload-fields err)))))

@@ -19,6 +19,18 @@
     (should-not (string-match-p "abc123\\|hunter2\\|xyz" content))
     (should (> (plist-get preview :original-bytes) 0))))
 
+(ert-deftest e-telemetry-test-redacts-provider-keys-and-signed-urls ()
+  (let* ((github "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890")
+         (openai "sk-proj-ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890")
+         (aws "AKIAABCDEFGHIJKLMNOP")
+         (text (format
+                "https://user:password@example.test/path?X-Amz-Credential=%s&X-Amz-Signature=signed-secret github=%s openai=%s"
+                aws github openai))
+         (redacted (e-telemetry-redact-string text)))
+    (should (string-match-p "REDACTED" redacted))
+    (dolist (secret (list "password" "signed-secret" github openai aws))
+      (should-not (string-match-p (regexp-quote secret) redacted)))))
+
 (ert-deftest e-telemetry-test-preview-bounds-redacted-content ()
   (let ((preview (e-telemetry-preview (make-string 100 ?x) 12)))
     (should (plist-get preview :truncated))

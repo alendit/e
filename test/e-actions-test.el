@@ -226,6 +226,35 @@
       (let ((matches (e-resources-search resources "e-action://" "rename" nil)))
         (should (< 0 (length (plist-get matches :matches))))))))
 
+(ert-deftest e-actions-test-rejected-arguments-never-enter-activity ()
+  (let* ((harness (e-harness-create :backend (e-backend-fake-create :items nil)))
+         (parameters
+          '(:type "object"
+            :properties (:allowed (:type "string"))
+            :additionalProperties :json-false))
+         (capability
+          (e-capability-create
+           :id 'exact-action
+           :actions
+           (list :run
+                 (e-action-cheap-create
+                  :parameters parameters
+                  :runner (lambda (_arguments _context) "ok"))))))
+    (e-harness-activate-capability harness capability)
+    (e-harness-create-session harness :id "session-1")
+    (should-error
+     (e-actions-call 'exact-action :run
+                     '(:allowed "ok" :extra "must-not-retain")
+                     (list :harness harness :session-id "session-1"
+                           :turn-id "turn-1"))
+     :type 'e-actions-invalid-arguments)
+    (let ((serialized
+           (prin1-to-string
+            (e-session-activity-events
+             (e-harness-sessions harness) "session-1"))))
+      (should-not (string-match-p "must-not-retain\\|:extra" serialized))
+      (should-not (string-match-p "allowed" serialized)))))
+
 (ert-deftest e-actions-test-failed-activity-redacts-error-message ()
   (let* ((harness (e-harness-create :backend (e-backend-fake-create :items nil)))
          (capability

@@ -41,6 +41,33 @@
    (list :harness harness :session-id "session-1" :turn-id "turn-1"
          :context context)))
 
+(ert-deftest e-process-reporting-test-lockf-timeout-is-an-integer ()
+  (let ((e-process-reporting-lock-timeout 5.0))
+    (cl-letf (((symbol-function 'executable-find)
+               (lambda (program)
+                 (and (equal program "lockf") "/usr/bin/lockf"))))
+      (should
+       (equal
+        (e-process-reporting--lock-command "/tmp/process-reporting.lock")
+        '("lockf" "-s" "-k" "-t" "5"
+          "/tmp/process-reporting.lock"
+          "sh" "-c" "printf 'acquired\\n'; cat >/dev/null"))))))
+
+(ert-deftest e-process-reporting-test-live-lock-cannot-be-reclaimed ()
+  (e-process-reporting-test--with-store (store directory)
+    (let ((e-process-reporting-lock-timeout 0.05)
+          (first (e-process-reporting--acquire-lock store)))
+      (unwind-protect
+          (progn
+            (should-error (e-process-reporting--acquire-lock store)
+                          :type 'file-error)
+            (should (process-live-p (car first))))
+        (e-process-reporting--release-lock first)))
+    (let ((after-release (e-process-reporting--acquire-lock store)))
+      (unwind-protect
+          (should (process-live-p (car after-release)))
+        (e-process-reporting--release-lock after-release)))))
+
 (ert-deftest e-process-reporting-test-tool-is-tiny-and-returns-minimal-ack ()
   (e-process-reporting-test--with-store (store directory)
     (let* ((harness (e-process-reporting-test--harness store))
@@ -161,6 +188,7 @@
          :provider-request-ordinal 1
          :caused-by-tool-call-id "marker-call"
          :caused-by-tool-name "process_marker"
+         :caused-by-tool-calls [(:id "marker-call" :name "process_marker")]
          :request-shape
          (:serialization "backend-neutral-elisp-v1"
           :actual-shape (:sha256 "a" :bytes 140)
@@ -245,6 +273,48 @@
       (should (eq (plist-get result :status) 'error))
       (should-not (e-process-reporting-list store)))))
 
+(ert-deftest e-process-reporting-test-loop-rejection-projects-undeclared-fields ()
+  (e-process-reporting-test--with-store (store directory)
+    (let* ((harness (e-process-reporting-test--harness store))
+           (registry (e-harness-tools harness "session-1" "turn-1"))
+           (calls 0)
+           (backend
+            (e-backend-create
+             :name "marker-rejection"
+             :stream
+             (cl-function
+              (lambda (&key messages options on-item)
+                (ignore messages options)
+                (setq calls (1+ calls))
+                (if (= calls 1)
+                    (progn
+                      (funcall on-item
+                               '(:type tool-call :id "marker-call"
+                                 :name "process_marker"
+                                 :arguments
+                                 (:signal "success" :note "Short."
+                                  :impact "must-not-retain")))
+                      (funcall on-item '(:type done :reason tool-use)))
+                  (funcall on-item '(:type assistant-message :content "done"))
+                  (funcall on-item '(:type done :reason stop)))))))
+           appended)
+      (e-loop-run-turn-batch
+       :session-id "session-1" :turn-id "turn-1"
+       :messages '((:role user :content "hi"))
+       :backend backend :tools registry
+       :options (list :tools (e-tools-definitions registry))
+       :on-event (lambda (type payload)
+                   (e-harness--emit-turn-event
+                    harness "session-1" "turn-1" type payload))
+       :append-message (lambda (message) (push message appended)))
+      (let ((serialized
+             (prin1-to-string
+              (list appended
+                    (e-session-activity-events
+                     (e-harness-sessions harness) "session-1")))))
+        (should-not (string-match-p "must-not-retain\\|:impact" serialized))
+        (should-not (e-process-reporting-list store))))))
+
 (ert-deftest e-process-reporting-test-note-and-extraction-free-text-are-redacted ()
   (e-process-reporting-test--with-store (store directory)
     (let* ((harness (e-process-reporting-test--harness store))
@@ -283,12 +353,16 @@
       (let* ((marker (e-process-reporting-test--call-action
                       harness :mark
                       '(:signal "success" :note "Nested action mattered.")))
-             (chain (plist-get marker :trigger-chain)))
+             (marker-id (plist-get marker :id))
+             (loaded (e-process-reporting-store-create :directory directory))
+             (reloaded-marker
+              (plist-get (e-process-reporting-read loaded marker-id) :marker))
+             (chain (plist-get reloaded-marker :trigger-chain)))
+        (should (= (length chain) 2))
         (should (equal (plist-get (car chain) :call-id) "action-1"))
         (should (equal (plist-get (car chain) :parent-tool-call-id) "run-1"))
-        (should (seq-some (lambda (entry)
-                            (equal (plist-get entry :call-id) "run-1"))
-                          chain))))))
+        (should (equal (plist-get (cadr chain) :call-id) "run-1"))
+        (should (equal (plist-get (cadr chain) :event-type) "tool-finished"))))))
 
 (ert-deftest e-process-reporting-test-completed-request-is-not-current ()
   (e-process-reporting-test--with-store (store directory)

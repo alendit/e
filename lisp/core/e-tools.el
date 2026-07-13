@@ -51,6 +51,8 @@
   "Synchronous tool execution requires an explicit batch/test scope")
 (define-error 'e-tools-nested-async-tool-rejected
   "Nested async tool call rejected")
+(define-error 'e-tools-invalid-arguments
+  "Tool arguments do not match the declared schema")
 
 (defconst e-tools-nested-tool-default-budget 20
   "Default maximum number of nested tool calls per parent tool execution.")
@@ -245,8 +247,8 @@ unchanged.  See `e-tools--coerce-argument'."
     (let ((properties (plist-get parameters :properties)))
       (cl-loop for key in arguments by #'cddr do
                (unless (plist-member properties key)
-                 (signal 'wrong-type-argument
-                         (list 'declared-tool-argument key)))))))
+                 (signal 'e-tools-invalid-arguments
+                         (list "Tool arguments contain undeclared fields")))))))
 
 (defun e-tools--prepare-call-arguments (call tool)
   "Coerce and validate CALL arguments against TOOL's runtime schema."
@@ -255,6 +257,36 @@ unchanged.  See `e-tools--coerce-argument'."
                      (plist-get call :arguments) parameters)))
     (e-tools--validate-exact-arguments arguments parameters)
     (plist-put call :arguments arguments)))
+
+(defun e-tools-prepare-call (registry call)
+  "Return a validated, coerced copy of CALL from REGISTRY.
+Unknown tools are returned unchanged so normal missing-tool handling remains
+inside `e-tools-start'."
+  (let* ((copy (copy-tree call))
+         (tool (gethash (plist-get copy :name)
+                        (e-tools-registry-tools registry))))
+    (if tool
+        (e-tools--prepare-call-arguments copy tool)
+      copy)))
+
+(defun e-tools-project-call-for-rejection (registry call)
+  "Return CALL with arguments projected to REGISTRY's declared fields.
+This projection is safe to retain in transcript and activity when exact schema
+validation rejects the original call.  The original call still goes through
+`e-tools-start' so the model receives a normal tool error."
+  (let* ((copy (copy-tree call))
+         (tool (gethash (plist-get copy :name)
+                        (e-tools-registry-tools registry)))
+         (parameters (and tool (plist-get tool :parameters)))
+         (properties (and (listp parameters)
+                          (plist-get parameters :properties)))
+         (arguments (plist-get copy :arguments))
+         projected)
+    (when (and tool (e-tools--plist-p arguments))
+      (cl-loop for (key value) on arguments by #'cddr do
+               (when (plist-member properties key)
+                 (setq projected (append projected (list key value))))))
+    (plist-put copy :arguments projected)))
 
 (defun e-tools--json-key (key)
   "Return stable JSON object key text for KEY."
@@ -450,7 +482,8 @@ strings."
                              e-tools-blocking-handler-rejected
                              e-tools-blocking-execute-rejected
                              e-tools-batch-execute-not-allowed
-                             e-tools-nested-async-tool-rejected))
+                             e-tools-nested-async-tool-rejected
+                             e-tools-invalid-arguments))
            (stringp (cadr err)))
       (cadr err)
     (e-work-error-message err)))
