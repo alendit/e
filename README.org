@@ -238,7 +238,16 @@ The =process-reporting= capability also exposes durable actions:
 
 Markers are immutable. Triage and offline extraction cost records append as
 separate facts in =~/.emacs.d/e/process-reporting/records.jsonl= (or the
-configured =e-process-reporting-directory=). The =:cost-report= action reports
-request-shape byte attribution with an explicit =utf-8-bytes/4= estimate. It
-does not claim behavioral or interruption cost; those require replay or A/B
-measurement.
+configured =e-process-reporting-directory=). Writers refresh and serialize each
+read/check/append operation with an inter-process lock, and recover only an
+incomplete final JSONL record. Persisted free text crosses the shared redaction
+boundary, while activity and extraction records use named schemas instead of
+copying arbitrary metadata.
+
+The =:cost-report= action reports per-request paired byte measures for the
+actual request and marker-free request shape. It separates passive surface,
+active call/result, and induced follow-up requests. The persisted shapes are
+backend-neutral serialized hashes and byte counts, not canonical provider
+payloads or provider-token counts. Provider serializer/tokenizer integration
+and behavioral replay remain deliberate follow-up measurement work; the report
+does not claim either result.

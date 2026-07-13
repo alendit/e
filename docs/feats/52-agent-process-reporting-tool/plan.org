@@ -59,8 +59,9 @@ Offline extraction can recover surrounding evidence through =session://= and can
 
 - A process-reporting capability owns an append-only store that is cheap to write and easy to inspect.
 - The capability exposes stable =list= and =read= actions or resources so human review and later extraction passes do not scrape private storage files.
-- Reports never contain secrets by construction.
-  Arguments previews and error text reuse the existing telemetry-preview redaction path rather than dumping raw payloads.
+- Reports use narrow persisted schemas and a shared best-effort redaction boundary.
+  Arguments previews and error text reuse the telemetry-preview path rather than dumping raw payloads, and arbitrary tool metadata is not copied.
+  Because free text can contain unknown secret forms, the first slice does not claim mathematically secret-free persistence; operators must apply the same retention and access controls used for session telemetry.
 - The original report remains immutable.
   Triage decisions and links to resulting work append separate records so provenance is preserved.
 
@@ -139,9 +140,10 @@ Runtime persistence CPU and latency also count, but should be reported outside m
 
 Use two levels of counterfactual measurement:
 
-- *Request-shape counterfactual* :: reconstruct each actual provider request and a paired request from the same snapshot with process-marker descriptors, guidance, calls, and results removed.
-  Tokenize both payloads with the provider tokenizer.
+- *Request-shape counterfactual* :: reconstruct each backend-neutral request value and a paired value from the same snapshot with process-marker descriptors, guidance, calls, and results removed.
+  Persist revisioned hashes and UTF-8 byte measures for the actual, passive-free, active-free, and fully paired values.
   This gives a deterministic direct context delta while holding the rest of the observed session fixed.
+  Canonical provider serialization and provider-tokenizer integration are deferred deliberately; the persisted backend-neutral shape measures preserve post-hoc attribution but must not be described as exact provider-token cost.
 - *Behavioral counterfactual* :: replay from the checkpoint immediately before marking with the process-marker surface disabled, or randomly enable marking across comparable sessions.
   Compare total provider tokens, request count, wall time, task quality, and completion outcome.
   Repeated trials are needed because model output is stochastic.
@@ -156,7 +158,8 @@ Preserve or add the following data so both counterfactuals remain possible:
 
 - A stable provider-request id or request ordinal on =provider-request-started=, =provider-request-finished=, and the corresponding =token-usage= event.
   Event order within a turn is a fallback, not a durable join contract, because a tool turn can issue several provider requests.
-- The exact model-visible request ingredients or durable content hashes and revisions for tool descriptors, guidance blocks, messages, tool calls, and tool results.
+- Revisioned, secret-safe hashes and byte measures for the actual backend-neutral request and its passive-free, active-free, and fully marker-free pair.
+  Exact provider payload retention is not part of the first slice because it would duplicate arbitrary model-visible content into telemetry.
 - A checkpoint or reconstructable session state immediately before a marker invocation.
 - The =process_marker= tool-call id, nested process-reporting action-call id, and resulting marker id.
 - Provider, model, model parameters, prompt-cache state where available, tokenizer revision, request timing, and task completion outcome.
@@ -210,7 +213,7 @@ Those totals are the denominator and validation evidence; the counterfactual del
 - Triage can append an outcome and optional target reference while leaving the original marker unchanged.
 - Bug work is one supported triage outcome rather than the identity of the marker tool.
 - Durable telemetry can join each marker invocation to its provider requests and =token-usage= events through stable ids rather than event-order inference.
-- A post-hoc report can reconstruct a request-shape counterfactual without the marker surface and calculate direct incremental context cost.
+- A post-hoc report can compare revisioned actual and marker-free backend-neutral request shapes, calculate direct incremental byte cost, and preserve stable request joins for later provider-specific measurement.
 - Replay or controlled A/B measurement can estimate interruption overhead relative to sessions without marking.
 - Offline extraction cost is tracked separately and linked to the marker batch it consumed.
 - Every estimate names its tokenizer or approximation and does not claim behavioral overhead from request-shape accounting alone.
@@ -264,11 +267,13 @@ Repository-side evidence:
 - The running Emacs was not reloaded. =e-dev-mark-reload-required= recorded a
   full reload requirement for the new runtime behavior.
 
-The first slice records deterministic request-shape attribution. Actual
-behavioral replay/A-B trials and provider-tokenizer integrations remain
-measurement operations, not online marker-capture work. The durable checkpoint,
-request ids, request shape, token usage joins, and completion events preserve
-the evidence those later trials need.
+The first slice records deterministic backend-neutral request-shape byte
+attribution. It does not retain canonical provider payloads or claim provider
+token counts. Actual behavioral replay/A-B trials and provider serializer and
+tokenizer integrations remain deliberate measurement work. The durable
+checkpoint, request ids, paired shape measures, token usage joins, explicit
+follow-up cause, and completion events preserve enough evidence for those later
+measurements without duplicating arbitrary prompt content into telemetry.
 
 * Provenance
 

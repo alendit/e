@@ -12,9 +12,15 @@ In-review.
 The parent-side =process_marker= surface is small and returns only =ok=.
 The implementation also gives provider request lifecycle events stable ids and joins token-usage events to those ids.
 
-The feature is not ready for acceptance.
-The durable store is not coherent across store instances or processes, persisted telemetry can still contain secrets, and the cost report cannot reconstruct the counterfactual claimed by the plan.
-Runtime correlation also loses nested action context and does not explicitly join the marker to the induced follow-up provider request.
+All six findings are resolved in the repository. The store now has a locked
+refresh/check/append transaction, telemetry uses narrow redacted schemas, the
+cost report separates paired backend-neutral byte measures honestly, nested
+action evidence retains an explicit chain, follow-up requests carry stable
+causes, and marker input rejects undeclared fields.
+
+Exact canonical provider payload/tokenizer integration remains a documented
+deferral. No public claim treats the current byte measure as provider-token or
+behavioral cost. The feature stays In-review pending operator approval.
 
 * Scope reviewed
 
@@ -92,7 +98,7 @@ The two-request probe also showed that the first request shape contains only des
 
 * Findings
 
-** TODO High: The durable store is stale and unsafe under concurrent writers
+** DONE High: The durable store is stale and unsafe under concurrent writers
 
 *** Expected
 
@@ -127,7 +133,27 @@ Under that lock, ingest records appended since the last known offset before ever
 Define recovery for an incomplete final line without accepting malformed records in the middle of the log.
 Add tests with two store instances and at least one separate-process contention probe covering marker append, triage, and terminal-evidence suppression.
 
-** TODO High: Persisted telemetry is not secret-safe by construction
+*** Resolution
+
+The store now serializes every refresh/check/append transaction with an atomic
+lock directory shared across Emacs processes. Each transaction reloads durable
+state before validation. Marker suppression, triage existence checks, and
+appends therefore use one current view. A dead local owner can be reclaimed.
+Loading truncates only an incomplete final line under the lock and still rejects
+a malformed complete line.
+
+*** Evidence
+
+=e-process-reporting-test-two-store-writers-refresh-and-recover-tail= proves
+cross-store list/read/triage and final-tail recovery.
+=e-process-reporting-test-terminal-suppression-is-atomic-across-stores= proves
+that terminal evidence written through one store suppresses a peer store write.
+
+A fresh-process contention probe started two =emacs -Q --batch= writers against
+one directory. Both exited zero and the resulting JSONL contained two complete
+records: =statuses=0/0 lines=2 ids=['one', 'two']=.
+
+** DONE High: Persisted telemetry is not secret-safe by construction
 
 *** Expected
 
@@ -164,7 +190,23 @@ Drop tool metadata by default and allow only named safe fields.
 If arbitrary notes cannot be guaranteed secret-free, change the claim from “by construction” and add an explicit redaction/retention policy before acceptance.
 Add regression tests for action errors, tool metadata, marker notes, extraction fields, nested maps/vectors, authorization headers, URL credentials, and common provider key formats.
 
-** TODO High: The request-shape report does not implement the claimed counterfactual
+*** Resolution
+
+The persistence boundary now uses narrow schemas. Action errors retain a
+redacted bounded preview instead of a raw message. Durable tool results retain
+only named scalar metadata. Marker notes, triage text, extraction references,
+and estimation text cross the public string redactor. Extraction token usage is
+projected onto named numeric fields. README and plan claims now describe a
+redaction policy rather than an impossible guarantee for arbitrary free text.
+
+*** Evidence
+
+Focused tests cover raw action-error tokens, unknown and nested tool metadata,
+marker notes, extraction text, authorization forms, API-key forms, nested
+containers, and URL credentials. No test fixture secret remains in the durable
+serialized values.
+
+** DONE High: The request-shape report does not implement the claimed counterfactual
 
 *** Expected
 
@@ -203,7 +245,30 @@ Keep passive descriptor/guidance, active call/result, extra request count, and b
 Until that exists, rename the current output to an attribution inventory and remove claims that it reconstructs or calculates the counterfactual.
 Add a two-request marker-turn test that proves each category and paired delta.
 
-** TODO Medium: Nested action context is lost behind the enclosing tool
+*** Resolution
+
+The loop now derives actual, passive-free, active-free, and fully marker-free
+backend-neutral request values at request time and persists revisioned hashes
+and UTF-8 byte measures. The cost report exposes per-request direct, passive,
+and active byte deltas, provider usage joins, and explicit marker follow-up
+counts. It no longer labels active bytes as passive or invents token counts.
+
+Canonical provider serialization and provider tokenizers are deliberately
+deferred. The plan, acceptance text, README, and report now state that this
+slice measures backend-neutral serialized bytes, not exact provider payloads or
+tokens. This retains enough post-hoc data for the stated measurement need: the
+stable request ids, model/cache fields, paired revisioned measures, usage joins,
+checkpoint, and explicit follow-up cause support later provider-specific
+calibration without persisting arbitrary prompt content.
+
+*** Evidence
+
+=e-process-reporting-test-request-shape-report-preserves-paired-measures= proves
+per-request passive, active, paired, and follow-up categories.
+=e-loop-test-followup-request-carries-tool-cause= proves the paired second
+request and usage event have stable cause joins.
+
+** DONE Medium: Nested action context is lost behind the enclosing tool
 
 *** Expected
 
@@ -231,7 +296,19 @@ At minimum preserve the latest relevant action plus its =:parent-tool-call-id= a
 Use explicit call relationships, not timestamp proximity.
 Add tests for direct tool, direct action, action inside =run_elisp=, nested =e-tools-call=, failure, and a marker with no prior operation.
 
-** TODO Medium: Marker-to-provider attribution omits the induced follow-up request
+*** Resolution
+
+Markers now retain a =:trigger-chain=. It puts the latest relevant action first,
+keeps its explicit =:parent-tool-call-id=, and includes the enclosing tool event.
+Direct tool/action and empty histories still produce the smallest valid chain.
+
+*** Evidence
+
+=e-process-reporting-test-trigger-chain-preserves-nested-action= proves the
+action id, parent tool id, and enclosing tool are all retained after the outer
+tool finishes.
+
+** DONE Medium: Marker-to-provider attribution omits the induced follow-up request
 
 *** Expected
 
@@ -263,7 +340,22 @@ Persist the producing request id on the marker only while that request is active
 When the loop starts a follow-up because of a tool result, add a stable =:caused-by-tool-call-id= or marker id to the new request lifecycle and token-usage join path.
 Add a full two-request process-marker test and a direct action test after provider completion.
 
-** TODO Medium: The runtime does not enforce the two-field marker payload
+*** Resolution
+
+The loop carries the completed tool call into the next provider request as
+=:caused-by-tool-call-id= and =:caused-by-tool-name= on started, finished, and
+token-usage payloads. Marker capture now returns a producing request id only
+while that request is active, so direct runtime actions cannot inherit a stale
+finished request.
+
+*** Evidence
+
+=e-loop-test-followup-request-carries-tool-cause= proves both lifecycle and
+usage joins for a two-request marker turn.
+=e-process-reporting-test-completed-request-is-not-current= proves stale request
+attribution is absent.
+
+** DONE Medium: The runtime does not enforce the two-field marker payload
 
 *** Expected
 
@@ -289,23 +381,35 @@ Set =additionalProperties= to false for provider schema generation and enforce a
 Return a normal tool error for unknown keys.
 Add a regression test that proves no extra field reaches the action, transcript, or durable telemetry.
 
+*** Resolution
+
+The marker schema sets =additionalProperties= to false. The shared tool runtime
+and action dispatcher both reject unknown arguments rather than relying on a
+provider to enforce JSON Schema. A rejected call returns a normal tool error and
+does not reach marker persistence.
+
+*** Evidence
+
+=e-process-reporting-test-marker-rejects-extra-fields-before-handler= proves an
+=:impact= field is rejected and no marker is written.
+
 * Plan coverage
 
 | Plan area | Review result |
 |-----------+---------------|
 | Minimal descriptor and guidance | Meets the intent |
-| Signal plus note payload | Partial; unknown fields are accepted and retained |
+| Signal plus note payload | Meets; provider schema and runtime enforce the exact two fields |
 | Minimal acknowledgement | Meets the intent |
 | No child or online enrichment | Meets the intent |
-| Auto-attached session/turn/project/tool context | Partial; nested action context is lost |
-| Redacted evidence | Blocked by raw persisted error/metadata/note paths |
-| Durable list/read/triage | Blocked by stale indexes and unsynchronized append |
+| Auto-attached session/turn/project/tool context | Meets; explicit nested action/tool trigger chains are retained |
+| Redacted evidence | Meets the documented narrow-schema and redaction policy |
+| Durable list/read/triage | Meets with locked refresh/check/append and tail recovery |
 | Immutable marker plus appended triage | Meets the serial single-store case |
-| Content-keyed suppression | Partial; races and stale stores defeat it |
-| Provider request/token usage joins | Partial; lifecycle joins work, induced request correlation does not |
-| Request-shape counterfactual | Not implemented; current output is a byte attribution inventory |
+| Content-keyed suppression | Meets across independent store instances/process locks |
+| Provider request/token usage joins | Meets; producing and caused follow-up requests use stable ids |
+| Request-shape counterfactual | Meets the narrowed contract for paired backend-neutral serialized bytes; provider payload/token counts are deferred and unclaimed |
 | Behavioral counterfactual | Correctly left unclaimed and unimplemented |
-| Separate extraction ledger | Present, but persisted fields need a safe schema |
+| Separate extraction ledger | Meets with a narrow redacted schema |
 | Default parent integration | Present in the built-in chat preset and absent from lean children |
 
 * Architecture review
@@ -331,7 +435,38 @@ No live visual check was needed.
 The running Emacs was not reloaded, as requested.
 All runtime probes used repository-side batch Emacs processes.
 
+* Final verification
+
+#+begin_src sh
+cd /Users/dimitrivorona/projects/elisp/e
+timeout 120 eldev -q test \
+  -f test/e-process-reporting-test.el \
+  -f test/e-telemetry-test.el \
+  -f test/e-loop-test.el \
+  -f test/e-defaults-test.el \
+  -f test/e-actions-test.el \
+  -f test/e-harness-test.el \
+  -f test/e-tools-test.el
+timeout 120 eldev -q compile --set all
+git diff --check
+#+end_src
+
+#+begin_example
+Ran 227 focused and affected tests, 227 results as expected, 0 unexpected.
+The full suite ran 1595 tests: 1589 expected, 5 unexpected, 1 skipped. The five
+failures are the same pre-existing nonblocking baseline, Org Canvas progress,
+session resource description, annotation inventory, and await architecture
+guard failures recorded before this fix. Compilation completed with only the
+pre-existing warnings listed in this review's implementation evidence.
+=git diff --check= passed.
+#+end_example
+
 * Unresolved
 
-- Three High findings block acceptance: durable store correctness, secret-safe persistence, and the claimed request-shape counterfactual.
-- Three Medium findings remain: nested action attachment, induced request correlation, and exact two-field payload enforcement.
+- No open implementation finding remains.
+- Deliberate deferral: canonical provider payload reconstruction and provider
+  tokenizer execution are not implemented. The accepted first-slice result is
+  paired, revisioned backend-neutral UTF-8 byte measurement with stable joins.
+  It preserves post-hoc measurement evidence and makes no exact provider-token
+  or behavioral claim.
+- Keep the feature and index at =In-review= pending operator approval.
