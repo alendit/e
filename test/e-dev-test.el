@@ -193,19 +193,23 @@
   (should (equal e-openai-default-model "gpt-5.5"))
   (should (e-layer-get 'agents-std-context))
   (should (equal e-default-chat-layer-ids
-                 '(agents-std-context harness-base harness-advanced e os-base
-                                      emacs-base web annotations org-canvas
-                                      project-local)))
+                 '(agents-std-context harness-base process-reporting
+                                      harness-advanced e os-base emacs-base
+                                      resource-toc web annotations org-canvas
+                                      project-local subagents-parent)))
   (should (eq e-debug-display-strategy 'popup))
   (let ((harness (e-harness-registry-get-or-create :chat-default)))
     (should (equal (e-harness-enabled-layer-ids harness)
-                   '(agents-std-context harness-base harness-advanced e os-base
-                                        emacs-base web annotations org-canvas
-                                        project-local)))
+                   '(agents-std-context harness-base process-reporting
+                                        harness-advanced e os-base emacs-base
+                                        resource-toc web annotations org-canvas
+                                        project-local subagents-parent)))
     (should (equal (e-harness-effective-layer-ids harness)
-                   '(agents-std-context harness-base harness-advanced e os-base
-                                        emacs-base web annotations org-canvas
-                                        project-local)))))
+                   '(agents-std-context harness-base process-reporting
+                                        harness-advanced e resource-discovery
+                                        os-base async-control emacs-base resource-toc
+                                        web annotations org-canvas project-local
+                                        subagents-parent)))))
 
 (provide 'e-dev-test)
 

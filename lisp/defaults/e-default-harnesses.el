@@ -61,7 +61,7 @@
   "Built-in debug harness spec appended to chat-only custom defaults.")
 
 (defcustom e-default-chat-layer-ids
-  '(agents-std-context harness-base harness-advanced e os-base emacs-base resource-toc web annotations org-canvas project-local subagents-parent)
+  '(agents-std-context harness-base process-reporting harness-advanced e os-base emacs-base resource-toc web annotations org-canvas project-local subagents-parent)
   "Layer ids activated by default chat harnesses.
 
 This option is the source of truth for the stateless layer preset attached to
@@ -365,6 +365,7 @@ with an explicit unconfigured backend and no provider."
   (require 'e-base)
   (require 'e-emacs-base)
   (require 'e-harness-base)
+  (require 'e-process-reporting)
   (require 'e-layer-selection)
   (require 'e-layers)
   (require 'e-org-canvas-capabilities)

@@ -16,6 +16,7 @@
 (require 'e-compaction)
 (require 'e-context)
 (require 'e-events)
+(require 'e-telemetry)
 (require 'e-operations)
 (require 'e-resource-patterns)
 (require 'e-resource-query)

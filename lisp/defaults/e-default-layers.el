@@ -36,6 +36,11 @@
      :summary "Harness-owned support resources and tool lifecycle guards."
      :feature e-harness-base
      :factory e-harness-base-layer-create)
+    (:id process-reporting
+     :name "Process Reporting"
+     :summary "Parent-side durable process markers and triage actions."
+     :feature e-process-reporting
+     :factory e-process-reporting-layer-create)
     (:id harness-advanced
      :name "Harness Advanced"
      :summary "Harness-owned controller-loop and advanced work-management capabilities."

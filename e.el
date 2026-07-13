@@ -90,6 +90,7 @@
   (require 'e-core)
   (require 'e-ui-work)
   (require 'e-context-budget)
+  (require 'e-process-reporting)
   (require 'e-agent-shell-fleet)
   (require 'e-task-queue-actions)
   (require 'e-cron-actions)
