@@ -19,15 +19,13 @@ durable trigger arrays, segment-based paired accounting, complete follow-up
 cause sets, and unknown-field projection before transcript or activity writes.
 
 A fresh independent third review after =3302a58= and =d7e30e0= reopened three
-findings. Provider-request and token-usage activity still lack a narrow redacted
-persistence projection. Runtime tool validation rejects undeclared fields before
-transcript writes but does not enforce the rest of the marker schema there. The
-trigger-chain selector can also put an older unrelated action ahead of the most
-recent tool.
+findings. The third fix pass resolves them with narrow provider/usage persistence
+projections, full pre-transcript marker validation, and relation-based selection
+of the latest operation chain.
 
 Exact canonical provider payload/tokenizer integration remains a documented
 deferral. No public claim treats the current byte measure as provider-token or
-behavioral cost. The feature stays In-review with the third-pass findings open.
+behavioral cost. The feature stays In-review pending operator approval.
 
 * Scope reviewed
 
@@ -906,7 +904,7 @@ trigger relevance:
   chain=(("old-action" "old/:run") ("fresh-tool" "bash"))
 #+end_example
 
-** TODO High: Provider lifecycle and usage telemetry bypass the persistence redaction boundary
+** DONE High: Provider lifecycle and usage telemetry bypass the persistence redaction boundary
 
 *** Expected
 
@@ -949,7 +947,25 @@ raw prompt-cache key with presence, revision, or a one-way hash when identity is
 needed. Add disk-level tests that inject secrets through each retained string
 and unknown backend field.
 
-** TODO Medium: Pre-transcript marker validation enforces only unknown fields
+*** Resolution
+
+The harness persistence boundary now projects provider lifecycle and token-usage
+payloads onto named fields. Every retained string crosses the shared redactor,
+unknown diagnostics and usage fields are dropped, and request-shape persistence
+retains only revisioned hashes, measures, cache-key presence, and a one-way
+cache-key hash. Live event payloads remain provider-facing and unchanged.
+
+*** Evidence
+
+=e-harness-test-provider-telemetry-is-narrow-on-disk-and-reload= runs a complete
+provider request into a persistent session, injects secrets through lifecycle,
+diagnostics, cache-key, and unknown usage fields, checks the JSONL bytes, then
+reloads the session and checks the projected values and stable request joins.
+An independent projection probe returned =raw-retained=nil= while retaining
+redacted provider/path/model strings, request shape hashes, and named numeric
+usage.
+
+** DONE Medium: Pre-transcript marker validation enforces only unknown fields
 
 *** Expected
 
@@ -988,7 +1004,27 @@ explicit pre-persistence validator. Preserve protocol validity with a declared,
 bounded rejection projection. Add full-loop probes for missing fields, wrong
 types, invalid enum values, multiline notes, and overlong notes.
 
-** TODO Medium: Trigger selection can prefer an older unrelated action
+*** Resolution
+
+The shared tool preparation boundary now enforces the compact schema keywords it
+claims before transcript or activity writes: object shape, required fields,
+scalar types, enum membership, minimum and maximum string length, nonblank
+strings, and one-line strings. Rejected calls retain only declared values that
+independently satisfy their property schema, so the normal protocol error remains
+bounded without preserving the offending note. The marker schema declares its
+nonblank and one-line constraints directly.
+
+*** Evidence
+
+=e-process-reporting-test-loop-rejects-invalid-marker-schema-before-persistence=
+runs missing, wrong-type, invalid-enum, blank, multiline, and overlong marker
+calls through the full loop and proves no marker or rejected note survives in
+transcript/activity. =e-tools-test-prepare-call-validates-supported-schema-keywords=
+proves the shared validator independently. A fresh batch probe returned explicit
+schema errors for missing signal, invalid enum, overlong note, and multiline
+note.
+
+** DONE Medium: Trigger selection can prefer an older unrelated action
 
 *** Expected
 
@@ -1023,6 +1059,24 @@ latest operation. Otherwise keep only the latest independent tool or action.
 Add turn-history tests for old action then new tool, old tool then new action,
 nested action inside a tool, failures, and multiple independent operations.
 
+*** Resolution
+
+Trigger selection now starts from the latest completed relevant operation. It
+includes an action/tool pair only when =:parent-tool-call-id= connects them. A
+completed nested action can still retain a running parent tool, but an unrelated
+older action or tool is not added to a new chain. The marker's primary trigger
+and evidence identity therefore follow the current operation.
+
+*** Evidence
+
+=e-process-reporting-test-trigger-chain-keeps-latest-independent-operation=
+covers old action/new tool and old tool/new failed action histories.
+=e-process-reporting-test-trigger-chain-preserves-nested-action= covers a
+completed nested action plus completed parent and durable reload.
+=e-process-reporting-test-trigger-chain-keeps-running-parent-tool= covers an
+action completed inside a still-running parent tool. An independent probe for
+old action then fresh tool returned only =("fresh")=.
+
 ** Confirmed third-pass resolutions and non-findings
 
 - Kernel advisory locking serialized two independent batch writers. Their
@@ -1042,14 +1096,47 @@ nested action inside a tool, failures, and multiple independent operations.
 - The minimal successful result remains =ok=. Capture does not spawn a child or
   gather session history.
 
+* Third-review fix verification after =94e75ee=
+
+#+begin_src sh
+cd /Users/dimitrivorona/projects/elisp/e
+timeout 120 eldev -q test \
+  -f test/e-process-reporting-test.el \
+  -f test/e-telemetry-test.el \
+  -f test/e-loop-test.el \
+  -f test/e-defaults-test.el \
+  -f test/e-actions-test.el \
+  -f test/e-harness-test.el \
+  -f test/e-tools-test.el \
+  -f test/e-session-test.el \
+  -f test/e-context-budget-test.el \
+  -f test/e-context-status-test.el
+timeout 120 eldev -q test
+timeout 120 eldev -q compile
+git diff --check
+#+end_src
+
+#+begin_example
+Ran 329 focused and affected tests, 329 results as expected, 0 unexpected.
+Ran 1609 full-suite tests, 1603 results as expected, 5 unexpected, 1 skipped.
+Compilation passed with the two established unused-variable warnings in
+  e-base-tools.el and e-session-tmp-resources.el.
+git diff --check passed.
+#+end_example
+
+The five full-suite failures are the same unrelated baseline recorded by the
+third review: nonblocking sweep, Org Canvas synchronous progress,
+session-resource discovery text, annotation inventory, and the UI Work
+architecture guard. The test-count increase comes from the new regression
+coverage.
+
+No running Emacs was reloaded. The repository-side =e-dev= notification marks a
+full reload as required for the changed core and process-reporting files. Run
+=M-x e-dev-reload= when the active turn is idle.
+
 * Unresolved
 
-- High: provider lifecycle and token-usage telemetry lack a narrow redacted
-  durable projection.
-- Medium: pre-transcript marker validation does not enforce required, type,
-  enum, length, or one-line constraints.
-- Medium: trigger selection can prefer an older unrelated action over the latest
-  independent tool.
+- No third-review findings remain open.
 - Deliberate deferral: canonical provider payload reconstruction and provider
   tokenizer execution remain unimplemented and unclaimed.
-- Keep the feature and index at =In-review= pending fixes and operator approval.
+- Keep the feature and index at =In-review= pending operator approval.
