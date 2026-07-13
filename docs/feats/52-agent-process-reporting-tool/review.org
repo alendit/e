@@ -12,15 +12,17 @@ In-review.
 The parent-side =process_marker= surface is small and returns only =ok=.
 The implementation also gives provider request lifecycle events stable ids and joins token-usage events to those ids.
 
-All six findings are resolved in the repository. The store now has a locked
-refresh/check/append transaction, telemetry uses narrow redacted schemas, the
-cost report separates paired backend-neutral byte measures honestly, nested
-action evidence retains an explicit chain, follow-up requests carry stable
-causes, and marker input rejects undeclared fields.
+The first fix pass resolved the six original findings in its focused cases.
+A fresh independent second review reopened five findings. The lock reclaim path
+can break mutual exclusion, trigger chains do not survive JSONL reload, durable
+telemetry still has redaction bypasses, paired accounting can over- and
+under-attribute marker cost, and rejected marker fields remain in normal model
+transcript and activity paths.
 
 Exact canonical provider payload/tokenizer integration remains a documented
 deferral. No public claim treats the current byte measure as provider-token or
-behavioral cost. The feature stays In-review pending operator approval.
+behavioral cost. The feature stays In-review pending fixes and operator
+approval.
 
 * Scope reviewed
 
@@ -461,12 +463,286 @@ pre-existing warnings listed in this review's implementation evidence.
 =git diff --check= passed.
 #+end_example
 
+* Second independent review after fixes
+
+This pass independently inspected =e3f7761=, =c470548=, and =f48fa42= against
+the final plan, the complete first review, all implementation commits, and the
+pre-existing tool, action, loop, context, session activity, and default-harness
+paths. It reran every prior finding with fresh batch probes rather than relying
+on the resolution notes.
+
+** Verification
+
+#+begin_src sh
+cd /Users/dimitrivorona/projects/elisp/e
+timeout 120 eldev -q test \
+  -f test/e-process-reporting-test.el \
+  -f test/e-telemetry-test.el \
+  -f test/e-loop-test.el \
+  -f test/e-defaults-test.el \
+  -f test/e-actions-test.el \
+  -f test/e-harness-test.el \
+  -f test/e-tools-test.el
+timeout 120 eldev -q test
+#+end_src
+
+#+begin_example
+Ran 227 tests, 227 results as expected, 0 unexpected.
+Ran 1595 tests, 1589 results as expected, 5 unexpected, 1 skipped.
+#+end_example
+
+The five full-suite failures match the baseline recorded by the first fix pass:
+nonblocking sweep, Org Canvas synchronous progress, session resource
+description, annotation inventory, and the UI Work architecture guard.
+
+Fresh =eldev -q exec= probes produced these scalar results:
+
+#+begin_example
+stale-lock contention:
+  B-start 1783939314.199
+  A-start 1783939314.424
+  A-end   1783939314.635
+  B-end   1783939317.200
+  statuses=0/0 final-lock-directory=absent
+
+trigger chain before reload: list length 2
+trigger chain after reload: plist length 4 with duplicate :activity-event-id keys
+
+redaction-bypasses=("ghp_..." "sk-proj-..." "AKIA...")
+named metadata retained:
+  :tmp-uri "tmp://x?token=rawtmp"
+  :resource-uri "https://user:password@example.test/x?token=rawsecret"
+
+multi-tool producing request:
+  follow-up cause="e"/"echo"
+  marker-follow-up-request-count=0
+passive delta with unrelated system mention=765
+passive delta for marker guidance alone=180
+
+model extra-field rejection:
+  marker-count=0 transcript-extra=t activity-extra=t
+runtime action extra-field rejection:
+  marker-count=0 event-types=(action-started action-failed) leaked-extra=t
+
+default parent footprint:
+  guidance-bytes=128 descriptor-prin1-bytes=375 tool-count=16
+#+end_example
+
+No running Emacs was reloaded. All probes ran in fresh batch processes.
+
+** TODO High: Stale-lock recovery can destroy a live owner's lock
+
+*** Expected
+
+The reopened durable-store finding requires an inter-process transaction that
+preserves mutual exclusion while refreshing, checking, recovering a partial
+tail, and appending. Stale recovery must not delete a lock after another
+process has replaced the stale owner.
+
+*** Observed
+
+At =lisp/layers/harness/e-process-reporting.el:158-160=, a contender reads the
+owner and then recursively deletes the lock directory if that snapshot looks
+stale. The delete has no identity check. Another contender can delete the same
+stale directory and acquire a new lock between the first contender's check and
+delete. The first contender then deletes the new live lock and acquires its own.
+At lines 169-175, either owner also deletes whichever lock directory happens to
+exist at cleanup, without proving that it still owns it.
+
+The independent two-process probe widened only the stale-check race. Process B
+entered its three-second critical section first. Process A then deleted B's
+live lock, entered concurrently, and deleted the lock directory while B still
+ran. Both exited zero. The overlapping timestamps above prove that the claimed
+transaction is not exclusive.
+
+*** Why this matters
+
+Concurrent refresh/check/append operations can interleave after stale recovery.
+That reopens duplicate suppression races and permits one process to read or
+truncate a partial write while another process is writing. The current serial
+and ordinary-contention tests do not exercise lock replacement during reclaim.
+
+*** Smallest fix direction
+
+Give every acquisition a random owner token. Reclaim and cleanup must atomically
+rename or otherwise remove only the exact lock instance whose token was read.
+If the platform cannot conditionally remove a directory, use an advisory lock
+primitive or a lock file protocol with ownership verification after reclaim.
+Add a deterministic three-process stale-reclaim race and prove that critical
+sections never overlap and one owner cannot remove another owner's lock.
+
+** TODO High: Trigger chains are corrupted by JSON encoding
+
+*** Expected
+
+The resolved nested-action finding requires the explicit action/tool chain and
+its stable call relationships to remain available after restart through the
+durable store.
+
+*** Observed
+
+=e-process-reporting-mark= stores =:trigger-chain= as a Lisp list of plists at
+=lisp/layers/harness/e-process-reporting.el:508-550=. =json-encode= interprets
+that shape as an alist/object rather than a JSON array. A two-entry chain is
+written as one object with duplicate =activity-event-id= keys whose values are
+flattened plist arrays. Reloading it yields a malformed plist, not a list of
+trigger records.
+
+The fresh reload probe saw a valid list of length two before persistence and a
+plist of length four after persistence. Normal =:read= therefore cannot return
+the nested chain documented by the resolution.
+
+*** Why this matters
+
+The durable evidence loses its action/tool structure across the first reload.
+Offline extraction cannot reliably recover the action call, enclosing tool, or
+parent relation from the marker record.
+
+*** Smallest fix direction
+
+Encode repeated records as vectors or otherwise force JSON arrays, and validate
+record shapes while loading. Add a write/reload/read test for direct actions,
+action-inside-tool, and deeper nested tool/action chains. Assert the exact
+post-restart call ids and parent ids, not only the in-memory return from =mark=.
+
+** TODO High: Durable telemetry still has secret-redaction bypasses
+
+*** Expected
+
+The prior finding's narrowed contract says persisted free text crosses the
+shared redaction boundary and durable activity uses named safe schemas. It must
+not imply that naming a field makes arbitrary string content safe.
+
+*** Observed
+
+The shared string redactor does not recognize common standalone provider key
+forms such as GitHub =ghp_= tokens, OpenAI =sk-proj-= keys, or AWS access key
+ids. Fresh probes returned all three unchanged.
+
+More directly, =e-harness--safe-tool-result-metadata= at
+=lisp/core/e-harness.el:951-960= copies the named string fields =:tmp-uri= and
+=:resource-uri= verbatim. A probe retained URL userinfo and query secrets
+exactly in durable =tool-finished= activity. These fields bypass the redactor
+because the allowlist is treated as content-safe.
+
+The compaction function at lines 992-1000 also returns an unprojected payload
+when =:result= is not recognized as a structured tool result. A malformed or
+legacy event probe persisted raw =token= and authorization metadata. This is a
+general telemetry regression introduced by making only one expected result
+shape safe.
+
+*** Why this matters
+
+Resource URLs commonly contain credentials or signed query strings. These
+values now persist indefinitely in session telemetry despite the documented
+redaction boundary. Marker trigger previews can then link to that compromised
+activity.
+
+*** Smallest fix direction
+
+Run every retained string, including allowlisted metadata, through the public
+redactor. Extend the policy for common provider key families or document and
+enforce a stronger non-heuristic retention boundary. Project every durable
+event shape at the persistence boundary; do not fall back to raw payloads when
+a result is malformed. Add disk-level tests for signed/resource URLs, GitHub,
+OpenAI, AWS, malformed legacy results, and all named metadata fields.
+
+** TODO High: Paired accounting can over- and under-attribute marker overhead
+
+*** Expected
+
+The paired request shapes must remove exactly the marker descriptor, marker
+guidance, calls, and results. Follow-up attribution must identify every extra
+request caused by marking without claiming unrelated bytes.
+
+*** Observed
+
+=e-loop--without-marker-guidance= at =lisp/core/e-loop.el:108-115= removes every
+system message whose content contains the substring =process_marker=. It has no
+segment id or exact-content check. An unrelated 500-byte project policy that
+mentioned the tool raised the measured passive delta from 180 to 765 bytes.
+The report therefore calls unrelated context marker overhead.
+
+Follow-up state is also singular. =finish-tool= overwrites
+=next-request-cause= for each tool at =lisp/core/e-loop.el:390-410=. When one
+provider response emits =process_marker= followed by another tool, the second
+request is attributed only to the last tool. The complete turn probe reported
+cause =echo= and =marker-follow-up-request-count= 0 even though the marker call
+and acknowledgement are present in that request.
+
+*** Why this matters
+
+The cost report can both overstate passive cost and omit a real marker-induced
+follow-up. This breaks the feature's central requirement that byte accounting
+remain honest and stably attributable.
+
+*** Smallest fix direction
+
+Use context segment identity or an exact marker-guidance identity instead of a
+substring. Carry the full completed tool-call set, or an explicit list of
+request causes, into each follow-up lifecycle and token-usage event. Report a
+request as marker-related when any cause is the marker. Add tests for unrelated
+mentions, changed guidance, multiple tool calls in both orders, and more than
+one marker in one provider response.
+
+** TODO Medium: Exact payload rejection still retains undeclared fields
+
+*** Expected
+
+The prior finding's resolution says an unknown marker field is rejected before
+it reaches persistence, transcript, or durable telemetry. The purpose is to
+bound both stored telemetry and later model context, not only marker records.
+
+*** Observed
+
+Runtime validation rejects the handler call, so no marker is written. In the
+normal model path, however, the loop appends and emits =tool-started= before
+=e-tools-start= validates the schema. A full two-request probe with
+=:impact "must-not-retain"= produced =marker-count=0= but found the exact field
+in both the transcript tool-call and durable activity.
+
+The action dispatcher likewise emits =action-started= with the supplied
+arguments before =e-actions--validate-arguments=. A direct invalid =:mark=
+produced durable =action-started= and =action-failed= events containing the
+extra value in their previews.
+
+*** Why this matters
+
+Rejected narration still incurs the active context and telemetry footprint the
+exact schema was meant to prevent. The existing focused test calls the tool
+registry directly without the loop lifecycle, so it misses both persistence
+paths.
+
+*** Smallest fix direction
+
+Validate or project arguments before appending the model tool-call and before
+emitting action-started telemetry. If protocol validity requires retaining the
+provider call, persist only an explicit rejection record with declared-field
+projection and byte lengths. Add full-loop and direct-action disk-level tests.
+
+** Confirmed resolutions and non-findings
+
+- Ordinary two-process contention, cross-store refresh, atomic terminal
+  suppression, and incomplete final-line recovery pass when stale reclaim is
+  not racing. Complete malformed middle lines still fail rather than being
+  silently discarded.
+- The minimal tool result remains exactly =ok=, and capture performs no child
+  spawn or online session gather.
+- The default parent context adds one 128-byte guidance sentence and one small
+  descriptor. Lean child harness defaults still omit the layer.
+- Request shapes retain distinct actual, passive-free, active-free, and paired
+  hashes and byte counts. The report does not claim provider-token or
+  behavioral estimates. The open accounting finding concerns selection and
+  attribution, not those labels.
+- A direct completed provider request is no longer attached as the current
+  request.
+- Nested action ids are captured correctly before store serialization. The
+  open trigger-chain finding concerns durability across JSONL reload.
+
 * Unresolved
 
-- No open implementation finding remains.
+- Four High findings and one Medium finding remain open from the second pass.
 - Deliberate deferral: canonical provider payload reconstruction and provider
-  tokenizer execution are not implemented. The accepted first-slice result is
-  paired, revisioned backend-neutral UTF-8 byte measurement with stable joins.
-  It preserves post-hoc measurement evidence and makes no exact provider-token
-  or behavioral claim.
-- Keep the feature and index at =In-review= pending operator approval.
+  tokenizer execution remain unimplemented and unclaimed.
+- Keep the feature and index at =In-review= pending fixes and operator
+  approval.
