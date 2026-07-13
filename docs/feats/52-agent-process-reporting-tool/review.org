@@ -1,5 +1,5 @@
 #+title: Review: Agent Process-Reporting Tool
-#+author: e implementation
+#+author: independent review
 #+date: 2026-07-13
 #+startup: overview
 
@@ -9,142 +9,329 @@ In-review.
 
 * Review summary
 
-The first parent-side slice is ready for parent review.
-It adds neutral capture, durable append-only evidence and triage, redacted
-telemetry links, request attribution, extraction accounting, registration,
-documentation, and focused tests.
-No child session, enrichment request, or session-history gather runs during
-capture.
+The parent-side =process_marker= surface is small and returns only =ok=.
+The implementation also gives provider request lifecycle events stable ids and joins token-usage events to those ids.
+
+The feature is not ready for acceptance.
+The durable store is not coherent across store instances or processes, persisted telemetry can still contain secrets, and the cost report cannot reconstruct the counterfactual claimed by the plan.
+Runtime correlation also loses nested action context and does not explicitly join the marker to the induced follow-up provider request.
 
 * Scope reviewed
 
-- =lisp/core/e-telemetry.el=, action/tool durable previews, and their tests.
-- Provider request identity, request-shape attribution, and token-usage joins in
-  =lisp/core/e-loop.el=.
-- =lisp/layers/harness/e-process-reporting.el= and its store, tool, actions,
-  triage, extraction ledger, and cost report.
-- Default layer, harness, package, reload, README, and feature-ledger
-  registration.
-- The acceptance and architecture checks in =plan.org=.
+- Project rules in =AGENTS.md=, =docs/agents/review.org=, and =docs/references/dev_work.org=.
+- The final contract and acceptance criteria in =plan.org=.
+- Commits =30e7a34= through =6ef1a49=, including the telemetry, loop, process-reporting, defaults, tests, and documentation changes.
+- Pre-existing action dispatch, tool lifecycle, durable session activity, session resources, default-layer sync, child harness, and prompt-cache architecture.
+- Focused ERT and independent batch probes for repeated stores, action/tool context, complete two-request marker turns, redaction, and schema behavior.
 
 * What looks good
 
-- The model tool schema contains only =signal= and =note= and returns =ok=.
-- The action and tool share one capture service.
-- Marker records stay immutable. Triage and extraction records append.
-- Marker context uses stable session, turn, checkpoint, provider-request,
-  tool-call, action-call, activity-event, and =session://= references.
-- Shared telemetry redaction prevents marker evidence from copying raw argument,
-  result, or error payloads.
-- Content-keyed evidence suppresses terminal rejected or routed evidence until
-  the evidence changes.
-- Request-shape attribution names its byte approximation and explicitly refuses
-  to present it as behavioral overhead.
+- =process_marker= has a short descriptor and one compact guidance sentence.
+- Its declared fields are only =signal= and =note=.
+- Its model-visible result is exactly =ok= and does not repeat marker data.
+- Capture performs no provider call, child spawn, or session-history gather.
+- The model tool and =process-reporting/:mark= action share one capture service.
+- Marker, triage, and extraction facts use separate append-only record types.
+- =session://e/sessions/<id>/= links match the existing session resource architecture.
+- Provider request start, finish, and token-usage events share a generated request id and request ordinal.
+- The default chat layer list includes =process-reporting=, while lean subagent harnesses do not inherit it.
+- The cost report correctly leaves =:behavioral-estimate= nil and states that request-shape data does not measure changed behavior or interruption cost.
 
-* Verification
+* Verification performed during this review pass
 
 #+begin_src sh
-eldev -q test \
+cd /Users/dimitrivorona/projects/elisp/e
+timeout 60 eldev -q test \
   -f test/e-process-reporting-test.el \
   -f test/e-telemetry-test.el \
-  -f test/e-actions-test.el \
   -f test/e-loop-test.el \
-  -f test/e-harness-test.el \
   -f test/e-defaults-test.el \
-  -f test/e-dev-test.el \
-  -f test/e-layers-test.el \
-  -f test/e-usage-report-test.el \
-  -f test/e-session-test.el
+  -f test/e-actions-test.el \
+  -f test/e-harness-test.el
 #+end_src
 
 #+begin_example
-Ran 266 tests, 266 results as expected, 0 unexpected.
+Ran 184 tests, 184 results as expected, 0 unexpected.
 #+end_example
 
-#+begin_src sh
-eldev -q compile --set all
-#+end_src
+Independent probes were run with =eldev -q exec= in fresh batch Emacs processes.
+The relevant scalar results were:
 
 #+begin_example
-Completed with existing test-only warnings about unwind forms, Evil variables,
-debug helper definitions, and deprecated autoload APIs.
+stale-store-list-after-peer-write=nil
+first-store-list-after-second-write=("m1")
+fresh-reload-list=("m2" "m1")
+
+durable-action-error-contains-secret=t
+durable-action-error="token=super-secret action failed"
+
+tool-ack="ok"
+marker-tool="marker-1"
+trigger-name="bash"
+trigger-call="tool-1"
+provider="r1"
+
+direct-action-marker trigger-name="outer/:run"
+run_elisp-style nested action marker attached-name="run_elisp_probe"
+attached-event="tool-finished"
+attached-call="run-1"
+
+requests=2
+marker-request-is-first=t
+usage-joins=t/t
+ordinals=(1 2)
+
+additional-properties=nil
+extra-field-call-result="ok"
+marker-count=1
+
+request-id-after-finish="finished-request"
 #+end_example
 
-#+begin_src sh
-eldev -q test
-#+end_src
+The two-request probe also showed that the first request shape contains only descriptor and guidance bytes, while the follow-up shape contains descriptor, guidance, marker-call, and acknowledgement bytes.
 
-#+begin_example
-Ran 1586 tests, 1580 expected, 5 unexpected, 1 skipped.
-The five unrelated failures reproduce in isolated affected files:
-- nonblocking sweep expected-count baseline;
-- Org Canvas synchronous progress rendering;
-- session-resource discovery tool description;
-- annotation skill inventory;
-- await-test direct render-carrier guard.
-#+end_example
+* Findings
 
-#+begin_src sh
-git diff --check
-#+end_src
+** TODO High: The durable store is stale and unsafe under concurrent writers
 
-#+begin_example
-Passed with no output.
-#+end_example
+*** Expected
 
-* UX and performance playthrough
+The plan requires a durable, append-only store with stable list/read behavior, content-keyed suppression, and realistic repeated use.
+Durable facts and duplicate decisions must remain correct when more than one harness, store object, or Emacs process uses the configured directory.
 
-This slice has no new presentation shell or interactive UI.
-Focused tests exercise empty-store first use, direct action capture, model tool
-capture, restart/reload of the JSONL store, list/read, triage, duplicate
-suppression, extraction accounting, redaction, and request-shape reporting.
-Capture performs one bounded append and in-memory index update. It does not scan
-sessions, spawn work, or call a provider.
+*** Observed
 
-* Live reload
+=e-process-reporting-ensure-loaded= loads a store only once at =lisp/layers/harness/e-process-reporting.el:149-154=.
+Every later list, read, duplicate check, triage, and append trusts that private in-memory index.
+=e-process-reporting--append-file= at lines 87-93 appends without a file lock, refresh, record transaction, or incomplete-tail recovery.
 
-The user's running Emacs was left unchanged.
-The project action recorded a full reload requirement for feature 52.
-The new behavior becomes available after =M-x e-dev-reload= is run while idle.
+A probe created two store objects over one directory, loaded both, then appended through each.
+The second store did not see the first marker, and the first store did not see the second marker.
+A fresh reload saw both.
+This means list/read results, unknown-marker checks, and terminal-evidence suppression depend on which store object handled the call.
+Two processes can both pass suppression and append the same evidence.
+A killed or interleaved write can also leave a malformed line that makes the next full load fail.
+
+The current test covers restart after serial writes through one store.
+It does not cover two loaded stores, process concurrency, stale reads, duplicate races, or a partial final record.
+
+*** Why this matters
+
+This is correctness and provenance failure in the feature's owning store.
+Markers can disappear from a live review view, duplicate suppression can fail, and triage can reject a marker that exists on disk but not in one process's index.
+
+*** Smallest fix direction
+
+Give one component exclusive ownership of each records file, or serialize refresh/check/append with an inter-process lock.
+Under that lock, ingest records appended since the last known offset before every decision that depends on current state, then append one complete record and update the index.
+Define recovery for an incomplete final line without accepting malformed records in the middle of the log.
+Add tests with two store instances and at least one separate-process contention probe covering marker append, triage, and terminal-evidence suppression.
+
+** TODO High: Persisted telemetry is not secret-safe by construction
+
+*** Expected
+
+The plan says reports never contain secrets by construction and that marker evidence reuses a safe telemetry-preview path.
+The implementation handoff also claims that shared telemetry redaction prevents raw argument, result, or error payloads from being copied.
+
+*** Observed
+
+The redactor in =lisp/core/e-telemetry.el= is a key-name and regular-expression heuristic.
+It cannot establish that arbitrary note, error, result, or metadata text is secret-free.
+More concrete leaks remain in the touched persistence paths:
+
+- =e-actions--error-payload-fields= at =lisp/core/e-actions.el:206-210= persists the raw =e-work-error-message= as =:message= in =action-failed= activity.
+  A batch probe raised =token=super-secret action failed= and found the exact secret in durable session activity.
+- =e-harness--compact-tool-result-for-activity= at =lisp/core/e-harness.el:951-979= copies the complete result =:metadata= before adding preview fields.
+  Tool metadata therefore bypasses =e-telemetry-preview=.
+- =e-process-reporting-mark= stores the model-supplied =:note= verbatim at =lisp/layers/harness/e-process-reporting.el:359=.
+  The schema and guidance do not prevent a credential from appearing there.
+- =e-process-reporting-record-extraction= at =lisp/layers/harness/e-process-reporting.el:453-476= stores caller-supplied session evidence, request ids, token usage, and estimation method without a persistence-boundary projection.
+
+The process marker re-redacts a selected trigger preview, but that does not remove the raw secret already written to session telemetry.
+The current tests cover one keyed argument and one inline token form only.
+
+*** Why this matters
+
+The durable observability channel can preserve credentials indefinitely.
+This directly violates the plan's security invariant and the implementation's documentation claim.
+
+*** Smallest fix direction
+
+Define a narrow persisted schema for each activity and process-reporting record instead of copying arbitrary metadata or error values.
+Run every retained free-text field through one public redaction boundary, including action errors and marker notes.
+Drop tool metadata by default and allow only named safe fields.
+If arbitrary notes cannot be guaranteed secret-free, change the claim from “by construction” and add an explicit redaction/retention policy before acceptance.
+Add regression tests for action errors, tool metadata, marker notes, extraction fields, nested maps/vectors, authorization headers, URL credentials, and common provider key formats.
+
+** TODO High: The request-shape report does not implement the claimed counterfactual
+
+*** Expected
+
+The plan requires a request-shape counterfactual that reconstructs each actual provider request and a paired request with process-marker descriptor, guidance, calls, and results removed, then tokenizes both with a named provider tokenizer or stable approximation.
+It requires passive surface, active marker, and interruption costs to remain distinct.
+Provider totals are evidence and denominator values, not the marker cost itself.
+
+*** Observed
+
+=e-loop--request-shape= at =lisp/core/e-loop.el:79-143= stores Emacs =prin1-to-string= hashes and byte counts for broad values.
+It does not store the canonical provider-visible payload, a reversible component map, provider serialization revisions, or enough content to rebuild the exact paired request after descriptors or guidance change.
+The separate marker fields are also measured from Emacs Lisp representations, not the provider request payload.
+
+=e-process-reporting-cost-report= at =lisp/layers/harness/e-process-reporting.el:478-512= adds descriptor, guidance, call, and result bytes across all requests, labels the sum =:passive-surface-bytes=, divides it by four, and labels the result =:estimated-passive-surface-tokens=.
+The call and result are active overhead, not passive surface.
+The function does not construct paired requests, calculate their delta, use provider-reported usage as validation, report per-request values, or name a provider tokenizer.
+
+The two-request probe made the category error concrete.
+The first request had descriptor/guidance bytes only.
+The induced follow-up had descriptor/guidance plus call/result bytes.
+The report merged all four fields from both requests into one passive total.
+
+README and =plan.org='s implementation evidence overstate this as request-shape counterfactual support.
+The code only provides a rough attribution inventory.
+
+*** Why this matters
+
+The report can present active overhead as passive overhead and cannot support the acceptance claim that a paired request was reconstructed.
+This is a core feature contract, not a documentation detail.
+
+*** Smallest fix direction
+
+Preserve or reproducibly resolve the canonical provider-visible components and serialization/tokenizer revisions for each request.
+Build an explicit paired payload with marker components removed, and report actual-versus-paired bytes or tokens per request.
+Keep passive descriptor/guidance, active call/result, extra request count, and behavioral estimates in separate fields.
+Until that exists, rename the current output to an attribution inventory and remove claims that it reconstructs or calculates the counterfactual.
+Add a two-request marker-turn test that proves each category and paired delta.
+
+** TODO Medium: Nested action context is lost behind the enclosing tool
+
+*** Expected
+
+The runtime should auto-attach the relevant capability, tool, or action name and triggering call id when available.
+This matters most for actions invoked from =run_elisp=, because action telemetry is the mechanical evidence behind the parent agent's judgment.
+
+*** Observed
+
+=e-process-reporting--latest-trigger-event= at =lisp/layers/harness/e-process-reporting.el:196-205= selects one latest non-reporting lifecycle event.
+For a direct action followed immediately by =:mark=, it selects the action correctly.
+For an action called inside a =run_elisp=-style tool, the enclosing tool finishes after the action, so a later marker attaches only the outer tool.
+The probe returned =run_elisp_probe/tool-finished/run-1= rather than =outer/:run= and its action-call id.
+
+The action event remains elsewhere in session activity, but the marker does not preserve the stable relation needed to select it without searching and guessing.
+
+*** Why this matters
+
+Offline extraction loses the most specific evidence for the common action-through-tool path.
+The marker points at a generic execution carrier rather than the operation the agent judged significant.
+
+*** Smallest fix direction
+
+Attach a trigger chain rather than one latest event.
+At minimum preserve the latest relevant action plus its =:parent-tool-call-id= and enclosing tool event when both exist.
+Use explicit call relationships, not timestamp proximity.
+Add tests for direct tool, direct action, action inside =run_elisp=, nested =e-tools-call=, failure, and a marker with no prior operation.
+
+** TODO Medium: Marker-to-provider attribution omits the induced follow-up request
+
+*** Expected
+
+Each marker invocation should join to its provider requests and token-usage events through stable ids rather than event-order inference.
+The producing request and the induced follow-up request are both part of online marker overhead.
+
+*** Observed
+
+The loop correctly gives start, finish, and token-usage events one stable id per request at =lisp/core/e-loop.el:275-306= and lines 473-484.
+A complete marker-turn probe confirmed both token-usage joins.
+
+The marker record stores only =e-process-reporting--current-request-id=, which is the latest request-started id.
+For the model tool path this is the request that emitted the marker call.
+The follow-up request created after the acknowledgement has no marker id or causing tool-call id in its lifecycle payload.
+Linking it back to the marker therefore requires event-order inference.
+
+The helper also never checks whether the selected request has finished.
+A direct runtime =:mark= action after a completed request attached that stale finished request id.
+
+*** Why this matters
+
+The implementation cannot make the stable join required to count the marker's extra request and its token usage.
+It can also claim provider attribution for an action that ran outside any active provider request.
+
+*** Smallest fix direction
+
+Track active request state explicitly.
+Persist the producing request id on the marker only while that request is active.
+When the loop starts a follow-up because of a tool result, add a stable =:caused-by-tool-call-id= or marker id to the new request lifecycle and token-usage join path.
+Add a full two-request process-marker test and a direct action test after provider completion.
+
+** TODO Medium: The runtime does not enforce the two-field marker payload
+
+*** Expected
+
+The model-supplied payload is limited to =signal= and =note= so capture remains small and later requests do not retain extra marker narration.
+
+*** Observed
+
+=e-process-reporting--marker-parameters= at =lisp/layers/harness/e-process-reporting.el:514-520= does not set =additionalProperties= to false.
+The shared tool coercion path preserves unknown keys, and process reporting ignores them only when writing its own record.
+A probe passed an extra =:impact= field; the tool returned =ok= and wrote a marker.
+The extra field remains in the model transcript and in durable tool-started telemetry.
+
+The focused test checks required fields but does not test rejection of unknown fields.
+
+*** Why this matters
+
+The store remains small, but the parent context and telemetry do not.
+Extra narration increases the exact online overhead this feature is meant to constrain and can carry sensitive text.
+
+*** Smallest fix direction
+
+Set =additionalProperties= to false for provider schema generation and enforce an exact key set at the runtime boundary because not every backend guarantees schema enforcement.
+Return a normal tool error for unknown keys.
+Add a regression test that proves no extra field reaches the action, transcript, or durable telemetry.
 
 * Plan coverage
 
-The first slice meets the online capture, durable review, triage, redaction,
-registration, guidance, and attribution requirements.
-Provider-tokenizer accounting and repeated replay/A-B experiments are later
-measurement executions. The slice stores the stable checkpoint, request shape,
-request identity, usage joins, and estimate method needed to run them without
-changing online capture.
+| Plan area | Review result |
+|-----------+---------------|
+| Minimal descriptor and guidance | Meets the intent |
+| Signal plus note payload | Partial; unknown fields are accepted and retained |
+| Minimal acknowledgement | Meets the intent |
+| No child or online enrichment | Meets the intent |
+| Auto-attached session/turn/project/tool context | Partial; nested action context is lost |
+| Redacted evidence | Blocked by raw persisted error/metadata/note paths |
+| Durable list/read/triage | Blocked by stale indexes and unsynchronized append |
+| Immutable marker plus appended triage | Meets the serial single-store case |
+| Content-keyed suppression | Partial; races and stale stores defeat it |
+| Provider request/token usage joins | Partial; lifecycle joins work, induced request correlation does not |
+| Request-shape counterfactual | Not implemented; current output is a byte attribution inventory |
+| Behavioral counterfactual | Correctly left unclaimed and unimplemented |
+| Separate extraction ledger | Present, but persisted fields need a safe schema |
+| Default parent integration | Present in the built-in chat preset and absent from lean children |
 
 * Architecture review
 
-The process-reporting capability owns marker semantics and durable facts.
-Core telemetry owns shared redaction and provider-request identity.
-The loop stores hashes and sizes rather than depending on a provider adapter or
-process-reporting storage implementation.
-The model interface stays narrow. The append-only file is private behind
-capability actions.
-No presentation, issue tracker, extractor, or child-agent dependency points
-into capture.
+The capability boundary is the right owner for marker semantics, triage, and the durable report API.
+The loop is the right owner for provider request lifecycle identity.
+The current design crosses those boundaries through retrospective scans of activity events, which loses explicit causal relations.
+The store also combines persistence, indexing, duplicate policy, and process coordination without a transaction boundary.
 
-* Design self-check
+The smallest architectural correction is not a new general abstraction.
+It is an explicit append/refresh ownership rule for one records file and explicit causal ids in lifecycle payloads.
 
-1. The slice is useful alone because it preserves and routes high-signal process evidence.
-2. It moves toward offline session learning and reviewed durable outcomes.
-3. Signal vocabularies and triage states are local constants; stable append-only facts and ids are direct models.
-4. Process reporting owns capture, marker storage, review, and triage.
-5. The tool takes two fields. Other consumers use narrow actions.
-6. Core telemetry does not depend on the process-reporting capability.
-7. Persistence stays at the capability boundary. Provider lifecycle attribution stays in the loop.
-8. Markers, triage, and extraction ledgers are durable facts. Cost summaries are derived.
-9. Passive overhead is one tiny descriptor and one guidance sentence. Active persistence is one append.
-10. The capture contract applies uniformly to all supported signals.
-11. No legacy compatibility path was added.
-12. There was no prior process-report store to retain.
-13. Validation errors surface. Persistence and redaction errors are not swallowed.
-14. Focused tests isolate store, redaction, capture, triage, and attribution behavior.
+* UX and performance playthrough
+
+There is no new presentation shell.
+The meaningful flows are model tool capture, runtime action capture, offline list/read/triage, and later extraction.
+Batch playthrough confirmed first-use creation, minimal =ok=, serial reload, and a normal two-request marker turn.
+Repeated use through two loaded stores exposed stale views.
+No live visual check was needed.
+
+* Live reload
+
+The running Emacs was not reloaded, as requested.
+All runtime probes used repository-side batch Emacs processes.
 
 * Unresolved
 
-No implementation blockers are known.
-Parent review is pending.
+- Three High findings block acceptance: durable store correctness, secret-safe persistence, and the claimed request-shape counterfactual.
+- Three Medium findings remain: nested action attachment, induced request correlation, and exact two-field payload enforcement.
