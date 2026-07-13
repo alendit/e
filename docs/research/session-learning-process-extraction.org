@@ -294,17 +294,16 @@ Concrete direction:
    A skill or schedule proposal should usually point to repeated evidence.
 6. Reports and proposals should share content-keyed anti-re-nag discipline.
    A rejected or already-routed evidence set should not reappear unless new evidence changes its identity.
-7. Process reports should improve extraction prompts.
-   The agent's concise account of what mattered is often a better query and problem statement than the raw transcript alone.
-8. Process reporting should carry enough attribution data for counterfactual cost accounting.
+7. Process markers should improve extraction prompts.
+   The parent agent's one-sentence account of what mattered is often a better anchor and query than an undirected transcript scan.
+8. Process marking should carry enough attribution data for counterfactual cost accounting.
    It is a pure observability function and cannot improve the current task, so every main-session token, provider round trip, delay, and context entry it induces is overhead that later learning must repay.
    Provider-reported =token-usage= events give request totals, while stored tool/action events identify calls and results.
-   Add a stable provider-request id or ordinal across request lifecycle and token-usage events, preserve process-report and observer lineage ids, retain reconstructable request ingredients, and record descriptor and guidance revisions.
-   A request-shape counterfactual can calculate direct context deltas after removing report artifacts.
+   Add a stable provider-request id or ordinal across request lifecycle and token-usage events, preserve marker and tool/action call ids, retain reconstructable request ingredients, and record descriptor and guidance revisions.
+   A request-shape counterfactual can calculate direct context deltas after removing the marker surface and marker calls.
    Replay or controlled A/B sessions are still required to estimate interruption overhead and changed model behavior.
-   Default capture should therefore run after the turn in an isolated observer session, leaving the main session free of report guidance, tool calls, results, and child output; any ordinary in-band tool mode should be opt-in and costed separately.
-   The observer is a fresh linked session, not a copy of the parent's context.
-   It should use a small stable cacheable prefix and a bounded dynamic evidence suffix resolved from =session://=, while tracking total, cached, and uncached observer input separately.
+   Capture should stay in the task-performing parent because it already has the process judgment and needs to emit only a signal plus one short note.
+   Children or queued background sessions belong to later offline extraction, where they resolve bounded evidence through =session://= and batch enough markers to justify their setup and context cost.
 
 This changes the first-slice sequencing slightly.
 A session-learning extractor can start with =session://= alone, but once =52= exists it should read open process reports first, use them as anchors into session history, and then run broader recurrence mining.
