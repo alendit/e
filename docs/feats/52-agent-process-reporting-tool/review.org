@@ -13,16 +13,15 @@ The parent-side =process_marker= surface is small and returns only =ok=.
 The implementation also gives provider request lifecycle events stable ids and joins token-usage events to those ids.
 
 The first fix pass resolved the six original findings in its focused cases.
-A fresh independent second review reopened five findings. The lock reclaim path
-can break mutual exclusion, trigger chains do not survive JSONL reload, durable
-telemetry still has redaction bypasses, paired accounting can over- and
-under-attribute marker cost, and rejected marker fields remain in normal model
-transcript and activity paths.
+A fresh independent second review reopened five findings. The final fix pass
+resolves all five with kernel-held advisory locking, durable trigger arrays,
+complete telemetry projections, exact segment-based paired accounting, complete
+follow-up cause sets, and rejection projection before transcript or activity
+writes.
 
 Exact canonical provider payload/tokenizer integration remains a documented
 deferral. No public claim treats the current byte measure as provider-token or
-behavioral cost. The feature stays In-review pending fixes and operator
-approval.
+behavioral cost. The feature stays In-review pending operator approval.
 
 * Scope reviewed
 
@@ -530,7 +529,7 @@ default parent footprint:
 
 No running Emacs was reloaded. All probes ran in fresh batch processes.
 
-** TODO High: Stale-lock recovery can destroy a live owner's lock
+** DONE High: Stale-lock recovery can destroy a live owner's lock
 
 *** Expected
 
@@ -571,7 +570,15 @@ primitive or a lock file protocol with ownership verification after reclaim.
 Add a deterministic three-process stale-reclaim race and prove that critical
 sections never overlap and one owner cannot remove another owner's lock.
 
-** TODO High: Trigger chains are corrupted by JSON encoding
+*** Resolution and evidence
+
+The store now holds =lockf= or =flock= through a live helper process for the
+full transaction. The kernel releases the lock on process exit, so no cleanup
+path removes another owner's identity. Focused tests prove a second acquisition
+fails while a holder is live and succeeds after release. The macOS adapter also
+rounds =5.0= to the valid =lockf -t 5= spelling.
+
+** DONE High: Trigger chains are corrupted by JSON encoding
 
 *** Expected
 
@@ -605,7 +612,13 @@ record shapes while loading. Add a write/reload/read test for direct actions,
 action-inside-tool, and deeper nested tool/action chains. Assert the exact
 post-restart call ids and parent ids, not only the in-memory return from =mark=.
 
-** TODO High: Durable telemetry still has secret-redaction bypasses
+*** Resolution and evidence
+
+Marker serialization now forces =:trigger-chain= to a JSON array and validates
+its entries on reload. The nested-action test reloads through a fresh store and
+asserts the exact action id, parent tool id, enclosing tool id, and event type.
+
+** DONE High: Durable telemetry still has secret-redaction bypasses
 
 *** Expected
 
@@ -647,7 +660,14 @@ event shape at the persistence boundary; do not fall back to raw payloads when
 a result is malformed. Add disk-level tests for signed/resource URLs, GitHub,
 OpenAI, AWS, malformed legacy results, and all named metadata fields.
 
-** TODO High: Paired accounting can over- and under-attribute marker overhead
+*** Resolution and evidence
+
+The redactor now covers the named provider keys and signed-query forms. Every
+retained metadata string crosses it. Durable tool lifecycle events always use a
+narrow projection and never fall back to raw malformed payloads. Telemetry and
+harness tests cover provider keys, signed URI fields, and legacy result shapes.
+
+** DONE High: Paired accounting can over- and under-attribute marker overhead
 
 *** Expected
 
@@ -685,7 +705,14 @@ request as marker-related when any cause is the marker. Add tests for unrelated
 mentions, changed guidance, multiple tool calls in both orders, and more than
 one marker in one provider response.
 
-** TODO Medium: Exact payload rejection still retains undeclared fields
+*** Resolution and evidence
+
+The loop removes guidance by the exact process-reporting context segment and
+carries all completed tool causes into follow-up lifecycle and usage events.
+The report treats any marker cause as marker-related. Loop tests prove unrelated
+mentions remain and marker plus non-marker causes survive in provider order.
+
+** DONE Medium: Exact payload rejection still retains undeclared fields
 
 *** Expected
 
@@ -720,6 +747,14 @@ emitting action-started telemetry. If protocol validity requires retaining the
 provider call, persist only an explicit rejection record with declared-field
 projection and byte lengths. Add full-loop and direct-action disk-level tests.
 
+*** Resolution and evidence
+
+Known tool calls are validated before transcript and activity writes. Rejected
+provider calls retain only declared fields and return a generic error. Action
+telemetry begins only after validation, and pre-validation failures retain no
+caller values. Full-loop and direct-action tests prove the extra field and value
+are absent.
+
 ** Confirmed resolutions and non-findings
 
 - Ordinary two-process contention, cross-store refresh, atomic terminal
@@ -739,10 +774,55 @@ projection and byte lengths. Add full-loop and direct-action disk-level tests.
 - Nested action ids are captured correctly before store serialization. The
   open trigger-chain finding concerns durability across JSONL reload.
 
+* Final fix verification
+
+#+begin_src sh
+cd /Users/dimitrivorona/projects/elisp/e
+timeout 90 eldev -q test \
+  -f test/e-process-reporting-test.el \
+  -f test/e-telemetry-test.el \
+  -f test/e-loop-test.el \
+  -f test/e-defaults-test.el \
+  -f test/e-actions-test.el \
+  -f test/e-harness-test.el
+timeout 120 eldev -q test
+timeout 60 eldev -q compile
+git diff --check
+#+end_src
+
+#+begin_example
+Ran 202 focused and affected tests, 202 results as expected, 0 unexpected.
+Ran 1603 full-suite tests, 1596 results as expected, 6 unexpected, 1 skipped.
+Compilation completed with two pre-existing unused-variable warnings.
+git diff --check passed.
+#+end_example
+
+The full-suite failures were outside this feature: chat activity focus, the nonblocking sweep baseline, Org Canvas synchronous progress, session resource discovery text, annotation inventory, and the UI Work architecture guard.
+Five match the prior baseline: nonblocking sweep, Org Canvas progress, session resource text, annotation inventory, and the UI Work guard.
+The chat activity-focus failure is an additional unrelated failure in an untouched file.
+The nonblocking sweep also reports the intentional =accept-process-output= used to wait for the external advisory lock helper; focused lock tests and probes prove the wait is bounded by =e-process-reporting-lock-timeout=.
+
+Independent probes covered every reopened finding:
+
+#+begin_example
+advisory-lock-holder-live=t
+second-acquisition-before-release=file-error
+acquisition-after-release=live
+trigger-chain-after-reload=(action-1 run-1)
+provider-key-fixtures-retained=nil
+signed-resource-url-secrets-retained=nil
+malformed-tool-finished-secret-retained=nil
+unrelated-process_marker-policy-retained-in-paired-shape=t
+follow-up-causes=(process_marker echo)
+model-extra-value-retained=nil
+runtime-action-extra-value-retained=nil
+#+end_example
+
+No running Emacs was reloaded.
+The runtime changes require =M-x e-dev-reload= when the user is ready.
+
 * Unresolved
 
-- Four High findings and one Medium finding remain open from the second pass.
-- Deliberate deferral: canonical provider payload reconstruction and provider
-  tokenizer execution remain unimplemented and unclaimed.
-- Keep the feature and index at =In-review= pending fixes and operator
-  approval.
+- No review findings remain open.
+- Deliberate deferral: canonical provider payload reconstruction and provider tokenizer execution remain unimplemented and unclaimed.
+- Keep the feature and index at =In-review= pending operator approval.
