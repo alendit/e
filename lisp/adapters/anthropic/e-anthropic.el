@@ -27,6 +27,7 @@
 (require 'e-harness)
 (require 'e-request)
 (require 'e-tools)
+(require 'e-work)
 
 (define-error 'e-anthropic-auth-missing "Anthropic auth is missing")
 (define-error 'e-anthropic-auth-invalid "Anthropic auth is invalid")
@@ -915,7 +916,7 @@ instead of a stream (the failure mode this adapter was built to make visible)."
         ("error"
          (let ((err (plist-get event :error)))
            (push (list :type 'backend-error
-                       :content (or (plist-get err :message) (format "%S" event))
+                       :content (or (plist-get err :message) (e-format-safe "%S" event))
                        :payload event)
                  items)))))
       (when text-parts
@@ -1031,8 +1032,9 @@ condition list.  Return a cancellable `e-backend-request' handle."
                                    (funcall
                                     on-error
                                     (list 'error
-                                          (format "Anthropic request failed: %S"
-                                                  url-error))))))
+                                          (e-format-safe
+                                           "Anthropic request failed: %S"
+                                           url-error))))))
                            (when on-complete
                              (funcall
                               on-complete

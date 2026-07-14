@@ -624,7 +624,7 @@ headers) is searched."
       (let ((err-obj (plist-get response :error)))
         (signal 'e-mcp-backend-error
                 (list (or (plist-get err-obj :message)
-                          (format "%S" err-obj))))))
+                          (e-format-safe "%S" err-obj))))))
     (plist-get response :result)))
 
 (defun e-mcp--http-post (session method params)
@@ -646,7 +646,8 @@ Return the parsed JSON-RPC result on success, signal on error."
                      (url-retrieve-synchronously url 'silent nil timeout)
                    (error
                     (signal 'e-mcp-backend-error
-                            (list (format "HTTP request to %s failed: %S" url err)))))))
+                            (list (e-format-safe
+                                   "HTTP request to %s failed: %S" url err)))))))
     (unwind-protect
         (e-mcp--http-result-from-buffer session buffer url)
       (when (buffer-live-p buffer)
@@ -688,8 +689,9 @@ Return the parsed JSON-RPC result on success, signal on error."
                  (progn
                    (when-let ((transport-error (plist-get status :error)))
                      (signal 'e-mcp-backend-error
-                             (list (format "HTTP request to %s failed: %S"
-                                           url transport-error))))
+                             (list (e-format-safe
+                                    "HTTP request to %s failed: %S"
+                                    url transport-error))))
                    (let ((result (e-mcp--http-result-from-buffer
                                   session (current-buffer) url)))
                      (setq settled t)

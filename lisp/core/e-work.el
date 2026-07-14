@@ -105,6 +105,35 @@ cap size so formatting a hostile error always terminates."
         (print-level 8))
     (error-message-string err)))
 
+(defun e-format-safe (format-string &rest args)
+  "Like `format' with FORMAT-STRING and ARGS, but with the printer bounded.
+`format' renders a `%S' (or `%s' on a non-string) by calling the Lisp printer
+with the caller's print settings.  When an argument is cyclic or huge -- a
+harness struct, a streaming event, a buffer or process object, a backend error
+carrying that state -- the printer loops without end, spinning Emacs at 100%
+CPU while memory climbs until the process is killed.  This is the same failure
+`e-work-error-message' guards for errors; use this for any async or timer
+callback that formats an arbitrary value for display or logging.  Bind the
+printer to detect cycles and cap size so formatting always terminates.
+
+Do NOT use this where the printed text is an identity or is read back
+\(`secure-hash' keys, `prin1' to a file, saved state): the length and level
+caps truncate and would corrupt the result."
+  (let ((print-circle t)
+        (print-length 100)
+        (print-level 8))
+    (apply #'format format-string args)))
+
+(defun e-prin1-safe (value)
+  "Return `prin1-to-string' of VALUE with the printer bounded.
+See `e-format-safe' for why and when: a cyclic or huge VALUE otherwise makes
+the printer spin forever.  Never use this for a hash input, on-disk `prin1', or
+any text that must read back -- the caps truncate."
+  (let ((print-circle t)
+        (print-length 100)
+        (print-level 8))
+    (prin1-to-string value)))
+
 (defun e-work--next-id (spec)
   "Return a fresh work id for SPEC."
   (format "%s/%d"

@@ -23,6 +23,7 @@
 (require 'e-harness)
 (require 'e-request)
 (require 'e-tools)
+(require 'e-work)
 
 (declare-function e-dev-profile-enabled-p "e-dev-profile")
 (declare-function e-dev-profile-measure-thunk "e-dev-profile")
@@ -999,8 +1000,9 @@ condition list.  Return a cancellable `e-backend-request' handle."
                                    (funcall
                                     on-error
                                     (list 'error
-                                          (format "OpenAI request failed: %S"
-                                                  url-error))))))
+                                          (e-format-safe
+                                           "OpenAI request failed: %S"
+                                           url-error))))))
                            (when on-complete
                              (funcall
                               on-complete

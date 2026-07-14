@@ -623,6 +623,39 @@ forever, so the call returns promptly rather than hanging."
       ;; `print-circle' emits the #N=/#N# cycle markers rather than looping.
       (should (string-match-p "#[0-9]+" message)))))
 
+(ert-deftest e-work-test-format-safe-formats-plain-value ()
+  "`e-format-safe' behaves like `format' for a small value."
+  (should (equal "x=(1 2 3)" (e-format-safe "x=%S" (list 1 2 3)))))
+
+(ert-deftest e-work-test-format-safe-bounds-huge-value ()
+  "`e-format-safe' caps a huge argument instead of building a giant string.
+This is the async-timer shape of the printer hang: a timer callback runs
+\(format \"...%S\" value) on an enormous value, and the printer spins at 100%
+CPU while RSS climbs until the process is killed.  The length/level caps keep
+the result tiny."
+  (let ((message (e-format-safe "event=%S" (make-list 1000000 42))))
+    (should (stringp message))
+    (should (< (length message) 4096))))
+
+(ert-deftest e-work-test-format-safe-terminates-on-cyclic-value ()
+  "`e-format-safe' returns on a self-referential value rather than hanging.
+`print-circle' emits cycle markers instead of recursing forever."
+  (let ((cyclic (list 1 2 3)))
+    (setcdr (cddr cyclic) cyclic)
+    (let ((message (with-timeout (5 (ert-fail "e-format-safe did not terminate"))
+                     (e-format-safe "event=%S" cyclic))))
+      (should (stringp message))
+      (should (string-match-p "#[0-9]+" message)))))
+
+(ert-deftest e-work-test-prin1-safe-terminates-on-cyclic-value ()
+  "`e-prin1-safe' returns on a cyclic value rather than hanging."
+  (let ((cyclic (list 1 2 3)))
+    (setcdr (cddr cyclic) cyclic)
+    (let ((text (with-timeout (5 (ert-fail "e-prin1-safe did not terminate"))
+                  (e-prin1-safe cyclic))))
+      (should (stringp text))
+      (should (string-match-p "#[0-9]+" text)))))
+
 (provide 'e-work-test)
 
 ;;; e-work-test.el ends here
