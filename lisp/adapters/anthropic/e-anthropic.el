@@ -966,12 +966,10 @@ instead of a stream (the failure mode this adapter was built to make visible)."
           :url-path path)))
 
 (defun e-anthropic--kill-request-buffer (buffer)
-  "Cancel any live request process attached to BUFFER and kill BUFFER."
-  (when (buffer-live-p buffer)
-    (when-let ((process (get-buffer-process buffer)))
-      (when (process-live-p process)
-        (delete-process process)))
-    (kill-buffer buffer)))
+  "Cancel any live request process attached to BUFFER and kill BUFFER.
+Delegates to `e-kill-buffer-quietly' so a still-live gateway connection can
+never raise the blocking \"has a running process; kill it?\" prompt."
+  (e-kill-buffer-quietly buffer))
 
 (cl-defun e-anthropic--http-request-start
     (&key url headers body on-complete on-error (method "POST"))

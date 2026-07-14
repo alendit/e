@@ -942,14 +942,20 @@ profiles."
           :url-path path)))
 
 (defun e-openai-codex--kill-request-buffer (buffer)
-  "Cancel any live request process attached to BUFFER and kill BUFFER."
+  "Cancel any live request process attached to BUFFER and kill BUFFER.
+Real/pipe helper processes are force-killed; network processes are deleted.
+The exit query is disabled and `kill-buffer-query-functions' is bound off so a
+still-live process can never raise the blocking \"has a running process; kill
+it?\" prompt that stalls a headless agent."
   (when (buffer-live-p buffer)
     (when-let ((process (get-buffer-process buffer)))
       (when (process-live-p process)
+        (set-process-query-on-exit-flag process nil)
         (if (memq (process-type process) '(real pipe))
             (kill-process process)
           (delete-process process))))
-    (kill-buffer buffer)))
+    (let ((kill-buffer-query-functions nil))
+      (kill-buffer buffer))))
 
 (cl-defun e-openai-codex--http-request-start
     (&key url headers body on-complete on-error)

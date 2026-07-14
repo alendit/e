@@ -134,6 +134,26 @@ any text that must read back -- the caps truncate."
         (print-level 8))
     (prin1-to-string value)))
 
+(defun e-kill-buffer-quietly (buffer)
+  "Kill BUFFER without ever prompting about a running process.
+BUFFER is a transient HTTP/`url-retrieve' or subprocess buffer that e owns.
+Emacs's `process-kill-buffer-query-function' asks \"Buffer ... has a running
+process; kill it? (y or n)\" whenever `kill-buffer' runs on a buffer whose
+process is still live -- an in-flight request connection, say.  In a headless
+agent that prompt blocks the turn forever, since nothing answers it.
+
+Tear the process down first with its exit query disabled, then kill with
+`kill-buffer-query-functions' bound off.  The two guards are redundant on
+purpose: even if the process outlives `delete-process' for a moment, the
+prompt can never fire."
+  (when (buffer-live-p buffer)
+    (when-let ((process (get-buffer-process buffer)))
+      (when (process-live-p process)
+        (set-process-query-on-exit-flag process nil)
+        (delete-process process)))
+    (let ((kill-buffer-query-functions nil))
+      (kill-buffer buffer))))
+
 (defun e-work--next-id (spec)
   "Return a fresh work id for SPEC."
   (format "%s/%d"
@@ -540,10 +560,8 @@ late terminal callbacks then no-op."
                  (cancel-timer progress-timer))
                (when (timerp timeout-timer)
                  (cancel-timer timeout-timer))
-               (when (buffer-live-p stdout)
-                 (kill-buffer stdout))
-               (when (buffer-live-p stderr)
-                 (kill-buffer stderr)))
+               (e-kill-buffer-quietly stdout)
+               (e-kill-buffer-quietly stderr))
              (terminal-p ()
                (e-request-terminal-p (e-work-handle-lifecycle handle)))
              (ok-status-p (status)
@@ -731,8 +749,7 @@ late terminal callbacks then no-op."
         ((cleanup (_handle)
            (when (timerp timer)
              (cancel-timer timer))
-           (when (buffer-live-p response-buffer)
-             (kill-buffer response-buffer))))
+           (e-kill-buffer-quietly response-buffer)))
       (e-work--add-cleanup handle #'cleanup)
       (setf (e-work-handle-cancel-function handle)
             (lambda (_handle)
@@ -763,8 +780,7 @@ late terminal callbacks then no-op."
                (let ((buffer (current-buffer)))
                  (if (e-request-terminal-p
                       (e-work-handle-lifecycle handle))
-                     (when (buffer-live-p buffer)
-                       (kill-buffer buffer))
+                     (e-kill-buffer-quietly buffer)
                    (setq response-buffer buffer)
                    (if-let ((err (plist-get status :error)))
                        (e-work-fail handle (if (consp err)

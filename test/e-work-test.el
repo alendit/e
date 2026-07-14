@@ -656,6 +656,33 @@ the result tiny."
       (should (stringp text))
       (should (string-match-p "#[0-9]+" text)))))
 
+(ert-deftest e-work-test-kill-buffer-quietly-no-process ()
+  "`e-kill-buffer-quietly' kills an ordinary buffer and tolerates a dead one."
+  (let ((buffer (generate-new-buffer " *e-test-quiet*")))
+    (e-kill-buffer-quietly buffer)
+    (should-not (buffer-live-p buffer))
+    ;; A second call on the now-dead buffer is a no-op, not an error.
+    (e-kill-buffer-quietly buffer)))
+
+(ert-deftest e-work-test-kill-buffer-quietly-live-process-does-not-prompt ()
+  "`e-kill-buffer-quietly' kills a buffer with a live process without prompting.
+This is the headless-agent hang: `kill-buffer' on a buffer whose request
+process is still live triggers `process-kill-buffer-query-function', which
+asks \"has a running process; kill it?\" and blocks the turn forever.  Bind a
+query function that fails the test if it is ever consulted, so any prompt path
+is caught."
+  (let* ((buffer (generate-new-buffer " *e-test-quiet-proc*"))
+         (process (start-process "e-test-sleep" buffer
+                                 (or (executable-find "sleep") "sleep") "60")))
+    (should (process-live-p process))
+    ;; Emacs would normally prompt because the process is live.
+    (let ((kill-buffer-query-functions
+           (list (lambda () (ert-fail "kill-buffer prompted about a live process")))))
+      (with-timeout (5 (ert-fail "e-kill-buffer-quietly did not return"))
+        (e-kill-buffer-quietly buffer)))
+    (should-not (buffer-live-p buffer))
+    (should-not (process-live-p process))))
+
 (provide 'e-work-test)
 
 ;;; e-work-test.el ends here

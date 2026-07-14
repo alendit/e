@@ -245,10 +245,8 @@ transport), but not both."
   (when (and e-mcp--helper-process
              (process-live-p e-mcp--helper-process))
     (kill-process e-mcp--helper-process))
-  (when (buffer-live-p e-mcp--helper-stdout)
-    (kill-buffer e-mcp--helper-stdout))
-  (when (buffer-live-p e-mcp--helper-stderr)
-    (kill-buffer e-mcp--helper-stderr))
+  (e-kill-buffer-quietly e-mcp--helper-stdout)
+  (e-kill-buffer-quietly e-mcp--helper-stderr)
   (setq e-mcp--helper-process nil)
   (setq e-mcp--helper-stdout nil)
   (setq e-mcp--helper-stderr nil)
@@ -650,8 +648,7 @@ Return the parsed JSON-RPC result on success, signal on error."
                                    "HTTP request to %s failed: %S" url err)))))))
     (unwind-protect
         (e-mcp--http-result-from-buffer session buffer url)
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
+      (e-kill-buffer-quietly buffer))))
 
 (cl-defun e-mcp--http-post-start
     (session method params &key on-done on-error on-event &allow-other-keys)
@@ -672,8 +669,7 @@ Return the parsed JSON-RPC result on success, signal on error."
         ((cleanup ()
            (when (timerp timer)
              (cancel-timer timer))
-           (when (buffer-live-p buffer)
-             (kill-buffer buffer))
+           (e-kill-buffer-quietly buffer)
            (when reservation
              (e-mcp--release-request-slot reservation)
              (setq reservation nil)))
@@ -749,8 +745,7 @@ Return the parsed JSON-RPC result on success, signal on error."
          (url-request-data (encode-coding-string payload 'utf-8))
          (buffer (ignore-errors
                    (url-retrieve-synchronously url 'silent nil 5))))
-    (when (buffer-live-p buffer)
-      (kill-buffer buffer))))
+    (e-kill-buffer-quietly buffer)))
 
 (defun e-mcp--http-notify-start (session method params)
   "Send a JSON-RPC notification to SESSION asynchronously."
@@ -765,8 +760,7 @@ Return the parsed JSON-RPC result on success, signal on error."
     (url-retrieve
      url
      (lambda (_status)
-       (when (buffer-live-p (current-buffer))
-         (kill-buffer (current-buffer))))
+       (e-kill-buffer-quietly (current-buffer)))
      nil
      'silent)))
 
