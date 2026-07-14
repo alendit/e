@@ -36,6 +36,18 @@
 
 (setf eldev-test-framework 'ert)
 
+;; The MCP helper is a Node script that ships beside `e-mcp.el' and is resolved
+;; relative to that file at runtime (see `e-mcp--helper-script').  Eldev's
+;; default `eldev-files-to-package' bundles only `*.el', so the packaged install
+;; used by the test runner would lack the `.mjs' and the real-helper tests would
+;; fail with a Node MODULE_NOT_FOUND.  Wrap the default fileset in an `:or' with
+;; the helper so it lands next to the compiled `e-mcp.el'.  (Appending to the
+;; fileset instead both nests the pattern inside the default `:and' -- where a
+;; file would have to match `*.el' AND the `.mjs', matching nothing -- and trips
+;; Eldev's suspicious-suffix-modification warning.)
+(setf eldev-files-to-package
+      `(:or ,eldev-files-to-package "./lisp/core/e-mcp-helper.mjs"))
+
 ;; Live e2e tests intentionally sit outside the default test fileset because
 ;; they call real provider APIs.  Opt in with E_E2E=1 and load e2e files
 ;; explicitly, for example:
