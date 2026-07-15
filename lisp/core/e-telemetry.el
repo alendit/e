@@ -132,8 +132,17 @@ SEEN is an internal cycle guard."
     (substring text 0 index)))
 
 (defun e-telemetry-preview (value &optional max-bytes)
-  "Return bounded redacted printable telemetry metadata for VALUE."
-  (let* ((text (prin1-to-string value))
+  "Return bounded redacted printable telemetry metadata for VALUE.
+
+The printer is bounded (`print-circle', `print-length', `print-level') so a
+cyclic or huge VALUE cannot spin `prin1-to-string' forever or materialize a
+multi-gigabyte string before truncation.  This runs on every tool call and
+result through `e-process-reporting', so an unbounded print here is a
+process-wide hang and memory-exhaustion risk."
+  (let* ((print-circle t)
+         (print-length 1000)
+         (print-level 12)
+         (text (prin1-to-string value))
          (original-bytes (string-bytes text))
          (redacted-text (prin1-to-string (e-telemetry-redact-value value)))
          (redacted-bytes (string-bytes redacted-text))

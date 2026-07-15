@@ -36,6 +36,16 @@
     (should (plist-get preview :truncated))
     (should (<= (plist-get preview :shown-bytes) 12))))
 
+(ert-deftest e-telemetry-test-preview-bounds-wide-value ()
+  "A wide VALUE must not materialize an unbounded string before truncation.
+Tool results are parsed JSON -- large but finite -- so an unbounded printer
+here would build a multi-gigabyte string before the 4096-byte truncation."
+  (let* ((value (vconcat (mapcar (lambda (i) (format "item-%d" i))
+                                 (number-sequence 1 100000))))
+         (preview (e-telemetry-preview value 4096)))
+    (should (<= (plist-get preview :shown-bytes) 4096))
+    (should (plist-get preview :truncated))))
+
 (provide 'e-telemetry-test)
 
 ;;; e-telemetry-test.el ends here
