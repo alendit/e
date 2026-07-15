@@ -470,6 +470,168 @@ late terminal callbacks then no-op."
             (cancel-timer timer)
             (setq timer nil)))))))
 
+(defvar e-work--detached-handles (make-hash-table :test 'equal)
+  "Process-global map of `e-work' handle id to a live detached handle.
+Runtime-only and rebuildable: it holds no durable facts.  The race coordinator
+inserts a handle here when a raced tool call outlives its `wait_for' window, so
+the generic `work:' waitable scheme can resolve it later.  Entries key on the
+handle's own id, so nothing tool-specific is stored: a detached bash, glob, or
+fetch handle is just an `e-work' that kept running.")
+
+(defun e-work-detach-register (handle)
+  "Register HANDLE in the detached-work registry and return it.
+Keyed on HANDLE's own id.  A terminal handle stays registered so a later
+`await' can still resolve its result; the registry is discarded on restart."
+  (unless (e-work-handle-p handle)
+    (signal 'wrong-type-argument (list 'e-work-handle-p handle)))
+  (puthash (e-work-handle-id handle) handle e-work--detached-handles)
+  handle)
+
+(defun e-work-detached-handle (id)
+  "Return the live detached-work handle registered under ID, or nil."
+  (gethash id e-work--detached-handles))
+
+(defun e-work-detached-handle-ids ()
+  "Return the ids of currently registered detached-work handles."
+  (hash-table-keys e-work--detached-handles))
+
+(cl-defun e-work-race-or-detach (child &key wait-for on-inline on-detach)
+  "Race CHILD against a WAIT-FOR deadline and settle exactly one way.
+CHILD is a live `e-work-handle'.  WAIT-FOR is seconds:
+
+  <= 0   detach immediately without arming any timer (pure fire-and-forget),
+  > 0    race CHILD against a WAIT-FOR-second timer,
+  nil    hold until CHILD is terminal, bounded only by CHILD's own timeout.
+
+When CHILD reaches a terminal state inside the window, ON-INLINE is called with
+CHILD.  When the window expires with CHILD still running, ON-DETACH is called
+with CHILD.  Exactly one of the two runs.  This is `e-work-await-set' with
+`:mode any' over the single CHILD plus a WAIT-FOR timeout, so the wait is
+event-driven and never blocks.
+
+Returns a canceller thunk that tears down the race without invoking either
+callback, so a cancelled parent can detach the wait before settling CHILD
+itself."
+  (unless (e-work-handle-p child)
+    (signal 'wrong-type-argument (list 'e-work-handle-p child)))
+  (cond
+   ((and (numberp wait-for) (<= wait-for 0))
+    (when on-detach (funcall on-detach child))
+    (lambda () nil))
+   (t
+    (e-work-await-set
+     (list child)
+     :mode 'any
+     :timeout wait-for
+     :on-settle
+     (lambda (report)
+       (pcase (plist-get report :reason)
+         ('complete (when on-inline (funcall on-inline child)))
+         ('timed-out (when on-detach (funcall on-detach child)))))))))
+
+(defconst e-work-detachable-wait-for-parameter
+  '(:wait_for
+    (:type "number"
+     :description "Seconds to hold the turn before detaching. The work runs inline for up to this long; if it finishes first, its result is returned inline. If the window expires while it is still running, the work detaches and the call returns a `work:<id>' reference to pass to `await', plus an `output_uri' for partial output. 0 detaches immediately (fire-and-forget); omit for the tool's default hold."))
+  "JSON Schema property injected into every detachable tool's parameters.
+One concept, one parameter: `wait_for' subsumes any foreground/background flag.")
+
+(defun e-work-detachable-merge-parameters (parameters)
+  "Return PARAMETERS with the shared `wait_for' property merged in.
+PARAMETERS is a tool's JSON Schema object plist.  The `wait_for' property is
+declared once here so every detachable tool exposes an identical control."
+  (let* ((properties (plist-get parameters :properties))
+         (merged (append properties e-work-detachable-wait-for-parameter)))
+    (plist-put (copy-sequence parameters) :properties merged)))
+
+(defun e-work-detachable-wait-for (arguments default)
+  "Return the effective `wait_for' seconds from ARGUMENTS, or DEFAULT.
+A non-numeric `wait_for' is a client error and signals."
+  (let ((value (plist-get arguments :wait_for)))
+    (cond
+     ((null value) default)
+     ((numberp value) value)
+     (t (signal 'wrong-type-argument (list 'numberp value))))))
+
+(defun e-work--detach-ack (child scheme extra)
+  "Return the detach acknowledgment plist for detached CHILD under SCHEME.
+EXTRA is a per-tool plist merged after the generic fields.  The reference is
+CHILD's own `e-work' id under SCHEME, so `await' and `e-work-cancel' resolve it
+with no tool-specific knowledge."
+  (append
+   (list :reference (format "%s:%s" scheme (e-work-handle-id child))
+         :state "running")
+   (when-let ((uri (plist-get (e-work-handle-metadata child) :output-uri)))
+     (list :output_uri uri))
+   extra))
+
+(cl-defun e-work-detachable-spec
+    (child-spec &key id description owner default-wait-for
+                (reference-scheme "work") ack-extra)
+  "Return a cooperative parent spec that races CHILD-SPEC against `wait_for'.
+CHILD-SPEC is the tool's underlying work spec (process, url, or cooperative).
+The parent reads `wait_for' from its arguments, starts CHILD-SPEC as a
+standalone child handle, and delegates to `e-work-race-or-detach':
+
+  inline  finish the parent with CHILD's own terminal result (or failure),
+          indistinguishable from running CHILD-SPEC directly;
+  detach  register the still-running child and finish with a detach ack.
+
+DEFAULT-WAIT-FOR is the hold applied when a call omits `wait_for'.  ACK-EXTRA,
+when non-nil, is called with the tool arguments and returns a plist merged into
+the detach acknowledgment (for example a `:command' or `:query' echo).  The
+parent never touches the detached-work registry beyond the single insert on the
+detach branch, and the child stays ignorant of detachment entirely."
+  (e-work-spec-create
+   :id (or id (format "%s.detachable" (or (e-work-spec-id child-spec) "work")))
+   :description (or description (e-work-spec-description child-spec))
+   :execution 'cooperative
+   :interactive-policy 'async
+   :owner (or owner (e-work-spec-owner child-spec))
+   :runner
+   (lambda (parent arguments context)
+     (let ((wait-for (e-work-detachable-wait-for arguments default-wait-for))
+           (race-cancel nil)
+           child)
+       (setf (e-work-handle-cancel-function parent)
+             (lambda (_handle)
+               (when race-cancel (funcall race-cancel))
+               (when (e-work-handle-p child) (e-work-cancel child))
+               t))
+       (setq child
+             (e-work-start
+              child-spec arguments
+              :context context
+              :on-progress (lambda (payload) (e-work-progress parent payload))))
+       ;; Surface the child's early metadata (streaming output uri, transport)
+       ;; on the parent so a detach ack and progress reads see it at once.
+       (setf (e-work-handle-metadata parent)
+             (append (e-work-handle-metadata parent)
+                     (e-work-handle-metadata child)))
+       (setq race-cancel
+             (e-work-race-or-detach
+              child
+              :wait-for wait-for
+              :on-inline
+              (lambda (settled-child)
+                (pcase (e-request-lifecycle-state
+                        (e-work-handle-lifecycle settled-child))
+                  ('finished
+                   (e-work-finish parent (e-work-handle-result settled-child)))
+                  ('failed
+                   (e-work-fail parent (e-work-handle-error settled-child)))
+                  ('cancelled (e-work-cancel parent))))
+              :on-detach
+              (lambda (running-child)
+                (e-work-detach-register running-child)
+                (e-work-finish
+                 parent
+                 (e-work--detach-ack
+                  running-child reference-scheme
+                  (and (functionp ack-extra)
+                       (funcall ack-extra arguments)))))))
+       :deferred))))
+
 (defun e-work--setup (handle arguments context)
   "Run HANDLE setup and install cleanup/metadata."
   (when-let ((setup (e-work-spec-setup (e-work-handle-spec handle))))

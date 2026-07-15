@@ -17,6 +17,17 @@
 (require 'e-await-tool)
 (require 'e-capabilities)
 (require 'e-layers)
+(require 'e-waitable)
+(require 'e-work)
+
+(defun e-async-control-register-work-resolver ()
+  "Register the generic `work' waitable scheme against the detached registry.
+A reference of the form work:HANDLE-ID resolves to whichever detachable tool
+call outlived its `wait_for' window, without the await tool knowing which tool
+produced it.  This is the entire integration between detached work and `await'."
+  (e-waitable-register-resolver
+   "work"
+   (lambda (id) (e-work-detached-handle id))))
 
 (defun e-async-control-capability-create ()
   "Create the capability contributing the cross-domain await tool."
@@ -27,6 +38,7 @@
 
 (defun e-async-control-layer-create ()
   "Create the async-control layer."
+  (e-async-control-register-work-resolver)
   (e-layer-create
    :id 'async-control
    :name "Async Control"

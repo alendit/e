@@ -683,6 +683,129 @@ is caught."
     (should-not (buffer-live-p buffer))
     (should-not (process-live-p process))))
 
+;;; Detach coordinator and detached-work registry.
+
+(defmacro e-work-test--with-clean-detach-registry (&rest body)
+  "Run BODY with a fresh detached-work registry."
+  (declare (indent 0))
+  `(let ((e-work--detached-handles (make-hash-table :test 'equal)))
+     ,@body))
+
+(defun e-work-test--child-spec ()
+  "Return a render-carrier child spec that stays pending unless finished."
+  (e-work-spec-create
+   :id "race-child"
+   :execution 'render
+   :interactive-policy 'async
+   :runner (lambda (_arguments _context) :never)))
+
+(ert-deftest e-work-test-race-detaches-immediately-on-zero-wait ()
+  "wait-for 0 detaches now without arming a timer and never inlines."
+  (let* ((child (e-work-start (e-work-test--child-spec) '(:delay 600)))
+         inline detach)
+    (unwind-protect
+        (progn
+          (e-work-race-or-detach
+           child
+           :wait-for 0
+           :on-inline (lambda (_c) (setq inline t))
+           :on-detach (lambda (_c) (setq detach t)))
+          (should detach)
+          (should-not inline))
+      (e-work-cancel child))))
+
+(ert-deftest e-work-test-race-inlines-when-work-wins ()
+  "A child terminal inside the window settles on the inline branch."
+  (let* ((child (e-work-start (e-work-test--child-spec) '(:delay 600)))
+         inline detach)
+    (unwind-protect
+        (progn
+          (e-work-race-or-detach
+           child
+           :wait-for 60
+           :on-inline (lambda (_c) (setq inline t))
+           :on-detach (lambda (_c) (setq detach t)))
+          (should-not inline)
+          (e-work-finish child :done)
+          (should inline)
+          (should-not detach))
+      (e-work-cancel child))))
+
+(ert-deftest e-work-test-race-detaches-when-timer-wins ()
+  "A child still running at the deadline settles on the detach branch."
+  (let* ((child (e-work-start (e-work-test--child-spec) '(:delay 600)))
+         inline detach)
+    (unwind-protect
+        (progn
+          (e-work-race-or-detach
+           child
+           :wait-for 0.05
+           :on-inline (lambda (_c) (setq inline t))
+           :on-detach (lambda (_c) (setq detach t)))
+          (sleep-for 0.15)
+          (should detach)
+          (should-not inline))
+      (e-work-cancel child))))
+
+(ert-deftest e-work-test-detach-register-and-resolve ()
+  "A detached handle is resolvable by its own id and lists in the registry."
+  (e-work-test--with-clean-detach-registry
+    (let ((child (e-work-start (e-work-test--child-spec) '(:delay 600))))
+      (unwind-protect
+          (progn
+            (e-work-detach-register child)
+            (should (eq (e-work-detached-handle (e-work-handle-id child))
+                        child))
+            (should (member (e-work-handle-id child)
+                            (e-work-detached-handle-ids))))
+        (e-work-cancel child)))))
+
+(ert-deftest e-work-test-detachable-spec-inline-returns-child-result ()
+  "When the child finishes inside the window, the parent returns its result."
+  (e-work-test--with-clean-detach-registry
+    (let* ((spec (e-work-detachable-spec
+                  (e-work-spec-create
+                   :id "inline-child"
+                   :execution 'process
+                   :interactive-policy 'async
+                   :command (lambda (_a _c)
+                              (list :program "/bin/sh"
+                                    :args '("-c" "printf ok"))))
+                  :default-wait-for 60))
+           done)
+      (e-work-start spec nil :on-done (lambda (v) (setq done v)))
+      ;; Drive the event loop until the parent settles.
+      (with-timeout (3 (ert-fail "detachable inline did not settle"))
+        (while (not done)
+          (accept-process-output nil 0.02)))
+      (should (equal (plist-get done :stdout) "ok"))
+      ;; Nothing detached on the inline path.
+      (should-not (e-work-detached-handle-ids)))))
+
+(ert-deftest e-work-test-detachable-spec-detaches-and-acks ()
+  "When the window expires, the parent detaches and returns a work: reference."
+  (e-work-test--with-clean-detach-registry
+    (let* ((spec (e-work-detachable-spec
+                  (e-work-test--child-spec)
+                  :default-wait-for 0.05))
+           done
+           (handle (e-work-start spec '(:delay 600)
+                                 :on-done (lambda (v) (setq done v)))))
+      (unwind-protect
+          (progn
+            (with-timeout (3 (ert-fail "detachable detach did not settle"))
+              (while (not done)
+                (accept-process-output nil 0.02)))
+            (should (equal (plist-get done :state) "running"))
+            (let ((reference (plist-get done :reference)))
+              (should (string-prefix-p "work:" reference))
+              ;; The reference resolves to a still-live detached handle.
+              (let ((id (substring reference (length "work:"))))
+                (should (e-work-handle-p (e-work-detached-handle id))))))
+        (dolist (id (e-work-detached-handle-ids))
+          (when-let ((h (e-work-detached-handle id)))
+            (e-work-cancel h)))))))
+
 (provide 'e-work-test)
 
 ;;; e-work-test.el ends here

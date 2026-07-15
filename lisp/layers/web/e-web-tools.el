@@ -1145,6 +1145,22 @@ operators because ddgr's --site accepts only a single domain."
   (signal 'e-web-unimplemented
           (list (format "%s is not implemented yet" operation))))
 
+(defcustom e-web-tools-default-wait-for 30
+  "Default seconds a web tool holds the turn before detaching.
+Applied when a call omits `wait_for'.  A request that completes inside this
+window returns inline; one that outlives it detaches into the detached-work
+registry and returns a `work:<id>' reference.  A call may pass 0 to detach
+immediately or a larger value to hold longer."
+  :type 'number
+  :group 'e)
+
+(defun e-web-tools-detachable-work (child-spec)
+  "Wrap web CHILD-SPEC in the shared `wait_for' detach coordinator."
+  (e-work-detachable-spec
+   child-spec
+   :owner 'web
+   :default-wait-for e-web-tools-default-wait-for))
+
 (defun e-web-tools-register-search (registry)
   "Register the web search tool in REGISTRY."
   (e-tools-register
@@ -1161,9 +1177,20 @@ operators because ddgr's --site accepts only a single domain."
                                              :items (:type "string"))
                               :include_raw (:type "boolean"))
                  :required ["query"])
+   :parameters (e-work-detachable-merge-parameters
+                '(:type "object"
+                  :properties (:query (:type "string")
+                               :count (:type "number")
+                               :freshness (:type "string")
+                               :include_site (:type "array"
+                                              :items (:type "string"))
+                               :exclude_site (:type "array"
+                                              :items (:type "string"))
+                               :include_raw (:type "boolean"))
+                  :required ["query"]))
    :handler (lambda (arguments)
               (e-web-tools--search arguments))
-   :work (e-web-tools--search-work)
+   :work (e-web-tools-detachable-work (e-web-tools--search-work))
    :blocking-class 'process))
 
 (defun e-web-tools-register-fetch (registry)
@@ -1172,17 +1199,18 @@ operators because ddgr's --site accepts only a single domain."
    registry
    :name "web_fetch"
    :description "Fetch HTTP or HTTPS content without browser rendering."
-   :parameters '(:type "object"
-                 :properties (:url (:type "string")
-                              :format (:type "string")
-                              :include_links (:type "boolean")
-                              :include_html (:type "boolean")
-                              :max_chars (:type "number")
-                              :timeout (:type "number"))
-                 :required ["url"])
+   :parameters (e-work-detachable-merge-parameters
+                '(:type "object"
+                  :properties (:url (:type "string")
+                               :format (:type "string")
+                               :include_links (:type "boolean")
+                               :include_html (:type "boolean")
+                               :max_chars (:type "number")
+                               :timeout (:type "number"))
+                  :required ["url"]))
    :handler (lambda (arguments)
               (e-web-tools--fetch arguments))
-   :work (e-web-tools--fetch-work)
+   :work (e-web-tools-detachable-work (e-web-tools--fetch-work))
    :blocking-class 'network))
 
 (defun e-web-tools-register-browser (registry)
@@ -1191,21 +1219,22 @@ operators because ddgr's --site accepts only a single domain."
    registry
    :name "web_browser"
    :description "Run a rendered browser operation. Read e://web/refs/browser.md for supported operations and arguments before calling."
-   :parameters '(:type "object"
-                 :properties (:operation (:type "string")
-                              :session (:type "string")
-                              :url (:type "string")
-                              :selector (:type "string")
-                              :text (:type "string")
-                              :key (:type "string")
-                              :path (:type "string")
-                              :timeout (:type "number"))
-                 :required ["operation"])
+   :parameters (e-work-detachable-merge-parameters
+                '(:type "object"
+                  :properties (:operation (:type "string")
+                               :session (:type "string")
+                               :url (:type "string")
+                               :selector (:type "string")
+                               :text (:type "string")
+                               :key (:type "string")
+                               :path (:type "string")
+                               :timeout (:type "number"))
+                  :required ["operation"]))
    :handler (lambda (arguments)
               (e-web-tools--browser
                (e-web-tools--argument-string arguments :operation)
                arguments))
-   :work (e-web-tools--browser-work)
+   :work (e-web-tools-detachable-work (e-web-tools--browser-work))
    :blocking-class 'process))
 
 (provide 'e-web-tools)

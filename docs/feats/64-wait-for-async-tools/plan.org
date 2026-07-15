@@ -1,0 +1,191 @@
+#+title: wait_for: deadline-raced detach for async tools
+#+startup: overview
+
+* Status
+
+In-review
+
+#+begin_comment
+Implemented on main (uncommitted at time of writing). See Implementation notes.
+#+end_comment
+
+* Goal
+
+Give every long-running async tool one uniform control: run inline for up to =wait_for= seconds, and if the work is still running when that window expires, detach it and return a waitable reference the agent can pass to =await=.
+
+The agent decides how long to hold the turn, not whether the work is "foreground" or "background" up front.
+=wait_for: 0= detaches immediately (pure fire-and-forget).
+A large =wait_for= behaves like today: hold the turn until the work settles and return its result inline.
+Everything between is a race: the work finishes inside the window and returns inline, or it outlives the window and converts to a reference.
+
+=bash= is the tool where "probably fast, occasionally slow" is most common and where a wrong upfront timeout guess either stalls a turn or kills a command that would have finished one second later, so it is the clearest beneficiary. It converges onto this control in the same change as everything else.
+
+* Problem
+
+Today an async tool call has exactly two shapes, both committed before the command runs:
+
+- *Hold to completion.* =bash=, resource glob/search, web tools run with =interactive-policy 'async=; the harness holds the model's turn open until =on-done= fires. A slow command stalls the turn for its whole duration, and the only lever is a blocking =timeout= that either fails the command or waits the full time.
+- *Detach entirely.* The proposed =bash background: true= flag (and the existing subagent / task-queue / elisp-job spawn-then-=await= flow) commits to detachment before the work starts, so a command that would have returned in 200ms costs a spawn plus a later =await= round-trip.
+
+There is no way to say "give it N seconds, then decide." The agent must guess the runtime in advance. Guessing wrong is expensive in both directions.
+
+The waiting primitive to express "finished-first vs. timer-first" already exists -- =e-work-await-set= with =:mode 'any= and =:timeout= (=lisp/core/e-work.el:366=) -- but no tool uses it to gate its own detachment, and no tool surfaces the detached handle as a waitable reference.
+
+* Direction
+
+Introduce =wait_for= as a standard parameter on detachable async tools, backed by one shared coordinator that races a tool's own work against a deadline timer and settles the tool call one of two ways:
+
+1. *Work wins.* The work reached terminal inside the window. Settle the tool call inline with the work's normal result. Indistinguishable from today's behavior for a fast command.
+2. *Timer wins.* The work is still running at the deadline. The coordinator hands the still-running =e-work= handle to *one generic detached-work registry* and settles the tool call with a compact detach acknowledgment: =:reference "work:<handle-id>"=, a state marker, and any streaming output URI the work already exposes.
+
+The crucial point: a detached tool is *not* special. It produces an ordinary =e-work= handle -- the same kind subagents, tasks, and elisp-jobs already produce. Detachment is a generic property of any raced work, so there is exactly one detached-work registry, one =work:= waitable scheme, and one cancel path (the generic =e-work-cancel=). bash does not get its own registry, its own scheme, or its own cancel action, and neither does any other adopting tool.
+
+The handle that outlives the tool call is a *separate child handle*, not the tool call's own work handle -- the same parent-settles / child-continues split already used by =e-harness--resource-operation-work= (=lisp/core/e-harness.el:398=), where a cooperative parent starts a child, wires cancel through to it, and stashes it in metadata. =wait_for= adds a timer arm to that structure, and on the timer-wins branch the coordinator registers the child under its own stable =e-work= id.
+
+** Why one generic registry, not per-tool
+
+A per-tool registry + per-tool scheme + per-tool cancel action (=bash:=, =:cancel-bash=, and copies for every other tool) would re-implement the same three things N times and make =await= and cancel scheme-aware for no reason. A detached handle carries no tool-specific identity that matters to waiting or cancelling: it is an =e-work= handle with an id, a lifecycle, and a result. So the registry keys on the =e-work= handle id, the resolver is the single =work:= scheme, and cancel is =e-work-cancel= on the resolved handle. Tools stay ignorant of detachment entirely -- they start work and hand the child to the coordinator; the coordinator owns registration.
+
+This differs from subagents/tasks/elisp-jobs on purpose: those keep their own registries because they are durable domain objects with their own ids and lifecycles that predate and outlive any single detach. A detached bash/glob/fetch handle has no such domain identity; it is only "an =e-work= that kept running," which is exactly what the generic registry is for.
+
+** Why =wait_for= subsumes the earlier =background= flag
+
+=background: true= is exactly =wait_for: 0=; =background: false= is =wait_for: <large default>=. One duration parameter expresses both plus the whole middle range, and follows the global CLI-flag guidance (one concept, one parameter -- not =background= / =no-background=). The earlier two-state boolean design is dropped in favor of this.
+
+* Design sketch
+
+** 1. A shared detach coordinator over =e-work=
+
+A new helper in the work/tools layer that a tool's async =:work= runner (or =:start=) delegates to. Conceptually:
+
+#+begin_src elisp
+(e-work-race-or-detach
+ child-handle
+ :wait-for SECONDS
+ :on-inline  (lambda (child) ...) ; child terminal within window -> inline result
+ :on-detach  (lambda (child) ...)) ; window expired, child still running -> ack
+#+end_src
+
+Internally it is =e-work-await-set= with =:mode 'any= over the single child handle plus =:timeout wait-for=:
+
+- child terminal in the settle report's =:done= -> call =on-inline=,
+- =:reason 'timed-out= -> call =on-detach=,
+- =wait_for = 0= -> skip the wait entirely and detach now (do not arm a zero timer),
+- a very large / omitted =wait_for= -> effectively hold to completion (bounded by the tool's own execution timeout, unchanged).
+
+The coordinator never blocks; it rides the existing event-driven await. It returns a canceller so a cancelled tool call tears down both the timer and the child.
+
+** 2. One generic detached-work registry + =work:= scheme
+
+A single process-global, runtime-only, rebuildable map from =e-work= handle id to the live handle, owned by the work layer, holding whatever the handle already carries (id, lifecycle, result, metadata including any =output_uri=). The coordinator inserts a handle here on the detach branch; nothing tool-specific goes in. Register the scheme once:
+
+#+begin_src elisp
+(e-waitable-register-resolver "work"
+  (lambda (id) (e-work-detached-handle id)))
+#+end_src
+
+That single registration is the entire integration with =await=. No change to =e-await-tool.el= or =e-work-await-set=, and no per-tool schemes. A reference is always =work:<handle-id>=, whatever tool produced it.
+
+** 3. =wait_for= parameter + two result shapes
+
+Add =wait_for= (number, seconds; default a modest hold value) to each detachable tool's schema. The tool's async runner:
+
+1. starts its underlying work as a standalone child =e-work= handle (unchanged carrier: for bash the process spec with its streaming collector, =output_uri=, =:timeout=, cancellable),
+2. delegates to =e-work-race-or-detach=,
+3. *inline branch*: settle the tool call with the work's normal result,
+4. *detach branch*: the coordinator registers the child in the generic registry and settles with a detach ack plist.
+
+So the tool only supplies a child =e-work= handle and its two result shapers; it never touches a registry or a scheme. The detached child needs a *result-shaper returning a plist* so =await= can lift =:summary= / =:outputs= (=e-await-tool--result-entry=):
+
+#+begin_src elisp
+(:summary "exit 0" :exit_code 0 :output_uri "tmp://..." :truncated nil)
+#+end_src
+
+The inline and detached branches share the carrier and diverge only at the tail.
+
+** 4. Detach acknowledgment
+
+#+begin_src elisp
+(:reference "work:bash/42"
+ :state "running"
+ :output_uri "tmp://tool-results/<turn>/<call>/bash-....txt"
+ :command "...")
+#+end_src
+
+The reference is the handle's own =e-work= id under the =work:= scheme. The agent can =read= =output_uri= for partial output while the work runs (bash's collector already streams there), then =await ["work:bash/42"] mode: all/any=.
+
+** 5. Cancellation
+
+There is *no bash-specific cancel*. A detached handle is cancelled the same way any =e-work= is: resolve =work:<id>= and call the generic =e-work-cancel=. If a cancel-by-reference surface is wanted, it is one generic action over the =work:= scheme, not a per-tool action. Before the race settles, the tool call's own cancel already tears down the child (the coordinator's returned canceller).
+
+* Lifecycle walk-through (bash, wait_for: N)
+
+1. Model calls =bash {command, wait_for: 5}=.
+2. Runner starts the process child handle and races it against a 5s timer.
+3a. Process finishes in <5s -> tool call settles inline with output+exit. Agent never sees a handle.
+3b. Still running at 5s -> coordinator registers the child in the generic registry, tool call settles with =:reference "work:bash/42"= + =output_uri=. Turn continues.
+4. Model does other work, collects references, then =await {refs: ["work:bash/42", "subagent:sub_3"], mode: "all", timeout: 300}=.
+5. =await= resolves each by scheme, settles when all terminal or timeout, returns per-ref =summary/exit/output_uri=.
+6. Model =read=s =output_uri= for full output.
+
+* Scope
+
+One change, applied at once. No phased rollout, no compatibility flags, no coexistence with an old path. We restart the process after the change lands.
+
+All of the following ship together:
+
+- =e-work-race-or-detach= coordinator over =e-work-await-set= (=mode any= + timeout), with deterministic tests for wait_for=0 (immediate detach), work-wins, and timer-wins.
+- One generic detached-work registry + the single =work:= waitable scheme, owned by the work layer. The coordinator registers timed-out children here; no per-tool registries or schemes.
+- =wait_for= as the standard parameter on every detachable async tool: =bash=, resource glob/search, and the web tools. Each tool supplies only its child =e-work= handle and an inline/detached result shaper.
+
+Detach and cancel are generic over =e-work=: a detached tool produces an ordinary handle referenced as =work:<id>=, awaited via =await= and cancelled via =e-work-cancel=. Because we restart, the tools converge on the =wait_for= behavior directly with no old result contract to preserve. =await= and =e-work-await-set= stay scheme-agnostic and unchanged.
+
+* Required self-check (design-sensitive)
+
+1. *Better off if stopped here?* This is a single big-bang change; after it lands and we restart, every detachable async tool bounds how long it holds a turn and folds slow work into the existing =await= fan-in. Yes.
+2. *Final direction?* One uniform detach control across all long async tools, riding the feat 60 waitable/await substrate.
+3. *Likely-to-change vs stable?* The race semantics are stable (they are just =mode any= + timer). Per-tool default windows are the tunable part and stay local to each tool's parameter, reversible without touching the coordinator.
+4. *Owning component / one reason to change?* The coordinator owns racing and registration; the work layer owns the one detached-work registry and =work:= scheme; each tool owns only its two result shapers; =await= / =e-work-await-set= stay scheme-agnostic.
+5. *Coupling?* Additive. Tools depend on the stable =e-work= / =e-waitable= contracts; =await= gains no tool-specific knowledge; there is no per-tool registry or scheme to couple against.
+6. *Dependency direction?* Unstable tool code depends on stable work/await contracts, not the reverse.
+7. *Side effects outward?* Process start/kill stays in the tool's own carrier; registry mutation is the coordinator's single generic insert; the coordinator is otherwise pure event wiring.
+8. *State added?* One runtime-only, rebuildable, high-churn detached-work registry total (not per tool), held in the work layer, smallest correct lifetime, never persisted.
+9. *Performance?* The inline (fast-work) path adds only the race wiring; detach adds one hash-table insert and one timer per raced call. No regression on the common path.
+10. *Abstractions real / substitutable?* a detached handle is an ordinary =e-work= handle; it satisfies the existing waitable contract exactly and substitutes for any other awaitable in =await= with no narrowed preconditions. No new tool-specific abstraction is introduced.
+11. *Compatibility?* None to preserve. We restart the process, so the tools converge directly on =wait_for=; there is no old path to keep working alongside the new one.
+12. *Legacy to remove now?* The earlier =bash background: true= boolean design is superseded before implementation; nothing shipped to remove.
+13. *Errors?* Expected outcomes (finish, timeout, nonzero exit) are data in the branch shapers; unexpected errors surface through =e-work= failure as today.
+14. *Tests prove core independently?* The coordinator is tested against synthetic work handles with no tool and no harness, so tool changes cannot force coordinator-test rewrites.
+
+* Open questions
+
+- Default =wait_for= value per tool (hold-like vs. short). Leaning toward a modest hold that matches current perceived behavior for typical work, tuned in review.
+- Whether =wait_for= is declared once at the tool schema level via shared parameter injection or redeclared per tool. Since every detachable tool adopts it in this change, decide the shared-injection question here rather than deferring it.
+
+* Implementation notes
+
+Landed as described. Both open questions resolved in favor of the shared, uniform path.
+
+** What shipped
+
+- Coordinator and registry in =lisp/core/e-work.el=:
+  - =e-work-race-or-detach= over =e-work-await-set= (=:mode 'any= + =:timeout=). =wait_for <= 0= detaches immediately without arming a timer; a positive value races; =nil= holds to completion bounded by the child's own timeout.
+  - =e-work--detached-handles= registry with =e-work-detach-register=, =e-work-detached-handle=, and =e-work-detached-handle-ids=. Runtime-only, keyed on the child's own =e-work= id.
+  - =e-work-detachable-spec= wraps any child work spec (process, url, cooperative) in a cooperative parent that reads =wait_for=, starts the child, races it, and settles inline with the child's own result/failure or detaches with the ack. The parent wires cancel through to the child and the race canceller.
+  - =e-work-detachable-merge-parameters= injects the one shared =wait_for= JSON Schema property, and =e-work-detachable-wait-for= reads it. This resolves the schema open question: declared once, merged into each adopting tool's schema.
+- =work:= scheme registered once in =lisp/layers/harness/e-async-control.el= via =e-async-control-register-work-resolver=. No change to =e-await-tool.el= or =e-work-await-set=.
+- Adoption:
+  - =bash= (=e-base-tools--bash-work= now wraps =e-base-tools--bash-child-work=; the synchronous helper still runs the raw child carrier directly). Detach ack echoes =:command=. Default =e-base-tools-bash-default-wait-for= = 30.
+  - Resource glob/search: =e-harness--register-resource-operation-tool= wraps the async resource work in =e-work-detachable-spec= and merges =wait_for= into the schema.
+  - Web =web_search=, =web_fetch=, =web_browser=: wrapped via =e-web-tools-detachable-work= with =e-web-tools-default-wait-for= = 30.
+
+** Verification
+
+- =eldev compile= clean for the touched files (one pre-existing =_query= unused warning in =e-base-tools.el= is on unchanged code).
+- New coordinator/registry/detachable-spec tests in =test/e-work-test.el= (37/37 pass): wait_for=0 immediate detach, work-wins inline, timer-wins detach, register/resolve, detachable inline returns child result, detachable detach returns a resolvable =work:= reference.
+- =e-base-tools-test=, =e-web-tools-test=, =e-await-tool-test=, =e-waitable-test=, =e-harness-test= all green.
+- Full suite: the only failures are the same set present on clean =HEAD= plus the separately-in-progress =writing= layer (the =e-dev= / =nonblocking-sweep= / =org-canvas= / =session-resources= / =ui-work= failures are pre-existing and unrelated to this change).
+
+** Live use
+
+The running Emacs is unchanged. A full =M-x e-dev-reload= (or restart, per the big-bang scope) is needed to use =wait_for= live.

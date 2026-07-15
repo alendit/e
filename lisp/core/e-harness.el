@@ -472,7 +472,10 @@ available through e:// resources instead of repeating it in every request.")
          registry
          :name (e-operation-tool-name operation)
          :description (e-harness--resource-operation-description resources operation)
-         :parameters (e-operation-parameters operation)
+         :parameters (if async-p
+                         (e-work-detachable-merge-parameters
+                          (e-operation-parameters operation))
+                       (e-operation-parameters operation))
          :handler
          (lambda (arguments)
            (funcall dispatch
@@ -483,7 +486,10 @@ available through e:// resources instead of repeating it in every request.")
          (append
           (when async-p
             (list
-             :work (e-harness--resource-operation-work resources operation)
+             :work (e-work-detachable-spec
+                    (e-harness--resource-operation-work resources operation)
+                    :id (format "resource.%s" (e-operation-tool-name operation))
+                    :owner 'resources)
              :blocking-class 'process))))))))
 
 (defun e-harness--register-resource-operation-tools (registry resources)

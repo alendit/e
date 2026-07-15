@@ -53,6 +53,16 @@ default and restores unbounded runs, which is discouraged."
                  number)
   :group 'e-base-tools)
 
+(defcustom e-base-tools-bash-default-wait-for 30
+  "Default seconds the bash tool holds the turn before detaching.
+Applied when a call omits `wait_for'.  A command that finishes inside this
+window returns inline as before; one that outlives it detaches into the
+detached-work registry and returns a `work:<id>' reference.  This is a
+hold-like default matching the perceived behavior of typical work; a call may
+pass 0 to detach immediately or a larger value to hold longer."
+  :type 'number
+  :group 'e-base-tools)
+
 (define-error 'e-base-tools-read-invalid "Base read tool input is invalid")
 (define-error 'e-base-tools-path-outside-root
   "Base file resource path escapes the configured root")
@@ -1742,8 +1752,11 @@ tool-call progress metadata."
       (signal 'e-base-tools-bash-invalid
               (list (e-base-tools--bash-collector-content collector suffix))))))
 
-(defun e-base-tools--bash-work (directory)
-  "Return the work spec backing the bash tool rooted at DIRECTORY."
+(defun e-base-tools--bash-child-work (directory)
+  "Return the process work spec that runs one bash command in DIRECTORY.
+This is the raw carrier: it starts the shell process, streams output, and
+shapes the captured result.  The detachable tool spec races it against
+`wait_for'; the synchronous helper runs it directly to completion."
   (e-work-spec-create
    :id "bash"
    :description "Run a shell command through the base bash tool."
@@ -1754,6 +1767,21 @@ tool-call progress metadata."
               (e-base-tools--bash-work-command directory arguments context))
    :result-shaper #'e-base-tools--bash-work-result))
 
+(defun e-base-tools--bash-work (directory)
+  "Return the detachable work spec backing the bash tool in DIRECTORY.
+The command runs inline for up to `wait_for' seconds; if it is still running
+when that window expires, it detaches into the generic detached-work registry
+and the call returns a `work:<id>' reference plus the streaming `output_uri'."
+  (e-work-detachable-spec
+   (e-base-tools--bash-child-work directory)
+   :id "bash"
+   :description "Run a shell command through the base bash tool."
+   :owner 'base-tools
+   :default-wait-for e-base-tools-bash-default-wait-for
+   :ack-extra
+   (lambda (arguments)
+     (list :command (e-base-tools--argument-string arguments :command)))))
+
 (cl-defun e-base-tools--run-shell-command-start
     (command directory timeout &key on-done on-error on-request-start on-event)
   "Start shell COMMAND in DIRECTORY with optional TIMEOUT seconds.
@@ -1762,8 +1790,10 @@ ON-REQUEST-START receives the cancellable process request.  ON-EVENT receives
 streaming progress events."
   (let* ((context (e-tools-current-context))
          (arguments (list :command command :timeout timeout))
+         ;; The synchronous helper runs the raw process carrier to completion;
+         ;; racing/detachment is only for the model-facing tool path.
          (handle (e-work-start
-                  (e-base-tools--bash-work directory)
+                  (e-base-tools--bash-child-work directory)
                   arguments
                   :context context
                   :on-done (lambda (value)
@@ -1832,27 +1862,28 @@ streaming progress events."
    registry
    :name "bash"
    :description "Execute a shell command in the current working directory and return captured stdout and stderr. Never start a recursive search or traversal whose effective root is `/`, `~`, `$HOME`, or any other large ancestor. A large ancestor is not only the home directory: any directory that holds many projects or repositories is a banned root too, not just the single project you care about. This is about where the walk actually reaches, not the literal argument: a recursive `find`, `grep -r`, or `ls -R` rooted at home, at a parent that contains many projects, or at any other huge tree is banned, and so is a bare `find .` or `grep -rn PATTERN .` when the working directory itself is such a tree -- they are equally slow and flood output. Before a recursive search, resolve where the root actually points and consider what lives under it: if it is the home directory, a directory of many projects, or otherwise large, do not search it. Descend to the single project or repository that matters and scope the search there rather than at a broad parent or a bare `.` sitting at one. A bare `.` is only safe when the working directory is itself one bounded project directory. When a command's runtime OR extent is unknown or potentially unbounded -- a network fetch, a build, a watcher, a server, anything that may hang, and equally any filesystem search or traversal (`find`, `grep -r`, `ls -R`, `du`) whose reached scope you are not certain is small -- wrap it in `timeout(1)` (e.g. `timeout 30 CMD`) so it self-terminates, in addition to the tool's own `timeout` parameter. If you are unsure how big a directory tree is or how long a command will take, assume it is large and add `timeout(1)` rather than running it bare."
-   :parameters '(:type "object"
-                 :properties (:command (:type "string")
-                              :timeout (:type "number"
-                                        :description "Hard timeout in seconds. When reached, e kills the process and returns a tool error. Keep this SMALL and modest: default to about 10s for routine commands and 30s at most for anything you expect to be quick. Setting no timeout, or a large one, is a mistake for ordinary commands -- a bounded command that hangs should fail fast, not stall the turn. Only exceed 30s when the command is genuinely expected to run long (a real build, a large test suite, a slow network fetch), and prefer an explicit control pattern (backgrounding, polling) over a big blocking timeout.")
-                              :resource_usage
-                              (:type "object"
-                               :description "Optional high-value resource usage for future context. Use only when the command reads, writes, or edits resources that matter for future work."
-                               :properties (:resources
-                                            (:type "array"
-                                             :items
-                                             (:type "object"
-                                              :properties
-                                              (:uri (:type "string")
-                                               :operation
-                                               (:type "string"
-                                                :enum ["read" "write" "edit"]))
-                                              :required ["uri" "operation"]))
-                                            :summary
-                                            (:type "string"
-                                             :description "Compact summary of why these resources matter."))))
-                 :required ["command"])
+   :parameters (e-work-detachable-merge-parameters
+                '(:type "object"
+                  :properties (:command (:type "string")
+                               :timeout (:type "number"
+                                         :description "Hard timeout in seconds. When reached, e kills the process and returns a tool error. Keep this SMALL and modest: default to about 10s for routine commands and 30s at most for anything you expect to be quick. Setting no timeout, or a large one, is a mistake for ordinary commands -- a bounded command that hangs should fail fast, not stall the turn. Only exceed 30s when the command is genuinely expected to run long (a real build, a large test suite, a slow network fetch), and prefer an explicit control pattern (backgrounding, polling) over a big blocking timeout.")
+                               :resource_usage
+                               (:type "object"
+                                :description "Optional high-value resource usage for future context. Use only when the command reads, writes, or edits resources that matter for future work."
+                                :properties (:resources
+                                             (:type "array"
+                                              :items
+                                              (:type "object"
+                                               :properties
+                                               (:uri (:type "string")
+                                                :operation
+                                                (:type "string"
+                                                 :enum ["read" "write" "edit"]))
+                                               :required ["uri" "operation"]))
+                                             :summary
+                                             (:type "string"
+                                              :description "Compact summary of why these resources matter."))))
+                  :required ["command"]))
    :work (e-base-tools--bash-work directory)))
 
 (provide 'e-base-tools)
