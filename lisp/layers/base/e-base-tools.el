@@ -1106,7 +1106,7 @@ When QUERY-METADATA is non-nil, include sortable timestamp metadata."
       raw
     (let ((uri (plist-get work-arguments :uri))
           (arguments (plist-get work-arguments :operation-arguments)))
-      (pcase-let ((`(,_query ,options) arguments))
+      (pcase-let ((`(,query ,options) arguments))
         (let* ((scope (e-base-tools--resource-path uri directory))
                (glob-pattern (plist-get options :glob))
                (actual-limit (e-resource-pattern-search-limit
@@ -1117,7 +1117,7 @@ When QUERY-METADATA is non-nil, include sortable timestamp metadata."
            scope
            glob-pattern
            actual-limit
-           _query
+           query
            options))))))
 
 (defun e-base-tools--file-search-work (directory)
