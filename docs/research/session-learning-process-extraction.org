@@ -16,6 +16,9 @@ The note has two jobs:
 
 A third dimension is specific to =e=: we can read sessions from *other* harnesses (Codex, and any adapter-backed engine) through the =session://= resource scheme, so learning is not confined to =e='s own history.
 
+A fourth dimension is a *different consumer* of the same substrate: a personal knowledge base (grimoire) that wants durable *domain knowledge* mined out of sessions, not process/skills for the agent.
+The note treats that as a sibling extractor over the shared source seam, not a second scraper (see "The sibling consumer" below).
+
 This is background research, not a committed plan.
 When it turns into work, create =docs/feats/<n>-session-learning/= and leave this note as source.
 
@@ -37,6 +40,9 @@ When it turns into work, create =docs/feats/<n>-session-learning/= and leave thi
 - We already built this loop once, outside =e=: *Goodnite* mines Claude Code and Cursor traces nightly (=goodnite dream=), clusters recurring episodes, proposes skills, and hands a human a review list.
   It validates the cornerstone and supplies concrete mechanisms to reuse — recurrence by clustering, failure as an eligibility filter, mine/amend/drop routing, held-out replay validation, script-vs-skill split, and a content-keyed suggestion ledger.
   The =e= version's advantage is doing this in-harness over the normalized, cross-engine =session://= layer instead of as a separate Python pipeline.
+- Session learning has two *outputs*, not one: process/skills for the agent (this note's subject) and domain knowledge for the human (a KB like grimoire).
+  Both read the same sessions through the same =session://= seam and both should anchor on the same explicit evidence (=process_marker= records from feat 52), but they codify into different artifacts and keep separate review surfaces.
+  A human KB's hybrid search is human-facing recall, a different consumer than the agent, so this note's rejection of *online* vector recall does not transfer to it.
 
 * The two layers of session learning
 
@@ -308,6 +314,33 @@ Concrete direction:
 This changes the first-slice sequencing slightly.
 A session-learning extractor can start with =session://= alone, but once =52= exists it should read open process reports first, use them as anchors into session history, and then run broader recurrence mining.
 That sequence spends model attention on events already judged significant while preserving the broader Goodnite-style scan.
+
+* The sibling consumer: domain-knowledge extraction (grimoire)
+
+The question that motivates this section: a personal knowledge base (grimoire) already builds a semantic graph over its notes and sources and is about to add hybrid (keyword + vector) search.
+Agentic chat sessions across harnesses hold a lot of durable domain knowledge.
+Should grimoire pull that context in as a source and keep pulling the diff?
+
+The answer reuses this note's machinery rather than building a parallel pipeline.
+
+- *Same substrate, different output.* =e='s extractor turns sessions into process/skills for the agent.
+  Grimoire's extractor turns the same sessions into knowledge notes for the human.
+  They are siblings over one source layer, not two independent scrapers.
+- *Share the source seam.* =e= already exposes normalized, cross-engine history through =session://= (=e-session-resources=), with a Codex engine adapter on the roadmap.
+  Grimoire currently re-scrapes the raw stores itself (=scripts/agentic-sessions.py= walks the Claude Code, Codex, Cursor, and =e= stores for its daily "Agentic sessions" section).
+  The knowledge extractor should consume =session://= instead of re-implementing store-walking and normalization.
+- *=process_marker= is the anchor for both.* The same argument that markers are a stronger seed than an undirected transcript scan (see "Connection to process reporting") holds for knowledge extraction.
+  Seed on marked events, then widen with recurrence mining.
+- *Do not ingest raw transcripts as durable notes.* Transcripts are mostly machinery, retries, and dead ends, and they routinely carry secrets in a git-backed personal KB.
+  Distill session content into curated notes; only distillations enter the graph.
+  A separate, down-weighted raw-transcript tier for human recall is defensible, but it must stay out of anything the *agent* auto-consumes and any clustering over it must run off the UI thread.
+- *Grimoire triage is the review inbox this note keeps asking for.* The open questions below ask where proposals live before acceptance and whether reports and proposals share one review surface.
+  Grimoire's =proposed -> accept/reject= flow with content-keyed churn guards is a concrete instance of that gate, specialized to knowledge artifacts.
+- *Keep the two extractors and their review surfaces separate.* They cover different blind spots and route to different artifacts (a =SKILL.md= / =AGENTS.md= patch versus a =topics/= or =kb/= note).
+  Shared reader and shared evidence anchor, separate codify and review paths.
+
+The net design: grimoire's knowledge extractor is a sibling of =e='s process extractor over the shared =session://= reader, seeded by =process_marker= evidence, gated by grimoire triage, emitting KB notes that then feed the graph and hybrid search.
+That collapses the "ingest sessions into grimoire" idea and =e='s session-learning roadmap onto one substrate instead of two pipelines.
 
 * Design space summary and recommendation
 
