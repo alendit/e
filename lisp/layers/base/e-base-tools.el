@@ -22,6 +22,7 @@
 (require 'e-resource-query)
 (require 'e-request)
 (require 'e-resources)
+(require 'e-search-providers)
 (require 'e-tools)
 (require 'e-work)
 
@@ -1003,8 +1004,30 @@ When QUERY-METADATA is non-nil, include sortable timestamp metadata."
       (list :matches (vconcat (seq-take ranked actual-limit))
             :truncated (> (length ranked) actual-limit)))))
 
+(defun e-base-tools--file-search-request (uri query options directory)
+  "Return a search provider request plist for URI QUERY OPTIONS in DIRECTORY."
+  (list :scheme "file"
+        :uri (plist-get uri :uri)
+        :query query
+        :options options
+        :directory directory
+        :absolute-path (e-base-tools--resource-path uri directory)))
+
+(defun e-base-tools--file-search-provider-result (uri query options directory)
+  "Return a claiming provider's result for the file search, or nil.
+When a registered provider claims the request scope, run it and return its
+result plist; otherwise return nil so the caller runs the default backend."
+  (let ((request (e-base-tools--file-search-request uri query options directory)))
+    (when-let ((provider (e-search-providers-provider-for request)))
+      (e-search-providers-run provider request))))
+
 (defun e-base-tools--file-search-resource (uri query options directory)
   "Search file resources under parsed URI for QUERY with OPTIONS."
+  (or (e-base-tools--file-search-provider-result uri query options directory)
+      (e-base-tools--file-search-resource-default uri query options directory)))
+
+(defun e-base-tools--file-search-resource-default (uri query options directory)
+  "Search file resources with the default rg/Emacs backend."
   (if (or (> (length (e-resource-pattern-search-terms query)) 1)
           (e-base-tools--file-search-advanced-p options))
       (e-base-tools--file-search-resource-advanced uri query options directory)
@@ -1076,6 +1099,9 @@ When QUERY-METADATA is non-nil, include sortable timestamp metadata."
              (glob-pattern (plist-get options :glob))
              (query-regexp (e-resource-pattern-search-rg-prefilter-regexp query options))
              (metadata (list :operation 'search :scheme "file"))
+             (provider-result
+              (e-base-tools--file-search-provider-result
+               uri query options directory))
              (args (append
                     (list "--json"
                           "--line-number"
@@ -1088,16 +1114,21 @@ When QUERY-METADATA is non-nil, include sortable timestamp metadata."
                     (list "-e" query-regexp scope-relative))))
         (when glob-pattern
           (e-resource-pattern-compile-glob glob-pattern))
-        (if (or (> (length (e-resource-pattern-search-terms query)) 1)
-                (e-base-tools--file-search-advanced-p options))
-            (list :immediate
-                  (e-base-tools--file-search-resource uri query options directory)
-                  :metadata metadata)
+        (cond
+         (provider-result
+          (list :immediate provider-result :metadata metadata))
+         ((or (> (length (e-resource-pattern-search-terms query)) 1)
+              (e-base-tools--file-search-advanced-p options))
+          (list :immediate
+                (e-base-tools--file-search-resource-default
+                 uri query options directory)
+                :metadata metadata))
+         (t
           (list :program (e-base-tools--find-executable "rg")
                 :directory primary
                 :args args
                 :ok-statuses '(0 1)
-                :metadata metadata))))))
+                :metadata metadata)))))))
 
 (defun e-base-tools--file-search-work-result
     (directory raw work-arguments _context)

@@ -21,6 +21,7 @@
 (require 'e-resource-patterns)
 (require 'e-resource-query)
 (require 'e-resources)
+(require 'e-search-providers)
 (require 'e-resource-coherence)
 (require 'e-request)
 (require 'e-work)

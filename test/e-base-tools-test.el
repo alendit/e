@@ -19,6 +19,7 @@
 (require 'e-harness-base)
 (require 'e-request)
 (require 'e-resources)
+(require 'e-search-providers)
 (require 'e-tools)
 (require 'e-work)
 (require 'seq)
@@ -333,6 +334,42 @@ printf '%s\\n' delayed.txt
                       :query "missing"))
                    :content)
                   '(:matches [] :truncated nil))))
+      (delete-directory directory t))))
+
+(ert-deftest e-base-tools-test-search-delegates-to-registered-provider ()
+  "file:// search delegates to a provider that claims the request scope."
+  (let* ((directory (make-temp-file "e-base-search-provider-" t))
+         (registry (e-base-tools-test--resource-tools directory)))
+    (e-search-providers-reset)
+    (unwind-protect
+        (progn
+          (write-region "nothing here\n" nil
+                        (expand-file-name "one.txt" directory)
+                        nil 'silent)
+          (e-search-providers-register
+           (e-search-provider-create
+            :id 'test-scope
+            :priority 10
+            :predicate (e-search-providers-under-root-predicate directory)
+            :search (lambda (request)
+                      (list :matches (vector (list :uri (plist-get request :uri)
+                                                   :query (plist-get request :query)
+                                                   :provider 'test-scope))
+                            :truncated nil))))
+          (let ((matches (plist-get
+                          (plist-get
+                           (e-base-tools-test--execute
+                            registry
+                            "search"
+                            '(:uri "file://"
+                              :query "needle"
+                              :limit 5))
+                           :content)
+                          :matches)))
+            (should (= (length matches) 1))
+            (should (eq (plist-get (aref matches 0) :provider) 'test-scope))
+            (should (equal (plist-get (aref matches 0) :query) "needle"))))
+      (e-search-providers-reset)
       (delete-directory directory t))))
 
 (ert-deftest e-base-tools-test-file-discovery-rejects-outside-root ()
