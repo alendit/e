@@ -28,6 +28,16 @@
   options, `e-goodnite-search-program` and `e-goodnite-search-semantic`,
   control it. This is slice 2 of the daydream design.
 
+- goodnite:// reads and search hits are now recorded as a demand signal.
+  Each consultation appends one JSON line to `daydream_access.jsonl` under
+  the knowledge base's `state/` directory (entry URI, kind, query, session,
+  turn, timestamp), scrubbed to a single control-character-free line and
+  best-effort so a write failure never disturbs the read or search. The
+  offline `dream` loop reads this log to rank mined-but-unreviewed knowledge
+  an agent keeps consulting ahead of knowledge nothing has pulled up. A new
+  option `e-goodnite-track-access` (default t) controls it. Slice 3 of the
+  daydream design.
+
 - The `annotations` capability pivots from the Simply Annotate sidecar backend
   to the org-annotate in-file model (Org files only). It exposes stable actions
   `:list`, `:reply`, `:add`, and `:resolve` over `<<oa:...>>` anchors and the

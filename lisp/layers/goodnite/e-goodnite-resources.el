@@ -67,6 +67,16 @@ Falls back to lexical search when the index is absent or the program fails."
   :type 'boolean
   :group 'e)
 
+(defcustom e-goodnite-track-access t
+  "When non-nil, record goodnite:// reads and search hits as a demand signal.
+
+Each access appends one JSON line to `daydream_access.jsonl' under the
+knowledge base's `state/' directory.  The offline `dream' loop reads this log
+to rank mined-but-unreviewed knowledge an agent keeps consulting ahead of
+knowledge nothing has pulled up -- demand, not just recurrence."
+  :type 'boolean
+  :group 'e)
+
 (defconst e-goodnite-resources--type-order '("workflows" "pitfalls" "conventions")
   "Consumer knowledge types in display order.")
 
@@ -527,10 +537,43 @@ is always lexical, since it targets one known entry."
                        :truncated (and (plist-get result :truncated) t)))))
         (e-goodnite-resources--search-lexical uri query options))))
 
+(defun e-goodnite-resources--access-log-path ()
+  "Return the path of the daydream access log under the knowledge base."
+  (expand-file-name "state/daydream_access.jsonl"
+                    (e-goodnite-resources--home)))
+
+(defun e-goodnite-resources--scrub (text)
+  "Return TEXT reduced to a single line with control characters removed.
+The query is logged as a demand signal, not stored verbatim; strip C0 control
+characters so a stray NUL or newline never corrupts the JSONL line."
+  (when (stringp text)
+    (replace-regexp-in-string "[\000-\037]+" " " (string-trim text))))
+
+(defun e-goodnite-resources--record-access (kind entry-uri query context)
+  "Append one access record for a KIND consultation of ENTRY-URI.
+KIND is `read' or `search'.  QUERY is the search text (nil for a read).
+CONTEXT carries the registration `:session-id' and `:turn-id'.  Best-effort:
+a write failure never disturbs the read or search that triggered it."
+  (when e-goodnite-track-access
+    (condition-case nil
+        (let* ((record
+                (list :kind (symbol-name kind)
+                      :entry_uri entry-uri
+                      :query (e-goodnite-resources--scrub query)
+                      :session_id (plist-get context :session-id)
+                      :turn_id (plist-get context :turn-id)
+                      :engine "e"
+                      :ts (format-time-string "%Y-%m-%dT%H:%M:%S%z")))
+               (path (e-goodnite-resources--access-log-path)))
+          (make-directory (file-name-directory path) t)
+          (let ((line (json-serialize record :null-object nil :false-object nil)))
+            (write-region (concat line "\n") nil path 'append 'silent)))
+      (error nil))))
+
 ;;; Registration
 
 (cl-defun e-goodnite-resources-register-resource-methods
-    (registry &rest _context)
+    (registry &rest context)
   "Register goodnite:// resource methods in REGISTRY."
   (dolist (method
            (list
@@ -552,7 +595,9 @@ is always lexical, since it targets one known entry."
                              "goodnite://conventions/<slug>")
              :range-modes '("line")
              :handler (lambda (uri range)
-                        (e-goodnite-resources--read uri range)))
+                        (prog1 (e-goodnite-resources--read uri range)
+                          (e-goodnite-resources--record-access
+                           'read (plist-get uri :uri) nil context))))
             (e-resource-method-create
              :scheme "goodnite"
              :operation e-operation-glob
@@ -580,7 +625,12 @@ is always lexical, since it targets one known entry."
               "to scope to workflows, pitfalls, or conventions.")
              :uri-patterns '("goodnite://" "goodnite://<type>/")
              :handler (lambda (uri query options)
-                        (e-goodnite-resources--search uri query options)))))
+                        (let ((result (e-goodnite-resources--search
+                                       uri query options)))
+                          (dolist (m (append (plist-get result :matches) nil))
+                            (e-goodnite-resources--record-access
+                             'search (plist-get m :uri) query context))
+                          result)))))
     (e-resources-register registry method)))
 
 (provide 'e-goodnite-resources)
