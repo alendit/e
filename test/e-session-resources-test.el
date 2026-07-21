@@ -323,7 +323,7 @@ searchable content; it must be skipped rather than aborting the whole search."
                      "remote needle")))))
 
 (ert-deftest e-session-resources-test-tool-description-documents-discovery-workflow ()
-  "Generated resource tool descriptions tell agents to glob before reading."
+  "The read tool description documents the glob-before-read discovery workflow."
   (e-session-resources-test--with-empty-config
     (let* ((harness (e-session-resources-test--harness))
            (tools (e-harness-tools harness "session-1" "turn-1"))
@@ -334,10 +334,14 @@ searchable content; it must be skipped rather than aborting the whole search."
            (glob-tool (seq-find (lambda (tool)
                                   (equal (plist-get tool :name) "glob"))
                                 definitions)))
+      ;; Discovery guidance lives on the read tool; glob/search descriptions
+      ;; stay lean (see the "lean resource discovery schemas" change), so the
+      ;; full glob-before-read workflow is documented on read, not glob.
       (should (string-match-p "glob session://"
                               (plist-get read-tool :description)))
       (should (string-match-p "session://<engine-id>/sessions/"
-                              (plist-get glob-tool :description))))))
+                              (plist-get read-tool :description)))
+      (should glob-tool))))
 
 (provide 'e-session-resources-test)
 
