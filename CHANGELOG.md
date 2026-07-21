@@ -38,6 +38,15 @@
   option `e-goodnite-track-access` (default t) controls it. Slice 3 of the
   daydream design.
 
+- The goodnite capability now asks the agent to close the feedback loop:
+  after a `goodnite://` hit materially helps, record a `process_marker`
+  with signal `effective` citing the entry URI; when a hit is stale or
+  misleading, record `friction`/`correction` with the URI. On the offline
+  side, goodnite's `facts` extractor carves `goodnite://`-citing markers out
+  of project guidance and distills them into a proposal to adjust the
+  goodnite capability's own guidance (`facts/_goodnite-guidance.md`),
+  reviewed through the same human gate. Slice 5 of the daydream design.
+
 - The `annotations` capability pivots from the Simply Annotate sidecar backend
   to the org-annotate in-file model (Org files only). It exposes stable actions
   `:list`, `:reply`, `:add`, and `:resolve` over `<<oa:...>>` anchors and the

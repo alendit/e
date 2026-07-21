@@ -21,7 +21,7 @@
 (require 'e-goodnite-resources)
 
 (defconst e-goodnite-instructions
-  "A local base of task knowledge mined from your own past sessions is searchable at goodnite://: workflows (how to do a recurring task), pitfalls (failure modes to avoid), and conventions (project or tool preferences). When a task looks like something that has been done before -- a multi-step operation, work with a known domain gotcha, or work in a project with accumulated conventions -- search goodnite:// for it first, before reinventing an approach. Search by the task in front of you, not by tool name; scope to goodnite://workflows/, goodnite://pitfalls/, or goodnite://conventions/ when you know which you want. Glob and search are cheap (title, when-to-use, scope, confidence); read a leaf goodnite://<type>/<slug> URI only once a hit looks worth committing to. Weight every hit by its confidence: `established' knowledge is human-reviewed; `mined (unreviewed)' is a strong lead from real prior runs but not vetted, so sanity-check it before relying on it. Do not consult goodnite:// for trivial one-off asks. Cite the goodnite:// URI when a hit shapes your approach."
+  "A local base of task knowledge mined from your own past sessions is searchable at goodnite://: workflows (how to do a recurring task), pitfalls (failure modes to avoid), and conventions (project or tool preferences). When a task looks like something that has been done before -- a multi-step operation, work with a known domain gotcha, or work in a project with accumulated conventions -- search goodnite:// for it first, before reinventing an approach. Search by the task in front of you, not by tool name; scope to goodnite://workflows/, goodnite://pitfalls/, or goodnite://conventions/ when you know which you want. Glob and search are cheap (title, when-to-use, scope, confidence); read a leaf goodnite://<type>/<slug> URI only once a hit looks worth committing to. Weight every hit by its confidence: `established' knowledge is human-reviewed; `mined (unreviewed)' is a strong lead from real prior runs but not vetted, so sanity-check it before relying on it. Do not consult goodnite:// for trivial one-off asks. Cite the goodnite:// URI when a hit shapes your approach. After a hit materially helped, record a `process_marker' with signal `effective' citing the goodnite:// URI; when a hit was stale or misleading, record `friction' or `correction' with the URI. That feedback is how the base earns promotion and how its guidance is tuned -- it is a real part of the task, not overhead."
   "Model-facing instructions for the goodnite capability.")
 
 (defconst e-goodnite-using-skill-body
@@ -67,11 +67,24 @@ Skip goodnite:// for trivial one-off asks, for tasks with no recurring shape,
 and when you already hold a better, current answer. It is a memory of process,
 not a substitute for reading the actual code, tests, or docs in front of you.
 
-## Citing
+## Citing and feedback
 
 When a goodnite:// hit shapes your approach, cite the entry URI so the choice
 is traceable and so the consultation registers as evidence the knowledge earns
-its keep."
+its keep.
+
+Close the loop with a process marker that names the entry URI:
+
+- A hit that materially helped -> `process_marker' signal `effective', note
+  citing the `goodnite://<type>/<slug>' URI.
+- A hit that was stale, wrong, or sent you down a wrong path -> `friction' or
+  `correction', again citing the URI.
+
+These markers are the quality signal the offline loop reads: consulted-and-
+worked reinforces promotion, consulted-and-hurt is a demote/retire signal, and
+a pattern of the guidance steering you wrong becomes a proposal to adjust this
+capability's own instructions. Marking is part of doing the task well, not
+extra work."
   "Body of the using-goodnite skill.")
 
 (defun e-goodnite-capability-create ()
