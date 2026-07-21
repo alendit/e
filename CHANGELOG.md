@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- New `goodnite` layer (daydream: the online read side of goodnite). It
+  exposes a read-only `goodnite://` resource scheme over the goodnite
+  knowledge base (`GOODNITE_HOME`, default `~/.goodnite`), keyed by what the
+  knowledge helps the agent do rather than by goodnite's mining pipeline:
+  `goodnite://workflows/<slug>` (how to do a recurring task),
+  `goodnite://pitfalls/<slug>` (a failure mode to avoid), and
+  `goodnite://conventions/<slug>` (a project/tool convention). The three
+  types map from goodnite's candidate skills, gotcha notes, and facts
+  fragments; the only provenance surfaced is a `confidence` hint
+  (`established` for human-reviewed, `mined (unreviewed)` otherwise).
+  Ordinary `read`/`glob`/`search` work over the scheme (no new tool
+  surface). A `goodnite` capability with a `using-goodnite` skill tells a
+  live agent when and how to consult the base. Active by default in chat
+  harnesses. This is slice 1 of the daydream design
+  (`docs/research/goodnite-daydream.org`); semantic search and the
+  access-tracking promotion loop are later slices.
+
 - The `annotations` capability pivots from the Simply Annotate sidecar backend
   to the org-annotate in-file model (Org files only). It exposes stable actions
   `:list`, `:reply`, `:add`, and `:resolve` over `<<oa:...>>` anchors and the

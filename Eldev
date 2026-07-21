@@ -23,6 +23,8 @@
               "lisp/layers/annotations"
               "lisp/layers/org-canvas"
               "lisp/layers/project-local"
+              "lisp/layers/goodnite"
+              "lisp/layers/writing"
               "lisp/layers/chat"
               "lisp/defaults"
               "lisp/shells"

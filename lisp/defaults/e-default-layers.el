@@ -119,7 +119,17 @@
      :name "Project Local"
      :summary "Capabilities and shells a repository ships under .e/layers/."
      :feature e-project-local
-     :factory e-project-local-layer-create))
+     :factory e-project-local-layer-create)
+    (:id goodnite
+     :name "Goodnite"
+     :summary "Daydream: read-only goodnite:// task-knowledge base mined from past sessions."
+     :feature e-goodnite
+     :factory e-goodnite-layer-create)
+    (:id writing
+     :name "Writing"
+     :summary "Voice adjustment: detect, rewrite, and cache LLM writing tells."
+     :feature e-voice-adjustment
+     :factory e-voice-adjustment-layer-create))
   "Built-in layer specs registered during startup."
   :type '(repeat sexp)
   :group 'e)

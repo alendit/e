@@ -1,0 +1,154 @@
+#+title: Daydream — the online read side of goodnite in e
+#+author: e research
+#+date: 2026-07-21
+#+startup: overview
+
+* Scope
+
+The session-learning note ([[file:session-learning-process-extraction.org]]) describes the *offline write side*: mine sessions, cluster, propose skills/gotchas/facts, human review, promote. Goodnite implements it as =goodnite dream=. This note designs the *online read side* for =e=: let a live agent consult the knowledge goodnite has mined from past sessions while doing its own day-to-day work, and let that consultation feed back into what gets promoted.
+
+Working name: *daydream*. Dream runs at night and writes; daydream runs in the turn and reads.
+
+This is background design, not a committed plan. When it turns into work, create =docs/feats/<n>-goodnite-daydream/= and leave this as source.
+
+* The goal, and the level to expose it at
+
+The point of the capability is that =e= can *use* this base to do its job better — not that it can inspect goodnite. So the surface must be at the consumer's conceptual level, not the producer's.
+
+Goodnite's own vocabulary — candidate, gotcha, cluster, dream, promotion state — is pipeline internal. A =candidate= is a mining-stage word (a mined-but-unpromoted skill draft); a =cluster= is a recurrence artifact; a =dream= is a nightly batch. The working agent should never navigate by any of that. It has a task in front of it and three consumer-level questions:
+
+- *How do I do this?* — a recurring task it suspects it has done before (a *workflow*).
+- *What bites me here?* — a domain- or tool-specific failure mode to avoid (a *pitfall*).
+- *What holds in this project?* — an accumulated convention or preference (a *convention*).
+
+So daydream exposes *knowledge by what it helps the agent do*, not by which pipeline stage produced it. Goodnite's candidate/gotcha/fact split is an implementation detail of how each entry was mined; the agent sees a single knowledge base keyed by task relevance. Whether an entry came from an un-promoted candidate SKILL.md, a gotcha note, or a facts fragment is goodnite's concern, surfaced (if at all) only as a confidence hint, never as the primary index.
+
+* The asymmetry we are closing
+
+Goodnite has already mined durable, curated knowledge under =~/.goodnite/= — dozens of workflow drafts, failure lessons, and project conventions distilled from real prior sessions. Today the only consumer is a human at the morning review; a promoted skill reaches the agent through the normal skills path, and everything else stays invisible to the running agent. That is a large, already-distilled base the agent cannot see.
+
+Daydream makes that base *queryable in the turn*, at the consumer's level, read-only, and turns the agent's queries into a promotion signal.
+
+* Two design rejections carried over, and one reversal
+
+From the offline note:
+
+- *No autonomous promotion.* Daydream is strictly read + signal. It never edits =AGENTS.md=, never publishes a skill, never mutates goodnite state. Promotion stays human-gated; daydream only *raises evidence* that a piece of knowledge earns promotion.
+- *No online vector recall as memory.* The note rejected online episodic vector memory. Daydream is not that: it is retrieval over *already-distilled knowledge* (workflows, pitfalls, conventions — curated text), not over raw episodic transcripts. Same distinction grimoire's hybrid search makes, defensible for the same reason.
+
+One reversal the note invites: it said "offline clustering is the legitimate use of embeddings; decline online vector recall." Retrieval over the distilled knowledge set is a third case — human-facing-style recall over curated notes, on demand, bounded to a few hundred entries. Grimoire already crossed this line for its KB; daydream crosses it for the process/knowledge base. The rejection was about mining raw transcripts online, which daydream still does not do.
+
+* The =goodnite://= resource scheme
+
+Register a read-only scheme mirroring =session://= (=e-session-resources.el= is the template: =e-resource-method-create= for read/glob/search, wrapped in a capability via =e-capability-resource-method-provider-create=).
+
+The address space is keyed by *knowledge type the agent consumes*, not by goodnite's pipeline stage:
+
+#+begin_example
+goodnite://                          → types: workflows/ pitfalls/ conventions/
+goodnite://workflows/                 → recurring how-to entries
+goodnite://workflows/<slug>           → one workflow: when it applies + the steps
+goodnite://pitfalls/                  → known failure modes to avoid
+goodnite://pitfalls/<slug>            → one pitfall: symptom + the fix
+goodnite://conventions/               → project/tool conventions and preferences
+goodnite://conventions/<slug>         → the standing rule(s), scoped to a project
+#+end_example
+
+Three types, each answering one of the consumer questions above. The mapping from goodnite internals is a producer-side detail:
+- a *workflow* is sourced from a candidate/promoted skill (the SKILL.md body is the how-to);
+- a *pitfall* from a gotcha note;
+- a *convention* from a facts / AGENTS.md-guidance fragment.
+
+No =candidates/=, =clusters/=, =dreams/= in the address space — those are goodnite internals with no day-to-day use. Cluster evidence and promotion state still exist in =~/.goodnite/=; daydream just does not route the working agent through them.
+
+Operations:
+- *glob* — discover types and entries. Per-entry metadata stays consumer-relevant: a one-line "when to use this," the type, a scope (project/tool it applies to), and a *confidence* hint (see below). Goodnite-internal numbers (cluster size, recency score, seed signals) do not surface here — they inform ranking behind search, not the agent's mental model.
+- *read* — the full entry body. Progressive disclosure: glob is cheap (title + when-to-use + scope + confidence), read pulls the body only on commit.
+- *search* — hybrid semantic + lexical over entry text (next section). This is the primary entry point: the agent searches by its task, not by browsing types.
+
+*Confidence, not pipeline stage.* The one producer fact worth surfacing is how vetted the knowledge is, expressed as a consumer-meaningful =confidence= field, not as "candidate vs promoted." A promoted, human-reviewed workflow reads =confidence: established=; an un-promoted mined one reads =confidence: mined (unreviewed)=. That is enough for the agent to weight a hit correctly without exposing the review pipeline.
+
+The adapter reads =~/.goodnite/= directly (the =GOODNITE_HOME= layout is stable and documented) and maps each artifact into the consumer type. It does not shell into the goodnite CLI for reads — reads are plain file walks over YAML/markdown, cheap and synchronous.
+
+* Semantic search over the knowledge base
+
+Reuse grimoire's proven design (=scripts/semantic_search.py= + =grimoire-semantic.el=): SQLite FTS5 (BM25) + sqlite-vec (vector KNN) + Reciprocal Rank Fusion, local Ollama embeddings, nothing leaves the machine.
+
+Two clean paths, in preference order:
+
+1. *Add a knowledge search index in the goodnite repo*, mirroring grimoire's script: =goodnite search-index= (build) and =goodnite search "<query>"= (query, JSON on the last line). Index the distilled knowledge only — workflow when-to-use + body, pitfall symptom/fix, convention lines — never raw transcripts and never goodnite bookkeeping. e's =goodnite://= search handler shells to it exactly as =grimoire-semantic.el= shells to =semantic_search.py=. This also gives goodnite the semantic search the user wanted, independent of e.
+2. *Register an =e= search provider scoped to =goodnite://=* (the =e-search-providers= seam grimoire uses), so a =search= over a =goodnite://= URI transparently runs hybrid retrieval.
+
+Ranking may use goodnite-internal signals (recency, recurrence, consultation count) under the hood, but returns only consumer-level fields. The corpus is small (hundreds of entries), so indexing is fast and piggybacks on the nightly dream — dream re-derives everything, so it appends "rebuild the daydream index" as its last step. The index is disposable and rebuildable, git-ignored, same discipline as grimoire's =semantic.db=. Goodnite already has =embed_texts=/=cosine_matrix= in =skills_index.py=, so a first slice can run pure-Python cosine over a cached =.npz= before standing up the full FTS5+vec index.
+
+* The goodnite capability in e
+
+An =e-capability-with-skills-create= capability, id =goodnite=, packaging:
+
+- *Instructions (compact, always in context)*, framed entirely in consumer terms:
+  - "A local base of task knowledge mined from your own past sessions is searchable at =goodnite://=: *workflows* (how to do a recurring task), *pitfalls* (failure modes to avoid), and *conventions* (project/tool preferences). When a task looks like something that has been done before — a multi-step operation, work with a known domain gotcha, or work in a project with accumulated conventions — search =goodnite://= for it first. Weight a hit by its =confidence=: =established= knowledge is human-reviewed; =mined (unreviewed)= is a strong lead from real prior runs but not vetted, so sanity-check it. Cite the =goodnite://= URI when a hit shapes your approach."
+  - No mention of candidates, clusters, dreams, or promotion. The agent consults task knowledge; it never learns goodnite's pipeline.
+  - Progressive-disclosure pointer: search/glob cheap, read on commit.
+- *A =using-goodnite= skill body* (=e://goodnite/skills/using-goodnite=): query shapes ("search by the task, not the tool"), how to read a workflow/pitfall/convention, how confidence maps to trust, when NOT to consult (trivial one-off asks).
+- *Tools / actions.* Prefer wrapping =read=/=glob=/=search= over =goodnite://= (no new tool surface). Add one thin action only if the ranked-search ergonomics need it: =goodnite_consult= that runs the semantic search and returns ranked entry stubs. Reachable from =run_elisp= via =e-actions-call 'goodnite ...=.
+
+MECE guidance ownership: capability instructions own "when to consult," the skill owns "how," each entry owns its content.
+
+* Access tracking as a promotion and guidance signal
+
+The read/search handlers record access, and that access becomes evidence for the offline loop. This is the loop back to dream, and where the promotion signal comes from.
+
+** What to record
+
+On each read/search hit, append to a durable, content-keyed log under =~/.goodnite/state/daydream_access.jsonl=:
+
+#+begin_example
+{ entry_uri, knowledge_type, source_ref, query, session_id, turn_id,
+  rank, ts, engine: "e" }
+#+end_example
+
+=source_ref= links back to the goodnite artifact the entry was mapped from (the candidate/gotcha/fact), so the offline side can join consultation to the thing it might promote. Keyed by entry, so repeated consultation accumulates. This is the online analogue of =skill_activity.yaml= (which records when a *promoted* skill matched a cluster); daydream records when *mined-but-unreviewed* knowledge was consulted by a live agent.
+
+** How the signal is used (offline, by dream)
+
+Dream already ranks clusters by recency and seed-signal weight before mining. Add consultation count as a third input: knowledge an agent keeps pulling up mid-task is proving its value in the field before promotion — *demand*, not just supply, and a stronger promote signal than recurrence alone. Concretely:
+
+- =goodnite candidates= (the review list) surfaces =consulted: N times since mined=, sorted to the top.
+- A workflow consulted above a threshold with no negative feedback is flagged =field-validated= in the dream note — a lighter gate than held-out replay, grounded in real use, nudging it toward promotion (i.e. toward =confidence: established=).
+- A pitfall consulted repeatedly is evidence the failure mode is live and the lesson lands.
+
+** Guidance adjustment via the process-feedback tool
+
+Use =process_marker= (feat 52, =e-process-reporting.el=) as the channel for the agent's own signal about the base:
+
+1. *Consultation-quality markers.* When a =goodnite://= hit materially helped (=effective=) or misled/was-stale (=friction=/=correction=), the agent marks it, citing the entry URI. Markers already flow into the next dream (=markers.py= seeds clustering); now they carry a =goodnite://= reference, giving dream a supervised signal — consulted-and-worked reinforces promotion, consulted-and-hurt is a demote/retire signal.
+2. *Guidance drift.* If the =goodnite= capability's instructions steer wrong (over-consulting on trivia, under-consulting where it would help), that surfaces as =friction=/=correction= markers about the capability itself. The Layer-1 facts extractor (=facts.py=) already turns such markers into proposed guidance edits — so a proposal to adjust the goodnite guidance is a facts proposal scoped to that guidance, reviewed the same way. The guidance tunes itself through the same offline, human-gated loop.
+
+Closed loop: read raises demand, markers raise quality signal, dream folds both into what gets promoted and how the guidance reads, human approves. No autonomous mutation anywhere.
+
+* Sequencing (slices, by leverage and reversibility)
+
+1. *=goodnite://= read + glob + search* over =~/.goodnite/=, mapping artifacts into workflows/pitfalls/conventions, plus the =goodnite= capability with consumer-level instructions and a using-goodnite skill. Read-only, no tracking. This alone makes the mined base usable by the agent — the biggest single step. *(Landed: =lisp/layers/goodnite/=. The =goodnite://= scheme registers read/glob/search; search is lexical for now — the semantic index of slice 2 replaces the ranking, not the surface.)*
+2. *Semantic search*: goodnite-side index script (grimoire pattern) + =goodnite://= search handler / e search provider. Rebuild piggybacks on dream.
+3. *Access tracking*: =daydream_access.jsonl= written by the read/search handlers; =goodnite candidates= surfaces consultation counts.
+4. *Promotion signal*: dream reads the access log, ranks and flags field-validated knowledge, sorts the review list by demand.
+5. *Marker-cited feedback*: capability guidance nudges the agent to mark helpful/misleading hits with the =goodnite://= URI; =facts.py= grows a path proposing goodnite-guidance edits from goodnite-scoped markers.
+
+Slices 1–2 are the read side (value to the agent). 3–5 are the loop back to dream (value to extraction quality). Each is independently shippable.
+
+* What this is not
+
+- Not a window into goodnite's pipeline. The agent sees task knowledge (workflows/pitfalls/conventions), never candidates, clusters, dreams, or promotion state.
+- Not a second mining pipeline. Daydream reads what dream mined and feeds signal back; it never mines.
+- Not autonomous memory writes. Every mutation stays in dream, human-gated.
+- Not raw-transcript retrieval. The corpus is the distilled knowledge set; raw sessions stay behind =session://= for the offline miner.
+- Not e-only forever. The =goodnite://= scheme and index are e surfaces, but the underlying =goodnite search= CLI is engine-agnostic; a general skill for other agents can wrap the same CLI later. e first.
+
+* Open questions
+
+- *Freshness vs. the review gate.* Mined-but-unreviewed knowledge is consultable before a human vets it — deliberate (that is how we gather field signal), but the agent sees leads a human has not checked. The =confidence: mined (unreviewed)= label is the mitigation; is a label enough, or does unreviewed knowledge need to rank below established in every result set?
+- *Type mapping fidelity.* Mapping candidate→workflow, gotcha→pitfall, fact→convention is mostly clean, but a mined SKILL.md sometimes carries pitfall-shaped content in a =## Gotchas= section. Does an entry get one type, or can it surface under two?
+- *Access-log growth and privacy.* =daydream_access.jsonl= records queries and entry URIs — local and content-keyed, but a new durable log; apply the secret-scrub discipline the offline note flags for =state/=.
+- *Index staleness between dreams.* Knowledge is searchable only after the index rebuilds (piggybacked on dream), so intra-day changes lag a night. Acceptable, or is a cheap incremental append needed?
+- *Where goodnite-guidance edits land.* A facts-style proposal to adjust the goodnite capability instructions targets e's capability source, not a project =AGENTS.md= — a different codify path than the existing facts route; worth its own small design.
+- *Threshold calibration.* "Consulted N times → field-validated" needs a real threshold; start conservative and tune against the access log once it has run.
