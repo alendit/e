@@ -26,6 +26,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'json)
 (require 'seq)
 (require 'subr-x)
 (require 'e-capabilities)
@@ -48,6 +49,22 @@ When nil, resolve from the GOODNITE_HOME environment variable, falling back
 to ~/.goodnite.  This is the directory goodnite's offline `dream' run writes
 its distilled artifacts into."
   :type '(choice (const :tag "Resolve from environment" nil) directory)
+  :group 'e)
+
+(defcustom e-goodnite-search-program "goodnite"
+  "Program invoked for semantic search over the goodnite knowledge base.
+
+The program must accept `knowledge-search QUERY --limit N' and print a JSON
+object on its last stdout line, matching goodnite's `knowledge-search' command.
+When the program is absent or fails, goodnite:// search falls back to lexical
+matching over the same entries."
+  :type 'string
+  :group 'e)
+
+(defcustom e-goodnite-search-semantic t
+  "When non-nil, goodnite:// search tries semantic retrieval first.
+Falls back to lexical search when the index is absent or the program fails."
+  :type 'boolean
   :group 'e)
 
 (defconst e-goodnite-resources--type-order '("workflows" "pitfalls" "conventions")
@@ -420,8 +437,8 @@ precedes the distilled body."
              (list (format "Invalid goodnite search root: %s"
                            (plist-get uri :uri)))))))
 
-(defun e-goodnite-resources--search (uri query options)
-  "Search parsed goodnite URI for QUERY with OPTIONS."
+(defun e-goodnite-resources--search-lexical (uri query options)
+  "Lexical search parsed goodnite URI for QUERY with OPTIONS."
   (let* ((actual-limit (e-resource-pattern-search-limit (plist-get options :limit)))
          (glob-pattern (plist-get options :glob))
          (case-sensitive (plist-get options :case-sensitive))
@@ -443,6 +460,72 @@ precedes the distilled body."
     (let ((ranked (e-resource-pattern-rank-search-matches matches (1+ actual-limit))))
       (list :matches (vconcat (seq-take ranked actual-limit))
             :truncated (> (length ranked) actual-limit)))))
+
+(defun e-goodnite-resources--search-scope (uri)
+  "Return the type to scope semantic results to, or nil for all knowledge."
+  (pcase (e-goodnite-resources--segments uri)
+    (`(,type) type)
+    (_ nil)))
+
+(defun e-goodnite-resources--run-semantic (query limit)
+  "Run the goodnite semantic search program for QUERY.
+Return the parsed JSON plist on success, or nil when the program is absent,
+fails, or reports no index (so the caller falls back to lexical search)."
+  (let ((program (executable-find e-goodnite-search-program)))
+    (when program
+      (condition-case nil
+          (with-temp-buffer
+            (let* ((default-directory (e-goodnite-resources--home))
+                   (status (process-file
+                            program nil (list t nil) nil
+                            "knowledge-search" query
+                            "--limit" (number-to-string limit))))
+              (when (eq status 0)
+                (goto-char (point-max))
+                (forward-line -1)
+                (let ((line (string-trim
+                             (buffer-substring-no-properties
+                              (line-beginning-position) (line-end-position)))))
+                  (unless (string-empty-p line)
+                    (let ((parsed (json-parse-string
+                                   line :object-type 'plist :array-type 'list
+                                   :false-object nil :null-object nil)))
+                      (and (plist-get parsed :indexed) parsed)))))))
+        (error nil)))))
+
+(defun e-goodnite-resources--semantic-matches (result scope limit)
+  "Return RESULT's matches as e match plists, filtered to SCOPE, capped at LIMIT."
+  (let ((matches nil)
+        (rank 0))
+    (dolist (m (plist-get result :matches))
+      (when (or (null scope) (equal (plist-get m :type) scope))
+        (setq rank (1+ rank))
+        (push (list :uri (plist-get m :uri)
+                    :line (or (plist-get m :line) 1)
+                    :column (or (plist-get m :column) 1)
+                    :text (or (plist-get m :text) (plist-get m :title) "")
+                    :score (or (plist-get m :score) 0)
+                    :rank rank)
+              matches)))
+    (vconcat (seq-take (nreverse matches) limit))))
+
+(defun e-goodnite-resources--search (uri query options)
+  "Search parsed goodnite URI for QUERY with OPTIONS.
+Try semantic retrieval first (goodnite `knowledge-search'); fall back to
+lexical matching when the index or program is unavailable.  A leaf-slug search
+is always lexical, since it targets one known entry."
+  (let ((leaf-p (= (length (e-goodnite-resources--segments uri)) 2)))
+    (or (and e-goodnite-search-semantic
+             (not leaf-p)
+             (let* ((limit (e-resource-pattern-search-limit
+                            (plist-get options :limit)))
+                    (result (e-goodnite-resources--run-semantic query limit)))
+               (when result
+                 (list :matches (e-goodnite-resources--semantic-matches
+                                 result (e-goodnite-resources--search-scope uri)
+                                 limit)
+                       :truncated (and (plist-get result :truncated) t)))))
+        (e-goodnite-resources--search-lexical uri query options))))
 
 ;;; Registration
 

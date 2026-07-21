@@ -19,6 +19,15 @@
   (`docs/research/goodnite-daydream.org`); semantic search and the
   access-tracking promotion loop are later slices.
 
+- The `goodnite://` search operation now prefers semantic retrieval over the
+  distilled knowledge base. When goodnite's `knowledge-search` program and a
+  built index are available, a search runs local embedding similarity (so a
+  plain-language task description finds the right entry without a keyword
+  hit) and maps the ranked matches straight through; it falls back to lexical
+  matching over the same entries when the index or program is absent. Two new
+  options, `e-goodnite-search-program` and `e-goodnite-search-semantic`,
+  control it. This is slice 2 of the daydream design.
+
 - The `annotations` capability pivots from the Simply Annotate sidecar backend
   to the org-annotate in-file model (Org files only). It exposes stable actions
   `:list`, `:reply`, `:add`, and `:resolve` over `<<oa:...>>` anchors and the

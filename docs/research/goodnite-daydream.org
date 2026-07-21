@@ -129,7 +129,7 @@ Closed loop: read raises demand, markers raise quality signal, dream folds both 
 * Sequencing (slices, by leverage and reversibility)
 
 1. *=goodnite://= read + glob + search* over =~/.goodnite/=, mapping artifacts into workflows/pitfalls/conventions, plus the =goodnite= capability with consumer-level instructions and a using-goodnite skill. Read-only, no tracking. This alone makes the mined base usable by the agent — the biggest single step. *(Landed: =lisp/layers/goodnite/=. The =goodnite://= scheme registers read/glob/search; search is lexical for now — the semantic index of slice 2 replaces the ranking, not the surface.)*
-2. *Semantic search*: goodnite-side index script (grimoire pattern) + =goodnite://= search handler / e search provider. Rebuild piggybacks on dream.
+2. *Semantic search*: goodnite-side index script (grimoire pattern) + =goodnite://= search handler / e search provider. Rebuild piggybacks on dream. *(Landed: goodnite =knowledge-index= / =knowledge-search= over a cached =state/knowledge_index.npz=; e's =goodnite://= search shells to =knowledge-search= and falls back to lexical when the index is absent. dream rebuilds the index as its last step.)*
 3. *Access tracking*: =daydream_access.jsonl= written by the read/search handlers; =goodnite candidates= surfaces consultation counts.
 4. *Promotion signal*: dream reads the access log, ranks and flags field-validated knowledge, sorts the review list by demand.
 5. *Marker-cited feedback*: capability guidance nudges the agent to mark helpful/misleading hits with the =goodnite://= URI; =facts.py= grows a path proposing goodnite-guidance edits from goodnite-scoped markers.

@@ -198,7 +198,8 @@
 (ert-deftest e-goodnite-resources-test-search-ranks-by-relevance ()
   "Search over all knowledge ranks the on-topic workflow first."
   (e-goodnite-resources-test--with-home
-    (let* ((result (e-goodnite-resources--search
+    (let* ((e-goodnite-search-semantic nil)
+           (result (e-goodnite-resources--search
                     (e-resources-parse-uri "goodnite://") "rebase conflict"
                     '(:limit 5)))
            (matches (append (plist-get result :matches) nil)))
@@ -209,7 +210,8 @@
 (ert-deftest e-goodnite-resources-test-search-scopes-to-type ()
   "Search scoped to one type only returns entries of that type."
   (e-goodnite-resources-test--with-home
-    (let* ((result (e-goodnite-resources--search
+    (let* ((e-goodnite-search-semantic nil)
+           (result (e-goodnite-resources--search
                     (e-resources-parse-uri "goodnite://conventions/") "bash cat"
                     '(:limit 5)))
            (matches (append (plist-get result :matches) nil)))
@@ -218,6 +220,94 @@
                (lambda (m) (string-prefix-p "goodnite://conventions/"
                                             (plist-get m :uri)))
                matches)))))
+
+(ert-deftest e-goodnite-resources-test-search-semantic-program ()
+  "When a semantic program is configured, its ranked matches pass through."
+  (e-goodnite-resources-test--with-home
+    (let* ((script (expand-file-name "fake-goodnite"
+                                     e-goodnite-resources-test--home))
+           (payload (concat
+                     "{\"matches\":[{\"uri\":\"goodnite://pitfalls/c_0042\","
+                     "\"type\":\"pitfalls\",\"slug\":\"c_0042\","
+                     "\"title\":\"c_0042\",\"when_to_use\":\"a pitfall\","
+                     "\"confidence\":\"mined (unreviewed)\",\"text\":\"a pitfall\","
+                     "\"score\":91000,\"rank\":1}],"
+                     "\"truncated\":false,\"indexed\":true}")))
+      (with-temp-file script
+        (insert "#!/bin/sh\n")
+        (insert "echo diagnostic on stderr 1>&2\n")
+        (insert (format "echo '%s'\n" payload)))
+      (set-file-modes script #o755)
+      (let* ((e-goodnite-search-program script)
+             (e-goodnite-search-semantic t)
+             (result (e-goodnite-resources--search
+                      (e-resources-parse-uri "goodnite://") "anything"
+                      '(:limit 5)))
+             (matches (append (plist-get result :matches) nil)))
+        (should (= (length matches) 1))
+        (should (equal (plist-get (car matches) :uri)
+                       "goodnite://pitfalls/c_0042"))
+        (should (equal (plist-get (car matches) :score) 91000))))))
+
+(ert-deftest e-goodnite-resources-test-search-semantic-scope-filters ()
+  "A type-scoped semantic search drops out-of-scope program matches."
+  (e-goodnite-resources-test--with-home
+    (let* ((script (expand-file-name "fake-goodnite"
+                                     e-goodnite-resources-test--home))
+           (payload (concat
+                     "{\"matches\":["
+                     "{\"uri\":\"goodnite://workflows/w\",\"type\":\"workflows\","
+                     "\"slug\":\"w\",\"title\":\"w\",\"when_to_use\":\"x\","
+                     "\"confidence\":\"mined (unreviewed)\",\"text\":\"x\","
+                     "\"score\":90000,\"rank\":1},"
+                     "{\"uri\":\"goodnite://pitfalls/p\",\"type\":\"pitfalls\","
+                     "\"slug\":\"p\",\"title\":\"p\",\"when_to_use\":\"y\","
+                     "\"confidence\":\"mined (unreviewed)\",\"text\":\"y\","
+                     "\"score\":80000,\"rank\":2}],"
+                     "\"truncated\":false,\"indexed\":true}")))
+      (with-temp-file script
+        (insert "#!/bin/sh\n")
+        (insert (format "echo '%s'\n" payload)))
+      (set-file-modes script #o755)
+      (let* ((e-goodnite-search-program script)
+             (e-goodnite-search-semantic t)
+             (result (e-goodnite-resources--search
+                      (e-resources-parse-uri "goodnite://pitfalls/") "y"
+                      '(:limit 5)))
+             (matches (append (plist-get result :matches) nil)))
+        (should (= (length matches) 1))
+        (should (equal (plist-get (car matches) :uri) "goodnite://pitfalls/p"))))))
+
+(ert-deftest e-goodnite-resources-test-search-falls-back-to-lexical ()
+  "An unindexed program result falls back to lexical search over entries."
+  (e-goodnite-resources-test--with-home
+    (let* ((script (expand-file-name "fake-goodnite"
+                                     e-goodnite-resources-test--home)))
+      (with-temp-file script
+        (insert "#!/bin/sh\n")
+        (insert "echo '{\"matches\":[],\"truncated\":false,\"indexed\":false}'\n"))
+      (set-file-modes script #o755)
+      (let* ((e-goodnite-search-program script)
+             (e-goodnite-search-semantic t)
+             (result (e-goodnite-resources--search
+                      (e-resources-parse-uri "goodnite://") "rebase conflict"
+                      '(:limit 5)))
+             (matches (append (plist-get result :matches) nil)))
+        (should matches)
+        (should (equal (plist-get (car matches) :uri)
+                       "goodnite://workflows/resolving-rebase-conflicts"))))))
+
+(ert-deftest e-goodnite-resources-test-search-lexical-when-disabled ()
+  "With semantic disabled, search is lexical even if a program exists."
+  (e-goodnite-resources-test--with-home
+    (let ((e-goodnite-search-semantic nil))
+      (let* ((result (e-goodnite-resources--search
+                      (e-resources-parse-uri "goodnite://") "rebase conflict"
+                      '(:limit 5)))
+             (matches (append (plist-get result :matches) nil)))
+        (should matches)
+        (should (equal (plist-get (car matches) :uri)
+                       "goodnite://workflows/resolving-rebase-conflicts"))))))
 
 (ert-deftest e-goodnite-resources-test-empty-home-globs-clean ()
   "An absent artifact family globs to nothing rather than erroring."

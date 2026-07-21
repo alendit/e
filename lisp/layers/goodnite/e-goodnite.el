@@ -43,7 +43,10 @@ sessions. Consult it the way you would ask a colleague who has done this before.
 
 1. Search by the task, not the tool: `search goodnite:// \"resolve rebase
    conflicts\"`, not `search goodnite:// \"git\"`. Scope to one type when you
-   know which fits (`search goodnite://pitfalls/ ...`).
+   know which fits (`search goodnite://pitfalls/ ...`). Search is semantic
+   when the knowledge index is built, so plain-language task descriptions
+   find the right entry even without a keyword hit; it falls back to lexical
+   matching otherwise.
 2. Glob to browse a type: `glob goodnite://workflows/` lists entries with a
    one-line when-to-use, scope, and confidence -- cheap, no bodies.
 3. Read the leaf URI only when a stub looks worth committing to. `read
