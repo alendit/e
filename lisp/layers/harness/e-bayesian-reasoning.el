@@ -17,11 +17,84 @@
 (require 'cl-lib)
 (require 'e-capabilities)
 (require 'e-store)
+(require 'e-structured-blocks)
 (require 'subr-x)
 
 (defconst e-bayesian-reasoning-instructions
-  "Treat belief as a quantity, not a verdict: attach a confidence to factual claims, keep at least one rival hypothesis alive, and prefer \"insufficient evidence\" to a guess. Read e://bayesian-reasoning/refs/tenets.md before concluding on a load-bearing claim."
+  "Treat belief as a quantity, not a verdict: attach a confidence to factual claims, keep at least one rival hypothesis alive, and prefer \"insufficient evidence\" to a guess. Read e://bayesian-reasoning/refs/tenets.md before concluding on a load-bearing claim. When you assert a load-bearing factual conclusion, emit exactly one reserved fenced reasoning block: under org output mode, `#+begin_reasoning' ... `#+end_reasoning'; under markdown output mode, a ```reasoning fence. Inside it write four lines: `claim:' the one-line conclusion, `confidence:' one of low, medium, or high, `alternatives:' at least one rival explanation or the literal `insufficient-evidence', and `evidence:' references or blank. This block is hidden from the rendered reply and read only by deterministic tooling."
   "Compact model-facing disposition for calibrated reasoning.")
+
+(defconst e-bayesian-reasoning--fence-regexp
+  "\\`\\(?:#\\+begin_reasoning\\|```reasoning\\)[ \t]*\n\\(\\(?:.\\|\n\\)*?\\)\n?\\(?:#\\+end_reasoning\\|```\\)[ \t]*\n?\\'"
+  "Matches a whole reasoning fence (org or markdown form) and captures its body.
+Anchored to the full string so a caller must pass exactly the fenced text --
+any surrounding prose makes the match fail, which is the desired `malformed'
+outcome for a non-fence string.")
+
+(defconst e-bayesian-reasoning--field-line-regexp
+  "\\`[ \t]*\\([a-zA-Z_]+\\):[ \t]*\\(.*\\)[ \t]*\\'"
+  "Matches one `key: value' line inside a reasoning fence body.")
+
+(defconst e-bayesian-reasoning--confidence-bands '("low" "medium" "high")
+  "Allowed values for the reasoning fence's `confidence' field.")
+
+(defun e-bayesian-reasoning--fence-matches (content open close)
+  "Return match plists for one OPEN...CLOSE fenced form in CONTENT.
+Each match is `(:start START :end END)', 0-based offsets spanning the whole
+fence including its delimiters."
+  (let (matches (start 0))
+    (while (and (< start (length content))
+               (string-match (regexp-quote open) content start))
+      (let* ((match-start (match-beginning 0))
+             (close-pos (string-match (regexp-quote close) content (match-end 0))))
+        (if close-pos
+            (progn
+              (push (list :start match-start :end (+ close-pos (length close)))
+                    matches)
+              (setq start (+ close-pos (length close))))
+          (setq start (length content)))))
+    (nreverse matches)))
+
+(defun e-bayesian-reasoning--reasoning-matcher (content)
+  "Matcher for the `reasoning' structured-block kind.
+Finds both the org fence (`#+begin_reasoning' ... `#+end_reasoning') and the
+markdown fence (```reasoning ... ```) in CONTENT, since the matcher does not
+know which output mode produced the reply; it must recognize whichever fence
+the model actually emitted.  Returns matches sorted ascending by start, per
+the registry's matcher contract."
+  (let ((matches (append (e-bayesian-reasoning--fence-matches
+                          content "#+begin_reasoning" "#+end_reasoning")
+                         (e-bayesian-reasoning--fence-matches
+                          content "```reasoning" "```"))))
+    (sort matches (lambda (a b) (< (plist-get a :start) (plist-get b :start))))))
+
+(defun e-bayesian-reasoning-parse-reasoning-block (string)
+  "Parse a reasoning fence STRING into its field plist, or nil when malformed.
+STRING must be exactly one whole fence (org or markdown form), such as the
+`:text' of a block matched by `e-bayesian-reasoning--reasoning-matcher'.  On a
+well-formed fence, returns a plist `(:claim :confidence :alternatives
+:evidence)' with each value the trimmed string after its `key:'; a missing
+field is nil in the plist.  Returns nil when STRING is not a whole fence, or
+when it has no recognized `key: value' lines at all -- this is a deterministic
+string parse, never a completeness judgment, which stays with the Slice 3
+stop-hook checklist."
+  (when (and (stringp string)
+            (string-match e-bayesian-reasoning--fence-regexp string))
+    (let ((body (match-string 1 string))
+          (fields nil))
+      (dolist (line (split-string body "\n"))
+        (when (string-match e-bayesian-reasoning--field-line-regexp line)
+          (let ((key (downcase (match-string 1 line)))
+                (value (string-trim (match-string 2 line))))
+            (cond
+             ((equal key "claim") (setq fields (plist-put fields :claim value)))
+             ((equal key "confidence")
+              (setq fields (plist-put fields :confidence value)))
+             ((equal key "alternatives")
+              (setq fields (plist-put fields :alternatives value)))
+             ((equal key "evidence")
+              (setq fields (plist-put fields :evidence value)))))))
+      fields)))
 
 (defconst e-bayesian-reasoning-tenets-reference
   (string-join
@@ -98,7 +171,13 @@
    :name name
    :instruction-priority 255
    :instructions e-bayesian-reasoning-instructions
-   :resources (list (e-bayesian-reasoning--resource-provider))))
+   :resources (list (e-bayesian-reasoning--resource-provider))
+   :structured-blocks
+   (list (e-structured-block-create
+          :kind 'reasoning
+          :matcher #'e-bayesian-reasoning--reasoning-matcher
+          :display 'hidden
+          :parser #'e-bayesian-reasoning-parse-reasoning-block))))
 
 (provide 'e-bayesian-reasoning)
 
