@@ -1,29 +1,31 @@
-#+title: Work Bus: Subscription-Driven Turn Model
+#+title: Work Board: Subscription-Driven Turn Model
 #+startup: overview
 
 * Status
 
 Planned
 
+Directory keeps the =66-work-bus-interaction-model/= path; the plan settled on
+"board" for the shared scope (see [[*The scope above sessions]]).
+
 * Goal
 
 Make the queue the primary interaction model between the harness and the model,
 instead of the synchronous tool call.
 
-An agent posts work packages onto a session-visible bus, registers
-subscriptions describing which bus events should reach it, and its turns are
-reactions to delivered events.  The classic synchronous tool call becomes one
-configuration of that model: post one work package, hold the turn open with a
-one-shot inline subscription on its completion.
+An agent posts work packages onto a board, registers subscriptions describing
+which board events should reach it and how, and its turns are reactions to
+delivered events.  The classic synchronous tool call becomes one configuration
+of that model: post one work package, hold the turn open with a one-shot inline
+subscription on its completion.
 
-The same bus carries user input, schedule fires, file-notify triggers, subagent
-completions, and task-queue work, so "the user typed something" and "the grep
-finished" are the same kind of fact arriving through the same path.
+The same board carries user input, schedule fires, file-notify triggers,
+subagent completions, and task-queue work, so "the user typed something" and
+"the grep finished" are the same kind of fact arriving through the same path.
 
 * What already exists
 
-This is not a green-field mechanism.  Most of the substrate landed in feats 55,
-59, 60, and 64:
+Most of the substrate landed in feats 55, 59, 60, and 64:
 
 - =lisp/core/e-work.el= :: one lifecycle for potentially long work, with
   handles, progress/terminal callbacks, =e-work-await-set= (event-driven,
@@ -34,323 +36,472 @@ This is not a green-field mechanism.  Most of the substrate landed in feats 55,
 - =lisp/core/e-await-tool.el= :: the model-facing join over a set of references.
 - =wait_for= on every detachable tool :: run inline for N seconds, otherwise
   detach and return =work:<id>=.
-- =lisp/core/e-harness.el= :: per-session prompt queue
-  (=e-harness-queued-prompts=), post-settlement drain
-  (=e-harness--drain-next-queued-prompt=), and mid-turn steering input
-  (=e-harness--append-pending-steering-item=).
+- =lisp/core/e-harness.el= :: per-session prompt queue, post-settlement drain,
+  and mid-turn steering input.
 - =lisp/core/e-loop.el= :: =drain-pending-input= at every provider request
-  boundary, which is already a mid-turn injection channel.
-- =lisp/core/e-task-queue.el=, =e-cron.el=, subagents :: three producers of
-  long-lived work with their own registries.
+  boundary, already a mid-turn injection channel.
+- =e-session-fork= :: fork a session at a message, seeded with the source's
+  current path.  The mechanism branching needs already exists.
+- =e-subagent-registry= / =e-subagent-actions= :: spawn, steer, read, shutdown,
+  and a child-side =report= that sets a structured result.
+- =e-harness-instances= :: several live harness instances with their own
+  sessions, which is why the shared scope below is not just "the root session".
 
-What is missing is the connective tissue: subscriptions as first-class objects,
-event delivery as a turn input with a stated cause, one ordered event log, and a
-projection of outstanding work that the model does not have to reconstruct from
-transcript history.
+Missing: subscriptions as first-class objects with a deterministic pick/render
+step, event delivery with a stated cause, one ordered event log, a projection of
+outstanding work, and a scope that spans sessions.
 
-* The interleaving question
+* Concern: interleaved threads of work in one context
 
-The stated worry: the agent posts work 1 and 2, waits on any, gets 1, posts 3
-based on it, and then 2 completes and "wedges into" the context.
+The worry is not protocol-level mismatch between a call and its result.  It is
+that one linear context ends up carrying several logical threads of work,
+spliced at arbitrary points, and the model reasons worse in that context: it
+loses which plan it was executing, re-reads a stale intent as current, or
+applies a conclusion from thread A to thread B.
 
-** Structurally, results cannot wedge
+** What is structurally safe
 
-=e-loop= executes tool calls strictly sequentially: =tool-queue= holds pending
-calls, =start-next-tool= only starts one when =active-tool= is nil, and
-=finish-tool= appends the =tool-call= message and its paired =tool= result
-message together.  Provider adapters map each pair adjacently, e.g.
-=e-anthropic--message= emits =assistant(tool_use)= then =user(tool_result)=.  So
-even when a provider emits three parallel tool calls in one assistant message,
-the transcript e builds is a linearization with every call answered next to
-itself.
+Call/result pairing is not at risk.  =e-loop= runs tool calls one at a time
+(=tool-queue=, =start-next-tool= gated on =active-tool=, =finish-tool=
+appending call and result together), and provider adapters map each pair
+adjacently.  A late completion therefore cannot arrive as a tool result for an
+already-answered call; it arrives as new turn input.  That bounds the problem to
+one thing: prose and events from thread B landing between the steps of thread A.
 
-That constrains the design in a useful way: *a late completion can never be
-delivered as a tool result*, because the call that requested it was already
-answered (with a =work:<id>= reference).  Late completions arrive as new turn
-input, in the user role, the same way a typed prompt arrives.
+** What actually degrades
 
-The example transcript therefore reads:
+Three distinct effects, worth separating because they have different fixes:
 
-#+begin_example
-assistant  tool_call bash(wait_for 0)      -> tool_result work:bash/1
-assistant  tool_call bash(wait_for 0)      -> tool_result work:bash/2
-assistant  tool_call await([1,2], any)     -> tool_result {1: done}
-assistant  tool_call bash(cmd 3)           -> tool_result ...
-user       [bus] work:bash/2 finished (sub s7)
-#+end_example
+1. *Stale intent.*  The event arrives after the agent moved on and it must
+   recover why the work was started.  Fixed by carrying intent on the event and
+   a continuation on the subscription.
+2. *Plan fragmentation.*  Thread A's reasoning is cut in half by thread B's
+   event and result.  Not fixed by better event payloads.  Fixed by not
+   interleaving: put thread B somewhere else.
+3. *State ambiguity.*  "What is still running" has to be inferred from
+   interleaved history.  Fixed by a projection: history answers what happened,
+   the board answers what is true now.
 
-There is no ambiguity about which call a result answers, no provider protocol
-violation, and no reordering of anything already in context.  Concurrency lives
-entirely in work handles; the transcript stays a total order.
+Effect 2 is the one that motivates the rest of this section.
 
-** The real failure mode is stale intent, not disorder
+** Response: choose an isolation level per thread of work
 
-What actually degrades is attribution and relevance: the event for work 2
-arrives after the agent has moved on, and the agent has to recover why it
-started that work and what to do with the answer.  Four mitigations, all cheap:
+A subscription names where its wake lands.  Four destinations, increasing
+isolation and cost:
 
-1. *Self-describing events.*  A delivered event carries the subscription id, the
-   work id, the work kind, a one-line summary, and the =intent= note the agent
-   recorded when it posted the work.  The agent does not reconstruct intent from
-   history.
-2. *Stored continuation.*  A subscription may carry a short instruction string
-   ("when this finishes, run the failing test and report").  The wake then
-   carries its own plan, so correctness does not depend on the agent remembering
-   across an unrelated stretch of context.
-3. *Batched, ordered delivery.*  Events carry a per-session monotonic sequence
-   number.  Everything ready at a wake is delivered as one batch in sequence
-   order.  N completions during one turn cost one wake, not N.
-4. *Current state as a projection, not a memory exercise.*  Outstanding work is
-   rendered as a current-state context segment plus a =work://= board resource.
-   The agent reads what is still running; it never scans interleaved history to
-   infer it.
+| Destination     | Where the reaction runs             | Interleaving | Use when                                            |
+|-----------------+-------------------------------------+--------------+-----------------------------------------------------|
+| =here-inline=   | the current turn, held open         | none         | the classic call: work is fast, reaction is the plan |
+| =here-deferred= | a later turn of this session        | yes          | reaction is short and self-contained                |
+| =subagent=      | an existing child session, by id    | none         | reaction needs real reasoning of its own            |
+| =fork=          | a fork of this session at a mark    | none         | reaction needs this session's frame as it was       |
 
-Item 4 is the load-bearing one.  Transcript history answers "what happened";
-the board answers "what is true now".  Confusion in overlapping-work designs
-comes from making history do both jobs.
+The default for detached work is =here-deferred=, and the guidance is explicit:
+if reacting to the event takes more than reading it and noting a fact, give it
+its own session.  Interleaving is allowed for cheap reactions and discouraged
+for real ones, rather than being the only option.
+
+** Session branching
+
+=fork= is the answer to plan fragmentation when the reaction needs the context
+that existed when the work was posted.  Post work, mark the session at that
+point, keep working; when the event arrives, deliver it to a fork seeded at the
+mark, let the fork run to a =report=, and deliver that report to the parent as
+one compact message.
+
+- The mechanism exists: =e-session-fork= with =:at= already rebuilds a linear
+  path up to a message.
+- The parent absorbs a summary, not a context.  Merging two divergent contexts
+  is not attempted, now or later.
+- The cost is real: a fork duplicates context and re-pays cache warmup, so
+  =fork= is opt-in per subscription and never a default.
+- A fork is a participant on the same board, so its own posts and subscriptions
+  are visible to the parent through the board rather than through session
+  plumbing.
+
+=subagent= differs from =fork= in what the reaction knows: a fork inherits the
+parent's history, a subagent starts from a type's own prompt plus what the
+subscription renders.  When the reaction is describable, prefer =subagent=; it
+is cheaper and its result comes back structured.
 
 ** Where it stays genuinely hard
 
 - *Wake storms and cost.*  Each wake is a provider request with full context.
-  Batching, a per-session wake budget, and a minimum quiescence window before
-  waking are required, not optional.
+  Batching, a per-board wake budget, and a minimum quiescence window are
+  required, not optional.
 - *Cycles.*  An agent can post work whose completion wakes it to post more.
-  Subscriptions need max-wake counts and expiry, and the bus needs a
-  per-session wake budget with a visible stop.
-- *Orphaned work.*  Detaching today leaves no subscriber; the agent must
-  remember to =await=.  A session that goes dormant with unobserved terminal
-  work should say so and, by policy, wake or annotate.
-- *Deadlock.*  An agent awaiting work that only it can perform.  Detectable:
-  a wait set whose every member is a claimable task scoped to the waiting
-  session.
+  Subscriptions need max-wake counts and expiry; the board needs a wake budget
+  with a visible stop.
+- *Orphaned work.*  Detached work with no subscriber finishes unobserved.  A
+  session going dormant with unobserved terminal work must say so.
+- *Fork sprawl.*  Branch-per-event is easy to overuse.  Cap concurrent forks
+  per session and report the cap.
+- *Deadlock.*  An agent awaiting work only it can perform.  Detectable when a
+  wait set's members are all claimable work scoped to the waiting session.
 
 * Model
 
 ** Work package
 
-A work package is an =e-work= handle plus bus identity:
+An =e-work= handle plus board identity:
 
-- =id=, =kind= (=bash=, =user-message=, =schedule=, =annotation=,
-  =agent-task=, =subagent=, ...), =poster= (session id or =user=),
-- =scope= (=session= private, =workspace= shared),
+- =id=, =kind= (=bash=, =user-message=, =schedule=, =annotation=, =agent-task=,
+  =subagent=, ...), =poster= (session id or =user=),
+- =scope= :: =session= private or =board= shared,
 - =intent= :: short free-text note recorded at post time,
-- =delivery-class= :: =broadcast= or =claimable= (see below),
+- =delivery-class= :: =broadcast= or =claimable=,
 - lifecycle and result, owned by =e-work= as today.
 
 ** Event log
 
-One append-only log per bus with a monotonic =seq= per session view.  Event
-types: =posted=, =claimed=, =progress=, =finished=, =failed=, =cancelled=.  The
-log is runtime state, rebuildable, and truncated behind the board projection; it
-is not a durable audit store.
+One append-only log per board, with a monotonic =seq=.  Event types: =posted=,
+=claimed=, =progress=, =finished=, =failed=, =cancelled=, plus
+=subscription-degraded= and =budget-stopped= for the board's own faults.
+Runtime state, rebuildable, truncated behind the projection.
 
 ** Subscription
 
-- =id=, =owner= session,
-- =filter= :: work ids, kinds, posters, scopes, event types,
-- =lifetime= :: =one-shot= or =persistent= with optional =max-wakes= and
-  =expires-at=,
-- =delivery= :: =inline-hold= (hold the current turn open), =boundary= (wake at
-  the next turn boundary), or =inject= (append to the running turn at the next
-  provider request boundary, the existing steering channel),
-- =note= :: optional stored continuation,
-- =budget= :: wake accounting.
+Subscriptions are data, so they can be listed, inspected, serialized, and
+cancelled:
 
-** Consumption without a broker
+#+begin_src elisp
+(e-work-board-subscribe
+ :filter      (list :work-ids ["bash/2"] :types '(finished failed))
+ :select      'e-work-board-select-default
+ :render      'e-work-board-render-default
+ :destination (list :kind 'subagent :subagent-id "sub_000004")
+ :note        "run the failing test and report what broke"
+ :lifetime    'one-shot
+ :budget      (list :max-wakes 3 :expires-in 900))
+#+end_src
 
-Two classes are enough, and everything defaults to the first:
+Fields: =id=, =owner= session, =filter=, =select=, =render=, =destination=,
+=note=, =lifetime= (=one-shot= or =persistent=), =budget= (=max-wakes=,
+=expires-in=).
+
+** The deterministic part: select and render
+
+Every subscription carries two pure functions that run with no model call:
+
+- *select* decides whether to wake and what to deliver.
+  =(SELECT SUBSCRIPTION PENDING-EVENTS BOARD)= returns
+  =(:wake t :deliver EVENTS :drop EVENTS)= or =(:wake nil)= to keep waiting.
+- *render* turns the selected events into turn input.
+  =(RENDER SUBSCRIPTION EVENTS BOARD)= returns a prompt string, or a list of
+  seed messages for a =subagent=/=fork= destination.
+
+This is where the queue stops being a firehose.  Which events matter, whether
+enough has happened to be worth a turn, and what the next turn's prompt says are
+all decided by code, at zero token cost, before any provider request exists.
+
+Defaults, which cover the common cases:
+
+- =select-default= :: drop =progress= except the latest per work id; wake as
+  soon as one terminal event is pending; deliver all pending in =seq= order.
+- =select-all-terminal= :: no wake until every work id in the filter is
+  terminal.  This is the fan-in "wait for all" as a subscription.
+- =select-latest= :: deliver the newest event only, drop the rest.
+- =select-quiescent= :: wake only after N seconds with no new matching event.
+- =render-default= :: one line per event (work id, kind, state, summary,
+  =intent=), then the subscription =note=.
+- =render-terse= :: ids and states only, for high-volume subscriptions.
+
+Overrides are registered functions named by symbol, not inline lambdas:
+
+#+begin_src elisp
+(e-work-board-register-selector 'my/only-failures (lambda (sub events board) ...))
+#+end_src
+
+An agent writes the function from =run_elisp=, registers it, then names it in a
+subscription.  Subscriptions stay plain data; the code lives in one registry
+that the =subscriptions= action can report.
+
+Rules on these functions, because they run on the UI thread at match time:
+
+- Pure and bounded.  No I/O, no process start, no provider call, no buffer
+  mutation.  Anything expensive is a work package, not a selector.
+- A signalling or non-conforming selector or renderer falls back to its default,
+  posts =subscription-degraded=, and the fallback is stated in the wake, so a
+  broken override is visible instead of silently changing behavior.
+- A selector that never wakes is bounded by the subscription's =expires-in=.
+
+** Destinations
+
+- =here-inline= :: hold the current turn open.  This is what =wait_for= already
+  does; the subscription form exists so the inline case is not a special path.
+- =here-deferred= :: start a turn on this session at the next boundary, or
+  inject at the next provider request boundary when a turn is running
+  (the existing steering channel).
+- =subagent= :: deliver the rendered prompt to an existing child by
+  =subagent-id=.  The subscription refers to a subagent that was spawned
+  separately; it does not carry a subagent definition.  Spawning inside a
+  subscription would put agent configuration into queue data, duplicate the
+  spawnable-type surface, and make the subscription's cost invisible until it
+  fires.  Spawn first, get an id, subscribe to it.
+- =fork= :: fork the owning session at a recorded mark, deliver there, and
+  return the fork's =report= to the parent as one message.  The mark is taken
+  when the subscription is created.
+
+All four map onto channels that exist today (=e-harness-prompt-async=, the
+post-settlement queue drain, pending steering input, =e-subagent-actions=
+=send=, =e-session-fork=).  The board decides and the harness schedules.
+
+** Consumption: broadcast facts and claimable offers
+
+Two classes, no broker vocabulary:
 
 - *Broadcast facts.*  A lifecycle event is a fact about a work package.  Every
-  matching subscription sees it; nothing is consumed.  All existing work
-  (bash, fetch, subagent, cron fire) is this.
+  matching subscription sees it; nothing is consumed.  Everything that exists
+  today is this.
 - *Claimable offers.*  A work package posted with no executor, claimed by
-  exactly one consumer.  This is the only place exactly-once matters, and it
-  only matters for multi-agent hand-off.
+  exactly one consumer.  The only place exactly-once matters, and only for
+  multi-agent hand-off.
 
-There is no exchange type, routing key, or ack/nack vocabulary.
+No exchange types, routing keys, ack/nack, or dead-letter queues.
 
 ** Turn cause
 
-A turn started by the bus records =:caused-by (:subscription-id S :event-seqs
-[...])= in turn metadata, and its first input message names the subscription and
-the events.  Shells show it; the session resource exposes it.
+A turn started by the board records
+=:caused-by (:subscription-id S :event-seqs [...] :selector SYM :renderer SYM)=
+in turn metadata, and its first message names the subscription and events.
+Shells show it; the session resource exposes it.
 
-** The synchronous call as a configuration
+** The one-call shortcut stays
 
-=bash {command, wait_for: 30}= is: post a =bash= work package with an
-=inline-hold= one-shot subscription on its terminal event and a 30s deadline.
-Work wins: the tool call settles with the result, one round trip, no extra turn.
-Deadline wins: the subscription converts to =boundary= (or is dropped, per
-policy) and the call settles with =work:<id>=.  =wait_for: 0= posts with no
-inline hold.
+=bash {command, wait_for: 30}= is: post a =bash= work package with a one-shot
+=here-inline= subscription on its terminal event and a 30s deadline.  Work wins
+and the call settles with the result: one round trip, one tool call, no
+subscription bookkeeping visible to the model.  Deadline wins and the
+subscription converts to =here-deferred= per policy, with the call settling as
+=work:<id>=.  =wait_for: 0= posts with no inline hold.
 
-The common path keeps its current cost.  Generality is not paid for by latency
-on fast work.
+Small work must never cost two tool calls.  Explicit =post= plus =subscribe= is
+for work that is meant to outlive the call, or whose reaction belongs in another
+session.
+
+* The scope above sessions
+
+The board is an identity above the session: it owns the work packages, the event
+log, the subscriptions, and the wake budget, and its participants are sessions
+that may belong to different harness instances.  It is a first-level runtime
+concept alongside harness, session, and turn, and it needs a name that is not
+"session" and not "queue".
+
+Recommendation: *board*.  It is plain, unused in the codebase, and carries both
+halves of the model without extra vocabulary: facts are posted on it for anyone
+watching, and claimable work sits on it until someone takes it.  Sessions join a
+board; =board://= is its resource; a work package lives on a board.
+Alternatives considered: =arena= (collides with allocator jargon), =commons=
+(vaguer about what it holds), =ensemble= (names the participants, not the shared
+state).
+
+Two properties to get right from the start:
+
+- A board's id defaults to the root session's id, so today's single-agent case
+  has no extra ceremony, but it is a distinct identity from day one.  Assuming
+  board == root session would have to be unwound later, when a board outlives
+  every session that created it or spans harness instances with no root.
+- Board membership is explicit.  A session joins a board; it does not inherit
+  one from its parent by accident.  A subagent joins its parent's board by
+  default and can be spawned onto a different one.
+
+Scope rules follow from membership: =session=-scoped work is visible only to its
+poster, =board=-scoped work to every participant.  Cross-board delivery is not a
+thing; a session that needs both joins both.
 
 * Surface
 
 Following the project's action/tool split: cheap synchronous operations are
-capability actions reached from =run_elisp=; only operations that must hold a
-turn open are model-facing tools.
+capability actions from =run_elisp=; only operations that must hold a turn open
+are model-facing tools.
 
 - Posting stays where it is.  Existing tools *are* the post operations, with
   =wait_for= choosing inline versus detached.  No generic "post arbitrary work"
   tool is added.
-- =await= stays the one join tool, unchanged, resolving references through
-  =e-waitable=.
-- New actions on a =work-bus= capability: =subscribe=, =unsubscribe=,
-  =subscriptions=, =events= (windowed read), =post= (for claimable offers and
-  for work with no tool of its own), =claim=.
-- New resource =work://= :: board projection (outstanding work, recent terminal
-  work, live subscriptions) plus per-work detail. Readable on demand.
-- New context segment :: compact outstanding-work and live-subscription
-  summary in the current-state region, so the model's picture of "what is
-  running" is always a projection of truth.
+- =await= stays the one join tool, unchanged.
+- New =work-board= actions: =subscribe=, =unsubscribe=, =subscriptions=,
+  =events= (windowed read), =post= (claimable offers and work with no tool of
+  its own), =claim=, =register-selector=, =register-renderer=, =join=.
+- New resource =board://= :: outstanding work, recent terminal work, live
+  subscriptions with their selector/renderer, participants, budget state, and
+  per-work detail.
+- New context segment :: compact outstanding-work and live-subscription summary
+  in the current-state region.
 
-Model-facing tool count does not grow.  The change is in the turn lifecycle and
-in what the model can read, not in a pile of new tools.
+Model-facing tool count does not grow.
 
 * Ownership and dependency direction
 
-- =lisp/core/e-work-bus.el= :: event log, subscriptions, matching, budgets.
-  Depends on =e-work= only.  No harness dependency, no knowledge of turns.
-- =e-harness= :: translates matched deliveries into turn scheduling, reusing
-  the existing three channels (start a turn, drain queued prompt at
-  settlement, inject pending input at a request boundary).  It owns the wake
-  policy because it owns active-turn state.
+- =lisp/core/e-work-board.el= :: event log, subscriptions, selector/renderer
+  registry, matching, budgets.  Depends on =e-work= only.  No knowledge of
+  turns, sessions, or subagents.
+- =e-harness= :: turns matched deliveries into scheduling on the four
+  destinations, because it owns active-turn state.  Owns wake policy.
 - Producers (=e-task-queue=, =e-cron=, subagents, chat session, annotation
-  sweep) post to the bus and keep their own domain registries.
-- Shells render the board and the turn cause; they never own bus state.
+  sweep) post to the board and keep their own domain registries.
+- Shells render the board and the turn cause; they never own board state.
 
-Wake policy is harness state, high-churn and rebuildable.  Subscription
-definitions are session state; whether they persist across restart is an open
-question below.
+Wake policy and budget counters are harness runtime state.  Subscription
+definitions are session state; durability is an open question.
 
 * Slices
 
-Each slice is a useful stopping point.
+** Slice 1 -- Board, event log, and projection
 
-** Slice 1 -- Bus, event log, and board projection
+Register every =e-work= handle on a board, assign sequence numbers, expose
+=board://= and the current-state segment.  Board id defaults to the root
+session.  No subscriptions, no wakes.
 
-Register every =e-work= handle on a session-scoped bus, assign sequence
-numbers, expose =work://= and the current-state context segment.  No
-subscriptions, no wakes.
+Standalone value: detached work stops being invisible.  An agent that forgot to
+=await= sees the completion in its next turn's current-state segment.
 
-Value on its own: detached work stops being invisible.  An agent that forgot to
-=await= sees the completion in its next turn's current-state segment, and the
-shell can show what is still running.
+** Slice 2 -- Subscriptions with deterministic select/render
 
-** Slice 2 -- Subscriptions and bus-driven wakes
+Subscription objects, the selector/renderer registry with the default set,
+matching, batched =here-deferred= delivery, turn cause metadata, wake budget,
+quiescence, dormancy reporting, and the =subscribe= / =unsubscribe= /
+=subscriptions= / =register-*= actions.
 
-Subscription objects, matching, batched boundary delivery, turn cause metadata,
-=subscribe=/=unsubscribe=/=subscriptions= actions, stored continuation notes,
-wake budget, quiescence window, dormancy-with-unobserved-work reporting.
+Standalone value: an agent can end a turn and be woken by its own work, with the
+reason stated and the wake shaped by code rather than by luck.
 
-Value on its own: an agent can end a turn and be woken by its own work, with
-the reason stated.
+** Slice 3 -- Isolated destinations
 
-** Slice 3 -- Fold existing input paths onto the bus
+=here-inline= expressed as a subscription (folding =wait_for= onto the same
+path), =subagent= delivery against an existing child id, =fork= delivery with
+report-back and a concurrent-fork cap.
 
-Express user prompts, steering, queued follow-ups, cron fires, and annotation
-triggers as posted work with standing session subscriptions.  =inject= delivery
-maps onto the existing steering drain; =boundary= maps onto the existing
-post-settlement queue drain.  Retire the bespoke paths that this replaces
-rather than running both.
+Standalone value: the plan-fragmentation answer ships.  A long thread of work
+stops splicing itself into an unrelated one.
 
-Value on its own: one vocabulary for every session input, and feats 36, 47, 51,
-and 63 stop each carrying their own scheduling rules.
+** Slice 4 -- Fold existing input paths onto the board
 
-** Slice 4 -- Cross-session and claimable work
+User prompts, steering, queued follow-ups, cron fires, and annotation triggers
+become posted work with standing subscriptions.  Retire the bespoke paths rather
+than running both.
 
-=workspace= scope, claimable offers with exactly-once claim, cross-session
-subscriptions, subagent completion as bus events instead of registry polling.
+Standalone value: one vocabulary for every session input; feats 36, 47, 51, and
+63 stop carrying their own scheduling rules.
 
-** Slice 5 -- Guidance and limits
+** Slice 5 -- Multi-session boards and claimable work
 
-Skill and prompt guidance for the model: when to hold inline, when to detach
-with a continuation, how to read the board, how to cancel a subscription.
-Budget defaults tuned against real sessions.
+Explicit =join=, boards that outlive their creating session, cross-instance
+participants, claimable offers with exactly-once claim, subagent completion as
+board events instead of registry polling.
+
+** Slice 6 -- Guidance and limits
+
+Skill and prompt guidance: when to hold inline, when to defer, when to give a
+thread its own session, how to write a selector, how to read =board://=.  Budget
+and fork-cap defaults tuned against real sessions.
 
 * Non-goals
 
 - No broker semantics: no exchanges, routing keys, ack/nack, redelivery, or
   dead-letter queues.
-- No durable message bus across Emacs restarts in the first slices.
+- No durable board across Emacs restarts in the first slices.
 - No concurrent tool-call execution in =e-loop=.  Concurrency comes from
-  detached work; keeping tool slots sequential is what makes the transcript
-  readable.
+  detached work; sequential tool slots are what keep the transcript readable.
+- No context merging.  A fork rejoins by summary message only.
 - No replacement for =await=.  Inline joining stays a tool.
-- No cross-machine or multi-process bus.
+- No cross-machine or multi-process board.
 
 * Validation
 
-The bus must be testable with no provider and no UI:
+The board must be testable with no provider and no UI.
 
-- ordering :: events delivered in sequence order; a batch never reorders.
+Pure-function level:
+
+- selectors :: each default over synthetic event lists: progress coalescing,
+  all-terminal gating, latest-only, quiescence.  A signalling selector falls
+  back to the default and posts =subscription-degraded=.
+- renderers :: stable output for a fixed event list; prompt string for
+  same-session destinations, seed messages for =subagent=/=fork=.
+
+Board level:
+
+- ordering :: delivery in =seq= order; a batch never reorders.
 - batching :: N completions during one turn produce one wake with N events.
 - lifetime :: one-shot fires once; persistent respects =max-wakes= and expiry;
-  cancel stops delivery with an in-flight event pending.
-- cause :: turn metadata names the subscription and event sequence numbers.
-- pairing :: a completion arriving after its post call settled is delivered as
-  input, never as a tool result.  Assert on the built transcript.
-- budget :: a self-feeding post/wake cycle stops at the session budget with a
+  cancel stops delivery with an event pending.
+- cause :: turn metadata names the subscription, event sequence numbers,
+  selector, and renderer.
+- budget :: a self-feeding post/wake cycle stops at the board budget with a
   visible reason.
 - orphan :: a session going dormant with unobserved terminal work reports it.
+- scope :: =session=-scoped work is not visible to another participant.
 
-Then one scripted end-to-end scenario reproducing the two-bash example, to
-check empirically whether the agent's plan survives the late event.  That
-question is behavioral and will not be settled by unit tests.
+Destination level:
+
+- =subagent= delivery lands on the named child and its =report= returns.
+- =fork= delivery runs on a fork seeded at the mark, and the parent receives one
+  summary message, not the fork's context.
+- pairing :: a completion arriving after its post call settled is delivered as
+  input, never as a tool result.  Assert on the built transcript.
+
+Then a scripted end-to-end scenario: two long bash packages, =any= join, a
+follow-up, and the late second completion, run once with =here-deferred= and
+once with =subagent=, to compare how well the agent's plan survives.  That
+question is behavioral and unit tests will not settle it.
 
 * Open questions
 
-- Default policy when detached work completes and nothing subscribes: wake,
-  annotate the next turn, or stay silent.  Leaning toward annotate-by-default
-  and wake only on explicit subscription, with dormancy reporting as the
-  safety net.
-- Whether subscription definitions persist with the session.  A persistent
-  subscription that outlives a restart implies re-resolving work references
-  that no longer exist.
-- How much event payload enters context versus staying behind a =work://= read.
-- Interaction with compaction: the board projection must survive compaction
-  while old event messages are dropped.
-- Naming.  "Task queue" (feat 47) and "prompt queue" already exist; this
-  document uses "work bus" and "board" to keep them distinct.
+- Default destination for detached work with no explicit subscription: annotate
+  the next turn, or wake.  Leaning annotate-by-default with dormancy reporting
+  as the safety net.
+- Whether a fork's mark is the post point or the subscription point when they
+  differ.
+- Whether subscription definitions persist with the session.  Persistence
+  implies re-resolving work references that no longer exist.
+- How much event payload enters context versus staying behind a =board:// read=.
+- Whether agent-registered selectors persist across a reload, and where their
+  source lives if so.
+- Compaction: the projection must survive compaction while old event messages
+  are dropped.
+- Whether =claim= needs a lease and timeout, or whether a claimed-but-abandoned
+  package is just cancelled work.
 
 * Required self-check (design-sensitive)
 
 1. *Better off if stopped here?*  Slice 1 alone makes outstanding work visible
    and stops silent orphaning of detached handles.  Yes.
-2. *Final direction?*  One queue carrying every input and every completion,
-   with turns as reactions to delivered events, and the synchronous call as one
-   configuration of it.
-3. *Likely to change vs stable?*  Stable: the =e-work= lifecycle and the
-   ordered event log.  Uncertain and kept local: wake policy defaults, budget
-   numbers, how much payload enters context.  Claimable offers are deferred to
-   slice 4 so the exactly-once decision is not baked into the core early.
-4. *Owning component?*  =e-work-bus= owns the log, subscriptions, and matching;
-   the harness owns wake scheduling because it owns active-turn state; shells
-   own rendering.
-5. *Coupling?*  Producers depend on the bus contract; the bus depends only on
-   =e-work=.  =await= gains no new knowledge.
-6. *Dependency direction?*  Bus does not depend on the harness, tools, or
-   shells.  Producers point inward.
-7. *Side effects outward?*  Work execution stays in existing carriers.  The bus
-   mutates the log and subscription table; turn starting stays in the harness.
-8. *State?*  Event log and board: runtime, rebuildable, truncated.
-   Subscriptions: session-scoped; durability is an open question.  Wake budget:
-   per-session runtime counter.
+2. *Final direction?*  One board carrying every input and completion, turns as
+   reactions to delivered events, deterministic code deciding what is worth a
+   turn, and the synchronous call as one configuration.
+3. *Likely to change vs stable?*  Stable: the =e-work= lifecycle, the ordered
+   log, the select/render contracts.  Kept local and reversible: wake policy
+   defaults, budget numbers, the default selector set, how much payload enters
+   context.  Claimable offers and multi-session boards are deferred so those
+   decisions are not baked in early.
+4. *Owning component?*  The board owns log, subscriptions, and matching; the
+   harness owns wake scheduling and destination dispatch; shells render.
+5. *Coupling?*  Producers depend on the board contract; the board depends only
+   on =e-work=.  =await= gains no new knowledge.  Subscriptions reference
+   subagents by id, so the board does not depend on the subagent surface.
+6. *Dependency direction?*  The board does not depend on harness, tools, shells,
+   or subagents.  Producers point inward.
+7. *Side effects outward?*  Work execution stays in existing carriers.  The
+   board mutates its log and tables; turn starting, spawning, and forking stay
+   in the harness.  Selectors and renderers are pure by contract.
+8. *State?*  Log and projection: runtime, rebuildable, truncated.  Subscriptions
+   and selector registry: session-scoped runtime; durability open.  Budget
+   counters: per-board runtime.  Board membership: session metadata.
 9. *Performance?*  The inline fast path is unchanged.  Slice 1 adds one log
-   append per work state transition and one projection render per turn.  The
-   context segment must stay compact; it is a summary, not a dump.
-10. *Abstractions real?*  A subscription is substitutable across delivery modes
-    because all three already exist as harness channels.  A work package is an
-    =e-work= handle with bus identity, so nothing narrows the handle contract.
-11. *Compatibility?*  Slice 3 replaces the bespoke prompt-queue, steering, cron,
-    and annotation trigger paths.  Old paths are removed in that slice rather
-    than kept alongside.
+   append per state transition and one projection render per turn.  Select/render
+   run per match on the UI thread and are bounded by contract.  The context
+   segment is a summary, not a dump.
+10. *Abstractions real?*  A work package is an =e-work= handle with board
+    identity, so nothing narrows the handle contract.  All four destinations are
+    backed by channels that already exist, so none of them satisfies the
+    contract by throwing unsupported.
+11. *Compatibility?*  Slice 3 folds =wait_for= onto the subscription path and
+    slice 4 replaces the bespoke prompt-queue, steering, cron, and annotation
+    paths.  Old paths are removed in those slices rather than kept alongside.
 12. *Legacy to remove?*  Per-subsystem polling of subagent and task-queue
-    registries, once slice 4 delivers their events.
-13. *Errors?*  Expected outcomes (timeout, failure, cancellation, budget stop)
-    are events with data.  Unexpected errors surface through =e-work= failure.
-14. *Tests?*  The bus is tested with synthetic handles, no provider and no
-    harness, so tool or shell changes cannot force bus-test rewrites.
+    registries once slice 5 delivers their events.
+13. *Errors?*  Expected outcomes (timeout, failure, cancellation, budget stop,
+    degraded selector) are events with data.  Unexpected errors surface through
+    =e-work= failure.
+14. *Tests?*  Selectors and renderers are pure functions tested over synthetic
+    event lists; the board is tested with synthetic handles, no provider and no
+    harness.  Tool or shell changes cannot force those tests to be rewritten.
