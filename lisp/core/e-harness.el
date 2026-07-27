@@ -1283,6 +1283,36 @@ Apply TRANSFORM when supplied."
                                  (e-harness-queued-prompts
                                   harness session-id)))))
 
+(defun e-harness--enqueue-prompt-item
+    (harness session-id prompt references metadata)
+  "Append PROMPT to SESSION-ID's follow-up queue in HARNESS and return its id.
+Shared enqueue body with no active-turn guard, so both the guarded public
+`e-harness-queue-prompt' and the settlement-valid `e-harness-request-follow-up'
+reuse it."
+  (let* ((queue-id (e-session-generate-ulid))
+         (item (list :id queue-id
+                     :prompt prompt
+                     :references (copy-tree references)
+                     :metadata (copy-sequence metadata)
+                     :created-at (e-harness--queue-timestamp)))
+         (items (append (e-harness-queued-prompts harness session-id)
+                        (list item))))
+    (e-harness--set-queued-prompts harness session-id items)
+    (e-harness--emit-queue-changed harness session-id)
+    queue-id))
+
+(cl-defun e-harness-request-follow-up
+    (harness session-id prompt &key references metadata)
+  "Queue PROMPT as a follow-up during turn settlement, then return its id.
+Unlike `e-harness-queue-prompt', this does NOT require a running active turn:
+it is valid from a `:turn-finished' hook, whose turn is already settling.  The
+queued prompt is picked up by the normal post-settlement drain
+(`e-harness--drain-next-queued-prompt') that runs after the finished turn's
+hooks complete, so the drain path stays the single owner of turn scheduling."
+  (unless (and (stringp prompt) (not (string-empty-p prompt)))
+    (user-error "Prompt must not be empty"))
+  (e-harness--enqueue-prompt-item harness session-id prompt references metadata))
+
 (cl-defun e-harness-queue-prompt
     (harness session-id prompt &key references metadata)
   "Queue PROMPT as a follow-up for SESSION-ID in HARNESS.
