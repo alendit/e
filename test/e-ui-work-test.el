@@ -415,6 +415,7 @@
                    "test/e-work-test.el"
                    "test/e-ui-work-test.el"
                    "test/e-tools-test.el"
+                   "test/e-await-tool-test.el"
                    "e2e/e-work-e2e-test.el"
                    "lisp/dev/e-dev-perf.el"))
         violations)
