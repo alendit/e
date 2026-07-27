@@ -29,6 +29,7 @@
 (require 'e-session)
 (require 'e-shells)
 (require 'e-store)
+(require 'e-structured-blocks)
 (require 'e-telemetry)
 (require 'e-tools)
 (require 'e-work)
@@ -298,6 +299,15 @@ order for PROMPTS."
   (let ((registry (e-hooks-registry-create)))
     (dolist (capability (e-harness-effective-capabilities harness))
       (e-capabilities-register-hooks capability registry))
+    registry))
+
+(defun e-harness-structured-blocks (harness &optional session-id turn-id)
+  "Return a fresh structured-block registry view over HARNESS capabilities.
+SESSION-ID and TURN-ID scope the effective capability/layer set."
+  (let ((registry (e-structured-blocks-registry-create)))
+    (dolist (capability
+             (e-harness-effective-capabilities harness session-id turn-id))
+      (e-capabilities-register-structured-blocks capability registry))
     registry))
 
 (defun e-harness-store (harness &optional session-id turn-id)

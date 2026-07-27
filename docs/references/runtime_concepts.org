@@ -47,6 +47,21 @@ reading feature plans or examples.
   points. Hooks run under harness control; unexpected hook failures should fail
   visibly rather than silently weakening policy.
 
+- =structured-block registry= (=e-structured-blocks=) :: A core seam a
+  capability uses to mark up a structured, non-prose block inside its own
+  free-text output (a reasoning mark, a collapsible tool-plan, a citation)
+  without teaching a presentation shell that block's syntax. A capability
+  registers a =:kind= plus a =:matcher= (locates the block in assistant
+  content) and a =:display= disposition (=hidden= | =inline= | =collapsed=,
+  only =hidden= has real effect so far), and optionally a =:parser= for the
+  block's fields. Registration flows through the capability contract the same
+  way tools/resources/hooks do, via a =:structured-blocks= slot on
+  =e-capability-create=. A shell calls the single core transform
+  =e-structured-blocks-render= to get display-ready text plus the extracted
+  blocks; with no registered kinds it gets its content back byte-for-byte.
+  Both shell and capability depend only on this registry, never on each
+  other.
+
 - =shell-facing action= :: A semantic operation contributed by a capability for
   shell or host code. Actions are not model-facing tools by default. They
   validate action arguments, receive harness/session context from the dispatcher

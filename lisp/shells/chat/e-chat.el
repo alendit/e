@@ -29,6 +29,7 @@
 (require 'e-prompts)
 (require 'e-request)
 (require 'e-store)
+(require 'e-structured-blocks)
 (require 'e-tools)
 (require 'e-picker)
 (require 'e-session)
@@ -5862,6 +5863,22 @@ Defaults to `markdown' outside an attached session."
         (e-chat-output-mode-resolve e-chat-harness e-chat-session-id))
     'markdown))
 
+(defun e-chat--structured-blocks-registry ()
+  "Return a fresh structured-block registry for the attached session.
+Returns an empty registry outside an attached session, so unregistered
+content still passes through `e-structured-blocks-render' unchanged."
+  (if (and e-chat-harness e-chat-session-id)
+      (e-harness-structured-blocks e-chat-harness e-chat-session-id)
+    (e-structured-blocks-registry-create)))
+
+(defun e-chat--assistant-display-text (content)
+  "Return CONTENT with any registered structured blocks applied for display.
+This is the shell's only knowledge of structured blocks: it asks the core
+registry generically and never inspects a specific capability's block
+syntax.  With no registered kinds, CONTENT is returned byte-for-byte."
+  (plist-get (e-structured-blocks-render content (e-chat--structured-blocks-registry))
+             :text))
+
 (defun e-chat--apply-org-mode-properties (content-start content-end)
   "Fontify assistant Org markup between CONTENT-START and CONTENT-END.
 Return non-nil when Org fontification ran."
@@ -6096,7 +6113,9 @@ Preserve Markdown faces already present in the range."
   "Insert a protected chat entry with TITLE and CONTENT.
 When ENSURE-COMPOSER is non-nil, recreate the composer after inserting.
 TURN-ID tags the rendered entry for response navigation.  DETAILS-TEXT, when
-non-nil, is used by focused block activation."
+non-nil, is used by focused block activation.  Assistant CONTENT is passed
+through the structured-block registry before display; a shell with no
+registered kinds shows CONTENT unchanged."
   (e-chat--profile-call
    'chat.insert-entry
    (list :session-id e-chat-session-id
@@ -6112,7 +6131,10 @@ non-nil, is used by focused block activation."
             (composer-state (e-chat--capture-composer-state))
             (had-composer nil)
             (side (e-chat--entry-side title))
-            (block-id (and turn-id (e-chat--next-block-id))))
+            (block-id (and turn-id (e-chat--next-block-id)))
+            (content (if (equal title "Assistant")
+                        (e-chat--assistant-display-text content)
+                      content)))
        (when active-turn-id
          (e-chat--delete-running-status active-record))
        (setq had-composer (e-chat--delete-composer))

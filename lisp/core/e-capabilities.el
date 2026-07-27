@@ -19,6 +19,7 @@
 (require 'e-hooks)
 (require 'e-resources)
 (require 'e-store)
+(require 'e-structured-blocks)
 (require 'e-work)
 (require 'subr-x)
 
@@ -28,7 +29,7 @@
                                    resource-methods resources
                                    context-providers actions hooks
                                    instruction-priority config-options config
-                                   prompts))
+                                   prompts structured-blocks))
                (:conc-name e-capability--))
   id
   name
@@ -42,7 +43,8 @@
   (instruction-priority 200)
   config-options
   config
-  prompts)
+  prompts
+  structured-blocks)
 
 (cl-defstruct (e-action
                (:constructor e-action--create
@@ -199,6 +201,14 @@ slot existed."
       (e-capability--prompts capability)
     nil))
 
+(defun e-capability-structured-blocks (capability)
+  "Return CAPABILITY structured-block specs.
+This accessor tolerates stale capability records compiled before the
+`structured-blocks' slot existed."
+  (if (>= (length capability) 15)
+      (e-capability--structured-blocks capability)
+    nil))
+
 (defconst e-capabilities-system-guidance-default-capability-index 100000
   "Synthetic capability index for system-guidance hook fragments.
 Hook fragments sort by cache placement and priority first.  This large fallback
@@ -248,7 +258,8 @@ before backend serialization."
                   e-capability-instruction-priority
                   e-capability-config-options
                   e-capability-config
-                  e-capability-prompts))
+                  e-capability-prompts
+                  e-capability-structured-blocks))
   (put symbol 'compiler-macro nil)
   (put symbol 'side-effect-free nil)
   (put symbol 'gv-expander nil))
@@ -306,6 +317,11 @@ CAPABILITY."
 (defun e-capabilities-register-hooks (capability registry)
   "Register CAPABILITY lifecycle hooks in REGISTRY."
   (e-hooks-register-list registry (e-capability-hooks capability)))
+
+(defun e-capabilities-register-structured-blocks (capability registry)
+  "Register CAPABILITY structured-block specs in REGISTRY."
+  (dolist (spec (e-capability-structured-blocks capability))
+    (e-structured-blocks-register registry spec)))
 
 (cl-defun e-capabilities--provider-messages
     (provider &key harness session-id turn-id context-purpose)
