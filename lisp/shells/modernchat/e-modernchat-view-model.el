@@ -16,6 +16,7 @@
 (require 'e-chat-service)
 (require 'e-harness)
 (require 'e-session)
+(require 'e-structured-blocks)
 (require 'subr-x)
 
 (defgroup e-modernchat nil
@@ -60,14 +61,27 @@
      ((plist-get message :error) "error")
      (t "final"))))
 
-(defun e-modernchat-view-model-message (message &optional active-turn-id content-mode)
-  "Return JSON DTO for session MESSAGE."
+(defun e-modernchat-view-model--display-content (content registry)
+  "Return CONTENT with any registered structured blocks applied for display.
+Mirrors the chat shell: ask the core registry generically, never inspect a
+specific capability's block syntax.  With no REGISTRY or no registered kinds,
+CONTENT is returned unchanged."
+  (if (and registry (stringp content))
+      (plist-get (e-structured-blocks-render content registry) :text)
+    content))
+
+(defun e-modernchat-view-model-message
+    (message &optional active-turn-id content-mode registry)
+  "Return JSON DTO for session MESSAGE.
+REGISTRY, when non-nil, is a structured-block registry consulted to strip
+hidden blocks (e.g. a reasoning mark) from the displayed content."
   (let ((id (or (plist-get message :id)
                 (plist-get message :message-id)
                 (plist-get message :turn-id)))
         (turn-id (plist-get message :turn-id))
         (role (or (plist-get message :role) 'unknown))
-        (content (or (plist-get message :content) "")))
+        (content (e-modernchat-view-model--display-content
+                  (or (plist-get message :content) "") registry)))
     `((id . ,(e-modernchat-view-model--string id))
       (turnId . ,(e-modernchat-view-model--string turn-id))
       (role . ,(e-modernchat-view-model--string role))
@@ -176,6 +190,8 @@
          (active-turn-id (or (plist-get (plist-get state :active-turn) :id)
                              (plist-get state :active-turn)))
          (output-mode (e-chat-service-output-mode harness session-id))
+         (registry (ignore-errors
+                     (e-harness-structured-blocks harness session-id)))
          (messages (e-modernchat-view-model--take-last
                     (e-harness-messages harness session-id)
                     (or message-limit e-modernchat-view-model-message-limit)))
@@ -203,7 +219,7 @@
       (messages . ,(vconcat
                     (mapcar (lambda (message)
                               (e-modernchat-view-model-message
-                               message active-turn-id output-mode))
+                               message active-turn-id output-mode registry))
                             messages)))
       (activities . ,(vconcat
                       (mapcar #'e-modernchat-view-model-activity

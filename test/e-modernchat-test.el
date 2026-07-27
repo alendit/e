@@ -14,10 +14,12 @@
 (require 'ert)
 (require 'e)
 (require 'e-backend)
+(require 'e-bayesian-reasoning)
 (require 'e-chat-service)
 (require 'e-modernchat)
 (require 'e-modernchat-view-model)
 (require 'e-session)
+(require 'e-structured-blocks)
 
 (ert-deftest e-modernchat-view-model-test-snapshot-bounds-messages ()
   "Snapshots include recent bounded messages and session metadata."
@@ -48,6 +50,37 @@
       (should (= (length attachments) 1))
       (should (equal (cdr (assq 'uri (aref attachments 0)))
                      "file:///tmp/a.org")))))
+
+(ert-deftest e-modernchat-view-model-test-hides-reasoning-block ()
+  "A reasoning mark is stripped from snapshot content via the registry.
+The modernchat view model must honor the structured-block registry the same
+way the chat shell does, so a hidden reasoning block never reaches the egui
+client."
+  (let ((harness (e-harness-create
+                  :backend (e-backend-create :name "noop")
+                  :enabled-layer-ids nil)))
+    (e-harness-activate-capability
+     harness (e-bayesian-reasoning-capability-create))
+    (e-harness-create-session harness :id "session-1")
+    (e-session-append-message
+     (e-harness-sessions harness)
+     "session-1"
+     (list :id "m-0"
+           :role 'assistant
+           :content (concat "The answer is 42.\n\n"
+                            "#+begin_reasoning\n"
+                            "claim: the answer is 42\n"
+                            "confidence: high\n"
+                            "alternatives: insufficient-evidence\n"
+                            "evidence: none\n"
+                            "#+end_reasoning\n")))
+    (let* ((snapshot (e-modernchat-view-model-snapshot
+                      harness "session-1" :activity-limit 0))
+           (messages (cdr (assq 'messages snapshot)))
+           (content (cdr (assq 'content (aref messages 0)))))
+      (should (string-match-p "The answer is 42\\." content))
+      (should-not (string-match-p "begin_reasoning" content))
+      (should-not (string-match-p "confidence:" content)))))
 
 (ert-deftest e-modernchat-test-runtime-missing-is-command-time-error ()
   "The module loads without emacs-egui; command use reports missing runtime."
