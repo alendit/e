@@ -1,6 +1,11 @@
 #+title: A failed subagent cannot be resumed, even when its session survived
 #+startup: overview
 
+* Status
+
+Fixed. A =resume= action now recovers a settled-but-live child; see
+=Resolution= at the end.
+
 A subagent whose turn ended in =failed= (or =cancelled=) cannot be told to
 "continue," even though its child session and full transcript are intact.
 
@@ -45,3 +50,31 @@ accepts a terminal-but-live record) that starts one new turn on the existing
 child session, transitions the record back to =running=, and re-attaches the
 awaitable work handle -- so the parent can recover from a transient failure
 without discarding context or bypassing the registry.
+
+* Resolution
+
+Added a first-class =resume= path, exactly as Expected.
+
+- =e-subagent-resume= (=e-subagent-runner.el=) starts one new turn on the
+  existing child session for a record whose status is =failed= or =cancelled=.
+  It re-opens the record to =running=, clears the prior =:error=,
+  =:finished-at=, and =:reported= residue, mints a fresh awaitable =e-work=
+  handle, and re-arms the settle callback. The child's accumulated context is
+  untouched.
+- The turn-driving body is now shared: =e-subagent--drive-turn= is called by
+  both =e-subagent-spawn= (first turn) and =e-subagent-resume= (a later turn),
+  so the work-handle wiring and settle plumbing have one owner.
+- =await= re-tracks the resumed turn without any resolver change, because the
+  =subagent= waitable resolver reads the record's current =:work-handle=, which
+  resume replaces.
+- =shutdown= is now distinguished from a transient failure: it sets a
+  =:shutdown= flag (=e-subagent-registry-shutdown-p=), and =resume= refuses a
+  shut-down record with a =user-error=, directing the caller to spawn a fresh
+  child instead. A running or terminal-done record is likewise refused.
+- The =resume= action is exposed on the parent surface
+  (=e-subagent-actions-parent-alist=) as =(:subagent-id STRING :prompt STRING)=
+  with an optional prompt defaulting to a minimal continue, and documented in
+  the subagents skill.
+
+Covered by =e-subagent-runner-test-resume-restarts-failed-child=,
+=-resume-defaults-prompt=, and =-resume-refuses-running-and-shutdown=.

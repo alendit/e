@@ -86,6 +86,12 @@ With `:raw' non-nil, return a bounded transcript excerpt and the child's
                    (e-subagent-actions--subagent-id arguments)
                    (plist-get arguments :prompt)))
 
+(defun e-subagent-actions--resume (registry _context arguments)
+  "Resume a settled-but-live subagent in REGISTRY with one new turn."
+  (e-subagent-resume registry
+                     (e-subagent-actions--subagent-id arguments)
+                     (plist-get arguments :prompt)))
+
 (defun e-subagent-actions--interrupt (registry _context arguments)
   "Interrupt a subagent in REGISTRY."
   (e-subagent-interrupt registry
@@ -180,6 +186,18 @@ HANDLER is called as (REGISTRY CONTEXT ARGUMENTS)."
     :required ["subagent-id" "prompt"])
   "Action parameters for steer and send.")
 
+(defconst e-subagent-actions--resume-parameters
+  '(:type "object"
+    :properties
+    (:subagent-id
+     (:type "string"
+      :description "Subagent id returned by spawn.")
+     :prompt
+     (:type "string"
+      :description "Optional prompt for the resumed turn; defaults to a minimal continue."))
+    :required ["subagent-id"])
+  "Action parameters for the resume action.")
+
 (defconst e-subagent-actions--report-parameters
   '(:type "object"
     :properties
@@ -213,8 +231,9 @@ HANDLER is called as (REGISTRY CONTEXT ARGUMENTS)."
 (defun e-subagent-actions-parent-alist (&optional registry)
   "Return the parent-facing subagent actions plist bound to REGISTRY.
 These are the actions a session uses to spawn and manage its children:
-spawn, list, status, read, steer, send, interrupt, shutdown, configure-type.
-The child-side `report' is not here; see `e-subagent-actions-child-alist'."
+spawn, list, status, read, steer, send, resume, interrupt, shutdown,
+configure-type.  The child-side `report' is not here; see
+`e-subagent-actions-child-alist'."
   (let ((registry (or registry e-subagent-actions-default-registry)))
     (list
      :spawn
@@ -239,6 +258,10 @@ The child-side `report' is not here; see `e-subagent-actions-child-alist'."
      (e-subagent-actions--action
       registry #'e-subagent-actions--send
       e-subagent-actions--steer-parameters)
+     :resume
+     (e-subagent-actions--action
+      registry #'e-subagent-actions--resume
+      e-subagent-actions--resume-parameters)
      :interrupt
      (e-subagent-actions--action
       registry #'e-subagent-actions--interrupt

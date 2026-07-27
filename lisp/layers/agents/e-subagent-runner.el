@@ -202,6 +202,35 @@ never resurrected."
         (setq fields (plist-put fields :error (plist-get args :error))))
       (apply #'e-subagent-registry-update registry subagent-id fields))))
 
+(defun e-subagent--drive-turn
+    (registry subagent-id child-harness session-id prompt seed-messages runner)
+  "Start one child turn for SUBAGENT-ID and wire its settle + work handle.
+Mint a fresh cooperative `e-work' handle, mirror the record's terminal state
+onto it, and settle the record from RUNNER's callback.  Store the handle and
+any `:cancel' function on the record.  Return RUNNER's handle plist.  Shared by
+`e-subagent-spawn' (first turn) and `e-subagent-resume' (a later turn on an
+existing child session)."
+  (let* ((runner (or runner #'e-subagent-direct-runner))
+         ;; A cooperative work handle mirrors the record's terminal state so a
+         ;; subagent is awaitable as an `e-work' handle.  Its runner defers; the
+         ;; settle callback below finishes/fails/cancels it.  Resume mints a new
+         ;; handle here because the prior one is already spent, and the waitable
+         ;; resolver reads the record's current `:work-handle', so `await'
+         ;; re-tracks the resumed turn without touching the resolver registry.
+         (work-handle (e-work-start (e-subagent--work-spec) nil))
+         (handle (funcall runner
+                          child-harness session-id prompt seed-messages
+                          (lambda (status &rest args)
+                            (e-subagent--settle-work-handle
+                             work-handle status args)
+                            (apply #'e-subagent--settle
+                                   registry subagent-id status args)))))
+    (e-subagent-registry-update registry subagent-id :work-handle work-handle)
+    (when (and (listp handle) (functionp (plist-get handle :cancel)))
+      (e-subagent-registry-update registry subagent-id
+                                  :cancel (plist-get handle :cancel)))
+    handle))
+
 (cl-defun e-subagent-spawn
     (registry parent-harness parent-session-id
               &key type prompt seed-messages label schedule runner)
@@ -234,28 +263,55 @@ returns a handle plist carrying `:cancel'."
                   :label label
                   :schedule schedule
                   :child-harness child-harness))
-         (subagent-id (plist-get record :subagent-id))
-         (runner (or runner #'e-subagent-direct-runner))
-         ;; A cooperative work handle mirrors the record's terminal state so a
-         ;; subagent is awaitable as an `e-work' handle.  Its runner defers; the
-         ;; settle callback below finishes/fails/cancels it.
-         (work-handle (e-work-start (e-subagent--work-spec) nil))
-         (handle (funcall runner
-                          child-harness child-session-id prompt seed-messages
-                          (lambda (status &rest args)
-                            (e-subagent--settle-work-handle
-                             work-handle status args)
-                            (apply #'e-subagent--settle
-                                   registry subagent-id status args)))))
-    (e-subagent-registry-update registry subagent-id :work-handle work-handle)
-    (when (and (listp handle) (functionp (plist-get handle :cancel)))
-      (e-subagent-registry-update registry subagent-id
-                                  :cancel (plist-get handle :cancel)))
+         (subagent-id (plist-get record :subagent-id)))
+    (e-subagent--drive-turn
+     registry subagent-id child-harness child-session-id
+     prompt seed-messages runner)
     ;; A synchronous runner may already have settled the record; only a
     ;; still-live record advances to running.
     (when (memq (e-subagent-registry-status registry subagent-id)
                 '(queued))
       (e-subagent-registry-update registry subagent-id :status 'running))
+    (e-subagent-registry-get registry subagent-id)))
+
+(defun e-subagent-resume (registry subagent-id &optional prompt runner)
+  "Resume a settled-but-live SUBAGENT-ID with one new turn on its child session.
+The recovery path for a subagent whose turn ended in `failed' or `cancelled'
+while its child session and full transcript stayed live -- typically a
+transient backend error.  Rather than discard the child's accumulated context
+(what a fresh `e-subagent-spawn' would do), start one more turn on the existing
+session with PROMPT (default a minimal continue).
+
+Refuses a record that was explicitly `shutdown' (a deliberate terminal intent,
+unlike a failure), one already `running', or one whose child harness is gone.
+Transitions the record back to `running', clears the prior error and reported
+flag so the resumed turn's result can land, mints a fresh awaitable work
+handle, and re-arms the settle callback.  Return the normalized record."
+  (let* ((status (e-subagent-registry-status registry subagent-id))
+         (record (e-subagent-registry-get registry subagent-id))
+         (harness (e-subagent-registry-child-harness registry subagent-id))
+         (session-id (plist-get record :session-id))
+         (prompt (let ((value (and (stringp prompt) (string-trim prompt))))
+                   (if (and value (not (string-empty-p value)))
+                       value
+                     "Continue where you left off."))))
+    (unless (memq status '(failed cancelled))
+      (user-error "Subagent %s is %s, not resumable (only failed or cancelled)"
+                  subagent-id status))
+    (when (e-subagent-registry-shutdown-p registry subagent-id)
+      (user-error "Subagent %s was shut down; spawn a fresh child instead"
+                  subagent-id))
+    (unless harness
+      (user-error "Subagent %s has no live child harness" subagent-id))
+    ;; Re-open the record before driving so the next `--settle' sees a live
+    ;; record and advances it; clear terminal residue.
+    (e-subagent-registry-update registry subagent-id
+                                :status 'running
+                                :error nil
+                                :finished-at nil
+                                :reported nil)
+    (e-subagent--drive-turn
+     registry subagent-id harness session-id prompt nil runner)
     (e-subagent-registry-get registry subagent-id)))
 
 (defun e-subagent--normalize-type (value)
@@ -360,9 +416,13 @@ Return the normalized record."
   (e-subagent-registry-get registry subagent-id))
 
 (defun e-subagent-shutdown (registry subagent-id)
-  "Interrupt SUBAGENT-ID if running and mark its record terminal.
-Return the normalized record."
-  (e-subagent-interrupt registry subagent-id))
+  "Interrupt SUBAGENT-ID if running and mark its record terminally shut down.
+Unlike a transient failure, shutdown is a deliberate terminal intent, so the
+record is flagged `:shutdown' and `e-subagent-resume' refuses it.  Return the
+normalized record."
+  (e-subagent-interrupt registry subagent-id)
+  (e-subagent-registry-update registry subagent-id :shutdown t)
+  (e-subagent-registry-get registry subagent-id))
 
 (defun e-subagent-steer (registry subagent-id prompt)
   "Steer SUBAGENT-ID's running child turn with PROMPT.

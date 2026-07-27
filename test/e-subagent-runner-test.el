@@ -166,6 +166,95 @@
                                :status)
                     'cancelled))))))
 
+(ert-deftest e-subagent-runner-test-resume-restarts-failed-child ()
+  "Resume drives a new turn on a failed child's live session and clears residue.
+The child session and its context stay intact; resume re-opens the record to
+`running', clears the prior error, and re-arms the settle callback so the new
+turn's result lands."
+  (e-subagent-runner-test--with-instances
+    (let* ((registry (e-subagent-registry-create))
+           (parent (e-harness-create
+                    :backend (e-backend-fake-create :items nil)))
+           (captured (list nil)))
+      (e-harness-create-session parent :id "parent-1")
+      (let* ((record (e-subagent-spawn
+                      registry parent "parent-1"
+                      :type :reviewer :prompt "go"
+                      :runner (e-subagent-runner-test--capturing-runner captured)))
+             (subagent-id (plist-get record :subagent-id))
+             (first-handle (e-subagent-registry-work-handle registry subagent-id))
+             (settle (plist-get (car captured) :on-settle)))
+        ;; The first turn dies on a transient backend error.
+        (funcall settle 'failed :error "Backend returned no assistant output")
+        (should (eq (e-subagent-registry-status registry subagent-id) 'failed))
+        ;; Resume with a fresh capturing runner; the record re-opens.
+        (let ((resumed (e-subagent-resume
+                        registry subagent-id "keep going"
+                        (e-subagent-runner-test--capturing-runner captured))))
+          (should (eq (plist-get resumed :status) 'running))
+          (should-not (plist-get resumed :error))
+          (should (equal (plist-get (car captured) :prompt) "keep going"))
+          ;; A fresh awaitable work handle is minted for the resumed turn.
+          (let ((second-handle
+                 (e-subagent-registry-work-handle registry subagent-id)))
+            (should (e-work-handle-p second-handle))
+            (should-not (eq second-handle first-handle)))
+          ;; The resumed turn settles and its result is recorded.
+          (funcall (plist-get (car captured) :on-settle)
+                   'done :summary "finished on retry")
+          (let ((final (e-subagent-registry-get registry subagent-id)))
+            (should (eq (plist-get final :status) 'done))
+            (should (equal (plist-get final :result-summary)
+                           "finished on retry"))))))))
+
+(ert-deftest e-subagent-runner-test-resume-defaults-prompt ()
+  "Resume with no prompt uses a minimal continue prompt."
+  (e-subagent-runner-test--with-instances
+    (let* ((registry (e-subagent-registry-create))
+           (parent (e-harness-create
+                    :backend (e-backend-fake-create :items nil)))
+           (captured (list nil)))
+      (e-harness-create-session parent :id "parent-1")
+      (let* ((record (e-subagent-spawn
+                      registry parent "parent-1"
+                      :type :reviewer :prompt "go"
+                      :runner (e-subagent-runner-test--capturing-runner captured)))
+             (subagent-id (plist-get record :subagent-id))
+             (settle (plist-get (car captured) :on-settle)))
+        (funcall settle 'cancelled)
+        (e-subagent-resume registry subagent-id nil
+                           (e-subagent-runner-test--capturing-runner captured))
+        (should (stringp (plist-get (car captured) :prompt)))
+        (should-not (string-empty-p (plist-get (car captured) :prompt)))))))
+
+(ert-deftest e-subagent-runner-test-resume-refuses-running-and-shutdown ()
+  "Resume refuses a running child, a shut-down child, and a done child."
+  (e-subagent-runner-test--with-instances
+    (let* ((registry (e-subagent-registry-create))
+           (parent (e-harness-create
+                    :backend (e-backend-fake-create :items nil)))
+           (captured (list nil))
+           (noop (lambda (_h _s _p _seed _on) (list :cancel #'ignore))))
+      (e-harness-create-session parent :id "parent-1")
+      ;; A running child is not resumable.
+      (let* ((running (e-subagent-spawn
+                       registry parent "parent-1"
+                       :type :reviewer :prompt "go" :runner noop))
+             (running-id (plist-get running :subagent-id)))
+        (should-error (e-subagent-resume registry running-id nil noop)
+                      :type 'user-error))
+      ;; A deliberately shut-down child is refused even though it is terminal.
+      (let* ((record (e-subagent-spawn
+                      registry parent "parent-1"
+                      :type :reviewer :prompt "go"
+                      :runner (e-subagent-runner-test--capturing-runner captured)))
+             (subagent-id (plist-get record :subagent-id)))
+        (e-subagent-shutdown registry subagent-id)
+        (should (eq (e-subagent-registry-status registry subagent-id) 'cancelled))
+        (should (e-subagent-registry-shutdown-p registry subagent-id))
+        (should-error (e-subagent-resume registry subagent-id nil noop)
+                      :type 'user-error)))))
+
 (ert-deftest e-subagent-runner-test-list-scopes-to-parent ()
   "List returns only the calling parent's direct children."
   (e-subagent-runner-test--with-instances
@@ -320,7 +409,7 @@ report is child-side and must not be on the parent surface."
            (capability (e-subagents-parent-capability-create :registry registry))
            (store (e-store-create)))
       (should (eq (e-capability-id capability) 'subagents))
-      (dolist (action '(:spawn :list :status :read :steer :send
+      (dolist (action '(:spawn :list :status :read :steer :send :resume
                         :interrupt :shutdown :configure-type))
         (should (e-capabilities-action-spec capability action)))
       (should-not (e-capabilities-action-spec capability :report))

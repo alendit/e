@@ -79,6 +79,7 @@ internally so steer/read reach the child session on its own harness."
                        :result-summary nil
                        :outputs nil
                        :reported nil
+                       :shutdown nil
                        :error nil
                        :cancel nil
                        :created-at (float-time)
@@ -123,6 +124,12 @@ can treat a stale reference as unresolvable."
 (defun e-subagent-registry-reported-p (registry subagent-id)
   "Return non-nil when SUBAGENT-ID has a child-reported structured result."
   (plist-get (e-subagent-registry--record registry subagent-id) :reported))
+
+(defun e-subagent-registry-shutdown-p (registry subagent-id)
+  "Return non-nil when SUBAGENT-ID was deliberately shut down.
+Shutdown is a terminal intent distinct from a transient failure; `resume'
+refuses a shut-down record."
+  (plist-get (e-subagent-registry--record registry subagent-id) :shutdown))
 
 (defun e-subagent-registry-status (registry subagent-id)
   "Return the status symbol for SUBAGENT-ID in REGISTRY."
