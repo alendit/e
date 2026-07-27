@@ -1330,6 +1330,11 @@
                     ((symbol-function 'e-workspace-pop-to-buffer)
                      (lambda (&rest _args) nil)))
             (with-current-buffer buffer
+              ;; ERT buffers have no live window, so force the visible redraw
+              ;; path (the same seam e-chat-test uses); otherwise the
+              ;; visibility gate defers the transient repaint and no
+              ;; "Thinking" status is rendered.
+              (setq-local e-chat--assume-redraw-visible t)
               (goto-char (point-max))
               (insert "expand this")
               (e-org-canvas-input-submit)
