@@ -271,10 +271,19 @@ hook; no migration or state carry-over is involved.
 - =inline= and =collapsed= structured-block dispositions are declared but inert;
   folding UI for =collapsed= is a later slice when a real consumer needs it.
 
+* Follow-up remediations done
+
+- Subagent resume for settled-but-live children -- the bug filed during this
+  work (=docs/bugs/subagent-no-resume-after-failure/=) is now fixed. A
+  first-class =resume= action starts one new turn on an existing failed or
+  cancelled child session instead of discarding its context, distinguishes
+  deliberate =shutdown= from transient failure, and re-tracks the turn through
+  =await=. See that report's =Resolution= section.
+
 * Unresolved
 
-- Commits are local. =git-sync= push failed on a network reset during this work
-  (=origin= unreachable), so =main= is ahead of =origin= unpushed; run =git-sync=
-  when the remote is reachable.
+- Commits are local. =git-sync= push still fails: =origin=
+  (=http://192.168.178.79:3000/alendit/e.git/=) resets the connection, so =main=
+  is ahead of =origin= unpushed. Run =git-sync= once the remote is reachable.
 - Two unrelated pre-existing modified files (=e-project-local.el=,
   =e-project-local-test.el=) and =git stash@{0}= were left untouched throughout.
