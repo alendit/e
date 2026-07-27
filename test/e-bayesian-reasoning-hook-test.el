@@ -123,21 +123,35 @@ is no active turn, so the guarded `e-harness-queue-prompt' would signal."
              "```\n")))))
 
 (ert-deftest e-bayesian-reasoning-hook-test-follow-up-turn-never-refires ()
-  "A turn tagged as the corrective follow-up is exempt, preventing oscillation.
-The exemption lives in the hook, not the gate: a follow-up turn may still show
-a gap, but the hook must not queue another follow-up for it."
-  (let ((harness (e-harness-create :backend (e-backend-fake-create :items nil))))
+  "A turn whose prompt carries the follow-up marker is exempt.
+The marker rides the user (prompt) message of the corrective turn, so the
+hook must recognize it there and not queue a second follow-up -- otherwise a
+repeatedly-uncalibrated model would oscillate.  A concrete assistant reply is
+appended for the same turn so the gate itself would otherwise fire."
+  (let* ((backend (e-backend-fake-create
+                   :items '((:type assistant-message
+                             :content "The regression landed in commit 42.")
+                            (:type done :reason stop))))
+         (harness (e-harness-create :backend backend))
+         (queued nil))
     (e-harness-create-session harness :id "session-1")
-    (e-bayesian-reasoning--turn-finished-hook
-     '(:status done)
-     (list :harness harness
-           :session-id "session-1"
-           :assistant-message
-           (list :role 'assistant
-                 :content "The regression landed in commit 42."
-                 :metadata (list :bayesian-reasoning
-                                 e-bayesian-reasoning--follow-up-marker))))
-    (should-not (e-harness-queued-prompts harness "session-1"))))
+    ;; Run a real turn whose prompt carries the follow-up marker, then fire the
+    ;; hook against that turn.
+    (e-harness-prompt-batch
+     harness "session-1" "corrective"
+     :metadata (list :bayesian-reasoning e-bayesian-reasoning--follow-up-marker))
+    (let* ((messages (e-harness-messages harness "session-1"))
+           (turn-id (plist-get (car (last messages)) :turn-id))
+           (assistant (seq-find (lambda (m) (eq (plist-get m :role) 'assistant))
+                                messages)))
+      (e-bayesian-reasoning--turn-finished-hook
+       '(:status done)
+       (list :harness harness
+             :session-id "session-1"
+             :turn-id turn-id
+             :assistant-message assistant))
+      (setq queued (e-harness-queued-prompts harness "session-1")))
+    (should-not queued)))
 
 ;;;; The hook: requests exactly one follow-up, never rewrites the value
 

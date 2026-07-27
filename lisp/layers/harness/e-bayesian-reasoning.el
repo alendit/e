@@ -27,6 +27,7 @@
 
 (declare-function e-harness-request-follow-up "e-harness"
                   (harness session-id prompt &rest args))
+(declare-function e-harness-messages "e-harness" (harness session-id))
 
 (defconst e-bayesian-reasoning-instructions
   "Treat belief as a quantity, not a verdict: attach a confidence to factual claims, keep at least one rival hypothesis alive, and prefer \"insufficient evidence\" to a guess. Read e://bayesian-reasoning/refs/tenets.md before concluding on a load-bearing claim. When you assert a load-bearing factual conclusion, emit exactly one reserved fenced reasoning block: under org output mode, `#+begin_reasoning' ... `#+end_reasoning'; under markdown output mode, a ```reasoning fence. Inside it write four lines: `claim:' the one-line conclusion, `confidence:' one of low, medium, or high, `alternatives:' at least one rival explanation or the literal `insufficient-evidence', and `evidence:' references or blank. This block is hidden from the rendered reply and read only by deterministic tooling."
@@ -197,11 +198,22 @@ extra follow-up, never a wrong answer, so it is tuned loosely.")
 
 (defun e-bayesian-reasoning--follow-up-turn-p (context)
   "Return non-nil when CONTEXT's finished turn is a corrective follow-up.
-Read from the turn's assistant-message metadata so the hook does not recurse
-on the reply it prompted."
-  (let ((message (plist-get context :assistant-message)))
-    (equal (plist-get (plist-get message :metadata) :bayesian-reasoning)
-           e-bayesian-reasoning--follow-up-marker)))
+The marker rides the turn's user (prompt) message, since that is where a
+queued follow-up's `:metadata' lands -- the assistant reply carries no turn
+metadata.  Reading the prompt message keeps the hook from recursing on the
+turn it generated."
+  (let* ((harness (plist-get context :harness))
+         (session-id (plist-get context :session-id))
+         (turn-id (plist-get context :turn-id)))
+    (and harness session-id turn-id
+         (seq-some
+          (lambda (message)
+            (and (eq (plist-get message :role) 'user)
+                 (equal (plist-get message :turn-id) turn-id)
+                 (equal (plist-get (plist-get message :metadata)
+                                   :bayesian-reasoning)
+                        e-bayesian-reasoning--follow-up-marker)))
+          (e-harness-messages harness session-id)))))
 
 (defun e-bayesian-reasoning--marks (content)
   "Return parsed reasoning marks found in CONTENT, newest matcher order.
