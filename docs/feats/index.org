@@ -76,3 +76,4 @@ Status values for coding agents:
 | 63 | In-review | 63-org-annotate-answer-loop/ | Org-Annotate Answer Loop |
 | 64 | In-review | 64-wait-for-async-tools/ | wait_for: deadline-raced detach for async tools |
 | 65 | In-progress | 65-bayesian-reasoning-capability/ | Bayesian Reasoning Capability |
+| 66 | Planned | 66-work-bus-interaction-model/ | Work Bus: Subscription-Driven Turn Model |
