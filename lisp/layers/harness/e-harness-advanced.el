@@ -13,6 +13,7 @@
 
 ;;; Code:
 
+(require 'e-bayesian-reasoning)
 (require 'e-goal)
 (require 'e-layers)
 
@@ -22,7 +23,8 @@
    :id 'harness-advanced
    :name "Harness Advanced"
    :requires '(harness-base)
-   :capabilities (list (e-goal-capability-create))))
+   :capabilities (list (e-goal-capability-create)
+                       (e-bayesian-reasoning-capability-create))))
 
 (provide 'e-harness-advanced)
 
