@@ -1,0 +1,47 @@
+#+title: A failed subagent cannot be resumed, even when its session survived
+#+startup: overview
+
+A subagent whose turn ended in =failed= (or =cancelled=) cannot be told to
+"continue," even though its child session and full transcript are intact.
+
+During a multi-slice implementation run, two subagent turns died on transient
+backend/gateway errors (=Backend returned no assistant output=,
+=Internal server error=) after the child had already read a lot of context but
+before it produced any output.  The natural recovery -- reuse the child's
+existing context and tell it to keep going -- is not expressible through the
+subagents action surface:
+
+- =subagents :send= (queue a follow-up turn) signals =e-harness-no-active-turn=,
+  because it goes through =e-harness-queue-prompt=, which requires a
+  currently-running active turn.
+- =subagents :steer= has the same precondition (=e-harness-steer-active-turn=
+  also requires a running turn).
+- =subagents :spawn= only ever creates a *fresh* child session, so it throws
+  away the failed child's accumulated context and forces a full re-read from
+  scratch.
+
+So the only supported reactions to a failed subagent are "start over" or "give
+up."  There is no first-class "resume this settled child" path.  The parent has
+to reach past the subagents layer and call =e-harness-prompt-async= on the
+child session directly, which works but leaves the subagent record permanently
+marked =failed= and detaches the resumed turn from =await=/registry tracking.
+
+* Impact
+
+- Wasteful: a transient infra blip forces a fresh subagent to re-read
+  everything the failed one already read, burning tokens and turns.
+- Workflow gap for the intended fan-out/fan-in pattern: the docs encourage
+  spawning children for expensive multi-step work, but a single transient
+  provider error makes that work unrecoverable through the normal surface.
+- The direct-harness workaround (=e-harness-prompt-async= on the child session)
+  desyncs the registry: the record stays =failed=, =await= will not track the
+  resumed turn, and =read=/result summaries no longer reflect reality.
+
+* Expected
+
+A settled-but-not-shutdown subagent whose child session is still live should be
+resumable through the subagents surface -- e.g. a =resume= (or =send= that
+accepts a terminal-but-live record) that starts one new turn on the existing
+child session, transitions the record back to =running=, and re-attaches the
+awaitable work handle -- so the parent can recover from a transient failure
+without discarding context or bypassing the registry.

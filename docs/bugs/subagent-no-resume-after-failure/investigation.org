@@ -1,0 +1,116 @@
+#+title: Investigation
+#+startup: overview
+
+* Summary
+
+Confirmed. The subagents action surface has no path to resume a subagent whose
+turn has settled to =failed= or =cancelled=, even when the child session and
+its full transcript are still live on the shared child harness.  =send= and
+=steer= both require a running active turn; =spawn= always creates a fresh child
+session.  The parent can only recover by reaching past the subagents layer to
+=e-harness-prompt-async=, which resumes the turn but leaves the registry record
+terminal and detaches the turn from =await= and result tracking.
+
+* Source inspected
+
+** The two "talk to a running child" paths both gate on an active turn
+
+- =lisp/layers/agents/e-subagent-runner.el= =e-subagent-send= calls
+  =e-harness-queue-prompt=.
+- =lisp/core/e-harness.el= =e-harness-queue-prompt= (near line 1284):
+  #+begin_quote
+  The session must currently have a running active turn.
+  #+end_quote
+  It signals =e-harness-no-active-turn= when
+  =(e-harness--active-turn-running-p (gethash session-id (e-harness-active-turns harness)))=
+  is nil (line ~1292).
+- =e-subagent-steer= calls =e-harness-steer-active-turn=, which has the same
+  guard (=e-harness.el= line ~1339, same =e-harness-no-active-turn= signal).
+
+A failed child has no active turn, so both signal.  This is correct for their
+intended use (mid-flight follow-up / steer); the gap is that neither is a
+"resume a stopped child" operation, and no such operation exists.
+
+** spawn only ever creates a fresh session
+
+- =e-subagent-spawn= (=e-subagent-runner.el=) unconditionally calls
+  =e-harness-create-session= and registers a brand-new record.  There is no
+  argument to bind a new turn onto an existing child session.  Re-spawning
+  therefore discards the failed child's accumulated context.
+
+** The registry treats failed/cancelled as terminal, by design
+
+- =e-subagent--settle= (=e-subagent-runner.el= ~line 186) only advances a
+  record whose status is in =(queued running blocked)=, with the docstring
+  "A terminal record is never resurrected."  So even if a new turn were driven
+  onto the child session, the settle callback would not move the record out of
+  =failed=.
+- =e-subagent-registry-update= can still set arbitrary fields, so a resume
+  operation *could* legitimately transition =failed= -> =running= and install a
+  fresh work handle; nothing structural prevents it.  The terminal guard lives
+  only in =--settle=, not in =-update=.
+
+** The awaitable work handle is already terminal after failure
+
+- =e-subagent-spawn= starts one =e-work= handle per subagent
+  (=work-handle (e-work-start (e-subagent--work-spec) nil)=) and settles it in
+  =e-subagent--settle-work-handle= via =e-work-finish= / =e-work-fail= /
+  =e-work-cancel= (~lines 171-184).
+- Once =e-work-fail= has fired, that handle is spent.  A correct resume must
+  mint and store a *new* work handle (=e-subagent-registry-update ... :work-handle=)
+  and re-register the =subagent:<id>= waitable, or =await= will keep returning
+  the old failed state.
+
+* Live reproduction
+
+- Subagents =sub_000060= and =sub_000061= (type =plan-implementer=, session
+  =20260727T135030-1b0f83aef095=) both settled to =failed= on transient backend
+  errors after ~31 messages of context, before producing output.
+- =subagents :send= to =sub_000061= returned =No active turn:
+  "20260727T135030-1b0f83aef095"= -- the =e-harness-no-active-turn= signal
+  surfacing through the action.
+- The child session was verified intact: =e-session-get= returned a record and
+  =e-session-messages= returned 31 messages.
+- Workaround that succeeded: calling =e-harness-prompt-async= directly on the
+  child session (resolved via =e-harness-instance-get-or-create :plan-implementer=,
+  since children of a type share that type's harness) started a new turn
+  (session advanced 31 -> 32 messages, active turn confirmed running).  But the
+  registry still reports =sub_000061= as =failed=; the resumed turn is not
+  tracked by =await= or reflected in =read=/result summaries.
+
+* Root cause
+
+The subagents surface models a child as either live (steer/send while a turn
+runs) or terminal (failed/cancelled/shutdown).  It has no state for
+"stopped but resumable."  Because a transient provider error settles the record
+to =failed= while the child session remains fully usable, the common
+infra-blip recovery -- continue with existing context -- falls outside the
+model and can only be done by bypassing the layer.
+
+* Proposed fix (for a later change, not this investigation)
+
+Add a first-class resume path to the subagents layer, e.g.
+=e-subagent-resume= exposed as a =resume= action:
+
+1. Require a record whose status is =failed= or =cancelled= (not =shutdown=,
+   not already =running=) and whose =:child-harness= + =:session-id= are still
+   live.
+2. Start one new turn on the existing child session via
+   =e-harness-prompt-async= on the stored child harness (do not create a new
+   session).
+3. Transition the record =failed=/=cancelled= -> =running= through
+   =e-subagent-registry-update=, mint and store a fresh =e-work= handle, and
+   re-arm the settle callback so the record settles again on completion.
+4. Re-register / refresh the =subagent:<id>= waitable so =await= tracks the
+   resumed turn.
+
+Open design questions:
+
+- Whether =shutdown= should stay non-resumable (recommended: yes -- shutdown is
+  an explicit terminal intent, failure is not).
+- Whether resume should accept an optional continuation prompt (useful:
+  "continue" vs. a corrective nudge), defaulting to a minimal "continue" turn.
+- Whether =--settle='s "never resurrected" guard needs relaxing or whether the
+  resume path re-opening the record before the next settle is sufficient (the
+  latter looks sufficient: resume sets =running= first, so the next
+  =--settle= sees a live record).
