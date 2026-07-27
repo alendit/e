@@ -1,0 +1,280 @@
+#+title: Review: Bayesian Reasoning Capability
+#+author: e implementation
+#+date: 2026-07-27
+#+startup: overview
+
+* Status
+
+In-review.
+
+* Scope reviewed
+
+Commits =0171800=, =221425d=, =e1850e3=, =a415451=, =693d83e=, and the
+review-round fix =1e1373a=, plus the four separate pre-existing-failure fixes
+=a222fab=, =4810c96=, =b03c9d0=, =a350bf6=.
+
+The review checks each slice against the plan contract
+(=docs/feats/65-bayesian-reasoning-capability/plan.org=), the dependency-direction
+decisions, and the verification promises.
+
+* Review loop
+
+** DONE Medium: modernchat shell was not wired to the structured-block registry
+
+*** Problem
+
+Slice 2a's plan says "Both the chat shell and modernchat call exactly this
+[=e-structured-blocks-render=]."
+The first implementation wired only the chat shell
+(=e-chat--assistant-display-text=).
+The modernchat view model (=e-modernchat-view-model-message=) passed the raw
+message =:content= straight into the JSON DTO.
+A hidden =#+begin_reasoning= block would therefore have reached the egui client
+verbatim in modernchat, defeating the =:display hidden= disposition on that
+surface and contradicting the "both shells" contract.
+
+*** Change
+
+The snapshot builder now builds the session's structured-block registry once
+(=e-harness-structured-blocks=) and applies it per message through a new
+=e-modernchat-view-model--display-content= helper, mirroring the chat shell's
+generic consultation.
+The dependency direction is preserved: modernchat depends on
+=e-structured-blocks= and the harness registry accessor, never on the
+bayesian-reasoning capability.
+=e-modernchat-view-model-message= gained an optional =registry= argument, so
+callers with no registry get byte-for-byte content unchanged.
+
+*** Evidence
+
+New test =e-modernchat-view-model-test-hides-reasoning-block= activates the
+capability, appends an assistant message carrying a reasoning block, and asserts
+the prose survives while =begin_reasoning= and =confidence:= do not appear in
+the DTO content.
+
+#+begin_src sh
+eldev -dtT test test/e-modernchat-test.el
+#+end_src
+
+#+begin_example
+Ran 4 tests, 4 results as expected, 0 unexpected
+#+end_example
+
+* Plan coverage
+
+Each slice's contract, checked against the shipped code.
+
+** Slice 1: default capability with disposition + canonical reference
+
+Met.
+=lisp/layers/harness/e-bayesian-reasoning.el= follows the =e-goal= pattern:
+=e-bayesian-reasoning-instructions= (compact disposition, names abstention,
+points at the reference), =e-bayesian-reasoning-tenets-reference= (eight tenets
+in full, principle plus agent behavior each), a =refs/tenets.md= resource
+provider, and =e-bayesian-reasoning-capability-create=.
+It is packaged in =e-harness-advanced.el= beside =e-goal-capability-create=,
+and =harness-advanced= is already in =e-default-chat-layer-ids=, so no
+default-layer edit was needed.
+The capability is stateless as promised.
+
+** Slice 2a: core structured-block registry
+
+Met, and it is a real reusable seam rather than a one-off strip.
+=lisp/core/e-structured-blocks.el= keeps the surface at exactly =:kind=,
+=:matcher=, =:display=, optional =:parser=.
+=e-structured-blocks-render= returns =(:text :blocks)=, removes =hidden= blocks,
+leaves =inline=/=collapsed= inert this slice, and returns content byte-for-byte
+when no kind matches.
+Registration flows through the capability contract: =e-capability= gained a
+=:structured-blocks= slot, =e-capabilities-register-structured-blocks= collects
+it, and =e-harness-structured-blocks= builds a fresh registry view over the
+effective capability set, so it refreshes on layer reload.
+The module requires no shell or capability code, keeping the dependency arrows
+shell -> core-registry and capability -> core-registry, never shell ->
+capability.
+Documented in =docs/references/runtime_concepts.org= next to hooks/resources.
+
+** Slice 2b: inline reasoning mark, parser, registration
+
+Met.
+The disposition instructs the fenced block with the four fields; the matcher
+=e-bayesian-reasoning--reasoning-matcher= recognizes both the org
+(=#+begin_reasoning=) and markdown (```` ```reasoning ````) forms since it does
+not know which output mode produced the reply; the parser
+=e-bayesian-reasoning-parse-reasoning-block= reads =key: value= lines into a
+plist and returns nil on a malformed or non-fence string.
+The same parser is exposed through the block spec's =:parser=, so the shell's
+generic transform strips without importing capability code, and it is the same
+function the Slice 3 hook uses.
+No tool, no session record, no extra provider round-trip.
+
+** Slice 3: conditional stop-hook enforcement
+
+Met, including the core affordance.
+=e-harness-request-follow-up= was added as a settlement-valid enqueue with no
+active-turn guard, sharing =e-harness--enqueue-prompt-item= with
+=e-harness-queue-prompt= so the drain path stays the single owner of turn
+scheduling.
+The capability registers a conditional =:turn-finished= hook that:
+
+- returns =value= unchanged always -- it never rewrites the reply;
+- acts only on a marked turn or a coarse bare-assertion tripwire, and is a
+  no-op otherwise;
+- runs a deterministic field-completeness check over the parsed mark, never a
+  prose-calibration judgment;
+- on failure requests exactly one corrective follow-up naming the specific gap;
+- caps recursion via a follow-up marker so the generated turn does not re-fire.
+
+* Findings and corrections
+
+** Recursion guard reads the prompt message, not the assistant message
+
+Fixed in =693d83e= before this review.
+The loop builds the assistant message from content only, so a queued
+follow-up's =:metadata= lands on the /user (prompt)/ message, not the assistant
+reply.
+=e-bayesian-reasoning--follow-up-turn-p= correctly scans the user message for
+the =bayesian-reasoning-follow-up= marker.
+Without this the hook would have re-fired on its own correction and looped.
+
+** Case-sensitive CamelCase tripwire
+
+Fixed in =693d83e=.
+=e-bayesian-reasoning--turn-gap= binds =case-fold-search nil= around the
+=--specific-regexp= match, so ordinary sentence-initial words ("That", "The")
+do not trip the CamelCase branch of the bare-assertion filter.
+This is a real correctness constraint, not a style choice; it is worth keeping
+noted for anyone touching that regexp.
+
+** Degrade path is a no-op, not an error
+
+The hook wraps the follow-up request in =ignore-errors= and guards on the
+=e-harness-request-follow-up= symbol being bound, so a settlement window that
+cannot schedule degrades to leaving =value= unchanged rather than erroring the
+turn, as the plan's edge-handling section requires.
+
+* Verification
+
+Focused suites for the shipped surface:
+
+#+begin_src sh
+eldev -dtT test test/e-bayesian-reasoning-test.el \
+  test/e-bayesian-reasoning-mark-test.el \
+  test/e-bayesian-reasoning-hook-test.el \
+  test/e-structured-blocks-test.el \
+  test/e-modernchat-test.el
+#+end_src
+
+#+begin_example
+e-bayesian-reasoning-test:       Ran 5 tests
+e-bayesian-reasoning-mark-test:  Ran 9 tests
+e-bayesian-reasoning-hook-test:  Ran 15 tests
+e-structured-blocks-test:        Ran 6 tests
+e-modernchat-test:               Ran 4 tests
+#+end_example
+
+Full suite:
+
+#+begin_src sh
+eldev -dtT test
+#+end_src
+
+#+begin_example
+Ran 1690 tests, 1689 results as expected, 0 unexpected, 1 skipped
+#+end_example
+
+Byte-compile is clean for the changed sources:
+
+#+begin_src sh
+eldev compile lisp/core/e-structured-blocks.el \
+  lisp/layers/harness/e-bayesian-reasoning.el \
+  lisp/shells/modernchat/e-modernchat-view-model.el
+#+end_src
+
+#+begin_example
+No warnings.
+#+end_example
+
+Whitespace clean:
+
+#+begin_src sh
+git diff --check
+#+end_src
+
+#+begin_example
+No output.
+#+end_example
+
+* Pre-existing failures fixed alongside
+
+Four tests failed at the plan baseline =b3900cc= before any Slice-65 work, and
+each was fixed in its own commit rather than left broken:
+
+- =a222fab= :: =e-dev-test-reload-refreshes-defaults= pinned a stale
+  =e-default-chat-layer-ids= that had since gained =goodnite= and =writing=.
+  Test-only expectation refresh.
+- =4810c96= :: =e-nonblocking-sweep-test-reviewed-blocking-sites= inventory had
+  drifted (=e-ui-work= split from =e-work=, plus =e-resource-toc=,
+  =e-goodnite-resources=, extra =e-emacs-tools= sites).
+  Each new site is a bounded helper, not an interactive hot path; inventory
+  updated to reviewed reality.
+- =b03c9d0= :: =e-ui-work-test-direct-render-carrier-use-is-guarded= flagged
+  =e-await-tool-test= for legitimate render-carrier use; added to the allowlist.
+- =a350bf6= :: =e-org-canvas-test-input-submit_replays_synchronous_progress=
+  needed the =e-chat--assume-redraw-visible= seam because ERT buffers have no
+  live window and the redraw visibility gate deferred the transient repaint.
+
+None was caused by feature 65; each was reproduced at baseline before fixing.
+
+* Live reload
+
+Not performed automatically.
+To use the behavior live, run =M-x e-dev-reload= (or =e-dev-mark-reload-required=
+if a turn is active).
+The capability, registry, and hook are static content and a new =:turn-finished=
+hook; no migration or state carry-over is involved.
+
+* Architecture self-check
+
+1. Stopping after Slice 1 would still teach the discipline via disposition plus a
+   fetchable canonical reference -- a real improvement with no core machinery.
+2. Direction: calibration as a default runtime property, enforced only where a
+   load-bearing claim is actually made.
+3. The one core change (settlement-valid follow-up) is isolated in
+   =e-harness-request-follow-up= behind a narrow contract; Slices 1-2 do not
+   depend on it.
+4. Ownership: the capability owns content and checklist policy; the harness owns
+   turn scheduling. The hook signals intent, it does not schedule.
+5. Coupling: the capability depends on stable hook, resource, and structured-block
+   contracts, not on any shell or provider client.
+6. No dependency points from core policy toward the capability. Block hiding
+   routes through the core registry on both shells; shell and capability are both
+   consumers of that seam.
+7. Side effects (re-prompting) stay in the harness drain path.
+8. State: capability content is static; the reasoning mark lives in the turn
+   output; checklist outcomes are runtime telemetry, no sidecar.
+9. Performance: the hook is conditional by construction, so cost is paid only on
+   claim-marked or filter-flagged turns.
+10. The checklist is the tenets compiled to deterministic checks, substitutable
+    for the prose without weakening the contract.
+11. No legacy paths were introduced.
+12. Nothing to remove.
+
+* Deferred / not built (by plan)
+
+- Automatic per-prompt "consider Bayesian reasoning" nudge -- deliberately out of
+  scope; the evidence is that a blanket verbalized-confidence nudge is a weak
+  lever on its own.
+- Subagent-reviewer variant that judges whether a stated confidence is /accurate/
+  (a truth check, not a completeness check) -- reserved for high-stakes output,
+  not part of the default hook.
+- =inline= and =collapsed= structured-block dispositions are declared but inert;
+  folding UI for =collapsed= is a later slice when a real consumer needs it.
+
+* Unresolved
+
+- Commits are local. =git-sync= push failed on a network reset during this work
+  (=origin= unreachable), so =main= is ahead of =origin= unpushed; run =git-sync=
+  when the remote is reachable.
+- Two unrelated pre-existing modified files (=e-project-local.el=,
+  =e-project-local-test.el=) and =git stash@{0}= were left untouched throughout.
