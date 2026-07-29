@@ -493,8 +493,8 @@ Pure-function level:
 - selectors :: each default over synthetic event lists: progress coalescing,
   all-terminal gating, latest-only, quiescence.  A signalling selector falls
   back to the default and posts =subscription-degraded=.
-- renderers :: stable output for a fixed event list; prompt string for
-  same-session destinations, seed messages for =subagent=/=fork=.
+- renderers :: stable output for a fixed event list; prompt string or seed
+  messages independent of which session reference later receives them.
 
 Board level:
 
@@ -509,24 +509,30 @@ Board level:
 - orphan :: a session going dormant with unobserved terminal work reports it.
 - scope :: =session=-scoped work is not visible to another participant.
 
-Destination level:
+Target/arrival level:
 
-- =subagent= delivery lands on the named child and its =report= returns.
-- =fork= delivery runs on a fork seeded at the mark, and the parent receives one
-  summary message, not the fork's context.
+- matrix :: each =arrival= dispatches against =session:self= and a different
+  existing session; no dispatch path checks whether that session is a child,
+  parent, or sibling.
+- fork resolver :: =fork:<session>@<mark>= resolves once at wake time, returns a
+  session, and the parent receives one summary message rather than the fork's
+  context.
+- rights :: a session outside the board cannot be targeted, and the board fault
+  identifies the subscriber that attempted it.
 - pairing :: a completion arriving after its post call settled is delivered as
   input, never as a tool result.  Assert on the built transcript.
 
 Then a scripted end-to-end scenario: two long bash packages, =any= join, a
-follow-up, and the late second completion, run once with =here-deferred= and
-once with =subagent=, to compare how well the agent's plan survives.  That
-question is behavioral and unit tests will not settle it.
+follow-up, and the late second completion, run once targeting the posting
+session and once targeting a second session, to compare how well the agent's
+plan survives.  That question is behavioral and unit tests will not settle it.
 
 * Open questions
 
-- Default destination for detached work with no explicit subscription: annotate
-  the next turn, or wake.  Leaning annotate-by-default with dormancy reporting
-  as the safety net.
+- Default behavior for detached work with no explicit subscription: expose it
+  only through the next-turn board projection, or synthesize a subscription
+  targeting the poster with =queue= arrival.  Leaning projection-only with
+  dormancy reporting as the safety net.
 - Whether a fork's mark is the post point or the subscription point when they
   differ.
 - Whether subscription definitions persist with the session.  Persistence
@@ -569,9 +575,10 @@ question is behavioral and unit tests will not settle it.
    run per match on the UI thread and are bounded by contract.  The context
    segment is a summary, not a dump.
 10. *Abstractions real?*  A work package is an =e-work= handle with board
-    identity, so nothing narrows the handle contract.  All four destinations are
-    backed by channels that already exist, so none of them satisfies the
-    contract by throwing unsupported.
+    identity, so nothing narrows the handle contract.  Target and arrival are
+    orthogonal: a target resolves to a session, and an arrival dispatches against
+    a resolved session.  =settle-call='s restricted precondition is explicit
+    because it settles a particular open caller rather than starting a turn.
 11. *Compatibility?*  Slice 3 folds =wait_for= onto the subscription path and
     slice 4 replaces the bespoke prompt-queue, steering, cron, and annotation
     paths.  Old paths are removed in those slices rather than kept alongside.
