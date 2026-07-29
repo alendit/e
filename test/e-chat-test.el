@@ -6267,6 +6267,34 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
                        :chat-alpha)))
             candidates)))))))
 
+(ert-deftest e-chat-test-session-candidates-exclude-subagent-sessions ()
+  "Subagent child sessions never appear among chat session candidates.
+A subagent's child session is marked with `:parent-session-id'/`:subagent-role'
+metadata; the switch and active-sessions pickers list only top-level chats."
+  (let* ((store (e-session-store-create))
+         (harness (e-chat-test--activate-chat-session
+                   (e-harness-create
+                    :backend (e-backend-fake-create :items nil)
+                    :sessions store))))
+    (e-chat-test--with-empty-harness-registry
+      (let ((e-chat-default-harness-id :chat-alpha))
+        (e-chat-test--register-chat-instance
+         :chat-alpha "Alpha Target" harness t)
+        (e-session-create store :id "top-level"
+                          :metadata '(:name "Top Level"))
+        (e-session-create store :id "child-by-parent"
+                          :metadata '(:name "Child"
+                                      :parent-session-id "top-level"))
+        (e-session-create store :id "child-by-role"
+                          :metadata '(:name "Reviewer"
+                                      :subagent-role "reviewer"))
+        (let ((ids (mapcar (lambda (candidate)
+                             (plist-get candidate :session-id))
+                           (e-chat--session-candidates))))
+          (should (member "top-level" ids))
+          (should-not (member "child-by-parent" ids))
+          (should-not (member "child-by-role" ids)))))))
+
 (ert-deftest e-chat-test-session-candidates-order-newest-message-first ()
   "Switch-session candidates list newest last message first."
   (let* ((store (e-session-store-create))

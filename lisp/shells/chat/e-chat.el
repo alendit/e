@@ -7841,8 +7841,17 @@ timestamp."
         (and (string= left-time right-time)
              (> left-seq right-seq)))))
 
+(defun e-chat--subagent-session-p (session)
+  "Return non-nil when SESSION is a subagent child session.
+A subagent child is marked in its durable metadata with `:parent-session-id'
+or `:subagent-role'; the session pickers list only top-level chats."
+  (let ((metadata (plist-get session :metadata)))
+    (or (plist-get metadata :parent-session-id)
+        (plist-get metadata :subagent-role))))
+
 (defun e-chat--session-candidates ()
-  "Return chat session candidates across configured chat instances."
+  "Return chat session candidates across configured chat instances.
+Subagent child sessions are excluded; see `e-chat--subagent-session-p'."
   (let ((instances (e-chat--chat-instances))
         (default-instance-id
          (when-let ((default-instance
@@ -7862,13 +7871,14 @@ timestamp."
             (let ((harness (e-chat--harness-for-instance instance))
                   (instance-id (e-harness-instance-id instance)))
               (dolist (session (e-harness-session-list harness))
-                (when (e-chat--session-belongs-to-instance-p
-                       harness
-                       session
-                       instance-id
-                       default-instance-id
-                       (e-chat--shared-session-store-p
-                        harness store-counts))
+                (when (and (not (e-chat--subagent-session-p session))
+                           (e-chat--session-belongs-to-instance-p
+                            harness
+                            session
+                            instance-id
+                            default-instance-id
+                            (e-chat--shared-session-store-p
+                             harness store-counts)))
                   (push (list :instance instance
                               :instance-id instance-id
                               :harness harness
@@ -7887,7 +7897,8 @@ timestamp."
                         (list :harness harness
                               :session session
                               :session-id (plist-get session :id)))
-                      (e-harness-session-list harness)))))
+                      (cl-remove-if #'e-chat--subagent-session-p
+                                    (e-harness-session-list harness))))))
     candidates))
 
 (defun e-chat--candidate-for-label (candidates labels label)
