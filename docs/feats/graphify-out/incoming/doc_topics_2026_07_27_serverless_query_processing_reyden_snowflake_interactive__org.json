@@ -1,0 +1,116 @@
+{
+  "nodes": [
+    {
+      "id": "doc_topics_2026_07_27_serverless_query_processing_reyden_snowflake_interactive__org",
+      "label": "2026-07-27 — Serverless Query Processing (Reyden, Snowflake Interactive)",
+      "file_type": "document",
+      "source_file": "topics/2026-07-27-serverless-query-processing-reyden-snowflake-interactive-.org",
+      "source_location": "#+title"
+    },
+    {
+      "id": "rationale_workload_control_vs_compute_provisioning_separation",
+      "label": "Market trend: separating user-facing workload control from physical compute provisioning",
+      "file_type": "rationale",
+      "source_file": "topics/2026-07-27-serverless-query-processing-reyden-snowflake-interactive-.org",
+      "source_location": "Notes/Three main claims of the doc, claim 1"
+    },
+    {
+      "id": "rationale_serverless_default_but_htap_needs_provisioned",
+      "label": "Serverless is default for analytics/BI but low-latency/high-throughput HTAP still leans on provisioned compute",
+      "file_type": "rationale",
+      "source_file": "topics/2026-07-27-serverless-query-processing-reyden-snowflake-interactive-.org",
+      "source_location": "Notes/Three main claims of the doc, claim 2"
+    },
+    {
+      "id": "rationale_workload_container_concept",
+      "label": "Workload management should belong to a first-class 'workload container' concept, not processed-rows billing",
+      "file_type": "rationale",
+      "source_file": "topics/2026-07-27-serverless-query-processing-reyden-snowflake-interactive-.org",
+      "source_location": "Notes/Three main claims of the doc, claim 3; What claim 3 means"
+    },
+    {
+      "id": "rationale_container_admission_time_requirements",
+      "label": "Container design requirements: platform-integrated across every entry point, engine-evaluated at query admission, t-shirt-size-per-query plus workload-level multiplier",
+      "file_type": "rationale",
+      "source_file": "topics/2026-07-27-serverless-query-processing-reyden-snowflake-interactive-.org",
+      "source_location": "What claim 3 means, and how Snowflake satisfies it"
+    },
+    {
+      "id": "rationale_snowflake_adaptive_warehouse_mechanism",
+      "label": "Snowflake Adaptive Warehouse mechanism: per-query cap (MAX_QUERY_PERFORMANCE_LEVEL) plus throughput multiplier, graceful degradation under load, billing attributed to container",
+      "file_type": "rationale",
+      "source_file": "topics/2026-07-27-serverless-query-processing-reyden-snowflake-interactive-.org",
+      "source_location": "Snowflake Adaptive Warehouse: summary and limitations"
+    },
+    {
+      "id": "rationale_adaptive_warehouse_limitations",
+      "label": "Adaptive Warehouse limitations: not for low latency or highly transactional workloads, weaker analytical performance on Hybrid Tables, static resource assignment per query, ambiguous billing basis",
+      "file_type": "rationale",
+      "source_file": "topics/2026-07-27-serverless-query-processing-reyden-snowflake-interactive-.org",
+      "source_location": "Snowflake Adaptive Warehouse: summary and limitations, Limitations"
+    },
+    {
+      "id": "rationale_bigquery_fair_share_rejected",
+      "label": "BigQuery's fully dynamic fair-share slot allocation rejected as heavier-weight than the t-shirt-size-plus-multiplier model",
+      "file_type": "rationale",
+      "source_file": "topics/2026-07-27-serverless-query-processing-reyden-snowflake-interactive-.org",
+      "source_location": "What claim 3 means; Serverless fit, engine by engine"
+    },
+    {
+      "id": "rationale_metronome_matches_economic_model_not_admission",
+      "label": "Project Metronome matches the container's economic model (compute-based unit, tiered cap, report-by-container) but stops short of engine-level query-admission enforcement",
+      "file_type": "rationale",
+      "source_file": "topics/2026-07-27-serverless-query-processing-reyden-snowflake-interactive-.org",
+      "source_location": "How well the warehouse model maps to Project Metronome"
+    },
+    {
+      "id": "rationale_metronome_daily_allowance_vs_moment_in_time_cap",
+      "label": "Tradeoff: Metronome's daily slot allowance tolerates hourly spikes, versus Snowflake Adaptive's moment-in-time throughput cap on the $ rate",
+      "file_type": "rationale",
+      "source_file": "topics/2026-07-27-serverless-query-processing-reyden-snowflake-interactive-.org",
+      "source_location": "How well the warehouse model maps to Project Metronome, Where Metronome diverges"
+    },
+    {
+      "id": "rationale_metronome_soft_enforcement_converges_on_adaptive",
+      "label": "Metronome's future 262+ soft-enforcement design (per-tenant credit line, skip-enforcement header) converges on the same per-query-cap-plus-queue mechanics as Snowflake Adaptive",
+      "file_type": "rationale",
+      "source_file": "topics/2026-07-27-serverless-query-processing-reyden-snowflake-interactive-.org",
+      "source_location": "How well the warehouse model maps to Project Metronome, Where Metronome diverges"
+    },
+    {
+      "id": "rationale_hyper_serverless_compute_nonserverless_economics",
+      "label": "Core tension: Hyper today is serverless in compute (best-in-class scaling) but non-serverless in economics (processed-rows billing gives no workload container)",
+      "file_type": "rationale",
+      "source_file": "topics/2026-07-27-serverless-query-processing-reyden-snowflake-interactive-.org",
+      "source_location": "Serverless fit, engine by engine — Hyper today (QSM, processed-rows)"
+    },
+    {
+      "id": "rationale_databricks_serverless_sql_not_serverless_for_query",
+      "label": "Databricks Serverless SQL Warehouse judged not serverless for query processing: serverless only at IaaS layer, admin still fixes cluster size and max count",
+      "file_type": "rationale",
+      "source_file": "topics/2026-07-27-serverless-query-processing-reyden-snowflake-interactive-.org",
+      "source_location": "Serverless fit, engine by engine — Databricks Serverless SQL Warehouse"
+    }
+  ],
+  "edges": [
+    {"source": "doc_topics_2026_07_27_serverless_query_processing_reyden_snowflake_interactive__org", "target": "rationale_workload_control_vs_compute_provisioning_separation", "relation": "conceptually_related_to", "confidence": "high", "confidence_score": 0.9, "source_file": "topics/2026-07-27-serverless-query-processing-reyden-snowflake-interactive-.org"},
+    {"source": "doc_topics_2026_07_27_serverless_query_processing_reyden_snowflake_interactive__org", "target": "rationale_serverless_default_but_htap_needs_provisioned", "relation": "conceptually_related_to", "confidence": "high", "confidence_score": 0.9, "source_file": "topics/2026-07-27-serverless-query-processing-reyden-snowflake-interactive-.org"},
+    {"source": "doc_topics_2026_07_27_serverless_query_processing_reyden_snowflake_interactive__org", "target": "rationale_workload_container_concept", "relation": "conceptually_related_to", "confidence": "high", "confidence_score": 0.95, "source_file": "topics/2026-07-27-serverless-query-processing-reyden-snowflake-interactive-.org"},
+    {"source": "doc_topics_2026_07_27_serverless_query_processing_reyden_snowflake_interactive__org", "target": "rationale_container_admission_time_requirements", "relation": "conceptually_related_to", "confidence": "high", "confidence_score": 0.9, "source_file": "topics/2026-07-27-serverless-query-processing-reyden-snowflake-interactive-.org"},
+    {"source": "doc_topics_2026_07_27_serverless_query_processing_reyden_snowflake_interactive__org", "target": "rationale_snowflake_adaptive_warehouse_mechanism", "relation": "conceptually_related_to", "confidence": "high", "confidence_score": 0.95, "source_file": "topics/2026-07-27-serverless-query-processing-reyden-snowflake-interactive-.org"},
+    {"source": "doc_topics_2026_07_27_serverless_query_processing_reyden_snowflake_interactive__org", "target": "rationale_adaptive_warehouse_limitations", "relation": "conceptually_related_to", "confidence": "high", "confidence_score": 0.9, "source_file": "topics/2026-07-27-serverless-query-processing-reyden-snowflake-interactive-.org"},
+    {"source": "doc_topics_2026_07_27_serverless_query_processing_reyden_snowflake_interactive__org", "target": "rationale_bigquery_fair_share_rejected", "relation": "conceptually_related_to", "confidence": "medium", "confidence_score": 0.75, "source_file": "topics/2026-07-27-serverless-query-processing-reyden-snowflake-interactive-.org"},
+    {"source": "doc_topics_2026_07_27_serverless_query_processing_reyden_snowflake_interactive__org", "target": "rationale_metronome_matches_economic_model_not_admission", "relation": "conceptually_related_to", "confidence": "high", "confidence_score": 0.9, "source_file": "topics/2026-07-27-serverless-query-processing-reyden-snowflake-interactive-.org"},
+    {"source": "doc_topics_2026_07_27_serverless_query_processing_reyden_snowflake_interactive__org", "target": "rationale_metronome_daily_allowance_vs_moment_in_time_cap", "relation": "conceptually_related_to", "confidence": "high", "confidence_score": 0.85, "source_file": "topics/2026-07-27-serverless-query-processing-reyden-snowflake-interactive-.org"},
+    {"source": "doc_topics_2026_07_27_serverless_query_processing_reyden_snowflake_interactive__org", "target": "rationale_metronome_soft_enforcement_converges_on_adaptive", "relation": "conceptually_related_to", "confidence": "high", "confidence_score": 0.85, "source_file": "topics/2026-07-27-serverless-query-processing-reyden-snowflake-interactive-.org"},
+    {"source": "doc_topics_2026_07_27_serverless_query_processing_reyden_snowflake_interactive__org", "target": "rationale_hyper_serverless_compute_nonserverless_economics", "relation": "conceptually_related_to", "confidence": "high", "confidence_score": 0.95, "source_file": "topics/2026-07-27-serverless-query-processing-reyden-snowflake-interactive-.org"},
+    {"source": "doc_topics_2026_07_27_serverless_query_processing_reyden_snowflake_interactive__org", "target": "rationale_databricks_serverless_sql_not_serverless_for_query", "relation": "conceptually_related_to", "confidence": "medium", "confidence_score": 0.75, "source_file": "topics/2026-07-27-serverless-query-processing-reyden-snowflake-interactive-.org"},
+    {"source": "doc_topics_2026_07_27_serverless_query_processing_reyden_snowflake_interactive__org", "target": "theme_hyper_query", "relation": "participate_in", "confidence": "high", "confidence_score": 0.95, "source_file": "topics/2026-07-27-serverless-query-processing-reyden-snowflake-interactive-.org"},
+    {"source": "doc_topics_2026_07_27_serverless_query_processing_reyden_snowflake_interactive__org", "target": "theme_product_design", "relation": "participate_in", "confidence": "medium", "confidence_score": 0.7, "source_file": "topics/2026-07-27-serverless-query-processing-reyden-snowflake-interactive-.org"},
+    {"source": "doc_topics_2026_07_27_serverless_query_processing_reyden_snowflake_interactive__org", "target": "doc_sources_2026_07_27__266_serverless_query_processing_landscape_org", "relation": "references", "confidence": "high", "confidence_score": 0.95, "source_file": "topics/2026-07-27-serverless-query-processing-reyden-snowflake-interactive-.org", "source_location": "Notes/Three main claims of the doc; Sources"},
+    {"source": "doc_topics_2026_07_27_serverless_query_processing_reyden_snowflake_interactive__org", "target": "doc_sources_2026_07_27__df_260_project_metronome_capacity_based_pricing_org", "relation": "references", "confidence": "high", "confidence_score": 0.95, "source_file": "topics/2026-07-27-serverless-query-processing-reyden-snowflake-interactive-.org", "source_location": "How well the warehouse model maps to Project Metronome; Sources"}
+  ],
+  "hyperedges": [],
+  "input_tokens": 0,
+  "output_tokens": 0
+}

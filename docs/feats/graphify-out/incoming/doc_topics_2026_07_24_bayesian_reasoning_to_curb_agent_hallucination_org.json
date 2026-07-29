@@ -1,0 +1,263 @@
+{
+  "nodes": [
+    {
+      "id": "doc_topics_2026_07_24_bayesian_reasoning_to_curb_agent_hallucination_org",
+      "label": "2026-07-24 \u2014 Bayesian reasoning to curb agent hallucination",
+      "file_type": "document",
+      "source_file": "topics/2026-07-24-bayesian-reasoning-to-curb-agent-hallucination.org",
+      "source_location": "#+title",
+      "captured_at": "2026-07-24"
+    },
+    {
+      "id": "rationale_bayesian_hallucination_calibration_framing",
+      "label": "Hallucination and jumping to conclusions reframed as calibration failures: the agent commits before earning confidence and fails to revise cleanly; Bayesian reasoning fits because it treats belief as a quantity that moves only as much as evidence warrants",
+      "file_type": "rationale",
+      "source_file": "topics/2026-07-24-bayesian-reasoning-to-curb-agent-hallucination.org",
+      "source_location": "* Why Bayesian reasoning fits this problem"
+    },
+    {
+      "id": "rationale_bayesian_core_techniques_prior_and_confidence",
+      "label": "Core techniques 1-2: start from an explicit prior before reading evidence, and represent conclusions as degrees of belief (a confidence level) rather than flat yes/no verdicts",
+      "file_type": "rationale",
+      "source_file": "topics/2026-07-24-bayesian-reasoning-to-curb-agent-hallucination.org",
+      "source_location": "* Core techniques, items 1-2"
+    },
+    {
+      "id": "rationale_bayesian_core_techniques_evidence_and_base_rate",
+      "label": "Core techniques 3-4: weigh evidence by its likelihood ratio (how diagnostic it is under rival hypotheses) rather than its vividness, and keep the base rate in view so a striking but rare cause is not ranked first",
+      "file_type": "rationale",
+      "source_file": "topics/2026-07-24-bayesian-reasoning-to-curb-agent-hallucination.org",
+      "source_location": "* Core techniques, items 3-4"
+    },
+    {
+      "id": "rationale_bayesian_core_techniques_hypotheses_and_updating",
+      "label": "Core techniques 5-6: carry several competing hypotheses plus an explicit catch-all to counter tunnel vision, and update incrementally so today's posterior becomes tomorrow's prior instead of re-deriving belief from scratch",
+      "file_type": "rationale",
+      "source_file": "topics/2026-07-24-bayesian-reasoning-to-curb-agent-hallucination.org",
+      "source_location": "* Core techniques, items 5-6"
+    },
+    {
+      "id": "rationale_bayesian_core_techniques_discriminating_evidence_and_calibration",
+      "label": "Core techniques 7-8: seek the most discriminating evidence including disconfirming tests rather than only confirming ones, and calibrate confidence honestly so stated confidence matches real accuracy, treating abstention as a valid preferred output",
+      "file_type": "rationale",
+      "source_file": "topics/2026-07-24-bayesian-reasoning-to-curb-agent-hallucination.org",
+      "source_location": "* Core techniques, items 7-8"
+    },
+    {
+      "id": "rationale_bayesian_three_injection_points_design",
+      "label": "Design decision: use three complementary harness insertion points \u2014 system context, prompt-level nudge, stop-hook checklist \u2014 rather than any single one, because none is sufficient alone and each does a different job",
+      "file_type": "rationale",
+      "source_file": "topics/2026-07-24-bayesian-reasoning-to-curb-agent-hallucination.org",
+      "source_location": "* Where to inject it in the harness; ** The three together"
+    },
+    {
+      "id": "rationale_bayesian_system_context_role",
+      "label": "System prompt is scoped to vocabulary, defaults, and trigger conditions only, not the full procedure, because a long principled passage in standing context becomes background texture the model stops attending to after a few turns",
+      "file_type": "rationale",
+      "source_file": "topics/2026-07-24-bayesian-reasoning-to-curb-agent-hallucination.org",
+      "source_location": "** 1. System context: the standing definition"
+    },
+    {
+      "id": "rationale_bayesian_unconditional_nudge_rejected",
+      "label": "An always-on 'be Bayesian' reminder is rejected as a weak lever, citing verbalized-confidence calibration evidence (~62.7% AUROC, barely above chance) and FaR-style reflection prompts inducing overconfidence on some inputs; favor a conditional nudge gated on input markers over an unconditional one",
+      "file_type": "rationale",
+      "source_file": "topics/2026-07-24-bayesian-reasoning-to-curb-agent-hallucination.org",
+      "source_location": "** 2. Prompt-level nudge: the always-on reminder"
+    },
+    {
+      "id": "rationale_bayesian_stophook_enforcement_design_space",
+      "label": "Stop-hook enforcement tradeoff across three costs: an agent-invoked check tool (cheap but skippable by the exact agent that needs it), self-marking plus a filtered hook (chosen sweet spot, paired with a deterministic bare-assertion filter to cover under-marking), and a subagent reviewer (highest quality and cost, reserved for high-stakes turns)",
+      "file_type": "rationale",
+      "source_file": "topics/2026-07-24-bayesian-reasoning-to-curb-agent-hallucination.org",
+      "source_location": "** 3. Stop-hook / checklist: the enforcement point"
+    },
+    {
+      "id": "rationale_bayesian_training_time_abstention_evidence",
+      "label": "Cited evidence that training-time abstention (behaviorally calibrated RL with explicit risk thresholds) reduces hallucination more than prompt-only verbalized confidence; conclusion for a prompt-only harness is that the durable win is a clear abstain option plus a trigger, not a persistent exhortation",
+      "file_type": "rationale",
+      "source_file": "topics/2026-07-24-bayesian-reasoning-to-curb-agent-hallucination.org",
+      "source_location": "** 2. Prompt-level nudge: the always-on reminder (Calibrated RL paragraph); * Sources"
+    },
+    {
+      "id": "rationale_bayesian_single_source_of_truth_design",
+      "label": "The eight tenets are authored once as a single fetchable canonical document; the system prompt, prompt nudge, and stop-hook each hold only the shortest derived form (distillation, pointer, compiled checklist) rather than duplicating the full text, to avoid drift when the source is edited",
+      "file_type": "rationale",
+      "source_file": "topics/2026-07-24-bayesian-reasoning-to-curb-agent-hallucination.org",
+      "source_location": "** Where the canonical text actually lives"
+    },
+    {
+      "id": "rationale_bayesian_conditionality_principle",
+      "label": "Unifying design principle across all three injection points: pay the enforcement cost only where a claim is actually being made; standing context sets disposition and permits abstention, it does not try to enforce compliance turn by turn",
+      "file_type": "rationale",
+      "source_file": "topics/2026-07-24-bayesian-reasoning-to-curb-agent-hallucination.org",
+      "source_location": "** The three together"
+    }
+  ],
+  "edges": [
+    {
+      "source": "doc_topics_2026_07_24_bayesian_reasoning_to_curb_agent_hallucination_org",
+      "target": "rationale_bayesian_hallucination_calibration_framing",
+      "relation": "conceptually_related_to",
+      "confidence": "high",
+      "confidence_score": 0.95,
+      "source_file": "topics/2026-07-24-bayesian-reasoning-to-curb-agent-hallucination.org",
+      "source_location": "* Why Bayesian reasoning fits this problem"
+    },
+    {
+      "source": "doc_topics_2026_07_24_bayesian_reasoning_to_curb_agent_hallucination_org",
+      "target": "rationale_bayesian_core_techniques_prior_and_confidence",
+      "relation": "conceptually_related_to",
+      "confidence": "high",
+      "confidence_score": 0.9,
+      "source_file": "topics/2026-07-24-bayesian-reasoning-to-curb-agent-hallucination.org",
+      "source_location": "* Core techniques, items 1-2"
+    },
+    {
+      "source": "doc_topics_2026_07_24_bayesian_reasoning_to_curb_agent_hallucination_org",
+      "target": "rationale_bayesian_core_techniques_evidence_and_base_rate",
+      "relation": "conceptually_related_to",
+      "confidence": "high",
+      "confidence_score": 0.9,
+      "source_file": "topics/2026-07-24-bayesian-reasoning-to-curb-agent-hallucination.org",
+      "source_location": "* Core techniques, items 3-4"
+    },
+    {
+      "source": "doc_topics_2026_07_24_bayesian_reasoning_to_curb_agent_hallucination_org",
+      "target": "rationale_bayesian_core_techniques_hypotheses_and_updating",
+      "relation": "conceptually_related_to",
+      "confidence": "high",
+      "confidence_score": 0.9,
+      "source_file": "topics/2026-07-24-bayesian-reasoning-to-curb-agent-hallucination.org",
+      "source_location": "* Core techniques, items 5-6"
+    },
+    {
+      "source": "doc_topics_2026_07_24_bayesian_reasoning_to_curb_agent_hallucination_org",
+      "target": "rationale_bayesian_core_techniques_discriminating_evidence_and_calibration",
+      "relation": "conceptually_related_to",
+      "confidence": "high",
+      "confidence_score": 0.9,
+      "source_file": "topics/2026-07-24-bayesian-reasoning-to-curb-agent-hallucination.org",
+      "source_location": "* Core techniques, items 7-8"
+    },
+    {
+      "source": "doc_topics_2026_07_24_bayesian_reasoning_to_curb_agent_hallucination_org",
+      "target": "rationale_bayesian_three_injection_points_design",
+      "relation": "conceptually_related_to",
+      "confidence": "high",
+      "confidence_score": 0.95,
+      "source_file": "topics/2026-07-24-bayesian-reasoning-to-curb-agent-hallucination.org",
+      "source_location": "* Where to inject it in the harness"
+    },
+    {
+      "source": "doc_topics_2026_07_24_bayesian_reasoning_to_curb_agent_hallucination_org",
+      "target": "rationale_bayesian_system_context_role",
+      "relation": "conceptually_related_to",
+      "confidence": "high",
+      "confidence_score": 0.9,
+      "source_file": "topics/2026-07-24-bayesian-reasoning-to-curb-agent-hallucination.org",
+      "source_location": "** 1. System context: the standing definition"
+    },
+    {
+      "source": "doc_topics_2026_07_24_bayesian_reasoning_to_curb_agent_hallucination_org",
+      "target": "rationale_bayesian_unconditional_nudge_rejected",
+      "relation": "conceptually_related_to",
+      "confidence": "high",
+      "confidence_score": 0.9,
+      "source_file": "topics/2026-07-24-bayesian-reasoning-to-curb-agent-hallucination.org",
+      "source_location": "** 2. Prompt-level nudge: the always-on reminder"
+    },
+    {
+      "source": "doc_topics_2026_07_24_bayesian_reasoning_to_curb_agent_hallucination_org",
+      "target": "rationale_bayesian_stophook_enforcement_design_space",
+      "relation": "conceptually_related_to",
+      "confidence": "high",
+      "confidence_score": 0.95,
+      "source_file": "topics/2026-07-24-bayesian-reasoning-to-curb-agent-hallucination.org",
+      "source_location": "** 3. Stop-hook / checklist: the enforcement point"
+    },
+    {
+      "source": "doc_topics_2026_07_24_bayesian_reasoning_to_curb_agent_hallucination_org",
+      "target": "rationale_bayesian_training_time_abstention_evidence",
+      "relation": "conceptually_related_to",
+      "confidence": "medium",
+      "confidence_score": 0.8,
+      "source_file": "topics/2026-07-24-bayesian-reasoning-to-curb-agent-hallucination.org",
+      "source_location": "* Sources"
+    },
+    {
+      "source": "doc_topics_2026_07_24_bayesian_reasoning_to_curb_agent_hallucination_org",
+      "target": "rationale_bayesian_single_source_of_truth_design",
+      "relation": "conceptually_related_to",
+      "confidence": "high",
+      "confidence_score": 0.9,
+      "source_file": "topics/2026-07-24-bayesian-reasoning-to-curb-agent-hallucination.org",
+      "source_location": "** Where the canonical text actually lives"
+    },
+    {
+      "source": "doc_topics_2026_07_24_bayesian_reasoning_to_curb_agent_hallucination_org",
+      "target": "rationale_bayesian_conditionality_principle",
+      "relation": "conceptually_related_to",
+      "confidence": "high",
+      "confidence_score": 0.9,
+      "source_file": "topics/2026-07-24-bayesian-reasoning-to-curb-agent-hallucination.org",
+      "source_location": "** The three together"
+    },
+    {
+      "source": "doc_topics_2026_07_24_bayesian_reasoning_to_curb_agent_hallucination_org",
+      "target": "theme_general_knowledge",
+      "relation": "participate_in",
+      "confidence": "high",
+      "confidence_score": 0.85,
+      "source_file": "topics/2026-07-24-bayesian-reasoning-to-curb-agent-hallucination.org",
+      "source_location": "* Core techniques"
+    },
+    {
+      "source": "doc_topics_2026_07_24_bayesian_reasoning_to_curb_agent_hallucination_org",
+      "target": "theme_personal_research",
+      "relation": "participate_in",
+      "confidence": "medium",
+      "confidence_score": 0.75,
+      "source_file": "topics/2026-07-24-bayesian-reasoning-to-curb-agent-hallucination.org",
+      "source_location": "* Working brief"
+    },
+    {
+      "source": "doc_topics_2026_07_24_bayesian_reasoning_to_curb_agent_hallucination_org",
+      "target": "theme_e_runtime",
+      "relation": "participate_in",
+      "confidence": "high",
+      "confidence_score": 0.85,
+      "source_file": "topics/2026-07-24-bayesian-reasoning-to-curb-agent-hallucination.org",
+      "source_location": "* Where to inject it in the harness"
+    },
+    {
+      "source": "doc_topics_2026_07_24_bayesian_reasoning_to_curb_agent_hallucination_org",
+      "target": "doc_topics_2026_07_24_teaching_agents_to_use_a_new_library_hyperframe_efficiently_org",
+      "relation": "conceptually_related_to",
+      "confidence": "medium",
+      "confidence_score": 0.7,
+      "source_file": "topics/2026-07-24-bayesian-reasoning-to-curb-agent-hallucination.org",
+      "source_location": "** Where the canonical text actually lives"
+    },
+    {
+      "source": "doc_topics_2026_07_24_bayesian_reasoning_to_curb_agent_hallucination_org",
+      "target": "doc_topics_2026_06_19_skill_search_tool_with_on_demand_context_org",
+      "relation": "conceptually_related_to",
+      "confidence": "medium",
+      "confidence_score": 0.65,
+      "source_file": "topics/2026-07-24-bayesian-reasoning-to-curb-agent-hallucination.org",
+      "source_location": "** Where the canonical text actually lives; ** 1. System context: the standing definition"
+    },
+    {
+      "source": "doc_topics_2026_07_24_bayesian_reasoning_to_curb_agent_hallucination_org",
+      "target": "doc_topics_2026_06_16_agentic_code_review_org",
+      "relation": "conceptually_related_to",
+      "confidence": "medium",
+      "confidence_score": 0.65,
+      "source_file": "topics/2026-07-24-bayesian-reasoning-to-curb-agent-hallucination.org",
+      "source_location": "* Core techniques, item 2; ** 3. Stop-hook / checklist: the enforcement point"
+    }
+  ],
+  "hyperedges": [],
+  "input_tokens": 0,
+  "output_tokens": 0
+}

@@ -1,0 +1,300 @@
+{
+  "nodes": [
+    {
+      "id": "doc_topics_2026_07_03_grimoire_e_state_flow_and_future_directions_org",
+      "label": "2026-07-03 — Grimoire + e: state, flow, and future directions",
+      "file_type": "document",
+      "source_file": "topics/2026-07-03-grimoire-e-state-flow-and-future-directions.org",
+      "source_location": "#+title"
+    },
+    {
+      "id": "rat_e_grimoire_runtime_data_seam",
+      "label": "e/Grimoire split along a runtime/data seam: e is a domain-agnostic engine, Grimoire is content plus a project-local layer that teaches e its domain",
+      "file_type": "rationale",
+      "source_file": "topics/2026-07-03-grimoire-e-state-flow-and-future-directions.org",
+      "source_location": "* Overview: the two halves"
+    },
+    {
+      "id": "rat_e_four_concern_separation",
+      "label": "e separates harness / capabilities / layers / backend adapters / presentation shells so core session policy stays free of side effects",
+      "file_type": "rationale",
+      "source_file": "topics/2026-07-03-grimoire-e-state-flow-and-future-directions.org",
+      "source_location": "** Architecture"
+    },
+    {
+      "id": "rat_project_local_layer_mechanism",
+      "label": "Project-local capability layers (.e/layers/topic) auto-load for allowed roots, letting a repo extend e without touching e core",
+      "file_type": "rationale",
+      "source_file": "topics/2026-07-03-grimoire-e-state-flow-and-future-directions.org",
+      "source_location": "** What is built today"
+    },
+    {
+      "id": "rat_plain_text_org_no_sidecar_store",
+      "label": "Grimoire's data model is transparent plain-text Org files with no sidecar state store, trading a database for inspectability",
+      "file_type": "rationale",
+      "source_file": "topics/2026-07-03-grimoire-e-state-flow-and-future-directions.org",
+      "source_location": "** Data model (all plain-text Org)"
+    },
+    {
+      "id": "rat_review_property_nondestructive_gate",
+      "label": ":REVIEW: proposed/accepted/rejected keeps agent output non-destructive: the agent only proposes, the human commits by accept/reject",
+      "file_type": "rationale",
+      "source_file": "topics/2026-07-03-grimoire-e-state-flow-and-future-directions.org",
+      "source_location": "** The agenda layer (reviewable work dimension)"
+    },
+    {
+      "id": "rat_source_link_org_id_provenance",
+      "label": ":SOURCE: link + org-id gives provenance back to raw capture and a stable join key, and makes triage promotion idempotent on re-sweep",
+      "file_type": "rationale",
+      "source_file": "topics/2026-07-03-grimoire-e-state-flow-and-future-directions.org",
+      "source_location": "** The agenda layer (reviewable work dimension) / 3. Triage"
+    },
+    {
+      "id": "rat_org_roam_deferred_for_org_id_links",
+      "label": "Phase 5 (UX continuity + KB-wide linking) defers org-roam in favor of org-id plus explicit links, as a deliberately rejected alternative for now",
+      "file_type": "rationale",
+      "source_file": "topics/2026-07-03-grimoire-e-state-flow-and-future-directions.org",
+      "source_location": "** Grimoire / Phase 5"
+    },
+    {
+      "id": "rat_push_triggered_background_work",
+      "label": "Annotation-reactive sessions plus cron schedules push e from a pull model (you prompt) toward push (events wake sessions)",
+      "file_type": "rationale",
+      "source_file": "topics/2026-07-03-grimoire-e-state-flow-and-future-directions.org",
+      "source_location": "** e / Push-triggered background work"
+    },
+    {
+      "id": "rat_batch_jobs_isolate_expensive_work",
+      "label": "Elisp tool chaining plus batch jobs let agents offload expensive work to a separate process so it cannot freeze the UI",
+      "file_type": "rationale",
+      "source_file": "topics/2026-07-03-grimoire-e-state-flow-and-future-directions.org",
+      "source_location": "** What is built today"
+    },
+    {
+      "id": "rat_quest_layer_between_projects_topics",
+      "label": "Quests sit below projects and above topics as a bounded work stream with explicit dependencies/stages; quest-backfill can derive quests from graph communities",
+      "file_type": "rationale",
+      "source_file": "topics/2026-07-03-grimoire-e-state-flow-and-future-directions.org",
+      "source_location": "* The flow it supports right now / 5. Organize; ** Grimoire / Quest maturation"
+    },
+    {
+      "id": "rat_graphify_intentional_refresh",
+      "label": "The generated knowledge graph (graphify-out) is refreshed intentionally rather than continuously, to answer structure/relationship questions without reading every file",
+      "file_type": "rationale",
+      "source_file": "topics/2026-07-03-grimoire-e-state-flow-and-future-directions.org",
+      "source_location": "** The topic layer (how Grimoire drives e); * The flow it supports right now / 8. Sources + graph"
+    },
+    {
+      "id": "rat_deterministic_tools_from_repeated_workflows",
+      "label": "Recurring theme: extract stable, deterministic tools/actions out of workflows an agent keeps repeating, so the agent orchestrates rather than re-derives",
+      "file_type": "rationale",
+      "source_file": "topics/2026-07-03-grimoire-e-state-flow-and-future-directions.org",
+      "source_location": "** e / Deterministic tools from repeating workflows"
+    }
+  ],
+  "edges": [
+    {
+      "source": "doc_topics_2026_07_03_grimoire_e_state_flow_and_future_directions_org",
+      "target": "rat_e_grimoire_runtime_data_seam",
+      "relation": "conceptually_related_to",
+      "confidence": "high",
+      "confidence_score": 0.9,
+      "source_file": "topics/2026-07-03-grimoire-e-state-flow-and-future-directions.org"
+    },
+    {
+      "source": "doc_topics_2026_07_03_grimoire_e_state_flow_and_future_directions_org",
+      "target": "rat_e_four_concern_separation",
+      "relation": "conceptually_related_to",
+      "confidence": "high",
+      "confidence_score": 0.9,
+      "source_file": "topics/2026-07-03-grimoire-e-state-flow-and-future-directions.org"
+    },
+    {
+      "source": "doc_topics_2026_07_03_grimoire_e_state_flow_and_future_directions_org",
+      "target": "rat_project_local_layer_mechanism",
+      "relation": "conceptually_related_to",
+      "confidence": "high",
+      "confidence_score": 0.9,
+      "source_file": "topics/2026-07-03-grimoire-e-state-flow-and-future-directions.org"
+    },
+    {
+      "source": "doc_topics_2026_07_03_grimoire_e_state_flow_and_future_directions_org",
+      "target": "rat_plain_text_org_no_sidecar_store",
+      "relation": "conceptually_related_to",
+      "confidence": "high",
+      "confidence_score": 0.9,
+      "source_file": "topics/2026-07-03-grimoire-e-state-flow-and-future-directions.org"
+    },
+    {
+      "source": "doc_topics_2026_07_03_grimoire_e_state_flow_and_future_directions_org",
+      "target": "rat_review_property_nondestructive_gate",
+      "relation": "conceptually_related_to",
+      "confidence": "high",
+      "confidence_score": 0.9,
+      "source_file": "topics/2026-07-03-grimoire-e-state-flow-and-future-directions.org"
+    },
+    {
+      "source": "doc_topics_2026_07_03_grimoire_e_state_flow_and_future_directions_org",
+      "target": "rat_source_link_org_id_provenance",
+      "relation": "conceptually_related_to",
+      "confidence": "high",
+      "confidence_score": 0.85,
+      "source_file": "topics/2026-07-03-grimoire-e-state-flow-and-future-directions.org"
+    },
+    {
+      "source": "doc_topics_2026_07_03_grimoire_e_state_flow_and_future_directions_org",
+      "target": "rat_org_roam_deferred_for_org_id_links",
+      "relation": "conceptually_related_to",
+      "confidence": "high",
+      "confidence_score": 0.85,
+      "source_file": "topics/2026-07-03-grimoire-e-state-flow-and-future-directions.org"
+    },
+    {
+      "source": "doc_topics_2026_07_03_grimoire_e_state_flow_and_future_directions_org",
+      "target": "rat_push_triggered_background_work",
+      "relation": "conceptually_related_to",
+      "confidence": "high",
+      "confidence_score": 0.9,
+      "source_file": "topics/2026-07-03-grimoire-e-state-flow-and-future-directions.org"
+    },
+    {
+      "source": "doc_topics_2026_07_03_grimoire_e_state_flow_and_future_directions_org",
+      "target": "rat_batch_jobs_isolate_expensive_work",
+      "relation": "conceptually_related_to",
+      "confidence": "medium",
+      "confidence_score": 0.75,
+      "source_file": "topics/2026-07-03-grimoire-e-state-flow-and-future-directions.org"
+    },
+    {
+      "source": "doc_topics_2026_07_03_grimoire_e_state_flow_and_future_directions_org",
+      "target": "rat_quest_layer_between_projects_topics",
+      "relation": "conceptually_related_to",
+      "confidence": "high",
+      "confidence_score": 0.85,
+      "source_file": "topics/2026-07-03-grimoire-e-state-flow-and-future-directions.org"
+    },
+    {
+      "source": "doc_topics_2026_07_03_grimoire_e_state_flow_and_future_directions_org",
+      "target": "rat_graphify_intentional_refresh",
+      "relation": "conceptually_related_to",
+      "confidence": "medium",
+      "confidence_score": 0.75,
+      "source_file": "topics/2026-07-03-grimoire-e-state-flow-and-future-directions.org"
+    },
+    {
+      "source": "doc_topics_2026_07_03_grimoire_e_state_flow_and_future_directions_org",
+      "target": "rat_deterministic_tools_from_repeated_workflows",
+      "relation": "conceptually_related_to",
+      "confidence": "medium",
+      "confidence_score": 0.75,
+      "source_file": "topics/2026-07-03-grimoire-e-state-flow-and-future-directions.org"
+    },
+    {
+      "source": "doc_topics_2026_07_03_grimoire_e_state_flow_and_future_directions_org",
+      "target": "theme_grimoire_system",
+      "relation": "participate_in",
+      "confidence": "high",
+      "confidence_score": 0.9,
+      "source_file": "topics/2026-07-03-grimoire-e-state-flow-and-future-directions.org"
+    },
+    {
+      "source": "doc_topics_2026_07_03_grimoire_e_state_flow_and_future_directions_org",
+      "target": "theme_e_runtime",
+      "relation": "participate_in",
+      "confidence": "high",
+      "confidence_score": 0.9,
+      "source_file": "topics/2026-07-03-grimoire-e-state-flow-and-future-directions.org"
+    },
+    {
+      "source": "doc_topics_2026_07_03_grimoire_e_state_flow_and_future_directions_org",
+      "target": "area_topics",
+      "relation": "participate_in",
+      "confidence": "high",
+      "confidence_score": 0.85,
+      "source_file": "topics/2026-07-03-grimoire-e-state-flow-and-future-directions.org"
+    },
+    {
+      "source": "doc_topics_2026_07_03_grimoire_e_state_flow_and_future_directions_org",
+      "target": "area_e",
+      "relation": "participate_in",
+      "confidence": "medium",
+      "confidence_score": 0.75,
+      "source_file": "topics/2026-07-03-grimoire-e-state-flow-and-future-directions.org"
+    },
+    {
+      "source": "doc_topics_2026_07_03_grimoire_e_state_flow_and_future_directions_org",
+      "target": "doc_e_layers_topic_readme_org",
+      "relation": "references",
+      "confidence": "high",
+      "confidence_score": 0.9,
+      "source_file": "topics/2026-07-03-grimoire-e-state-flow-and-future-directions.org",
+      "source_location": "* Sources"
+    },
+    {
+      "source": "doc_topics_2026_07_03_grimoire_e_state_flow_and_future_directions_org",
+      "target": "doc_agents_md",
+      "relation": "references",
+      "confidence": "high",
+      "confidence_score": 0.9,
+      "source_file": "topics/2026-07-03-grimoire-e-state-flow-and-future-directions.org",
+      "source_location": "* Sources"
+    },
+    {
+      "source": "doc_topics_2026_07_03_grimoire_e_state_flow_and_future_directions_org",
+      "target": "doc_kb_features_agenda_layer_readme_org",
+      "relation": "references",
+      "confidence": "high",
+      "confidence_score": 0.9,
+      "source_file": "topics/2026-07-03-grimoire-e-state-flow-and-future-directions.org",
+      "source_location": "* Sources"
+    },
+    {
+      "source": "doc_topics_2026_07_03_grimoire_e_state_flow_and_future_directions_org",
+      "target": "doc_projects_e_org",
+      "relation": "references",
+      "confidence": "high",
+      "confidence_score": 0.85,
+      "source_file": "topics/2026-07-03-grimoire-e-state-flow-and-future-directions.org",
+      "source_location": "* Sources"
+    },
+    {
+      "source": "doc_topics_2026_07_03_grimoire_e_state_flow_and_future_directions_org",
+      "target": "doc_projects_grimoire_org",
+      "relation": "references",
+      "confidence": "high",
+      "confidence_score": 0.85,
+      "source_file": "topics/2026-07-03-grimoire-e-state-flow-and-future-directions.org",
+      "source_location": "* Sources"
+    },
+    {
+      "source": "doc_topics_2026_07_03_grimoire_e_state_flow_and_future_directions_org",
+      "target": "doc_topics_knowledge_agenda_system_design_org",
+      "relation": "references",
+      "confidence": "high",
+      "confidence_score": 0.85,
+      "source_file": "topics/2026-07-03-grimoire-e-state-flow-and-future-directions.org",
+      "source_location": "* Sources — origin design topic"
+    },
+    {
+      "source": "doc_topics_2026_07_03_grimoire_e_state_flow_and_future_directions_org",
+      "target": "doc_kb_features_agenda_layer_phase5_ux_continuity_org",
+      "relation": "conceptually_related_to",
+      "confidence": "high",
+      "confidence_score": 0.8,
+      "source_file": "topics/2026-07-03-grimoire-e-state-flow-and-future-directions.org",
+      "source_location": "** Grimoire / Phase 5 — UX continuity + KB-wide linking"
+    },
+    {
+      "source": "doc_topics_2026_07_03_grimoire_e_state_flow_and_future_directions_org",
+      "target": "doc_topics_2026_06_22_grimoire_quests_and_questbook_org",
+      "relation": "conceptually_related_to",
+      "confidence": "medium",
+      "confidence_score": 0.7,
+      "source_file": "topics/2026-07-03-grimoire-e-state-flow-and-future-directions.org",
+      "source_location": "** Grimoire / Quest maturation"
+    }
+  ],
+  "hyperedges": [],
+  "input_tokens": 0,
+  "output_tokens": 0
+}
