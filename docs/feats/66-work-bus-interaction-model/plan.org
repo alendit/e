@@ -84,45 +84,100 @@ Three distinct effects, worth separating because they have different fixes:
 
 Effect 2 is the one that motivates the rest of this section.
 
-** Response: choose an isolation level per thread of work
+** Response: deliver to a session, at an arrival mode
 
-A subscription names where its wake lands.  Four destinations, increasing
-isolation and cost:
+Isolation is not a property to enumerate.  It falls out of two independent
+questions that a delivery has to answer anyway:
 
-| Destination     | Where the reaction runs             | Interleaving | Use when                                            |
-|-----------------+-------------------------------------+--------------+-----------------------------------------------------|
-| =here-inline=   | the current turn, held open         | none         | the classic call: work is fast, reaction is the plan |
-| =here-deferred= | a later turn of this session        | yes          | reaction is short and self-contained                |
-| =subagent=      | an existing child session, by id    | none         | reaction needs real reasoning of its own            |
-| =fork=          | a fork of this session at a mark    | none         | reaction needs this session's frame as it was       |
+- *Which session receives it?*  A session reference.
+- *How does it arrive at that session?*  An arrival mode, one per channel the
+  harness actually has.
 
-The default for detached work is =here-deferred=, and the guidance is explicit:
-if reacting to the event takes more than reading it and noting a fact, give it
-its own session.  Interleaving is allowed for cheap reactions and discouraged
-for real ones, rather than being the only option.
+So a subscription carries =:target= and =:arrival=, and nothing else about
+placement.  Isolation is then a consequence: a target that is not the posting
+session does not interleave with it, because they are different contexts.
 
-** Session branching
+*** Target: a session reference
 
-=fork= is the answer to plan fragmentation when the reaction needs the context
-that existed when the work was posted.  Post work, mark the session at that
-point, keep working; when the event arrives, deliver it to a fork seeded at the
-mark, let the fork run to a =report=, and deliver that report to the parent as
-one compact message.
+The posting session, an existing child, a fork, a sibling, the parent: all of
+these are one thing, a session on the board.  Naming them as separate
+destination kinds was the mistake; it hid that the interesting cases (deliver to
+a sibling, deliver to the parent, fan the same event to three sessions with
+three different renderings) were inexpressible.
 
-- The mechanism exists: =e-session-fork= with =:at= already rebuilds a linear
-  path up to a message.
+A target is a reference resolved at wake time through a registry, the same
+pattern =e-waitable= already uses for work references:
+
+- =session:<id>= :: a concrete session, including the poster's own.
+- =fork:<session-id>@<message-id>= :: fork that session at that message, then
+  deliver.  Resolved lazily, so the fork is only paid for if the event fires.
+
+The registry makes other resolvers possible; the shipped set stops here on
+purpose.  A resolver like =subagent-type:reviewer= that provisions a fresh child
+at wake time is deliberately absent, for the same reason a subscription does not
+carry a subagent definition: it would move agent configuration into queue data
+and hide the cost until it fires.  Provision first, name the id.
+
+*** Arrival: one value per real harness channel
+
+| Arrival        | What happens at the target                                   | Backed by                              |
+|----------------+--------------------------------------------------------------+----------------------------------------|
+| =settle-call=  | settles the poster's still-open tool call                     | the =wait_for= inline race             |
+| =inject=       | appended to a running turn at its next request boundary, or starts one | pending steering input / =prompt-async= |
+| =queue=        | queued as a follow-up; never disturbs a running turn         | the post-settlement queue drain        |
+
+These are not new mechanisms.  All three exist today, and all three already work
+for any session: =e-subagent-steer= and =e-subagent-send= are
+=e-harness-steer-active-turn= and =e-harness-queue-prompt= called on a child
+harness.  The generalization is recognizing that "steer a subagent" and "steer
+myself" were the same operation with different session arguments.
+
+=settle-call= is the one arrival only the poster can use, and only while its call
+is open, because it settles that call.  That is the classic synchronous shape,
+and it is what keeps small work at one tool call.
+
+*** The old table, derived
+
+| Old name        | =:target=                | =:arrival=    |
+|-----------------+--------------------------+---------------|
+| =here-inline=   | =session:self=           | =settle-call= |
+| =here-deferred= | =session:self=           | =queue=       |
+| =subagent=      | =session:sub_000004=     | =queue=       |
+| =fork=          | =fork:self@<mark>=       | =queue=       |
+
+The four cases survive as recommended combinations in guidance.  They stop being
+the interface.  What the interface gains: deliver to a sibling, inject into a
+running child rather than queueing behind its current turn, fan one event to
+several targets, and let the agent hand a thread of work to whichever session
+should own it.
+
+Guidance stays as before: if reacting to an event takes more than reading it and
+noting a fact, target a session other than the poster.  Interleaving is fine for
+cheap reactions and discouraged for real ones.
+
+** Forks are sessions, not a delivery kind
+
+A fork answers plan fragmentation when the reaction needs the context that
+existed when the work was posted: mark the session at the post point, keep
+working, and when the event arrives deliver it to a fork seeded at that mark.
+
+The mechanism exists.  =e-session-fork= with =:at= already rebuilds a linear
+path up to a message; it becomes an ordinary session-producing action returning a
+session id, exactly like subagent spawn.  A subscription then names the result,
+or names =fork:<session>@<mark>= to defer creation to wake time.
+
 - The parent absorbs a summary, not a context.  Merging two divergent contexts
   is not attempted, now or later.
-- The cost is real: a fork duplicates context and re-pays cache warmup, so
-  =fork= is opt-in per subscription and never a default.
-- A fork is a participant on the same board, so its own posts and subscriptions
-  are visible to the parent through the board rather than through session
-  plumbing.
+- The cost is real: a fork duplicates context and re-pays cache warmup, so it is
+  opt-in and never a default.  Lazy resolution means an unfired subscription
+  costs a message id.
+- A fork is a board participant like any other, so its posts and subscriptions
+  are visible through the board rather than through session plumbing.
 
-=subagent= differs from =fork= in what the reaction knows: a fork inherits the
-parent's history, a subagent starts from a type's own prompt plus what the
-subscription renders.  When the reaction is describable, prefer =subagent=; it
-is cheaper and its result comes back structured.
+Fork and child differ only in what the reaction knows: a fork inherits the
+parent's history, a spawned child starts from its type's prompt plus what the
+subscription renders.  When the reaction is describable, a child is cheaper and
+returns a structured result.
 
 ** Where it stays genuinely hard
 
@@ -136,6 +191,10 @@ is cheaper and its result comes back structured.
   session going dormant with unobserved terminal work must say so.
 - *Fork sprawl.*  Branch-per-event is easy to overuse.  Cap concurrent forks
   per session and report the cap.
+- *Cross-session delivery rights.*  A generic target means a session can wake
+  another session.  Delivery must be confined to board participants and
+  recorded with the posting session's identity, so an unexpected wake is
+  traceable to whoever subscribed it.
 - *Deadlock.*  An agent awaiting work only it can perform.  Detectable when a
   wait set's members are all claimable work scoped to the waiting session.
 
@@ -169,15 +228,21 @@ cancelled:
  :filter      (list :work-ids ["bash/2"] :types '(finished failed))
  :select      'e-work-board-select-default
  :render      'e-work-board-render-default
- :destination (list :kind 'subagent :subagent-id "sub_000004")
+ :target      "session:sub_000004"
+ :arrival     'queue
  :note        "run the failing test and report what broke"
  :lifetime    'one-shot
  :budget      (list :max-wakes 3 :expires-in 900))
 #+end_src
 
-Fields: =id=, =owner= session, =filter=, =select=, =render=, =destination=,
-=note=, =lifetime= (=one-shot= or =persistent=), =budget= (=max-wakes=,
-=expires-in=).
+Fields: =id=, =owner= session, =filter=, =select=, =render=, =target=,
+=arrival=, =note=, =lifetime= (=one-shot= or =persistent=), =budget=
+(=max-wakes=, =expires-in=).
+
+=target= and =arrival= are independent, and neither enumerates a use case:
+=target= is a session reference resolved at wake time, =arrival= is which harness
+channel delivers it.  A fan-out is several subscriptions over the same filter
+with different targets and renderers.
 
 ** The deterministic part: select and render
 
@@ -188,7 +253,8 @@ Every subscription carries two pure functions that run with no model call:
   =(:wake t :deliver EVENTS :drop EVENTS)= or =(:wake nil)= to keep waiting.
 - *render* turns the selected events into turn input.
   =(RENDER SUBSCRIPTION EVENTS BOARD)= returns a prompt string, or a list of
-  seed messages for a =subagent=/=fork= destination.
+  seed messages when the target session should receive framing before the
+  prompt.
 
 This is where the queue stops being a firehose.  Which events matter, whether
 enough has happened to be worth a turn, and what the next turn's prompt says are
@@ -225,26 +291,32 @@ Rules on these functions, because they run on the UI thread at match time:
   broken override is visible instead of silently changing behavior.
 - A selector that never wakes is bounded by the subscription's =expires-in=.
 
-** Destinations
+** Target resolution and arrival dispatch
 
-- =here-inline= :: hold the current turn open.  This is what =wait_for= already
-  does; the subscription form exists so the inline case is not a special path.
-- =here-deferred= :: start a turn on this session at the next boundary, or
-  inject at the next provider request boundary when a turn is running
-  (the existing steering channel).
-- =subagent= :: deliver the rendered prompt to an existing child by
-  =subagent-id=.  The subscription refers to a subagent that was spawned
-  separately; it does not carry a subagent definition.  Spawning inside a
-  subscription would put agent configuration into queue data, duplicate the
-  spawnable-type surface, and make the subscription's cost invisible until it
-  fires.  Spawn first, get an id, subscribe to it.
-- =fork= :: fork the owning session at a recorded mark, deliver there, and
-  return the fork's =report= to the parent as one message.  The mark is taken
-  when the subscription is created.
+The board resolves =target= through a session-reference registry and hands the
+resolved session plus =arrival= to the harness, which owns the three channels.
+The board never spawns, forks, or starts a turn itself.
 
-All four map onto channels that exist today (=e-harness-prompt-async=, the
-post-settlement queue drain, pending steering input, =e-subagent-actions=
-=send=, =e-session-fork=).  The board decides and the harness schedules.
+Shipped target resolvers:
+
+- =session:<id>= :: including =session:self= for the owning session.
+- =fork:<session-id>@<message-id>= :: forks at wake time through
+  =e-session-fork=, so an unfired subscription costs only the recorded message
+  id.
+
+Arrival dispatch, all three already implemented per session:
+
+- =settle-call= :: settle the poster's open tool call.  Rejected unless the
+  target is the owning session and its call is still open, which is exactly the
+  =wait_for= race.
+- =inject= :: =e-harness-steer-active-turn= when a turn is running, otherwise
+  =e-harness-prompt-async=.
+- =queue= :: =e-harness-queue-prompt=, drained by
+  =e-harness--drain-next-queued-prompt= at settlement.
+
+Delivery to a session that is not a board participant is refused and logged as a
+board fault.  Every delivery records the subscribing session, so an unexpected
+wake names who arranged it.
 
 ** Consumption: broadcast facts and claimable offers
 
@@ -269,11 +341,15 @@ Shells show it; the session resource exposes it.
 ** The one-call shortcut stays
 
 =bash {command, wait_for: 30}= is: post a =bash= work package with a one-shot
-=here-inline= subscription on its terminal event and a 30s deadline.  Work wins
-and the call settles with the result: one round trip, one tool call, no
-subscription bookkeeping visible to the model.  Deadline wins and the
-subscription converts to =here-deferred= per policy, with the call settling as
-=work:<id>=.  =wait_for: 0= posts with no inline hold.
+subscription whose target is =session:self= and whose arrival is =settle-call=,
+with a 30s deadline.  Work wins and the call settles with the result: one round
+trip, one tool call, no subscription bookkeeping visible to the model.  Deadline
+wins and the arrival degrades to =queue= per policy, with the call settling as
+=work:<id>=.  =wait_for: 0= posts with no =settle-call= arrival at all.
+
+Arrival degradation is the reason =settle-call= is a value and not a special
+path: the deadline changes one field on an existing subscription instead of
+switching between two mechanisms.
 
 Small work must never cost two tool calls.  Explicit =post= plus =subscribe= is
 for work that is meant to outlive the call, or whose reaction belongs in another
@@ -335,8 +411,8 @@ Model-facing tool count does not grow.
 - =lisp/core/e-work-board.el= :: event log, subscriptions, selector/renderer
   registry, matching, budgets.  Depends on =e-work= only.  No knowledge of
   turns, sessions, or subagents.
-- =e-harness= :: turns matched deliveries into scheduling on the four
-  destinations, because it owns active-turn state.  Owns wake policy.
+- =e-harness= :: resolves target references and dispatches arrivals, because it
+  owns active-turn state and session forking.  Owns wake policy.
 - Producers (=e-task-queue=, =e-cron=, subagents, chat session, annotation
   sweep) post to the board and keep their own domain registries.
 - Shells render the board and the turn cause; they never own board state.
@@ -358,21 +434,23 @@ Standalone value: detached work stops being invisible.  An agent that forgot to
 ** Slice 2 -- Subscriptions with deterministic select/render
 
 Subscription objects, the selector/renderer registry with the default set,
-matching, batched =here-deferred= delivery, turn cause metadata, wake budget,
-quiescence, dormancy reporting, and the =subscribe= / =unsubscribe= /
-=subscriptions= / =register-*= actions.
+matching, batched delivery to =session:self= with =queue= arrival, turn cause
+metadata, wake budget, quiescence, dormancy reporting, and the =subscribe= /
+=unsubscribe= / =subscriptions= / =register-*= actions.
 
 Standalone value: an agent can end a turn and be woken by its own work, with the
 reason stated and the wake shaped by code rather than by luck.
 
-** Slice 3 -- Isolated destinations
+** Slice 3 -- Full target and arrival matrix
 
-=here-inline= expressed as a subscription (folding =wait_for= onto the same
-path), =subagent= delivery against an existing child id, =fork= delivery with
-report-back and a concurrent-fork cap.
+The target-reference registry with the =session:= and =fork:= resolvers, all
+three arrivals dispatched against any board participant, =settle-call= folding
+=wait_for= onto the subscription path, participant-only delivery enforcement,
+fork report-back, and a concurrent-fork cap.
 
-Standalone value: the plan-fragmentation answer ships.  A long thread of work
-stops splicing itself into an unrelated one.
+Standalone value: the plan-fragmentation answer ships.  A thread of work can be
+handed to whichever session should own it instead of splicing into an unrelated
+one.
 
 ** Slice 4 -- Fold existing input paths onto the board
 
