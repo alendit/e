@@ -31,6 +31,7 @@
 (defvar e-project-local-test--unexpected-inspect-load)
 (defvar e-project-local-test--prime-action-loaded)
 (defvar e-project-local-test--factory-helper-loaded)
+(defvar e-project-local-test--layer-load-count)
 
 (defun e-project-local-test--write-file (path content)
   "Write CONTENT to PATH, creating parent directories."
@@ -577,6 +578,81 @@ list every time, or discovery after the first would find no layers."
             (should (cl-find 'topic (e-layer-shells first) :key #'e-shell-id))
             (should (cl-find 'topic (e-layer-shells second)
                              :key #'e-shell-id))))
+      (delete-directory project t))))
+
+(defun e-project-local-test--counting-layer-source ()
+  "Return layer.el source that increments the load counter at read time.
+The top-level `setq' runs each time the registration file is loaded, so the
+counter measures how many times discovery reloaded `layer.el'."
+  (concat
+   "(setq e-project-local-test--layer-load-count"
+   "      (1+ e-project-local-test--layer-load-count))\n"
+   "(e-project-layer-register\n"
+   " :id 'topic\n"
+   " :factory (lambda (_dir)\n"
+   "            (e-layer-create :id 'topic :name \"Topic\")))"))
+
+(ert-deftest e-project-local-test-discover-layers-reuses-cached-snapshot ()
+  "Repeated layer discovery reuses the warmed snapshot without reloading layer.el.
+`e-project-local--discover-layers' reloads every `layer.el' and rebuilds each
+layer's skills on every call, so an unchanged root must reuse the snapshot."
+  (let* ((project (make-temp-file "e-project-local-layer-warm-" t))
+         (e-project-local-allowed-roots (list project))
+         (e-project-local--loaded-files (make-hash-table :test 'equal)))
+    (unwind-protect
+        (progn
+          (clrhash e-project-local--layer-snapshots)
+          (setq e-project-local-test--layer-load-count 0)
+          (e-project-local-test--make-layer
+           project 'topic (e-project-local-test--counting-layer-source))
+          ;; First discovery loads layer.el.
+          (e-project-local--discover-layers project)
+          (should (= e-project-local-test--layer-load-count 1))
+          ;; Second discovery reuses the snapshot; layer.el must not reload.
+          (let ((layers (e-project-local--discover-layers project)))
+            (should (cl-find 'topic layers :key #'e-layer-id))
+            (should (= e-project-local-test--layer-load-count 1))))
+      (delete-directory project t))))
+
+(ert-deftest e-project-local-test-discover-layers-reloads-after-edit ()
+  "Editing `layer.el' invalidates the warmed layer snapshot on next discovery."
+  (let* ((project (make-temp-file "e-project-local-layer-edit-" t))
+         (e-project-local-allowed-roots (list project))
+         (e-project-local--loaded-files (make-hash-table :test 'equal)))
+    (unwind-protect
+        (progn
+          (clrhash e-project-local--layer-snapshots)
+          (setq e-project-local-test--layer-load-count 0)
+          (e-project-local-test--make-layer
+           project 'topic (e-project-local-test--counting-layer-source))
+          (e-project-local--discover-layers project)
+          (should (= e-project-local-test--layer-load-count 1))
+          ;; Rewrite layer.el with a strictly newer mtime.
+          (e-project-local-test--make-layer
+           project 'topic (e-project-local-test--counting-layer-source))
+          (set-file-times
+           (expand-file-name ".e/layers/topic/layer.el" project)
+           (time-add (current-time) 5))
+          (e-project-local--discover-layers project)
+          (should (= e-project-local-test--layer-load-count 2)))
+      (delete-directory project t))))
+
+(ert-deftest e-project-local-test-reset-loaded-files-clears-layer-snapshot ()
+  "Resetting the loaded-file set clears the layer snapshot so discovery reloads."
+  (let* ((project (make-temp-file "e-project-local-layer-reset-" t))
+         (e-project-local-allowed-roots (list project))
+         (e-project-local--loaded-files (make-hash-table :test 'equal)))
+    (unwind-protect
+        (progn
+          (clrhash e-project-local--layer-snapshots)
+          (setq e-project-local-test--layer-load-count 0)
+          (e-project-local-test--make-layer
+           project 'topic (e-project-local-test--counting-layer-source))
+          (e-project-local--discover-layers project)
+          (should (= e-project-local-test--layer-load-count 1))
+          (e-project-local-reset-loaded-files)
+          (e-project-local--discover-layers project)
+          (should (= e-project-local-test--layer-load-count 2)))
       (delete-directory project t))))
 
 (ert-deftest e-project-local-test-extensionless-loads-use-elc-without-source ()

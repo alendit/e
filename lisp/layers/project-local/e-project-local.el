@@ -108,6 +108,12 @@ can detect they are running inside a sanctioned project layer load.")
 (defvar e-project-local--capability-snapshots (make-hash-table :test 'equal)
   "Cached discovered project-local capabilities keyed by normalized root.")
 
+(defvar e-project-local--layer-snapshots (make-hash-table :test 'equal)
+  "Cached discovered project-local layers keyed by normalized root.
+Layer discovery reloads every `layer.el' and rebuilds each layer's skills, so
+the result is cached tagged with the extension signature and reused until an
+edit changes it, mirroring `e-project-local--capability-snapshots'.")
+
 (defvar e-project-local--loaded-files (make-hash-table :test 'equal)
   "Set of project-local factory files already loaded this session, by truename.
 A layer/capability factory typically `load's several helper `.el' files each
@@ -147,13 +153,15 @@ commit or roll back independently."
 
 (defun e-project-local-reset-loaded-files ()
   "Forget cached project-local discovery so the next open reloads factory files.
-Clears both the loaded-file set and the capability snapshots.  The snapshot
-signature only tracks `layer.el'/`capability.el' mtimes, so an edit to a factory
-helper file would otherwise be reused from cache; clearing both lets a live
-reload pick up any project-local edit.  `defvar' does not reset an already-bound
-table, so this must run explicitly after reloading this file."
+Clears the loaded-file set, the capability snapshots, and the layer snapshots.
+A snapshot signature only tracks `layer.el'/`capability.el' mtimes, so an edit
+to a factory helper file would otherwise be reused from cache; clearing all
+three lets a live reload pick up any project-local edit.  `defvar' does not
+reset an already-bound table, so this must run explicitly after reloading this
+file."
   (clrhash e-project-local--loaded-files)
-  (clrhash e-project-local--capability-snapshots))
+  (clrhash e-project-local--capability-snapshots)
+  (clrhash e-project-local--layer-snapshots))
 
 (cl-defstruct (e-project-local-registration
                (:constructor e-project-local-registration-create))
@@ -594,14 +602,17 @@ capability-scoped skills, and drops duplicate ids (nearer directory wins)."
                     capabilities)))))))
     (nreverse capabilities)))
 
-(defun e-project-local--discover-layers (directory)
-  "Return project layers discovered for project root DIRECTORY.
+(defun e-project-local--discover-layers-uncached (directory)
+  "Return project layers discovered for project root DIRECTORY, loading files.
 Walks `.e/layers/' ancestors, skips layer.el under roots that are not
 allowlisted (reporting them), instantiates registered factories, and drops
-duplicate ids (nearer directory wins)."
-  (let (layers seen)
+duplicate ids (nearer directory wins).  Stores the result, tagged with the
+current extension signature, in `e-project-local--layer-snapshots' keyed by the
+normalized root and returns it."
+  (let ((root (e-skills-normalize-directory directory))
+        layers seen)
     (dolist (layer-directory
-             (e-project-local--layer-directories directory))
+             (e-project-local--layer-directories root))
       (cond
        ((not (e-project-local--root-allowed-p layer-directory))
         (message "e-project-local: skipping unallowed project layer %s (add its root to `e-project-local-allowed-roots')"
@@ -619,7 +630,24 @@ duplicate ids (nearer directory wins)."
                       registration layer-directory)
                      layer-directory)
                     layers)))))))
-    (nreverse layers)))
+    (setq layers (nreverse layers))
+    (puthash root
+             (cons (e-project-local--extension-signature root) layers)
+             e-project-local--layer-snapshots)
+    layers))
+
+(defun e-project-local--discover-layers (directory)
+  "Return project layers discovered for project root DIRECTORY.
+Reuses the cached snapshot when one exists for the normalized root and its
+extension signature is unchanged, so each `layer.el' is loaded and its skills
+rebuilt once per root rather than on every turn but reloaded after an edit."
+  (let* ((root (and directory (e-skills-normalize-directory directory)))
+         (entry (and root (gethash root e-project-local--layer-snapshots))))
+    (if (and entry
+             (equal (car entry)
+                    (e-project-local--extension-signature root)))
+        (cdr entry)
+      (e-project-local--discover-layers-uncached root))))
 
 (defun e-project-local--aggregate-requires (layers)
   "Return de-duplicated layer ids required by discovered project LAYERS.
@@ -650,20 +678,23 @@ shells are used."
 
 (defun e-project-local--extension-signature (directory)
   "Return a cheap staleness signature for project-local extensions of DIRECTORY.
-The signature folds in each discovered `layer.el'/`capability.el' path and its
-modification time, so editing, adding, or removing an extension file changes it
-without re-reading file contents."
+The signature folds in each discovered `layer.el'/`capability.el' path, its
+modification time, and whether its root is allowlisted, so editing, adding, or
+removing an extension file, or changing `e-project-local-allowed-roots', changes
+it without re-reading file contents."
   (let ((root (e-skills-normalize-directory directory))
         entries)
     (dolist (layer-directory (e-project-local--layer-directories root))
       (let ((file (expand-file-name "layer.el" layer-directory)))
-        (push (cons file (file-attribute-modification-time
-                          (file-attributes file)))
+        (push (list file
+                    (file-attribute-modification-time (file-attributes file))
+                    (and (e-project-local--root-allowed-p layer-directory) t))
               entries)))
     (dolist (capability-directory (e-project-local--capability-directories root))
       (let ((file (expand-file-name "capability.el" capability-directory)))
-        (push (cons file (file-attribute-modification-time
-                          (file-attributes file)))
+        (push (list file
+                    (file-attribute-modification-time (file-attributes file))
+                    (and (e-project-local--root-allowed-p capability-directory) t))
               entries)))
     (sort entries (lambda (left right) (string< (car left) (car right))))))
 
