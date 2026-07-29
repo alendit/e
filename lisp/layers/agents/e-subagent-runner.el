@@ -439,10 +439,24 @@ communicate mid-flight.  Return the normalized record."
 (defun e-subagent-send (registry subagent-id prompt)
   "Queue a follow-up PROMPT to SUBAGENT-ID's child session.
 Unlike `e-subagent-steer', this submits a follow-up turn rather than steering
-the active one.  Return the normalized record."
-  (let ((harness (e-subagent-registry-child-harness registry subagent-id))
+the active one, so it needs a running turn to queue behind.  A settled child
+has none, so guard status up front like `e-subagent-resume' rather than let
+`e-harness-queue-prompt' raise the low-level `e-harness-no-active-turn': point a
+`failed' or `cancelled' child at resume, refuse a `done' or shut-down child, and
+require a live child harness.  Return the normalized record."
+  (let ((status (e-subagent-registry-status registry subagent-id))
+        (harness (e-subagent-registry-child-harness registry subagent-id))
         (session-id (plist-get (e-subagent-registry-get registry subagent-id)
                                :session-id)))
+    (when (memq status '(failed cancelled))
+      (user-error "Subagent %s is %s; use resume to start a new turn, not send"
+                  subagent-id status))
+    (when (eq status 'done)
+      (user-error "Subagent %s is done; spawn a fresh child instead of send"
+                  subagent-id))
+    (when (e-subagent-registry-shutdown-p registry subagent-id)
+      (user-error "Subagent %s was shut down; spawn a fresh child instead"
+                  subagent-id))
     (unless harness
       (user-error "Subagent %s has no live child harness" subagent-id))
     (e-harness-queue-prompt harness session-id prompt)

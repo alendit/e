@@ -315,6 +315,47 @@ turn's result lands."
           (should (equal steered "steer this"))
           (should (equal queued "follow up")))))))
 
+(ert-deftest e-subagent-runner-test-send-refuses-settled-child ()
+  "Send refuses a failed, cancelled, or done child instead of queueing.
+A settled child has no active turn, so `e-harness-queue-prompt' would raise the
+low-level `e-harness-no-active-turn'.  Send must guard status up front like
+`e-subagent-resume', point failed/cancelled children at resume, and never reach
+the harness."
+  (e-subagent-runner-test--with-instances
+    (let* ((registry (e-subagent-registry-create))
+           (parent (e-harness-create
+                    :backend (e-backend-fake-create :items nil)))
+           (captured (list nil))
+           (queued nil))
+      (e-harness-create-session parent :id "parent-1")
+      (cl-letf (((symbol-function 'e-harness-queue-prompt)
+                 (lambda (_h _s prompt &rest _) (setq queued prompt) nil)))
+        ;; A failed child is not sendable; the error points at resume.
+        (let* ((record (e-subagent-spawn
+                        registry parent "parent-1"
+                        :type :reviewer :prompt "go"
+                        :runner (e-subagent-runner-test--capturing-runner captured)))
+               (subagent-id (plist-get record :subagent-id)))
+          (funcall (plist-get (car captured) :on-settle)
+                   'failed :error "boom")
+          (should (eq (e-subagent-registry-status registry subagent-id) 'failed))
+          (let ((err (should-error
+                      (e-subagent-send registry subagent-id "follow up")
+                      :type 'user-error)))
+            (should (string-match-p "resume" (cadr err))))
+          (should-not queued))
+        ;; A done child is likewise refused.
+        (let* ((record (e-subagent-spawn
+                        registry parent "parent-1"
+                        :type :reviewer :prompt "go"
+                        :runner (e-subagent-runner-test--capturing-runner captured)))
+               (subagent-id (plist-get record :subagent-id)))
+          (funcall (plist-get (car captured) :on-settle) 'done :summary "ok")
+          (should (eq (e-subagent-registry-status registry subagent-id) 'done))
+          (should-error (e-subagent-send registry subagent-id "follow up")
+                        :type 'user-error)
+          (should-not queued))))))
+
 (ert-deftest e-subagent-runner-test-raw-read-returns-excerpt-and-uri ()
   "Raw read returns a bounded excerpt and the child session:// URI."
   (e-subagent-runner-test--with-instances
