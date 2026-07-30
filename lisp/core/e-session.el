@@ -1714,31 +1714,34 @@ checkpoint without making an older index hide a new session."
   (let ((sessions-directory (e-session-store-sessions-directory store)))
     (when (file-directory-p sessions-directory)
       (dolist (file (directory-files sessions-directory t "\\.jsonl\\'"))
-        (condition-case nil
-            (with-temp-buffer
-              (let ((coding-system-for-read 'utf-8))
-                (insert-file-contents file nil 0 65536))
-              (goto-char (point-min))
-              (let* ((line (buffer-substring-no-properties
-                            (line-beginning-position)
-                            (line-end-position)))
-                     (record (and (not (string-empty-p line))
-                                  (e-session--json-read-line line))))
-                (when (and (equal (plist-get record :type) "session")
-                           (or (not only-missing)
-                               (not (gethash (plist-get record :session-id)
-                                             (e-session-store-sessions store)))))
-                  (e-session--put-index-entry
-                   store
-                   (list :id (plist-get record :session-id)
-                         :created-at (or (plist-get record :created-at)
-                                         (plist-get record :timestamp))
-                         :updated-at (or (plist-get record :updated-at)
-                                         (plist-get record :timestamp))
-                         :message-count 0
-                         :file file)))))
-          (file-error nil)
-          (json-parse-error nil))))))
+        ;; A current catalog must make listing transcript-free.  File names
+        ;; match session ids, so only a journal absent from the catalog needs
+        ;; its root record read during reconciliation.
+        (let ((session-id (file-name-base file)))
+          (when (or (not only-missing)
+                    (not (gethash session-id (e-session-store-sessions store))))
+            (condition-case nil
+                (with-temp-buffer
+                  (let ((coding-system-for-read 'utf-8))
+                    (insert-file-contents file nil 0 65536))
+                  (goto-char (point-min))
+                  (let* ((line (buffer-substring-no-properties
+                                (line-beginning-position)
+                                (line-end-position)))
+                         (record (and (not (string-empty-p line))
+                                      (e-session--json-read-line line))))
+                    (when (equal (plist-get record :type) "session")
+                      (e-session--put-index-entry
+                       store
+                       (list :id (plist-get record :session-id)
+                             :created-at (or (plist-get record :created-at)
+                                             (plist-get record :timestamp))
+                             :updated-at (or (plist-get record :updated-at)
+                                             (plist-get record :timestamp))
+                             :message-count 0
+                             :file file)))))
+              (file-error nil)
+              (json-parse-error nil))))))))
 
 (cl-defun e-session-persistent-index-store-create (&optional directory
                                                              &key write-mode)
