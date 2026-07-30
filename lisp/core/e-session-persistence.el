@@ -48,7 +48,7 @@
                (:constructor e-session-persistence--create)
                (:conc-name e-session-persistence-))
   store process stderr-buffer input-fragment
-  (next-id 0) (outbox (make-hash-table :test 'eql))
+  instance-id (next-sequence 0) (outbox (make-hash-table :test 'equal))
   checkpoint-timer retry-timer last-error)
 
 (defun e-session-persistence--directory ()
@@ -84,7 +84,8 @@
 (defun e-session-persistence--ordered-outbox (controller)
   "Return CONTROLLER requests in submission order."
   (sort (hash-table-values (e-session-persistence-outbox controller))
-        (lambda (left right) (< (plist-get left :id) (plist-get right :id)))))
+        (lambda (left right)
+          (< (plist-get left :sequence) (plist-get right :sequence)))))
 
 (defun e-session-persistence--restart-later (controller)
   "Retry CONTROLLER's writer when it still has work."
@@ -113,7 +114,7 @@
                 (list 'e-session-persistence-error
                       (or (plist-get response :error) "Writer rejected command")))
           (e-session-persistence--restart-later controller))
-      (when (integerp id)
+      (when (stringp id)
         (remhash id (e-session-persistence-outbox controller))
         (setf (e-session-persistence-last-error controller) nil)))))
 
@@ -153,8 +154,12 @@
 
 (defun e-session-persistence--submit (controller operation)
   "Queue OPERATION for CONTROLLER and return its stable command id."
-  (let* ((id (cl-incf (e-session-persistence-next-id controller)))
-         (request (append (list :id id
+  (let* ((sequence (cl-incf (e-session-persistence-next-sequence controller)))
+         ;; The writer deduplicates this value after an Emacs restart.  A local
+         ;; counter would collide with a prior controller's acknowledged work.
+         (id (format "%s:%d" (e-session-persistence-instance-id controller)
+                     sequence))
+         (request (append (list :id id :sequence sequence
                                 :directory (e-session-store-directory
                                             (e-session-persistence-store controller)))
                           operation)))
@@ -206,7 +211,8 @@ This is for controlled durability boundaries, never ordinary interaction."
   (unless (e-session-store-persistent store)
     (signal 'e-session-persistence-error (list "Store is not persistent")))
   (or (e-session-store-persistence-controller store)
-      (let ((controller (e-session-persistence--create :store store)))
+      (let ((controller (e-session-persistence--create
+                         :store store :instance-id (e-session-generate-ulid))))
         (setf (e-session-store-persistence-controller store) controller)
         controller)))
 

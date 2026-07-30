@@ -24,7 +24,7 @@ async function knownCommands(directory) {
     for (const line of content.split("\n")) {
       try {
         const id = JSON.parse(line)["writer-command-id"];
-        if (Number.isInteger(id)) known.add(id);
+        if (typeof id === "string" && id) known.add(id);
       } catch (_) {}
     }
   }

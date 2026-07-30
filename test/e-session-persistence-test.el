@@ -29,6 +29,11 @@
           (should (= writes 0))
           (e-session-flush store 5)
           (should (= writes 0))
+          (should (string-match-p "^[0-9A-Z]+:[0-9]+\\'"
+                                  (e-session-persistence-submit-record
+                                   controller "session-1"
+                                   '(:type "session-info" :metadata (:retry t)))))
+          (e-session-flush store 5)
           (let ((loaded (e-session-persistent-store-create directory)))
             (should (equal (plist-get (car (e-session-messages loaded "session-1"))
                                       :content)
