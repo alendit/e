@@ -59,13 +59,16 @@
 It persists to `e-task-queue-directory'; `e-task-queue-load' rehydrates it.")
 
 (defun e-task-queue-actions-ensure-loaded ()
-  "Rehydrate the default durable queue from disk once, and return it.
+  "Rehydrate the default durable queue and reconcile legacy sessions.
 Idempotent: the `loaded' property guards against repeated disk reads.  Every
 path that first touches the shared default queue -- the layer factory and the
 list buffer alike -- calls this, so rehydration and re-dispatch of persisted
 queued work never depend on a harness happening to build the task-queue layer
-first."
-  (unless (get 'e-task-queue-actions-default-queue 'loaded)
+first.  Calls after a code reload reconcile legacy task-session markers without
+reloading or re-dispatching the queue."
+  (if (get 'e-task-queue-actions-default-queue 'loaded)
+    (e-task-queue--reconcile-session-metadata
+     e-task-queue-actions-default-queue)
     (ignore-errors (e-task-queue-load e-task-queue-actions-default-queue))
     (put 'e-task-queue-actions-default-queue 'loaded t))
   e-task-queue-actions-default-queue)
