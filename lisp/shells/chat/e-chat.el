@@ -53,6 +53,11 @@
   :group 'e
   :prefix "e-chat-")
 
+(defcustom e-chat-mode-line-status-delay 0.15
+  "Seconds to coalesce non-terminal chat mode-line status updates."
+  :type 'number
+  :group 'e-chat)
+
 (defcustom e-chat-buffer-name "*e-chat*"
   "Legacy fallback e chat buffer name."
   :type 'string
@@ -689,11 +694,19 @@ intentionally not persisted in session metadata.")
                 window-configuration-change-hook)
     (add-hook 'window-configuration-change-hook
               #'e-chat--flush-deferred-hidden-redraws))
+  (unless (memq #'e-chat--flush-deferred-hidden-mode-line-statuses
+                window-configuration-change-hook)
+    (add-hook 'window-configuration-change-hook
+              #'e-chat--flush-deferred-hidden-mode-line-statuses))
   (when (boundp 'window-buffer-change-functions)
     (unless (memq #'e-chat--flush-deferred-hidden-redraws
                   window-buffer-change-functions)
       (add-hook 'window-buffer-change-functions
-                #'e-chat--flush-deferred-hidden-redraws)))
+                #'e-chat--flush-deferred-hidden-redraws))
+    (unless (memq #'e-chat--flush-deferred-hidden-mode-line-statuses
+                  window-buffer-change-functions)
+      (add-hook 'window-buffer-change-functions
+                #'e-chat--flush-deferred-hidden-mode-line-statuses)))
   (when (boundp 'persp-activated-functions)
     (unless (memq #'e-chat--mark-selected-session-read
                   persp-activated-functions)
@@ -865,6 +878,15 @@ visible.")
 
 (defvar-local e-chat--mode-line-status nil
   "Current compact e chat status text shown in the mode line.")
+
+(defvar-local e-chat--mode-line-status-dirty nil
+  "Non-nil when a hidden chat buffer needs a scheduled status refresh.")
+
+(defvar-local e-chat--mode-line-status-generation 0
+  "Generation used to discard stale scheduled mode-line refreshes.")
+
+(defvar-local e-chat--mode-line-status-prefer-token-usage nil
+  "Whether the pending mode-line refresh should prefer provider token usage.")
 
 (defvar-local e-chat--mode-line-context-estimate-cache nil
   "Caller-owned (TOKENS . TIME) cache cell for context-token estimates.
@@ -6966,10 +6988,54 @@ expensive context-token estimate path."
   "Refresh this buffer's e chat mode-line text.
 When PREFER-TOKEN-USAGE is non-nil, prefer fresh provider usage over recomputing
 an approximate full-context estimate."
-  (setq-local e-chat--mode-line-status
-              (e-chat--mode-line-status-text prefer-token-usage))
-  (setq-local mode-name e-chat--mode-line-status)
-  (force-mode-line-update))
+  (let ((status (e-chat--mode-line-status-text prefer-token-usage)))
+    (unless (equal status e-chat--mode-line-status)
+      (setq-local e-chat--mode-line-status status)
+      (setq-local mode-name status)
+      (force-mode-line-update))))
+
+(defun e-chat--request-mode-line-status-refresh (&optional prefer-token-usage immediate)
+  "Schedule a coalesced refresh of this chat buffer's mode-line status.
+Token-usage events are latest-value UI state.  Hidden buffers remember that
+state but do not cause a mode-line redraw until they become visible.  IMMEDIATE
+is reserved for terminal context boundaries."
+  (setq-local e-chat--mode-line-status-dirty t)
+  (setq-local e-chat--mode-line-status-prefer-token-usage
+              (or prefer-token-usage e-chat--mode-line-status-prefer-token-usage))
+  (when (e-chat--redraw-visible-p)
+    (let ((generation (cl-incf e-chat--mode-line-status-generation))
+          (buffer (current-buffer)))
+      (e-ui-work-schedule
+       (e-ui-work-spec-create
+        :id "chat_mode_line_status"
+        :description "Refresh coalesced chat mode-line status."
+        :owner 'chat-mode-line-status
+        :target-buffer buffer
+        :key 'status
+        :generation generation
+        :delay (if immediate 0 e-chat-mode-line-status-delay)
+        :coalesce t
+        :focus-policy 'preserve
+        :reentrancy-policy 'defer
+        :stale-p (lambda (_job)
+                   (/= generation e-chat--mode-line-status-generation))
+        :apply (lambda (_job _handle)
+                 (when (= generation e-chat--mode-line-status-generation)
+                   (let ((prefer e-chat--mode-line-status-prefer-token-usage))
+                     (setq-local e-chat--mode-line-status-dirty nil)
+                     (setq-local e-chat--mode-line-status-prefer-token-usage nil)
+                     (e-chat--refresh-mode-line-status prefer)))))))))
+
+(defun e-chat--flush-deferred-hidden-mode-line-statuses (&rest _)
+  "Schedule deferred mode-line refreshes for chat buffers that became visible."
+  (dolist (buffer (buffer-list))
+    (when (buffer-live-p buffer)
+      (with-current-buffer buffer
+        (when (and (derived-mode-p 'e-chat-mode)
+                   e-chat--mode-line-status-dirty
+                   (e-chat--redraw-visible-p))
+          (e-chat--request-mode-line-status-refresh
+           e-chat--mode-line-status-prefer-token-usage t))))))
 
 (defun e-chat--invalidate-mode-line-context-estimate ()
   "Clear the buffer-local context estimate used by the mode-line status."
@@ -7399,7 +7465,7 @@ passed through assistant fontification, so the audit view is faithful."
      (e-chat--stop-progress-indicator (plist-get event :turn-id))
      (e-chat--set-status "done"))
     ('token-usage
-     (e-chat--refresh-mode-line-status t))
+     (e-chat--request-mode-line-status-refresh t))
     ('provider-anchor-candidate
      nil)
     ('session-reset

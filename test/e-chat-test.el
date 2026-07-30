@@ -7652,6 +7652,7 @@ The context-window denominator comes from the live provider lookup
          (buffer (e-chat-open :harness harness :session-id "chat-mode-line-usage")))
     (unwind-protect
         (with-current-buffer buffer
+          (setq-local e-chat--assume-redraw-visible t)
           (e-session-append-activity-event
            store
            e-chat-session-id
@@ -8031,6 +8032,7 @@ The context-window denominator comes from the live provider lookup
                               :session-id "chat-token-usage-fast")))
     (unwind-protect
         (with-current-buffer buffer
+          (setq-local e-chat--assume-redraw-visible t)
           (e-session-append-activity-event
            store
            e-chat-session-id
@@ -8046,6 +8048,9 @@ The context-window denominator comes from the live provider lookup
                             :turn-id "turn-1"
                             :payload '(:input-tokens 1200
                                        :total-tokens 1300))))
+          (e-ui-work-with-batch-drain
+            (e-ui-work-drain-batch :buffer (current-buffer)
+                                   :owner 'chat-mode-line-status))
           (should (string-match-p "1.2k/258k tok" mode-name)))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
@@ -8064,6 +8069,7 @@ The context-window denominator comes from the live provider lookup
          (turn-option-calls 0))
     (unwind-protect
         (with-current-buffer buffer
+          (setq-local e-chat--assume-redraw-visible t)
           (e-session-append-activity-event
            store
            e-chat-session-id
@@ -8080,8 +8086,40 @@ The context-window denominator comes from the live provider lookup
                             :turn-id "turn-1"
                             :payload '(:input-tokens 1200
                                        :total-tokens 1300))))
+          (e-ui-work-with-batch-drain
+            (e-ui-work-drain-batch :buffer (current-buffer)
+                                   :owner 'chat-mode-line-status))
           (should (= turn-option-calls 0))
           (should (string-match-p "1.2k/258k tok" mode-name)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-token-usage-coalesces-mode-line-render-work ()
+  "Repeated usage events schedule one latest-value mode-line projection."
+  (let* ((store (e-session-store-create))
+         (backend (e-backend-fake-create :items nil))
+         (harness (e-harness-create
+                   :backend backend :sessions store
+                   :default-options '(:model "gpt-5.5" :reasoning-effort "high")))
+         (buffer (e-chat-open :harness harness :session-id "chat-token-status-work"))
+         (refreshes 0))
+    (unwind-protect
+        (with-current-buffer buffer
+          (setq-local e-chat--assume-redraw-visible t)
+          (let ((e-chat-mode-line-status-delay 0))
+            (cl-letf (((symbol-function 'e-chat--refresh-mode-line-status)
+                       (lambda (&rest _args) (setq refreshes (1+ refreshes)))))
+              (dotimes (_ 3)
+                (e-chat--render-event
+                 (e-events-make :type 'token-usage
+                                :session-id e-chat-session-id :turn-id "turn-1")))
+              (should (= (length (e-ui-work-pending
+                                  (current-buffer) :owner 'chat-mode-line-status))
+                         1))
+              (e-ui-work-with-batch-drain
+                (e-ui-work-drain-batch :buffer (current-buffer)
+                                       :owner 'chat-mode-line-status))
+              (should (= refreshes 1)))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
