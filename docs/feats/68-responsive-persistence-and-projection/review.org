@@ -1,0 +1,105 @@
+#+title: Review: Responsive Persistence and Scheduled Chat Projection
+#+author: e implementation
+#+date: 2026-07-30
+#+startup: overview
+
+* Status
+
+Done.
+
+* Scope reviewed
+
+- Default persistent session writes, catalog checkpoints, restart recovery, and
+  indexed-session startup.
+- Token-usage, progress-start, steering, hook-audit, and intermittent activity
+  projections in the chat shell.
+- Commits =b30d198=, =64c2f22=, =46a19c8=, =cdb7a0e=, and =2822ede=.
+
+* Review loop
+
+** DONE High: Writer command ids collided after an Emacs restart
+
+*** Problem
+
+The initial writer protocol used a process-local integer sequence.  Reusing a
+session directory after restart could make a newly submitted record look like
+an already committed command.
+
+*** Change
+
+Commands now combine a fresh ULID controller instance id and a local sequence.
+The Node writer deduplicates these opaque string ids.
+
+*** Evidence
+
+=e-session-persistence-test= verifies writer-owned journal/catalog commits and
+the command-id shape; commit =46a19c8= contains the corrective slice.
+
+** DONE High: Reconciliation loaded every transcript despite a current catalog
+
+*** Problem
+
+The first stale-catalog reconciliation pass read all JSONL files at startup,
+breaking the indexed-session listing contract.
+
+*** Change
+
+Reconciliation compares journal file names with catalog ids and reads only
+journals absent from the catalog.
+
+*** Evidence
+
+=e-session-test-index-store-lists-without-loading-transcripts= passes alongside
+the stale-catalog recovery test; commit =cdb7a0e= contains the correction.
+
+* Final review
+
+No unresolved findings.  Durable journal appends now leave the Emacs UI thread,
+the catalog is a debounced reconstructible cache, and latest-value chat state
+uses one scheduled projection.  Terminal transcript updates remain ordered and
+synchronous by design.
+
+* Verification
+
+- =eldev test e-chat-test=: 309 passed, one environment-dependent markdown
+  test skipped, no failures.
+- =eldev test e-session-test e-session-persistence-test ...=: 72 passed.
+- =node --check lisp/core/e-session-writer.mjs= and batch source loading passed.
+- Controlled event-burst trace: =/tmp/e-profile/20260730-174106-000001.jsonl=.
+  =chat.render-event= peaked at 0.600 ms; =session.append-record= at 0.076 ms;
+  the one coalesced activity redraw took 1.095 ms.
+
+* Live reload
+
+No live reload was performed.  Repository-side validation used isolated batch
+Emacs; the running Emacs was left unchanged.
+
+* Architecture review
+
+The persistence controller owns transient outbox/retry state while the Node
+adapter owns filesystem effects.  Journals remain authoritative durable state;
+the catalog is derived and recoverable.  Chat event dispatch updates local view
+state and asks the existing UI-work service to project it, avoiding a second
+renderer or a new shared event abstraction.
+
+* Design self-check
+
+1. Each committed slice is useful independently.
+2. The direction is UI-thread-free persistence and bounded latest-value UI work.
+3. Writer transport is a local, replaceable boundary; journal format is stable.
+4. The controller owns durability delivery; chat owns presentation state.
+5. Interfaces are narrow append/checkpoint/ack and scheduled projection calls.
+6. Core policy depends on those contracts, not Node or shell implementation.
+7. Filesystem effects are outside the Emacs interactive path.
+8. Outbox state is transient; journals are durable; catalog state is rebuildable.
+9. Work is coalesced, deferred for hidden buffers, and measured by trace.
+10. No speculative common event interface was added.
+11. Existing JSONL and catalog reads remain compatible.
+12. The default synchronous catalog rewrite is removed from the interactive path.
+13. Explicit flush exposes writer errors; unexpected process failure retries.
+14. Persistence, recovery, indexed listing, projection, and event-burst paths
+    have focused automated coverage.
+
+* Unresolved
+
+None.

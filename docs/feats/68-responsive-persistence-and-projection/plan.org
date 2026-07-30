@@ -1,7 +1,7 @@
 #+title: Responsive Persistence and Scheduled Chat Projection
 #+startup: overview
 
-* In-progress
+* Done
 
 The 2026-07-30 profile recorded two synchronous session flushes of 481 ms and
 544 ms.  The existing timer deferred writes by only 50 ms, then rewrote the
@@ -27,7 +27,17 @@ ordered; token usage and progress remain latest-value updates.
 2. DONE: Token usage now enters a coalesced =e-ui-work= projection job.  Hidden
    buffers retain dirty status until a window displays them; unchanged status
    text does not force a mode-line redraw.
-3. NEXT: Extend the same projection contract to remaining transient chat
-   updates, then validate replay, writer retry/order, hidden-buffer behavior,
-   and a repeat
-   profile of the original chat workload.
+3. DONE: Route progress start, steering, hook-audit, and intermittent activity
+   through the existing coalesced activity projection.  Terminal transcript
+   updates remain ordered and immediate.  Validate replay, writer retry/order,
+   hidden-buffer behavior, and a representative event-burst profile.
+
+* Completion evidence
+
+The controlled 2026-07-30 trace at
+=/tmp/e-profile/20260730-174106-000001.jsonl= exercised a persistent writer,
+40 token-usage records, 20 reasoning updates, and 20 tool-progress updates.
+It recorded 81 =chat.render-event= calls with a 0.600 ms maximum, 40
+=session.append-record= calls with a 0.076 ms maximum, and one coalesced
+=chat.activity-redraw= at 1.095 ms.  The trace is a deterministic workload,
+not a replacement for profiling a live provider turn.
