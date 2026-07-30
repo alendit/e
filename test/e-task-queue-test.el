@@ -84,10 +84,39 @@ tests need a runner whose handle carries one."
       (should (equal (plist-get record :await-ref)
                      (format "task:%s" (plist-get record :task-id))))
       (should (equal (plist-get record :prompt) "do thing"))
+      (should (eq (plist-get record :harness-instance-id) :chat-a))
       ;; Cap is 2 by default and nothing else is running, so it dispatched.
       (should (eq (plist-get (e-task-queue-get queue (plist-get record :task-id))
                              :status)
                   'running)))))
+
+(ert-deftest e-task-queue-test-load-backfills-legacy-session-marker ()
+  "Loading records marks an existing pre-marker task session as a worker."
+  (e-task-queue-test--with-instances
+    (e-task-queue-test--register-instance :chat-a t)
+    (let ((directory (make-temp-file "e-task-queue-test" t)))
+      (unwind-protect
+          (let* ((harness (e-harness-instance-get-or-create :chat-a))
+                 (session (e-harness-create-session harness :id "legacy-task"))
+                 (session-id (plist-get session :id))
+                 (queue (e-task-queue-create
+                         :directory directory
+                         :runner (lambda (_task _harness _on-settle)
+                                   (list :session-id session-id))))
+                 (task (e-task-queue-enqueue queue :prompt "legacy task"))
+                 (task-id (plist-get task :task-id)))
+            (e-task-queue-flush queue)
+            (let ((reloaded (e-task-queue-create :directory directory)))
+              ;; The test concerns historical record repair, not re-dispatch.
+              (setf (e-task-queue-paused-p reloaded) t)
+              (e-task-queue-load reloaded)
+              (let ((loaded (e-session-get (e-harness-sessions harness)
+                                           session-id)))
+                (should (equal (plist-get (plist-get loaded :metadata)
+                                          :task-queue-task-id)
+                               task-id))
+                (should-not (e-session-root-p loaded)))))
+        (delete-directory directory t)))))
 
 (ert-deftest e-task-queue-test-admission-control-under-cap ()
   "With cap 2, a third enqueue waits until a running task settles."

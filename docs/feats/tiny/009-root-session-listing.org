@@ -8,6 +8,7 @@ Subagent sessions and task-queue sessions remain in the session store and stay d
 
 Task-queue sessions now carry durable =:task-queue-task-id= metadata.
 The session layer owns the root-session predicate and filtered listing, and chat and canvas pickers consume that shared policy.
+When the queue loads persisted records from before the marker existed, it reconciles only already-live matching sessions and writes the durable task id before those sessions enter a picker.
 
 * Why tiny
 
@@ -17,7 +18,7 @@ It does not change session lifecycle, persistence, or worker-specific navigation
 * Validation
 
 #+begin_src sh
-eldev -p -dtT test --file test/e-session-test.el --file test/e-task-queue-test.el --file test/e-chat-test.el
+eldev test test/e-session-test.el test/e-task-queue-test.el test/e-chat-test.el test/e-org-canvas-test.el
 git diff --check
 #+end_src
 

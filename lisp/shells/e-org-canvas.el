@@ -458,11 +458,11 @@ ad-hoc test or caller-supplied harnesses keep their explicit layer state."
   (e-org-canvas--metadata-ref (plist-get session :metadata)))
 
 (defun e-org-canvas--all-sessions (harness)
-  "Return full session records for HARNESS."
+  "Return full root session records for HARNESS."
   (let ((store (e-harness-sessions harness)))
     (mapcar (lambda (session)
               (e-session-get store (plist-get session :id)))
-            (e-harness-session-list harness))))
+            (e-harness-root-session-list harness))))
 
 (defun e-org-canvas--normalize-directory (directory)
   "Return normalized DIRECTORY."

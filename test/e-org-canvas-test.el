@@ -1977,6 +1977,26 @@ relied on `e-chat--running-status-rendered-hook' to follow the bottom."
           (kill-buffer buffer)))
       (delete-directory directory t))))
 
+(ert-deftest e-org-canvas-test-session-candidates-exclude-worker-sessions ()
+  "Org Canvas pickers retain root sessions and omit worker-owned sessions."
+  (let ((directory (make-temp-file "e-org-canvas-project-" t))
+        (harness (e-org-canvas-test--harness)))
+    (unwind-protect
+        (let ((file (e-org-canvas-test--org-file directory "notes.org")))
+          (e-org-canvas-test--session-with-file harness "root" file)
+          (e-org-canvas-test--session-with-file harness "worker" file)
+          (e-session-set-session-config
+           (e-harness-sessions harness) "worker"
+           '(:parent-session-id "root"))
+          (should (equal (mapcar (lambda (session) (plist-get session :id))
+                                 (e-org-canvas--session-candidates harness :file file))
+                         '("root"))))
+      (dolist (buffer (buffer-list))
+        (when (and (buffer-file-name buffer)
+                   (file-in-directory-p (buffer-file-name buffer) directory))
+          (kill-buffer buffer)))
+      (delete-directory directory t))))
+
 (ert-deftest e-org-canvas-test-resume_reopens_file_and_enables_mode ()
   "Resuming an Org Canvas session visits the file and restores presentation state."
   (let ((directory (make-temp-file "e-org-canvas-resume-" t))

@@ -362,6 +362,11 @@ is missing or unresolvable settles `failed' without stalling the dispatcher."
   (let* ((record (gethash task-id (e-task-queue-records queue)))
          (instance-id (or (plist-get record :harness-instance-id)
                           (e-task-queue--default-instance-id queue))))
+    ;; A nil instance id is a dispatch-time choice.  Once the task starts,
+    ;; retain the resolved target so its completed session can be identified
+    ;; after a restart even if the queue default later changes.
+    (when instance-id
+      (plist-put record :harness-instance-id instance-id))
     (plist-put record :status 'running)
     (plist-put record :started-at (e-task-queue--timestamp))
     (e-task-queue--notify queue)
@@ -690,6 +695,36 @@ is normalized to `queued' for a best-effort re-run."
                      (e-task-queue--work-handle-for-status record)))
     record))
 
+(defun e-task-queue--reconcile-session-metadata (queue)
+  "Stamp live legacy task sessions with their durable task identity.
+QUEUE records are the authoritative historical link from a task to its
+session.  Older sessions predate `:task-queue-task-id', so session core cannot
+classify them as workers until this migration records that fact.  Only already
+live harnesses are inspected; reconciliation neither creates a harness nor
+starts work.  Return QUEUE."
+  (let ((task-ids-by-session (make-hash-table :test 'equal)))
+    (maphash
+     (lambda (task-id record)
+       (when-let ((session-id (plist-get record :session-id)))
+         (puthash session-id task-id task-ids-by-session)))
+     (e-task-queue-records queue))
+    (when (> (hash-table-count task-ids-by-session) 0)
+      (dolist (instance (e-harness-instance-list))
+        (when-let ((harness
+                    (e-harness-registry-get
+                     (e-harness-instance-harness-id instance))))
+          (dolist (session (e-harness-session-list harness))
+            (when-let ((task-id
+                        (gethash (plist-get session :id) task-ids-by-session)))
+              (unless (equal (plist-get (plist-get session :metadata)
+                                        :task-queue-task-id)
+                             task-id)
+                (e-session-set-session-config
+                 (e-harness-sessions harness)
+                 (plist-get session :id)
+                 (list :task-queue-task-id task-id))))))))
+  queue))
+
 (defun e-task-queue-load (queue)
   "Load QUEUE's persisted records from disk and re-dispatch.  Return QUEUE.
 A `running' record loads as `queued'; `paused', terminal, and `queued' states
@@ -708,6 +743,7 @@ load unchanged.  A queue with no directory or no records file is left empty."
         (let ((record (e-task-queue--load-record durable)))
           (puthash (plist-get record :task-id) record
                    (e-task-queue-records queue))))
+      (e-task-queue--reconcile-session-metadata queue)
       (e-task-queue--notify queue)
       (e-task-queue--dispatch queue)))
   queue)
