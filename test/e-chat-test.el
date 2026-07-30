@@ -502,6 +502,147 @@ tests, matching how the buffer behaves when shown to a user."
       (when (buffer-live-p second-buffer)
         (kill-buffer second-buffer)))))
 
+(ert-deftest e-chat-test-render-session-skips-hidden-messages ()
+  "A message flagged `:display' `hidden' is not rendered in the transcript.
+A superseded first attempt stays in the store for audit but the shell shows
+only the visible reply."
+  (let ((buffer (e-chat-test--buffer nil "chat-hidden-render")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-session-append-message
+           (e-harness-sessions e-chat-harness) "chat-hidden-render"
+           (list :id "m-visible" :role 'assistant :turn-id "turn-1"
+                 :content "visible answer"))
+          (e-session-append-message
+           (e-harness-sessions e-chat-harness) "chat-hidden-render"
+           (list :id "m-hidden" :role 'assistant :turn-id "turn-1"
+                 :content "superseded first attempt" :display 'hidden))
+          (e-chat--clear)
+          (e-chat--render-session)
+          (let ((content (buffer-string)))
+            (should (string-match-p "visible answer" content))
+            (should-not (string-match-p "superseded first attempt" content))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-message-updated-hides-rendered-reply ()
+  "Flipping a rendered message to hidden removes it via `message-updated'.
+The bayesian follow-up hides the first attempt after it was already shown, so
+the shell must react to the `message-updated' event and drop the block."
+  (let ((buffer (e-chat-test--buffer nil "chat-hidden-update")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (setq e-chat--assume-redraw-visible t)
+          (let ((message (e-harness--append-message
+                          e-chat-harness "chat-hidden-update" "turn-1"
+                          (list :role 'assistant
+                                :content "first attempt reply"))))
+            (should (string-match-p "first attempt reply" (buffer-string)))
+            (e-harness-set-message-display
+             e-chat-harness "chat-hidden-update"
+             (plist-get message :id) 'hidden)
+            (should-not (string-match-p "first attempt reply"
+                                        (buffer-string)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-navigation-reveal-hidden-shows-and-focuses ()
+  "Pressing `h' in navigation mode reveals hidden messages as focusable blocks.
+The superseded first attempt and the machine-authored corrective prompt are
+hidden from the clean transcript, but the ESC inspection mode must expose them
+on demand so the user can audit what the calibration follow-up removed."
+  (let ((buffer (e-chat-test--buffer nil "chat-hidden-reveal")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-session-append-message
+           (e-harness-sessions e-chat-harness) "chat-hidden-reveal"
+           (list :id "m-visible" :role 'assistant :turn-id "turn-1"
+                 :content "revised answer"))
+          (e-session-append-message
+           (e-harness-sessions e-chat-harness) "chat-hidden-reveal"
+           (list :id "m-first" :role 'assistant :turn-id "turn-1"
+                 :content "superseded first attempt" :display 'hidden))
+          (e-session-append-message
+           (e-harness-sessions e-chat-harness) "chat-hidden-reveal"
+           (list :id "m-prompt" :role 'user :turn-id "turn-1"
+                 :content "machine corrective prompt"
+                 :metadata '(:display hidden)))
+          (e-chat--clear)
+          (e-chat--render-session)
+          (should-not (string-match-p "superseded first attempt"
+                                      (buffer-string)))
+          (e-chat-test--focus-block-containing "revised answer")
+          (should-not e-chat--reveal-hidden)
+          (call-interactively
+           (lookup-key e-chat-response-navigation-mode-map (kbd "h")))
+          (should e-chat--reveal-hidden)
+          (should (string-match-p "superseded first attempt" (buffer-string)))
+          (should (string-match-p "machine corrective prompt" (buffer-string)))
+          ;; A revealed hidden message is a real navigable block.
+          (e-chat-test--focus-block-containing "superseded first attempt")
+          (should (eq (plist-get (e-chat-test--focused-block) :kind)
+                      'hidden))
+          (should e-chat-response-navigation-mode))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-navigation-reveal-hidden-toggles-off ()
+  "Pressing `h' twice hides the revealed messages again.
+Reveal is a temporary inspection affordance; toggling it off restores the clean
+one-answer transcript."
+  (let ((buffer (e-chat-test--buffer nil "chat-hidden-reveal-off")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-session-append-message
+           (e-harness-sessions e-chat-harness) "chat-hidden-reveal-off"
+           (list :id "m-visible" :role 'assistant :turn-id "turn-1"
+                 :content "revised answer"))
+          (e-session-append-message
+           (e-harness-sessions e-chat-harness) "chat-hidden-reveal-off"
+           (list :id "m-first" :role 'assistant :turn-id "turn-1"
+                 :content "superseded first attempt" :display 'hidden))
+          (e-chat--clear)
+          (e-chat--render-session)
+          (e-chat-test--focus-block-containing "revised answer")
+          (call-interactively
+           (lookup-key e-chat-response-navigation-mode-map (kbd "h")))
+          (should (string-match-p "superseded first attempt" (buffer-string)))
+          (call-interactively
+           (lookup-key e-chat-response-navigation-mode-map (kbd "h")))
+          (should-not e-chat--reveal-hidden)
+          (should-not (string-match-p "superseded first attempt"
+                                      (buffer-string))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-test-composer-input-collapses-revealed-hidden ()
+  "Returning to the composer collapses revealed hidden messages.
+The default reading view is the clean transcript, so leaving inspection mode
+must drop any revealed hidden blocks."
+  (let ((buffer (e-chat-test--buffer nil "chat-hidden-reveal-composer")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-session-append-message
+           (e-harness-sessions e-chat-harness) "chat-hidden-reveal-composer"
+           (list :id "m-visible" :role 'assistant :turn-id "turn-1"
+                 :content "revised answer"))
+          (e-session-append-message
+           (e-harness-sessions e-chat-harness) "chat-hidden-reveal-composer"
+           (list :id "m-first" :role 'assistant :turn-id "turn-1"
+                 :content "superseded first attempt" :display 'hidden))
+          (e-chat--clear)
+          (e-chat--render-session)
+          (e-chat-test--focus-block-containing "revised answer")
+          (call-interactively
+           (lookup-key e-chat-response-navigation-mode-map (kbd "h")))
+          (should (string-match-p "superseded first attempt" (buffer-string)))
+          (call-interactively #'e-chat-response-navigation-insert)
+          (should-not e-chat--reveal-hidden)
+          (should-not (string-match-p "superseded first attempt"
+                                      (buffer-string))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-submit-immediately-clears-composer-and-keeps-separator ()
   "Submitting shows the user turn and keeps an empty follow-up composer."
   (let ((buffer (e-chat-test--buffer
@@ -6361,12 +6502,16 @@ metadata; the switch and active-sessions pickers list only top-level chats."
         (e-session-create store :id "child-by-role"
                           :metadata '(:name "Reviewer"
                                       :subagent-role "reviewer"))
+        (e-session-create store :id "queued-task"
+                          :metadata '(:name "Queue worker"
+                                      :task-queue-task-id "tsk_000001"))
         (let ((ids (mapcar (lambda (candidate)
                              (plist-get candidate :session-id))
                            (e-chat--session-candidates))))
           (should (member "top-level" ids))
           (should-not (member "child-by-parent" ids))
-          (should-not (member "child-by-role" ids)))))))
+          (should-not (member "child-by-role" ids))
+          (should-not (member "queued-task" ids)))))))
 
 (ert-deftest e-chat-test-session-candidates-order-newest-message-first ()
   "Switch-session candidates list newest last message first."

@@ -184,12 +184,14 @@ That is a deterministic string parse, not a judgment about the prose.
 
 The hook returns =value= unchanged and does nothing unless the turn qualifies:
 
-1. the reply contains a =#+begin_reasoning= block (the agent self-marked), OR
-2. a coarse lexical filter over the reply trips -- a concrete value, name, or date that is present in the reply and absent from the turn input.
+1. the reply contains a =#+begin_reasoning= block (the agent self-marked) -- always on, OR
+2. a coarse lexical filter over the reply trips -- a concrete value, name, or date -- *only when the opt-in flag =e-bayesian-reasoning-enable-bare-assertion-gate= is non-nil*.
 
 Gate 2 is an intentionally dumb tripwire, not a grounding judge.
-It exists only to catch turns where the agent asserted something concrete but omitted the mark; it will have false positives and false negatives, its firing rate is telemetry, and it is tuned conservatively because its only cost on a false positive is one extra follow-up.
-On a trivial, hedged, or unmarked-and-unflagged turn the hook is a no-op -- the answer to "overkill on every turn."
+It exists only to catch turns where the agent asserted something concrete but omitted the mark.
+
+*Reversal (implemented): gate 2 defaults OFF.* The earlier design ran gate 2 unconditionally and tuned it "conservatively" only in the sense of tolerating false positives. In practice the tripwire matches any number, date, or CamelCase name, and ordinary prose is full of those, so it fired a correction on nearly every normal answer -- the "weird message" the user hit on a grimoire chat. The default gate is now gate 1 alone (the self-emitted mark), which fires only when the model actually annotates a load-bearing claim. Gate 2 is available behind =e-bayesian-reasoning-enable-bare-assertion-gate= for callers who accept the extra false-positive follow-ups; its firing rate is telemetry.
+On a trivial, hedged, or unmarked turn the hook is a no-op -- the answer to "overkill on every turn."
 
 **** The checks: completeness of the parsed mark, never prose analysis
 
@@ -222,13 +224,19 @@ Editing the model's words would put the capability in the business of authoring 
 Instead, on a fail the hook requests exactly one corrective follow-up turn through the Slice-3 harness affordance.
 The mechanism, step by step:
 
-1. The hook leaves the original assistant message in the transcript unchanged; that message already happened and stands as the turn's first attempt.
-2. The hook signals the harness (via the recognized hook-return signal or =e-harness-request-follow-up=) to schedule one follow-up turn once the current turn finishes settling. The drain path remains the single owner of turn scheduling; the hook only expresses intent.
-3. The follow-up turn's input is a system/user message naming the specific missing fields -- e.g. "Your previous answer asserted X but included no reasoning mark: add a =#+begin_reasoning= block with a confidence band and at least one alternative (or =insufficient-evidence=) and cite the evidence, then restate the conclusion accordingly, or answer 'insufficient evidence'." It names the failing completeness checks, not a generic "be more Bayesian," and it does not tell the model what to conclude -- only to show its reasoning or abstain.
-4. The model then produces a /new/ assistant message in the follow-up turn. The correction is thus authored by the model in response to a targeted prompt, and it appears as a normal subsequent message the user sees, not as a mutation of the earlier one.
+1. The hook leaves the original assistant message in the /stored/ transcript unchanged -- that message already happened and stands as the turn's first attempt for audit -- but flags it hidden from display (see the reversal below), so the user does not see the superseded answer.
+2. The hook signals the harness (via =e-harness-request-follow-up=) to schedule one follow-up turn once the current turn finishes settling. The drain path remains the single owner of turn scheduling; the hook only expresses intent.
+3. The follow-up turn's input is a system/user message naming the specific missing fields -- e.g. "Your previous answer made a load-bearing factual claim without complete calibration. Specifically: <gap>. Restate the conclusion with a complete reasoning block, or answer with =insufficient-evidence= ...". It names the failing completeness checks, not a generic "be more Bayesian," and it does not tell the model what to conclude -- only to show its reasoning or abstain. This corrective prompt is *hidden from display* -- it is a machine instruction to the agent, not something the user should read.
+4. The model then produces a /new/ assistant message in the follow-up turn. The correction is authored by the model in response to a targeted prompt, and it is the only reply the user sees for the exchange.
 5. The follow-up is capped at one. The corrective turn is itself marked so it does not recurse: the hook does not re-fire enforcement on the turn it generated, preventing an oscillating loop. If the corrected turn still fails, that is recorded as telemetry and left alone rather than re-prompted.
 
-So "feedback applied to the response" means: the original reply is preserved, and a single model-authored follow-up reply -- prompted with the exact calibration gap -- is appended. The user reads the correction as the agent's own revised answer.
+*Reversal (implemented): show only the final answer.* The earlier design (points 1 and 4 above, original wording) preserved the first attempt /visibly/ and appended the corrective prompt and the correction as ordinary visible messages. The user reported that this leaks a machine instruction ("add a reasoning block recording your confidence...") into the chat, which reads as a non-sequitur. The chosen model is now: the corrective follow-up prompt and the superseded first attempt are both hidden from display; the agent incorporates the feedback and the user reads a single clean revised reply. Provenance is preserved because both hidden records remain in the stored transcript/telemetry for audit; only their /display/ disposition changes.
+
+Display mechanics: a message carries a =:display= disposition. The follow-up prompt is queued hidden from the start via its turn =:metadata= =(:display hidden)=; the first attempt is flipped after the fact via =e-harness-set-message-display=, which writes a durable =message-display= event so the hidden state survives replay. A shared predicate =e-harness-message-hidden-p= recognizes both the top-level =:display= (the after-the-fact flip) and the =:metadata= =:display= (the born-hidden prompt). Both shells consult it: the modernchat view model drops hidden messages from the snapshot, and the classic chat shell skips them in =e-chat--render-session= / the live =message-added= handler and re-renders the transcript on =message-updated= when a shown reply is flipped hidden.
+
+So "feedback applied to the response" means: a single model-authored reply -- prompted with the exact calibration gap -- is what the user sees, while the first attempt and the machine prompt persist hidden for audit.
+
+Inspecting hidden messages (implemented): hiding must not mean the record is unreachable. The classic chat's response-navigation ("chat history inspection") mode -- entered with =ESC= -- gains an =h= toggle, =e-chat-response-navigation-toggle-hidden=. It flips a buffer-local =e-chat--reveal-hidden= flag and re-renders the transcript; while set, =e-chat--render-session= emits each hidden message as a dimmed, italic audit block (=e-chat-hidden-face=, glyph =⋯=, labelled "superseded answer" or "calibration prompt") of block kind =hidden=. Because these are real navigable blocks, =j=/=k=/=RET=/=y=/=o= work on them for free; a hidden block never joins the turn's activity or finalization flow, so revealing it cannot disturb the visible answer's rendering. Revealing focuses the first hidden block; toggling off (or returning to the composer via =i=/=ESC=) clears the flag and restores the clean one-answer transcript, which stays the default reading view. The reveal is view-only -- it changes nothing in the store, so audit reads the same records the modernchat snapshot omits.
 
 **** Why not rewrite in place
 
@@ -236,19 +244,22 @@ Rewriting the =value= (the turn result) or the assistant message directly is ava
 
 - It would make the capability the author of factual content, which it cannot calibrate honestly.
 - A machine-inserted "(confidence: 70%)" is exactly the fabricated, uncalibrated number the tenets warn against.
-- Preserving the first attempt and adding a model-authored correction keeps provenance auditable: telemetry can compare first attempt to correction and measure whether the loop earns its cost.
+- Keeping the first attempt in the stored transcript (hidden from display) and adding a model-authored correction keeps provenance auditable: telemetry can compare first attempt to correction and measure whether the loop earns its cost. Hiding the first attempt from display is a presentation choice, not a mutation -- the record stands.
 
 **** Failure and edge handling
 
 - If the harness cannot schedule a follow-up (no valid settlement window), the hook degrades to emitting the failing checklist as telemetry/annotation and returns =value= unchanged; it never errors the turn.
-- The deterministic filter is intentionally coarse; false positives cost one extra follow-up, so it is tuned conservatively and its firing rate is part of the telemetry.
+- The deterministic filter (gate 2) is intentionally coarse and defaults OFF behind =e-bayesian-reasoning-enable-bare-assertion-gate=; when enabled, false positives cost one extra follow-up and its firing rate is part of the telemetry.
+- Hiding depends on the harness display affordance (=e-harness-set-message-display= + =e-harness-message-hidden-p=). If the display flip fails, the follow-up is still requested; the worst case is the first attempt remains visible, never a lost correction.
 
 * Verification
 
 - ERT for the capability: instructions present, reference resource registered and readable at =e://bayesian-reasoning/refs/tenets.md=, capability created and enabled in the default chat layer set.
 - ERT for the structured-block registry (Slice 2a): registering a =:display hidden= kind makes the core transform remove that block from display text and return it among extracted blocks; content with no registered kind passes through byte-for-byte; the registry does not import any shell or capability module (dependency direction test).
 - ERT for the mark parser and registration (Slice 2b): a well-formed reasoning block parses into the expected field plist; a malformed or absent block parses to nil; the block is hidden via the registry transform (not a bespoke strip) in both markdown and =org= modes while the raw block survives in the stored transcript.
-- ERT for the stop-hook (Slice 3): a marked turn with an incomplete block triggers exactly one corrective follow-up naming the missing field; a complete block passes with no follow-up; an unmarked trivial turn triggers nothing; the coarse filter catches an unmarked bare assertion; the generated corrective turn does not itself re-trigger enforcement.
+- ERT for the stop-hook (Slice 3): a marked turn with an incomplete block triggers exactly one corrective follow-up naming the missing field; a complete block passes with no follow-up; an unmarked trivial turn triggers nothing; an unmarked bare assertion is quiet by default and fires only when =e-bayesian-reasoning-enable-bare-assertion-gate= is enabled; the generated corrective turn does not itself re-trigger enforcement.
+- ERT for hidden display (this reversal): the requested follow-up carries =:display hidden= in its metadata; the hook flips the superseded first attempt hidden via =e-harness-set-message-display= (=e-harness-message-hidden-p= true on it); =e-harness-set-message-display= persists a durable =message-display= record that survives reload; the modernchat snapshot omits hidden messages; the classic shell skips hidden messages in =e-chat--render-session= and drops an already-rendered reply on =message-updated=.
+- ERT for hidden inspection (classic shell): in response-navigation mode =h= sets =e-chat--reveal-hidden= and the hidden first attempt and calibration prompt appear as focusable =hidden=-kind blocks; a second =h= clears the flag and they disappear; returning to the composer input state collapses any active reveal.
 
 #+begin_src sh
 rtk eldev test test/e-bayesian-reasoning-test.el

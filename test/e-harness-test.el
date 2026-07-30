@@ -338,6 +338,47 @@
                             events)))
     (e-harness-abort harness "session-1")))
 
+(ert-deftest e-harness-test-set-message-display-hides-and-emits-event ()
+  "Setting a message's display flips it hidden and emits `message-updated'."
+  (let* ((harness (e-harness-create :backend (e-backend-fake-create :items nil)))
+         (events nil))
+    (e-harness-create-session harness :id "session-1")
+    (let ((message (e-harness--append-message
+                    harness "session-1" "turn-1"
+                    '(:role assistant :content "The fix shipped in commit 42."))))
+      (e-harness-subscribe harness (lambda (event) (push event events)))
+      (e-harness-set-message-display
+       harness "session-1" (plist-get message :id) 'hidden)
+      (should (eq (plist-get (car (last (e-harness-messages harness "session-1")))
+                             :display)
+                  'hidden))
+      (let ((updated (seq-find (lambda (event)
+                                 (eq (plist-get event :type) 'message-updated))
+                               events)))
+        (should updated)
+        (should (equal (plist-get (plist-get (plist-get updated :payload)
+                                             :message)
+                                  :id)
+                       (plist-get message :id)))
+        (should (eq (plist-get (plist-get (plist-get updated :payload)
+                                          :message)
+                               :display)
+                    'hidden))))))
+
+(ert-deftest e-harness-test-message-hidden-p-recognizes-both-channels ()
+  "A message is hidden via top-level `:display' or `:metadata' `:display'.
+The first-attempt reply is hidden with a top-level symbol; the follow-up
+prompt rides the metadata channel and its value may replay as a string."
+  (should-not (e-harness-message-hidden-p '(:role assistant :content "x")))
+  (should (e-harness-message-hidden-p
+           '(:role assistant :content "x" :display hidden)))
+  (should (e-harness-message-hidden-p
+           '(:role user :content "x" :metadata (:display hidden))))
+  (should (e-harness-message-hidden-p
+           '(:role user :content "x" :metadata (:display "hidden"))))
+  (should-not (e-harness-message-hidden-p
+               '(:role assistant :content "x" :display inline))))
+
 (ert-deftest e-harness-test-abort-cancels-queued-async-turn ()
   "Aborting a queued async turn settles it as cancelled."
   (let* ((called nil)

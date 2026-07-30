@@ -174,6 +174,35 @@
      (e-session-append-message store "missing" '(:role user :content "x"))
      :type 'e-session-missing)))
 
+(ert-deftest e-session-test-set-message-display-updates-in-memory ()
+  "Setting a message's display disposition flips its stored `:display'."
+  (let ((store (e-session-store-create)))
+    (e-session-create store :id "session-1")
+    (let ((message (e-session-append-message
+                    store "session-1"
+                    '(:id "msg-1" :role assistant :content "hi"))))
+      (e-session-set-message-display store "session-1"
+                                     (plist-get message :id) 'hidden)
+      (should (eq (plist-get (car (e-session-messages store "session-1"))
+                             :display)
+                  'hidden)))))
+
+(ert-deftest e-session-test-set-message-display-survives-reload ()
+  "A hidden-display update replays from disk so hiding is durable."
+  (let* ((directory (make-temp-file "e-session-" t))
+         (store (e-session-persistent-store-create directory)))
+    (unwind-protect
+        (progn
+          (e-session-create store :id "session-1")
+          (e-session-append-message
+           store "session-1" '(:id "msg-1" :role assistant :content "hi"))
+          (e-session-set-message-display store "session-1" "msg-1" 'hidden)
+          (let ((loaded (e-session-persistent-store-create directory)))
+            (should (eq (plist-get (car (e-session-messages loaded "session-1"))
+                                   :display)
+                        'hidden))))
+      (delete-directory directory t))))
+
 (ert-deftest e-session-test-persistent-session-generates-id-and-reloads ()
   "Persistent sessions get generated ids and replay messages in order."
   (let* ((directory (make-temp-file "e-session-" t))
