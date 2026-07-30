@@ -20,6 +20,7 @@
 
 (require 'cl-lib)
 (require 'e-capabilities)
+(require 'e-context)
 (require 'e-hooks)
 (require 'e-store)
 (require 'e-structured-blocks)
@@ -28,9 +29,15 @@
 (declare-function e-harness-request-follow-up "e-harness"
                   (harness session-id prompt &rest args))
 (declare-function e-harness-messages "e-harness" (harness session-id))
+(declare-function e-harness-session-activity-events "e-harness"
+                  (harness session-id))
+(declare-function e-harness-set-message-display "e-harness"
+                  (harness session-id message-id display))
+(declare-function e-harness-record-hook-audit "e-harness"
+                  (harness session-id turn-id &rest args))
 
 (defconst e-bayesian-reasoning-instructions
-  "Treat belief as a quantity, not a verdict: attach a confidence to factual claims, keep at least one rival hypothesis alive, and prefer \"insufficient evidence\" to a guess. Read e://bayesian-reasoning/refs/tenets.md before concluding on a load-bearing claim. When you assert a load-bearing factual conclusion, emit exactly one reserved fenced reasoning block: under org output mode, `#+begin_reasoning' ... `#+end_reasoning'; under markdown output mode, a ```reasoning fence. Inside it write four lines: `claim:' the one-line conclusion, `confidence:' one of low, medium, or high, `alternatives:' at least one rival explanation or the literal `insufficient-evidence', and `evidence:' references or blank. This block is hidden from the rendered reply and read only by deterministic tooling."
+  "Treat belief as a quantity, not a verdict: attach a confidence to factual claims, keep at least one rival hypothesis alive, and prefer \"insufficient evidence\" to a guess. Read e://bayesian-reasoning/refs/tenets.md before concluding on a load-bearing claim. When you assert a load-bearing factual conclusion, emit exactly one reserved fenced reasoning block: under org output mode, `#+begin_reasoning' ... `#+end_reasoning'; under markdown output mode, a ```reasoning fence. Inside it write four lines: `claim:' the one-line conclusion, `confidence:' one of low, medium, or high, `alternatives:' at least one rival explanation or the literal `insufficient-evidence', and `evidence:' a comma-separated list of the `ev:' or `in:' evidence handles provided in context. Only an explicit `insufficient-evidence' abstention may leave evidence blank. This block is hidden from the rendered reply and read only by deterministic tooling."
   "Compact model-facing disposition for calibrated reasoning.")
 
 (defconst e-bayesian-reasoning--fence-regexp
@@ -46,6 +53,14 @@ outcome for a non-fence string.")
 
 (defconst e-bayesian-reasoning--confidence-bands '("low" "medium" "high")
   "Allowed values for the reasoning fence's `confidence' field.")
+
+(defconst e-bayesian-reasoning--hook-id
+  "60-bayesian-reasoning-turn-finished"
+  "Stable identifier for the capability's claim-check hook.")
+
+(defconst e-bayesian-reasoning--high-risk-request-regexp
+  "\\b\\(why\\|cause\\|root cause\\|diagnos\\|explain\\|does .*work\\|current\\|latest\\|recommend\\|compare\\|should we\\|is .*loaded\\|what did\\)\\b"
+  "Narrow input signal for requests that need a factual conclusion.")
 
 (defun e-bayesian-reasoning--fence-matches (content open close)
   "Return match plists for one OPEN...CLOSE fenced form in CONTENT.
@@ -105,6 +120,139 @@ stop-hook checklist."
               (setq fields (plist-put fields :evidence value)))))))
       fields)))
 
+(defun e-bayesian-reasoning--evidence-refs (mark)
+  "Return ordered evidence handles named by MARK's `evidence:' field.
+
+The v2 grammar is deliberately small: a comma-separated list of `ev:' tool
+result handles or `in:' user-input handles.  Keeping the parser's historical
+field plist intact lets old transcripts still render, while the checker below
+can reject their opaque evidence prose instead of treating it as provenance."
+  (let ((evidence (plist-get mark :evidence)))
+    (and evidence
+         (not (string-empty-p evidence))
+         (mapcar #'string-trim (split-string evidence "," t "[ \t\n]+")))))
+
+(defun e-bayesian-reasoning--evidence-handle-p (reference)
+  "Return non-nil when REFERENCE uses the v2 evidence-handle grammar."
+  (and (stringp reference)
+       (string-match-p "\\`\\(?:ev\\|in\\):[0-9A-HJKMNP-TV-Z]+\\'" reference)))
+
+(defun e-bayesian-reasoning--message-index (messages message)
+  "Return MESSAGE's position in MESSAGES, or nil when it is absent."
+  (cl-position message messages :test #'eq))
+
+(defun e-bayesian-reasoning--message-for-handle (messages reference)
+  "Return the durable message named by v2 evidence REFERENCE in MESSAGES."
+  (let ((id (and (stringp reference) (substring reference 3))))
+    (seq-find (lambda (message) (equal (plist-get message :id) id)) messages)))
+
+(defun e-bayesian-reasoning--resolve-evidence-refs (context mark)
+  "Resolve MARK's v2 evidence references against CONTEXT's session transcript.
+
+Returns `(:resolved ... :rejected ...)' where each resolved item snapshots only
+stable provenance fields.  A resolvable handle proves that a cited input or
+successful tool result existed before the response; it deliberately makes no
+claim about the truth of the response."
+  (let* ((harness (plist-get context :harness))
+         (session-id (plist-get context :session-id))
+         (assistant (plist-get context :assistant-message))
+         (messages (and harness session-id
+                        (e-harness-messages harness session-id)))
+         (assistant-index (and messages assistant
+                               (e-bayesian-reasoning--message-index
+                                messages assistant)))
+         (seen (make-hash-table :test 'equal))
+         resolved rejected)
+    (dolist (reference (e-bayesian-reasoning--evidence-refs mark))
+      (cond
+       ((or (not (e-bayesian-reasoning--evidence-handle-p reference))
+            (gethash reference seen))
+        (push (list :reference reference
+                    :reason (if (gethash reference seen) 'duplicate 'malformed))
+              rejected))
+       (t
+        (puthash reference t seen)
+        (let* ((message (e-bayesian-reasoning--message-for-handle messages reference))
+               (message-index (and message
+                                   (e-bayesian-reasoning--message-index
+                                    messages message)))
+               (kind (substring reference 0 2))
+               (content (and message (plist-get message :content))))
+          (cond
+           ((null message)
+            (push (list :reference reference :reason 'unknown) rejected))
+           ((and assistant-index (>= message-index assistant-index))
+            (push (list :reference reference :reason 'future) rejected))
+           ((and (equal kind "ev")
+                 (eq (plist-get message :role) 'tool)
+                 (equal (plist-get content :status) 'ok))
+            (push (list :reference reference
+                        :message-id (plist-get message :id)
+                        :turn-id (plist-get message :turn-id)
+                        :source-kind 'tool-result
+                        :tool-call-id (plist-get content :tool-call-id))
+                  resolved))
+           ((and (equal kind "in") (eq (plist-get message :role) 'user))
+            (push (list :reference reference
+                        :message-id (plist-get message :id)
+                        :turn-id (plist-get message :turn-id)
+                        :source-kind 'user-provided)
+                  resolved))
+           (t
+            (push (list :reference reference :reason 'wrong-source) rejected)))))))
+    (list :resolved (nreverse resolved) :rejected (nreverse rejected))))
+
+(cl-defun e-bayesian-reasoning--current-turn-evidence-context
+    (&key harness session-id turn-id &allow-other-keys)
+  "Return compact v2 evidence handles available during TURN-ID.
+
+The provider derives handles from immutable transcript messages.  It stores no
+separate ledger and lists only the current prompt plus successful tool results
+from this turn, keeping the prompt cost bounded."
+  (when-let ((messages (and harness session-id
+                            (e-harness-messages harness session-id))))
+    (let (lines)
+      (dolist (message messages)
+        (when (equal (plist-get message :turn-id) turn-id)
+          (pcase (plist-get message :role)
+            ('user
+             (push (format "in:%s — current user statement"
+                           (plist-get message :id)) lines))
+            ('tool
+             (let ((content (plist-get message :content)))
+               (when (equal (plist-get content :status) 'ok)
+                 (push (format "ev:%s — successful tool result"
+                               (plist-get message :id)) lines)))))))
+      (when lines
+        (list
+         (list :role 'system
+               :content
+               (concat "Evidence handles for this turn. Cite only these exact "
+                       "handles in a reasoning block's evidence field; a handle "
+                       "establishes provenance, not truth.\n"
+                       (mapconcat #'identity (nreverse lines) "\n"))))))))
+
+(defun e-bayesian-reasoning--turn-user-content (context)
+  "Return the current turn's user text from CONTEXT, when available."
+  (when-let* ((harness (plist-get context :harness))
+              (session-id (plist-get context :session-id))
+              (turn-id (plist-get context :turn-id))
+              (message (seq-find
+                        (lambda (candidate)
+                          (and (eq (plist-get candidate :role) 'user)
+                               (equal (plist-get candidate :turn-id) turn-id)))
+                        (e-harness-messages harness session-id))))
+    (plist-get message :content)))
+
+(defun e-bayesian-reasoning--high-risk-reasons (context)
+  "Return deterministic high-risk reasons for the current request in CONTEXT."
+  (let ((prompt (e-bayesian-reasoning--turn-user-content context)))
+    (when (and (stringp prompt)
+               (let ((case-fold-search t))
+                 (string-match-p e-bayesian-reasoning--high-risk-request-regexp
+                                 prompt)))
+      '(input-classifier))))
+
 (defconst e-bayesian-reasoning-tenets-reference
   (string-join
    '("# Bayesian reasoning tenets"
@@ -162,15 +310,52 @@ stop-hook checklist."
    "\n")
   "Detailed tenets reference exposed as e://bayesian-reasoning/refs/tenets.md.")
 
+(defun e-bayesian-reasoning--claim-audit-resource (harness session-id)
+  "Render Bayesian hook-audit records for SESSION-ID as an e:// resource."
+  (if (not (and harness session-id))
+      "No session is selected, so no claim audits are available.\n"
+    (let ((audits (seq-filter
+                   (lambda (event)
+                     (eq (plist-get (plist-get event :payload) :owner)
+                         'bayesian-reasoning))
+                   (e-harness-session-activity-events harness session-id))))
+      (if (null audits)
+          "No Bayesian claim audits were recorded for this session.\n"
+        (concat
+         "# Bayesian claim audits\n\n"
+         (mapconcat
+          (lambda (event)
+            (let* ((payload (plist-get event :payload))
+                   (details (plist-get payload :details)))
+              (format
+               "## Turn %s\n- outcome: %s\n- truth status: %s\n- correction: %s\n- resolved references: %S\n- rejected references: %S\n"
+               (plist-get event :turn-id)
+               (plist-get payload :outcome)
+               (plist-get payload :truth-status)
+               (or (plist-get details :correction) 'none)
+               (plist-get details :resolved)
+               (plist-get details :rejected))))
+          audits
+          "\n"))))))
+
 (defun e-bayesian-reasoning--resource-provider ()
-  "Return resource provider for the tenets reference."
-  (lambda (store capability)
+  "Return context-aware resource provider for Bayesian references and audits."
+  (lambda (store capability &rest context)
     (e-store-register
      store
      (e-capability-id capability)
      "refs/tenets.md"
      :description "The eight Bayesian reasoning tenets in full."
-     :content e-bayesian-reasoning-tenets-reference)))
+     :content e-bayesian-reasoning-tenets-reference)
+    (let ((harness (plist-get context :harness))
+          (session-id (plist-get context :session-id)))
+      (e-store-register
+       store
+       (e-capability-id capability)
+       "claim-audits"
+       :description "Durable provenance and correction outcomes for Bayesian claim checks."
+       :reader (lambda (_entry _range)
+                 (e-bayesian-reasoning--claim-audit-resource harness session-id))))))
 
 ;;;; Slice 3: conditional turn-finished stop-hook
 
@@ -186,6 +371,16 @@ the turn it generated, which would otherwise oscillate.")
 Deliberately dumb -- it only decides whether an unmarked reply looks like it
 asserted something concrete, so the hook checks it.  False positives cost one
 extra follow-up, never a wrong answer, so it is tuned loosely.")
+
+(defcustom e-bayesian-reasoning-enable-bare-assertion-gate nil
+  "When non-nil, fire the coarse bare-assertion tripwire on unmarked replies.
+Off by default: the tripwire matches any number, date, or CamelCase name, and
+ordinary prose is full of those, so enabling it draws a correction on nearly
+every normal answer.  The default gate is the self-emitted reasoning mark (gate
+1), which fires only when the model actually annotates a load-bearing claim.
+Turn this on only where the extra false-positive follow-ups are acceptable."
+  :type 'boolean
+  :group 'e)
 
 (defun e-bayesian-reasoning--assistant-content (context)
   "Return the finished turn's assistant text from a turn-finished CONTEXT."
@@ -231,8 +426,8 @@ for one matched fence."
   "Return the first failing completeness check for reasoning MARK, or nil.
 This is a deterministic field-completeness test over the parsed mark, never a
 judgment about whether the stated confidence is accurate: confidence must be a
-known band; at least one alternative must be named; and a bare high/medium
-claim must cite evidence unless it abstained via `insufficient-evidence'."
+known band; at least one alternative must be named; and every non-abstaining
+factual claim must cite evidence handles."
   (let ((confidence (plist-get mark :confidence))
         (alternatives (plist-get mark :alternatives))
         (evidence (plist-get mark :evidence)))
@@ -242,58 +437,159 @@ claim must cite evidence unless it abstained via `insufficient-evidence'."
      ((or (null alternatives) (string-empty-p (string-trim alternatives)))
       "name at least one alternative, or `insufficient-evidence'")
      ((and (not (equal (string-trim alternatives) "insufficient-evidence"))
-           (not (equal confidence "low"))
            (or (null evidence) (string-empty-p (string-trim evidence))))
-      "cite the evidence the claim rests on, or lower the confidence, or abstain")
+      "cite at least one `ev:' or `in:' evidence handle, or abstain")
      (t nil))))
+
+(defun e-bayesian-reasoning--turn-check (context)
+  "Return the Bayesian audit decision for a finished turn, or nil when skipped.
+
+The decision separates marker format, evidence provenance, and correction
+policy.  In particular, `references-resolved' never means that the claim is
+true: the hook only established that cited durable records preceded it."
+  (let* ((content (e-bayesian-reasoning--assistant-content context))
+         (marks (and content (e-bayesian-reasoning--marks content)))
+         (high-risk-reasons (e-bayesian-reasoning--high-risk-reasons context)))
+    (cond
+     ((null content) nil)
+     ((> (length marks) 1)
+      (list :outcome 'format-gap
+            :gap "emit exactly one reasoning block"
+            :details (list :mark-count (length marks)
+                           :high-risk-reasons high-risk-reasons)))
+     ((null marks)
+      (when (or high-risk-reasons
+                (and e-bayesian-reasoning-enable-bare-assertion-gate
+                     (let ((case-fold-search nil))
+                       (string-match-p e-bayesian-reasoning--specific-regexp
+                                       content))))
+        (list :outcome 'format-gap
+              :gap "add a reasoning block or explicitly abstain with `insufficient-evidence'"
+              :details (list :mark-count 0
+                             :high-risk-reasons high-risk-reasons
+                             :strict-tripwire
+                             (and (null high-risk-reasons)
+                                  e-bayesian-reasoning-enable-bare-assertion-gate)))))
+     (t
+      (let* ((mark (car marks))
+             (format-gap (e-bayesian-reasoning--mark-gap mark))
+             (alternatives (string-trim (or (plist-get mark :alternatives) ""))))
+        (cond
+         (format-gap
+          (list :outcome 'format-gap
+                :gap format-gap
+                :details (list :mark mark :high-risk-reasons high-risk-reasons)))
+         ((equal alternatives "insufficient-evidence")
+          (list :outcome 'abstained
+                :details (list :mark mark :high-risk-reasons high-risk-reasons)))
+         (t
+          (let ((resolution (e-bayesian-reasoning--resolve-evidence-refs context mark)))
+            (if (plist-get resolution :rejected)
+                (list :outcome 'evidence-gap
+                      :gap "replace opaque or unresolved evidence with available `ev:' or `in:' handles"
+                      :details (append (list :mark mark
+                                             :high-risk-reasons high-risk-reasons)
+                                       resolution))
+              (list :outcome 'references-resolved
+                    :details (append (list :mark mark
+                                           :high-risk-reasons high-risk-reasons)
+                                     resolution)))))))))))
 
 (defun e-bayesian-reasoning--turn-gap (context)
   "Return the corrective gap string for CONTEXT's finished turn, or nil.
 Gate: acts only on a turn that carries a reasoning mark, or -- when unmarked --
 trips the coarse bare-assertion tripwire.  A trivial or already-well-marked
 turn returns nil and the hook does nothing."
-  (let* ((content (e-bayesian-reasoning--assistant-content context))
-         (marks (and content (e-bayesian-reasoning--marks content))))
-    (cond
-     ((null content) nil)
-     (marks
-      ;; Marked turn: fail on the first incomplete mark's gap.
-      (seq-some #'e-bayesian-reasoning--mark-gap marks))
-     ;; Case-sensitive: the CamelCase branch must not treat ordinary
-     ;; sentence-initial words as concrete names under `case-fold-search'.
-     ((let ((case-fold-search nil))
-        (string-match-p e-bayesian-reasoning--specific-regexp content))
-      ;; Unmarked but concrete: the failure is the absent mark itself.
-      "add a reasoning block recording your confidence, an alternative, and the evidence")
-     (t nil))))
+  (let ((check (e-bayesian-reasoning--turn-check context)))
+    (when (memq (plist-get check :outcome) '(format-gap evidence-gap))
+      (plist-get check :gap))))
 
 (defun e-bayesian-reasoning--follow-up-prompt (gap)
-  "Return the corrective follow-up prompt naming the specific GAP."
+  "Return the corrective follow-up prompt naming the specific GAP.
+The goal is a better answer, not a shorter one.  The prompt tells the model to
+keep the detail its evidence supports and to revise only the unsupported claim,
+so the correction improves the reply instead of replacing it with a terse
+restatement."
   (concat
    "Your previous answer made a load-bearing factual claim without complete "
-   "calibration. Specifically: " gap ". Restate the conclusion with a complete "
-   "reasoning block, or answer with `insufficient-evidence' if the evidence "
-   "does not support a confident claim. Do not fabricate a confidence or "
-   "evidence you do not have."))
+   "calibration. Specifically: " gap ". Revise that answer: keep the detail "
+   "and structure the evidence supports, and change only the unsupported "
+   "claims -- drop them or soften them to match the evidence -- then add a "
+   "complete reasoning block. If the evidence does not support a confident "
+   "claim, answer with `insufficient-evidence' for that claim while keeping "
+   "the rest. Do not fabricate a confidence or evidence you do not have, and "
+   "do not discard supported detail merely to shorten the reply."))
+
+(defun e-bayesian-reasoning--audit-summary (outcome correction)
+  "Return presentation text for Bayesian OUTCOME and CORRECTION.
+
+The harness persists this as generic event metadata; shells do not need to
+know this capability's marker grammar to render it."
+  (cond
+   ((eq outcome 'references-resolved) "Evidence references resolved")
+   ((eq outcome 'abstained) "Claim explicitly abstained for insufficient evidence")
+   ((eq correction 'queued) "Claim check needs revision")
+   ((eq outcome 'verification-unavailable) "Claim check unavailable")
+   (t "Claim check recorded")))
+
+(defun e-bayesian-reasoning--record-audit
+    (harness session-id turn-id outcome details correction)
+  "Persist one terminal Bayesian audit with OUTCOME and CORRECTION."
+  (e-harness-record-hook-audit
+   harness session-id turn-id
+   :owner 'bayesian-reasoning
+   :hook-id e-bayesian-reasoning--hook-id
+   :outcome outcome
+   :summary (e-bayesian-reasoning--audit-summary outcome correction)
+   :details (append details (list :correction correction))))
 
 (defun e-bayesian-reasoning--turn-finished-hook (value context)
   "Conditional `:turn-finished' hook enforcing the reasoning mark.
 Returns VALUE unchanged always -- the hook never rewrites the reply.  On a
 gated failure it requests exactly one corrective follow-up turn through
-`e-harness-request-follow-up', tagged so it does not recurse.  Degrades to a
-no-op when no harness/session is available or the follow-up cannot be queued."
+`e-harness-request-follow-up', tagged so it does not recurse, and hides both
+the machine-authored follow-up prompt and the superseded first attempt so only
+the model's revised reply is shown; the first attempt stays in the transcript
+for audit.  Every performed check writes a durable hook-audit record."
   (unless (e-bayesian-reasoning--follow-up-turn-p context)
-    (when-let* ((gap (e-bayesian-reasoning--turn-gap context))
+    (when-let* ((check (e-bayesian-reasoning--turn-check context))
                 (harness (plist-get context :harness))
-                (session-id (plist-get context :session-id)))
-      (ignore-errors
-        (when (fboundp 'e-harness-request-follow-up)
-          (e-harness-request-follow-up
-           harness session-id
-           (e-bayesian-reasoning--follow-up-prompt gap)
-           :metadata (list :bayesian-reasoning
-                           e-bayesian-reasoning--follow-up-marker))))))
-  value)
+                (session-id (plist-get context :session-id))
+                (turn-id (plist-get context :turn-id)))
+      (let ((outcome (plist-get check :outcome))
+            (details (plist-get check :details))
+            (gap (plist-get check :gap)))
+        (if (not (memq outcome '(format-gap evidence-gap)))
+            (e-bayesian-reasoning--record-audit
+             harness session-id turn-id outcome details 'none)
+          (if (not (fboundp 'e-harness-request-follow-up))
+              (e-bayesian-reasoning--record-audit
+               harness session-id turn-id 'verification-unavailable
+               (append details (list :reason 'follow-up-unavailable)) 'unavailable)
+            (condition-case err
+                (progn
+                  (e-harness-request-follow-up
+                   harness session-id
+                   (e-bayesian-reasoning--follow-up-prompt gap)
+                   :metadata (list :bayesian-reasoning
+                                   e-bayesian-reasoning--follow-up-marker
+                                   :display 'hidden))
+                  (e-bayesian-reasoning--record-audit
+                   harness session-id turn-id outcome details 'queued)
+                  ;; Hide the reply only after the correction is safely queued.
+                  (when-let ((message-id (plist-get
+                                          (plist-get context :assistant-message)
+                                          :id)))
+                    (when (fboundp 'e-harness-set-message-display)
+                      (e-harness-set-message-display
+                       harness session-id message-id 'hidden))))
+              (error
+               (e-bayesian-reasoning--record-audit
+                harness session-id turn-id 'verification-unavailable
+                (append details (list :error (error-message-string err)))
+                'unavailable)
+               (signal (car err) (cdr err))))))))
+  value))
 
 (cl-defun e-bayesian-reasoning-capability-create
     (&key (id 'bayesian-reasoning) (name "Bayesian Reasoning"))
@@ -304,6 +600,12 @@ no-op when no harness/session is available or the follow-up cannot be queued."
    :instruction-priority 255
    :instructions e-bayesian-reasoning-instructions
    :resources (list (e-bayesian-reasoning--resource-provider))
+   :context-providers
+   (list (e-context-provider-create
+          :name 'bayesian-reasoning-evidence-handles
+          :priority 255
+          :cache-placement 'dynamic-context
+          :build #'e-bayesian-reasoning--current-turn-evidence-context))
    :structured-blocks
    (list (e-structured-block-create
           :kind 'reasoning

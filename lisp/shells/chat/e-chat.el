@@ -316,6 +316,11 @@ is enabled as a word-wrap fallback."
   "Face used for compact system chat blocks."
   :group 'e-chat)
 
+(defface e-chat-hidden-face
+  '((t :inherit shadow :slant italic :extend t))
+  "Face used for revealed hidden audit chat blocks."
+  :group 'e-chat)
+
 (defface e-chat-composer-face
   '((t :inherit minibuffer-prompt :extend t))
   "Face used for the composer prompt chrome."
@@ -896,6 +901,14 @@ progress redraws that never pass through harness event dispatch.")
 (defconst e-chat--system-glyph "·"
   "Glyph shown before compact system chat blocks.")
 
+(defconst e-chat--hidden-glyph "⋯"
+  "Glyph shown before a revealed hidden audit chat block.")
+
+(defconst e-chat--hidden-entry-title-prefix "Hidden"
+  "Title prefix marking a revealed hidden message's rendered block.
+Any entry title with this prefix renders as a dimmed audit block and maps to
+the `hidden' block kind.")
+
 (defconst e-chat--progress-glyphs ["⠋" "⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏"]
   "Glyphs used for the active assistant progress indicator.")
 
@@ -939,6 +952,13 @@ progress redraws that never pass through harness event dispatch.")
 Production visibility is decided by `get-buffer-window'; tests that drive
 redraws without a live window set this buffer-local flag, mirroring the
 `e-chat--test-window-body-height' seam.")
+
+(defvar-local e-chat--reveal-hidden nil
+  "When non-nil, render messages hidden from the clean transcript.
+A calibration follow-up hides the superseded first attempt and the
+machine-authored corrective prompt so the reply reads as one answer.  Response
+navigation flips this flag to expose those messages as dimmed, focusable blocks
+for audit, then clears it when the user returns to the composer.")
 
 (defvar e-chat--refresh-visible-composers-in-progress nil
   "Non-nil while visible e chat composers are being refreshed.")
@@ -1000,6 +1020,7 @@ redraws without a live window set this buffer-local flag, mirroring the
     (define-key map (kbd "y") #'e-chat-response-navigation-copy)
     (define-key map (kbd "o") #'e-chat-response-navigation-open)
     (define-key map (kbd "d") #'e-chat-response-navigation-details)
+    (define-key map (kbd "h") #'e-chat-response-navigation-toggle-hidden)
     map))
 
 (defvar e-chat-response-navigation-mode-map
@@ -1540,6 +1561,21 @@ PROMPT forces completion even when only one/default instance exists."
       (e-chat--clear nil t)
       (let ((inhibit-read-only t))
         (e-chat--render-loaded-session-messages messages next-count))
+      (e-chat--restore-composer-state composer-state))))
+
+(defun e-chat--rerender-transcript ()
+  "Rebuild the attached session transcript in place, preserving the composer.
+Used when stored message state changes after messages were already rendered --
+for example when a message's display disposition flips to hidden -- since the
+shell keys rendered blocks by block id, not message id, and cannot delete one
+message's block surgically."
+  (when (and e-chat-harness e-chat-session-id
+             (derived-mode-p 'e-chat-mode)
+             (not e-chat--preview-buffer))
+    (let ((composer-state (e-chat--capture-composer-state)))
+      (let ((inhibit-read-only t))
+        (e-chat--clear nil t)
+        (e-chat--render-session))
       (e-chat--restore-composer-state composer-state))))
 
 (defun e-chat--render-loaded-session-initial ()
@@ -3549,9 +3585,15 @@ DETAILS-TEXT describe block actions."
            (gethash e-chat--focused-block-id e-chat--block-registry))
       (user-error "Focused e chat block is no longer rendered")))
 
+(defun e-chat--hidden-entry-title-p (title)
+  "Return non-nil when TITLE marks a revealed hidden audit block."
+  (and (stringp title)
+       (string-prefix-p e-chat--hidden-entry-title-prefix title)))
+
 (defun e-chat--block-kind-for-title (title)
   "Return block kind for rendered entry TITLE."
   (cond
+   ((e-chat--hidden-entry-title-p title) 'hidden)
    ((equal title "You") 'user)
    ((equal title "Assistant") 'final)
    ((equal title "System") 'system)
@@ -5404,6 +5446,11 @@ SOURCE identifies where the entry came from for duplicate suppression."
         record
         (plist-get activity-event :payload)
         'activity))
+      ('hook-audit
+       (when-let ((summary (plist-get (plist-get activity-event :payload)
+                                      :summary)))
+         (e-chat--add-intermittent-entry
+          record "Hook audit" summary nil 'activity)))
       ('tool-progress
        (e-chat--record-tool-progress
         record
@@ -5654,17 +5701,19 @@ SOURCE identifies where the entry came from for duplicate suppression."
 
 (defun e-chat--entry-face (title)
   "Return face for chat entry TITLE."
-  (pcase title
-    ("You" 'e-chat-user-face)
-    ("Assistant" 'e-chat-final-assistant-face)
-    (_ 'e-chat-system-face)))
+  (cond
+   ((e-chat--hidden-entry-title-p title) 'e-chat-hidden-face)
+   ((equal title "You") 'e-chat-user-face)
+   ((equal title "Assistant") 'e-chat-final-assistant-face)
+   (t 'e-chat-system-face)))
 
 (defun e-chat--entry-glyph (title)
   "Return glyph for chat entry TITLE."
-  (pcase title
-    ("You" e-chat--user-glyph)
-    ("Assistant" e-chat--assistant-glyph)
-    (_ e-chat--system-glyph)))
+  (cond
+   ((e-chat--hidden-entry-title-p title) e-chat--hidden-glyph)
+   ((equal title "You") e-chat--user-glyph)
+   ((equal title "Assistant") e-chat--assistant-glyph)
+   (t e-chat--system-glyph)))
 
 (defun e-chat--entry-heading (title)
   "Return compact heading text for chat entry TITLE."
@@ -6270,6 +6319,45 @@ registered kinds shows CONTENT unchanged."
     (e-chat--display-details-buffer
      (e-chat--turn-details-text turn-id record))))
 
+(defun e-chat--first-live-block-if (predicate)
+  "Return the first live rendered block id whose record satisfies PREDICATE."
+  (cl-find-if
+   (lambda (block-id)
+     (when-let ((record (e-chat--live-block-record block-id)))
+       (funcall predicate record)))
+   e-chat--block-order))
+
+(defun e-chat-response-navigation-toggle-hidden ()
+  "Reveal or hide messages kept out of the clean transcript.
+A calibration follow-up hides the superseded first attempt and the
+machine-authored corrective prompt so the reply reads as one answer.  This
+exposes them as dimmed, focusable audit blocks so the user can inspect what was
+removed, and hides them again on a second press.  Focus lands on the first
+revealed block when revealing, or on the block that was focused when hiding."
+  (interactive)
+  (unless e-chat-response-navigation-mode
+    (user-error "Response navigation is not active"))
+  (let* ((block (ignore-errors (e-chat--focused-block)))
+         (turn-id (plist-get block :turn-id))
+         (revealing (not e-chat--reveal-hidden)))
+    (setq e-chat--reveal-hidden revealing)
+    (e-chat--rerender-transcript)
+    (e-chat-response-navigation-mode 1)
+    (let ((target
+           (or (and revealing
+                    (e-chat--first-live-block-if
+                     (lambda (record) (eq (plist-get record :kind) 'hidden))))
+               (and turn-id
+                    (e-chat--first-live-block-if
+                     (lambda (record)
+                       (and (equal (plist-get record :turn-id) turn-id)
+                            (not (eq (plist-get record :kind) 'hidden))))))
+               (e-chat--last-rendered-block-id))))
+      (if target
+          (e-chat--focus-block target)
+        (e-chat-response-navigation-mode -1)
+        (message "No rendered e chat blocks to focus")))))
+
 (defun e-chat-copy-latest-response ()
   "Copy the latest final assistant response."
   (interactive)
@@ -6587,6 +6675,11 @@ registered kinds shows CONTENT unchanged."
     (e-chat-block-view-mode -1))
   (when e-chat-response-navigation-mode
     (e-chat-response-navigation-mode -1))
+  ;; The clean one-answer transcript is the default reading view, so collapse
+  ;; any audit reveal when returning to the composer.
+  (when e-chat--reveal-hidden
+    (setq e-chat--reveal-hidden nil)
+    (e-chat--rerender-transcript))
   (e-chat--ensure-composer)
   (e-chat--show-composer))
 
@@ -6974,6 +7067,22 @@ When REFRESH-MODE-LINE is non-nil, also refresh context-aware mode-line text."
       ('tool (cons "Tool" (format "%S" content)))
       (_ (cons (format "%s" role) (format "%S" content))))))
 
+(defun e-chat--hidden-message-entry (message)
+  "Return a dimmed audit entry for a hidden MESSAGE revealed for inspection.
+The label names why the message was hidden -- a superseded first attempt or a
+machine-authored calibration prompt -- and the content is shown as stored, not
+passed through assistant fontification, so the audit view is faithful."
+  (let ((role (plist-get message :role))
+        (content (plist-get message :content)))
+    (cons (pcase role
+            ('assistant (concat e-chat--hidden-entry-title-prefix
+                                " · superseded answer"))
+            ('user (concat e-chat--hidden-entry-title-prefix
+                           " · calibration prompt"))
+            (_ (format "%s · %s"
+                       e-chat--hidden-entry-title-prefix role)))
+          (if (stringp content) content (format "%S" content)))))
+
 (defun e-chat--final-assistant-message (turn-id)
   "Return the final assistant message for TURN-ID in the attached session."
   (car
@@ -7121,6 +7230,10 @@ When REFRESH-MODE-LINE is non-nil, also refresh context-aware mode-line text."
          ;; Tool transcript messages are internal model context.  Presentation
          ;; activity is driven only by current durable activity events.
          nil)
+        ((e-harness-message-hidden-p message)
+         ;; A message hidden from the start (e.g. a machine-authored corrective
+         ;; prompt) stays in the transcript for audit but is never rendered.
+         nil)
         (t
          (let ((assistant-p (eq (plist-get message :role) 'assistant))
                (turn-id (plist-get event :turn-id)))
@@ -7139,6 +7252,12 @@ When REFRESH-MODE-LINE is non-nil, also refresh context-aware mode-line text."
              (e-chat--mark-buffer-session-read-if-selected))
            (when (eq (plist-get message :role) 'user)
              (e-chat--refresh-session-display)))))))
+    ('message-updated
+     ;; A stored message's display disposition changed (e.g. the bayesian
+     ;; follow-up hid an already-rendered first attempt).  Blocks are keyed by
+     ;; block id, not message id, so re-render the transcript rather than hunt
+     ;; for one block; this is rare and off the hot path.
+     (e-chat--rerender-transcript))
     ('provider-request-started
      (e-chat--set-status "waiting for provider")
      (e-chat--record-provider-started
@@ -7335,13 +7454,21 @@ attached session's full transcript."
           (setq turn-id next-turn-id))
         (setq record (e-chat--turn-record turn-id)))
       (e-chat--record-replayed-message-time record message)
-      (unless (e-chat--tool-message-p message)
-        (let ((entry (e-chat--message-entry message)))
-          (when (eq (plist-get message :role) 'assistant)
-            (e-chat--render-turn-activity-events turn-id activity-events))
-          (e-chat--insert-entry (car entry) (cdr entry) t turn-id)
-          (when (eq (plist-get message :role) 'assistant)
-            (e-chat--finalize-turn-display turn-id)))))
+      (let ((hidden (e-harness-message-hidden-p message)))
+        (unless (or (e-chat--tool-message-p message)
+                    (and hidden (not e-chat--reveal-hidden)))
+          (if hidden
+              ;; Revealed for audit: a dimmed, focusable block that never joins
+              ;; the turn's activity/finalization flow, so it cannot disturb the
+              ;; visible answer's rendering.
+              (let ((entry (e-chat--hidden-message-entry message)))
+                (e-chat--insert-entry (car entry) (cdr entry) t turn-id))
+            (let ((entry (e-chat--message-entry message)))
+              (when (eq (plist-get message :role) 'assistant)
+                (e-chat--render-turn-activity-events turn-id activity-events))
+              (e-chat--insert-entry (car entry) (cdr entry) t turn-id)
+              (when (eq (plist-get message :role) 'assistant)
+                (e-chat--finalize-turn-display turn-id)))))))
     (e-chat--render-replayed-active-activity activity-events)
     (when turn-id
       (e-chat--render-replayed-terminal-event turn-id activity-events))))
@@ -7841,17 +7968,8 @@ timestamp."
         (and (string= left-time right-time)
              (> left-seq right-seq)))))
 
-(defun e-chat--subagent-session-p (session)
-  "Return non-nil when SESSION is a subagent child session.
-A subagent child is marked in its durable metadata with `:parent-session-id'
-or `:subagent-role'; the session pickers list only top-level chats."
-  (let ((metadata (plist-get session :metadata)))
-    (or (plist-get metadata :parent-session-id)
-        (plist-get metadata :subagent-role))))
-
 (defun e-chat--session-candidates ()
-  "Return chat session candidates across configured chat instances.
-Subagent child sessions are excluded; see `e-chat--subagent-session-p'."
+  "Return root chat session candidates across configured chat instances."
   (let ((instances (e-chat--chat-instances))
         (default-instance-id
          (when-let ((default-instance
@@ -7870,15 +7988,14 @@ Subagent child sessions are excluded; see `e-chat--subagent-session-p'."
           (dolist (instance instances)
             (let ((harness (e-chat--harness-for-instance instance))
                   (instance-id (e-harness-instance-id instance)))
-              (dolist (session (e-harness-session-list harness))
-                (when (and (not (e-chat--subagent-session-p session))
-                           (e-chat--session-belongs-to-instance-p
+              (dolist (session (e-harness-root-session-list harness))
+                (when (e-chat--session-belongs-to-instance-p
                             harness
                             session
                             instance-id
                             default-instance-id
                             (e-chat--shared-session-store-p
-                             harness store-counts)))
+                             harness store-counts))
                   (push (list :instance instance
                               :instance-id instance-id
                               :harness harness
@@ -7897,8 +8014,7 @@ Subagent child sessions are excluded; see `e-chat--subagent-session-p'."
                         (list :harness harness
                               :session session
                               :session-id (plist-get session :id)))
-                      (cl-remove-if #'e-chat--subagent-session-p
-                                    (e-harness-session-list harness))))))
+                      (e-harness-root-session-list harness)))))
     candidates))
 
 (defun e-chat--candidate-for-label (candidates labels label)
@@ -7969,7 +8085,7 @@ Subagent child sessions are excluded; see `e-chat--subagent-session-p'."
 
 (defun e-chat--latest-session-id (harness)
   "Return the latest session id in HARNESS, creating one when none exists."
-  (or (plist-get (car (e-harness-session-list harness)) :id)
+  (or (plist-get (car (e-harness-root-session-list harness)) :id)
       (plist-get (e-chat--create-session harness) :id)))
 
 (defun e-chat--context-session-target ()
@@ -8692,7 +8808,7 @@ face properties so the preview still reflects chat rendering."
                                        e-chat-overview--harness
                                        (e-chat--default-harness))))
                        (setq harness target)
-                       (e-harness-session-list target))))
+                       (e-harness-root-session-list target))))
          (inhibit-read-only t))
     (setq-local e-chat-overview--harness harness)
     (erase-buffer)

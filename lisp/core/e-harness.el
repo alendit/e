@@ -709,7 +709,7 @@ an already-removed record is a no-op."
   '(turn-started provider-request-started provider-request-finished
     reasoning-delta reasoning-raw-delta
     tool-started tool-finished action-started action-finished action-failed
-    turn-finished token-usage
+    hook-audit turn-finished token-usage
     turn-failed turn-cancelled turn-steered backend-empty-output
     compaction-started compaction-prepared compaction-summary-started
     compaction-finished compaction-failed)
@@ -726,6 +726,7 @@ an already-removed record is a no-op."
     (action-started . audit)
     (action-finished . presentation-log)
     (action-failed . audit)
+    (hook-audit . audit)
     (turn-finished . replay)
     (token-usage . audit)
     (turn-failed . audit)
@@ -741,7 +742,7 @@ an already-removed record is a no-op."
 Classes are `audit', `replay', `presentation-log', and `transient-progress'.")
 
 (defconst e-harness--activity-index-flush-event-types
-  '(turn-finished turn-failed turn-cancelled backend-empty-output
+  '(hook-audit turn-finished turn-failed turn-cancelled backend-empty-output
     compaction-finished compaction-failed)
   "Durable activity event types that should flush the session index.")
 
@@ -1251,6 +1252,18 @@ Apply TRANSFORM when supplied."
   "Return messages for SESSION-ID in HARNESS."
   (e-session-messages (e-harness-sessions harness) session-id))
 
+(defun e-harness-message-hidden-p (message)
+  "Return non-nil when MESSAGE should be hidden from display.
+A message is hidden when its display disposition is `hidden', set either as a
+top-level `:display' (used to supersede a stored reply after the fact) or in
+its `:metadata' `:display' (used when a message is queued hidden from the
+start).  The value may be the symbol `hidden' or the string \"hidden\" after a
+JSON replay, so both are recognized."
+  (let* ((display (or (plist-get message :display)
+                      (plist-get (plist-get message :metadata) :display))))
+    (or (eq display 'hidden)
+        (equal display "hidden"))))
+
 (defun e-harness--queue-item-metadata (item)
   "Return turn metadata for queued ITEM."
   (append (copy-sequence (plist-get item :metadata))
@@ -1418,6 +1431,45 @@ The session must currently have a running active turn."
 (defun e-harness-session-activity-events (harness session-id)
   "Return activity events for SESSION-ID in HARNESS."
   (e-session-activity-events (e-harness-sessions harness) session-id))
+
+(cl-defun e-harness-record-hook-audit
+    (harness session-id turn-id &key owner hook-id outcome details summary)
+  "Persist one capability hook audit outcome for a settled turn.
+
+OWNER names the capability, HOOK-ID identifies its hook contract, OUTCOME is a
+machine-readable result owned by that capability, DETAILS is an opaque plist or
+alist owned by the capability, and SUMMARY is optional generic presentation
+text.  Core owns only the durable event envelope;
+it must not interpret a capability's policy or mistake an audit outcome for a
+truth judgment.  Returns the emitted event.
+
+Callers should record an outcome only when their hook actually checked a turn.
+This keeps audit volume proportional to conditional enforcement rather than to
+all ordinary replies."
+  (unless (and (symbolp owner) (not (keywordp owner)))
+    (signal 'wrong-type-argument (list 'symbolp owner)))
+  (unless (and (stringp hook-id) (not (string-empty-p hook-id)))
+    (signal 'wrong-type-argument (list 'stringp hook-id)))
+  (unless (symbolp outcome)
+    (signal 'wrong-type-argument (list 'symbolp outcome)))
+  (let ((payload (list :owner owner
+                       :hook-id hook-id
+                       :outcome outcome
+                       :truth-status 'not-evaluated
+                       :summary summary
+                       :details details)))
+    (e-harness--emit-turn-event harness session-id turn-id 'hook-audit payload)
+    (car (last (e-harness-session-activity-events harness session-id)))))
+
+(defun e-harness-turn-hook-audits (harness session-id turn-id &optional owner)
+  "Return durable hook-audit records for TURN-ID, optionally filtered by OWNER."
+  (seq-filter
+   (lambda (event)
+     (and (eq (plist-get event :event-type) 'hook-audit)
+          (equal (plist-get event :turn-id) turn-id)
+          (or (null owner)
+              (eq (plist-get (plist-get event :payload) :owner) owner))))
+   (e-harness-session-activity-events harness session-id)))
 
 (defun e-harness--merge-turn-options (base overrides)
   "Return BASE options with OVERRIDES applied."
@@ -2251,6 +2303,20 @@ provider or loop failure."
        (e-harness--emit-turn-event
         harness session-id turn-id 'message-added (list :message message))
        message))))
+
+(defun e-harness-set-message-display (harness session-id message-id display)
+  "Set DISPLAY on SESSION-ID's message MESSAGE-ID in HARNESS.
+DISPLAY is a display disposition symbol (e.g. `hidden'); nil restores the
+default visible state.  Persists the change through the session store and emits
+a `message-updated' turn event so a live shell can drop or restore the block.
+Returns the updated message, or nil when no such message exists."
+  (when-let ((message (e-session-set-message-display
+                       (e-harness-sessions harness)
+                       session-id message-id display)))
+    (e-harness--emit-turn-event
+     harness session-id (plist-get message :turn-id)
+     'message-updated (list :message message))
+    message))
 
 (defun e-harness--append-user-message
     (harness session-id turn-id prompt &optional metadata)

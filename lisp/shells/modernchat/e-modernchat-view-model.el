@@ -100,11 +100,13 @@ hidden blocks (e.g. a reasoning mark) from the displayed content."
          (tool-name (or (plist-get payload :tool-name)
                         (plist-get payload :name)
                         (plist-get payload :action))))
-    (string-trim
-     (mapconcat #'identity
-                (delq nil (list (e-modernchat-view-model--string type)
-                                (e-modernchat-view-model--string tool-name)))
-                " "))))
+    (if (eq type 'hook-audit)
+        "Hook audit"
+      (string-trim
+       (mapconcat #'identity
+                  (delq nil (list (e-modernchat-view-model--string type)
+                                  (e-modernchat-view-model--string tool-name)))
+                  " ")))))
 
 (defun e-modernchat-view-model--activity-status (event)
   "Return display status for activity EVENT."
@@ -193,7 +195,8 @@ hidden blocks (e.g. a reasoning mark) from the displayed content."
          (registry (ignore-errors
                      (e-harness-structured-blocks harness session-id)))
          (messages (e-modernchat-view-model--take-last
-                    (e-harness-messages harness session-id)
+                    (cl-remove-if #'e-harness-message-hidden-p
+                                  (e-harness-messages harness session-id))
                     (or message-limit e-modernchat-view-model-message-limit)))
          (activities (e-modernchat-view-model--take-last
                       (e-harness-session-activity-events harness session-id)

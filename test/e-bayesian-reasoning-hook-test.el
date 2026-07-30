@@ -61,9 +61,9 @@ is no active turn, so the guarded `e-harness-queue-prompt' would signal."
    (e-bayesian-reasoning--mark-gap
     '(:claim "X" :confidence "high" :alternatives "Y" :evidence ""))))
 
-(ert-deftest e-bayesian-reasoning-hook-test-low-confidence-without-evidence-passes ()
-  "Low confidence excuses missing evidence: the claim is already hedged."
-  (should-not
+(ert-deftest e-bayesian-reasoning-hook-test-low-confidence-without-evidence-is-a-gap ()
+  "A hedged factual claim still needs provenance or an abstention."
+  (should
    (e-bayesian-reasoning--mark-gap
     '(:claim "X" :confidence "low" :alternatives "Y" :evidence ""))))
 
@@ -89,16 +89,27 @@ is no active turn, so the guarded `e-harness-queue-prompt' would signal."
     (e-bayesian-reasoning-hook-test--context
      "That is possible, but I am not sure and would need to check."))))
 
-(ert-deftest e-bayesian-reasoning-hook-test-unmarked-concrete-turn-fires ()
-  "An unmarked reply asserting a concrete specific trips the coarse filter."
-  (should
+(ert-deftest e-bayesian-reasoning-hook-test-unmarked-concrete-turn-quiet-by-default ()
+  "By default an unmarked concrete reply does not fire.
+Ordinary prose is full of numbers, dates, and CamelCase names, so the coarse
+bare-assertion tripwire is off unless explicitly enabled -- otherwise every
+normal answer would draw a correction."
+  (should-not
    (e-bayesian-reasoning--turn-gap
     (e-bayesian-reasoning-hook-test--context
      "The regression landed in commit 42 and cut latency by 37%."))))
 
-(ert-deftest e-bayesian-reasoning-hook-test-well-marked-turn-passes ()
-  "A concrete reply carrying a complete markdown reasoning mark passes."
-  (should-not
+(ert-deftest e-bayesian-reasoning-hook-test-bare-assertion-gate-opt-in-fires ()
+  "With the bare-assertion gate enabled, an unmarked concrete reply fires."
+  (let ((e-bayesian-reasoning-enable-bare-assertion-gate t))
+    (should
+     (e-bayesian-reasoning--turn-gap
+      (e-bayesian-reasoning-hook-test--context
+       "The regression landed in commit 42 and cut latency by 37%.")))))
+
+(ert-deftest e-bayesian-reasoning-hook-test-opaque-v1-evidence-is-a-gap ()
+  "A historical opaque evidence string cannot pass v2 enforcement."
+  (should
    (e-bayesian-reasoning--turn-gap
     (e-bayesian-reasoning-hook-test--context
      (concat "The rollout raised errors by 5%.\n\n"
@@ -108,6 +119,66 @@ is no active turn, so the guarded `e-harness-queue-prompt' would signal."
              "alternatives: coincidental upstream incident\n"
              "evidence: tool:dashboard-1\n"
              "```\n")))))
+
+(ert-deftest e-bayesian-reasoning-hook-test-resolves-earlier-successful-tool-handle ()
+  "A v2 `ev:' handle resolves only to an earlier successful tool result."
+  (let* ((harness (e-harness-create :backend (e-backend-fake-create :items nil)))
+         (session-id "session-1")
+         (turn-id "turn-1")
+         tool
+         assistant)
+    (e-harness-create-session harness :id session-id)
+    (e-session-append-message
+     (e-harness-sessions harness) session-id
+     '(:id "01KUSER" :role user :turn-id "turn-1" :content "Why is it slow?"))
+    (setq tool
+          (e-session-append-message
+           (e-harness-sessions harness) session-id
+           '(:role tool :turn-id "turn-1"
+             :content (:status ok :tool-call-id "call-1" :content "Measured result"))))
+    (setq assistant
+          (e-session-append-message
+           (e-harness-sessions harness) session-id
+           (list :id "01KASSIST" :role 'assistant :turn-id turn-id
+                 :content
+                 (concat "The query is slow.\n\n```reasoning\n"
+                         "claim: the query is slow\nconfidence: medium\n"
+                         "alternatives: cache miss\n"
+                         "evidence: ev:" (plist-get tool :id) "\n```\n"))))
+    (let ((check (e-bayesian-reasoning--turn-check
+                  (list :harness harness :session-id session-id :turn-id turn-id
+                        :assistant-message assistant))))
+      (should (eq (plist-get check :outcome) 'references-resolved))
+      (should (equal (plist-get (car (plist-get (plist-get check :details)
+                                                 :resolved))
+                                 :source-kind)
+                     'tool-result)))
+    (let* ((messages (e-bayesian-reasoning--current-turn-evidence-context
+                      :harness harness :session-id session-id :turn-id turn-id))
+           (content (plist-get (car messages) :content)))
+      (should (string-match-p (regexp-quote (concat "ev:" (plist-get tool :id)))
+                              content)))))
+
+(ert-deftest e-bayesian-reasoning-hook-test-high-risk-unmarked-turn-is-a-gap ()
+  "A diagnostic request requires a mark or explicit abstention."
+  (let* ((harness (e-harness-create :backend (e-backend-fake-create :items nil)))
+         (session-id "session-1")
+         (turn-id "turn-1"))
+    (e-harness-create-session harness :id session-id)
+    (e-session-append-message
+     (e-harness-sessions harness) session-id
+     '(:role user :turn-id "turn-1" :content "Why is the query slow?"))
+    (let ((assistant
+           (e-session-append-message
+            (e-harness-sessions harness) session-id
+            '(:role assistant :turn-id "turn-1" :content "The query is slow."))))
+      (should (equal
+               (plist-get
+                (e-bayesian-reasoning--turn-check
+                 (list :harness harness :session-id session-id :turn-id turn-id
+                       :assistant-message assistant))
+                :outcome)
+               'format-gap)))))
 
 (ert-deftest e-bayesian-reasoning-hook-test-incomplete-mark-fires ()
   "A concrete reply whose mark omits evidence fails on that gap."
@@ -133,6 +204,10 @@ appended for the same turn so the gate itself would otherwise fire."
                              :content "The regression landed in commit 42.")
                             (:type done :reason stop))))
          (harness (e-harness-create :backend backend))
+         ;; Enable the bare-assertion gate so the concrete unmarked reply would
+         ;; otherwise fire; the point of the test is that the follow-up marker
+         ;; suppresses it regardless.
+         (e-bayesian-reasoning-enable-bare-assertion-gate t)
          (queued nil))
     (e-harness-create-session harness :id "session-1")
     ;; Run a real turn whose prompt carries the follow-up marker, then fire the
@@ -153,27 +228,93 @@ appended for the same turn so the gate itself would otherwise fire."
       (setq queued (e-harness-queued-prompts harness "session-1")))
     (should-not queued)))
 
+;;;; The corrective follow-up prompt
+
+(ert-deftest e-bayesian-reasoning-hook-test-follow-up-prompt-improves-not-restates ()
+  "The corrective prompt improves the answer instead of replacing it.
+The goal is a better answer, not a terser one: the prompt must name the
+specific GAP, tell the model to keep the detail the evidence supports, drop or
+soften only the unsupported claims, add a complete reasoning block, offer the
+`insufficient-evidence' abstention, and forbid both fabrication and discarding
+supported detail merely to shorten the reply."
+  (let ((prompt (e-bayesian-reasoning--follow-up-prompt "cite the evidence")))
+    (should (string-match-p "cite the evidence" prompt))
+    (should (string-match-p "keep the detail" prompt))
+    (should (string-match-p "unsupported claims" prompt))
+    (should (string-match-p "reasoning block" prompt))
+    (should (string-match-p "insufficient-evidence" prompt))
+    (should (string-match-p "fabricate" prompt))
+    (should (string-match-p "supported detail" prompt))))
+
 ;;;; The hook: requests exactly one follow-up, never rewrites the value
 
-(ert-deftest e-bayesian-reasoning-hook-test-hook-requests-one-follow-up ()
-  "On a gated failure the hook queues exactly one follow-up and returns VALUE."
+(defconst e-bayesian-reasoning-hook-test--incomplete-mark-reply
+  (concat "The rollout raised errors by 5%.\n\n"
+          "```reasoning\n"
+          "claim: the rollout raised errors\n"
+          "confidence: high\n"
+          "alternatives: coincidental upstream incident\n"
+          "evidence:\n"
+          "```\n")
+  "An assistant reply carrying a mark whose evidence field is empty.
+This trips gate 1 (the self-emitted mark path), which is on by default, so it
+is the reply used to exercise the failure path without the opt-in gate.")
+
+(ert-deftest e-bayesian-reasoning-hook-test-hook-requests-one-hidden-follow-up ()
+  "On a gated failure the hook queues exactly one hidden follow-up.
+The follow-up prompt rides the metadata `:display' `hidden' channel so the
+shell never shows the machine-authored instruction; the hook returns VALUE
+unchanged."
   (let ((harness (e-harness-create :backend (e-backend-fake-create :items nil)))
         (value '(:status done)))
     (e-harness-create-session harness :id "session-1")
-    (let ((result
-           (e-bayesian-reasoning--turn-finished-hook
-            value
-            (list :harness harness
-                  :session-id "session-1"
-                  :assistant-message
-                  (list :role 'assistant
-                        :content "The fix shipped in commit 42.")))))
+    (let* ((message (e-harness--append-message
+                     harness "session-1" "turn-1"
+                     (list :role 'assistant
+                           :content
+                           e-bayesian-reasoning-hook-test--incomplete-mark-reply)))
+           (result
+            (e-bayesian-reasoning--turn-finished-hook
+             value
+             (list :harness harness
+                   :session-id "session-1"
+                   :turn-id "turn-1"
+                   :assistant-message message))))
       (should (eq result value))
       (let ((queued (e-harness-queued-prompts harness "session-1")))
         (should (= (length queued) 1))
         (should (equal (plist-get (car queued) :metadata)
                        (list :bayesian-reasoning
-                             e-bayesian-reasoning--follow-up-marker)))))))
+                             e-bayesian-reasoning--follow-up-marker
+                             :display 'hidden))))
+      (let ((audit (car (e-harness-turn-hook-audits
+                         harness "session-1" "turn-1" 'bayesian-reasoning))))
+        (should (eq (plist-get (plist-get audit :payload) :outcome) 'format-gap))
+        (should (eq (plist-get (plist-get (plist-get audit :payload) :details)
+                               :correction)
+                    'queued))
+        (should (eq (plist-get (plist-get audit :payload) :truth-status)
+                    'not-evaluated))))))
+
+(ert-deftest e-bayesian-reasoning-hook-test-hook-hides-superseded-first-attempt ()
+  "On a gated failure the hook hides the finished reply it is correcting.
+The first attempt stays in the transcript for audit but is flagged hidden so
+only the model-authored correction is shown."
+  (let ((harness (e-harness-create :backend (e-backend-fake-create :items nil))))
+    (e-harness-create-session harness :id "session-1")
+    (let ((message (e-harness--append-message
+                    harness "session-1" "turn-1"
+                    (list :role 'assistant
+                          :content
+                          e-bayesian-reasoning-hook-test--incomplete-mark-reply))))
+      (e-bayesian-reasoning--turn-finished-hook
+       '(:status done)
+       (list :harness harness
+             :session-id "session-1"
+             :turn-id "turn-1"
+             :assistant-message message))
+      (should (e-harness-message-hidden-p
+               (car (last (e-harness-messages harness "session-1"))))))))
 
 (ert-deftest e-bayesian-reasoning-hook-test-hook-noop-on-clean-turn ()
   "A trivial turn queues no follow-up."

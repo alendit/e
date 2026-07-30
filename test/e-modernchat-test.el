@@ -82,6 +82,45 @@ client."
       (should-not (string-match-p "begin_reasoning" content))
       (should-not (string-match-p "confidence:" content)))))
 
+(ert-deftest e-modernchat-view-model-test-omits-hidden-messages ()
+  "A message flagged `:display' `hidden' never reaches the snapshot.
+A superseded first attempt and a machine-authored corrective prompt both carry
+the hidden disposition; the modern chat client should see only the visible
+messages so the transcript reads as one clean answer."
+  (let ((harness (e-harness-create
+                  :backend (e-backend-create :name "noop")
+                  :enabled-layer-ids nil)))
+    (e-harness-create-session harness :id "session-1")
+    (e-session-append-message
+     (e-harness-sessions harness)
+     "session-1"
+     (list :id "m-0" :role 'assistant :content "visible reply"))
+    (e-session-append-message
+     (e-harness-sessions harness)
+     "session-1"
+     (list :id "m-1" :role 'assistant :content "hidden first attempt"
+           :display 'hidden))
+    (e-session-append-message
+     (e-harness-sessions harness)
+     "session-1"
+     (list :id "m-2" :role 'user :content "hidden corrective prompt"
+           :metadata '(:display hidden)))
+    (let* ((snapshot (e-modernchat-view-model-snapshot
+                      harness "session-1" :activity-limit 0))
+           (messages (cdr (assq 'messages snapshot)))
+           (ids (mapcar (lambda (m) (cdr (assq 'id m)))
+                        (append messages nil))))
+      (should (equal ids '("m-0"))))))
+
+(ert-deftest e-modernchat-view-model-test-exposes-generic-hook-audit-summary ()
+  "A shell renders generic audit metadata without importing claim policy."
+  (let* ((event '(:id "audit-1" :turn-id "turn-1" :event-type hook-audit
+                  :created-at "2026-07-30T00:00:00Z"
+                  :payload (:summary "Claim check needs revision")))
+         (dto (e-modernchat-view-model-activity event)))
+    (should (equal (cdr (assq 'title dto)) "Hook audit"))
+    (should (equal (cdr (assq 'summary dto)) "Claim check needs revision"))))
+
 (ert-deftest e-modernchat-test-runtime-missing-is-command-time-error ()
   "The module loads without emacs-egui; command use reports missing runtime."
   (cl-letf (((symbol-function 'e-modernchat--runtime-available-p)

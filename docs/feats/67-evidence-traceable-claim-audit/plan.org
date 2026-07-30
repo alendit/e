@@ -3,7 +3,11 @@
 
 * Status
 
-Planned.
+Done.  Implemented on 2026-07-30.  Repository-side validation passed for the
+audit, session, Bayesian, and modernchat suites; the classic chat suite has an
+unrelated pre-existing cursor-preservation failure in the dirty worktree.
+
+No running Emacs reload was performed.
 
 * Problem
 
@@ -271,3 +275,17 @@ corrected, or unavailable without reading JSONL or inferring hook execution.
 12. The obsolete “non-empty evidence string means pass” rule is removed.
 13. Expected enforcement unavailability is recorded; unexpected errors surface.
 14. Focused tests prove each contract without a live Emacs reload.
+
+* Completion notes
+
+- The harness persists generic =hook-audit= events with an opaque capability
+  owner/outcome/details payload, a =not-evaluated= truth status, and optional
+  shell summary.  Replay restores its generic symbol fields.
+- Bayesian reasoning emits =format-gap=, =evidence-gap=, =abstained=,
+  =references-resolved=, or =verification-unavailable= audit records only for
+  turns it checks.  Failed checks queue one hidden correction before hiding the
+  superseded reply.
+- The v2 marker accepts only durable =ev:= successful-tool and =in:= user-input
+  handles.  Opaque v1 strings remain readable but fail new enforcement.
+- Both presentation paths consume generic event metadata; the capability also
+  exposes =e://bayesian-reasoning/claim-audits= for session-scoped detail.

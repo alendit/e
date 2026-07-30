@@ -536,6 +536,7 @@ arrays and sometimes inverted key/value pairs."
   '("session"
     "session-info"
     "message"
+    "message-display"
     "activity-event"
     "branch-summary"
     "compaction"
@@ -1269,9 +1270,18 @@ and RECORD supplies persisted identity fields during replay."
       (intern role)
     role))
 
+(defun e-session--known-display (display)
+  "Return DISPLAY disposition normalized for the in-memory transcript."
+  (if (stringp display)
+      (intern display)
+    display))
+
 (defun e-session--normalize-message (message)
   "Return MESSAGE normalized after JSON replay."
   (plist-put message :role (e-session--known-role (plist-get message :role)))
+  (when (plist-member message :display)
+    (plist-put message :display
+               (e-session--known-display (plist-get message :display))))
   message)
 
 (defun e-session--known-event-type (event-type)
@@ -1291,6 +1301,13 @@ and RECORD supplies persisted identity fields during replay."
   (plist-put event
              :event-type
              (e-session--known-event-type (plist-get event :event-type)))
+  (when (eq (plist-get event :event-type) 'hook-audit)
+    (let ((payload (copy-sequence (plist-get event :payload))))
+      (dolist (key '(:owner :outcome :truth-status))
+        (when-let ((value (plist-get payload key)))
+          (when (stringp value)
+            (plist-put payload key (intern value)))))
+      (plist-put event :payload payload)))
   event)
 
 (defun e-session--update-activity-derived-fields (session event)
@@ -1359,6 +1376,19 @@ and RECORD supplies persisted identity fields during replay."
             timestamp)
            timestamp
            record))
+         (e-session--touch store session timestamp)))
+      ("message-display"
+       (when session
+         (when-let ((message
+                     (seq-find (lambda (message)
+                                 (equal (plist-get message :id)
+                                        (plist-get record :id)))
+                               (plist-get session :messages))))
+           (let ((display (plist-get record :display)))
+             (if display
+                 (plist-put message :display
+                            (e-session--known-display display))
+               (cl-remf message :display))))
          (e-session--touch store session timestamp)))
       ("activity-event"
        (when session
@@ -2150,6 +2180,37 @@ New code should prefer the narrower typed metadata helpers."
            :message message))
     (e-session--write-index store)
     message))
+
+(defun e-session--message-by-id (store session-id message-id)
+  "Return SESSION-ID's message with MESSAGE-ID in STORE, or nil.
+Prefers the entry-id index; falls back to a scan of `:messages' so a message
+appended before an index rebuild is still found."
+  (or (let ((entry (gethash message-id (e-session--entry-index store session-id))))
+        (and entry (eq (plist-get entry :type) 'message) entry))
+      (seq-find (lambda (message)
+                  (equal (plist-get message :id) message-id))
+                (plist-get (e-session-get store session-id) :messages))))
+
+(defun e-session-set-message-display (store session-id message-id display)
+  "Set DISPLAY on SESSION-ID's message MESSAGE-ID in STORE and persist it.
+DISPLAY is a display disposition symbol (e.g. `hidden'); nil clears it back to
+the default visible state.  Mutates the in-memory message in place and appends
+a durable `message-display' record so the change replays on reload.  Returns
+the updated message, or nil when no such message exists."
+  (when-let ((message (e-session--message-by-id store session-id message-id)))
+    (let ((timestamp (e-session--timestamp)))
+      (if display
+          (plist-put message :display display)
+        (cl-remf message :display))
+      (e-session--touch store (e-session-get store session-id) timestamp)
+      (e-session--append-record
+       store session-id
+       (list :type "message-display"
+             :session-id session-id
+             :timestamp timestamp
+             :id message-id
+             :display (and display (symbol-name display))))
+      message)))
 
 (cl-defun e-session-append-activity-event
     (store session-id turn-id event-type payload &key (write-index t))
