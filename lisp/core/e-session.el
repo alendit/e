@@ -19,6 +19,9 @@
 
 (declare-function e-dev-profile-enabled-p "e-dev-profile")
 (declare-function e-dev-profile-measure-thunk "e-dev-profile")
+(declare-function e-session-persistence-submit-record "e-session-persistence")
+(declare-function e-session-persistence-request-checkpoint "e-session-persistence")
+(declare-function e-session-persistence-flush "e-session-persistence")
 
 (define-error 'e-session-missing "Session does not exist")
 (define-error 'e-session-duplicate "Session already exists")
@@ -44,6 +47,7 @@
   write-queue
   write-queue-timer
   index-write-pending
+  persistence-controller
   (write-queue-generation 0)
   (write-queue-sequence 0)
   (sequence 0))
@@ -509,6 +513,10 @@ arrays and sometimes inverted key/value pairs."
   "Return non-nil when STORE batches persistent writes through a timer."
   (eq (e-session-store-write-mode store) 'queued))
 
+(defun e-session--persistence-controller (store)
+  "Return STORE's asynchronous persistence controller, if configured."
+  (e-session-store-persistence-controller store))
+
 (defun e-session--append-record-now (store session-id record)
   "Immediately append RECORD for SESSION-ID in persistent STORE."
   (when (e-session--persistent-p store)
@@ -710,12 +718,14 @@ Return STORE."
          :metadata (list :record-type (plist-get record :type)))
    (lambda ()
      (when (e-session--persistent-p store)
-       (if (e-session--queued-writes-p store)
+       (if-let ((controller (e-session--persistence-controller store)))
+           (e-session-persistence-submit-record controller session-id record)
+         (if (e-session--queued-writes-p store)
            (progn
              (e-session--schedule-write-queue store)
              (push (e-session--queued-write-entry store session-id record)
                    (e-session-store-write-queue store)))
-         (e-session--append-record-now store session-id record))))))
+           (e-session--append-record-now store session-id record)))))))
 
 
 (defun e-session--entry-index (store session-id)
@@ -1249,12 +1259,23 @@ and RECORD supplies persisted identity fields during replay."
    (list :metadata (list :persistent (and (e-session--persistent-p store) t)))
    (lambda ()
      (when (e-session--persistent-p store)
-       (if (e-session--queued-writes-p store)
+       (if-let ((controller (e-session--persistence-controller store)))
+           (e-session-persistence-request-checkpoint controller)
+         (if (e-session--queued-writes-p store)
            (progn
              (e-session--schedule-write-queue store)
              (setf (e-session-store-index-write-pending store)
                    (e-session--queued-index-entry store)))
-         (e-session--write-index-now store))))))
+           (e-session--write-index-now store)))))))
+
+(defun e-session-flush (store &optional timeout)
+  "Synchronously establish STORE's requested durability boundary.
+When STORE owns an asynchronous persistence controller, wait for the writer's
+acknowledgements up to TIMEOUT.  Legacy stores retain their queued-write
+behavior.  Interactive mutation paths must not call this function."
+  (if-let ((controller (e-session--persistence-controller store)))
+      (e-session-persistence-flush controller timeout)
+    (e-session-flush-write-queue store)))
 
 (defun e-session--json-read-line (line)
   "Parse one JSONL LINE as a plist."
@@ -1685,8 +1706,11 @@ and RECORD supplies persisted identity fields during replay."
           (e-session--put-index-entry store entry))
         t))))
 
-(defun e-session--load-index-from-session-files (store)
-  "Populate STORE metadata from session records when no index exists."
+(defun e-session--load-index-from-session-files (store &optional only-missing)
+  "Populate STORE metadata from session root records.
+When ONLY-MISSING is non-nil, preserve catalog entries already loaded from the
+derived index.  This reconciles journals committed after the last catalog
+checkpoint without making an older index hide a new session."
   (let ((sessions-directory (e-session-store-sessions-directory store)))
     (when (file-directory-p sessions-directory)
       (dolist (file (directory-files sessions-directory t "\\.jsonl\\'"))
@@ -1700,7 +1724,10 @@ and RECORD supplies persisted identity fields during replay."
                             (line-end-position)))
                      (record (and (not (string-empty-p line))
                                   (e-session--json-read-line line))))
-                (when (equal (plist-get record :type) "session")
+                (when (and (equal (plist-get record :type) "session")
+                           (or (not only-missing)
+                               (not (gethash (plist-get record :session-id)
+                                             (e-session-store-sessions store)))))
                   (e-session--put-index-entry
                    store
                    (list :id (plist-get record :session-id)
@@ -1727,7 +1754,8 @@ state are requested."
                  :index-file (expand-file-name "index.json" directory)
                  :persistent t
                  :write-mode write-mode)))
-    (unless (e-session--load-index store)
+    (if (e-session--load-index store)
+        (e-session--load-index-from-session-files store t)
       (e-session--load-index-from-session-files store))
     store))
 

@@ -1,0 +1,30 @@
+#+title: Responsive Persistence and Scheduled Chat Projection
+#+startup: overview
+
+* In-progress
+
+The 2026-07-30 profile recorded two synchronous session flushes of 481 ms and
+544 ms.  The existing timer deferred writes by only 50 ms, then rewrote the
+entire session catalog in Emacs's event loop.  Token-usage updates also forced
+mode-line redisplay at roughly 55 ms each.
+
+* Direction
+
+Session mutation owns in-memory state and emits durable commands.  A persistence
+controller owns the unacknowledged outbox and writer lifecycle.  The bundled
+writer process owns JSONL I/O and derived catalog checkpoints.  The journal is
+authoritative; the catalog is reconstructible cache state.
+
+Chat presentation will reduce harness events into buffer-local view state and
+use =e-ui-work= for coalesced, budgeted rendering.  Terminal events remain
+ordered; token usage and progress remain latest-value updates.
+
+* Slices
+
+1. DONE: Move the default persistent store to a Node writer process and keep an
+   acknowledged outbox in Emacs.  Preserve JSONL format and reconcile journals
+   absent from a stale catalog.
+2. NEXT: Route token usage and transient chat updates through one coalesced
+   =e-ui-work= projection job.
+3. Validate replay, writer retry/order, hidden-buffer behavior, and a repeat
+   profile of the original chat workload.

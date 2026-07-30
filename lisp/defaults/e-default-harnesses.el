@@ -26,6 +26,7 @@
 (require 'e-layers)
 (require 'e-prompts)
 (require 'e-session)
+(require 'e-session-persistence)
 (require 'e-shells)
 (require 'e-startup)
 
@@ -134,6 +135,7 @@ attaches the internal chat-session layer and `e-default-chat-layer-ids'."
             (e-session-persistent-index-store-create
              directory
              :write-mode 'queued)))
+    (e-session-persistence-enable e-default--chat-sessions)
     e-default--chat-sessions))
 
 (defun e-default-chat--record-layer-ids (harness)
