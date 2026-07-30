@@ -1,0 +1,14 @@
+#+title: Visible Claim Emphasis
+
+* Change
+
+Tell the Bayesian capability to wrap every load-bearing conclusion in the
+visible reply as =*<claim>*=.  The hidden reasoning block remains the durable,
+machine-audited source for claim fields and evidence.
+
+This is tiny because it changes only the capability's model-facing output
+instruction.
+
+* Validation
+
+- Bayesian instruction unit coverage asserts the visible-claim syntax.

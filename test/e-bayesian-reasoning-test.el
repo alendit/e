@@ -28,6 +28,8 @@
   (should (string-match-p "insufficient evidence" e-bayesian-reasoning-instructions))
   (should (string-match-p "e://bayesian-reasoning/refs/tenets.md"
                           e-bayesian-reasoning-instructions))
+  (should (string-match-p "\\*<claim>\\*"
+                          e-bayesian-reasoning-instructions))
   (should (string-match-p "not answer content"
                           e-bayesian-reasoning-instructions)))
 
