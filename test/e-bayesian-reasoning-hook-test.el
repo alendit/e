@@ -149,6 +149,7 @@ normal answer would draw a correction."
                   (list :harness harness :session-id session-id :turn-id turn-id
                         :assistant-message assistant))))
       (should (eq (plist-get check :outcome) 'references-resolved))
+      (should (= (plist-get (plist-get check :details) :claim-count) 1))
       (should (equal (plist-get (car (plist-get (plist-get check :details)
                                                  :resolved))
                                  :source-kind)

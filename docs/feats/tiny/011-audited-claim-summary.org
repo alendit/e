@@ -1,0 +1,16 @@
+#+title: Audited Claim Count in Settled Chat Summaries
+
+* Change
+
+Keep internal validation workflow provenance out of user-facing replies.  The
+Bayesian capability records an explicit claim count in its durable audit, and
+the chat shell adds that count to the settled activity summary when present.
+
+This is tiny because the audit record already owns the count's source data and
+the chat summary already owns its compact presentation.
+
+* Validation
+
+- Bayesian unit coverage checks the model-facing instruction and persisted
+  claim count.
+- Chat unit coverage checks plural claim-count summary formatting.

@@ -37,7 +37,7 @@
                   (harness session-id turn-id &rest args))
 
 (defconst e-bayesian-reasoning-instructions
-  "Treat belief as a quantity, not a verdict: attach a confidence to factual claims, keep at least one rival hypothesis alive, and prefer \"insufficient evidence\" to a guess. Read e://bayesian-reasoning/refs/tenets.md before concluding on a load-bearing claim. When you assert a load-bearing factual conclusion, emit exactly one reserved fenced reasoning block: under org output mode, `#+begin_reasoning' ... `#+end_reasoning'; under markdown output mode, a ```reasoning fence. Inside it write four lines: `claim:' the one-line conclusion, `confidence:' one of low, medium, or high, `alternatives:' at least one rival explanation or the literal `insufficient-evidence', and `evidence:' a comma-separated list of the `ev:' or `in:' evidence handles provided in context. Only an explicit `insufficient-evidence' abstention may leave evidence blank. This block is hidden from the rendered reply and read only by deterministic tooling."
+  "Treat belief as a quantity, not a verdict: attach a confidence to factual claims, keep at least one rival hypothesis alive, and prefer \"insufficient evidence\" to a guess. Read e://bayesian-reasoning/refs/tenets.md before concluding on a load-bearing claim. When you assert a load-bearing factual conclusion, emit exactly one reserved fenced reasoning block: under org output mode, `#+begin_reasoning' ... `#+end_reasoning'; under markdown output mode, a ```reasoning fence. Inside it write four lines: `claim:' the one-line conclusion, `confidence:' one of low, medium, or high, `alternatives:' at least one rival explanation or the literal `insufficient-evidence', and `evidence:' a comma-separated list of the `ev:' or `in:' evidence handles provided in context. Only an explicit `insufficient-evidence' abstention may leave evidence blank. This block is hidden from the rendered reply and read only by deterministic tooling. Internal workflow and validation bookkeeping is audit metadata, not answer content: do not say that you followed or ran a workflow, cite an internal workflow URI, or report process markers in the user-facing reply."
   "Compact model-facing disposition for calibrated reasoning.")
 
 (defconst e-bayesian-reasoning--fence-regexp
@@ -326,13 +326,19 @@ from this turn, keeping the prompt cost bounded."
          (mapconcat
           (lambda (event)
             (let* ((payload (plist-get event :payload))
-                   (details (plist-get payload :details)))
+                   (details (plist-get payload :details))
+                   (mark (plist-get details :mark)))
               (format
-               "## Turn %s\n- outcome: %s\n- truth status: %s\n- correction: %s\n- resolved references: %S\n- rejected references: %S\n"
+               "## Turn %s\n- outcome: %s\n- truth status: %s\n- correction: %s\n- claims: %s\n- claim: %s\n- confidence: %s\n- alternatives: %s\n- evidence: %s\n- resolved references: %S\n- rejected references: %S\n"
                (plist-get event :turn-id)
                (plist-get payload :outcome)
                (plist-get payload :truth-status)
                (or (plist-get details :correction) 'none)
+               (or (plist-get details :claim-count) 0)
+               (or (plist-get mark :claim) "none")
+               (or (plist-get mark :confidence) "none")
+               (or (plist-get mark :alternatives) "none")
+               (or (plist-get mark :evidence) "none")
                (plist-get details :resolved)
                (plist-get details :rejected))))
           audits
@@ -449,13 +455,15 @@ policy.  In particular, `references-resolved' never means that the claim is
 true: the hook only established that cited durable records preceded it."
   (let* ((content (e-bayesian-reasoning--assistant-content context))
          (marks (and content (e-bayesian-reasoning--marks content)))
+         (claim-count (length marks))
          (high-risk-reasons (e-bayesian-reasoning--high-risk-reasons context)))
     (cond
      ((null content) nil)
      ((> (length marks) 1)
       (list :outcome 'format-gap
             :gap "emit exactly one reasoning block"
-            :details (list :mark-count (length marks)
+            :details (list :claim-count claim-count
+                           :mark-count claim-count
                            :high-risk-reasons high-risk-reasons)))
      ((null marks)
       (when (or high-risk-reasons
@@ -465,7 +473,8 @@ true: the hook only established that cited durable records preceded it."
                                        content))))
         (list :outcome 'format-gap
               :gap "add a reasoning block or explicitly abstain with `insufficient-evidence'"
-              :details (list :mark-count 0
+              :details (list :claim-count claim-count
+                             :mark-count 0
                              :high-risk-reasons high-risk-reasons
                              :strict-tripwire
                              (and (null high-risk-reasons)
@@ -478,20 +487,24 @@ true: the hook only established that cited durable records preceded it."
          (format-gap
           (list :outcome 'format-gap
                 :gap format-gap
-                :details (list :mark mark :high-risk-reasons high-risk-reasons)))
+                :details (list :claim-count claim-count
+                               :mark mark :high-risk-reasons high-risk-reasons)))
          ((equal alternatives "insufficient-evidence")
           (list :outcome 'abstained
-                :details (list :mark mark :high-risk-reasons high-risk-reasons)))
+                :details (list :claim-count claim-count
+                               :mark mark :high-risk-reasons high-risk-reasons)))
          (t
           (let ((resolution (e-bayesian-reasoning--resolve-evidence-refs context mark)))
             (if (plist-get resolution :rejected)
                 (list :outcome 'evidence-gap
                       :gap "replace opaque or unresolved evidence with available `ev:' or `in:' handles"
-                      :details (append (list :mark mark
+                      :details (append (list :claim-count claim-count
+                                             :mark mark
                                              :high-risk-reasons high-risk-reasons)
                                        resolution))
               (list :outcome 'references-resolved
-                    :details (append (list :mark mark
+                    :details (append (list :claim-count claim-count
+                                           :mark mark
                                            :high-risk-reasons high-risk-reasons)
                                      resolution)))))))))))
 

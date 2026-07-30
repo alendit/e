@@ -4191,6 +4191,17 @@ Count tool invocations after the reasoning chunk they followed."
          (equal (plist-get entry :title) "Action call"))
        (plist-get record :intermittent-entries))))
 
+(defun e-chat--claim-count-summary-text (record)
+  "Return the optional audited claim-count suffix for RECORD.
+
+The count comes from a capability-owned hook-audit payload.  The shell does
+not parse claim syntax or infer claims from prose."
+  (or (when-let ((claim-count (plist-get record :claim-count)))
+        (when (and (integerp claim-count) (>= claim-count 0))
+          (format " (%d claim%s)" claim-count
+                  (if (= claim-count 1) "" "s"))))
+      ""))
+
 (defun e-chat--activity-summary-text (record)
   "Return settled turn summary text for RECORD."
   (when (and (plist-get record :started-at)
@@ -4208,8 +4219,9 @@ Count tool invocations after the reasoning chunk they followed."
            (action-text (cond
                          ((= action-count 0) "")
                          ((= action-count 1) ", 1 action")
-                         (t (format ", %d actions" action-count)))))
-      (format "Turn took %s%s%s." duration tool-text action-text))))
+                         (t (format ", %d actions" action-count))))
+           (claim-text (e-chat--claim-count-summary-text record)))
+      (format "Turn took %s%s%s%s." duration tool-text action-text claim-text))))
 
 (defun e-chat--activity-expanded-text (record)
   "Return expanded per-line activity history for RECORD."
@@ -5397,6 +5409,18 @@ SOURCE identifies where the entry came from for duplicate suppression."
       (plist-put record :started-at created-at))
     (plist-put record :ended-at created-at)))
 
+(defun e-chat--record-hook-audit (record payload &optional source)
+  "Record a generic hook audit PAYLOAD in RECORD.
+
+SOURCE identifies replayed durable activity or a live event.  The optional
+claim count is a capability-declared summary metric; its opaque audit details
+remain available only through answer details and capability resources."
+  (when-let ((summary (plist-get payload :summary)))
+    (e-chat--add-intermittent-entry record "Hook audit" summary nil source))
+  (when-let ((claim-count (plist-get (plist-get payload :details) :claim-count)))
+    (when (and (integerp claim-count) (>= claim-count 0))
+      (plist-put record :claim-count claim-count))))
+
 (defun e-chat--record-activity-event (turn-id activity-event)
   "Record durable ACTIVITY-EVENT for TURN-ID without re-emitting it."
   (let ((record (e-chat--turn-record turn-id)))
@@ -5447,10 +5471,8 @@ SOURCE identifies where the entry came from for duplicate suppression."
         (plist-get activity-event :payload)
         'activity))
       ('hook-audit
-       (when-let ((summary (plist-get (plist-get activity-event :payload)
-                                      :summary)))
-         (e-chat--add-intermittent-entry
-          record "Hook audit" summary nil 'activity)))
+       (e-chat--record-hook-audit record (plist-get activity-event :payload)
+                                  'activity))
       ('tool-progress
        (e-chat--record-tool-progress
         record
@@ -7336,9 +7358,10 @@ passed through assistant fontification, so the audit view is faithful."
      ;; Audits remain durable and queryable, but are ordinary turn activity,
      ;; not user-facing system failures.  Keep the live path consistent with
      ;; replay, which records the compact summary below.
-     (when-let ((summary (plist-get (plist-get event :payload) :summary)))
-       (e-chat--append-intermittent-entry
-        (plist-get event :turn-id) "Hook audit" summary nil 'activity)))
+     (when-let ((turn-id (plist-get event :turn-id)))
+       (let ((record (e-chat--turn-record turn-id)))
+         (e-chat--record-hook-audit record (plist-get event :payload) 'activity)
+         (e-chat--render-turn-transient turn-id record))))
     ('tool-progress
      (e-chat--set-status "tool output")
      (when-let ((record (e-chat--existing-turn-record

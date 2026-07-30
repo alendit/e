@@ -27,6 +27,8 @@
   (should (string-match-p "confidence" e-bayesian-reasoning-instructions))
   (should (string-match-p "insufficient evidence" e-bayesian-reasoning-instructions))
   (should (string-match-p "e://bayesian-reasoning/refs/tenets.md"
+                          e-bayesian-reasoning-instructions))
+  (should (string-match-p "not answer content"
                           e-bayesian-reasoning-instructions)))
 
 (ert-deftest e-bayesian-reasoning-test-capability-created ()
@@ -71,6 +73,7 @@
                                  "e://bayesian-reasoning/claim-audits" nil)))
       (should (string-match-p "outcome: references-resolved" content))
       (should (string-match-p "truth status: not-evaluated" content))
+      (should (string-match-p "claims: 0" content))
       (should (string-match-p "ev:01KTEST" content)))))
 
 (ert-deftest e-bayesian-reasoning-test-harness-advanced-includes-capability ()

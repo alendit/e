@@ -2665,6 +2665,15 @@ See [[https://example.test][docs]] and [[file:notes.org]].")
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-settled-summary-includes-audited-claim-count ()
+  "A capability-declared claim count appears only in the settled summary."
+  (let ((record '(:started-at 10 :ended-at 772 :has-provider-activity t
+                  :action-count 9)))
+    (e-chat--record-hook-audit
+     record '(:details (:claim-count 2)) 'activity)
+    (should (equal (e-chat--activity-summary-text record)
+                   "Turn took 12min 42sec, 9 actions (2 claims)."))))
+
 (ert-deftest e-chat-test-failed-turn-expands-full-error-inline ()
   "RET on a focused failed system block expands provider details inline."
   (let ((buffer (e-chat-test--buffer nil "chat-failed-details")))
