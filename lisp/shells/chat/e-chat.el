@@ -5396,10 +5396,12 @@ turn keeps a background session from stalling the main thread."
       (e-chat--request-activity-redraw e-chat--progress-turn-id 'progress))))
 
 (defun e-chat--start-progress-indicator (turn-id)
-  "Start the active assistant progress indicator for TURN-ID."
+  "Start the active assistant progress indicator for TURN-ID.
+The first visible frame uses the same scheduled projection as later progress
+and activity updates.  Event dispatch only changes local state."
   (setq e-chat--progress-frame 0)
   (e-chat--ensure-progress-interval turn-id)
-  (e-chat--render-progress-indicator turn-id))
+  (e-chat--request-activity-redraw turn-id 'progress))
 
 (defun e-chat--stop-progress-indicator (&optional turn-id)
   "Stop and delete the active assistant progress indicator.
@@ -5428,7 +5430,7 @@ SOURCE identifies where the entry came from for duplicate suppression."
   (when (and turn-id content (not (string-empty-p content)))
     (let ((record (e-chat--turn-record turn-id)))
       (e-chat--add-intermittent-entry record title content append source)
-      (e-chat--render-turn-transient turn-id record))))
+      (e-chat--request-activity-redraw turn-id 'activity))))
 
 (defun e-chat--format-tool-call (payload)
   "Return a compact display string for tool-call PAYLOAD."
@@ -7395,7 +7397,7 @@ passed through assistant fontification, so the audit view is faithful."
         record
         (plist-get payload :prompt-preview))
        (e-chat--set-status "steered")
-       (e-chat--render-running-status turn-id record)))
+       (e-chat--request-activity-redraw turn-id 'activity)))
     ('assistant-delta
      (e-chat--set-status "streaming"))
     ('reasoning-delta
@@ -7453,7 +7455,7 @@ passed through assistant fontification, so the audit view is faithful."
      (when-let ((turn-id (plist-get event :turn-id)))
        (let ((record (e-chat--turn-record turn-id)))
          (e-chat--record-hook-audit record (plist-get event :payload) 'activity)
-         (e-chat--render-turn-transient turn-id record))))
+         (e-chat--request-activity-redraw turn-id 'activity))))
     ('tool-progress
      (e-chat--set-status "tool output")
      (when-let ((record (e-chat--existing-turn-record

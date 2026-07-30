@@ -2658,6 +2658,9 @@ See [[https://example.test][docs]] and [[file:notes.org]].")
                           :turn-id "turn-1"
                           :payload '(:summary "Evidence references resolved"
                                      :details (:private "not rendered"))))
+          (e-ui-work-with-batch-drain
+            (e-ui-work-drain-batch :buffer (current-buffer)
+                                   :owner 'activity-redraw))
           (let ((content (buffer-string)))
             (should (string-match-p "Evidence references resolved" content))
             (should-not (string-match-p "Event: (" content))
@@ -2696,6 +2699,9 @@ See [[https://example.test][docs]] and [[file:notes.org]].")
           (e-chat--render-event
            (e-events-make :type 'turn-started :session-id e-chat-session-id
                           :turn-id "turn-2" :created-at 10))
+          (e-ui-work-with-batch-drain
+            (e-ui-work-drain-batch :buffer (current-buffer)
+                                   :owner 'activity-redraw))
           (should (string-match-p "Validating claims…" (buffer-string)))
           (should (string-match-p (regexp-quote e-chat--assistant-glyph)
                                   (buffer-string))))
@@ -2762,6 +2768,9 @@ See [[https://example.test][docs]] and [[file:notes.org]].")
                           :turn-id "turn-1"
                           :created-at 10))
           (e-chat-test--mark-active-turn "turn-1")
+          (e-ui-work-with-batch-drain
+            (e-ui-work-drain-batch :buffer (current-buffer)
+                                   :owner 'activity-redraw))
           (let ((content (buffer-string)))
             (should (string-match-p
                      (concat (regexp-quote e-chat--assistant-glyph)
@@ -2838,8 +2847,8 @@ See [[https://example.test][docs]] and [[file:notes.org]].")
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest e-chat-test-turn-steered-renders-immediate-indicator ()
-  "A steering event immediately adds a visible active-turn indicator."
+(ert-deftest e-chat-test-turn-steered-schedules-visible-indicator ()
+  "A steering event schedules a visible active-turn indicator."
   (let ((buffer (e-chat-test--buffer nil "chat-steered-indicator")))
     (unwind-protect
         (with-current-buffer buffer
@@ -2854,6 +2863,9 @@ See [[https://example.test][docs]] and [[file:notes.org]].")
                           :turn-id "turn-1"
                           :created-at 11
                           :payload '(:prompt-preview "focus on the count")))
+          (e-ui-work-with-batch-drain
+            (e-ui-work-drain-batch :buffer (current-buffer)
+                                   :owner 'activity-redraw))
           (should (string-match-p "steered" header-line-format))
           (should (string-match-p "Steered: focus on the count"
                                   (buffer-string))))
@@ -4425,6 +4437,9 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
                           :turn-id "turn-1"
                           :created-at 10))
           (e-chat-test--mark-active-turn "turn-1")
+          (e-ui-work-with-batch-drain
+            (e-ui-work-drain-batch :buffer (current-buffer)
+                                   :owner 'activity-redraw))
           (goto-char (point-max))
           (insert "Review ")
           (let ((reference
@@ -4805,6 +4820,9 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
                           :turn-id "turn-1"
                           :created-at 10))
           (e-chat-test--mark-active-turn "turn-1")
+          (e-ui-work-with-batch-drain
+            (e-ui-work-drain-batch :buffer (current-buffer)
+                                   :owner 'activity-redraw))
           (goto-char (point-max))
           (insert "follow-up draft")
           (let ((delete-composer (symbol-function 'e-chat--delete-composer))
@@ -8258,6 +8276,7 @@ The context-window denominator comes from the live provider lookup
          (buffer (e-chat-open :harness harness :session-id "chat-token-usage-event")))
     (unwind-protect
         (with-current-buffer buffer
+          (setq-local e-chat--assume-redraw-visible t)
           (e-session-append-activity-event
            store
            e-chat-session-id
@@ -8277,6 +8296,9 @@ The context-window denominator comes from the live provider lookup
                                      :output-tokens 154
                                      :reasoning-output-tokens 0
                                      :total-tokens 54735)))
+          (e-ui-work-with-batch-drain
+            (e-ui-work-drain-batch :buffer (current-buffer)
+                                   :owner 'chat-mode-line-status))
           (should (equal mode-name
                          "e-chat gpt-5.5/high 21% (55k/258k tok)"))
           (should-not (string-match-p "token-usage" (buffer-string)))
