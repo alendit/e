@@ -60,6 +60,39 @@
             (should (e-session-get indexed "unindexed"))))
       (delete-directory directory t))))
 
+(ert-deftest e-session-persistence-test-retries-keep-journal-order-and-deduplicate ()
+  "Replayed writer commands append once and preserve session record order."
+  (skip-unless (executable-find e-session-persistence-node-executable))
+  (let* ((directory (make-temp-file "e-session-persistence-retry-" t))
+         (store (e-session-persistent-index-store-create directory))
+         (controller (e-session-persistence-enable store))
+         (sent nil))
+    (unwind-protect
+        (progn
+          ;; Hold commands in the controller outbox, then deliver every one
+          ;; twice as a process restart would.  The writer must retain only
+          ;; the first delivery of each globally unique command id.
+          (cl-letf (((symbol-function 'e-session-persistence--send)
+                     (lambda (_controller request) (push request sent))))
+            (e-session-create store :id "session-1")
+            (e-session-append-message
+             store "session-1" '(:role user :content "ordered retry")))
+          (dolist (request (nreverse sent))
+            (e-session-persistence--send controller request)
+            (e-session-persistence--send controller request))
+          (e-session-flush store 5)
+          (with-temp-buffer
+            (insert-file-contents
+             (expand-file-name "sessions/session-1.jsonl" directory))
+            (should (= (count-lines (point-min) (point-max)) 2)))
+          (let ((loaded (e-session-persistent-store-create directory)))
+            (should (equal (mapcar (lambda (message) (plist-get message :content))
+                                   (e-session-messages loaded "session-1"))
+                           '("ordered retry")))))
+      (when-let ((process (e-session-persistence-process controller)))
+        (when (process-live-p process) (kill-process process)))
+      (delete-directory directory t))))
+
 (provide 'e-session-persistence-test)
 
 ;;; e-session-persistence-test.el ends here
